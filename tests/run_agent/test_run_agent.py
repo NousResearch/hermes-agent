@@ -5632,3 +5632,15 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+
+def test_nonretryable_error_kind_surfaces_exception_type_without_status():
+    """Transport/parse failures with no status must not render as HTTP None."""
+    assert (
+        AIAgent._nonretryable_error_kind(
+            None, TypeError("'NoneType' object is not iterable")
+        )
+        == "TypeError"
+    )
+    assert AIAgent._nonretryable_error_kind(0, ValueError("bad")) == "ValueError"
+    assert AIAgent._nonretryable_error_kind(404, RuntimeError("nope")) == "HTTP 404"

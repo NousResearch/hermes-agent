@@ -2591,6 +2591,35 @@ class TestCodexAuxiliaryAdapterNullOutputRecovery:
 
         assert response.choices[0].message.content == "aux survived"
 
+    def test_recovers_when_sdk_iterator_raises_none_output_typeerror(self):
+        """Recover from streamed items when the SDK iterator crashes post-stream."""
+        output_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="aux recovered")],
+        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=output_item),
+        ]
+
+        class _BrokenCreateStream:
+            def __iter__(self):
+                for event in events:
+                    yield event
+                raise TypeError("'NoneType' object is not iterable")
+            def close(self): pass
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                return _BrokenCreateStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
+        assert response.choices[0].message.content == "aux recovered"
+
 
 # ---------------------------------------------------------------------------
 # Issue #23432 — auxiliary timeout poisons cached client; later aux calls fail

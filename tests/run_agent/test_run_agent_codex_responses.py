@@ -161,12 +161,16 @@ class _FakeCreateStream:
     tests use this to drive it through the same code paths the wire does.
     """
 
-    def __init__(self, events):
+    def __init__(self, events, *, iter_error=None):
         self._events = list(events)
+        self._iter_error = iter_error
         self.closed = False
 
     def __iter__(self):
-        return iter(self._events)
+        for event in self._events:
+            yield event
+        if self._iter_error is not None:
+            raise self._iter_error
 
     def close(self):
         self.closed = True
@@ -529,6 +533,48 @@ def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatc
     assert response.status == "completed"
     assert response.output == [output_item]
     assert response.usage.total_tokens == 11
+
+
+def test_run_codex_stream_recovers_after_sdk_none_output_typeerror(monkeypatch):
+    """If the SDK iterator crashes after streamed items arrived, recover from them.
+
+    ``responses.create(stream=True)`` still runs the OpenAI SDK's internal
+    accumulator while yielding SSE events. When chatgpt.com sends a terminal
+    snapshot with ``response.output = null``, the iterator can raise
+    ``TypeError: 'NoneType' object is not iterable`` after earlier
+    ``response.output_item.done`` events were already delivered. The runtime
+    must synthesize the final response from those streamed items instead of
+    surfacing a local parse failure.
+    """
+    agent = _build_agent(monkeypatch)
+    tool_call_item = SimpleNamespace(
+        type="function_call",
+        call_id="call_123",
+        name="lookup_weather",
+        arguments='{"city":"Lahore"}',
+    )
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=tool_call_item),
+        ],
+        iter_error=TypeError("'NoneType' object is not iterable"),
+    )
+
+    def _fake_create(**kwargs):
+        assert kwargs.get("stream") is True
+        return create_stream
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response is not None
+    assert create_stream.closed is True
+    assert response.status == "completed"
+    assert response.output == [tool_call_item]
+    assert response.output_text == ""
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

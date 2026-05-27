@@ -1563,6 +1563,18 @@ class AIAgent:
         prefix = f"HTTP {status_code}: " if status_code else ""
         return f"{prefix}{raw[:500]}"
 
+    @staticmethod
+    def _nonretryable_error_kind(status_code, api_error) -> str:
+        """Short label for a non-retryable failure.
+
+        Returns ``HTTP <code>`` when an HTTP status is present, otherwise the
+        exception class name. This avoids misleading labels like ``HTTP None``
+        for local parse or transport failures.
+        """
+        if status_code:
+            return f"HTTP {status_code}"
+        return type(api_error).__name__
+
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
         # Azure Foundry Entra ID bearer providers are callables — never
         # invoke them in log paths; identify the auth surface instead.

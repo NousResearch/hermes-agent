@@ -281,7 +281,35 @@ def _consume_codex_event_stream(
     terminal_error: Any = None
     saw_terminal = False
 
-    for event in event_iter:
+    event_iter = iter(event_iter)
+    while True:
+        try:
+            event = next(event_iter)
+        except StopIteration:
+            break
+        except TypeError as exc:
+            # The OpenAI SDK's streamed Responses iterator still runs its own
+            # accumulator while yielding SSE events. When chatgpt.com emits a
+            # terminal snapshot whose ``response.output`` is ``null``, the SDK
+            # trips over ``for output in response.output`` and raises
+            # ``TypeError: 'NoneType' object is not iterable`` *after* earlier
+            # ``response.output_item.done`` / ``response.output_text.delta``
+            # events have already arrived. If we have recoverable streamed
+            # state, synthesize the final response from that state instead of
+            # letting a local parse bug poison credential-pool health.
+            if "not iterable" not in str(exc):
+                raise
+            if not collected_output_items and not collected_text_deltas:
+                raise
+            logger.debug(
+                "Codex Responses iterator hit SDK None-output TypeError; "
+                "recovering from streamed state (items=%d, chars=%d)",
+                len(collected_output_items),
+                sum(len(p) for p in collected_text_deltas),
+            )
+            saw_terminal = True
+            terminal_status = terminal_status or "completed"
+            break
         if on_event is not None:
             try:
                 on_event(event)

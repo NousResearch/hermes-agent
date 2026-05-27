@@ -2914,7 +2914,11 @@ def run_conversation(
                 if is_client_error:
                     # Try fallback before aborting — a different provider
                     # may not have the same issue (rate limit, auth, etc.)
-                    agent._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                    _err_kind = agent._nonretryable_error_kind(status_code, api_error)
+                    agent._emit_status(
+                        f"⚠️ Non-retryable error ({_err_kind}): "
+                        f"{agent._summarize_api_error(api_error)} — trying fallback..."
+                    )
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -2925,10 +2929,10 @@ def run_conversation(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
                     agent._emit_status(
-                        f"❌ Non-retryable error (HTTP {status_code}): "
+                        f"❌ Non-retryable error ({_err_kind}): "
                         f"{agent._summarize_api_error(api_error)}"
                     )
-                    agent._vprint(f"{agent.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
+                    agent._vprint(f"{agent.log_prefix}❌ Non-retryable client error ({_err_kind}). Aborting.", force=True)
                     agent._vprint(f"{agent.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                     agent._vprint(f"{agent.log_prefix}   🌐 Endpoint: {_base}", force=True)
                     # Actionable guidance for common auth errors

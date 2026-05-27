@@ -5077,6 +5077,34 @@ def _(rid, params: dict) -> dict:
         # Fallback: no active run, treat as next-turn message
         return _ok(rid, {"type": "send", "message": arg})
 
+    if name == "loop":
+        try:
+            from hermes_cli.loops import loop_text, run_loop
+        except Exception as exc:
+            return _err(rid, 5030, f"loop unavailable: {exc}")
+
+        parts = arg.split()
+        command = parts[0].lower() if parts else "status"
+        try:
+            if command == "run":
+                result = run_loop(parts[1] if len(parts) > 1 else None)
+                if "\nStory:" in result.text:
+                    story_line = next(
+                        (line for line in result.text.splitlines() if line.startswith("Story: ")),
+                        "Story queued",
+                    )
+                    notice = (
+                        f"Loop: {result.slug}\n"
+                        "Status: queued\n"
+                        f"{story_line}\n"
+                        "Next: queued story will run as the next turn."
+                    )
+                    return _ok(rid, {"type": "send", "notice": notice, "message": result.text})
+                return _ok(rid, {"type": "exec", "output": result.text})
+            return _ok(rid, {"type": "exec", "output": loop_text(arg or "status")})
+        except Exception as exc:
+            return _err(rid, 5030, f"loop failed: {exc}")
+
     if name == "goal":
         if not session:
             return _err(rid, 4001, "no active session")

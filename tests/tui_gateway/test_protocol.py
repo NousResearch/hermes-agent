@@ -484,7 +484,7 @@ def test_slash_exec_plugin_handler_error_returns_output(server):
     assert worker.calls == []
 
 
-@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
+@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan", "loop status demo"])
 def test_slash_exec_rejects_pending_input_commands(server, cmd):
     """slash.exec must reject commands that use _pending_input in the CLI."""
     sid = "test-session"
@@ -531,6 +531,55 @@ def test_command_dispatch_queue_requires_arg(server):
 
     assert "error" in resp
     assert resp["error"]["code"] == 4004
+
+
+def test_command_dispatch_loop_status_executes_locally(server, tmp_path, monkeypatch):
+    """command.dispatch /loop status returns local loop output after slash.exec fallback."""
+    monkeypatch.chdir(tmp_path)
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    resp = server.handle_request({
+        "id": "r-loop-status",
+        "method": "command.dispatch",
+        "params": {"name": "loop", "arg": "status demo", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "exec"
+    assert "Loop: demo" in result["output"]
+    assert "Status: not started" in result["output"]
+
+
+def test_command_dispatch_loop_run_sends_story_prompt(server, tmp_path, monkeypatch):
+    """command.dispatch /loop run returns {type: send} so the TUI submits the story prompt."""
+    monkeypatch.chdir(tmp_path)
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+    server.handle_request({
+        "id": "r-loop-init",
+        "method": "command.dispatch",
+        "params": {"name": "loop", "arg": "init demo", "session_id": sid},
+    })
+    prd_path = tmp_path / ".hermes" / "loops" / "demo" / "prd.json"
+    prd = json.loads(prd_path.read_text(encoding="utf-8"))
+    prd["userStories"] = [{"id": "S1", "title": "first", "priority": 1}]
+    prd_path.write_text(json.dumps(prd, indent=2) + "\n", encoding="utf-8")
+
+    resp = server.handle_request({
+        "id": "r-loop-run",
+        "method": "command.dispatch",
+        "params": {"name": "loop", "arg": "run demo", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert "Status: queued" in result["notice"]
+    assert "Story: S1 — first" in result["notice"]
+    assert result["message"].startswith("Loop: demo")
+    assert "Story: S1 — first" in result["message"]
 
 
 def test_skills_manage_search_uses_tools_hub_sources(server):

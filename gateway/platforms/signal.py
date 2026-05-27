@@ -209,10 +209,6 @@ class SignalAdapter(BasePlatformAdapter):
         dm_allowed_str = os.getenv("SIGNAL_ALLOWED_USERS", "*")
         self.dm_allow_from = set(_parse_comma_list(dm_allowed_str))
 
-        # Reply prefix — prepended to every outbound text message.
-        # Mirrors WhatsApp's self-chat header behavior.
-        self._reply_prefix: Optional[str] = extra.get("reply_prefix")
-
         # HTTP client
         self.client: Optional[httpx.AsyncClient] = None
 
@@ -970,17 +966,6 @@ class SignalAdapter(BasePlatformAdapter):
     # Sending
     # ------------------------------------------------------------------
 
-    DEFAULT_REPLY_PREFIX = "⚕ Hermes Agent\n────────────\n"
-
-    def _effective_reply_prefix(self) -> str:
-        """Return the prefix prepended to every outbound message."""
-        if self._reply_prefix is not None:
-            return self._reply_prefix.replace("\\n", "\n")
-        env_prefix = os.getenv("SIGNAL_REPLY_PREFIX")
-        if env_prefix is not None:
-            return env_prefix.replace("\\n", "\n")
-        return self.DEFAULT_REPLY_PREFIX
-
     async def send(
         self,
         chat_id: str,
@@ -990,12 +975,6 @@ class SignalAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a text message with native Signal formatting."""
         await self._stop_typing_indicator(chat_id)
-
-        # Prepend reply prefix (configured via signal.reply_prefix in config.yaml,
-        # SIGNAL_REPLY_PREFIX env, or default header). Mirrors WhatsApp behavior.
-        prefix = self._effective_reply_prefix()
-        if prefix and content and not content.startswith(prefix):
-            content = prefix + content
 
         plain_text, text_styles = self._markdown_to_signal(content)
 

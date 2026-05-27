@@ -2898,12 +2898,14 @@ class DiscordAdapter(BasePlatformAdapter):
         Matches @username patterns (case-insensitive) and replaces with
         Discord's native mention format <@user_id>.
         
-        Already-correct <@123> mentions are preserved unchanged.
+        Requirements:
+        - @ must be at start of string or preceded by non-word character (space, punctuation)
+        - Already-correct <@123> mentions are preserved unchanged
         """
-        # Pattern to match @username but NOT <@123> (already correct format)
+        # (?<!\w) ensures @ is not preceded by word character (matches Discord behavior)
         # \b\w+\b matches word characters with word boundaries
-        # Negative lookahead (?![>\d]*>) prevents matching <@id> patterns
-        pattern = r'@(\b\w+\b)(?![>\d]*>)'
+        # (?![>\d]*>) prevents matching <@id> patterns
+        pattern = r'(?<!\w)@(\b\w+\b)(?![>\d]*>)'
         
         def replace_mention(match):
             username = match.group(1)

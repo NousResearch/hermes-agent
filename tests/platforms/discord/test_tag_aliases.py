@@ -277,3 +277,36 @@ class TestTagAliasCorrection:
         
         result = adapter.format_message("Hi @marvin2")
         assert result == "Hi <@123456789012345678>"
+
+    def test_no_space_before_at_not_matched(self):
+        """Test that @ without space before is NOT matched (Discord behavior)."""
+        config = PlatformConfig(
+            enabled=True,
+            extra={"tag_aliases": {"lachlan": "556627489947123749"}}
+        )
+        adapter = DiscordAdapter(config=config)
+        
+        result = adapter.format_message("test@lachlan")
+        assert result == "test@lachlan"
+
+    def test_word_before_at_not_matched(self):
+        """Test that word character before @ is NOT matched."""
+        config = PlatformConfig(
+            enabled=True,
+            extra={"tag_aliases": {"marvin": "123456789012345678"}}
+        )
+        adapter = DiscordAdapter(config=config)
+        
+        result = adapter.format_message("x@marvin")
+        assert result == "x@marvin"
+
+    def test_punctuation_before_at_is_matched(self):
+        """Test that punctuation before @ IS matched."""
+        config = PlatformConfig(
+            enabled=True,
+            extra={"tag_aliases": {"lachlan": "556627489947123749"}}
+        )
+        adapter = DiscordAdapter(config=config)
+        
+        result = adapter.format_message("Hi, @lachlan!")
+        assert result == "Hi, <@556627489947123749>!"

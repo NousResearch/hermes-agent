@@ -1554,11 +1554,16 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     its own inline invocation for backward-compatible display handling.
     """
     # Check plugin hooks for a block directive before executing anything.
+    # Routed through the latency-aware wrapper so a slow pre_tool_call
+    # hook surfaces a WARNING in agent.log instead of producing a silent
+    # multi-second wall-clock gap (#32460).
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
         try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            block_message = get_pre_tool_call_block_message(
+            from agent.tool_dispatch_helpers import (
+                pre_tool_call_block_message_with_latency,
+            )
+            block_message = pre_tool_call_block_message_with_latency(
                 function_name, function_args, task_id=effective_task_id or "",
             )
         except Exception:

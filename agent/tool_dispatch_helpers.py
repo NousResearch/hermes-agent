@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -35,6 +36,63 @@ from agent.tool_result_classification import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Pre-tool dispatch latency threshold (#32460).  The agent loop calls
+# ``get_pre_tool_call_block_message()`` for every tool call before the
+# tool starts measuring its own duration, so a slow plugin / shell hook
+# here produces a silent wall-clock gap between an LLM response and the
+# resulting tool execution.  When the call exceeds this threshold, emit
+# a single WARNING that names the tool — the operator no longer has to
+# guess whether the agent was idle or one of their hooks was hung.
+_PRE_TOOL_DISPATCH_SLOW_THRESHOLD_SECONDS = 2.0
+
+
+def pre_tool_call_block_message_with_latency(
+    tool_name: str,
+    function_args: Optional[Dict[str, Any]],
+    *,
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+) -> Optional[str]:
+    """Call ``get_pre_tool_call_block_message`` and warn on slow dispatch.
+
+    Equivalent to invoking
+    :func:`hermes_cli.plugins.get_pre_tool_call_block_message` directly,
+    but wraps the call in a ``time.monotonic`` window so dispatch latency
+    above ``_PRE_TOOL_DISPATCH_SLOW_THRESHOLD_SECONDS`` is reported via a
+    WARNING that names the offending tool.
+
+    The pre-tool dispatch path is silent in the agent log under normal
+    conditions, so a hook or plugin that blocks here for tens of seconds
+    appears to the user as the agent "freezing" between an LLM response
+    and the next tool execution — exactly the symptom reported in
+    #32460.  Surfacing the latency immediately lets the operator chase
+    down the responsible hook / plugin without having to enable debug
+    logging or instrument by hand.
+    """
+    from hermes_cli.plugins import get_pre_tool_call_block_message
+
+    t0 = time.monotonic()
+    try:
+        return get_pre_tool_call_block_message(
+            tool_name,
+            function_args,
+            task_id=task_id,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        )
+    finally:
+        elapsed = time.monotonic() - t0
+        if elapsed >= _PRE_TOOL_DISPATCH_SLOW_THRESHOLD_SECONDS:
+            logger.warning(
+                "pre_tool_call dispatch took %.1fs for tool %r — a slow "
+                "shell hook or plugin is stalling the agent loop. "
+                "Check ~/.hermes/config.yaml 'hooks.pre_tool_call' "
+                "entries and recently installed plugins.",
+                elapsed,
+                tool_name,
+            )
 
 # Tools that must never run concurrently (interactive / user-facing).
 # When any of these appear in a batch, we fall back to sequential execution.

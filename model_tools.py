@@ -784,8 +784,13 @@ def handle_function_call(
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
+                # Routed through the latency-aware wrapper so a slow
+                # pre_tool_call hook surfaces a WARNING in agent.log
+                # instead of a silent wall-clock gap (#32460).
+                from agent.tool_dispatch_helpers import (
+                    pre_tool_call_block_message_with_latency,
+                )
+                block_message = pre_tool_call_block_message_with_latency(
                     function_name,
                     function_args,
                     task_id=task_id or "",

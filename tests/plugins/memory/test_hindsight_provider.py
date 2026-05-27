@@ -43,7 +43,7 @@ def _clean_env(tmp_path, monkeypatch):
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
         "HINDSIGHT_API_LLM_BASE_URL", "HINDSIGHT_API_LLM_PROVIDER",
-        "HINDSIGHT_API_LLM_MODEL",
+        "HINDSIGHT_API_LLM_MODEL", "HINDSIGHT_API_LLM_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
     isolated_home = tmp_path / "isolated-user-home"
@@ -356,6 +356,94 @@ class TestConfig:
         })
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
+
+    @pytest.mark.parametrize(
+        ("key_name", "expected_key"),
+        [
+            ("HINDSIGHT_LLM_API_KEY", "global-llm-key"),
+            ("HINDSIGHT_API_LLM_API_KEY", "global-api-llm-key"),
+        ],
+    )
+    def test_embedded_profile_env_reads_global_hindsight_env_fallback(
+        self, tmp_path, monkeypatch, key_name, expected_key
+    ):
+        user_home = tmp_path / "user-home"
+        global_env = user_home / ".hindsight" / ".env"
+        global_env.parent.mkdir(parents=True)
+        global_env.write_text(
+            f"{key_name}={expected_key}\n"
+            "HINDSIGHT_API_LLM_BASE_URL=https://llm.example.test/v1\n"
+            "HINDSIGHT_API_LLM_MODEL=global-model\n"
+            "HINDSIGHT_API_LLM_PROVIDER=openrouter\n"
+        )
+        monkeypatch.setattr(Path, "home", lambda: user_home)
+
+        env = _build_embedded_profile_env({})
+
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == expected_key
+        assert env["HINDSIGHT_API_LLM_BASE_URL"] == "https://llm.example.test/v1"
+        assert env["HINDSIGHT_API_LLM_MODEL"] == "global-model"
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+
+    def test_embedded_profile_env_keeps_profile_overrides_above_global_env(
+        self, tmp_path, monkeypatch
+    ):
+        user_home = tmp_path / "user-home"
+        global_env = user_home / ".hindsight" / ".env"
+        global_env.parent.mkdir(parents=True)
+        global_env.write_text(
+            "HINDSIGHT_LLM_API_KEY=global-key\n"
+            "HINDSIGHT_API_LLM_BASE_URL=https://global.example.test/v1\n"
+            "HINDSIGHT_API_LLM_MODEL=global-model\n"
+            "HINDSIGHT_API_LLM_PROVIDER=openrouter\n"
+        )
+        monkeypatch.setattr(Path, "home", lambda: user_home)
+        monkeypatch.setenv("HINDSIGHT_LLM_API_KEY", "profile-env-key")
+        monkeypatch.setenv("HINDSIGHT_API_LLM_BASE_URL", "https://profile-env.example.test/v1")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "anthropic",
+            "llm_model": "profile-model",
+        })
+
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "profile-env-key"
+        assert env["HINDSIGHT_API_LLM_BASE_URL"] == "https://profile-env.example.test/v1"
+        assert env["HINDSIGHT_API_LLM_MODEL"] == "profile-model"
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "anthropic"
+
+    def test_get_client_reads_global_hindsight_env_for_embedded_llm_kwargs(
+        self, tmp_path, monkeypatch
+    ):
+        user_home = tmp_path / "user-home"
+        global_env = user_home / ".hindsight" / ".env"
+        global_env.parent.mkdir(parents=True)
+        global_env.write_text(
+            "HINDSIGHT_API_LLM_API_KEY=global-api-key\n"
+            "HINDSIGHT_API_LLM_BASE_URL=https://global.example.test/v1\n"
+            "HINDSIGHT_API_LLM_MODEL=global-model\n"
+            "HINDSIGHT_API_LLM_PROVIDER=openrouter\n"
+        )
+        monkeypatch.setattr(Path, "home", lambda: user_home)
+        captured = {}
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {"profile": "hermes", "idle_timeout": 0}
+        p._llm_base_url = ""
+
+        p._get_client()
+
+        assert captured["llm_api_key"] == "global-api-key"
+        assert captured["llm_base_url"] == "https://global.example.test/v1"
+        assert captured["llm_model"] == "global-model"
+        assert captured["llm_provider"] == "openai"
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}

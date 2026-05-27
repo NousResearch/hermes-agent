@@ -39,7 +39,7 @@ import queue
 import threading
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
@@ -444,26 +444,100 @@ def _load_simple_env(path) -> dict[str, str]:
 
     values: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
-        if not line or line.startswith("#") or "=" not in line:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip()
+        if stripped.startswith("export "):
+            stripped = stripped[len("export "):].lstrip()
+            if "=" not in stripped:
+                continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        values[key] = value
     return values
+
+
+def _global_hindsight_env_path():
+    from pathlib import Path
+
+    return Path.home() / ".hindsight" / ".env"
+
+
+def _load_global_hindsight_env() -> dict[str, str]:
+    """Read host-wide Hindsight secrets from ~/.hindsight/.env.
+
+    Values are used only as a fallback after profile config and process env;
+    callers must avoid logging the returned values.
+    """
+    try:
+        return _load_simple_env(_global_hindsight_env_path())
+    except OSError:
+        return {}
+
+
+def _first_nonempty_mapping_value(mapping: dict[str, Any], keys: Iterable[str]) -> str:
+    for key in keys:
+        value = mapping.get(key)
+        if value is not None and value != "":
+            return str(value)
+    return ""
+
+
+def _resolve_llm_setting(
+    config: dict[str, Any],
+    config_keys: Iterable[str],
+    env_keys: Iterable[str],
+    *,
+    default: str = "",
+) -> str:
+    """Resolve local-embedded LLM settings with profile overrides first.
+
+    Precedence: profile Hindsight config, loaded profile/process env, then
+    host-wide ~/.hindsight/.env fallback. This keeps profile-specific values
+    authoritative while allowing one shared secret file for every profile.
+    """
+    value = _first_nonempty_mapping_value(config, config_keys)
+    if value:
+        return value
+
+    for key in env_keys:
+        value = os.environ.get(key, "")
+        if value:
+            return value
+
+    global_env = _load_global_hindsight_env()
+    value = _first_nonempty_mapping_value(global_env, env_keys)
+    return value or default
 
 
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
     """Build the profile-scoped env file that standalone hindsight-embed consumes."""
     current_key = llm_api_key
     if current_key is None:
-        current_key = (
-            config.get("llmApiKey")
-            or config.get("llm_api_key")
-            or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
+        current_key = _resolve_llm_setting(
+            config,
+            ("llmApiKey", "llm_api_key"),
+            ("HINDSIGHT_LLM_API_KEY", "HINDSIGHT_API_LLM_API_KEY"),
         )
 
-    current_provider = config.get("llm_provider", "")
-    current_model = config.get("llm_model", "")
-    current_base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+    current_provider = _resolve_llm_setting(
+        config,
+        ("llm_provider",),
+        ("HINDSIGHT_API_LLM_PROVIDER",),
+    )
+    current_model = _resolve_llm_setting(
+        config,
+        ("llm_model",),
+        ("HINDSIGHT_API_LLM_MODEL",),
+    )
+    current_base_url = _resolve_llm_setting(
+        config,
+        ("llm_base_url",),
+        ("HINDSIGHT_API_LLM_BASE_URL",),
+    )
 
     # The embedded daemon expects OpenAI wire format for these providers.
     daemon_provider = "openai" if current_provider in {"openai_compatible", "openrouter"} else current_provider
@@ -937,19 +1011,37 @@ class HindsightMemoryProvider(MemoryProvider):
                     raise ImportError(str(_e))
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
-                llm_provider = self._config.get("llm_provider", "")
+                config = self._config if isinstance(self._config, dict) else {}
+                llm_provider = _resolve_llm_setting(
+                    config,
+                    ("llm_provider",),
+                    ("HINDSIGHT_API_LLM_PROVIDER",),
+                )
                 if llm_provider in {"openai_compatible", "openrouter"}:
                     llm_provider = "openai"
                 logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
-                             self._config.get("profile", "hermes"), llm_provider)
-                kwargs = dict(
-                    profile=self._config.get("profile", "hermes"),
-                    llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
-                    llm_model=self._config.get("llm_model", ""),
+                             config.get("profile", "hermes"), llm_provider)
+                llm_base_url = self._llm_base_url or _resolve_llm_setting(
+                    config,
+                    ("llm_base_url",),
+                    ("HINDSIGHT_API_LLM_BASE_URL",),
                 )
-                if self._llm_base_url:
-                    kwargs["llm_base_url"] = self._llm_base_url
+                kwargs: dict[str, Any] = dict(
+                    profile=config.get("profile", "hermes"),
+                    llm_provider=llm_provider,
+                    llm_api_key=_resolve_llm_setting(
+                        config,
+                        ("llmApiKey", "llm_api_key"),
+                        ("HINDSIGHT_LLM_API_KEY", "HINDSIGHT_API_LLM_API_KEY"),
+                    ),
+                    llm_model=_resolve_llm_setting(
+                        config,
+                        ("llm_model",),
+                        ("HINDSIGHT_API_LLM_MODEL",),
+                    ),
+                )
+                if llm_base_url:
+                    kwargs["llm_base_url"] = llm_base_url
                 idle_timeout = _parse_int_setting(
                     self._config.get("idle_timeout")
                     if self._config.get("idle_timeout") is not None

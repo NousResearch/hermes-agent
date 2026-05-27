@@ -2,6 +2,7 @@
 
 import pytest
 
+from acp_adapter.edit_approval import EditProposal
 from acp_adapter.tools import (
     TOOL_KIND_MAP,
     build_tool_complete,
@@ -147,7 +148,7 @@ class TestBuildToolTitle:
 
 class TestBuildToolStart:
     def test_build_tool_start_for_patch(self):
-        """patch should produce a FileEditToolCallContent (diff)."""
+        """patch start should not duplicate the edit-approval diff."""
         args = {
             "path": "src/main.py",
             "old_string": "print('hello')",
@@ -156,24 +157,42 @@ class TestBuildToolStart:
         result = build_tool_start("tc-1", "patch", args)
         assert isinstance(result, ToolCallStart)
         assert result.kind == "edit"
-        # The first content item should be a diff
         assert len(result.content) >= 1
-        diff_item = result.content[0]
-        assert isinstance(diff_item, FileEditToolCallContent)
-        assert diff_item.path == "src/main.py"
-        assert diff_item.new_text == "print('world')"
-        assert diff_item.old_text == "print('hello')"
+        item = result.content[0]
+        assert isinstance(item, ContentToolCallContent)
+        assert "Approval prompt shows the diff" in item.content.text
+        assert "src/main.py" in item.content.text
 
     def test_build_tool_start_for_write_file(self):
-        """write_file should produce a FileEditToolCallContent (diff)."""
+        """write_file start should not duplicate the edit-approval diff."""
         args = {"path": "new_file.py", "content": "print('hello')"}
         result = build_tool_start("tc-w1", "write_file", args)
         assert isinstance(result, ToolCallStart)
         assert result.kind == "edit"
         assert len(result.content) >= 1
-        diff_item = result.content[0]
-        assert isinstance(diff_item, FileEditToolCallContent)
-        assert diff_item.path == "new_file.py"
+        item = result.content[0]
+        assert isinstance(item, ContentToolCallContent)
+        assert "Approval prompt shows the diff" in item.content.text
+        assert "new_file.py" in item.content.text
+
+    def test_auto_approved_edit_start_shows_diff_content(self):
+        """Auto-approved edit starts need the diff because no approval card exists."""
+        args = {"path": "/tmp/acp.txt", "old_string": "old", "new_string": "new"}
+        result = build_tool_start(
+            "tc-auto-edit",
+            "patch",
+            args,
+            edit_diff=EditProposal("patch", "/tmp/acp.txt", "old\n", "new\n", args),
+        )
+
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "edit"
+        assert len(result.content) == 1
+        item = result.content[0]
+        assert isinstance(item, FileEditToolCallContent)
+        assert item.path == "/tmp/acp.txt"
+        assert item.old_text == "old\n"
+        assert item.new_text == "new\n"
 
     def test_build_tool_start_for_terminal(self):
         """terminal should produce text content with the command."""
@@ -205,6 +224,16 @@ class TestBuildToolStart:
         assert result.title == "extract: https://example.com/docs"
         assert result.kind == "fetch"
         assert result.content is None
+        assert result.raw_input is None
+
+    def test_build_tool_start_for_browser_navigate(self):
+        """browser_navigate should emit a polished start event."""
+        args = {"url": "https://x.com"}
+        result = build_tool_start("tc-browser-start", "browser_navigate", args)
+        assert isinstance(result, ToolCallStart)
+        assert result.title == "navigate: https://x.com"
+        assert result.kind == "fetch"
+        assert result.content[0].content.text == '{\n  "url": "https://x.com"\n}'
         assert result.raw_input is None
 
     def test_build_tool_start_for_search(self):
@@ -315,6 +344,59 @@ class TestBuildToolComplete:
         assert "Exit code: 0" in text
         assert "hello" in text
         assert result.raw_output is None
+
+    def test_build_tool_complete_marks_success_false_as_failed(self):
+        result = build_tool_complete("tc-fail", "skill_manage", '{"success": false, "error": "boom"}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_marks_ok_false_as_failed(self):
+        result = build_tool_complete("tc-fail", "some_tool", '{"ok": false, "error": "boom"}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_marks_exit_code_nonzero_as_failed(self):
+        result = build_tool_complete("tc-fail", "terminal", '{"output": "bad", "exit_code": 2}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_marks_returncode_nonzero_as_failed(self):
+        result = build_tool_complete("tc-fail", "execute_code", '{"output": "bad", "returncode": 2}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_keeps_plain_error_text_completed(self):
+        result = build_tool_complete("tc-ok", "terminal", "tests failed: 1 assertion error")
+        assert result.status == "completed"
+
+    def test_build_tool_complete_marks_raised_exception_prefix_as_failed(self):
+        """The agent's tool executor wraps raised exceptions in a canonical
+        "Error executing tool '<name>': ..." prefix. That prefix is unique to
+        the wrapper and means the tool blew up, so it must surface as failed
+        in Zed regardless of whether the body parses as JSON.
+        """
+        result = build_tool_complete(
+            "tc-fail-exc",
+            "patch",
+            "Error executing tool 'patch': KeyError: 'foo'",
+        )
+        assert result.status == "failed"
+
+    def test_build_tool_complete_does_not_match_error_word_alone(self):
+        """Bare 'Error: ...' messages (without the unique 'Error executing
+        tool '<name>':' prefix) must still be reported as completed — they
+        legitimately appear in compiler/linter/test output.
+        """
+        result = build_tool_complete(
+            "tc-ok-error-word",
+            "terminal",
+            "Error: pytest collected 0 items",
+        )
+        assert result.status == "completed"
+
+    def test_build_tool_complete_marks_structured_polished_tool_error_as_failed(self):
+        result = build_tool_complete("tc-fail", "read_file", '{"error": "File not found"}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_keeps_json_error_without_failure_flag_completed(self):
+        result = build_tool_complete("tc-ok", "some_tool", '{"error": "timeout while reading optional source"}')
+        assert result.status == "completed"
 
     def test_build_tool_complete_for_skill_manage_summarizes_without_raw_json(self):
         result = build_tool_complete(
@@ -433,6 +515,62 @@ class TestBuildToolComplete:
         assert "timeout" in text
         assert result.raw_output is None
 
+    def test_build_tool_complete_generically_formats_unknown_json_dict_without_raw_output(self):
+        result = build_tool_complete(
+            "tc-recall-search",
+            "memory_archive_search",
+            '{"results":[{"id":"obs-1","status":"active","content":"Recall should render as a readable summary."}],"trust":"lower-trust archive evidence"}',
+        )
+        text = result.content[0].content.text
+        assert "memory_archive_search result" in text
+        assert "lower-trust archive evidence" in text
+        assert "Recall should render as a readable summary" in text
+        assert "{\"results\"" not in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_generically_formats_unknown_json_list_without_raw_output(self):
+        result = build_tool_complete(
+            "tc-plugin-list",
+            "some_plugin_tool",
+            '[{"name":"alpha","status":"ok"},{"name":"beta","status":"ok"}]',
+        )
+        text = result.content[0].content.text
+        assert "some_plugin_tool: 2 items" in text
+        assert "alpha" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_generically_formats_nested_json_without_inline_blob(self):
+        result = build_tool_complete(
+            "tc-recall-stats",
+            "memory_archive_stats",
+            '{"observations_by_status":{"active":12,"rejected":83},"capabilities":["sqlite-fts5-archive","hash-chain-audit"],"audit":{"ok":true,"count":208,"head":"abc123"}}',
+        )
+        text = result.content[0].content.text
+        assert "**observations_by_status:**" in text
+        assert "**active:** 12" in text
+        assert "**rejected:** 83" in text
+        assert "**capabilities:** 2 items" in text
+        assert "sqlite-fts5-archive" in text
+        assert "**audit:**" in text
+        assert "**ok:** True" in text
+        assert "{\"active\"" not in text
+        assert "[\"sqlite" not in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_search_files_files_only_formats_file_list(self):
+        result = build_tool_complete(
+            "tc-search-files",
+            "search_files",
+            '{"total_count":36,"files":["/home/nour/.hermes/config.yaml","/home/nour/.hermes/profiles/recall-test/config.yaml"],"truncated":true}',
+        )
+        text = result.content[0].content.text
+        assert "File search results" in text
+        assert "Found 36 files; showing 2." in text
+        assert "/home/nour/.hermes/config.yaml" in text
+        assert "use offset to page" in text
+        assert "{\"total_count\"" not in text
+        assert result.raw_output is None
+
     def test_build_tool_complete_truncates_large_output(self):
         """Very large outputs should be truncated."""
         big_output = "x" * 10000
@@ -442,8 +580,8 @@ class TestBuildToolComplete:
         assert len(display_text) < 6000
         assert "truncated" in display_text
 
-    def test_build_tool_complete_for_patch_uses_diff_blocks(self):
-        """Completed patch calls should keep structured diff content for Zed."""
+    def test_build_tool_complete_for_patch_summarizes_without_repeating_diff(self):
+        """Completed patch calls should not duplicate the edit-approval diff."""
         patch_result = (
             '{"success": true, "diff": "--- a/README.md\\n+++ b/README.md\\n@@ -1 +1,2 @@\\n old line\\n+new line\\n", '
             '"files_modified": ["README.md"]}'
@@ -451,18 +589,17 @@ class TestBuildToolComplete:
         result = build_tool_complete("tc-p1", "patch", patch_result)
         assert isinstance(result, ToolCallProgress)
         assert len(result.content) == 1
-        diff_item = result.content[0]
-        assert isinstance(diff_item, FileEditToolCallContent)
-        assert diff_item.path == "README.md"
-        assert diff_item.old_text == "old line"
-        assert diff_item.new_text == "old line\nnew line"
+        item = result.content[0]
+        assert isinstance(item, ContentToolCallContent)
+        assert "✅ patch completed" in item.content.text
+        assert "README.md" in item.content.text
 
     def test_build_tool_complete_for_patch_falls_back_to_text_when_no_diff(self):
         result = build_tool_complete("tc-p2", "patch", '{"success": true}')
         assert isinstance(result, ToolCallProgress)
         assert isinstance(result.content[0], ContentToolCallContent)
 
-    def test_build_tool_complete_for_write_file_uses_snapshot_diff(self, tmp_path):
+    def test_build_tool_complete_for_write_file_summarizes_without_repeating_diff(self, tmp_path):
         target = tmp_path / "diff-test.txt"
         snapshot = type("Snapshot", (), {"paths": [target], "before": {str(target): None}})()
         target.write_text("hello from hermes\n", encoding="utf-8")
@@ -476,11 +613,10 @@ class TestBuildToolComplete:
         )
         assert isinstance(result, ToolCallProgress)
         assert len(result.content) == 1
-        diff_item = result.content[0]
-        assert isinstance(diff_item, FileEditToolCallContent)
-        assert diff_item.path.endswith("diff-test.txt")
-        assert diff_item.old_text is None
-        assert diff_item.new_text == "hello from hermes"
+        item = result.content[0]
+        assert isinstance(item, ContentToolCallContent)
+        assert "✅ write_file completed" in item.content.text
+        assert "diff-test.txt" in item.content.text
 
 
 # ---------------------------------------------------------------------------

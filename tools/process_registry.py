@@ -42,6 +42,7 @@ import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -109,6 +110,7 @@ class ProcessSession:
     watcher_user_id: str = ""
     watcher_user_name: str = ""
     watcher_thread_id: str = ""
+    watcher_message_id: str = ""                # Triggering message id — reply anchor for topic routing
     watcher_interval: int = 0                   # 0 = no watcher configured
     notify_on_complete: bool = False             # Queue agent notification on exit
     # Watch patterns — trigger agent notification when output matches any pattern
@@ -278,6 +280,7 @@ class ProcessRegistry:
                     "user_id": session.watcher_user_id,
                     "user_name": session.watcher_user_name,
                     "thread_id": session.watcher_thread_id,
+                    "message_id": session.watcher_message_id,
                     "message": (
                         f"Watch patterns disabled for process {session.id} — "
                         f"{WATCH_STRIKE_LIMIT} consecutive rate-limit windows triggered "
@@ -310,6 +313,7 @@ class ProcessRegistry:
             "user_id": session.watcher_user_id,
             "user_name": session.watcher_user_name,
             "thread_id": session.watcher_thread_id,
+            "message_id": session.watcher_message_id,
         })
 
     def _global_watch_admit(self, now: float) -> bool:
@@ -430,9 +434,50 @@ class ProcessRegistry:
 
     @staticmethod
     def _terminate_host_pid(pid: int) -> None:
-        """Terminate a host-visible PID without requiring the original process handle."""
+        """Terminate a host-visible PID and its descendants.
+
+        POSIX: walks the process tree with ``psutil`` and SIGTERMs
+        children before the parent so subprocess trees (e.g. Chromium
+        renderers/GPU helpers spawned by an ``agent-browser`` daemon)
+        don't get reparented to init and survive cleanup.
+
+        Windows: shells out to ``taskkill /PID <pid> /T /F``. This is
+        the documented Microsoft primitive for tree-kill and matches the
+        existing convention in ``gateway.status.terminate_pid``. We can't
+        reuse the POSIX psutil path on Windows because:
+
+          1. Windows doesn't maintain a Unix-style process tree —
+             ``psutil.Process.children(recursive=True)`` walks PPID
+             links that go stale when intermediate processes exit, so
+             enumeration is best-effort and misses orphaned descendants.
+          2. ``psutil.Process.terminate()`` on Windows is
+             ``TerminateProcess()`` which kills only the target handle
+             and is a hard kill — there is no Windows equivalent of a
+             SIGTERM that cascades through a process group. (See the
+             warning in ``gateway/status.py::terminate_pid``: "os.kill
+             with SIGTERM is not equivalent to a tree-killing hard stop"
+             on Windows.) Headless Chromium has no GUI window, so the
+             softer ``taskkill /T`` without ``/F`` won't reach it either.
+
+        ``psutil`` is a hard dependency (see ``pyproject.toml``); the
+        bare-``os.kill`` fallback covers OSError / PermissionError on
+        POSIX and a missing ``taskkill.exe`` on Windows (effectively
+        unreachable on real Windows installs, but cheap insurance).
+        """
         if _IS_WINDOWS:
-            os.kill(pid, signal.SIGTERM)
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    creationflags=windows_hide_flags(),
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except (OSError, ProcessLookupError, PermissionError):
+                    pass
             return
 
         import psutil
@@ -546,6 +591,8 @@ class ProcessRegistry:
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
+        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+
         proc = subprocess.Popen(
             [user_shell, "-lic", f"set +m; {command}"],
             text=True,
@@ -555,28 +602,50 @@ class ProcessRegistry:
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
+            **_popen_kwargs,
         )
 
         session.process = proc
         session.pid = proc.pid
 
-        # Start output reader thread
-        reader = threading.Thread(
-            target=self._reader_loop,
-            args=(session,),
-            daemon=True,
-            name=f"proc-reader-{session.id}",
-        )
-        session._reader_thread = reader
-        reader.start()
+        try:
+            # Start output reader thread
+            reader = threading.Thread(
+                target=self._reader_loop,
+                args=(session,),
+                daemon=True,
+                name=f"proc-reader-{session.id}",
+            )
+            session._reader_thread = reader
+            reader.start()
 
-        with self._lock:
-            self._prune_if_needed()
-            self._running[session.id] = session
+            with self._lock:
+                self._prune_if_needed()
+                self._running[session.id] = session
 
-        self._write_checkpoint()
+            self._write_checkpoint()
+        except Exception:
+            # Post-Popen setup failed — kill the orphaned subprocess (and any
+            # descendants spawned via setsid) before re-raising so they do not
+            # leak as untracked background processes.
+            try:
+                if not _IS_WINDOWS:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok — guarded by _IS_WINDOWS check above
+                    except (ProcessLookupError, PermissionError, OSError):
+                        proc.kill()
+                else:
+                    proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            raise
+
         return session
 
     def spawn_via_env(
@@ -804,6 +873,26 @@ class ProcessRegistry:
     def is_completion_consumed(self, session_id: str) -> bool:
         """Check if a completion notification was already consumed via wait/poll/log."""
         return session_id in self._completion_consumed
+
+    def drain_notifications(self) -> "list[tuple[dict, str]]":
+        """Pop all pending notification events and return formatted pairs.
+
+        Returns a list of (raw_event, formatted_text) tuples.
+        Skips completion events that were already consumed via wait/poll/log.
+        """
+        results = []
+        while not self.completion_queue.empty():
+            try:
+                evt = self.completion_queue.get_nowait()
+            except Exception:
+                break
+            _evt_sid = evt.get("session_id", "")
+            if evt.get("type") == "completion" and self.is_completion_consumed(_evt_sid):
+                continue
+            text = format_process_notification(evt)
+            if text:
+                results.append((evt, text))
+        return results
 
     def get(self, session_id: str) -> Optional[ProcessSession]:
         """Get a session by ID (running or finished)."""
@@ -1146,6 +1235,19 @@ class ProcessRegistry:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
+    def count_running(self) -> int:
+        """Return the count of currently-running background processes.
+
+        Cheap O(1) read of the running dict, suitable for status-bar polling
+        on every render tick. CPython dict ``len()`` is atomic; callers do not
+        need to hold ``self._lock``. Reflects ``_running`` only: sessions are
+        moved to ``_finished`` when their subprocess exits.
+        """
+        try:
+            return len(self._running)
+        except Exception:
+            return 0
+
     def list_sessions(self, task_id: str = None) -> list:
         """List all running and recently-finished processes."""
         with self._lock:
@@ -1216,7 +1318,7 @@ class ProcessRegistry:
         killed = 0
         for session in targets:
             result = self.kill_process(session.id)
-            if result.get("status") in ("killed", "already_exited"):
+            if result.get("status") in {"killed", "already_exited"}:
                 killed += 1
         return killed
 
@@ -1272,6 +1374,7 @@ class ProcessRegistry:
                             "watcher_user_id": s.watcher_user_id,
                             "watcher_user_name": s.watcher_user_name,
                             "watcher_thread_id": s.watcher_thread_id,
+                            "watcher_message_id": s.watcher_message_id,
                             "watcher_interval": s.watcher_interval,
                             "notify_on_complete": s.notify_on_complete,
                             "watch_patterns": s.watch_patterns,
@@ -1335,6 +1438,7 @@ class ProcessRegistry:
                     watcher_user_id=entry.get("watcher_user_id", ""),
                     watcher_user_name=entry.get("watcher_user_name", ""),
                     watcher_thread_id=entry.get("watcher_thread_id", ""),
+                    watcher_message_id=entry.get("watcher_message_id", ""),
                     watcher_interval=entry.get("watcher_interval", 0),
                     notify_on_complete=entry.get("notify_on_complete", False),
                     watch_patterns=entry.get("watch_patterns", []),
@@ -1355,6 +1459,7 @@ class ProcessRegistry:
                         "user_id": session.watcher_user_id,
                         "user_name": session.watcher_user_name,
                         "thread_id": session.watcher_thread_id,
+                        "message_id": session.watcher_message_id,
                         "notify_on_complete": session.notify_on_complete,
                     })
 
@@ -1365,6 +1470,44 @@ class ProcessRegistry:
 
 # Module-level singleton
 process_registry = ProcessRegistry()
+
+
+def format_process_notification(evt: dict) -> "str | None":
+    """Format a process notification event into a [IMPORTANT: ...] message.
+
+    Handles completion events (notify_on_complete), watch pattern matches,
+    and watch disabled events from the unified completion_queue.
+    """
+    evt_type = evt.get("type", "completion")
+    _sid = evt.get("session_id", "unknown")
+    _cmd = evt.get("command", "unknown")
+
+    if evt_type == "watch_disabled":
+        return f"[IMPORTANT: {evt.get('message', '')}]"
+
+    if evt_type == "watch_match":
+        _pat = evt.get("pattern", "?")
+        _out = evt.get("output", "")
+        _sup = evt.get("suppressed", 0)
+        text = (
+            f"[IMPORTANT: Background process {_sid} matched "
+            f"watch pattern \"{_pat}\".\n"
+            f"Command: {_cmd}\n"
+            f"Matched output:\n{_out}"
+        )
+        if _sup:
+            text += f"\n({_sup} earlier matches were suppressed by rate limit)"
+        text += "]"
+        return text
+
+    _exit = evt.get("exit_code", "?")
+    _out = evt.get("output", "")
+    return (
+        f"[IMPORTANT: Background process {_sid} completed "
+        f"(exit code {_exit}).\n"
+        f"Command: {_cmd}\n"
+        f"Output:\n{_out}]"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1425,7 +1568,7 @@ def _handle_process(args, **kw):
 
     if action == "list":
         return json.dumps({"processes": process_registry.list_sessions(task_id=task_id)}, ensure_ascii=False)
-    elif action in ("poll", "log", "wait", "kill", "write", "submit", "close"):
+    elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
         if action == "poll":

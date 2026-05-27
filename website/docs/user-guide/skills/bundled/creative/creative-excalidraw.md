@@ -19,6 +19,7 @@ Hand-drawn Excalidraw JSON diagrams (arch, flow, seq).
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `Excalidraw`, `Diagrams`, `Flowcharts`, `Architecture`, `Visualization`, `JSON` |
 
 ## Reference: full SKILL.md

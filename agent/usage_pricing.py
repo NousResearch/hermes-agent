@@ -370,6 +370,17 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
         pricing_version="deepseek-pricing-2026-03-16",
     ),
+    (
+        "deepseek",
+        "deepseek-v4-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.74"),
+        output_cost_per_million=Decimal("3.48"),
+        cache_read_cost_per_million=Decimal("0.0145"),
+        source="official_docs_snapshot",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+        pricing_version="deepseek-pricing-2026-05-12",
+    ),
     # Google Gemini
     (
         "google",
@@ -700,8 +711,8 @@ def normalize_usage(
         output_tokens = _to_int(getattr(response_usage, "completion_tokens", 0))
         details = getattr(response_usage, "prompt_tokens_details", None)
         # Primary: OpenAI-style prompt_tokens_details. Fallback: Anthropic-style
-        # top-level fields that some OpenAI-compatible proxies (OpenRouter, Vercel
-        # AI Gateway, Cline) expose when routing Claude models — without this
+        # top-level fields that some OpenAI-compatible proxies (OpenRouter, Cline)
+        # expose when routing Claude models — without this
         # fallback, cache writes are undercounted as 0 and cache reads can be
         # missed when the proxy only surfaces them at the top level.
         # Port of cline/cline#10266.

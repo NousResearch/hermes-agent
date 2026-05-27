@@ -10,6 +10,7 @@ Sometimes you already know exactly what message you want to send. You don't need
 
 Hermes calls this **no-agent mode**. It's the cron system minus the LLM.
 
+<!-- ascii-guard-ignore -->
 ```
    ┌──────────────────┐          ┌──────────────────┐
    │ scheduler tick   │  every   │ run script       │
@@ -23,6 +24,7 @@ Hermes calls this **no-agent mode**. It's the cron system minus the LLM.
                                  │ (telegram/disc…) │
                                  └──────────────────┘
 ```
+<!-- ascii-guard-ignore-end -->
 
 - **No LLM call.** Zero tokens, zero agent loop, zero model spend.
 - **Script is the job.** The script decides whether to alert. Emit output → message gets sent. Emit nothing → silent tick.
@@ -171,7 +173,7 @@ hermes cron create "0 9 * * *"       # standard cron: 9am daily
 hermes cron create "30m"             # one-shot: run once in 30 minutes
 ```
 
-See the [cron feature reference](/docs/user-guide/features/cron) for the full syntax.
+See the [cron feature reference](/user-guide/features/cron) for the full syntax.
 
 ## Delivery Targets
 
@@ -231,16 +233,15 @@ Silent when both filesystems are under 90%; fires exactly one line per over-thre
 
 | Approach | What runs | When to use |
 |----------|-----------|-------------|
-| `hermes send` (one-shot) | Any shell command piping into it | Ad-hoc delivery or as the action of an external scheduler (systemd, launchd) |
 | `cronjob --no-agent` (this page) | Your script on Hermes' schedule | Recurring watchdogs / alerts / metrics that don't need reasoning |
 | `cronjob` (default, LLM) | Agent with optional pre-check script | When the message content requires reasoning over data |
-| OS cron + `hermes send` | Your script on the OS schedule | When Hermes might be unhealthy (the thing you're monitoring) |
+| OS cron + `curl` to a [webhook subscription](/user-guide/messaging/webhooks) | Your script on the OS schedule | When Hermes might be unhealthy (the thing you're monitoring) |
 
-For critical system-health watchdogs that must fire *even when the gateway is down*, keep using OS-level cron + a plain `curl` or `hermes send` call — those run as independent OS processes and don't depend on Hermes being up. The in-gateway scheduler is the right choice when the thing being monitored is external.
+For critical system-health watchdogs that must fire *even when the gateway is down*, use OS-level cron with a plain `curl` to a Hermes webhook subscription (or any external alerting endpoint) — those run as independent OS processes and don't depend on Hermes being up. The in-gateway scheduler is the right choice when the thing being monitored is external.
 
 ## Related
 
-- [Automate Anything with Cron](/docs/guides/automate-with-cron) — LLM-driven cron patterns.
-- [Scheduled Tasks (Cron) reference](/docs/user-guide/features/cron) — full schedule syntax, lifecycle, delivery routing.
-- [Pipe Script Output with `hermes send`](/docs/guides/pipe-script-output) — the one-shot counterpart for ad-hoc scripts.
-- [Gateway Internals](/docs/developer-guide/gateway-internals) — delivery-router internals.
+- [Automate Anything with Cron](/guides/automate-with-cron) — LLM-driven cron patterns.
+- [Scheduled Tasks (Cron) reference](/user-guide/features/cron) — full schedule syntax, lifecycle, delivery routing.
+- [Webhook Subscriptions](/user-guide/messaging/webhooks) — fire-and-forget HTTP entry points for external schedulers.
+- [Gateway Internals](/developer-guide/gateway-internals) — delivery-router internals.

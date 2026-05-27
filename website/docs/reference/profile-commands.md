@@ -25,6 +25,9 @@ Top-level command for managing profiles. Running `hermes profile` without a subc
 | `rename` | Rename a profile. |
 | `export` | Export a profile to a tar.gz archive. |
 | `import` | Import a profile from a tar.gz archive. |
+| `install` | Install a profile distribution from a git URL or local directory. See [Profile Distributions](../user-guide/profile-distributions.md). |
+| `update` | Re-pull a distribution-managed profile and re-apply its bundle. |
+| `info` | Show distribution metadata for a profile (origin URL, commit, last update). |
 
 ## `hermes profile list`
 
@@ -80,6 +83,8 @@ Creates a new profile.
 | `--clone-all` | Copy everything (config, memories, skills, sessions, state) from the current profile. |
 | `--clone-from <profile>` | Clone from a specific profile instead of the current one. Used with `--clone` or `--clone-all`. |
 | `--no-alias` | Skip wrapper script creation. |
+| `--description "<text>"` | One- or two-sentence description of what this profile is good at. Used by the kanban orchestrator to route tasks based on role instead of profile name alone. Skip and add later via `hermes profile describe`. Persisted in `<profile_dir>/profile.yaml`. |
+| `--no-skills` | Create an **empty** profile with zero bundled skills enabled. Writes a `.no-skills` marker into the profile so future `hermes update` runs won't re-seed the bundled set, and refuses to combine with `--clone` / `--clone-all` (which would copy skills in anyway). Useful for narrow orchestrator profiles or sandbox profiles that should not inherit the full skill catalog. |
 
 Creating a profile does **not** make that profile directory the default project/workspace directory for terminal commands. If you want a profile to start in a specific project, set `terminal.cwd` in that profile's `config.yaml`.
 
@@ -97,6 +102,40 @@ hermes profile create backup --clone-all
 
 # Clone config from a specific profile
 hermes profile create work2 --clone --clone-from work
+```
+
+## `hermes profile describe`
+
+```bash
+hermes profile describe [<name>] [options]
+```
+
+Read or set a profile's description. The description is consumed by the kanban orchestrator to route tasks based on what each profile is good at, rather than guessing from the profile name alone. Persisted in `<profile_dir>/profile.yaml` so it survives reboots and is shared with the gateway.
+
+With no flags, prints the current description (or `(no description set for '<name>')` if empty).
+
+| Argument / Option | Description |
+|-------------------|-------------|
+| `<name>` | Profile to describe. Required unless `--all --auto` is used. |
+| `--text "<text>"` | Set the description to this exact text (user-authored). Overwrites any existing description. |
+| `--auto` | Auto-generate a 1-2 sentence description via the auxiliary LLM, based on the profile's installed skills, configured model, and name. Configure the model under `auxiliary.profile_describer` in `config.yaml`. Auto-generated descriptions are marked `description_auto: true` so the dashboard can flag them for review. |
+| `--overwrite` | With `--auto`, replace user-authored descriptions too (default: skip profiles whose description was set explicitly). |
+| `--all` | With `--auto`, sweep every profile missing a description. |
+
+**Examples:**
+
+```bash
+# Read the current description
+hermes profile describe researcher
+
+# Set it explicitly
+hermes profile describe researcher --text "Reads source code and writes findings."
+
+# Let the LLM generate one
+hermes profile describe researcher --auto
+
+# Fill in descriptions for every profile that doesn't have one
+hermes profile describe --all --auto
 ```
 
 ## `hermes profile delete`
@@ -434,7 +473,7 @@ Generates shell completion scripts. Includes completions for profile names and p
 
 | Argument | Description |
 |----------|-------------|
-| `<shell>` | Shell to generate completions for: `bash` or `zsh`. |
+| `<shell>` | Shell to generate completions for: `bash`, `zsh`, or `fish`. |
 
 **Examples:**
 
@@ -442,6 +481,7 @@ Generates shell completion scripts. Includes completions for profile names and p
 # Install completions
 hermes completion bash >> ~/.bashrc
 hermes completion zsh >> ~/.zshrc
+hermes completion fish > ~/.config/fish/completions/hermes.fish
 
 # Reload shell
 source ~/.bashrc

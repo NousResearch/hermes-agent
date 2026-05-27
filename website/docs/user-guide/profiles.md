@@ -32,6 +32,14 @@ hermes profile create mybot
 
 Creates a fresh profile with bundled skills seeded. Run `mybot setup` to configure API keys, model, and gateway tokens.
 
+If you plan to use this profile as a kanban worker (or want the kanban orchestrator to route work to it), pass `--description "<role>"` at create time so the orchestrator knows what it's good at:
+
+```bash
+hermes profile create researcher --description "Reads source code and external docs, writes findings."
+```
+
+You can also set or auto-generate the description later with `hermes profile describe` — see the [Kanban guide](./features/kanban#auto-vs-manual-orchestration) for the full routing model.
+
 ### Clone config only (`--clone`)
 
 ```bash
@@ -163,6 +171,10 @@ assistant gateway install     # creates hermes-gateway-assistant service
 ```
 
 Each profile gets its own service name. They run independently.
+
+:::note Inside the official Docker image
+Per-profile gateways are supervised by [s6-overlay](https://github.com/just-containers/s6-overlay) (PID 1 in the container), so `hermes profile create <name>` automatically registers an s6 service slot at `/run/service/gateway-<name>/`. `hermes -p <name> gateway start/stop/restart` dispatches to `s6-svc` instead of spawning a bare process — crashes are auto-restarted and `docker restart` preserves the previously-running set of gateways. See [Per-profile gateway supervision](/user-guide/docker#per-profile-gateway-supervision) for details.
+:::
 
 ## Configuring profiles
 

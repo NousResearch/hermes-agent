@@ -40,6 +40,7 @@ from tools.skills_hub import (
     ClawHubSource,
     ClaudeMarketplaceSource,
     LobeHubSource,
+    BrowseShSource,
     SkillMeta,
 )
 import httpx
@@ -147,7 +148,7 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
     4. Match skills to their resolved paths
     """
     # Filter to skills.sh entries that need resolution
-    skills_sh = [s for s in skills if s["source"] in ("skills.sh", "skills-sh")]
+    skills_sh = [s for s in skills if s["source"] in {"skills.sh", "skills-sh"}]
     if not skills_sh:
         return skills
 
@@ -260,6 +261,7 @@ def main():
         "clawhub": ClawHubSource(),
         "claude-marketplace": ClaudeMarketplaceSource(auth=auth),
         "lobehub": LobeHubSource(),
+        "browse-sh": BrowseShSource(),
     }
 
     all_skills: list[dict] = []
@@ -292,7 +294,7 @@ def main():
     # Sort
     source_order = {"official": 0, "skills-sh": 1, "skills.sh": 1,
                     "github": 2, "well-known": 3, "clawhub": 4,
-                    "claude-marketplace": 5, "lobehub": 6}
+                    "browse-sh": 5, "claude-marketplace": 6, "lobehub": 7}
     deduped.sort(key=lambda s: (source_order.get(s["source"], 99), s["name"]))
 
     # Build index
@@ -319,6 +321,50 @@ def main():
                        if s["source"] == src and s.get("resolved_github_id"))
         extra = f" ({resolved} resolved)" if resolved else ""
         print(f"  {src}: {count}{extra}")
+
+    # Health check: catch silent breakage early. Every source listed below
+    # has historically returned at least `floor` entries; a zero (or near-
+    # zero) result almost certainly means a tap path moved, an API changed,
+    # or rate limiting kicked in.  Failing here forces a human look before
+    # the broken index reaches the live docs.
+    EXPECTED_FLOORS = {
+        "skills.sh": 100,
+        "lobehub": 100,
+        "clawhub": 50,
+        "official": 50,
+        "github": 30,        # collapsed across all GitHub taps
+        "browse-sh": 50,
+    }
+    health_errors = []
+    for src, floor in EXPECTED_FLOORS.items():
+        # 'skills-sh' and 'skills.sh' are the same source; both labels exist.
+        count = by_source.get(src, 0)
+        if src == "skills.sh":
+            count = by_source.get("skills.sh", 0) + by_source.get("skills-sh", 0)
+        if count < floor:
+            health_errors.append(f"  {src}: {count} < expected floor {floor}")
+
+    MIN_TOTAL = 1500
+    if len(deduped) < MIN_TOTAL:
+        health_errors.append(
+            f"  total: {len(deduped)} < expected floor {MIN_TOTAL}"
+        )
+
+    if health_errors:
+        print(
+            "\nERROR: skills index health check failed — refusing to ship "
+            "a degenerate index. Investigate the following sources:",
+            file=sys.stderr,
+        )
+        for line in health_errors:
+            print(line, file=sys.stderr)
+        print(
+            "\nIf the drop is expected (e.g. a hub is genuinely shutting "
+            "down), lower the floor in scripts/build_skills_index.py "
+            "EXPECTED_FLOORS in the same PR.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 if __name__ == "__main__":

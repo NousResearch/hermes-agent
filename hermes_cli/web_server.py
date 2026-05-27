@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import secrets
+import stat
 import subprocess
 import sys
 import threading
@@ -48,6 +49,7 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from utils import env_var_enabled
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -56,10 +58,22 @@ try:
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
-    raise SystemExit(
-        "Web UI requires fastapi and uvicorn.\n"
-        f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
-    )
+    # First try lazy-installing the dashboard extras. Only the user actually
+    # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
+    # them out of every other install path. After install, re-import.
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tool.dashboard", prompt=False)
+        from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+        from fastapi.middleware.cors import CORSMiddleware
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+        from fastapi.staticfiles import StaticFiles
+        from pydantic import BaseModel
+    except Exception:
+        raise SystemExit(
+            "Web UI requires fastapi and uvicorn.\n"
+            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
+        )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
@@ -106,7 +120,6 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/model/info",
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
-    "/api/dashboard/plugins/rescan",
 })
 
 
@@ -147,6 +160,22 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def should_require_auth(host: str, allow_public: bool) -> bool:
+    """Return True iff the dashboard OAuth auth gate must be active.
+
+    Truth table:
+      host == loopback                              → False (no auth)
+      host != loopback AND allow_public (--insecure)→ False (legacy escape hatch)
+      host != loopback AND NOT allow_public         → True  (gate engages)
+
+    "Loopback" matches the same set used by ``--insecure`` enforcement in
+    ``start_server``: 127.0.0.1, localhost, ::1. RFC1918 / CGNAT / link-local
+    are deliberately treated as PUBLIC — a hostile device on the same LAN is
+    exactly the threat model the gate is designed for.
+    """
+    return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
@@ -179,7 +208,7 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
     # defence can protect that mode; rely on operator network controls.
-    if bound_host in ("0.0.0.0", "::"):
+    if bound_host in {"0.0.0.0", "::"}:
         return True
 
     # Loopback bind: accept the loopback names
@@ -221,11 +250,31 @@ async def host_header_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+# ---------------------------------------------------------------------------
+# Dashboard OAuth auth gate — engaged only when start_server flags the
+# bind as non-loopback-without-insecure.  No-op pass-through in loopback
+# mode so the legacy auth_middleware (below) handles those binds via
+# the injected ``_SESSION_TOKEN``.  Registered between host_header and
+# auth_middleware so the order is: host check → cookie auth → token auth.
+# ---------------------------------------------------------------------------
+
+
+@app.middleware("http")
+async def _dashboard_auth_gate(request: Request, call_next):
+    from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
+    return await gated_auth_middleware(request, call_next)
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
+    # When the OAuth gate is active, cookie-based auth (gated_auth_middleware
+    # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
+    # and is skipped here so the gate's session attachment isn't overridden.
+    if getattr(request.app.state, "auth_required", False):
+        return await call_next(request)
     path = request.url.path
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
+    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
@@ -253,12 +302,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
-    },
-    "terminal.vercel_runtime": {
-        "type": "select",
-        "description": "Vercel Sandbox runtime",
-        "options": ["node24", "node22", "python3.13"],  # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
+        "options": ["local", "docker", "ssh", "modal", "daytona", "singularity"],
     },
     "terminal.modal_mode": {
         "type": "select",
@@ -273,7 +317,9 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "stt.provider": {
         "type": "select",
         "description": "Speech-to-text provider",
-        "options": ["local", "openai", "mistral"],
+        # "mistral" temporarily removed — mistralai PyPI package quarantined
+        # (malicious 2.4.6 release on 2026-05-12). Restore once available.
+        "options": ["local", "openai"],
     },
     "display.skin": {
         "type": "select",
@@ -385,7 +431,7 @@ def _build_schema_from_config(
         full_key = f"{prefix}.{key}" if prefix else key
 
         # Skip internal / version keys
-        if full_key in ("_config_version",):
+        if full_key in {"_config_version",}:
             continue
 
         # Category is the first path component for nested keys, or "general"
@@ -533,7 +579,7 @@ async def get_status():
     remote_health_body: dict | None = None
 
     if not gateway_running and _GATEWAY_HEALTH_URL:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         alive, remote_health_body = await loop.run_in_executor(
             None, _probe_gateway_health
         )
@@ -576,13 +622,13 @@ async def get_status():
         gateway_exit_reason = runtime.get("exit_reason")
         gateway_updated_at = runtime.get("updated_at")
         if not gateway_running:
-            gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
+            gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
             gateway_platforms = {}
         elif gateway_running and remote_health_body is not None:
             # The health probe confirmed the gateway is alive, but the local
             # runtime status file may be stale (cross-container).  Override
             # stopped/None state so the dashboard shows the correct badge.
-            if gateway_state in (None, "stopped"):
+            if gateway_state in {None, "stopped"}:
                 gateway_state = "running"
 
     # If there was no runtime info at all but the health probe confirmed alive,
@@ -607,6 +653,19 @@ async def get_status():
     except Exception:
         pass
 
+    # Dashboard auth gate (Phase 7): surface whether the gate is engaged
+    # and which providers are registered so ``hermes status`` and the
+    # SPA's StatusPage can show "OAuth gate ON via Nous Research" or
+    # "loopback only — no auth gate" with no extra round trips.
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    auth_providers: list[str] = []
+    try:
+        from hermes_cli.dashboard_auth import list_providers as _list_providers
+        auth_providers = [p.name for p in _list_providers()]
+    except Exception:
+        # Module not importable yet (early startup) — leave as [].
+        pass
+
     return {
         "version": __version__,
         "release_date": __release_date__,
@@ -623,6 +682,8 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+        "auth_required": auth_required,
+        "auth_providers": auth_providers,
     }
 
 
@@ -961,11 +1022,13 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "vision",
     "web_extract",
     "compression",
-    "session_search",
     "skills_hub",
     "approval",
     "mcp",
     "title_generation",
+    "triage_specifier",
+    "kanban_decomposer",
+    "profile_describer",
     "curator",
 )
 
@@ -980,39 +1043,9 @@ def get_model_options():
     can share the same types.
     """
     try:
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.inventory import build_models_payload, load_picker_context
 
-        cfg = load_config()
-        model_cfg = cfg.get("model", {})
-        if isinstance(model_cfg, dict):
-            current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
-            current_provider = model_cfg.get("provider", "") or ""
-            current_base_url = model_cfg.get("base_url", "") or ""
-        else:
-            current_model = str(model_cfg) if model_cfg else ""
-            current_provider = ""
-            current_base_url = ""
-
-        user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
-        custom_providers = (
-            cfg.get("custom_providers")
-            if isinstance(cfg.get("custom_providers"), list)
-            else []
-        )
-
-        providers = list_authenticated_providers(
-            current_provider=current_provider,
-            current_base_url=current_base_url,
-            current_model=current_model,
-            user_providers=user_providers,
-            custom_providers=custom_providers,
-            max_models=50,
-        )
-        return {
-            "providers": providers,
-            "model": current_model,
-            "provider": current_provider,
-        }
+        return build_models_payload(load_picker_context(), max_models=50)
     except Exception:
         _log.exception("GET /api/model/options failed")
         raise HTTPException(status_code=500, detail="Failed to list model options")
@@ -1075,7 +1108,7 @@ async def set_model_assignment(body: ModelAssignment):
     model = (body.model or "").strip()
     task = (body.task or "").strip().lower()
 
-    if scope not in ("main", "auxiliary"):
+    if scope not in {"main", "auxiliary"}:
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
 
     try:
@@ -1190,14 +1223,13 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     disk_model.pop("context_length", None)
                 config["model"] = disk_model
-            else:
-                # Model was previously a bare string — upgrade to dict if
-                # user is setting a context_length override
-                if ctx_override > 0:
-                    config["model"] = {
-                        "default": model_val,
-                        "context_length": ctx_override,
-                    }
+            # Model was previously a bare string — upgrade to dict if
+            # user is setting a context_length override
+            elif ctx_override > 0:
+                config["model"] = {
+                    "default": model_val,
+                    "context_length": ctx_override,
+                }
         except Exception:
             pass  # can't read disk config — just use the string form
     return config
@@ -1237,6 +1269,12 @@ async def set_env_var(body: EnvVarUpdate):
     try:
         save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
+    except ValueError as exc:
+        # save_env_value raises ValueError for invalid names and for keys
+        # on the denylist (LD_PRELOAD, PATH, PYTHONPATH, …). Surface the
+        # message to the SPA so the user understands why the write was
+        # refused instead of seeing an opaque 500.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
         _log.exception("PUT /api/env failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -1305,9 +1343,15 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
     OAuth access token. JWT prefixes (the part before the first dot) are
     stripped first when present so the visible suffix is always part of
     the signing region rather than a meaningless header chunk.
+
+    Returns the Entra-ID placeholder when handed a callable (Azure Foundry
+    bearer provider) — the callable is NEVER invoked here.
     """
     if not value:
         return ""
+    if callable(value) and not isinstance(value, str):
+        # Entra ID bearer provider — never reveal a minted token in the UI.
+        return "<entra-id-bearer>"
     s = str(value)
     if "." in s and s.count(".") >= 2:
         # Looks like a JWT — show the trailing piece of the signature only.
@@ -1457,7 +1501,12 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
         "id": "minimax-oauth",
         "name": "MiniMax (OAuth)",
-        "flow": "pkce",
+        # MiniMax's flow is structurally device-code (verification URI +
+        # user code, backend polls the token endpoint) with a PKCE
+        # extension for code-binding. The dashboard renders the same UX
+        # as Nous's device-code flow; the PKCE bit is a security
+        # extension that doesn't change the operator experience.
+        "flow": "device_code",
         "cli_command": "hermes auth add minimax-oauth",
         "docs_url": "https://www.minimax.io",
         "status_fn": None,  # dispatched via auth.get_minimax_oauth_auth_status
@@ -1569,7 +1618,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
     # AND forget the Claude Code import. We don't touch ~/.claude/* directly
     # — that's owned by the Claude Code CLI; users can re-auth there if they
     # want to undo a disconnect.
-    if provider_id in ("anthropic", "claude-code"):
+    if provider_id in {"anthropic", "claude-code"}:
         try:
             from agent.anthropic_adapter import _HERMES_OAUTH_FILE
             if _HERMES_OAUTH_FILE.exists():
@@ -1690,7 +1739,25 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
         "expiresAt": expires_at_ms,
     }
     _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _HERMES_OAUTH_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_path = _HERMES_OAUTH_FILE.with_name(
+        f"{_HERMES_OAUTH_FILE.name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
+    )
+    try:
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, _HERMES_OAUTH_FILE)
+        try:
+            _HERMES_OAUTH_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
     # Best-effort credential-pool insert. Failure here doesn't invalidate
     # the file write — pool registration only matters for the rotation
     # strategy, not for runtime credential resolution.
@@ -1820,14 +1887,18 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
 
 
 async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
-    """Initiate a device-code flow (Nous or OpenAI Codex).
+    """Initiate a device-code flow (Nous, OpenAI Codex, or MiniMax).
 
     Calls the provider's device-auth endpoint via the existing CLI helpers,
     then spawns a background poller. Returns the user-facing display fields
     so the UI can render the verification page link + user code.
     """
     if provider_id == "nous":
-        from hermes_cli.auth import _request_device_code, PROVIDER_REGISTRY
+        from hermes_cli.auth import (
+            _nous_device_scope_with_env_override,
+            _request_nous_device_code_with_scope_fallback,
+            PROVIDER_REGISTRY,
+        )
         import httpx
         pconfig = PROVIDER_REGISTRY["nous"]
         portal_base_url = (
@@ -1836,22 +1907,34 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             or pconfig.portal_base_url
         ).rstrip("/")
         client_id = pconfig.client_id
-        scope = pconfig.scope
+        scope, explicit_scope = _nous_device_scope_with_env_override(
+            None,
+            default_scope=pconfig.scope,
+        )
+
         def _do_nous_device_request():
-            with httpx.Client(timeout=httpx.Timeout(15.0), headers={"Accept": "application/json"}) as client:
-                return _request_device_code(
+            with httpx.Client(
+                timeout=httpx.Timeout(15.0),
+                headers={"Accept": "application/json"},
+            ) as client:
+                return _request_nous_device_code_with_scope_fallback(
                     client=client,
                     portal_base_url=portal_base_url,
                     client_id=client_id,
                     scope=scope,
+                    allow_legacy_fallback=not explicit_scope,
                 )
-        device_data = await asyncio.get_event_loop().run_in_executor(None, _do_nous_device_request)
+
+        device_data, effective_scope = await asyncio.get_running_loop().run_in_executor(
+            None, _do_nous_device_request
+        )
         sid, sess = _new_oauth_session("nous", "device_code")
         sess["device_code"] = str(device_data["device_code"])
         sess["interval"] = int(device_data["interval"])
         sess["expires_at"] = time.time() + int(device_data["expires_in"])
         sess["portal_base_url"] = portal_base_url
         sess["client_id"] = client_id
+        sess["scope"] = effective_scope
         threading.Thread(
             target=_nous_poller, args=(sid,), daemon=True, name=f"oauth-poll-{sid[:6]}"
         ).start()
@@ -1899,12 +1982,92 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             "poll_interval": int(s.get("interval") or 5),
         }
 
+    if provider_id == "minimax-oauth":
+        # MiniMax uses a device-code-style flow (verification URI + user
+        # code + background poll) with a PKCE extension on top. From the
+        # operator's perspective it's identical to Nous's device-code
+        # flow; the PKCE bit (verifier + challenge from
+        # _minimax_pkce_pair) is a security extension that binds the
+        # token exchange to the original session.
+        from hermes_cli.auth import (
+            _minimax_pkce_pair,
+            _minimax_request_user_code,
+            MINIMAX_OAUTH_CLIENT_ID,
+            MINIMAX_OAUTH_GLOBAL_BASE,
+        )
+        import httpx
+        verifier, challenge, state = _minimax_pkce_pair()
+        portal_base_url = (
+            os.getenv("MINIMAX_PORTAL_BASE_URL") or MINIMAX_OAUTH_GLOBAL_BASE
+        ).rstrip("/")
+        def _do_minimax_request():
+            with httpx.Client(
+                timeout=httpx.Timeout(15.0),
+                headers={"Accept": "application/json"},
+                follow_redirects=True,
+            ) as client:
+                return _minimax_request_user_code(
+                    client=client,
+                    portal_base_url=portal_base_url,
+                    client_id=MINIMAX_OAUTH_CLIENT_ID,
+                    code_challenge=challenge,
+                    state=state,
+                )
+        device_data = await asyncio.get_event_loop().run_in_executor(
+            None, _do_minimax_request
+        )
+        sid, sess = _new_oauth_session("minimax-oauth", "device_code")
+        # The CLI flow names this `interval_ms` because MiniMax's
+        # `interval` field is in milliseconds (defensive default 2000ms
+        # in _minimax_poll_token).
+        interval_raw = device_data.get("interval")
+        sess["interval_ms"] = (
+            int(interval_raw) if interval_raw is not None else None
+        )
+        sess["user_code"] = str(device_data["user_code"])
+        sess["code_verifier"] = verifier
+        sess["state"] = state
+        sess["portal_base_url"] = portal_base_url
+        sess["client_id"] = MINIMAX_OAUTH_CLIENT_ID
+        sess["region"] = "global"
+        # `expired_in` from MiniMax is overloaded — could be a unix-ms
+        # timestamp OR a seconds-from-now duration. Mirror the heuristic
+        # in _minimax_poll_token. Stash the raw value for the poller;
+        # compute a derived expires_at + UI-friendly expires_in seconds.
+        expired_in_raw = int(device_data["expired_in"])
+        sess["expired_in_raw"] = expired_in_raw
+        if expired_in_raw > 1_000_000_000_000:  # likely unix-ms
+            expires_at_ts = expired_in_raw / 1000.0
+            expires_in_seconds = max(0, int(expires_at_ts - time.time()))
+        else:
+            expires_at_ts = time.time() + expired_in_raw
+            expires_in_seconds = expired_in_raw
+        sess["expires_at"] = expires_at_ts
+        threading.Thread(
+            target=_minimax_poller,
+            args=(sid,),
+            daemon=True,
+            name=f"oauth-poll-{sid[:6]}",
+        ).start()
+        return {
+            "session_id": sid,
+            "flow": "device_code",
+            "user_code": str(device_data["user_code"]),
+            "verification_url": str(device_data["verification_uri"]),
+            "expires_in": expires_in_seconds,
+            "poll_interval": max(2, (sess["interval_ms"] or 2000) // 1000),
+        }
+
     raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
 
 
 def _nous_poller(session_id: str) -> None:
     """Background poller that drives a Nous device-code flow to completion."""
-    from hermes_cli.auth import _poll_for_token, refresh_nous_oauth_from_state
+    from hermes_cli.auth import (
+        NOUS_INFERENCE_AUTH_MODE_FRESH,
+        _poll_for_token,
+        refresh_nous_oauth_from_state,
+    )
     from datetime import datetime, timezone
     import httpx
     with _oauth_sessions_lock:
@@ -1915,6 +2078,7 @@ def _nous_poller(session_id: str) -> None:
     client_id = sess["client_id"]
     device_code = sess["device_code"]
     interval = sess["interval"]
+    scope = sess.get("scope")
     expires_in = max(60, int(sess["expires_at"] - time.time()))
     try:
         with httpx.Client(timeout=httpx.Timeout(15.0), headers={"Accept": "application/json"}) as client:
@@ -1933,7 +2097,7 @@ def _nous_poller(session_id: str) -> None:
             "portal_base_url": portal_base_url,
             "inference_base_url": token_data.get("inference_base_url"),
             "client_id": client_id,
-            "scope": token_data.get("scope"),
+            "scope": token_data.get("scope") or scope,
             "token_type": token_data.get("token_type", "Bearer"),
             "access_token": token_data["access_token"],
             "refresh_token": token_data.get("refresh_token"),
@@ -1945,8 +2109,11 @@ def _nous_poller(session_id: str) -> None:
             "expires_in": token_ttl,
         }
         full_state = refresh_nous_oauth_from_state(
-            auth_state, min_key_ttl_seconds=300, timeout_seconds=15.0,
-            force_refresh=False, force_mint=True,
+            auth_state,
+            min_key_ttl_seconds=300,
+            timeout_seconds=15.0,
+            force_refresh=False,
+            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_FRESH,
         )
         from hermes_cli.auth import persist_nous_credentials
         persist_nous_credentials(full_state)
@@ -1955,6 +2122,89 @@ def _nous_poller(session_id: str) -> None:
         _log.info("oauth/device: nous login completed (session=%s)", session_id)
     except Exception as e:
         _log.warning("nous device-code poll failed (session=%s): %s", session_id, e)
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = str(e)
+
+
+def _minimax_poller(session_id: str) -> None:
+    """Background poller that drives a MiniMax OAuth flow to completion.
+
+    Mirrors `_nous_poller` but calls the MiniMax-specific token endpoint,
+    which uses a PKCE-style ``code_verifier`` + ``user_code`` rather than
+    the ``device_code`` field used by Nous. On success, builds the same
+    auth_state dict that ``_minimax_oauth_login`` (the CLI flow) builds
+    and persists via ``_minimax_save_auth_state`` — so the dashboard
+    path leaves the system in the same state as
+    ``hermes auth add minimax-oauth``.
+    """
+    from hermes_cli.auth import (
+        _minimax_poll_token,
+        _minimax_resolve_token_expiry_unix,
+        _minimax_save_auth_state,
+        MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        MINIMAX_OAUTH_SCOPE,
+    )
+    from datetime import datetime, timezone
+    import httpx
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if not sess:
+        return
+    portal_base_url = sess["portal_base_url"]
+    client_id = sess["client_id"]
+    user_code = sess["user_code"]
+    code_verifier = sess["code_verifier"]
+    interval_ms = sess.get("interval_ms")
+    expired_in_raw = sess["expired_in_raw"]
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(15.0),
+            headers={"Accept": "application/json"},
+            follow_redirects=True,
+        ) as client:
+            token_data = _minimax_poll_token(
+                client=client,
+                portal_base_url=portal_base_url,
+                client_id=client_id,
+                user_code=user_code,
+                code_verifier=code_verifier,
+                expired_in=expired_in_raw,
+                interval_ms=interval_ms,
+            )
+        # Build the auth_state dict in the same shape as the CLI flow's
+        # `_minimax_oauth_login` so `_minimax_save_auth_state` writes
+        # the canonical record. Region is fixed to "global" for the
+        # dashboard path; cn-region operators can still use the CLI
+        # flow which supports `--region cn`.
+        now = datetime.now(timezone.utc)
+        expires_at_ts = _minimax_resolve_token_expiry_unix(
+            int(token_data["expired_in"]), now=now,
+        )
+        expires_in_s = max(0, int(expires_at_ts - now.timestamp()))
+        auth_state = {
+            "provider": "minimax-oauth",
+            "region": sess.get("region", "global"),
+            "portal_base_url": portal_base_url,
+            "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+            "client_id": client_id,
+            "scope": MINIMAX_OAUTH_SCOPE,
+            "token_type": token_data.get("token_type", "Bearer"),
+            "access_token": token_data["access_token"],
+            "refresh_token": token_data["refresh_token"],
+            "resource_url": token_data.get("resource_url"),
+            "obtained_at": now.isoformat(),
+            "expires_at": datetime.fromtimestamp(
+                expires_at_ts, tz=timezone.utc
+            ).isoformat(),
+            "expires_in": expires_in_s,
+        }
+        _minimax_save_auth_state(auth_state)
+        with _oauth_sessions_lock:
+            sess["status"] = "approved"
+        _log.info("oauth/device: minimax login completed (session=%s)", session_id)
+    except Exception as e:
+        _log.warning("minimax device-code poll failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             sess["status"] = "error"
             sess["error_message"] = str(e)
@@ -2025,7 +2275,7 @@ def _codex_full_login_worker(session_id: str) -> None:
                 if poll.status_code == 200:
                     code_resp = poll.json()
                     break
-                if poll.status_code in (403, 404):
+                if poll.status_code in {403, 404}:
                     continue  # user hasn't authorized yet
                 raise RuntimeError(f"deviceauth/token poll returned {poll.status_code}")
 
@@ -2112,7 +2362,13 @@ async def start_oauth_login(provider_id: str, request: Request):
             detail=f"{provider_id} uses an external CLI; run `{catalog_entry['cli_command']}` manually",
         )
     try:
-        if catalog_entry["flow"] == "pkce":
+        # The pkce branch is gated on provider_id == "anthropic" because
+        # `_start_anthropic_pkce()` is hardcoded to the Anthropic flow.
+        # Routing any other future pkce-flagged provider through it would
+        # silently launch the Anthropic OAuth flow (the bug fixed in this
+        # change for MiniMax). New PKCE providers must add their own
+        # start function and an explicit branch here.
+        if catalog_entry["flow"] == "pkce" and provider_id == "anthropic":
             return _start_anthropic_pkce()
         if catalog_entry["flow"] == "device_code":
             return await _start_device_code_flow(provider_id)
@@ -2134,7 +2390,7 @@ async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Re
     """Submit the auth code for PKCE flows. Token-protected."""
     _require_token(request)
     if provider_id == "anthropic":
-        return await asyncio.get_event_loop().run_in_executor(
+        return await asyncio.get_running_loop().run_in_executor(
             None, _submit_anthropic_pkce, body.session_id, body.code,
         )
     raise HTTPException(status_code=400, detail=f"submit not supported for {provider_id}")
@@ -2377,73 +2633,188 @@ class CronJobUpdate(BaseModel):
     updates: dict
 
 
+_CRON_PROFILE_LOCK = threading.RLock()
+
+
+def _cron_profile_dicts() -> List[Dict[str, Any]]:
+    """Return dashboard profile records, falling back to a directory scan."""
+    from hermes_cli import profiles as profiles_mod
+    try:
+        return [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
+    except Exception:
+        _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
+        return _fallback_profile_dicts(profiles_mod)
+
+
+def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
+    """Resolve a profile query value to (profile_name, HERMES_HOME)."""
+    from hermes_cli import profiles as profiles_mod
+
+    raw = (profile or "default").strip() or "default"
+    try:
+        canon = profiles_mod.normalize_profile_name(raw)
+        profiles_mod.validate_profile_name(canon)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not profiles_mod.profile_exists(canon):
+        raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
+    return canon, profiles_mod.get_profile_dir(canon)
+
+
+def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
+    annotated = dict(job)
+    annotated["profile"] = profile
+    annotated["profile_name"] = profile
+    annotated["hermes_home"] = str(home)
+    annotated["is_default_profile"] = profile == "default"
+    return annotated
+
+
+def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwargs):
+    """Run cron.jobs helpers against the selected profile's cron directory.
+
+    cron.jobs keeps CRON_DIR/JOBS_FILE/OUTPUT_DIR as module globals resolved
+    from the process HERMES_HOME at import time. The dashboard is a single
+    process that can inspect many profiles, so temporarily retarget those
+    globals while holding a lock and restore them immediately after the call.
+    """
+    profile_name, home = _cron_profile_home(profile)
+    with _CRON_PROFILE_LOCK:
+        from cron import jobs as cron_jobs
+
+        old_cron_dir = cron_jobs.CRON_DIR
+        old_jobs_file = cron_jobs.JOBS_FILE
+        old_output_dir = cron_jobs.OUTPUT_DIR
+        cron_jobs.CRON_DIR = home / "cron"
+        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
+        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
+        try:
+            result = getattr(cron_jobs, func_name)(*args, **kwargs)
+        finally:
+            cron_jobs.CRON_DIR = old_cron_dir
+            cron_jobs.JOBS_FILE = old_jobs_file
+            cron_jobs.OUTPUT_DIR = old_output_dir
+
+    if isinstance(result, list):
+        return [_annotate_cron_job(j, profile_name, home) for j in result]
+    if isinstance(result, dict):
+        return _annotate_cron_job(result, profile_name, home)
+    return result
+
+
+def _find_cron_job_profile(job_id: str) -> Optional[str]:
+    for profile in _cron_profile_dicts():
+        name = str(profile.get("name") or "")
+        if not name:
+            continue
+        jobs = _call_cron_for_profile(name, "list_jobs", True)
+        if any(j.get("id") == job_id or j.get("name") == job_id for j in jobs):
+            return name
+    return None
+
+
 @app.get("/api/cron/jobs")
-async def list_cron_jobs():
-    from cron.jobs import list_jobs
-    return list_jobs(include_disabled=True)
+async def list_cron_jobs(profile: str = "all"):
+    requested = (profile or "all").strip()
+    if requested.lower() != "all":
+        return _call_cron_for_profile(requested, "list_jobs", True)
+
+    jobs: List[Dict[str, Any]] = []
+    for item in _cron_profile_dicts():
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        try:
+            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
+        except Exception:
+            _log.exception("Failed to list cron jobs for profile %s", name)
+    return jobs
 
 
 @app.get("/api/cron/jobs/{job_id}")
-async def get_cron_job(job_id: str):
-    from cron.jobs import get_job
-    job = get_job(job_id)
+async def get_cron_job(job_id: str, profile: Optional[str] = None):
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = _call_cron_for_profile(selected, "get_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.post("/api/cron/jobs")
-async def create_cron_job(body: CronJobCreate):
-    from cron.jobs import create_job
+async def create_cron_job(body: CronJobCreate, profile: str = "default"):
     try:
-        job = create_job(prompt=body.prompt, schedule=body.schedule,
-                         name=body.name, deliver=body.deliver)
-        return job
+        return _call_cron_for_profile(
+            profile,
+            "create_job",
+            prompt=body.prompt,
+            schedule=body.schedule,
+            name=body.name,
+            deliver=body.deliver,
+        )
     except Exception as e:
         _log.exception("POST /api/cron/jobs failed")
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.put("/api/cron/jobs/{job_id}")
-async def update_cron_job(job_id: str, body: CronJobUpdate):
-    from cron.jobs import update_job
-    job = update_job(job_id, body.updates)
+async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        job = _call_cron_for_profile(selected, "update_job", job_id, body.updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.post("/api/cron/jobs/{job_id}/pause")
-async def pause_cron_job(job_id: str):
-    from cron.jobs import pause_job
-    job = pause_job(job_id)
+async def pause_cron_job(job_id: str, profile: Optional[str] = None):
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = _call_cron_for_profile(selected, "pause_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.post("/api/cron/jobs/{job_id}/resume")
-async def resume_cron_job(job_id: str):
-    from cron.jobs import resume_job
-    job = resume_job(job_id)
+async def resume_cron_job(job_id: str, profile: Optional[str] = None):
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = _call_cron_for_profile(selected, "resume_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.post("/api/cron/jobs/{job_id}/trigger")
-async def trigger_cron_job(job_id: str):
-    from cron.jobs import trigger_job
-    job = trigger_job(job_id)
+async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = _call_cron_for_profile(selected, "trigger_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.delete("/api/cron/jobs/{job_id}")
-async def delete_cron_job(job_id: str):
-    from cron.jobs import remove_job
-    if not remove_job(job_id):
+async def delete_cron_job(job_id: str, profile: Optional[str] = None):
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        removed = _call_cron_for_profile(selected, "remove_job", job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not removed:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"ok": True}
 
@@ -3002,23 +3373,104 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
-def _is_public_bind() -> bool:
-    """True when bound to all-interfaces (operator used --insecure)."""
-    return getattr(app.state, "bound_host", "") in ("0.0.0.0", "::")
-
-
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback always; allows any IP when bound to all-interfaces
-    (--insecure mode, guarded by session token auth).
+    Loopback mode: only loopback clients allowed — the legacy
+    ``?token=<_SESSION_TOKEN>`` path is the only auth we have, so we
+    don't want LAN hosts guessing tokens.
+
+    Gated mode: any peer is allowed — uvicorn's ``proxy_headers=True``
+    (enabled when the OAuth gate is active so cookies can pick up
+    ``X-Forwarded-Proto``) rewrites ``ws.client.host`` to the
+    X-Forwarded-For value, which is the real internet client IP. The
+    OAuth gate + single-use ``?ticket=`` is the auth at that point; the
+    Host/Origin guard in :func:`_ws_host_origin_is_allowed` is what
+    blocks DNS-rebinding here, not the peer IP.
     """
-    if _is_public_bind():
+    if getattr(app.state, "auth_required", False):
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
     return client_host in _LOOPBACK_HOSTS
+
+
+def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
+    """Apply the dashboard Host/Origin guard to WebSocket upgrades.
+
+    FastAPI HTTP middleware does not run for WebSocket routes, so the
+    DNS-rebinding Host check used for normal dashboard HTTP requests must be
+    repeated here before accepting the upgrade.  Browsers also send an Origin
+    header on WebSocket handshakes; when present, require it to target the
+    same bound dashboard host.
+    """
+    bound_host = getattr(app.state, "bound_host", None)
+    if not bound_host:
+        return True
+
+    host_header = ws.headers.get("host", "")
+    if not _is_accepted_host(host_header, bound_host):
+        return False
+
+    origin = ws.headers.get("origin", "")
+    if not origin:
+        return True
+
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+
+    return _is_accepted_host(parsed.netloc, bound_host)
+
+
+def _ws_request_is_allowed(ws: "WebSocket") -> bool:
+    """Return True when the WebSocket upgrade matches dashboard boundaries."""
+    return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
+
+
+def _ws_auth_ok(ws: "WebSocket") -> bool:
+    """Validate WS-upgrade auth in either loopback or gated mode.
+
+    Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
+    parameter, constant-time compared.
+
+    Gated (public bind, no ``--insecure``): ``?ticket=<single-use>`` query
+    parameter consumed against the dashboard-auth ticket store. The legacy
+    token path is unconditionally rejected in this mode (the SPA bundle
+    isn't carrying the token any longer).
+
+    Returns True if the WS should be accepted; callers close with the
+    appropriate WS code (4401) on False. Audit-logs the rejection so
+    operators can debug "WS keeps closing" issues from the log.
+    """
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    if auth_required:
+        ticket = ws.query_params.get("ticket", "")
+        if not ticket:
+            return False
+        # Lazy import — keeps this function importable in test harnesses
+        # that don't bring in the dashboard_auth layer.
+        from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+        from hermes_cli.dashboard_auth.ws_tickets import (
+            TicketInvalid,
+            consume_ticket,
+        )
+
+        try:
+            consume_ticket(ticket)
+            return True
+        except TicketInvalid as exc:
+            audit_log(
+                AuditEvent.WS_TICKET_REJECTED,
+                reason=str(exc),
+                ip=(ws.client.host if ws.client else ""),
+                path=ws.url.path,
+            )
+            return False
+
+    token = ws.query_params.get("token", "")
+    return hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -3059,6 +3511,7 @@ def _resolve_chat_argv(
     # build unchanged for native CLI usage; only disable mouse tracking for
     # the dashboard PTY path.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
+    env.setdefault("HERMES_TUI_INLINE", "1")
 
     if resume:
         latest_resume, _latest_path = _session_latest_descendant(resume)
@@ -3073,7 +3526,21 @@ def _resolve_chat_argv(
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:
-    """ws:// URL the PTY child should publish events to, or None when unbound."""
+    """ws:// URL the PTY child should publish events to, or None when unbound.
+
+    Loopback / ``--insecure``: uses ``?token=<_SESSION_TOKEN>``.
+
+    Gated mode: mints a single-use ticket via the dashboard-auth ticket
+    store (server-side mint, no HTTP round trip — the PTY child is a
+    server-spawned process and we trust it). The ticket binds to the
+    pseudo-user ``"pty-sidecar"`` so audit logs can distinguish these from
+    browser-initiated tickets.
+
+    The single-use lifetime means the PTY child cannot reconnect without a
+    new sidecar URL. PTY children open ``/api/pub`` once at startup; if
+    reconnect semantics ever become important, this should be upgraded to
+    a long-lived process-scoped token.
+    """
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
 
@@ -3081,7 +3548,15 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
         return None
 
     netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
-    qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
+
+    if getattr(app.state, "auth_required", False):
+        # Gated mode — mint a ticket so the WS upgrade survives _ws_auth_ok.
+        from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+
+        ticket = mint_ticket(user_id="pty-sidecar", provider="server-internal")
+        qs = urllib.parse.urlencode({"ticket": ticket, "channel": channel})
+    else:
+        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
 
     return f"ws://{netloc}/api/pub?{qs}"
 
@@ -3097,7 +3572,7 @@ async def _broadcast_event(channel: str, payload: str) -> None:
         except Exception:
             # Subscriber went away mid-send; the /api/events finally clause
             # will remove it from the registry on its next iteration.
-            pass
+            _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
@@ -3114,13 +3589,11 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # --- auth + loopback check (before accept so we can close cleanly) ---
-    token = ws.query_params.get("token", "")
-    expected = _SESSION_TOKEN
-    if not hmac.compare_digest(token.encode(), expected.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3234,12 +3707,11 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    token = ws.query_params.get("token", "")
-    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3266,12 +3738,11 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    token = ws.query_params.get("token", "")
-    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3295,12 +3766,11 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    token = ws.query_params.get("token", "")
-    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3336,24 +3806,13 @@ async def events_ws(ws: WebSocket) -> None:
 def _normalise_prefix(raw: Optional[str]) -> str:
     """Normalise an X-Forwarded-Prefix header value.
 
-    Returns a string like ``"/hermes"`` (no trailing slash) or ``""`` when
-    no prefix is set / the header is malformed. We deliberately reject
-    anything containing ``..`` or non-printable bytes so a hostile proxy
-    can't inject HTML via the prefix.
+    Thin re-export of :func:`hermes_cli.dashboard_auth.prefix.normalise_prefix`
+    — the single source of truth lives in the dashboard_auth package so
+    the gate middleware, the OAuth routes, the cookie helpers, and the
+    SPA mount all agree on validation rules.
     """
-    if not raw:
-        return ""
-    p = raw.strip()
-    if not p:
-        return ""
-    if not p.startswith("/"):
-        p = "/" + p
-    p = p.rstrip("/")
-    if "//" in p or ".." in p or any(c in p for c in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
-        return ""
-    if len(p) > 64:
-        return ""
-    return p
+    from hermes_cli.dashboard_auth.prefix import normalise_prefix
+    return normalise_prefix(raw)
 
 
 def mount_spa(application: FastAPI):
@@ -3386,14 +3845,33 @@ def mount_spa(application: FastAPI):
 
         ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
         or empty string when served at root.
+
+        When the OAuth auth gate is active (``app.state.auth_required``),
+        the legacy ``_SESSION_TOKEN`` is NOT injected — the SPA reads
+        identity from ``/api/auth/me`` over cookie auth instead.  The
+        ``__HERMES_AUTH_REQUIRED__`` flag lets the SPA pick the right
+        auth scheme for /api/pty and /api/ws (ticket vs token).
         """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
-        token_script = (
-            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
-            f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-            f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
-        )
+        gated = bool(getattr(app.state, "auth_required", False))
+        gated_js = "true" if gated else "false"
+        if gated:
+            bootstrap_script = (
+                f"<script>"
+                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+                f'window.__HERMES_BASE_PATH__="{prefix}";'
+                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"</script>"
+            )
+        else:
+            bootstrap_script = (
+                f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+                f'window.__HERMES_BASE_PATH__="{prefix}";'
+                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"</script>"
+            )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the
             # browser fetches them through the same proxy prefix.
@@ -3403,7 +3881,7 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
-        html = html.replace("</head>", f"{token_script}</head>", 1)
+        html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
         return HTMLResponse(
             html,
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
@@ -3586,7 +4064,7 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
     if isinstance(radius, str) and radius.strip():
         layout["radius"] = radius
     density = layout_src.get("density")
-    if isinstance(density, str) and density in ("compact", "comfortable", "spacious"):
+    if isinstance(density, str) and density in {"compact", "comfortable", "spacious"}:
         layout["density"] = density
 
     # Color overrides — keep only valid keys with string values.
@@ -3752,6 +4230,43 @@ async def set_dashboard_theme(body: ThemeSetBody):
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 
+def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional[str]:
+    """Validate the manifest's ``api`` field for the plugin loader.
+
+    The web server later imports this file as a Python module via
+    ``importlib.util.spec_from_file_location`` (arbitrary code
+    execution by design — that's how plugins extend the backend).
+    Pre-#29156 the field was used as-is, which meant:
+
+    * An absolute path swallowed the plugin's dashboard directory
+      entirely — ``Path('safe/dashboard') / '/tmp/evil.py'`` resolves
+      to ``/tmp/evil.py``, so any attacker-controlled manifest could
+      point the import at any Python file on disk (GHSA-5qr3-c538-wm9j).
+    * A ``../..`` traversal could climb out of the plugin into
+      neighbouring directories on the search path.
+
+    Return the original string when the resolved path stays under
+    ``dashboard_dir``; return ``None`` (with a warning logged at the
+    call site) otherwise so the plugin still loads its static JS/CSS
+    but its backend ``api`` is rejected.
+    """
+    if not isinstance(api_field, str) or not api_field.strip():
+        return None
+    candidate = Path(api_field)
+    if candidate.is_absolute():
+        return None
+    try:
+        resolved = (dashboard_dir / candidate).resolve()
+        base = dashboard_dir.resolve()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        resolved.relative_to(base)
+    except ValueError:
+        return None
+    return api_field
+
+
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -3770,7 +4285,16 @@ def _discover_dashboard_plugins() -> list:
         (bundled_root / "memory", "bundled"),
         (bundled_root, "bundled"),
     ]
-    if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS"):
+    # GHSA-5qr3-c538-wm9j (#29156): the previous ``os.environ.get(...)``
+    # check treated *any* non-empty string as truthy, so ``=0``, ``=false``,
+    # and ``=no`` — all of which the agent loader and operators correctly
+    # read as "disabled" — silently *enabled* the untrusted project source
+    # in the web server.  Combined with the absolute-path RCE primitive on
+    # the manifest's ``api`` field (now patched below), this turned the
+    # opt-in into a sticky always-on switch.  Use the shared truthy
+    # semantics (``1`` / ``true`` / ``yes`` / ``on``) so the gate matches
+    # ``hermes_cli/plugins.py`` and the documented user contract.
+    if env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
         search_dirs.append((Path.cwd() / ".hermes" / "plugins", "project"))
 
     for plugins_root, source in search_dirs:
@@ -3809,6 +4333,23 @@ def _discover_dashboard_plugins() -> list:
                 slots: List[str] = []
                 if isinstance(slots_src, list):
                     slots = [s for s in slots_src if isinstance(s, str) and s]
+                # Validate ``api`` at discovery time so the value cached
+                # on the plugin entry is already safe to feed into the
+                # importer.  An attacker-controlled manifest can name
+                # any absolute path or ``..`` traversal here — the
+                # web server then imports that file as a Python module
+                # (RCE, GHSA-5qr3-c538-wm9j).
+                raw_api = data.get("api")
+                dashboard_dir = child / "dashboard"
+                safe_api = _safe_plugin_api_relpath(raw_api, dashboard_dir=dashboard_dir)
+                if raw_api and safe_api is None:
+                    _log.warning(
+                        "Plugin %s: refusing unsafe api path %r (must be a "
+                        "relative file inside the plugin's dashboard/ "
+                        "directory); backend routes from this plugin will "
+                        "not be mounted",
+                        name, raw_api,
+                    )
                 plugins.append({
                     "name": name,
                     "label": data.get("label", name),
@@ -3819,10 +4360,10 @@ def _discover_dashboard_plugins() -> list:
                     "slots": slots,
                     "entry": data.get("entry", "dist/index.js"),
                     "css": data.get("css"),
-                    "has_api": bool(data.get("api")),
+                    "has_api": bool(safe_api),
                     "source": source,
-                    "_dir": str(child / "dashboard"),
-                    "_api_file": data.get("api"),
+                    "_dir": str(dashboard_dir),
+                    "_api_file": safe_api,
                 })
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
@@ -3838,6 +4379,9 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
     global _dashboard_plugins_cache
     if _dashboard_plugins_cache is None or force_rescan:
         _dashboard_plugins_cache = _discover_dashboard_plugins()
+    elif _dashboard_plugins_cache:
+        if any(not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache):
+            _dashboard_plugins_cache = _discover_dashboard_plugins()
     return _dashboard_plugins_cache
 
 
@@ -3919,7 +4463,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             pass
 
         can_remove_update = (
-            source in ("user", "git") and under_user_tree and Path(dir_str).is_dir()
+            source in {"user", "git"} and under_user_tree and Path(dir_str).is_dir()
         )
 
         # Check if this plugin provides tools that require auth
@@ -4022,12 +4566,13 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
 
 def _validate_plugin_name(name: str) -> str:
     """Reject path-traversal attempts in plugin name URL parameters."""
-    if not name or "/" in name or "\\" in name or ".." in name:
+    name = name.strip("/")
+    if not name or ".." in name or "\\" in name:
         raise HTTPException(status_code=400, detail="Invalid plugin name.")
     return name
 
 
-@app.post("/api/dashboard/agent-plugins/{name}/enable")
+@app.post("/api/dashboard/agent-plugins/{name:path}/enable")
 async def post_agent_plugin_enable(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4039,7 +4584,7 @@ async def post_agent_plugin_enable(request: Request, name: str):
     return result
 
 
-@app.post("/api/dashboard/agent-plugins/{name}/disable")
+@app.post("/api/dashboard/agent-plugins/{name:path}/disable")
 async def post_agent_plugin_disable(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4051,7 +4596,7 @@ async def post_agent_plugin_disable(request: Request, name: str):
     return result
 
 
-@app.post("/api/dashboard/agent-plugins/{name}/update")
+@app.post("/api/dashboard/agent-plugins/{name:path}/update")
 async def post_agent_plugin_update(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4064,7 +4609,7 @@ async def post_agent_plugin_update(request: Request, name: str):
     return result
 
 
-@app.delete("/api/dashboard/agent-plugins/{name}")
+@app.delete("/api/dashboard/agent-plugins/{name:path}")
 async def delete_agent_plugin(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4102,7 +4647,7 @@ class _PluginVisibilityBody(BaseModel):
     hidden: bool
 
 
-@app.post("/api/dashboard/plugins/{name}/visibility")
+@app.post("/api/dashboard/plugins/{name:path}/visibility")
 async def post_plugin_visibility(request: Request, name: str, body: _PluginVisibilityBody):
     """Toggle a plugin's sidebar visibility (persists to config.yaml dashboard.hidden_plugins)."""
     _require_token(request)
@@ -4131,6 +4676,17 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
 
     Only serves files from the plugin's ``dashboard/`` subdirectory.
     Path traversal is blocked by checking ``resolve().is_relative_to()``.
+
+    Restricted to a browser-fetchable suffix allowlist (JS/CSS/JSON/HTML/
+    SVG/PNG/JPG/WOFF). The dashboard loads plugin JS via ``<script src>``
+    and CSS via ``<link href>``, neither of which can attach a custom
+    auth header — so this route stays unauthenticated to keep the SPA
+    working. But user-installed plugins ship a ``plugin_api.py``
+    backend module that the browser never fetches; it's only imported
+    by :func:`_mount_plugin_api_routes` at startup. Without a suffix
+    allowlist, anyone on the loopback port can curl the ``.py`` source
+    of a private third-party plugin. Reject everything outside the
+    browser-asset set.
     """
     plugins = _get_dashboard_plugins()
     plugin = next((p for p in plugins if p["name"] == plugin_name), None)
@@ -4145,7 +4701,11 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Guess content type
+    # Browser-asset suffix allowlist. Everything outside this set is
+    # rejected with 404 so we don't leak ``.py`` backend sources, README
+    # files, ``.env.example`` templates, etc. — none of which the SPA
+    # actually fetches. Add to this set deliberately when a new asset
+    # type comes up; do NOT change the default fallback.
     suffix = target.suffix.lower()
     content_types = {
         ".js": "application/javascript",
@@ -4156,11 +4716,27 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
         ".svg": "image/svg+xml",
         ".png": "image/png",
         ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".ico": "image/x-icon",
         ".woff2": "font/woff2",
         ".woff": "font/woff",
+        ".ttf": "font/ttf",
+        ".otf": "font/otf",
+        ".map": "application/json",
     }
-    media_type = content_types.get(suffix, "application/octet-stream")
-    return FileResponse(target, media_type=media_type)
+    if suffix not in content_types:
+        raise HTTPException(
+            status_code=404,
+            detail="File not found",
+        )
+    media_type = content_types[suffix]
+    return FileResponse(
+        target,
+        media_type=media_type,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 def _mount_plugin_api_routes():
@@ -4169,12 +4745,42 @@ def _mount_plugin_api_routes():
     Each plugin's ``api`` field points to a Python file that must expose
     a ``router`` (FastAPI APIRouter).  Routes are mounted under
     ``/api/plugins/<name>/``.
+
+    Backend import is restricted to ``bundled`` and ``user`` sources.
+    Project plugins (``./.hermes/plugins/``) ship with the CWD and are
+    therefore attacker-controlled in any threat model where the user
+    opens a malicious repo; they can extend the dashboard UI via
+    static JS/CSS but their Python ``api`` file is never auto-imported
+    by the web server.  See GHSA-5qr3-c538-wm9j (#29156).
     """
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
-        api_path = Path(plugin["_dir"]) / api_file_name
+        if plugin.get("source") == "project":
+            _log.warning(
+                "Plugin %s: ignoring backend api=%s (project plugins may "
+                "not auto-import Python code; move the plugin to "
+                "~/.hermes/plugins/ if you trust it)",
+                plugin["name"], api_file_name,
+            )
+            continue
+        dashboard_dir = Path(plugin["_dir"])
+        api_path = dashboard_dir / api_file_name
+        try:
+            resolved_api = api_path.resolve()
+            resolved_base = dashboard_dir.resolve()
+            resolved_api.relative_to(resolved_base)
+        except (OSError, RuntimeError, ValueError):
+            # Discovery already filters this, but re-check here in case
+            # ``_dir`` was tampered with after caching or a future caller
+            # bypasses the validator.  Defence in depth keeps the import
+            # primitive contained even if the upstream check regresses.
+            _log.warning(
+                "Plugin %s: refusing to import api file outside its "
+                "dashboard directory (%s)", plugin["name"], api_path,
+            )
+            continue
         if not api_path.exists():
             _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
             continue
@@ -4209,6 +4815,13 @@ def _mount_plugin_api_routes():
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
 
+# Mount the dashboard auth routes (/login, /auth/*, /api/auth/*) before the
+# SPA catch-all so /{full_path:path} doesn't swallow them.  These are
+# always mounted — the gate middleware decides whether to enforce auth,
+# not whether the routes exist.
+from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
+app.include_router(_dashboard_auth_router)
+
 mount_spa(app)
 
 
@@ -4226,14 +4839,65 @@ def start_server(
     global _DASHBOARD_EMBEDDED_CHAT_ENABLED
     _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
 
-    _LOCALHOST = ("127.0.0.1", "localhost", "::1")
-    if host not in _LOCALHOST and not allow_public:
-        raise SystemExit(
-            f"Refusing to bind to {host} — the dashboard exposes API keys "
-            f"and config without robust authentication.\n"
-            f"Use --insecure to override (NOT recommended on untrusted networks)."
+    # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
+    # injection / WS-auth paths can branch on it consistently.  Phase 3.5
+    # uses this to decide whether to refuse the bind, log the gate-on
+    # banner, and enable uvicorn proxy_headers.
+    app.state.auth_required = should_require_auth(host, allow_public)
+
+    if app.state.auth_required:
+        # Phase 3.5: the gate engages on non-loopback binds.  The legacy
+        # "refusing to bind" guard is replaced by "require at least one
+        # provider to be registered, else fail closed".
+        from hermes_cli.dashboard_auth import list_providers
+        if not list_providers():
+            # Surface the *specific* reason any bundled provider declined
+            # to register (e.g. missing HERMES_DASHBOARD_OAUTH_CLIENT_ID).
+            # Each provider plugin that ships with Hermes Agent exposes a
+            # module-level ``LAST_SKIP_REASON`` string for this purpose;
+            # without it the operator would only see "no providers" which
+            # is misleading when the provider IS installed but unconfigured.
+            skip_reasons: list[str] = []
+            try:
+                from plugins.dashboard_auth import nous as _nous_plugin
+
+                if _nous_plugin.LAST_SKIP_REASON:
+                    skip_reasons.append(
+                        f"  • nous: {_nous_plugin.LAST_SKIP_REASON}"
+                    )
+            except Exception:
+                pass
+
+            if skip_reasons:
+                raise SystemExit(
+                    f"Refusing to bind dashboard to {host} — the OAuth auth "
+                    f"gate engages on non-loopback binds, but no auth "
+                    f"providers are registered.\n"
+                    f"\n"
+                    f"Bundled providers reported these issues:\n"
+                    + "\n".join(skip_reasons)
+                    + "\n"
+                    f"\n"
+                    f"Or pass --insecure to skip the auth gate (NOT "
+                    f"recommended on untrusted networks)."
+                )
+            raise SystemExit(
+                f"Refusing to bind dashboard to {host} — the OAuth auth "
+                f"gate engages on non-loopback binds, but no auth providers "
+                f"are registered and no bundled plugin reported a reason "
+                f"(was the dashboard_auth/nous plugin removed?).\n"
+                f"Install a DashboardAuthProvider plugin, or pass --insecure "
+                f"to skip the auth gate (NOT recommended on untrusted "
+                f"networks)."
+            )
+        _log.info(
+            "Dashboard binding to %s with OAuth auth gate enabled. "
+            "Providers: %s",
+            host,
+            ", ".join(p.name for p in list_providers()),
         )
-    if host not in _LOCALHOST:
+    elif host not in _LOOPBACK_HOST_VALUES and allow_public:
+        # --insecure path — no auth, loud warning.
         _log.warning(
             "Binding to %s with --insecure — the dashboard has no robust "
             "authentication. Only use on trusted networks.", host,
@@ -4249,11 +4913,42 @@ def start_server(
     if open_browser:
         import webbrowser
 
-        def _open():
-            time.sleep(1.0)
-            webbrowser.open(f"http://{host}:{port}")
+        # On headless Linux (no DISPLAY or WAYLAND_DISPLAY) some registered
+        # browsers are TUI programs (links, lynx, www-browser) that try to
+        # take over the terminal.  That can send SIGHUP to the server process
+        # and cause an immediate exit even though uvicorn bound successfully.
+        # Skip the auto-open attempt on headless systems and let the user
+        # open the URL manually.  macOS and Windows are always considered
+        # display-capable.
+        _has_display = (
+            sys.platform != "linux"
+            or bool(os.environ.get("DISPLAY"))
+            or bool(os.environ.get("WAYLAND_DISPLAY"))
+        )
 
-        threading.Thread(target=_open, daemon=True).start()
+        if _has_display:
+            def _open():
+                try:
+                    time.sleep(1.0)
+                    webbrowser.open(f"http://{host}:{port}")
+                except Exception:
+                    pass
+
+            threading.Thread(target=_open, daemon=True).start()
+        else:
+            _log.debug(
+                "Skipping browser-open: no DISPLAY or WAYLAND_DISPLAY detected "
+                "(headless Linux). Pass --no-open to suppress this detection."
+            )
 
     print(f"  Hermes Web UI → http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    # proxy_headers defaults to False so _ws_client_is_allowed sees the real
+    # connection peer rather than X-Forwarded-For's rewritten value (which
+    # would defeat the loopback gate when behind a reverse proxy).  When the
+    # OAuth gate is active we are explicitly running behind a TLS terminator
+    # (Fly.io) and need X-Forwarded-Proto to decide cookie Secure flags, so
+    # we flip proxy_headers on for that mode.
+    uvicorn.run(
+        app, host=host, port=port, log_level="warning",
+        proxy_headers=bool(app.state.auth_required),
+    )

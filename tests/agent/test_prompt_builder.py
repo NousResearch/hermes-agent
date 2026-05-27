@@ -789,6 +789,7 @@ class TestPromptBuilderConstants:
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
         assert "api_server" in PLATFORM_HINTS
+        assert "webui" in PLATFORM_HINTS
 
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
@@ -825,6 +826,13 @@ class TestPromptBuilderConstants:
         assert "Feishu" in hint
         assert "MEDIA:" in hint
         assert "Markdown" in hint
+
+    def test_platform_hints_webui(self):
+        hint = PLATFORM_HINTS["webui"]
+        assert "WebUI" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+        assert "absolute" in hint
 
 
 # =========================================================================
@@ -934,7 +942,7 @@ class TestEnvironmentHints:
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""
         import agent.prompt_builder as _pb
-        for backend in ("docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox"):
+        for backend in ("docker", "singularity", "modal", "daytona", "ssh"):
             assert backend in _pb._REMOTE_TERMINAL_BACKENDS, (
                 f"{backend!r} must be in _REMOTE_TERMINAL_BACKENDS so its host "
                 f"info is suppressed in the system prompt"
@@ -1135,6 +1143,12 @@ class TestToolUseEnforcementGuidance:
 
     def test_enforcement_models_includes_grok(self):
         assert "grok" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_qwen(self):
+        assert "qwen" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_deepseek(self):
+        assert "deepseek" in TOOL_USE_ENFORCEMENT_MODELS
 
     def test_enforcement_models_is_tuple(self):
         assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)

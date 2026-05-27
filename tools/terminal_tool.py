@@ -3,18 +3,16 @@
 Terminal Tool Module
 
 A terminal tool that executes commands in local, Docker, Modal, SSH,
-Singularity, Daytona, and Vercel Sandbox environments. Supports local
-execution, containerized backends, and cloud sandboxes, including managed
-Modal mode.
+Singularity, and Daytona environments. Supports local execution,
+containerized backends, and cloud sandboxes, including managed Modal mode.
 
-Environment Selection (via TERMINAL_ENV environment variable):
+Supported environments:
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
-- "vercel_sandbox": Execute in Vercel Sandbox cloud sandboxes
 
 Features:
-- Multiple execution backends (local, docker, modal, vercel_sandbox)
+- Multiple execution backends (local, docker, modal)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
@@ -46,6 +44,8 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+
+from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -117,68 +117,6 @@ DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env(
     float,
     "number",
 )
-_VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
-_SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-
-
-def _is_supported_vercel_runtime(runtime: str) -> bool:
-    return not runtime or runtime in _SUPPORTED_VERCEL_RUNTIMES
-
-
-def _check_vercel_sandbox_requirements(config: dict[str, Any]) -> bool:
-    """Validate Vercel Sandbox terminal backend requirements."""
-    runtime = (config.get("vercel_runtime") or "").strip()
-    if not _is_supported_vercel_runtime(runtime):
-        supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
-        logger.error(
-            "Vercel Sandbox runtime %r is not supported. "
-            "Set TERMINAL_VERCEL_RUNTIME to one of: %s.",
-            runtime,
-            supported,
-        )
-        return False
-
-    disk = config.get("container_disk", 51200)
-    if disk not in (0, 51200):
-        logger.error(
-            "Vercel Sandbox does not support custom TERMINAL_CONTAINER_DISK=%s. "
-            "Use the default shared setting (51200 MB).",
-            disk,
-        )
-        return False
-
-    if importlib.util.find_spec("vercel") is None:
-        logger.error(
-            "vercel is required for the Vercel Sandbox terminal backend: pip install vercel"
-        )
-        return False
-
-    has_oidc = bool(os.getenv("VERCEL_OIDC_TOKEN"))
-    has_token = bool(os.getenv("VERCEL_TOKEN"))
-    has_project = bool(os.getenv("VERCEL_PROJECT_ID"))
-    has_team = bool(os.getenv("VERCEL_TEAM_ID"))
-
-    if has_oidc:
-        return True
-
-    if has_token or has_project or has_team:
-        if has_token and has_project and has_team:
-            return True
-        logger.error(
-            "Vercel Sandbox backend selected with token auth, but "
-            "VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID must all "
-            "be set together. VERCEL_OIDC_TOKEN is supported for one-off "
-            "local development only."
-        )
-        return False
-
-    logger.error(
-        "Vercel Sandbox backend selected but no supported auth configuration "
-        "was found. Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID "
-        "for normal use. VERCEL_OIDC_TOKEN is supported for one-off local "
-        "development only."
-    )
-    return False
 
 
 def _check_disk_usage_warning():
@@ -360,7 +298,7 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     
     Returns enhanced output if sudo failed in messaging context, else original.
     """
-    is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
+    is_gateway = env_var_enabled("HERMES_GATEWAY_SESSION")
     
     if not is_gateway:
         return output
@@ -416,7 +354,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 chars = []
                 while True:
                     c = msvcrt.getwch()
-                    if c in ("\r", "\n"):
+                    if c in {"\r", "\n"}:
                         break
                     if c == "\x03":
                         raise KeyboardInterrupt
@@ -432,7 +370,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 chars = []
                 while True:
                     b = os.read(tty_fd, 1)
-                    if not b or b in (b"\n", b"\r"):
+                    if not b or b in {b"\n", b"\r"}:
                         break
                     chars.append(b)
                 result["password"] = b"".join(chars).decode("utf-8", errors="replace")
@@ -707,7 +645,7 @@ def _rewrite_compound_background(command: str) -> str:
             continue
 
         # Quoted tokens — consume whole string via the shared tokenizer.
-        if ch in ("'", '"'):
+        if ch in {"'", '"'}:
             _, next_i = _read_shell_token(command, i)
             i = max(next_i, i + 1)
             continue
@@ -835,10 +773,9 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     should prepend sudo_stdin to their stdin_data and pass the merged bytes to
     Popen's stdin pipe.
 
-    Callers that cannot pipe subprocess stdin (modal, daytona,
-    vercel_sandbox) must embed the password in the command string
-    themselves; see their execute() methods for how they handle the
-    non-None sudo_stdin case.
+    Callers that cannot pipe subprocess stdin (modal, daytona) must embed
+    the password in the command string themselves; see their execute()
+    methods for how they handle the non-None sudo_stdin case.
 
     If SUDO_PASSWORD is not set and in interactive mode (HERMES_INTERACTIVE=1):
       Prompts user for password with 45s timeout, caches for session.
@@ -868,7 +805,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
         return command, None
 
-    if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
+    if not has_configured_password and not sudo_password and env_var_enabled("HERMES_INTERACTIVE"):
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
             _set_cached_sudo_password(sudo_password)
@@ -888,6 +825,7 @@ from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
+import sys
 
 
 # Tool description for LLM
@@ -901,9 +839,9 @@ Do NOT use echo/cat heredoc to create files — use write_file instead.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
 
 Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
-Background: Set background=true to get a session_id. Two patterns:
-  (1) Long-lived processes that never exit (servers, watchers).
-  (2) Long-running tasks with notify_on_complete=true — you can keep working on other things and the system auto-notifies you when the task finishes. Great for test suites, builds, deployments, or anything that takes more than a minute.
+Background: Set background=true to get a session_id. Almost always pair with notify_on_complete=true — bg without notify runs SILENTLY and you have no way to learn it finished short of calling process(action='poll') yourself. Two legitimate uses:
+  (1) Long-lived processes that never exit (servers, watchers, daemons) — silent is correct, there's no exit to notify on.
+  (2) Long-running bounded tasks (tests, builds, deploys, CI pollers, batch jobs) — MUST set notify_on_complete=true. Without it you'll either forget to poll or sit blocked waiting for the user to surface the result.
 For servers/watchers, do NOT use shell-level background wrappers (nohup/disown/setsid/trailing '&') in foreground mode. Use background=true so Hermes can track lifecycle and output.
 After starting a server, verify readiness with a health check or log signal, then run tests in a separate terminal() call. Avoid blind sleep loops.
 Use process(action="poll") for progress checks, process(action="wait") to block until done.
@@ -1009,17 +947,15 @@ def _get_env_config() -> Dict[str, Any]:
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     env_type = os.getenv("TERMINAL_ENV", "local")
     
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in ("true", "1", "yes")
+    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
 
     # Default cwd: local uses the host's current directory, ssh uses the
-    # remote home, Vercel uses its documented workspace root, and everything
-    # else starts in the backend's default root-like cwd.
+    # remote home, and everything else starts in the backend's default
+    # root-like cwd.
     if env_type == "local":
         default_cwd = os.getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
-    elif env_type == "vercel_sandbox":
-        default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
     else:
         default_cwd = "/root"
 
@@ -1041,7 +977,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in ("modal", "docker", "singularity", "daytona", "vercel_sandbox") and cwd:
+    elif env_type in {"modal", "docker", "singularity", "daytona"} and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -1059,7 +995,6 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
-        "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1076,16 +1011,18 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_persistent": os.getenv(
             "TERMINAL_SSH_PERSISTENT",
             os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
-        ).lower() in ("true", "1", "yes"),
-        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in ("true", "1", "yes"),
+        ).lower() in {"true", "1", "yes"},
+        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
-        # daytona, and vercel_sandbox -- ignored for local/ssh)
+        # daytona -- ignored for local/ssh)
         "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
-        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
+        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
-        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in ("true", "1", "yes"),
+        "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"),
+        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
+        "docker_extra_args": _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON"),
     }
 
 
@@ -1108,8 +1045,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
-        image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
+            "daytona", "ssh"
+        image: Docker/Singularity/Modal image name (ignored for local/ssh)
         cwd: Working directory
         timeout: Default command timeout
         ssh_config: SSH connection config (for env_type="ssh")
@@ -1128,6 +1065,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     volumes = cc.get("docker_volumes", [])
     docker_forward_env = cc.get("docker_forward_env", [])
     docker_env = cc.get("docker_env", {})
+    docker_extra_args = cc.get("docker_extra_args", [])
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -1143,6 +1081,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             forward_env=docker_forward_env,
             env=docker_env,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
+            extra_args=docker_extra_args,
         )
     
     elif env_type == "singularity":
@@ -1213,21 +1152,6 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
         )
 
-    elif env_type == "vercel_sandbox":
-        from tools.environments.vercel_sandbox import (
-            VercelSandboxEnvironment as _VercelSandboxEnvironment,
-        )
-        return _VercelSandboxEnvironment(
-            runtime=cc.get("vercel_runtime") or None,
-            cwd=cwd,
-            timeout=timeout,
-            cpu=cpu,
-            memory=memory,
-            disk=disk,
-            persistent_filesystem=persistent,
-            task_id=task_id,
-        )
-
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1243,7 +1167,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', or 'ssh'"
         )
 
 
@@ -1539,9 +1463,29 @@ def _command_requires_pipe_stdin(command: str) -> bool:
     )
 
 
-_SHELL_LEVEL_BACKGROUND_RE = re.compile(r"\b(?:nohup|disown|setsid)\b", re.IGNORECASE)
+_SHELL_LEVEL_BACKGROUND_RE = re.compile(
+    r"(?:^|[;&|]\s*|&&\s*|\|\|\s*|\$\(\s*)(?:nohup|disown|setsid)\b", re.IGNORECASE | re.MULTILINE
+)
 _INLINE_BACKGROUND_AMP_RE = re.compile(r"\s&\s")
 _TRAILING_BACKGROUND_AMP_RE = re.compile(r"\s&\s*(?:#.*)?$")
+
+
+def _strip_quotes(command: str) -> str:
+    """Remove single- and double-quoted content so regex checks don't match inside strings.
+
+    This prevents false positives when keywords like 'nohup' or 'setsid' appear
+    in commit messages, Python -c code, echo arguments, or PR body text.
+    Also strips backtick-quoted content and heredoc-style inline text.
+    """
+    # Remove single-quoted strings (no escaping inside single quotes in shell)
+    result = re.sub(r"'[^']*'", "''", command)
+    # Remove double-quoted strings (handle escaped quotes)
+    result = re.sub(r'"(?:[^"\\]|\\.)*"', '""', result)
+    # Remove backtick-quoted strings
+    result = re.sub(r"`[^`]*`", "``", result)
+    return result
+
+
 _LONG_LIVED_FOREGROUND_PATTERNS = (
     re.compile(r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b", re.IGNORECASE),
     re.compile(r"\bdocker\s+compose\s+up\b", re.IGNORECASE),
@@ -1574,21 +1518,25 @@ def _foreground_background_guidance(command: str) -> str | None:
     if _looks_like_help_or_version_command(command):
         return None
 
-    if _SHELL_LEVEL_BACKGROUND_RE.search(command):
+    # Strip quoted content so keywords inside strings/arguments don't trigger
+    # false positives (e.g., git commit -m "... setsid ...", python3 -c "os.setsid").
+    unquoted = _strip_quotes(command)
+
+    if _SHELL_LEVEL_BACKGROUND_RE.search(unquoted):
         return (
             "Foreground command uses shell-level background wrappers (nohup/disown/setsid). "
             "Use terminal(background=true) so Hermes can track the process, then run "
             "readiness checks and tests in separate commands."
         )
 
-    if _INLINE_BACKGROUND_AMP_RE.search(command) or _TRAILING_BACKGROUND_AMP_RE.search(command):
+    if _INLINE_BACKGROUND_AMP_RE.search(unquoted) or _TRAILING_BACKGROUND_AMP_RE.search(unquoted):
         return (
             "Foreground command uses '&' backgrounding. Use terminal(background=true) for long-lived "
             "processes, then run health checks and tests in follow-up terminal calls."
         )
 
     for pattern in _LONG_LIVED_FOREGROUND_PATTERNS:
-        if pattern.search(command):
+        if pattern.search(unquoted):
             return (
                 "This foreground command appears to start a long-lived server/watch process. "
                 "Run it with background=true, verify readiness (health endpoint/log signal), "
@@ -1778,19 +1726,19 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+                        if env_type in {"docker", "singularity", "modal", "daytona"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),
-                                "vercel_runtime": config.get("vercel_runtime", ""),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
                                 "docker_env": config.get("docker_env", {}),
                                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                                "docker_extra_args": config.get("docker_extra_args", []),
                             }
 
                         local_config = None
@@ -1831,12 +1779,13 @@ def terminal_tool(
             approval = _check_all_guards(command, env_type)
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
-                if approval.get("status") == "approval_required":
+                if approval.get("status") == "pending_approval":
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
-                        "error": approval.get("message", "Waiting for user approval"),
-                        "status": "approval_required",
+                        "error": "",
+                        "status": "pending_approval",
+                        "approval_pending": True,
                         "command": approval.get("command", command),
                         "description": approval.get("description", "command flagged"),
                         "pattern_key": approval.get("pattern_key", ""),
@@ -1926,6 +1875,111 @@ def terminal_tool(
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
 
+                # Nudge: background=True without notify_on_complete=True OR
+                # watch_patterns is a silent process. The agent has NO way to
+                # learn it finished short of calling process(action="poll"/"wait")
+                # explicitly. That's correct only for genuine long-lived
+                # processes that never exit (servers, watchers). For every
+                # bounded task (tests, builds, CI pollers, deploys, batch
+                # jobs) the agent almost certainly wanted notification and
+                # forgot the flag. May 2026 PR #31231 incident: bg CI poller
+                # ran fine, exited green, agent never noticed — user had to
+                # surface the result. Cheap nudge here costs ~one read for
+                # server cases (false positive) and prevents silent
+                # blindness for bounded-task cases (false negative).
+                if background and not notify_on_complete and not watch_patterns:
+                    result_data["hint"] = (
+                        "background=true without notify_on_complete=true means "
+                        "this process runs SILENTLY — you will not be told when "
+                        "it exits. If this is a bounded task (test suite, build, "
+                        "CI poller, deploy, anything with a defined end), you "
+                        "almost certainly wanted notify_on_complete=true so the "
+                        "system pings you on exit. Re-launch with "
+                        "notify_on_complete=true, or call process(action='poll') "
+                        "/ process(action='wait') yourself to learn the outcome. "
+                        "Only ignore this hint for genuine long-lived processes "
+                        "that never exit (servers, watchers, daemons)."
+                    )
+
+                # Nudge: homebrewed CI watcher built from `gh pr view`
+                # `--json statusCheckRollup` or `gh pr checks` piped through
+                # `jq` is the #1 cause of silent CI-watcher failures in
+                # hermes-agent dev work. May 2026 PRs that surfaced this
+                # exact failure mode: #31329, #31448, #31695, #31709, #31745,
+                # #32264, #33131. Failure modes seen:
+                #   * `gh pr view --json statusCheckRollup --jq ...` with
+                #     `from_entries` choking on null `conclusion` keys, loop
+                #     silently exits with empty status, never terminates.
+                #   * `for i in $(seq 1 60); do ... 2>&1` block-buffered stdout
+                #     never flushed to background-process capture; SIGTERM
+                #     cuts the buffer before flush; `process(action='log')`
+                #     returns total_lines=0 forever.
+                #   * conclusion vs. status field confusion: filtering for
+                #     `PENDING` in `.conclusion` while in-progress checks have
+                #     empty conclusion → poller declares all-green while 18/23
+                #     checks still IN_PROGRESS.
+                #   * grepping for TTY-only banners ("All checks were
+                #     successful") that never appear when stdout is piped.
+                # The canonical patterns in the green-ci-policy skill avoid
+                # every one of these — drive the loop off exit codes or on
+                # tab-separated `awk -F"\t" "$2==\"pending\""` (column 2).
+                # The detector here is deliberately narrow: it flags the
+                # statusCheckRollup JSON-API path and the `gh pr checks` +
+                # jq combination, but NOT the canonical column-2 awk
+                # poller (which uses awk on tabs, not as a generic
+                # stdout parser). When we detect the homebrew shape, point
+                # the agent at the canonical snippet rather than letting
+                # it ship another broken poller.
+                if background and command:
+                    _gh = ("gh pr view" in command or "gh pr checks" in command)
+                    _has_jq = (
+                        " jq " in command or "| jq" in command or "$(jq" in command
+                    )
+                    _bad_shape = (
+                        # The JSON-API anti-pattern. Even without jq, going
+                        # through `--json statusCheckRollup` + parsing puts
+                        # you in conclusion-vs-status field hell.
+                        "statusCheckRollup" in command
+                        # gh pr checks piped to jq is also wrong — `gh pr
+                        # checks` doesn't emit JSON, so any `| jq` here is
+                        # confused intent. The canonical column-2 poller
+                        # uses awk-on-tabs, not jq.
+                        or (_gh and _has_jq)
+                    )
+                    if _bad_shape:
+                        existing = result_data.get("hint", "")
+                        canonical_hint = (
+                            "This looks like a homebrewed CI poller built from "
+                            "`gh pr view --json statusCheckRollup` and/or "
+                            "`gh pr checks | jq`. That shape has burned us "
+                            "repeatedly in hermes-agent dev work (PRs #31329, "
+                            "#31448, #31695, #31709, #31745, #32264, #33131) — "
+                            "stdout buffering kills output capture, jq null-key "
+                            "edge cases silently exit the loop, conclusion-vs-"
+                            "status field confusion exits early with bogus "
+                            "all-green verdicts, TTY-only summary banners "
+                            "never appear when piped. Use the canonical "
+                            "snippets in the green-ci-policy skill instead: "
+                            "the exit-code-driven `gh pr checks $PR >/dev/null` "
+                            "(rc 0 = green, 8 = pending, else fail) for "
+                            "exit-on-first-fail behavior, or the column-2 "
+                            "awk-on-tabs poller "
+                            "(`awk -F\"\\t\" \"$2==\\\"pending\\\"\"`) for "
+                            "sharded matrices. Load skill_view("
+                            "name='github/hermes-agent-dev', "
+                            "file_path='references/green-ci-policy.md') for "
+                            "the verbatim snippets. If you must roll a custom "
+                            "loop with rich structured output, write each tick "
+                            "to a known file (`tee -a /tmp/ci.log`) and rely "
+                            "on `process(action='log')` to read THAT file — "
+                            "do not rely on background-process stdout capture "
+                            "for line-buffered shell loops."
+                        )
+                        result_data["hint"] = (
+                            existing + "\n\n" + canonical_hint if existing
+                            else canonical_hint
+                        )
+
                 # Populate routing metadata on the session so that
                 # watch-pattern and completion notifications can be
                 # routed back to the correct chat/thread.
@@ -1937,11 +1991,13 @@ def terminal_tool(
                         _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
                         _gw_user_id = _gse("HERMES_SESSION_USER_ID", "")
                         _gw_user_name = _gse("HERMES_SESSION_USER_NAME", "")
+                        _gw_message_id = _gse("HERMES_SESSION_MESSAGE_ID", "")
                         proc_session.watcher_platform = _gw_platform
                         proc_session.watcher_chat_id = _gw_chat_id
                         proc_session.watcher_user_id = _gw_user_id
                         proc_session.watcher_user_name = _gw_user_name
                         proc_session.watcher_thread_id = _gw_thread_id
+                        proc_session.watcher_message_id = _gw_message_id
 
                 # Mutual exclusion: if both notify_on_complete and watch_patterns
                 # are set, drop watch_patterns. The combination produces duplicate
@@ -1978,6 +2034,7 @@ def terminal_tool(
                             "user_id": proc_session.watcher_user_id,
                             "user_name": proc_session.watcher_user_name,
                             "thread_id": proc_session.watcher_thread_id,
+                            "message_id": proc_session.watcher_message_id,
                             "notify_on_complete": True,
                         })
 
@@ -2001,9 +2058,10 @@ def terminal_tool(
             
             while retry_count <= max_retries:
                 try:
-                    execute_kwargs = {"timeout": effective_timeout}
-                    if workdir:
-                        execute_kwargs["cwd"] = workdir
+                    execute_kwargs = {
+                        "timeout": effective_timeout,
+                        "cwd": workdir or cwd,
+                    }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()
@@ -2202,9 +2260,6 @@ def check_terminal_requirements() -> bool:
 
             return True
 
-        elif env_type == "vercel_sandbox":
-            return _check_vercel_sandbox_requirements(config)
-
         elif env_type == "daytona":
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
@@ -2212,7 +2267,7 @@ def check_terminal_requirements() -> bool:
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "modal, daytona, ssh.",
                 env_type,
             )
             return False
@@ -2237,7 +2292,7 @@ if __name__ == "__main__":
 
     if not check_terminal_requirements():
         print("\n❌ Requirements not met. Please check the messages above.")
-        exit(1)
+        sys.exit(1)
 
     print("\n✅ All requirements met!")
     print("\nAvailable Tool:")
@@ -2255,7 +2310,7 @@ if __name__ == "__main__":
     print(
         "  TERMINAL_ENV: "
         f"{os.getenv('TERMINAL_ENV', 'local')} "
-        "(local/docker/singularity/modal/daytona/vercel_sandbox/ssh)"
+        "(local/docker/singularity/modal/daytona/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
@@ -2285,7 +2340,7 @@ TERMINAL_SCHEMA = {
             },
             "background": {
                 "type": "boolean",
-                "description": "Run the command in the background. Two patterns: (1) Long-lived processes that never exit (servers, watchers). (2) Long-running tasks paired with notify_on_complete=true — you can keep working and get notified when the task finishes. For short commands, prefer foreground with a generous timeout instead.",
+                "description": "Run the command in the background. Almost always pair with notify_on_complete=true — without it, the process runs silently and you'll have no way to learn it finished short of calling process(action='poll') yourself (easy to forget, leading to silent blindness on long jobs). Two legitimate patterns: (1) Long-lived processes that never exit (servers, watchers, daemons) — these stay silent because there's no exit to notify on. (2) Long-running bounded tasks (tests, builds, deploys, CI pollers, batch jobs) — these MUST set notify_on_complete=true. For short commands, prefer foreground with a generous timeout instead.",
                 "default": False
             },
             "timeout": {

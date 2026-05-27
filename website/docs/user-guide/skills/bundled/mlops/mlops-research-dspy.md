@@ -20,6 +20,7 @@ DSPy: declarative LM programs, auto-optimize prompts, RAG.
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `dspy`, `openai`, `anthropic` |
+| Platforms | linux, macos, windows |
 | Tags | `Prompt Engineering`, `DSPy`, `Declarative Programming`, `RAG`, `Agents`, `Prompt Optimization`, `LM Programming`, `Stanford NLP`, `Automatic Optimization`, `Modular AI` |
 
 ## Reference: full SKILL.md

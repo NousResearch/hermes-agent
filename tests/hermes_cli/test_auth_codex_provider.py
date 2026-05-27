@@ -144,6 +144,73 @@ def test_save_codex_tokens_roundtrip(tmp_path, monkeypatch):
     assert data["tokens"]["refresh_token"] == "rt456"
 
 
+def test_save_codex_tokens_syncs_credential_pool(tmp_path, monkeypatch):
+    """Re-auth must update the credential_pool device_code entry, not just providers.
+
+    Regression for #33000: the runtime selects from credential_pool, so a
+    re-auth that only refreshed providers.openai-codex.tokens left the pool
+    holding a consumed refresh token and stale error markers, causing an
+    immediate 401 token_invalidated on the next request.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
+                "last_refresh": "2026-01-01T00:00:00Z",
+                "auth_mode": "chatgpt",
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "abc123",
+                    "source": "device_code",
+                    "auth_type": "oauth",
+                    "access_token": "old-at",
+                    "refresh_token": "old-rt",
+                    "last_status": "exhausted",
+                    "last_error_code": 401,
+                    "last_error_reason": "token_invalidated",
+                    "last_error_reset_at": 9999999999,
+                },
+                {
+                    "id": "manual1",
+                    "source": "manual:codex",
+                    "auth_type": "oauth",
+                    "access_token": "manual-at",
+                    "refresh_token": "manual-rt",
+                },
+            ],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _save_codex_tokens({"access_token": "new-at", "refresh_token": "new-rt"},
+                       last_refresh="2026-05-27T00:00:00Z")
+
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    pool = auth["credential_pool"]["openai-codex"]
+    seeded = next(e for e in pool if e["source"] == "device_code")
+    assert seeded["access_token"] == "new-at"
+    assert seeded["refresh_token"] == "new-rt"
+    assert seeded["last_refresh"] == "2026-05-27T00:00:00Z"
+    assert seeded["last_status"] is None
+    assert seeded["last_error_code"] is None
+    assert seeded["last_error_reason"] is None
+    assert seeded["last_error_reset_at"] is None
+
+    # Manual entries are independent credentials and must not be overwritten.
+    manual = next(e for e in pool if e["source"] == "manual:codex")
+    assert manual["access_token"] == "manual-at"
+    assert manual["refresh_token"] == "manual-rt"
+
+    # Provider singleton is updated too.
+    assert auth["providers"]["openai-codex"]["tokens"]["access_token"] == "new-at"
+
+
 def test_import_codex_cli_tokens(tmp_path, monkeypatch):
     codex_home = tmp_path / "codex-cli"
     codex_home.mkdir(parents=True, exist_ok=True)
@@ -196,9 +263,10 @@ def test_resolve_returns_hermes_auth_store_source(tmp_path, monkeypatch):
 
 
 class _StubHTTPResponse:
-    def __init__(self, status_code: int, payload):
+    def __init__(self, status_code: int, payload, headers=None):
         self.status_code = status_code
         self._payload = payload
+        self.headers = headers or {}
         self.text = json.dumps(payload) if isinstance(payload, (dict, list)) else str(payload)
 
     def json(self):
@@ -313,6 +381,74 @@ def test_refresh_falls_back_to_generic_message_on_unparseable_body(monkeypatch):
     # invalid/expired — force relogin even without a parseable error body.
     assert err.relogin_required is True
     assert "status 401" in str(err)
+
+
+def test_refresh_429_classified_as_quota_not_auth_failure(monkeypatch):
+    """429 from the token endpoint is a usage-quota cap, not an auth failure.
+
+    Regression test for #32790: must NOT force relogin and must carry the
+    dedicated rate-limit code so callers surface a "retry later" notice rather
+    than a misleading "run hermes auth".
+    """
+    from hermes_cli.auth import (
+        CODEX_RATE_LIMITED_CODE,
+        format_auth_error,
+        is_rate_limited_auth_error,
+    )
+
+    response = _StubHTTPResponse(
+        429,
+        {"error": {"message": "You hit your usage limit.", "code": "usage_limit_reached"}},
+        headers={"retry-after": "120"},
+    )
+    _patch_httpx(monkeypatch, response)
+
+    with pytest.raises(AuthError) as exc_info:
+        refresh_codex_oauth_pure("a-tok", "r-tok")
+
+    err = exc_info.value
+    assert err.code == CODEX_RATE_LIMITED_CODE
+    assert err.relogin_required is False
+    assert is_rate_limited_auth_error(err) is True
+    assert "retry after 120s" in str(err)
+    # User-facing copy must not tell the operator to re-authenticate.
+    rendered = format_auth_error(err)
+    assert "re-authenticate" not in rendered
+    assert "hermes auth" not in rendered
+
+
+def test_refresh_429_without_retry_after_header(monkeypatch):
+    """429 without a Retry-After header still classifies as quota, no relogin."""
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE
+
+    response = _StubHTTPResponse(429, {"error": "rate_limited"})
+    _patch_httpx(monkeypatch, response)
+
+    with pytest.raises(AuthError) as exc_info:
+        refresh_codex_oauth_pure("a-tok", "r-tok")
+
+    err = exc_info.value
+    assert err.code == CODEX_RATE_LIMITED_CODE
+    assert err.relogin_required is False
+    assert "quota exhausted" in str(err).lower()
+
+
+def test_is_rate_limited_auth_error_distinguishes_credential_errors():
+    """Missing/expired credentials must NOT be treated as rate-limit errors."""
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, is_rate_limited_auth_error
+
+    rate_limited = AuthError(
+        "quota", provider="openai-codex", code=CODEX_RATE_LIMITED_CODE, relogin_required=False
+    )
+    missing_creds = AuthError(
+        "No Codex credentials stored.",
+        provider="openai-codex",
+        code="codex_auth_missing",
+        relogin_required=True,
+    )
+    assert is_rate_limited_auth_error(rate_limited) is True
+    assert is_rate_limited_auth_error(missing_creds) is False
+    assert is_rate_limited_auth_error(ValueError("nope")) is False
 
 
 def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypatch):

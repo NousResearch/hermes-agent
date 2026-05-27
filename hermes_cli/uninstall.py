@@ -490,7 +490,7 @@ def run_uninstall(args):
         print("Cancelled.")
         return
     
-    if choice == "3" or choice.lower() in ("c", "cancel", "q", "quit", "n", "no"):
+    if choice == "3" or choice.lower() in {"c", "cancel", "q", "quit", "n", "no"}:
         print()
         print("Uninstall cancelled.")
         return
@@ -517,7 +517,7 @@ def run_uninstall(args):
             print()
             print("Cancelled.")
             return
-        remove_profiles = resp in ("y", "yes")
+        remove_profiles = resp in {"y", "yes"}
 
     # Final confirmation
     print()
@@ -664,7 +664,7 @@ def run_uninstall(args):
         print()
         print("To reinstall later with your existing settings:")
         if _is_windows():
-            print(color("  irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex", Colors.DIM))
+            print(color("  iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)", Colors.DIM))
         else:
             print(color("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash", Colors.DIM))
         print()

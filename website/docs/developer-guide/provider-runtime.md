@@ -40,24 +40,34 @@ That ordering matters because Hermes treats the saved model/provider choice as t
 
 ## Providers
 
-Current provider families include:
+Current provider families include (see `plugins/model-providers/` for the complete bundled set):
 
-- AI Gateway (Vercel)
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
 - Copilot / Copilot ACP
 - Anthropic (native)
-- Google / Gemini
-- Alibaba / DashScope
+- Google / Gemini (`gemini`, `google-gemini-cli`)
+- Alibaba / DashScope (`alibaba`, `alibaba-coding-plan`)
 - DeepSeek
 - Z.AI
-- Kimi / Moonshot
-- MiniMax
-- MiniMax China
+- Kimi / Moonshot (`kimi-coding`, `kimi-coding-cn`)
+- MiniMax (`minimax`, `minimax-cn`, `minimax-oauth`)
 - Kilo Code
 - Hugging Face
 - OpenCode Zen / OpenCode Go
+- AWS Bedrock
+- Azure Foundry
+- NVIDIA NIM
+- xAI (Grok)
+- Arcee
+- GMI Cloud
+- StepFun
+- Qwen OAuth
+- Xiaomi
+- Ollama Cloud
+- LM Studio
+- Tencent TokenHub
 - Custom (`provider: custom`) — first-class provider for any OpenAI-compatible endpoint
 - Named custom providers (`custom_providers` list in config.yaml)
 
@@ -82,18 +92,13 @@ This resolver is the main reason Hermes can share auth/runtime logic between:
 - ACP editor sessions
 - auxiliary model tasks
 
-## AI Gateway
+## OpenRouter and custom OpenAI-compatible base URLs
 
-Set `AI_GATEWAY_API_KEY` in `~/.hermes/.env` and run with `--provider ai-gateway`. Hermes fetches available models from the gateway's `/models` endpoint, filtering to language models with tool-use support.
-
-## OpenRouter, AI Gateway, and custom OpenAI-compatible base URLs
-
-Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when multiple provider keys exist (e.g. `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`, and `OPENAI_API_KEY`).
+Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when multiple provider keys exist (e.g. `OPENROUTER_API_KEY` and `OPENAI_API_KEY`).
 
 Each provider's API key is scoped to its own base URL:
 
 - `OPENROUTER_API_KEY` is only sent to `openrouter.ai` endpoints
-- `AI_GATEWAY_API_KEY` is only sent to `ai-gateway.vercel.sh` endpoints
 - `OPENAI_API_KEY` is used for custom endpoints and as a fallback
 
 Hermes also distinguishes between:
@@ -104,7 +109,7 @@ Hermes also distinguishes between:
 That distinction is especially important for:
 
 - local model servers
-- non-OpenRouter/non-AI Gateway OpenAI-compatible APIs
+- non-OpenRouter OpenAI-compatible APIs
 - switching providers without re-running setup
 - config-saved custom endpoints that should keep working even when `OPENAI_BASE_URL` is not exported in the current shell
 
@@ -139,7 +144,6 @@ Auxiliary tasks such as:
 - vision
 - web extraction summarization
 - context compression summaries
-- session search summarization
 - skills hub operations
 - MCP helper operations
 - memory flushes
@@ -154,7 +158,7 @@ When an auxiliary task is configured with provider `main`, Hermes resolves that 
 
 ## Fallback models
 
-Hermes supports a configured fallback model/provider pair, allowing runtime failover when the primary model encounters errors.
+Hermes supports a configured fallback provider chain — a list of `(provider, model)` entries tried in order when the primary model encounters errors. The legacy single-pair `fallback_model` dict is still accepted for back-compat (and migrated on first write).
 
 ### How it works internally
 

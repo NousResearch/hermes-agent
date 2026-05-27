@@ -52,6 +52,7 @@ import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip } from "@/components/SidebarStatusStrip";
+import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
@@ -75,6 +76,7 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import { api } from "@/lib/api";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
@@ -316,6 +318,23 @@ export default function App() {
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
+  // `dashboard.show_token_analytics` gates the Analytics nav item.  The
+  // page itself remains reachable by URL (it renders an explanation when
+  // the flag is off — see AnalyticsPage), but hiding the nav entry avoids
+  // surfacing misleading token/cost numbers in the sidebar.  Default off.
+  const [showTokenAnalytics, setShowTokenAnalytics] = useState(false);
+  useEffect(() => {
+    api
+      .getConfig()
+      .then((cfg) => {
+        const dash = (cfg?.dashboard ?? {}) as {
+          show_token_analytics?: unknown;
+        };
+        setShowTokenAnalytics(dash.show_token_analytics === true);
+      })
+      .catch(() => setShowTokenAnalytics(false));
+  }, []);
+
   // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
   // in its manifest.  When one does, `buildRoutes` already swaps the route
   // element for <PluginPage /> — but we also have to suppress the
@@ -346,11 +365,14 @@ export default function App() {
     [embeddedChat],
   );
 
-  const builtinNav = useMemo(
-    () =>
-      embeddedChat ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST] : BUILTIN_NAV_REST,
-    [embeddedChat],
-  );
+  const builtinNav = useMemo(() => {
+    const base = embeddedChat
+      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
+      : BUILTIN_NAV_REST;
+    return showTokenAnalytics
+      ? base
+      : base.filter((n) => n.path !== "/analytics");
+  }, [embeddedChat, showTokenAnalytics]);
 
   const sidebarNav = useMemo(
     () => partitionSidebarNav(builtinNav, manifests),
@@ -399,7 +421,7 @@ export default function App() {
   return (
     <div
       data-layout-variant={layoutVariant}
-      className="font-mondwest flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black uppercase text-midground antialiased"
+      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased"
     >
       <SelectionSwitcher />
       <Backdrop />
@@ -407,8 +429,8 @@ export default function App() {
 
       <header
         className={cn(
-          "lg:hidden fixed top-0 left-0 right-0 z-40 h-12",
-          "flex items-center gap-2 px-3",
+          "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
+          "flex items-center gap-2 px-4 py-2",
           "border-b border-current/20",
           "bg-background-base/90 backdrop-blur-sm",
         )}
@@ -425,7 +447,7 @@ export default function App() {
           aria-label={t.app.openNavigation}
           aria-expanded={mobileOpen}
           aria-controls="app-sidebar"
-          className="text-midground/70 hover:text-midground"
+          className="text-text-secondary hover:text-midground"
         >
           <Menu />
         </Button>
@@ -452,7 +474,7 @@ export default function App() {
 
       <PluginSlot name="header-banner" />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-12 lg:pt-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"
@@ -473,7 +495,7 @@ export default function App() {
           >
             <div
               className={cn(
-                "flex h-14 shrink-0 items-center justify-between gap-2",
+                "flex h-14 shrink-0 items-center justify-between gap-2 px-4",
                 "border-b border-current/20",
               )}
             >
@@ -481,7 +503,7 @@ export default function App() {
                 <PluginSlot name="header-left" />
 
                 <Typography
-                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
+                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
                   style={{ mixBlendMode: "plus-lighter" }}
                 >
                   Hermes
@@ -495,7 +517,7 @@ export default function App() {
                 size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className="lg:hidden text-midground/70 hover:text-midground"
+                className="lg:hidden text-text-secondary hover:text-midground"
               >
                 <X />
               </Button>
@@ -525,7 +547,7 @@ export default function App() {
                   <span
                     className={cn(
                       "px-5 pt-2.5 pb-1",
-                      "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
+                      "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
                     )}
                     id="hermes-sidebar-plugin-nav-heading"
                   >
@@ -558,10 +580,11 @@ export default function App() {
               <div className="flex min-w-0 items-center gap-2">
                 <PluginSlot name="header-right" />
                 <ThemeSwitcher dropUp />
-                <LanguageSwitcher />
+                <LanguageSwitcher dropUp />
               </div>
             </div>
 
+            <AuthWidget />
             <SidebarFooter />
           </aside>
 
@@ -571,8 +594,8 @@ export default function App() {
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
                 "px-3 sm:px-6",
                 isChatRoute
-                  ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
-                  : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
+                  ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
+                  : "pt-2 sm:pt-4 lg:pt-6",
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >
@@ -580,6 +603,8 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
+                  !isChatRoute &&
+                    "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
                   (isDocsRoute || isChatRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
@@ -652,10 +677,12 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
           cn(
             "group relative flex items-center gap-3",
             "px-5 py-2.5",
-            "font-mondwest text-[0.8rem] tracking-[0.12em]",
+            "font-mondwest text-display uppercase text-sm tracking-[0.12em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-            isActive ? "text-midground" : "opacity-60 hover:opacity-100",
+            isActive
+              ? "text-midground"
+              : "text-text-secondary hover:text-midground",
           )
         }
         style={{
@@ -727,7 +754,7 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
       <span
         className={cn(
           "px-5 pt-0.5 pb-0.5",
-          "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
+          "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
         )}
       >
         {t.app.system}
@@ -753,12 +780,12 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                 active={busy}
                 className={cn(
                   "gap-3 px-5 py-1.5 whitespace-nowrap",
-                  "font-mondwest text-[0.75rem] tracking-[0.1em]",
-                  "transition-opacity",
+                  "font-mondwest text-display text-xs tracking-[0.1em]",
+                  "transition-colors",
                   busy
-                    ? "text-midground opacity-100"
-                    : "opacity-60 hover:opacity-100",
-                  "disabled:opacity-30",
+                    ? "text-midground"
+                    : "text-text-secondary hover:text-midground",
+                  "disabled:text-text-disabled",
                 )}
               >
                 {isPending ? (

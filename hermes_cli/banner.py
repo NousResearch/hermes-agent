@@ -175,6 +175,48 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     return None
 
 
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Parse '0.13.0' into (0, 13, 0) for comparison. Non-numeric segments become 0."""
+    parts = []
+    for segment in v.split("."):
+        try:
+            parts.append(int(segment))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+def _fetch_pypi_latest(package: str = "hermes-agent") -> Optional[str]:
+    """Fetch the latest version of a package from PyPI. Returns None on failure."""
+    try:
+        import urllib.request
+        url = f"https://pypi.org/pypi/{package}/json"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+            return data.get("info", {}).get("version")
+    except Exception:
+        return None
+
+
+def check_via_pypi() -> Optional[int]:
+    """Compare installed version against PyPI latest.
+
+    Returns 0 if up-to-date, 1 if behind, None on failure.
+    """
+    latest = _fetch_pypi_latest()
+    if latest is None:
+        return None
+    if latest == VERSION:
+        return 0
+    try:
+        if _version_tuple(latest) > _version_tuple(VERSION):
+            return 1
+        return 0
+    except Exception:
+        return 1 if latest != VERSION else 0
+
+
 def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
 
@@ -206,12 +248,16 @@ def check_for_updates() -> Optional[int]:
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        repo_dir = hermes_home / "hermes-agent"
+        # Prefer the running code's location over the profile-scoped path.
+        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
+        # Path(__file__) always resolves to the actual installed checkout.
+        repo_dir = Path(__file__).parent.parent.resolve()
         if not (repo_dir / ".git").exists():
-            repo_dir = Path(__file__).parent.parent.resolve()
+            repo_dir = hermes_home / "hermes-agent"
         if not (repo_dir / ".git").exists():
-            return None
-        behind = _check_via_local_git(repo_dir)
+            behind = check_via_pypi()
+        else:
+            behind = _check_via_local_git(repo_dir)
 
     try:
         cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
@@ -222,11 +268,16 @@ def check_for_updates() -> Optional[int]:
 
 
 def _resolve_repo_dir() -> Optional[Path]:
-    """Return the active Hermes git checkout, or None if this isn't a git install."""
-    hermes_home = get_hermes_home()
-    repo_dir = hermes_home / "hermes-agent"
+    """Return the active Hermes git checkout, or None if this isn't a git install.
+
+    Prefers the running code's location over the profile-scoped path
+    because ``$HERMES_HOME/hermes-agent/`` may be a stale copy carried
+    over by ``--clone-all``.
+    """
+    repo_dir = Path(__file__).parent.parent.resolve()
     if not (repo_dir / ".git").exists():
-        repo_dir = Path(__file__).parent.parent.resolve()
+        hermes_home = get_hermes_home()
+        repo_dir = hermes_home / "hermes-agent"
     return repo_dir if (repo_dir / ".git").exists() else None
 
 
@@ -462,6 +513,9 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         model_short = model_short[:25] + "..."
     ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
     left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+
+    if os.getenv("HERMES_YOLO_MODE"):
+        left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")
     left_lines.append(f"[dim {dim}]{cwd}[/]")
     if session_id:
         left_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
@@ -573,6 +627,19 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
+    # Indicate when the codex_app_server runtime is active so users
+    # understand why tool counts may not match what's actually reachable
+    # (codex builds its own tool list inside the spawned subprocess).
+    try:
+        from hermes_cli.codex_runtime_switch import get_current_runtime
+        from hermes_cli.config import load_config as _load_cfg
+        if get_current_runtime(_load_cfg()) == "codex_app_server":
+            right_lines.append(
+                f"[bold {accent}]Runtime:[/] [{text}]codex app-server[/] "
+                f"[dim {dim}](terminal/file ops/MCP run inside codex)[/]"
+            )
+    except Exception:
+        pass
     # Show active profile name when not 'default'
     try:
         from hermes_cli.profiles import get_active_profile_name

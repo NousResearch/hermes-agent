@@ -20,6 +20,18 @@ set -eu
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
+# --- Bootstrap HERMES_HOME as root ---
+# Create the directory (and any missing parents) while we still have root
+# privileges so the chown checks below see real metadata and the later
+# `s6-setuidgid hermes mkdir -p` block doesn't EACCES on root-owned
+# ancestors. Without this, custom HERMES_HOME paths whose parents only
+# root can create (e.g. `HERMES_HOME=/home/hermes/.hermes` in a Compose
+# file, or any path under a fresh / not pre-populated by the image)
+# fail on first boot with `mkdir: cannot create directory '/...': Permission
+# denied` and the cont-init hook exits non-zero. Idempotent — `mkdir -p`
+# is a no-op if the dir already exists. (#18482, salvages #18488)
+mkdir -p "$HERMES_HOME"
+
 # --- UID/GID remap ---
 if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
     echo "[stage2] Changing hermes UID to $HERMES_UID"

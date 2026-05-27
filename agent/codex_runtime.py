@@ -655,22 +655,13 @@ def run_codex_app_server_turn(
                 exc_info=True,
             )
 
-        def _on_codex_event(note: dict) -> None:
-            # Bridge Codex app-server item/started notifications to Hermes
-            # tool-progress so gateways show verbose "running X" breadcrumbs
-            # on this route too (#38835).
-            progress_callback = getattr(agent, "tool_progress_callback", None)
-            if progress_callback is None:
-                return
-            mapped = _codex_note_to_tool_progress(note)
-            if mapped is None:
-                return
-            tool_name, preview, args = mapped
-            try:
-                progress_callback("tool.started", tool_name, preview, args)
-            except Exception:
-                logger.debug("codex tool-progress callback raised", exc_info=True)
-
+        # Bridge codex JSON-RPC notifications (item/started, item/completed,
+        # item/agentMessage/delta, ...) into Hermes' gateway UI callbacks
+        # (tool_progress_callback, _fire_stream_delta,
+        # _emit_interim_assistant_message). Without this, Discord/Telegram
+        # users see no live tool-progress or interim commentary while
+        # codex_app_server is running — only the final answer (#33200).
+        # Supersedes the narrower item/started-only bridge from #38835.
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
@@ -678,7 +669,7 @@ def run_codex_app_server_turn(
                 auto_approve_exec=auto_approve_requests,
                 auto_approve_apply_patch=auto_approve_requests,
             ),
-            on_event=_on_codex_event,
+            on_event=make_codex_app_server_event_bridge(agent),
         )
 
     # NOTE: the user message is ALREADY appended to messages by the

@@ -423,6 +423,75 @@ def test_video_gen_direct_mode_when_fal_key_set(monkeypatch):
     assert "submit_via" not in captured
 
 
+def test_video_gen_gateway_4xx_raises_actionable_valueerror(monkeypatch):
+    """A 4xx from the managed gateway surfaces a clear ValueError with remediation hints."""
+    captured = {}
+    _install_fake_fal_client(captured)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-video-token")
+
+    plugin = _load_video_gen_plugin(monkeypatch)
+
+    # Make _maybe_retry_request raise an exception with a 403 status
+    class FakeResponse:
+        status_code = 403
+
+    class GatewayRejectError(Exception):
+        def __init__(self):
+            super().__init__("forbidden")
+            self.response = FakeResponse()
+
+    original_retry = sys.modules["fal_client"].client._maybe_retry_request
+
+    def raising_retry(client, method, url, json=None, timeout=None, headers=None):
+        raise GatewayRejectError()
+
+    sys.modules["fal_client"].client._maybe_retry_request = raising_retry
+
+    with pytest.raises(ValueError, match=r"gateway rejected endpoint.*HTTP 403"):
+        plugin._submit_fal_video_request(
+            "fal-ai/pixverse/v6/text-to-video",
+            {"prompt": "test 4xx"},
+        )
+
+
+def test_video_gen_is_available_true_via_gateway(monkeypatch):
+    """is_available() returns True when FAL_KEY is absent but managed gateway is configured."""
+    _install_fake_fal_client({})
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-video-token")
+
+    plugin = _load_video_gen_plugin(monkeypatch)
+    provider = plugin.FALVideoGenProvider()
+    assert provider.is_available() is True
+
+
+def test_video_gen_prefers_gateway_overrides_direct_key(monkeypatch):
+    """When FAL_KEY is set but prefers_gateway('video_gen') is True, routes through gateway."""
+    captured = {}
+    _install_fake_fal_client(captured)
+    monkeypatch.setenv("FAL_KEY", "direct-key-present")
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-video-token")
+
+    plugin = _load_video_gen_plugin(monkeypatch)
+
+    # Patch prefers_gateway to return True for video_gen
+    tb_helpers = sys.modules["tools.tool_backend_helpers"]
+    original_pg = tb_helpers.prefers_gateway
+    monkeypatch.setattr(tb_helpers, "prefers_gateway", lambda section: section == "video_gen")
+
+    plugin._submit_fal_video_request(
+        "fal-ai/pixverse/v6/text-to-video",
+        {"prompt": "gateway preferred"},
+    )
+
+    assert captured["submit_via"] == "managed_client"
+    assert captured["client_key"] == "nous-video-token"
+
+
 def test_video_gen_happy_horse_uses_alibaba_namespace():
     """Verify the happy-horse family uses alibaba/ not fal-ai/ endpoints."""
     _install_fake_tools_package()

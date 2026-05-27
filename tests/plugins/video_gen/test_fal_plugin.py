@@ -105,6 +105,19 @@ def test_fal_generate_requires_fal_key(monkeypatch):
     assert result["error_type"] == "auth_required"
 
 
+def test_fal_available_via_gateway(monkeypatch):
+    from plugins.video_gen.fal import FALVideoGenProvider
+    from plugins.video_gen import fal as fal_plugin
+
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setattr(
+        fal_plugin,
+        "_resolve_managed_fal_video_gateway",
+        lambda: object(),  # truthy sentinel — gateway is available
+    )
+    assert FALVideoGenProvider().is_available() is True
+
+
 class TestFamilyRouting:
     """The headline behavior: image_url presence picks the endpoint."""
 

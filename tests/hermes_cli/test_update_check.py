@@ -26,10 +26,21 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(
+        json.dumps(
+            {
+                "ts": time.time(),
+                "behind": 3,
+                "compare_ref": "origin/main",
+            }
+        )
+    )
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run") as mock_run:
+    with (
+        patch("hermes_cli.banner._resolve_local_git_compare_ref", return_value="origin/main"),
+        patch("hermes_cli.banner.subprocess.run") as mock_run,
+    ):
         result = check_for_updates()
 
     assert result == 3
@@ -46,12 +57,15 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
 
     # Write an expired cache (timestamp far in the past)
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": 0, "behind": 1}))
+    cache_file.write_text(json.dumps({"ts": 0, "behind": 1, "compare_ref": "origin/main"}))
 
     mock_result = MagicMock(returncode=0, stdout="5\n")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+    with (
+        patch("hermes_cli.banner._resolve_local_git_compare_ref", return_value="origin/main"),
+        patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run,
+    ):
         result = check_for_updates()
 
     assert result == 5

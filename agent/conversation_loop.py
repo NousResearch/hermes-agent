@@ -1960,6 +1960,53 @@ def run_conversation(
                             f"{cached:,}/{prompt:,} tokens "
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
+                else:
+                    # Some provider/SDK recovery paths can return a valid
+                    # assistant response without usage metadata (notably Codex
+                    # null-output stream recovery).  Do not invent billable
+                    # token counters, but do keep context-pressure tracking and
+                    # API-call accounting moving from the same preflight request
+                    # estimate used for compression decisions.  Otherwise the
+                    # TUI status bar remains pinned at 0/<ctx> even though a
+                    # real request was just sent.
+                    _estimated_prompt_tokens = max(0, int(approx_request_tokens or approx_tokens or 0))
+                    if _estimated_prompt_tokens:
+                        agent.context_compressor.update_from_response({
+                            "prompt_tokens": _estimated_prompt_tokens,
+                            "completion_tokens": 0,
+                            "total_tokens": _estimated_prompt_tokens,
+                        })
+                    agent.session_api_calls += 1
+                    logger.info(
+                        "API call #%d: model=%s provider=%s usage=missing context_estimate=%d latency=%.1fs",
+                        agent.session_api_calls,
+                        agent.model,
+                        agent.provider or "unknown",
+                        _estimated_prompt_tokens,
+                        api_duration,
+                    )
+                    if agent._session_db and agent.session_id:
+                        try:
+                            if not agent._session_db_created:
+                                agent._ensure_db_session()
+                            agent._session_db.update_token_counts(
+                                agent.session_id,
+                                input_tokens=0,
+                                output_tokens=0,
+                                cache_read_tokens=0,
+                                cache_write_tokens=0,
+                                reasoning_tokens=0,
+                                api_call_count=1,
+                                model=agent.model,
+                                billing_provider=agent.provider,
+                                billing_base_url=agent.base_url,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "No-usage API-call persistence failed (session=%s): %s",
+                                agent.session_id,
+                                e,
+                            )
                 
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call

@@ -126,3 +126,25 @@ def test_codex_no_cache_fields(monkeypatch):
     agent = _make_agent(monkeypatch, "codex_responses", "openai-codex", resp)
     agent.run_conversation("hi")
     assert agent.context_compressor.last_prompt_tokens == 3000
+
+
+def test_codex_missing_usage_falls_back_to_request_estimate_for_context_only(monkeypatch):
+    """Recovered Codex responses may have no usage; context tracking must not stay 0."""
+    monkeypatch.setattr(
+        "agent.conversation_loop.estimate_request_tokens_rough",
+        lambda *args, **kwargs: 4321,
+    )
+    resp = lambda: SimpleNamespace(
+        output=[SimpleNamespace(type="message", content=[SimpleNamespace(type="output_text", text="ok")])],
+        usage=None,
+        status="completed", model="gpt-5-codex",
+    )
+    agent = _make_agent(monkeypatch, "codex_responses", "openai-codex", resp)
+
+    agent.run_conversation("hi")
+
+    assert getattr(agent, "context_compressor").last_prompt_tokens == 4321
+    assert agent.session_api_calls == 1
+    # The fallback is for context-window pressure only; do not fake billable token counters.
+    assert agent.session_prompt_tokens == 0
+    assert agent.session_total_tokens == 0

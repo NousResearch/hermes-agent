@@ -9,9 +9,11 @@ function readBasePath(): string {
   if (typeof window === "undefined") return "";
   const raw = window.__HERMES_BASE_PATH__ ?? "";
   if (!raw) return "";
-  // Normalise: ensure leading slash, strip trailing slash.
   const withLead = raw.startsWith("/") ? raw : `/${raw}`;
-  return withLead.replace(/\/+$/, "");
+  const prefix = withLead.replace(/\/+$/, "");
+  if (!prefix) return "";
+  if (prefix.length > 64 || prefix.includes("//") || prefix.includes("..")) return "";
+  return /^\/[A-Za-z0-9._~/-]+$/.test(prefix) ? prefix : "";
 }
 
 export const HERMES_BASE_PATH = readBasePath();

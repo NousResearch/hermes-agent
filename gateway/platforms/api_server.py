@@ -50,6 +50,12 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from gateway.proxy_scope_auth import (
+    PROXY_SCOPE_SIGNATURE_HEADER,
+    PROXY_SCOPE_TIMESTAMP_HEADER,
+    get_proxy_scope_key,
+    verify_proxy_scope_signature,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +67,11 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+
+
+def _constant_time_equal(left: str, right: str) -> bool:
+    """Compare text secrets without rejecting non-ASCII values."""
+    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -527,9 +538,15 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(
+    body: Dict[str, Any],
+    keys: List[str],
+    extra: Optional[Dict[str, Any]] = None,
+) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
+    if extra:
+        subset["__extra__"] = extra
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
@@ -611,9 +628,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
-        # Active approval session key for each run_id.  API runs use a
-        # per-run approval key so concurrent runs sharing conversation
-        # continuity cannot resolve each other's approval prompts.
+        # Active approval session key for each run_id.  The approval core
+        # resolves requests by session key, while API clients address the
+        # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
@@ -700,7 +717,7 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
+            if _constant_time_equal(token, self._api_key):
                 return None  # Auth OK
 
         return web.json_response(
@@ -816,16 +833,15 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         origin_platform: Optional[str] = None,
-        enabled_toolsets_override: Optional[List[str]] = None,
+        enabled_toolsets_override: Optional[list] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
 
         Uses _resolve_runtime_agent_kwargs() to pick up model, api_key,
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
-        from config.yaml platform_toolsets.api_server by default. Gateway
-        proxy calls may pass the originating platform's resolved toolsets so
-        a proxied chat keeps the same capability scope as the native gateway.
+        from config.yaml platform_toolsets.api_server (same as all other
+        gateway platforms), falling back to the hermes-api-server default.
 
         ``gateway_session_key`` is a stable per-channel identifier supplied
         by the client (via ``X-Hermes-Session-Key``).  Unlike ``session_id``
@@ -843,11 +859,11 @@ class APIServerAdapter(BasePlatformAdapter):
         model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
-        if enabled_toolsets_override is None:
-            platform_key = origin_platform or "api_server"
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        platform = origin_platform or "api_server"
+        if enabled_toolsets_override is not None:
+            enabled_toolsets = list(enabled_toolsets_override)
         else:
-            enabled_toolsets = sorted(str(ts) for ts in enabled_toolsets_override)
+            enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
@@ -869,7 +885,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
-            platform=origin_platform or "api_server",
+            platform=platform,
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -1011,12 +1027,22 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stream = body.get("stream", False)
 
-        proxy_scope = body.get("hermes_proxy_scope")
         origin_platform = None
         enabled_toolsets_override = None
-        if proxy_scope is not None:
+        if "hermes_proxy_scope" in body:
+            proxy_scope = body["hermes_proxy_scope"]
             if not isinstance(proxy_scope, dict):
                 return web.json_response(_openai_error("Invalid hermes_proxy_scope"), status=400)
+            if not verify_proxy_scope_signature(
+                proxy_scope,
+                get_proxy_scope_key(),
+                request.headers.get(PROXY_SCOPE_TIMESTAMP_HEADER),
+                request.headers.get(PROXY_SCOPE_SIGNATURE_HEADER),
+            ):
+                return web.json_response(
+                    _openai_error("hermes_proxy_scope requires trusted gateway proxy authentication"),
+                    status=403,
+                )
             raw_platform = proxy_scope.get("origin_platform")
             if raw_platform is not None:
                 origin_platform = str(raw_platform).strip()
@@ -1027,6 +1053,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 if not isinstance(raw_toolsets, list) or not all(isinstance(ts, str) for ts in raw_toolsets):
                     return web.json_response(_openai_error("Invalid hermes_proxy_scope.enabled_toolsets"), status=400)
                 enabled_toolsets_override = [ts for ts in raw_toolsets if ts]
+
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -1094,8 +1121,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                     status=403,
                 )
-            # Sanitize: reject control characters that could enable header injection.
-            if re.search(r'[\r\n\x00]', provided_session_id):
+            # Accept only server-generated session IDs (api-<16 hex chars>).
+            # Rejects path traversal, control characters, and any non-server value.
+            if not re.fullmatch(r'api-[0-9a-f]{16}', provided_session_id):
                 return web.json_response(
                     {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
                     status=400,
@@ -1104,6 +1132,12 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 db = self._ensure_session_db()
                 if db is not None:
+                    session_record = db.get_session(session_id)
+                    if session_record is not None and session_record.get("source") != "api_server":
+                        return web.json_response(
+                            {"error": {"message": "Session not found", "type": "invalid_request_error"}},
+                            status=404,
+                        )
                     history = db.get_messages_as_conversation(session_id)
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
@@ -1231,7 +1265,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(
+                body,
+                keys=["model", "messages", "tools", "tool_choice", "stream"],
+                extra={"x_hermes_session_id": session_id},
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -1372,6 +1410,8 @@ class APIServerAdapter(BasePlatformAdapter):
             await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
             last_activity = time.monotonic()
 
+            emitted_content = False
+
             # Helper — route a queue item to the correct SSE event.
             async def _emit(item):
                 """Write a single queue item to the SSE stream.
@@ -1383,12 +1423,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
+                nonlocal emitted_content
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
                 else:
+                    emitted_content = True
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
                         "created": created, "model": model,
@@ -1429,6 +1471,9 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
+                final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                if final_response and not emitted_content:
+                    last_activity = await _emit(final_response)
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
 
@@ -1825,18 +1870,24 @@ class APIServerAdapter(BasePlatformAdapter):
             _batch_buf: List[str] = []
             _batch_timer: Optional[asyncio.Task] = None
             _batch_lock = asyncio.Lock()
+            _batch_error: Optional[BaseException] = None
+            _batch_error_sentinel = object()
 
             async def _batch_flush_after(delay: float) -> None:
                 """Wait delay seconds, then flush accumulated text deltas."""
+                nonlocal _batch_error, _batch_timer
                 try:
                     await asyncio.sleep(delay)
+                    # Clear timer reference BEFORE flush so new deltas
+                    # can start a fresh timer while we emit
+                    _batch_timer = None
+                    await _flush_batch()
                 except asyncio.CancelledError:
                     return
-                # Clear timer reference BEFORE flush so new deltas
-                # can start a fresh timer while we emit
-                nonlocal _batch_buf, _batch_timer
-                _batch_timer = None
-                await _flush_batch()
+                except Exception as exc:
+                    _batch_timer = None
+                    _batch_error = exc
+                    stream_q.put(_batch_error_sentinel)
 
             async def _flush_batch() -> None:
                 """Emit a single SSE delta for all accumulated text."""
@@ -1857,6 +1908,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         while True:
                             try:
                                 item = stream_q.get_nowait()
+                                if item is _batch_error_sentinel:
+                                    if _batch_error is not None:
+                                        raise _batch_error
+                                    break
                                 if item is None:
                                     break
                                 await _dispatch(item)
@@ -1868,6 +1923,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         await response.write(b": keepalive\n\n")
                         last_activity = time.monotonic()
                     continue
+
+                if item is _batch_error_sentinel:
+                    if _batch_error is not None:
+                        raise _batch_error
+                    break
 
                 if item is None:  # EOS sentinel
                     # Cancel pending timer and flush remaining batched text
@@ -1896,7 +1956,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
                 if agent_final and not final_text_parts:
                     await _emit_text_delta(agent_final)
-                if agent_final and not final_response_text:
+                if agent_final:
                     final_response_text = agent_final
                 if isinstance(result, dict) and result.get("error") and not final_response_text:
                     agent_error = result["error"]
@@ -1904,8 +1964,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
                 agent_error = str(e)
 
-            # Close the message item if it was opened
-            final_response_text = "".join(final_text_parts) or final_response_text
+            # Close the message item if it was opened. Prefer the agent's
+            # final_response because output hooks may have transformed it after
+            # any raw provider deltas were assembled.
+            final_response_text = final_response_text or "".join(final_text_parts)
             if message_opened:
                 await _write_event("response.output_text.done", {
                     "type": "response.output_text.done",
@@ -2729,7 +2791,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         origin_platform: Optional[str] = None,
-        enabled_toolsets_override: Optional[List[str]] = None,
+        enabled_toolsets_override: Optional[list] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2995,23 +3057,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     from gateway.session_context import clear_session_vars, set_session_vars
                     from tools.approval import (
                         register_gateway_notify,
-                        reset_current_run_id,
                         reset_current_session_key,
-                        set_current_run_id,
                         set_current_session_key,
                         unregister_gateway_notify,
                     )
 
                     effective_task_id = session_id or run_id
                     approval_token = None
-                    approval_run_token = None
                     session_tokens = []
                     try:
                         # Bind approval/session identity for this API run via
                         # contextvars so concurrent runs do not share process
                         # environment state.
                         approval_token = set_current_session_key(approval_session_key)
-                        approval_run_token = set_current_run_id(run_id)
                         session_tokens = set_session_vars(
                             platform="api_server",
                             session_key=approval_session_key,
@@ -3026,11 +3084,6 @@ class APIServerAdapter(BasePlatformAdapter):
                         try:
                             unregister_gateway_notify(approval_session_key)
                         finally:
-                            if approval_run_token is not None:
-                                try:
-                                    reset_current_run_id(approval_run_token)
-                                except Exception:
-                                    pass
                             if approval_token is not None:
                                 try:
                                     reset_current_session_key(approval_token)

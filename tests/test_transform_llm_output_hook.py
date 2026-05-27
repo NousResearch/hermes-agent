@@ -157,3 +157,59 @@ def test_no_plugins_returns_empty_results(tmp_path, monkeypatch):
         platform="",
     )
     assert results == []
+
+
+def test_plugin_manager_has_hook_reports_registered_hook(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_test"
+    hermes_home.mkdir(exist_ok=True)
+    _make_enabled_plugin(
+        hermes_home,
+        "has_hook_plugin",
+        register_body='ctx.register_hook("transform_llm_output", lambda **kw: kw["response_text"])',
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    mgr = PluginManager()
+    mgr.discover_and_load()
+
+    assert mgr.has_hook("transform_llm_output") is True
+    assert mgr.has_hook("post_tool_call") is False
+
+
+def test_stream_delta_is_deferred_when_transform_hook_registered(monkeypatch):
+    from run_agent import AIAgent
+
+    agent = object.__new__(AIAgent)
+    emitted = []
+    agent.stream_delta_callback = lambda text: emitted.append(text)
+    agent._stream_callback = None
+    agent._current_streamed_assistant_text = ""
+    agent._stream_needs_break = False
+
+    monkeypatch.setattr(plugins_mod, "has_hook", lambda hook_name: hook_name == "transform_llm_output")
+
+    agent._fire_stream_delta("LEAK-SECRET")
+
+    assert emitted == []
+    assert agent._deferred_stream_due_to_transform is True
+    assert agent._current_streamed_assistant_text == "LEAK-SECRET"
+
+
+def test_transform_output_updates_persisted_assistant_message(monkeypatch):
+    from run_agent import AIAgent
+
+    agent = object.__new__(AIAgent)
+    agent.session_id = "s1"
+    agent.model = "m"
+    agent.platform = "api_server"
+    monkeypatch.setattr(plugins_mod, "invoke_hook", lambda *a, **kw: ["[REDACTED]"])
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "LEAK-SECRET"},
+    ]
+
+    final_response = agent._apply_transform_llm_output_hook("LEAK-SECRET")
+    agent._replace_latest_assistant_content(messages, final_response)
+
+    assert final_response == "[REDACTED]"
+    assert messages[-1]["content"] == "[REDACTED]"

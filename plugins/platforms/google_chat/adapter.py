@@ -1249,18 +1249,36 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 pass
 
     async def _dispatch_message(self, msg: Dict[str, Any], envelope: Dict[str, Any]) -> None:
-        """Translate a Chat message payload to a MessageEvent and hand off.
-
-        Intercepts the ``/setup-files`` admin command BEFORE the agent
-        sees it — that's a bot-local OAuth setup flow, not a prompt.
-        Everything else flows to ``handle_message`` as normal.
-        """
+        """Translate a Chat message payload to a MessageEvent and hand off."""
         try:
-            event = await self._build_message_event(msg, envelope)
+            event = await self._build_message_event(
+                msg,
+                envelope,
+                download_attachments=False,
+                record_state=False,
+            )
             if event is None:
                 return
 
-            # Short-circuit /setup-files before the agent dispatch.
+            # Build sender/source first, then let the gateway authorization
+            # policy run before any bot-local command or media side effects.
+            if not self._source_authorized_for_pre_dispatch(event.source):
+                await self.handle_message(event)
+                return
+
+            # Rebuild after auth so thread counters and sender caches are
+            # updated only for users who passed the gateway policy.
+            event = await self._build_message_event(
+                msg,
+                envelope,
+                download_attachments=False,
+                record_state=True,
+            )
+            if event is None:
+                return
+
+            # Short-circuit /setup-files before the agent dispatch, but only
+            # after the same authorization gate that normal messages use.
             text = (event.text or "").strip()
             if text.startswith("/setup-files") and event.source is not None:
                 # The sender's email (user_id_alt) is the per-user OAuth
@@ -1282,9 +1300,41 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 if handled:
                     return
 
+            await self._download_event_attachments(event, msg)
             await self.handle_message(event)
         except Exception:
             logger.exception("[GoogleChat] _dispatch_message failed")
+
+    def _source_authorized_for_pre_dispatch(self, source: Any) -> bool:
+        """Return whether pre-dispatch side effects may run for ``source``."""
+        handler = getattr(self, "_message_handler", None)
+        runner = getattr(handler, "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if not callable(auth_fn):
+            return True
+        try:
+            return bool(source is not None and auth_fn(source))
+        except Exception:
+            logger.debug("[GoogleChat] pre-dispatch auth check failed", exc_info=True)
+            return False
+
+    async def _download_event_attachments(
+        self, event: MessageEvent, msg: Dict[str, Any]
+    ) -> None:
+        """Download authorized inbound attachments into ``event`` in place."""
+        attachments = msg.get("attachment") or []
+        for att in attachments:
+            try:
+                local_path, mime = await self._download_attachment(att)
+            except Exception:
+                logger.exception("[GoogleChat] attachment download failed")
+                continue
+            if not local_path:
+                continue
+            event.media_urls.append(local_path)
+            event.media_types.append(mime or "application/octet-stream")
+            if event.message_type == MessageType.TEXT and not event.text:
+                event.message_type = _mime_for_message_type(mime or "")
 
     async def _handle_setup_files_command(
         self,
@@ -1511,7 +1561,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
         return True
 
     async def _build_message_event(
-        self, msg: Dict[str, Any], envelope: Dict[str, Any]
+        self,
+        msg: Dict[str, Any],
+        envelope: Dict[str, Any],
+        *,
+        download_attachments: bool = True,
+        record_state: bool = True,
     ) -> Optional[MessageEvent]:
         """Parse a Chat API message into a hermes MessageEvent."""
         space = envelope.get("space") or msg.get("space") or {}
@@ -1528,7 +1583,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # right per-user OAuth token when the agent later wants to send
         # an attachment in this conversation. Lower-cased so cache hits
         # match the sanitized token-file lookup.
-        if sender_email and space_name:
+        if record_state and sender_email and space_name:
             self._last_sender_by_chat[space_name] = sender_email.strip().lower()
 
         chat_type = "dm" if space_type in ("DIRECT_MESSAGE", "DM") else "group"
@@ -1547,20 +1602,21 @@ class GoogleChatAdapter(BasePlatformAdapter):
         media_urls: List[str] = []
         media_types: List[str] = []
         message_type = MessageType.TEXT
-        attachments = msg.get("attachment") or []
-        for att in attachments:
-            try:
-                local_path, mime = await self._download_attachment(att)
-            except Exception:
-                logger.exception("[GoogleChat] attachment download failed")
-                continue
-            if not local_path:
-                continue
-            media_urls.append(local_path)
-            media_types.append(mime or "application/octet-stream")
-            # Prefer the first-seen type for MessageType if no text present.
-            if message_type == MessageType.TEXT and not text:
-                message_type = _mime_for_message_type(mime or "")
+        if download_attachments:
+            attachments = msg.get("attachment") or []
+            for att in attachments:
+                try:
+                    local_path, mime = await self._download_attachment(att)
+                except Exception:
+                    logger.exception("[GoogleChat] attachment download failed")
+                    continue
+                if not local_path:
+                    continue
+                media_urls.append(local_path)
+                media_types.append(mime or "application/octet-stream")
+                # Prefer the first-seen type for MessageType if no text present.
+                if message_type == MessageType.TEXT and not text:
+                    message_type = _mime_for_message_type(mime or "")
 
         if is_slash:
             message_type = MessageType.COMMAND
@@ -1571,9 +1627,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # main-flow-vs-side-thread heuristic below.
         prev_thread_count = 0
         if thread_name and space_name:
-            prev_thread_count = self._thread_count_store.incr(
-                space_name, thread_name
-            )
+            if record_state:
+                prev_thread_count = self._thread_count_store.incr(
+                    space_name, thread_name
+                )
+            else:
+                prev_thread_count = self._thread_count_store.get(
+                    space_name, thread_name
+                )
 
         # Session-thread + outbound-thread routing for DMs:
         # - prev_count == 0  → first message in this thread. Google Chat
@@ -1598,14 +1659,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
             # Outbound thread cache: populated only when side-thread, so
             # _resolve_thread_id falls through to "no thread" on main
             # flow and the bot reply lands as a top-level sibling.
-            if thread_name and space_name and is_side_thread:
+            if record_state and thread_name and space_name and is_side_thread:
                 self._last_inbound_thread[space_name] = thread_name
-            elif space_name:
+            elif record_state and space_name:
                 self._last_inbound_thread.pop(space_name, None)
         else:
             session_thread_id = thread_name
             # Groups always reply in-thread.
-            if thread_name and space_name:
+            if record_state and thread_name and space_name:
                 self._last_inbound_thread[space_name] = thread_name
 
         source = self.build_source(

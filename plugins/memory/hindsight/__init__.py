@@ -52,6 +52,7 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.4.22"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
+_DEFAULT_RETAIN_QUEUE_MAXSIZE = 64
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
 # Without it, reusing a stable session-scoped document_id silently
@@ -246,11 +247,6 @@ RETAIN_SCHEMA = {
         "properties": {
             "content": {"type": "string", "description": "The information to store."},
             "context": {"type": "string", "description": "Short label (e.g. 'user preference', 'project decision')."},
-            "tags": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional per-call tags to merge with configured default retain tags.",
-            },
         },
         "required": ["content"],
     },
@@ -601,7 +597,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # thread drains sequentially. Avoids spawning ad-hoc threads that
         # can race the interpreter shutdown and emit "cannot schedule new
         # futures after interpreter shutdown" / "Unclosed client session".
-        self._retain_queue: queue.Queue = queue.Queue()
+        self._retain_queue: queue.Queue = queue.Queue(maxsize=_DEFAULT_RETAIN_QUEUE_MAXSIZE)
         self._writer_thread: threading.Thread | None = None
         self._shutting_down = threading.Event()
         self._atexit_registered = False
@@ -624,6 +620,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_context = "conversation between Hermes Agent and the User"
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
+        self._retained_turn_count = 0
 
         # Recall controls
         self._auto_recall = True
@@ -1040,6 +1037,58 @@ class HindsightMemoryProvider(MemoryProvider):
         self._atexit_registered = True
         atexit.register(self._atexit_shutdown)
 
+    def _unregister_atexit(self) -> None:
+        """Release the atexit callback's bound-method reference."""
+        if not self._atexit_registered:
+            return
+        try:
+            atexit.unregister(self._atexit_shutdown)
+        except Exception:
+            pass
+        self._atexit_registered = False
+
+    def _drop_pending_retain_jobs(self) -> int:
+        """Discard queued retain closures and mark them complete."""
+        dropped = 0
+        while True:
+            try:
+                self._retain_queue.get_nowait()
+            except queue.Empty:
+                return dropped
+            self._retain_queue.task_done()
+            dropped += 1
+
+    def _enqueue_retain_job(self, job) -> bool:
+        """Queue a retain job without allowing unbounded transcript retention."""
+        if self._shutting_down.is_set():
+            return False
+        self._ensure_writer()
+        self._register_atexit()
+        try:
+            self._retain_queue.put_nowait(job)
+            return True
+        except queue.Full:
+            dropped = self._drop_pending_retain_jobs()
+            logger.warning(
+                "Hindsight retain queue full; dropped %d pending retain(s)",
+                dropped,
+            )
+            try:
+                self._retain_queue.put_nowait(job)
+                return True
+            except queue.Full:
+                logger.warning("Hindsight retain queue still full; dropping latest retain")
+                return False
+
+    def _clear_retained_state(self) -> None:
+        """Drop per-session transcript state after provider shutdown."""
+        self._drop_pending_retain_jobs()
+        self._session_turns = []
+        self._turn_counter = 0
+        self._turn_index = 0
+        with self._prefetch_lock:
+            self._prefetch_result = ""
+
     def _atexit_shutdown(self) -> None:
         if self._shutting_down.is_set():
             return
@@ -1151,6 +1200,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
         self._turn_index = 0
         self._session_turns = []
+        self._retained_turn_count = 0
         self._mode = self._config.get("mode", "cloud")
         # Read timeout from config or env var, fall back to default
         self._timeout = _parse_int_setting(
@@ -1483,9 +1533,18 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._turn_counter, self._turn_counter + (self._retain_every_n_turns - self._turn_counter % self._retain_every_n_turns))
             return
 
-        logger.debug("sync_turn: retaining %d turns, total session content %d chars",
-                     len(self._session_turns), sum(len(t) for t in self._session_turns))
-        content = "[" + ",".join(self._session_turns) + "]"
+        document_id, update_mode = self._resolve_retain_target(self._document_id)
+        retained_start = self._retained_turn_count if update_mode == "append" else 0
+        turns_to_retain = self._session_turns[retained_start:]
+        if not turns_to_retain:
+            logger.debug("sync_turn: skipped retain (no new turns since last append)")
+            return
+
+        logger.debug(
+            "sync_turn: retaining %d/%d turns, payload content %d chars",
+            len(turns_to_retain), len(self._session_turns), sum(len(t) for t in turns_to_retain),
+        )
+        content = "[" + ",".join(turns_to_retain) + "]"
 
         lineage_tags: list[str] = []
         if self._session_id:
@@ -1496,11 +1555,12 @@ class HindsightMemoryProvider(MemoryProvider):
         # Snapshot the state needed for the retain. The writer may run after
         # _session_turns / _turn_index are mutated by a later sync_turn().
         metadata_snapshot = self._build_metadata(
-            message_count=len(self._session_turns) * 2,
+            message_count=len(turns_to_retain) * 2,
             turn_index=self._turn_index,
         )
-        num_turns = len(self._session_turns)
-        document_id, update_mode = self._resolve_retain_target(self._document_id)
+        num_turns = len(turns_to_retain)
+        if update_mode == "append":
+            self._retained_turn_count = len(self._session_turns)
         bank_id = self._bank_id
         retain_async_flag = self._retain_async
         retain_context = self._retain_context
@@ -1528,9 +1588,7 @@ class HindsightMemoryProvider(MemoryProvider):
             )
             logger.debug("Hindsight retain succeeded")
 
-        self._ensure_writer()
-        self._register_atexit()
-        self._retain_queue.put(_do_retain)
+        self._enqueue_retain_job(_do_retain)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
@@ -1547,7 +1605,6 @@ class HindsightMemoryProvider(MemoryProvider):
                 retain_kwargs = self._build_retain_kwargs(
                     content,
                     context=context,
-                    tags=args.get("tags"),
                 )
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
@@ -1656,16 +1713,11 @@ class HindsightMemoryProvider(MemoryProvider):
             old_session_id = self._session_id
             old_parent_session_id = self._parent_session_id
             old_turn_index = self._turn_index
-            old_metadata = self._build_metadata(
-                message_count=len(old_turns) * 2,
-                turn_index=old_turn_index,
-            )
             old_lineage_tags: list[str] = []
             if old_session_id:
                 old_lineage_tags.append(f"session:{old_session_id}")
             if old_parent_session_id:
                 old_lineage_tags.append(f"parent:{old_parent_session_id}")
-            old_content = "[" + ",".join(old_turns) + "]"
             # Resolve doc_id + update_mode against the OLD session BEFORE
             # we rotate _session_id, so the flush lands in the old
             # session's document either way (legacy: per-process unique;
@@ -1673,9 +1725,18 @@ class HindsightMemoryProvider(MemoryProvider):
             old_document_id, old_update_mode = self._resolve_retain_target(
                 self._document_id
             )
+            old_retained_start = (
+                self._retained_turn_count if old_update_mode == "append" else 0
+            )
+            old_turns_to_flush = old_turns[old_retained_start:]
+            old_metadata = self._build_metadata(
+                message_count=len(old_turns_to_flush) * 2,
+                turn_index=old_turn_index,
+            )
 
             def _flush():
                 try:
+                    old_content = "[" + ",".join(old_turns_to_flush) + "]"
                     item = self._build_retain_kwargs(
                         old_content,
                         context=self._retain_context,
@@ -1688,7 +1749,8 @@ class HindsightMemoryProvider(MemoryProvider):
                         item["update_mode"] = old_update_mode
                     logger.debug(
                         "Hindsight flush-on-switch: bank=%s, doc=%s, mode=%s, num_turns=%d",
-                        self._bank_id, old_document_id, old_update_mode, len(old_turns),
+                        self._bank_id, old_document_id, old_update_mode,
+                        len(old_turns_to_flush),
                     )
                     self._run_hindsight_operation(
                         lambda client: client.aretain_batch(
@@ -1708,9 +1770,7 @@ class HindsightMemoryProvider(MemoryProvider):
             # keeps shutdown's drain semantics intact. Skip enqueue if
             # shutdown has already fired — the writer is draining/gone.
             if not self._shutting_down.is_set():
-                self._ensure_writer()
-                self._register_atexit()
-                self._retain_queue.put(_flush)
+                self._enqueue_retain_job(_flush)
 
         # 2. Drain any in-flight prefetch from the old session and drop
         # its cached result so the new session doesn't see stale recall.
@@ -1728,6 +1788,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._session_turns = []
         self._turn_counter = 0
         self._turn_index = 0
+        self._retained_turn_count = 0
         logger.debug(
             "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
             self._session_id, self._parent_session_id, reset, self._document_id,
@@ -1744,7 +1805,17 @@ class HindsightMemoryProvider(MemoryProvider):
         writer = self._writer_thread
         if writer is not None and writer.is_alive():
             try:
-                self._retain_queue.put(_WRITER_SENTINEL)
+                self._retain_queue.put_nowait(_WRITER_SENTINEL)
+            except queue.Full:
+                dropped = self._drop_pending_retain_jobs()
+                logger.warning(
+                    "Hindsight retain queue full during shutdown; dropped %d pending retain(s)",
+                    dropped,
+                )
+                try:
+                    self._retain_queue.put_nowait(_WRITER_SENTINEL)
+                except Exception:
+                    pass
             except Exception:
                 pass
             writer.join(timeout=10.0)
@@ -1781,6 +1852,8 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception:
                 pass
             self._client = None
+        self._unregister_atexit()
+        self._clear_retained_state()
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin

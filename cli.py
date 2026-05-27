@@ -687,6 +687,7 @@ from tools.terminal_tool import set_sudo_password_callback, set_approval_callbac
 from tools.skills_tool import set_secret_capture_callback
 from hermes_cli.callbacks import prompt_for_secret
 from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
+from tools.ansi_strip import strip_ansi
 
 # Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
@@ -1869,7 +1870,7 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
     "\x1b[?1002l"  # disable button-motion tracking
     "\x1b[?1000l"  # disable click tracking
     "\x1b[?1004l"  # disable focus events
-    "\x1b[?2004l"  # disable bracketed paste
+    "\x1b[?2004h"  # keep bracketed paste safety enabled while prompt_toolkit runs
     "\x1b[?1049l"  # leave alt screen (if stuck there)
     "\x1b[<u"      # pop kitty keyboard mode
     "\x1b[>4m"     # reset modifyOtherKeys
@@ -8805,8 +8806,23 @@ class HermesCLI:
             return
 
         new_mcp = new_cfg.get("mcp_servers") or {}
-        if new_mcp == self._config_mcp_servers:
+        current_mcp = self._config_mcp_servers
+        if new_mcp == current_mcp:
             return  # mcp_servers unchanged (some other section was edited)
+
+        def _is_stdio_server(server_cfg: object) -> bool:
+            return isinstance(server_cfg, dict) and bool(server_cfg.get("command"))
+
+        changed_server_names = set(current_mcp) | set(new_mcp)
+        for server_name in changed_server_names:
+            old_server = current_mcp.get(server_name)
+            new_server = new_mcp.get(server_name)
+            if old_server == new_server:
+                continue
+            if _is_stdio_server(old_server) or _is_stdio_server(new_server):
+                print()
+                print("⚠️  MCP stdio server config changed — run /reload-mcp to apply executable changes.")
+                return
 
         self._config_mcp_servers = new_mcp
         # Notify user and reload.  Run in a separate thread with a hard
@@ -12859,7 +12875,7 @@ class HermesCLI:
                                     else:
                                         _synth = _format_process_notification(evt)
                                         if _synth:
-                                            self._pending_input.put(_synth)
+                                            _cprint(f"\n{_ACCENT}{strip_ansi(_synth)}{_RST}")
                             except Exception:
                                 pass
                         continue
@@ -12971,7 +12987,7 @@ class HermesCLI:
                                     continue  # already delivered via tool result
                                 _synth = _format_process_notification(evt)
                                 if _synth:
-                                    self._pending_input.put(_synth)
+                                    _cprint(f"\n{_ACCENT}{strip_ansi(_synth)}{_RST}")
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 

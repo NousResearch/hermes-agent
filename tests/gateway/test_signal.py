@@ -770,6 +770,42 @@ class TestSignalMediaExtraction:
         assert type(adapter).send_document is not BasePlatformAdapter.send_document
         assert type(adapter).send_image is not BasePlatformAdapter.send_image
 
+    def test_trusted_media_path_allows_hermes_cache_file(self, monkeypatch, tmp_path):
+        """Model-emitted MEDIA paths may deliver Hermes-managed cache files."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from gateway.platforms.base import _is_trusted_media_path
+
+        image_path = tmp_path / "cache" / "images" / "chart.png"
+        image_path.parent.mkdir(parents=True)
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        assert _is_trusted_media_path(str(image_path)) is True
+
+    def test_trusted_media_path_blocks_untrusted_tmp_file(self, monkeypatch, tmp_path):
+        """Model-emitted MEDIA paths outside Hermes caches are not attachable."""
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        from gateway.platforms.base import _is_trusted_media_path
+
+        secret_image = tmp_path / "private_screenshot.png"
+        secret_image.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        assert _is_trusted_media_path(str(secret_image)) is False
+
+    def test_trusted_media_path_blocks_cache_symlink_escape(self, monkeypatch, tmp_path):
+        """Cache-contained symlinks cannot point MEDIA delivery at other files."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        from gateway.platforms.base import _is_trusted_media_path
+
+        trusted_dir = tmp_path / "hermes-home" / "cache" / "images"
+        trusted_dir.mkdir(parents=True)
+        secret_image = tmp_path / "private_screenshot.png"
+        secret_image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        symlink_path = trusted_dir / "linked_secret.png"
+        symlink_path.symlink_to(secret_image)
+
+        assert _is_trusted_media_path(str(symlink_path)) is False
+
 
 # ---------------------------------------------------------------------------
 # send_document now routes through _send_attachment (#5105 bonus)

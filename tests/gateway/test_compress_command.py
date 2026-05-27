@@ -90,6 +90,54 @@ async def test_compress_command_reports_noop_without_success_banner():
 
 
 @pytest.mark.asyncio
+async def test_compress_command_cleans_evicted_cached_agent():
+    """Manual /compress must close the real cached session agent it evicts."""
+    import threading
+
+    history = _make_history()
+    compressed = [history[0], {"role": "assistant", "content": "summary"}, history[-1]]
+    runner = _make_runner(history)
+    runner._agent_cache_lock = threading.Lock()
+
+    session_key = build_session_key(_make_source())
+    cached_agent = MagicMock()
+    cached_agent.shutdown_memory_provider = MagicMock()
+    cached_agent.close = MagicMock()
+    runner._agent_cache = {session_key: (cached_agent, "sig")}
+
+    tmp_agent = MagicMock()
+    tmp_agent.shutdown_memory_provider = MagicMock()
+    tmp_agent.close = MagicMock()
+    tmp_agent._cached_system_prompt = ""
+    tmp_agent.tools = None
+    tmp_agent.context_compressor.has_content_to_compress.return_value = True
+    tmp_agent.session_id = "sess-1"
+    tmp_agent._compress_context.return_value = (compressed, "")
+
+    def _estimate(messages, **_kwargs):
+        if messages == history:
+            return 100
+        if messages == compressed:
+            return 60
+        raise AssertionError(f"unexpected transcript: {messages!r}")
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=tmp_agent),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "Compressed:" in result
+    assert session_key not in runner._agent_cache
+    cached_agent.shutdown_memory_provider.assert_called_once()
+    cached_agent.close.assert_called_once()
+    tmp_agent.shutdown_memory_provider.assert_called_once()
+    tmp_agent.close.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_compress_command_explains_when_token_estimate_rises():
     history = _make_history()
     compressed = [
@@ -214,11 +262,12 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
     agent_instance.context_compressor._last_summary_dropped_count = 0
     agent_instance.context_compressor._last_summary_error = None
     # But the configured aux model DID fail before the retry succeeded.
+    raw_token = "sk-abcdefghijklmnopqrstuvwxyz1234567890"
     agent_instance.context_compressor._last_aux_model_failure_model = (
-        "gemini-3-flash-preview"
+        f"gemini-3-flash-preview-{raw_token}"
     )
     agent_instance.context_compressor._last_aux_model_failure_error = (
-        "404 model not found: gemini-3-flash-preview"
+        f"404 model not found: Authorization: Bearer {raw_token}"
     )
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
@@ -246,6 +295,7 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
     assert "ℹ️" in result
     assert "gemini-3-flash-preview" in result
     assert "404" in result
+    assert raw_token not in result
     assert "auxiliary.compression.model" in result
     # The user's context is explicitly called out as intact
     assert "intact" in result

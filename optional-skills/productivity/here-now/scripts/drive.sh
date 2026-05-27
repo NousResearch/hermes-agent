@@ -148,11 +148,44 @@ urlenc_path() {
   local path="$1"
   local out=""
   local part
+  local -a parts
   IFS='/' read -r -a parts <<< "$path"
   for part in "${parts[@]}"; do
     [[ -n "$out" ]] && out="$out/"
     out="$out$(urlenc "$part")"
   done
+  echo "$out"
+}
+
+validate_export_relpath() {
+  local rel="$1"
+  local part
+  local -a parts
+  [[ -n "$rel" ]] || die "refusing empty Drive export path"
+  [[ "$rel" != /* ]] || die "refusing unsafe Drive export path: $rel"
+  IFS='/' read -r -a parts <<< "$rel"
+  for part in "${parts[@]}"; do
+    [[ -n "$part" && "$part" != "." && "$part" != ".." ]] || die "refusing unsafe Drive export path: $rel"
+  done
+}
+
+safe_export_path() {
+  local root="$1"
+  local rel="$2"
+  local root_real parent parent_real out
+
+  validate_export_relpath "$rel"
+  mkdir -p "$root"
+  root_real="$(cd "$root" && pwd -P)" || die "unable to resolve export folder: $root"
+  out="$root/$rel"
+  parent="$(dirname "$out")"
+  mkdir -p "$parent"
+  parent_real="$(cd "$parent" && pwd -P)" || die "unable to resolve export destination: $parent"
+  case "$parent_real/" in
+    "$root_real"/*) ;;
+    *) die "refusing Drive export path outside target folder: $rel" ;;
+  esac
+  [[ ! -L "$out" ]] || die "refusing to overwrite symlink during Drive export: $rel"
   echo "$out"
 }
 
@@ -322,11 +355,12 @@ case "$CMD" in
         [[ -n "$p" ]] || continue
         rel="$p"
         [[ -n "$prefix" ]] && rel="${p#$prefix/}"
-        out="$to/$rel"
         if [[ "$dry" -eq 1 ]]; then
+          validate_export_relpath "$rel"
+          out="$to/$rel"
           echo "download $p -> $out"
         else
-          mkdir -p "$(dirname "$out")"
+          out=$(safe_export_path "$to" "$rel")
           curl -fsS "$BASE_URL/api/v1/drives/$id/files/$(urlenc_path "$p")" "${auth_header[@]}" -o "$out"
         fi
         total=$((total + 1))

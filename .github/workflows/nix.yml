@@ -22,9 +22,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
-      - uses: ./.github/actions/nix-setup
+      - name: Set up Nix (trusted push with Cachix write token)
+        if: github.event_name == 'push'
+        uses: ./.github/actions/nix-setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Set up Nix (pull request, no secrets)
+        if: github.event_name != 'push'
+        uses: ./.github/actions/nix-setup
 
       - name: Resolve head SHA
         if: github.event_name == 'pull_request'

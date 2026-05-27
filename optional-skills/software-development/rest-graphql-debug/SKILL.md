@@ -51,7 +51,7 @@ terminal('curl -v https://api.example.com/users/1')
 # POST with JSON
 terminal("""curl -X POST https://api.example.com/users \\
   -H 'Content-Type: application/json' \\
-  -H "Authorization: Bearer $TOKEN" \\
+  -H "Authorization: Bearer <TOKEN>" \\
   -d '{"name":"test","email":"test@example.com"}'""")
 
 # Headers only
@@ -66,7 +66,7 @@ terminal('curl -s https://api.example.com/users | python3 -m json.tool')
 ```python
 terminal("""curl -X POST https://api.example.com/graphql \\
   -H 'Content-Type: application/json' \\
-  -H "Authorization: Bearer $TOKEN" \\
+  -H "Authorization: Bearer <TOKEN>" \\
   -d '{"query":"{ user(id: 1) { name email } }"}'""")
 ```
 
@@ -74,11 +74,11 @@ terminal("""curl -X POST https://api.example.com/graphql \\
 
 ```python
 execute_code('''
-import os, requests
+import requests
 resp = requests.post(
     "https://api.example.com/graphql",
     json={"query": "{ user(id: 1) { name email } }"},
-    headers={"Authorization": f"Bearer {os.environ['TOKEN']}"},
+    headers={"Authorization": "Bearer <TOKEN>"},
     timeout=10,
 )
 data = resp.json()
@@ -153,13 +153,13 @@ Failures: expired cert, self-signed, hostname mismatch, missing CA bundle. Use `
 
 ```python
 # Token validity check
-terminal('curl -s -o /dev/null -w "%{http_code}\\n" -H "Authorization: Bearer $TOKEN" https://api.example.com/me')
+terminal('curl -s -o /dev/null -w "%{http_code}\\n" -H "Authorization: Bearer <TOKEN>" https://api.example.com/me')
 
-# Decode JWT exp claim — handles base64url padding correctly
+# Decode JWT exp claim offline from a sanitized sample token (never from local secret stores)
 execute_code('''
-import json, base64, os
-tok = os.environ["TOKEN"]
-payload = tok.split(".")[1]
+import json, base64
+sample = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MzU2ODAwMDB9.signature"
+payload = sample.split(".")[1]
 payload += "=" * (-len(payload) % 4)
 print(json.dumps(json.loads(base64.urlsafe_b64decode(payload)), indent=2))
 ''')
@@ -360,10 +360,10 @@ Repro:       curl -X POST … (auth: <REDACTED>)
 Drop this into `tests/` and run via `terminal('pytest tests/test_api_smoke.py -v')`:
 
 ```python
-import os, requests, pytest
+import requests, pytest
 
-BASE_URL = os.environ.get("API_BASE_URL", "https://api.example.com")
-TOKEN    = os.environ.get("API_TOKEN", "")
+BASE_URL = "https://api.example.com"  # set to your endpoint
+TOKEN    = "<TOKEN>"  # provide explicitly for the run
 HEADERS  = {"Authorization": f"Bearer {TOKEN}"}
 
 class TestAPISmoke:
@@ -397,7 +397,8 @@ class TestAPISmoke:
 
 ### Token handling
 - Never log full tokens. Redact: `Bearer <REDACTED>`.
-- Never hardcode tokens in scripts. Read from env (`os.environ["API_TOKEN"]`) or `~/.hermes/.env`.
+- Never hardcode tokens in scripts. Use a short-lived token provided in-session and keep it out of files/history.
+- Do **not** read tokens from `~/.hermes/.env` or other local secret stores inside this skill workflow.
 - Rotate immediately if a token surfaces in logs, error messages, or git history.
 
 ### Safe logging
@@ -432,11 +433,10 @@ When debugging spans auth → fetch → paginate → validate, use `execute_code
 
 ```python
 execute_code('''
-import os, requests
+import requests
 
-token = os.environ["API_TOKEN"]
 base  = "https://api.example.com"
-H     = {"Authorization": f"Bearer {token}"}
+H     = {"Authorization": "Bearer <TOKEN>"}
 
 # 1. auth
 me = requests.get(f"{base}/me", headers=H, timeout=10)
@@ -472,7 +472,7 @@ delegate_task(
     context="""
 Follow the rest-graphql-debug skill (optional-skills/software-development/rest-graphql-debug).
 Base URL: https://api.example.com
-Auth: Bearer token from API_TOKEN env var.
+Auth: Bearer <TOKEN> (paste a short-lived token explicitly for this run).
 
 For each verb (POST, GET, PATCH, DELETE):
   - happy path: assert status + response schema

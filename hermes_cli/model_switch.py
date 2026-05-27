@@ -900,6 +900,17 @@ def switch_model(
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
         if _da is not None and _da.base_url:
+            alias_base_url = _da.base_url.rstrip("/")
+            resolved_base_url = str(base_url or "").rstrip("/")
+            if (
+                alias_base_url
+                and alias_base_url != resolved_base_url
+                and (
+                    target_provider in {"custom", "local"}
+                    or target_provider.startswith("custom:")
+                )
+            ):
+                api_key = "no-key-required"
             base_url = _da.base_url
             api_mode = ""  # clear so determine_api_mode re-detects from URL
             if not api_key:

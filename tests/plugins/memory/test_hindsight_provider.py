@@ -17,11 +17,13 @@ import pytest
 
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
+    _DEFAULT_RETAIN_QUEUE_MAXSIZE,
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _materialize_embedded_profile_env,
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
@@ -162,7 +164,7 @@ class TestSchemas:
     def test_retain_schema_has_content(self):
         assert RETAIN_SCHEMA["name"] == "hindsight_retain"
         assert "content" in RETAIN_SCHEMA["parameters"]["properties"]
-        assert "tags" in RETAIN_SCHEMA["parameters"]["properties"]
+        assert "tags" not in RETAIN_SCHEMA["parameters"]["properties"]
         assert "content" in RETAIN_SCHEMA["parameters"]["required"]
 
     def test_recall_schema_has_query(self):
@@ -341,6 +343,52 @@ class TestPostSetup:
             "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT=300\n"
         )
 
+
+    def test_materialized_embedded_profile_env_uses_private_permissions(self, tmp_path, monkeypatch):
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+
+        if os.name != "nt":
+            old_umask = os.umask(0o022)
+        try:
+            profile_env = _materialize_embedded_profile_env({
+                "profile": "hermes",
+                "llm_provider": "openai",
+                "llm_model": "gpt-4o-mini",
+                "llmApiKey": "sk-local-test",
+            })
+        finally:
+            if os.name != "nt":
+                os.umask(old_umask)
+
+        if os.name != "nt":
+            assert stat.S_IMODE(profile_env.parent.parent.stat().st_mode) == 0o700
+            assert stat.S_IMODE(profile_env.parent.stat().st_mode) == 0o700
+            assert stat.S_IMODE(profile_env.stat().st_mode) == 0o600
+        assert "HINDSIGHT_API_LLM_API_KEY=sk-local-test" in profile_env.read_text()
+
+    def test_materialized_embedded_profile_env_tightens_existing_permissions(self, tmp_path, monkeypatch):
+        user_home = tmp_path / "user-home"
+        profile_dir = user_home / ".hindsight" / "profiles"
+        profile_dir.mkdir(parents=True)
+        profile_env = profile_dir / "hermes.env"
+        profile_env.write_text("HINDSIGHT_API_LLM_API_KEY=old-key\n")
+        if os.name != "nt":
+            profile_env.chmod(0o644)
+        monkeypatch.setenv("HOME", str(user_home))
+
+        _materialize_embedded_profile_env({
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "llmApiKey": "sk-local-test",
+        })
+
+        if os.name != "nt":
+            assert stat.S_IMODE(profile_env.stat().st_mode) == 0o600
+        assert "HINDSIGHT_API_LLM_API_KEY=sk-local-test" in profile_env.read_text()
+
     def test_local_embedded_setup_respects_existing_profile_name(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes-home"
         user_home = tmp_path / "user-home"
@@ -462,14 +510,14 @@ class TestToolHandlers:
         call_kwargs = p._client.aretain.call_args.kwargs
         assert call_kwargs["tags"] == ["pref", "ui"]
 
-    def test_retain_merges_per_call_tags_with_config_tags(self, provider_with_config):
+    def test_retain_ignores_model_supplied_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])
         p.handle_tool_call(
             "hindsight_retain",
             {"content": "likes dark mode", "tags": ["client:x", "ui"]},
         )
         call_kwargs = p._client.aretain.call_args.kwargs
-        assert call_kwargs["tags"] == ["pref", "ui", "client:x"]
+        assert call_kwargs["tags"] == ["pref", "ui"]
 
     def test_retain_without_tags(self, provider):
         provider.handle_tool_call("hindsight_retain", {"content": "hello"})
@@ -875,6 +923,52 @@ class TestSyncTurn:
 
 
 class TestShutdownRace:
+
+    def test_retain_queue_is_bounded(self, provider):
+        assert provider._retain_queue.maxsize == _DEFAULT_RETAIN_QUEUE_MAXSIZE
+
+    def test_shutdown_unregisters_atexit_and_clears_retained_state(self, provider, monkeypatch):
+        registered = []
+        unregistered = []
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.atexit.register",
+            lambda callback: registered.append(callback),
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.atexit.unregister",
+            lambda callback: unregistered.append(callback),
+        )
+
+        provider.sync_turn("secret user text", "secret assistant text")
+        provider._retain_queue.join()
+        assert registered
+        assert provider._session_turns
+        assert provider._atexit_registered is True
+
+        provider.shutdown()
+
+        assert unregistered
+        assert provider._atexit_registered is False
+        assert provider._session_turns == []
+        assert provider._turn_counter == 0
+        assert provider._turn_index == 0
+        assert provider._retain_queue.empty()
+
+    def test_full_retain_queue_drops_pending_closures_before_latest(self, provider, monkeypatch):
+        monkeypatch.setattr(provider, "_ensure_writer", lambda: None)
+        monkeypatch.setattr(provider, "_register_atexit", lambda: None)
+
+        for _ in range(_DEFAULT_RETAIN_QUEUE_MAXSIZE):
+            provider._retain_queue.put_nowait(lambda: None)
+
+        latest = object()
+
+        assert provider._enqueue_retain_job(latest) is True
+        assert provider._retain_queue.qsize() == 1
+        assert provider._retain_queue.get_nowait() is latest
+        provider._retain_queue.task_done()
+
     def test_sync_turn_uses_single_writer_thread(self, provider):
         """All retains run through one long-lived writer thread."""
         provider.sync_turn("a", "b")
@@ -1123,6 +1217,58 @@ class TestUpdateModeAppendCapability:
         assert kw["document_id"] == "test-session"
         item = kw["items"][0]
         assert item["update_mode"] == "append"
+
+    def test_modern_api_appends_only_new_turns(self, provider, monkeypatch):
+        """Append mode must retain deltas, not the cumulative transcript."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+
+        provider.sync_turn("turn1-user", "turn1-asst")
+        provider._retain_queue.join()
+        provider._client.aretain_batch.reset_mock()
+
+        provider.sync_turn("turn2-user", "turn2-asst")
+        provider._retain_queue.join()
+
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        content = item["content"]
+        assert item["update_mode"] == "append"
+        assert "turn2-user" in content
+        assert "turn1-user" not in content
+        assert item["metadata"]["message_count"] == "2"
+
+    def test_session_switch_append_flushes_only_unretained_turns(
+        self, provider_with_config, monkeypatch
+    ):
+        """Flush-on-switch must not append turns already retained earlier."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+        p._client.aretain_batch.reset_mock()
+
+        p.sync_turn("turn3-user", "turn3-asst")
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.join()
+
+        kw = p._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == "test-session"
+        item = kw["items"][0]
+        assert item["update_mode"] == "append"
+        content = item["content"]
+        assert "turn3-user" in content
+        assert "turn1-user" not in content
+        assert "turn2-user" not in content
+        assert item["metadata"]["message_count"] == "2"
 
     def test_capability_cached_per_url(self, provider, monkeypatch):
         """The /version probe must run at most once per (process, api_url)."""

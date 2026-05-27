@@ -1305,6 +1305,147 @@ class TestAdapterInteractionDispatch:
         })
 
 
+
+class TestQQAttachmentPreAuth:
+    """Attachment processing must not run before gateway authorization."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    def test_attachment_auth_gate_fails_closed_without_gateway_runner(self):
+        adapter = self._make_adapter()
+        source = adapter.build_source(chat_id="u-1", user_id="u-1", chat_type="dm")
+
+        assert adapter._is_source_authorized_for_attachment_processing(source) is False
+
+    def test_attachment_auth_gate_fails_closed_when_auth_raises(self):
+        """Auth exceptions must not grant access — the gate must fail closed."""
+        adapter = self._make_adapter()
+
+        class RaisingRunner:
+            def _is_user_authorized(self, source):
+                raise RuntimeError("unexpected auth error")
+
+        adapter.gateway_runner = RaisingRunner()
+        source = adapter.build_source(chat_id="u-err", user_id="u-err", chat_type="dm")
+
+        assert adapter._is_source_authorized_for_attachment_processing(source) is False
+
+    @pytest.mark.asyncio
+    async def test_c2c_attachment_not_processed_when_auth_raises(self):
+        """Attachment processing must be skipped when the auth check raises."""
+        adapter = self._make_adapter()
+
+        class RaisingRunner:
+            def _is_user_authorized(self, source):
+                raise RuntimeError("unexpected auth error")
+
+        adapter.gateway_runner = RaisingRunner()
+        processed = []
+        forwarded = []
+
+        async def fake_process(attachments):
+            processed.append(attachments)
+            return {"image_urls": [], "image_media_types": [], "voice_transcripts": [], "attachment_info": ""}
+
+        async def fake_handle(event):
+            forwarded.append(event)
+
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+        adapter.handle_message = fake_handle  # type: ignore[assignment]
+
+        await adapter._handle_c2c_message(
+            {"attachments": [{"url": "https://attacker.example/payload.bin"}]},
+            "msg-err",
+            "hello",
+            {"user_openid": "u-err"},
+            "2026-05-17T00:00:00Z",
+        )
+
+        assert processed == [], "attachment I/O must not run when auth raises"
+        assert len(forwarded) == 1, "text-only event must still be forwarded"
+        assert forwarded[0].media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_c2c_attachment_from_unauthorized_source_is_not_processed(self):
+        adapter = self._make_adapter()
+
+        class DenyRunner:
+            def __init__(self):
+                self.sources = []
+
+            def _is_user_authorized(self, source):
+                self.sources.append(source)
+                return False
+
+        runner = DenyRunner()
+        adapter.gateway_runner = runner
+        processed = []
+        forwarded = []
+
+        async def fake_process(attachments):
+            processed.append(attachments)
+            return {"image_urls": [], "image_media_types": [], "voice_transcripts": [], "attachment_info": ""}
+
+        async def fake_handle(event):
+            forwarded.append(event)
+
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+        adapter.handle_message = fake_handle  # type: ignore[assignment]
+
+        await adapter._handle_c2c_message(
+            {"attachments": [{"url": "https://attacker.example/payload.bin"}]},
+            "msg-1",
+            "hello",
+            {"user_openid": "u-1"},
+            "2026-05-17T00:00:00Z",
+        )
+
+        assert len(runner.sources) == 1
+        assert runner.sources[0].user_id == "u-1"
+        assert processed == []
+        assert len(forwarded) == 1
+        assert forwarded[0].text == "hello"
+        assert forwarded[0].media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_c2c_attachment_from_authorized_source_is_processed(self):
+        adapter = self._make_adapter()
+
+        class AllowRunner:
+            def _is_user_authorized(self, source):
+                return True
+
+        adapter.gateway_runner = AllowRunner()
+        processed = []
+        forwarded = []
+
+        async def fake_process(attachments):
+            processed.append(attachments)
+            return {"image_urls": [], "image_media_types": [], "voice_transcripts": [], "attachment_info": ""}
+
+        async def fake_quoted(_d):
+            return {"quote_block": "", "image_urls": [], "image_media_types": []}
+
+        async def fake_handle(event):
+            forwarded.append(event)
+
+        adapter._process_attachments = fake_process  # type: ignore[assignment]
+        adapter._process_quoted_context = fake_quoted  # type: ignore[assignment]
+        adapter.handle_message = fake_handle  # type: ignore[assignment]
+
+        await adapter._handle_c2c_message(
+            {"attachments": [{"url": "https://example.invalid/image.png"}]},
+            "msg-2",
+            "hello",
+            {"user_openid": "u-2"},
+            "2026-05-17T00:00:00Z",
+        )
+
+        assert processed == [[{"url": "https://example.invalid/image.png"}]]
+        assert len(forwarded) == 1
+
 # ---------------------------------------------------------------------------
 # Quoted-message handling (message_type=103 → msg_elements)
 # ---------------------------------------------------------------------------

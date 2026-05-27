@@ -200,6 +200,20 @@ class TestOrphanedPipeReconciliation:
         registry._reconcile_local_exit(s)
         assert s.exited is False
 
+    def test_reconcile_does_not_read_stdout_stream(self, registry):
+        """Reconcile must not contend with the reader thread's stdout.read()."""
+        s = _make_session(sid="proc_no_stdout_read")
+        s.process = MagicMock()
+        s.process.poll = MagicMock(return_value=0)
+        s.process.stdout = MagicMock()
+        registry._running[s.id] = s
+
+        registry._reconcile_local_exit(s)
+
+        s.process.stdout.read.assert_not_called()
+        assert s.exited is True
+        assert s.exit_code == 0
+
     def test_wait_returns_when_reader_blocked(self, registry):
         """wait() must also reconcile — not just poll()."""
         proc = subprocess.Popen(

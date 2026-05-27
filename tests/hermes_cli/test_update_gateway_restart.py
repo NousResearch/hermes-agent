@@ -1150,7 +1150,6 @@ class TestFindGatewayPidsExclude:
 
 
 # ---------------------------------------------------------------------------
-<<<<<<< HEAD
 
 
 class TestDetachedProfileGatewayRestartEnv:
@@ -1228,11 +1227,9 @@ class TestDetachedProfileGatewayRestartEnv:
         assert "victim" in cmd
         assert kwargs["env"]["HERMES_HOME"] == str(target_home)
         assert "OPENAI_API_KEY" not in kwargs["env"]
-        assert "env=os.environ.copy()" in cmd[2]
+        assert "env=os.environ.copy()" not in cmd[2]
 
 
-=======
->>>>>>> fff93d5380c0ca5c30f611c1a8a151015ad5aff2
 # Gateway mode writes exit code before restart (#8300)
 # ---------------------------------------------------------------------------
 

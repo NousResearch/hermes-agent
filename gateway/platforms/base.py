@@ -54,11 +54,14 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if thread_id is None:
         return None
     metadata = {"thread_id": thread_id}
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+    platform = _platform_name(getattr(source, "platform", None))
+    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
+    if platform == "feishu" and reply_to_message_id is not None:
+        metadata["reply_to_message_id"] = str(reply_to_message_id)
     return metadata
 
 
@@ -778,6 +781,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
 # ---------------------------------------------------------------------------
 
 VIDEO_CACHE_DIR = get_hermes_dir("cache/videos", "video_cache")
+MAX_VIDEO_BYTES = 20 * 1024 * 1024
 
 SUPPORTED_VIDEO_TYPES = {
     ".mp4": "video/mp4",
@@ -788,6 +792,36 @@ SUPPORTED_VIDEO_TYPES = {
 }
 
 
+def _trusted_media_directories() -> Tuple[Path, ...]:
+    """Return local directories allowed for model-emitted media delivery."""
+    return (
+        get_hermes_dir("cache/images", "image_cache"),
+        get_hermes_dir("cache/audio", "audio_cache"),
+        get_hermes_dir("cache/videos", "video_cache"),
+        get_hermes_dir("cache/documents", "document_cache"),
+        get_hermes_dir("cache/screenshots", "browser_screenshots"),
+    )
+
+
+def _is_trusted_media_path(path: str) -> bool:
+    """Return True when *path* resolves inside a Hermes-managed media cache."""
+    try:
+        resolved = Path(path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+    if not resolved.is_file():
+        return False
+
+    for directory in _trusted_media_directories():
+        try:
+            resolved.relative_to(directory.expanduser().resolve(strict=False))
+            return True
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return False
+
+
 def get_video_cache_dir() -> Path:
     """Return the video cache directory, creating it if it doesn't exist."""
     VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -796,12 +830,34 @@ def get_video_cache_dir() -> Path:
 
 def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     """Save raw video bytes to the cache and return the absolute file path."""
+    if len(data) > MAX_VIDEO_BYTES:
+        raise ValueError("Video exceeds maximum cache size of 20 MB")
     cache_dir = get_video_cache_dir()
     filename = f"video_{uuid.uuid4().hex[:12]}{ext}"
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
 
+
+def cleanup_video_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached videos older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    import time
+
+    cache_dir = get_video_cache_dir()
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    for f in cache_dir.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            try:
+                f.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
 
 # ---------------------------------------------------------------------------
 # Document cache utilities
@@ -3000,8 +3056,21 @@ class BasePlatformAdapter(ABC):
                 # where Telegram's sendPhoto recompression destroys legibility.
                 force_document_attachments = "[[as_document]]" in response
 
-                # Extract MEDIA:<path> tags (from TTS tool) before other processing
-                media_files, response = self.extract_media(response)
+                # Extract MEDIA:<path> tags (from TTS tool) before other processing.
+                # Model-visible response text is untrusted, so only deliver local
+                # files that resolve inside Hermes-managed media cache directories.
+                extracted_media_files, response = self.extract_media(response)
+                media_files = []
+                for path, is_voice in extracted_media_files:
+                    if _is_trusted_media_path(path):
+                        media_files.append((path, is_voice))
+                blocked_media_count = len(extracted_media_files) - len(media_files)
+                if blocked_media_count:
+                    logger.warning(
+                        "[%s] Blocked %d untrusted MEDIA file path(s) from response",
+                        self.name,
+                        blocked_media_count,
+                    )
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
@@ -3017,7 +3086,19 @@ class BasePlatformAdapter(ABC):
                 local_files, text_content = self.extract_local_files(text_content)
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
-                
+                    extracted_local_files = local_files
+                    local_files = [
+                        path for path in extracted_local_files
+                        if _is_trusted_media_path(path)
+                    ]
+                    blocked_local_count = len(extracted_local_files) - len(local_files)
+                    if blocked_local_count:
+                        logger.warning(
+                            "[%s] Blocked %d untrusted local file path(s) from response",
+                            self.name,
+                            blocked_local_count,
+                        )
+
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
@@ -3327,18 +3408,16 @@ class BasePlatformAdapter(ABC):
             if late_pending is not None:
                 current_task = asyncio.current_task()
                 existing_task = self._session_tasks.get(session_key)
+                current_guard = self._active_sessions.get(session_key)
                 if (
-                    existing_task is not None
-                    and existing_task is not current_task
+                    (existing_task is not None and existing_task is not current_task)
+                    or (current_guard is not None and current_guard is not interrupt_event)
                 ):
-                    # The in-band drain (or an earlier late-arrival drain)
-                    # already spawned a follow-up task that owns this
-                    # session.  Re-queue the late-arrival event so that
-                    # task picks it up — avoids spawning two concurrent
-                    # _process_message_background tasks for the same key
-                    # (#17758 follow-up: prevents the create_task path
-                    # from racing with itself across the in-band/finally
-                    # boundary).
+                    # Another owner already controls this session: either a
+                    # follow-up task recorded in _session_tasks, or a
+                    # command-scoped guard installed by /stop, /new, or /reset
+                    # while this task is being cancelled. Re-queue the event
+                    # so that owner performs the single authorized drain.
                     self._pending_messages[session_key] = late_pending
                 else:
                     logger.debug(

@@ -49,6 +49,48 @@
 
     configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
 
+    safeStateSetup = pkgs.writeScript "hermes-safe-state-setup" ''
+      #!${pkgs.python3}/bin/python3
+      import os
+      import pwd
+      import grp
+      import stat
+      import sys
+      from pathlib import Path
+
+      user, group, state_dir, working_dir = sys.argv[1:5]
+      uid = pwd.getpwnam(user).pw_uid
+      gid = grp.getgrnam(group).gr_gid
+
+      def reject_symlink(path: Path) -> None:
+          if path.exists() or path.is_symlink():
+              mode = os.lstat(path).st_mode
+              if stat.S_ISLNK(mode):
+                  raise SystemExit(f"refusing to manage symlinked Hermes state path: {path}")
+              if not stat.S_ISDIR(mode):
+                  raise SystemExit(f"refusing to manage non-directory Hermes state path: {path}")
+
+      def ensure_dir(path: Path, mode: int) -> None:
+          reject_symlink(path)
+          path.mkdir(parents=True, exist_ok=True)
+          reject_symlink(path)
+          fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+          try:
+              os.fchown(fd, uid, gid)
+              os.fchmod(fd, mode)
+          finally:
+              os.close(fd)
+
+      state = Path(state_dir)
+      hermes_home = state / ".hermes"
+      ensure_dir(state, 0o2770)
+      ensure_dir(hermes_home, 0o2770)
+      ensure_dir(state / "home", 0o750)
+      ensure_dir(Path(working_dir), 0o2770)
+      for name in ("cron", "sessions", "logs", "memories", "plugins"):
+          ensure_dir(hermes_home / name, 0o2770)
+    '';
+
     # Generate .env from non-secret environment attrset
     envFileContent = lib.concatStringsSep "\n" (
       lib.mapAttrsToList (k: v: "${k}=${v}") cfg.environment
@@ -720,24 +762,28 @@
       # ── Activation: link config + auth + documents ────────────────────
       {
         system.activationScripts."hermes-agent-setup" = lib.stringAfter ([ "users" ] ++ lib.optional (config.system.activationScripts ? setupSecrets) "setupSecrets") ''
-          # Ensure directories exist (activation runs before tmpfiles)
-          mkdir -p ${cfg.stateDir}/.hermes
-          mkdir -p ${cfg.stateDir}/home
-          mkdir -p ${cfg.workingDirectory}
-          chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
-          chmod 2770 ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.workingDirectory}
-          chmod 0750 ${cfg.stateDir}/home
+          # Ensure activation-managed paths are real directories before root
+          # writes to them. The service user owns cfg.stateDir, so activation
+          # must fail closed instead of following attacker-controlled symlinks.
+          ${safeStateSetup} ${cfg.user} ${cfg.group} ${cfg.stateDir} ${cfg.workingDirectory}
+
+          hermes_install_file() {
+            local src="$1"
+            local dst="$2"
+            local mode="$3"
+            local tmp
+            tmp="$(mktemp "$(dirname "$dst")/.tmp.$(basename "$dst").XXXXXX")"
+            install -o ${cfg.user} -g ${cfg.group} -m "$mode" -T "$src" "$tmp"
+            mv -Tf "$tmp" "$dst"
+          }
 
           # Create subdirs, set setgid + group-writable, migrate existing files.
           # Nix-managed files (config.yaml, .env, .managed) stay 0640/0644.
-          find ${cfg.stateDir}/.hermes -maxdepth 1 \
+          find -P ${cfg.stateDir}/.hermes -maxdepth 1 -type f \
             \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
             -exec chmod g+rw {} + 2>/dev/null || true
           for _subdir in cron sessions logs memories plugins; do
-            mkdir -p "${cfg.stateDir}/.hermes/$_subdir"
-            chown ${cfg.user}:${cfg.group} "${cfg.stateDir}/.hermes/$_subdir"
-            chmod 2770 "${cfg.stateDir}/.hermes/$_subdir"
-            find "${cfg.stateDir}/.hermes/$_subdir" -type f \
+            find -P "${cfg.stateDir}/.hermes/$_subdir" -type f \
               -exec chmod g+rw {} + 2>/dev/null || true
           done
 
@@ -745,24 +791,20 @@
           # Preserves user-added keys (skills, streaming, etc.); Nix keys win.
           # If configFile is user-provided (not generated), overwrite instead of merge.
           ${if cfg.configFile != null then ''
-            install -o ${cfg.user} -g ${cfg.group} -m 0640 -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
+            hermes_install_file ${configFile} ${cfg.stateDir}/.hermes/config.yaml 0640
           '' else ''
-            ${configMergeScript} ${generatedConfigFile} ${cfg.stateDir}/.hermes/config.yaml
-            chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/config.yaml
-            chmod 0640 ${cfg.stateDir}/.hermes/config.yaml
+            ${configMergeScript} ${generatedConfigFile} ${cfg.stateDir}/.hermes/config.yaml ${cfg.user} ${cfg.group} 0640
           ''}
 
           # Managed mode marker (so interactive shells also detect NixOS management)
-          touch ${cfg.stateDir}/.hermes/.managed
-          chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.managed
-          chmod 0644 ${cfg.stateDir}/.hermes/.managed
+          hermes_install_file /dev/null ${cfg.stateDir}/.hermes/.managed 0644
 
           # Container mode metadata — tells the host CLI to exec into the
           # container instead of running locally. Keep it root-owned outside
           # HERMES_HOME so the containerized agent cannot alter host routing.
           ${if cfg.container.enable then ''
-            install -d -o root -g root -m 0755 /etc/hermes-agent
-            cat > ${containerModeFile} <<'HERMES_CONTAINER_MODE_EOF'
+            _container_mode_tmp="$(mktemp ${cfg.stateDir}/.hermes/.container-mode.XXXXXX)"
+            cat > "$_container_mode_tmp" <<'HERMES_CONTAINER_MODE_EOF'
     # Written by NixOS activation script. Do not edit manually.
     backend=${cfg.container.backend}
     runtime_path=${containerBin}
@@ -770,9 +812,9 @@
     exec_user=${cfg.user}
     hermes_bin=${containerDataDir}/current-package/bin/hermes
     HERMES_CONTAINER_MODE_EOF
-            chown root:root ${containerModeFile}
-            chmod 0644 ${containerModeFile}
-            rm -f ${cfg.stateDir}/.hermes/.container-mode
+            install -o ${cfg.user} -g ${cfg.group} -m 0644 -T "$_container_mode_tmp" "$_container_mode_tmp.installed"
+            mv -Tf "$_container_mode_tmp.installed" ${cfg.stateDir}/.hermes/.container-mode
+            rm -f "$_container_mode_tmp"
           '' else ''
             rm -f ${containerModeFile}
             rmdir /etc/hermes-agent 2>/dev/null || true
@@ -818,10 +860,10 @@
           # Seed auth file if provided
           ${lib.optionalString (cfg.authFile != null) ''
             ${if cfg.authFileForceOverwrite then ''
-              install -o ${cfg.user} -g ${cfg.group} -m 0600 ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json
+              hermes_install_file ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json 0600
             '' else ''
               if [ ! -f ${cfg.stateDir}/.hermes/auth.json ]; then
-                install -o ${cfg.user} -g ${cfg.group} -m 0600 ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json
+                hermes_install_file ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json 0600
               fi
             ''}
           ''}
@@ -831,21 +873,24 @@
           # so this is the single source of truth for both native and container mode.
           ${lib.optionalString (cfg.environment != {} || cfg.environmentFiles != []) ''
             ENV_FILE="${cfg.stateDir}/.hermes/.env"
-            install -o ${cfg.user} -g ${cfg.group} -m 0640 /dev/null "$ENV_FILE"
-            cat > "$ENV_FILE" <<'HERMES_NIX_ENV_EOF'
+            ENV_TMP="$(mktemp ${cfg.stateDir}/.hermes/.env.XXXXXX)"
+            cat > "$ENV_TMP" <<'HERMES_NIX_ENV_EOF'
     ${envFileContent}
     HERMES_NIX_ENV_EOF
             ${lib.concatStringsSep "\n" (map (f: ''
               if [ -f "${f}" ]; then
-                echo "" >> "$ENV_FILE"
-                cat "${f}" >> "$ENV_FILE"
+                echo "" >> "$ENV_TMP"
+                cat "${f}" >> "$ENV_TMP"
               fi
             '') cfg.environmentFiles)}
+            install -o ${cfg.user} -g ${cfg.group} -m 0640 -T "$ENV_TMP" "$ENV_TMP.installed"
+            mv -Tf "$ENV_TMP.installed" "$ENV_FILE"
+            rm -f "$ENV_TMP"
           ''}
 
           # Link documents into workspace
           ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _value: ''
-            install -o ${cfg.user} -g ${cfg.group} -m 0640 ${documentDerivation}/${name} ${cfg.workingDirectory}/${name}
+            hermes_install_file ${documentDerivation}/${name} ${cfg.workingDirectory}/${name} 0640
           '') cfg.documents)}
 
         # ── Declarative plugins ─────────────────────────────────────────

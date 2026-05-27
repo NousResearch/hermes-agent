@@ -29,6 +29,11 @@ class TestKnownPrefixes:
         result = redact_sensitive_text(text)
         assert "abcdefghijklmnop" not in result
 
+    def test_prefixed_key_embedded_after_separator(self):
+        text = "model-sk-abcdefghijklmnopqrstuvwxyz1234567890"
+        result = redact_sensitive_text(text)
+        assert "abcdefghijklmnopqrstuvwxyz" not in result
+
     def test_github_pat_classic(self):
         result = redact_sensitive_text("token: ghp_abc123def456ghi789jkl")
         assert "abc123def456" not in result

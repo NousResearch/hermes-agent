@@ -18,19 +18,20 @@ Plugin HTTP routes go through the dashboard's session-token auth middleware
 ``/api/plugins/...`` request must present the session bearer token (or the
 session cookie set when you load the dashboard HTML). The token is the
 random per-process ``_SESSION_TOKEN`` printed at startup; the dashboard's
-own pages inject it via ``window.__HERMES_SESSION_TOKEN__`` so logged-in
-browsers don't have to handle it manually.
+own pages also inject it via ``window.__HERMES_SESSION_TOKEN__`` so the SPA
+can call protected APIs.
+
+Because the dashboard HTML is served before API authentication and contains
+that token, the session token is not robust protection against other users
+who can reach the dashboard port. Bind to localhost by default. If you use
+non-local binds (which still require the explicit ``--insecure`` override),
+add network-level access controls (firewall, VPN, or SSH tunnel) that limit
+the dashboard port to the single intended user/device.
 
 For the ``/events`` WebSocket we still require the session token as a
 ``?token=`` query parameter (browsers cannot set the ``Authorization``
 header on an upgrade request), matching the established pattern used by
 the in-browser PTY bridge in ``hermes_cli/web_server.py``.
-
-This means ``hermes dashboard --host 0.0.0.0`` is safe to run on a LAN:
-plugin routes are no longer an unauthenticated exception. The auth still
-isn't multi-user — anyone who can read the printed URL+token gets full
-dashboard access — but they can't ride along just because they can reach
-the port.
 """
 
 from __future__ import annotations
@@ -1060,24 +1061,15 @@ def specify_task_endpoint(
     ``async def`` without an explicit ``run_in_executor``.
     """
     board = _resolve_board(board)
-    # Pin the board for the duration of this call so the specifier module
-    # (which calls ``kb.connect()`` with no args) hits the right DB.
-    prev_env = os.environ.get("HERMES_KANBAN_BOARD")
-    try:
-        os.environ["HERMES_KANBAN_BOARD"] = board or kanban_db.DEFAULT_BOARD
-        # Import lazily so a missing auxiliary client at import time
-        # doesn't break plugin load.
-        from hermes_cli import kanban_specify  # noqa: WPS433 (intentional)
+    # Import lazily so a missing auxiliary client at import time
+    # doesn't break plugin load.
+    from hermes_cli import kanban_specify  # noqa: WPS433 (intentional)
 
-        outcome = kanban_specify.specify_task(
-            task_id,
-            author=(payload.author or None),
-        )
-    finally:
-        if prev_env is None:
-            os.environ.pop("HERMES_KANBAN_BOARD", None)
-        else:
-            os.environ["HERMES_KANBAN_BOARD"] = prev_env
+    outcome = kanban_specify.specify_task(
+        task_id,
+        author=(payload.author or None),
+        board=board,
+    )
 
     return {
         "ok": bool(outcome.ok),

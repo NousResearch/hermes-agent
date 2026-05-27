@@ -19,20 +19,21 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import contextvars
 
 logger = logging.getLogger(__name__)
 import os
 import threading
 import time
-from concurrent.futures import (
-    ThreadPoolExecutor,
-    TimeoutError as FuturesTimeoutError,
-)
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
-from toolsets import TOOLSETS
+from toolsets import TOOLSETS, resolve_toolset
 from tools import file_state
-from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
+from tools.terminal_tool import (
+    _get_approval_callback as _get_thread_approval_cb,
+    set_approval_callback as _set_subagent_approval_cb,
+)
 from utils import base_url_hostname, is_truthy_value
 
 
@@ -462,8 +463,24 @@ def _is_mcp_toolset_name(name: str) -> bool:
     return bool(target and str(target).startswith("mcp-"))
 
 
+def _toolset_has_blocked_tools(toolset_name: str) -> bool:
+    """Return True when a toolset would grant any delegated-blocked tool."""
+    try:
+        return bool(set(resolve_toolset(toolset_name)) & DELEGATE_BLOCKED_TOOLS)
+    except Exception:
+        return False
+
+
+def _blocked_toolsets_for_role(role: str) -> List[str]:
+    """Return toolsets to subtract from the child after enabled resolution."""
+    blocked = ["clarify", "memory", "code_execution", "messaging"]
+    if role != "orchestrator":
+        blocked.append("delegation")
+    return blocked
+
+
 def _expand_parent_toolsets(parent_toolsets: set) -> set:
-    """Expand composite toolsets so individual toolset names are recognized.
+    """Expand composite toolsets so individual safe toolset names are recognized.
 
     When a parent uses a composite toolset like ``hermes-cli`` (which bundles
     all core tools), the child may request individual toolsets such as ``web``
@@ -471,8 +488,11 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
     because ``"web" != "hermes-cli"``.
 
     This helper collects the tool names from each parent toolset, then adds
-    the names of any individual toolsets whose tools are a *subset* of the
-    parent's available tools.  The original parent toolset names are preserved.
+    the names of individual toolsets whose tools are a subset of the parent's
+    available tools. Toolsets that would grant delegated-blocked tools are not
+    expanded into the accepted set; those tools are subtracted again at child
+    construction time as a defense in depth for composite parent toolsets.
+    The original parent toolset names are preserved.
     """
     parent_tool_names: set = set()
     for ts_name in parent_toolsets:
@@ -485,7 +505,7 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
 
     expanded = set(parent_toolsets)
     for ts_name, ts_def in TOOLSETS.items():
-        if ts_name in expanded:
+        if ts_name in expanded or _toolset_has_blocked_tools(ts_name):
             continue
         ts_tools = ts_def.get("tools", [])
         if ts_tools and set(ts_tools).issubset(parent_tool_names):
@@ -513,7 +533,8 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 #     operation (terminal command, web fetch, large file read)
 # The idle ceiling stays tight so genuinely stuck children don't mask the gateway
 # timeout. The in-tool ceiling is much higher so legit long-running tools get
-# time to finish; child_timeout_seconds (default 600s) is still the hard cap.
+# time to finish; child_timeout_seconds (default 600s) is still the cooperative
+# cutoff that interrupts the child without detaching its execution thread.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
@@ -644,8 +665,14 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     teaching subagents a fake container path while still helping them avoid
     guessing `/workspace/...` for local repo tasks.
     """
+    try:
+        from gateway.session_context import get_terminal_cwd
+        session_cwd = get_terminal_cwd()
+    except ImportError:
+        session_cwd = os.getenv("TERMINAL_CWD")
+
     candidates = [
-        os.getenv("TERMINAL_CWD"),
+        session_cwd,
         getattr(
             getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None
         ),
@@ -665,14 +692,17 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
-    """Remove toolsets that contain only blocked tools."""
-    blocked_toolset_names = {
-        "delegation",
-        "clarify",
-        "memory",
-        "code_execution",
-    }
-    return [t for t in toolsets if t not in blocked_toolset_names]
+    """Remove toolsets that contain only delegated-blocked tools."""
+    kept = []
+    for toolset_name in toolsets:
+        try:
+            resolved_tools = set(resolve_toolset(toolset_name))
+        except Exception:
+            resolved_tools = set()
+        if resolved_tools and resolved_tools.issubset(DELEGATE_BLOCKED_TOOLS):
+            continue
+        kept.append(toolset_name)
+    return kept
 
 
 def _build_child_progress_callback(
@@ -1117,6 +1147,7 @@ def _build_child_agent(
         provider_sort=child_provider_sort,
         openrouter_min_coding_score=child_openrouter_min_coding_score,
         tool_progress_callback=child_progress_cb,
+        disabled_toolsets=_blocked_toolsets_for_role(effective_role),
         iteration_budget=None,  # fresh budget per subagent
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
@@ -1470,68 +1501,76 @@ def _run_single_child(
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
         )
 
-        # Run child with a hard timeout to prevent indefinite blocking
-        # when the child's API call or tool-level HTTP request hangs.
+        # Run child in this worker thread and arm a cooperative timeout.
+        # Python cannot forcibly kill a running thread.  Running the child in a
+        # nested executor and returning on Future.result(timeout=...) would leave
+        # a timed-out subagent executing after cleanup.  The timer therefore only
+        # requests interruption and records diagnostics; cleanup/return happen
+        # after child.run_conversation has actually exited.
         child_timeout = _get_child_timeout()
-        _timeout_executor = ThreadPoolExecutor(
-            max_workers=1,
-            # Install a non-interactive approval callback in the worker thread
-            # so dangerous-command prompts from the subagent don't fall back to
-            # input() and deadlock the parent's prompt_toolkit TUI.
-            # Callback (deny vs approve) is governed by delegation.subagent_auto_approve.
-            initializer=_set_subagent_approval_cb,
-            initargs=(_get_subagent_approval_callback(),),
-        )
-        # Capture the worker thread so the timeout diagnostic can dump its
-        # Python stack (see #14726 — 0-API-call hangs are opaque without it).
-        _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
+        _worker_thread = threading.current_thread()
+        _timeout_lock = threading.Lock()
+        _run_finished = threading.Event()
+        _timeout_state: Dict[str, Any] = {
+            "timed_out": False,
+            "diagnostic_path": None,
+            "api_calls": 0,
+        }
 
-        def _run_with_thread_capture():
-            _worker_thread_holder["t"] = threading.current_thread()
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
-            )
-
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
-        try:
-            result = _child_future.result(timeout=child_timeout)
-        except Exception as _timeout_exc:
-            # Signal the child to stop so its thread can exit cleanly.
-            try:
-                if hasattr(child, "interrupt"):
-                    child.interrupt()
-                elif hasattr(child, "_interrupt_requested"):
-                    child._interrupt_requested = True
-            except Exception:
-                pass
-
-            is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
-            duration = round(time.monotonic() - child_start, 2)
-            logger.warning(
-                "Subagent %d %s after %.1fs",
-                task_index,
-                "timed out" if is_timeout else f"raised {type(_timeout_exc).__name__}",
-                duration,
-            )
-
-            # When a subagent times out BEFORE making any API call, dump a
-            # diagnostic to help users (and us) see what the child was doing.
-            # See #14726 — without this, 0-API-call hangs are black boxes.
-            diagnostic_path: Optional[str] = None
-            child_api_calls = 0
+        def _read_child_api_calls() -> int:
             try:
                 _summary = child.get_activity_summary()
-                child_api_calls = int(_summary.get("api_call_count", 0) or 0)
+                return int(_summary.get("api_call_count", 0) or 0)
             except Exception:
-                pass
-            if is_timeout and child_api_calls == 0:
+                return 0
+
+        def _build_timeout_result(
+            duration: float, error_text: Optional[str] = None
+        ) -> Dict[str, Any]:
+            child_api_calls = int(_timeout_state.get("api_calls") or 0)
+            diagnostic_path = _timeout_state.get("diagnostic_path")
+            if child_api_calls == 0:
+                _err = (
+                    f"Subagent timed out after {child_timeout}s without "
+                    f"making any API call — the child never reached its "
+                    f"first LLM request (prompt construction, credential "
+                    f"resolution, or transport may be stuck)."
+                )
+                if diagnostic_path:
+                    _err += f" Diagnostic: {diagnostic_path}"
+            else:
+                _err = (
+                    f"Subagent timed out after {child_timeout}s with "
+                    f"{child_api_calls} API call(s) completed — likely "
+                    f"stuck on a slow API call or unresponsive network request."
+                )
+            if error_text:
+                _err += f" Child stopped with: {error_text}"
+            return {
+                "task_index": task_index,
+                "status": "timeout",
+                "summary": None,
+                "error": _err,
+                "exit_reason": "timeout",
+                "api_calls": child_api_calls,
+                "duration_seconds": duration,
+                "_child_role": getattr(child, "_delegate_role", None),
+                "diagnostic_path": diagnostic_path,
+            }
+
+        def _on_child_timeout() -> None:
+            if _run_finished.is_set():
+                return
+            duration = round(time.monotonic() - child_start, 2)
+            child_api_calls = _read_child_api_calls()
+            diagnostic_path: Optional[str] = None
+            if child_api_calls == 0:
                 diagnostic_path = _dump_subagent_timeout_diagnostic(
                     child=child,
                     task_index=task_index,
                     timeout_seconds=float(child_timeout),
                     duration_seconds=float(duration),
-                    worker_thread=_worker_thread_holder.get("t"),
+                    worker_thread=_worker_thread,
                     goal=goal,
                 )
                 if diagnostic_path:
@@ -1540,57 +1579,59 @@ def _run_single_child(
                         task_index,
                         diagnostic_path,
                     )
-
+            with _timeout_lock:
+                if _run_finished.is_set():
+                    return
+                _timeout_state["timed_out"] = True
+                _timeout_state["diagnostic_path"] = diagnostic_path
+                _timeout_state["api_calls"] = child_api_calls
+            try:
+                if hasattr(child, "interrupt"):
+                    child.interrupt()
+                elif hasattr(child, "_interrupt_requested"):
+                    child._interrupt_requested = True
+            except Exception:
+                pass
+            logger.warning(
+                "Subagent %d timed out after %.1fs; waiting for child to stop before cleanup",
+                task_index,
+                duration,
+            )
             if child_progress_cb:
                 try:
                     child_progress_cb(
                         "subagent.complete",
-                        preview=(
-                            f"Timed out after {duration}s"
-                            if is_timeout
-                            else str(_timeout_exc)
-                        ),
-                        status="timeout" if is_timeout else "error",
+                        preview=f"Timed out after {duration}s",
+                        status="timeout",
                         duration_seconds=duration,
                         summary="",
                     )
                 except Exception:
                     pass
 
-            if is_timeout:
-                if child_api_calls == 0:
-                    _err = (
-                        f"Subagent timed out after {child_timeout}s without "
-                        f"making any API call — the child never reached its "
-                        f"first LLM request (prompt construction, credential "
-                        f"resolution, or transport may be stuck)."
-                    )
-                    if diagnostic_path:
-                        _err += f" Diagnostic: {diagnostic_path}"
-                else:
-                    _err = (
-                        f"Subagent timed out after {child_timeout}s with "
-                        f"{child_api_calls} API call(s) completed — likely "
-                        f"stuck on a slow API call or unresponsive network request."
-                    )
-            else:
-                _err = str(_timeout_exc)
-
-            return {
-                "task_index": task_index,
-                "status": "timeout" if is_timeout else "error",
-                "summary": None,
-                "error": _err,
-                "exit_reason": "timeout" if is_timeout else "error",
-                "api_calls": child_api_calls,
-                "duration_seconds": duration,
-                "_child_role": getattr(child, "_delegate_role", None),
-                "diagnostic_path": diagnostic_path,
-            }
+        _timeout_timer = threading.Timer(child_timeout, _on_child_timeout)
+        _timeout_timer.daemon = True
+        _previous_approval_cb = _get_thread_approval_cb()
+        _set_subagent_approval_cb(_get_subagent_approval_callback())
+        _timeout_timer.start()
+        try:
+            result = child.run_conversation(
+                user_message=goal,
+                task_id=child_task_id,
+            )
+        except Exception as exc:
+            if _timeout_state.get("timed_out"):
+                duration = round(time.monotonic() - child_start, 2)
+                return _build_timeout_result(duration, str(exc))
+            raise
         finally:
-            # Shut down executor without waiting — if the child thread
-            # is stuck on blocking I/O, wait=True would hang forever.
-            _timeout_executor.shutdown(wait=False)
+            _run_finished.set()
+            _timeout_timer.cancel()
+            _set_subagent_approval_cb(_previous_approval_cb)
+
+        if _timeout_state.get("timed_out"):
+            duration = round(time.monotonic() - child_start, 2)
+            return _build_timeout_result(duration)
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, "_flush"):

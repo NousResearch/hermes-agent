@@ -541,19 +541,36 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
             proc.kill()
         return
 
-    import psutil
+    pgid = getattr(proc, "_hermes_pgid", None)
+    _killpg_ok = False
     try:
-        parent = psutil.Process(proc.pid)
-        for child in parent.children(recursive=True):
+        if pgid is None:
+            pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — guarded by os.name above
+        _killpg_ok = True
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+    if not _killpg_ok:
+        import psutil as _psutil
+        try:
+            _parent = _psutil.Process(proc.pid)
+            for _child in _parent.children(recursive=True):
+                try:
+                    _child.terminate()
+                except _psutil.NoSuchProcess:
+                    pass
             try:
-                child.terminate()
-            except psutil.NoSuchProcess:
+                _parent.terminate()
+            except _psutil.NoSuchProcess:
                 pass
-        parent.terminate()
-    except psutil.NoSuchProcess:
-        return
-    except Exception:
-        proc.terminate()
+        except _psutil.NoSuchProcess:
+            pass
+        except (PermissionError, OSError):
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
     try:
         proc.wait(timeout=2)
@@ -561,18 +578,36 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         pass
 
+    _killpg_kill_ok = False
     try:
-        parent = psutil.Process(proc.pid)
-        for child in parent.children(recursive=True):
+        if pgid is None:
+            raise ProcessLookupError(proc.pid)
+        os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — guarded by os.name above
+        _killpg_kill_ok = True
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+    if not _killpg_kill_ok:
+        import psutil as _psutil
+        try:
+            _parent = _psutil.Process(proc.pid)
+            for _child in _parent.children(recursive=True):
+                try:
+                    _child.kill()
+                except _psutil.NoSuchProcess:
+                    pass
             try:
-                child.kill()
-            except psutil.NoSuchProcess:
+                _parent.kill()
+            except _psutil.NoSuchProcess:
                 pass
-        parent.kill()
-    except psutil.NoSuchProcess:
-        return
-    except Exception:
-        proc.kill()
+        except _psutil.NoSuchProcess:
+            pass
+        except (PermissionError, OSError):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    return
 
 
 def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProcess:
@@ -589,6 +624,11 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
         popen_kwargs["start_new_session"] = True
 
     proc = subprocess.Popen(command, **popen_kwargs)
+    if os.name != "nt":
+        try:
+            proc._hermes_pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            pass
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:

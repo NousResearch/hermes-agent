@@ -1187,6 +1187,28 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 # Rename
 # ---------------------------------------------------------------------------
 
+def _write_text_preserving_file_metadata(path: Path, content: str) -> None:
+    """Atomically replace a text file while preserving its mode and owner."""
+    original_stat = path.stat()
+    original_mode = stat.S_IMODE(original_stat.st_mode)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.chmod(tmp, original_mode)
+        try:
+            os.chown(tmp, original_stat.st_uid, original_stat.st_gid)
+        except (AttributeError, OSError):
+            pass
+        os.chmod(tmp, original_mode)
+        tmp.replace(path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) -> None:
     """Rename Honcho host blocks for a renamed profile without changing peers."""
     old_host = f"hermes.{old_name}"
@@ -1226,15 +1248,12 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
             bare = old_host.split(".", 1)[1] if "." in old_host else old_host
             block["aiPeer"] = bare
         hosts[new_host] = hosts.pop(old_host)
-        tmp = path.with_suffix(path.suffix + ".tmp")
         try:
-            tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            tmp.replace(path)
+            _write_text_preserving_file_metadata(
+                path,
+                json.dumps(raw, indent=2, ensure_ascii=False) + "\n",
+            )
         except OSError:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
             continue
 
         print(f"✓ Honcho host updated: {old_host} → {new_host}")

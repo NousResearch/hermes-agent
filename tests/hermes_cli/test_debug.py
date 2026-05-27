@@ -192,6 +192,24 @@ class TestCaptureLogSnapshot:
         assert snap.full_text is not None
         assert "truncated" in snap.full_text
 
+    def test_truncates_sparse_newline_large_file(self, hermes_home):
+        """Sparse-newline logs cannot bypass the full-log upload byte cap."""
+        from hermes_cli.debug import _capture_log_snapshot
+
+        max_bytes = 1024
+        marker = "SECRET_AT_START"
+        (hermes_home / "logs" / "agent.log").write_text(
+            marker + "A" * (max_bytes * 2),
+            encoding="utf-8",
+        )
+
+        snap = _capture_log_snapshot("agent", tail_lines=10, max_bytes=max_bytes)
+
+        assert snap.full_text is not None
+        assert "truncated" in snap.full_text
+        assert marker not in snap.full_text
+        assert len(snap.full_text.encode("utf-8")) <= max_bytes + 64
+
     def test_keeps_first_line_when_truncation_on_boundary(self, hermes_home):
         """When truncation lands on a line boundary, keep the first full line."""
         from hermes_cli.debug import _capture_log_snapshot

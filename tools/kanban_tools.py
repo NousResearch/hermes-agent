@@ -98,20 +98,19 @@ def _configured_kanban_assignees(profile: str) -> set[str]:
 
 
 def _kanban_create_assignee_error(assignee: str) -> Optional[str]:
-    """Reject unauthorized cross-profile dispatch from profile-global tools.
+    """Reject unauthorized cross-profile dispatch.
 
-    Dispatcher-spawned workers keep their historical fan-out behavior because
-    they already run inside an assigned Kanban task. Profile-global sessions
-    are broader entry points (including gateways/webhooks), so cross-profile
-    spawning must be explicitly allowed in config.
+    The check applies to both profile-global orchestrators and dispatcher-
+    spawned workers. ``HERMES_KANBAN_TASK`` scopes a worker to one assigned
+    task, but it is not an authorization grant for arbitrary cross-profile
+    fan-out because task bodies are model-controlled prompt content.
     """
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        return None
     caller = _current_profile_name()
-    if assignee == caller:
+    assignee_key = assignee.lower()
+    if assignee_key == caller.lower():
         return None
     allowed = _configured_kanban_assignees(caller)
-    if "*" in allowed or assignee in allowed:
+    if "*" in allowed or assignee_key in allowed:
         return None
     return tool_error(
         f"kanban_create: profile '{caller}' is not authorized to assign "
@@ -725,9 +724,30 @@ def _handle_link(args: dict, **kw) -> str:
     child_id = args.get("child_id")
     if not parent_id or not child_id:
         return tool_error("both parent_id and child_id are required")
+    parent_id = str(parent_id)
+    child_id = str(child_id)
+    ownership_err = _enforce_worker_task_ownership(parent_id)
+    if ownership_err:
+        return ownership_err
     try:
         kb, conn = _connect()
         try:
+            env_tid = os.environ.get("HERMES_KANBAN_TASK")
+            if env_tid:
+                child = kb.get_task(conn, child_id)
+                if child is None:
+                    return tool_error(f"task {child_id} not found")
+                current_profiles = {
+                    env_tid,
+                    os.environ.get("HERMES_PROFILE") or "worker",
+                    _current_profile_name(),
+                }
+                if child.created_by not in current_profiles:
+                    return tool_error(
+                        "worker-scoped kanban_link may only attach cards "
+                        "created by this worker; use kanban_create with "
+                        "parents=[current_task] for new child work"
+                    )
             kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
             return _ok(parent_id=parent_id, child_id=child_id)
         finally:

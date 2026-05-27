@@ -40,10 +40,14 @@ def test_default_limits_tighten_keepalive_below_httpx_default():
     # CLOSE_WAIT sockets drain promptly behind proxies like Warp.
     assert limits.keepalive_expiry is not None
     assert limits.keepalive_expiry < 5.0
+    # max_connections must stay bounded; constructing httpx.Limits
+    # without it would make the active connection pool unlimited.
+    assert limits.max_connections == 100
     # max_keepalive_connections must be positive and reasonable for a
     # single adapter (platform APIs rarely parallelise beyond ~10).
     assert limits.max_keepalive_connections is not None
     assert 1 <= limits.max_keepalive_connections <= 50
+    assert limits.max_connections >= limits.max_keepalive_connections
 
 
 def test_env_override_keepalive_expiry(monkeypatch):
@@ -58,6 +62,17 @@ def test_env_override_max_keepalive(monkeypatch):
     from gateway.platforms._http_client_limits import platform_httpx_limits
     limits = platform_httpx_limits()
     assert limits.max_keepalive_connections == 25
+    assert limits.max_connections == 100
+
+
+def test_large_keepalive_override_keeps_total_limit_valid(monkeypatch):
+    monkeypatch.setenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", "250")
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+
+    limits = platform_httpx_limits()
+    assert limits.max_keepalive_connections == 250
+    assert limits.max_connections == 250
+    assert limits.max_connections >= limits.max_keepalive_connections
 
 
 def test_env_override_rejects_garbage(monkeypatch):
@@ -68,6 +83,7 @@ def test_env_override_rejects_garbage(monkeypatch):
     limits = platform_httpx_limits()
     # Non-positive / non-numeric → fell back to defaults (not the override values)
     assert limits.keepalive_expiry is not None and limits.keepalive_expiry > 0
+    assert limits.max_connections == 100
     assert limits.max_keepalive_connections is not None
     assert limits.max_keepalive_connections > 0
 

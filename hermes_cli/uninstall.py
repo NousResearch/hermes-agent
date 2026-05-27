@@ -383,13 +383,13 @@ def _discover_named_profiles():
         return []
 
 
-def _uninstall_profile(profile) -> None:
-    """Fully uninstall a single named profile: stop its gateway service,
-    remove its alias wrapper, and wipe its HERMES_HOME directory.
+def _uninstall_profile(profile) -> bool:
+    """Fully uninstall a single named profile.
 
-    We shell out to ``hermes -p <name> gateway stop|uninstall`` because
-    service names, unit paths, and plist paths are all derived from the
-    current HERMES_HOME and can't be easily switched in-process.
+    Returns:
+        True when gateway cleanup completed and local profile data was removed;
+        False when gateway cleanup could not be verified, in which case profile
+        data is left in place so a live gateway is not orphaned from its config.
     """
     import sys as _sys
     name = profile.name
@@ -403,7 +403,7 @@ def _uninstall_profile(profile) -> None:
     hermes_invocation = [_sys.executable, "-m", "hermes_cli.main", "--profile", name]
     for subcmd in ("stop", "uninstall"):
         try:
-            subprocess.run(
+            result = subprocess.run(
                 hermes_invocation + ["gateway", subcmd],
                 capture_output=True,
                 text=True,
@@ -412,8 +412,16 @@ def _uninstall_profile(profile) -> None:
             )
         except subprocess.TimeoutExpired:
             log_warn(f"  Gateway {subcmd} timed out for '{name}'")
+            return False
         except Exception as e:
             log_warn(f"  Could not run gateway {subcmd} for '{name}': {e}")
+            return False
+
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            suffix = f": {detail}" if detail else ""
+            log_warn(f"  Gateway {subcmd} failed for '{name}' (exit {result.returncode}){suffix}")
+            return False
 
     # 2. Remove the wrapper alias script at ~/.local/bin/<name> (if any).
     alias_path = getattr(profile, "alias_path", None)
@@ -431,6 +439,9 @@ def _uninstall_profile(profile) -> None:
             log_success(f"  Removed {profile_home}")
     except Exception as e:
         log_warn(f"  Could not remove {profile_home}: {e}")
+        return False
+
+    return True
 
 
 def run_uninstall(args):
@@ -595,6 +606,17 @@ def run_uninstall(args):
     else:
         log_info("No wrapper script found")
     
+    if full_uninstall and remove_profiles and named_profiles:
+        log_info("Removing named profiles before deleting installation code...")
+        failed_profiles = [prof.name for prof in named_profiles if not _uninstall_profile(prof)]
+        if failed_profiles:
+            log_warn(
+                "Aborting uninstall because named profile gateway cleanup failed for: "
+                + ", ".join(failed_profiles)
+            )
+            log_info("Stop/uninstall those profile gateways manually, then rerun uninstall.")
+            return
+
     # 4. Remove installation directory (code)
     log_info("Removing installation directory...")
     
@@ -629,17 +651,8 @@ def run_uninstall(args):
         else:
             log_info("No Windows installer artifacts to remove")
     
-    # 5. Optionally remove ~/.hermes/ data directory (and named profiles)
+    # 5. Optionally remove ~/.hermes/ data directory.
     if full_uninstall:
-        # 5a. Stop and remove each named profile's gateway service and
-        #     alias wrapper. The profile HERMES_HOME dirs live under
-        #     ``<default>/profiles/<name>/`` and will be swept away by the
-        #     rmtree below, but services + alias scripts live OUTSIDE the
-        #     default root and have to be cleaned up explicitly.
-        if remove_profiles and named_profiles:
-            for prof in named_profiles:
-                _uninstall_profile(prof)
-
         log_info("Removing configuration and data...")
         try:
             if hermes_home.exists():

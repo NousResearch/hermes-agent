@@ -200,6 +200,15 @@ export const api = {
         body: JSON.stringify({ content }),
       },
     ),
+  activateProfile: (name: string) =>
+    fetchJSON<{ ok: boolean; active_profile: string; profile_dir: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/activate`,
+      { method: "POST" },
+    ),
+
+  // Agents
+  getAgentMetrics: () =>
+    fetchJSON<AgentMetricsResponse>("/api/agents/metrics"),
 
   // Skills & Toolsets
   getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
@@ -604,6 +613,36 @@ export interface SessionSearchResult {
 export interface SessionSearchResponse {
   results: SessionSearchResult[];
 }
+
+// ── Agent metrics types ────────────────────────────────────────────────
+
+export interface MemoryUsage {
+  mb: number;
+}
+
+export interface DiskUsage {
+  mb: number;
+}
+
+export interface TokenUsage {
+  input: number;
+  output: number;
+}
+
+export interface AgentMetricsEntry {
+  memory_mb: number;
+  disk_all_mb: number;
+  disk_active_mb: number;
+  token_totals: {
+    all: TokenUsage;
+    active: TokenUsage;
+  };
+  by_model: Record<string, TokenUsage>;
+  time: { unix: number; iso: string };
+  active_profile: string;
+}
+
+export type AgentMetricsResponse = AgentMetricsEntry;
 
 // ── Model info types ──────────────────────────────────────────────────
 

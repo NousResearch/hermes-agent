@@ -2969,6 +2969,159 @@ async def open_profile_terminal_endpoint(name: str):
     return {"ok": True, "command": command}
 
 
+@app.post("/api/profiles/{name}/activate")
+async def activate_profile(request: Request, name: str):
+    """Set the active profile (sticky — persists across restarts)."""
+    _require_token(request)
+    from hermes_cli import profiles as profiles_mod
+
+    canon = profiles_mod.normalize_profile_name(name)
+    if not profiles_mod.profile_exists(canon):
+        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
+
+    profiles_mod.set_active_profile(canon)
+    return {
+        "ok": True,
+        "active_profile": canon,
+        "profile_dir": str(profiles_mod.get_profile_dir(canon)),
+    }
+
+
+@app.get("/api/agents/metrics")
+async def get_agent_metrics(request: Request):
+    """Live telemetry: memory, disk, token usage, and active profile name."""
+    _require_token(request)
+    import time
+    from datetime import datetime
+
+    # Memory: RSS of all Hermes Python processes
+    import os, glob
+
+    memory_mb = 0.0
+    for pid_dir in glob.glob("/proc/[0-9]*"):
+        try:
+            pid = int(os.path.basename(pid_dir))
+            with open(f"{pid_dir}/cmdline", "r") as f:
+                cmdline = f.read()
+            if "hermes" in cmdline.lower() or "python" in cmdline.lower():
+                with open(f"{pid_dir}/status", "r") as f:
+                    for line in f:
+                        if line.startswith("VmRSS:"):
+                            memory_mb += float(line.split()[1])
+                            break
+        except (OSError, ValueError, IOError):
+            pass
+
+    # Disk: walk ~/.hermes for total, and active profile dir for active
+    import shutil
+
+    hermes_home = os.path.expanduser("~/.hermes")
+    disk_all_mb = 0.0
+    disk_active_mb = 0.0
+    active_profile_dir = os.path.expanduser("~/.hermes/profiles/default")
+
+    try:
+        active_name = (
+            open(os.path.expanduser("~/.hermes/profiles/active_profile"), "r")
+            .read()
+            .strip()
+            or "default"
+        )
+        active_profile_dir = os.path.expanduser(
+            f"~/.hermes/profiles/{active_name}"
+        )
+    except FileNotFoundError:
+        pass
+
+    for root, dirs, files in os.walk(hermes_home):
+        # Skip large cache dirs
+        if any(
+            x in root for x in ["/.hermes/cache", "/.hermes/venv", "/__pycache__"]
+        ):
+            continue
+        for d in dirs:
+            try:
+                disk_all_mb += sum(
+                    os.path.getsize(os.path.join(root, d, f))
+                    for f in os.listdir(os.path.join(root, d))
+                    if os.path.isfile(os.path.join(root, d, f))
+                )
+            except (OSError, IOError):
+                pass
+        for f in files:
+            try:
+                disk_all_mb += os.path.getsize(os.path.join(root, f))
+            except (OSError, IOError):
+                pass
+
+    disk_all_mb /= 1024 * 1024
+
+    try:
+        for root, dirs, files in os.walk(active_profile_dir):
+            if any(x in root for x in ["/.hermes/cache", "/.hermes/venv", "/__pycache__"]):
+                continue
+            for d in dirs:
+                try:
+                    disk_active_mb += sum(
+                        os.path.getsize(os.path.join(root, d, f))
+                        for f in os.listdir(os.path.join(root, d))
+                        if os.path.isfile(os.path.join(root, d, f))
+                    )
+                except (OSError, IOError):
+                    pass
+            for f in files:
+                try:
+                    disk_active_mb += os.path.getsize(os.path.join(root, f))
+                except (OSError, IOError):
+                    pass
+    except FileNotFoundError:
+        pass
+
+    disk_active_mb /= 1024 * 1024
+
+    # Token stats from session DB
+    # NOTE: the sessions table does not store profile_name, so we cannot
+    # split tokens by active vs. other profiles.  We show all-token totals
+    # and a by-model breakdown; active vs. all comparison is informational.
+    token_totals = {
+        "all": {"input": 0, "output": 0},
+        "active": {"input": 0, "output": 0},
+    }
+    by_model: Dict[str, Dict[str, int]] = {}
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        cur = db._conn.execute(
+            "SELECT model, SUM(input_tokens), SUM(output_tokens) "
+            "FROM sessions WHERE input_tokens IS NOT NULL OR output_tokens IS NOT NULL "
+            "GROUP BY model"
+        )
+        for row in cur.fetchall():
+            model, inp, out = row[0] or "unknown", row[1] or 0, row[2] or 0
+            inp = int(inp)
+            out = int(out)
+            by_model[model] = {"input": inp, "output": out}
+            token_totals["all"]["input"] += inp
+            token_totals["all"]["output"] += out
+            token_totals["active"]["input"] += inp
+            token_totals["active"]["output"] += out
+        db.close()
+    except Exception:
+        pass
+
+    now = time.time()
+    return {
+        "active_profile": os.path.basename(active_profile_dir),
+        "memory_mb": round(memory_mb, 1),
+        "disk_all_mb": round(disk_all_mb, 1),
+        "disk_active_mb": round(disk_active_mb, 1),
+        "token_totals": token_totals,
+        "by_model": by_model,
+        "time": {"unix": now, "iso": datetime.now().isoformat()},
+    }
+
+
 @app.patch("/api/profiles/{name}")
 async def rename_profile_endpoint(name: str, body: ProfileRename):
     from hermes_cli import profiles as profiles_mod

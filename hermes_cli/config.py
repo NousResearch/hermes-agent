@@ -1181,6 +1181,11 @@ DEFAULT_CONFIG = {
         # Set this to True to re-enable the surfaces with the understanding
         # that the numbers are a local lower-bound estimate, not billing.
         "show_token_analytics": False,
+        # Chat tab (TUI/Web Chat) — requires the dashboard to be started with
+        # --tui.  These flags are sub-feature controls within the Chat tab:
+        "chat_ui": True,  # Master switch: enables/disables the entire Chat tab
+        "chat_system_monitor": True,  # Show the memory/disk/token metrics bar
+        "chat_by_agent_profile": True,  # Show the Agent Profile selector in the sidebar
     },
 
     # Privacy settings

@@ -56,7 +56,7 @@ function hermesDevToken(): Plugin {
       } catch (err) {
         console.warn(
           `[hermes] Dashboard at ${BACKEND} unreachable — ` +
-            `start it with \`hermes dashboard\` or set HERMES_DASHBOARD_URL. ` +
+            `start with \`hermes dashboard\` or set HERMES_DASHBOARD_URL. ` +
             `(${(err as Error).message})`,
         );
       }
@@ -64,21 +64,51 @@ function hermesDevToken(): Plugin {
   };
 }
 
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), hermesDevToken()],
+    plugins: [
+    react(),
+    tailwindcss(),
+    hermesDevToken(),
+    // Inject crypto.randomUUID polyfill before any app code runs.
+    // Handles @xterm/xterm@6 which calls it unconditionally.
+    {
+      name: "hermes:crypto-polyfill",
+      transformIndexHtml(_html: string) {
+        return [{
+          tag: "script",
+          injectTo: "head",
+          children: `/* Hermes crypto.randomUUID polyfill */
+(function(){
+  try{
+    if(!crypto.randomUUID||typeof crypto.randomUUID!=="function"){
+      crypto.randomUUID=function(){return"rnd-"+Math.random().toString(36).slice(2)+"-"+Date.now().toString(36)};
+    }
+  }catch(e){}
+})();`,
+        }];
+      },
+    },
+    // Patch ALL chunks (including lazy-loaded ones like xterm WebGL addon)
+    // that call crypto.randomUUID without checking if it's callable.
+    // The pattern comes from @xterm/xterm@6's ESBuild output.
+    {
+      name: "hermes:crypto-randomuuid-safe-call",
+      apply: "build",
+      transform(code: string, _id: string) {
+        // Universal pattern: match ANY module with this exact minified form
+        const OLD = 'typeof crypto<"u"&&"randomUUID"in crypto?crypto.randomUUID():';
+        const NEW = 'typeof crypto<"u"&&"randomUUID"in crypto&&"function"===typeof crypto.randomUUID?crypto.randomUUID():';
+        if (!code.includes(OLD)) return undefined;
+        const patched = code.split(OLD).join(NEW);
+        return { code: patched, map: null };
+      },
+    },
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
-    // When @nous-research/ui is symlinked via `file:../../design-language`,
-    // Node's module resolution would pick up shared deps from
-    // design-language/node_modules/*, giving us two copies + breaking
-    // hooks (useRef-of-null), webgl contexts, etc. Force everything that
-    // exists in BOTH places to use the dashboard's copy.
-    //
-    // Don't list packages here that only exist in the DS (nanostores,
-    // @nanostores/react) — Vite dedupe errors out when it can't find
-    // them at the project root.
     dedupe: [
       "react",
       "react-dom",
@@ -99,9 +129,6 @@ export default defineConfig({
         target: BACKEND,
         ws: true,
       },
-      // Same host as `hermes dashboard` must serve these; Vite has no
-      // dashboard-plugins/* files, so without this, plugin scripts 404
-      // or receive index.html in dev.
       "/dashboard-plugins": BACKEND,
     },
   },

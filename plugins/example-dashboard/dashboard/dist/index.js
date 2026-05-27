@@ -1,0 +1,1 @@
+// Example dashboard plugin — placeholder

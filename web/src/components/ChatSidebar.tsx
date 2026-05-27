@@ -28,12 +28,13 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card } from "@/components/ui/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
+import { ProfilePickerDialog } from "@/components/ProfilePickerDialog";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
-import { HERMES_BASE_PATH } from "@/lib/api";
+import { api, HERMES_BASE_PATH } from "@/lib/api";
 
 import { cn } from "@/lib/utils";
-import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
+import { AlertCircle, ChevronDown, Crown, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 interface SessionInfo {
@@ -41,6 +42,8 @@ interface SessionInfo {
   model?: string;
   provider?: string;
   credential_warning?: string;
+  /** The active profile name, emitted by the PTY-side TUI gateway in session.info. */
+  profile_name?: string;
 }
 
 interface RpcEnvelope {
@@ -72,9 +75,18 @@ const STATE_TONE: Record<
 interface ChatSidebarProps {
   channel: string;
   className?: string;
+  /** When false, the Agent Profile selector card is hidden. */
+  chatByAgentProfile?: boolean;
+  /** Fires after a profile switch is saved and the PTY is respawning — parent bumps channelKey. */
+  onProfileActivated?: () => void;
 }
 
-export function ChatSidebar({ channel, className }: ChatSidebarProps) {
+export function ChatSidebar({
+  channel,
+  className,
+  chatByAgentProfile = true,
+  onProfileActivated,
+}: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -90,6 +102,20 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Agent Profile state (gated by chatByAgentProfile)
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [activeProfile, setActiveProfile] = useState<string>("default");
+
+  // Fetch active profile on mount — session.info events override this once PTY boots.
+  useEffect(() => {
+    api
+      .getAgentMetrics()
+      .then((metrics) => {
+        setActiveProfile(metrics.active_profile ?? "default");
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const offState = gw.onState(setState);
@@ -101,6 +127,13 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
 
       if (ev.payload) {
         setInfo((prev) => ({ ...prev, ...ev.payload }));
+        // The PTY's TUI gateway tells us the profile it's actually running under.
+        // Use this as the authoritative label — it's what the user sees in the
+        // agent loop, so the sidebar label should match it without needing a
+        // separate HTTP round-trip.
+        if (ev.payload.profile_name) {
+          setActiveProfile(ev.payload.profile_name);
+        }
       }
     });
 
@@ -297,6 +330,31 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     [gw, sessionId],
   );
 
+  // When the user picks a new profile, call activateProfile, re-fetch metrics
+  // from the server (authoritative under the new HERMES_HOME), then signal
+  // parent to bump the channel key so the PTY respawns under the new profile.
+  const handleProfileActivated = useCallback(
+    (name: string) => {
+      void api
+        .activateProfile(name)
+        .then(() =>
+          // Re-fetch so activeProfile always reflects the server's actual
+          // active_profile — not the optimistic local guess.  This also
+          // covers the initial-load race where getAgentMetrics() resolves
+          // after the dialog has already opened.
+          api.getAgentMetrics(),
+        )
+        .then((metrics) => {
+          setActiveProfile(metrics.active_profile ?? name);
+          // Signal parent to regenerate channel → new PTY with new HERMES_HOME
+          onProfileActivated?.();
+          setProfileOpen(false);
+        })
+        .catch(() => {});
+    },
+    [onProfileActivated],
+  );
+
   const canPickModel = state === "open" && !!sessionId;
   const modelLabel = (info.model ?? "—").split("/").slice(-1)[0] ?? "—";
   const banner = error ?? info.credential_warning ?? null;
@@ -308,6 +366,26 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         className,
       )}
     >
+      {/* ACTIVE PROFILE — PTY-ground-truth profile name from session.info events.
+          Always visible first. Shows "default" if PTY hasn't emitted yet. */}
+      <Card className="flex items-center justify-between gap-2 px-3 py-2">
+        <div className="min-w-0">
+          <div className="text-display text-xs tracking-wider text-text-tertiary">
+            active profile
+          </div>
+          <Button
+            ghost
+            size="sm"
+            disabled
+            className="self-start min-w-0 px-0 py-0 normal-case tracking-normal text-sm font-medium"
+            title={activeProfile}
+          >
+            <Crown className="mr-1 h-3 w-3 text-amber-400" />
+            <span className="truncate">{activeProfile}</span>
+          </Button>
+        </div>
+      </Card>
+
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="min-w-0">
           <div className="text-display text-xs tracking-wider text-text-tertiary">
@@ -333,6 +411,28 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
 
         <Badge tone={STATE_TONE[state]}>{STATE_LABEL[state]}</Badge>
       </Card>
+
+      {/* Agent Profile selector — gated by dashboard.chat_by_agent_profile.
+          Opens ProfilePickerDialog to switch the active profile. */}
+      {chatByAgentProfile && (
+        <Card className="flex items-center justify-between gap-2 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-display text-xs tracking-wider text-text-tertiary">
+              agent profile
+            </div>
+            <Button
+              ghost
+              size="sm"
+              onClick={() => setProfileOpen(true)}
+              suffix={<ChevronDown className="text-text-secondary" />}
+              className="self-start min-w-0 px-0 py-0 normal-case tracking-normal text-sm font-medium hover:underline"
+              title="switch agent profile"
+            >
+              <span className="truncate">switch profile</span>
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {banner && (
         <Card className="flex items-start gap-2 border-destructive/40 bg-destructive/5 px-3 py-2 text-xs">
@@ -378,6 +478,14 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           sessionId={sessionId}
           onClose={() => setModelOpen(false)}
           onSubmit={onModelSubmit}
+        />
+      )}
+
+      {profileOpen && (
+        <ProfilePickerDialog
+          activeProfile={activeProfile}
+          onClose={() => setProfileOpen(false)}
+          onProfileActivated={handleProfileActivated}
         />
       )}
     </aside>

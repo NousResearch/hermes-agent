@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hermes Dashboard</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚕</text></svg>" />
+</head>
+<body>
+<div id="app">
+  <!-- Header -->
+  <header id="header">
+    <div class="header-left">
+      <span class="logo">⚕</span>
+      <span class="title">Hermes</span>
+    </div>
+    <div class="header-center">
+      <span id="status-badge" class="badge disconnected">Connecting...</span>
+    </div>
+    <div class="header-right">
+      <button id="btn-files" class="icon-btn" title="File Browser">📁</button>
+      <button id="btn-uploads" class="icon-btn" title="Uploaded Files">📤</button>
+      <button id="btn-clear" class="icon-btn" title="Clear Chat">🗑</button>
+    </div>
+  </header>
+
+  <!-- Chat area -->
+  <main id="chat">
+    <div id="messages"></div>
+    <div id="typing-indicator" class="hidden">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    </div>
+  </main>
+
+  <!-- Uploaded file chips -->
+  <div id="upload-chips" class="hidden"></div>
+
+  <!-- Composer -->
+  <footer id="composer">
+    <div id="attached-files"></div>
+    <div class="composer-row">
+      <textarea id="input" placeholder="Message Hermes..." rows="1" autofocus></textarea>
+      <button id="btn-attach" class="icon-btn" title="Upload File">📎</button>
+      <button id="btn-send" class="send-btn" title="Send (Enter)">▶</button>
+    </div>
+  </footer>
+</div>
+
+<!-- File Browser Modal -->
+<div id="modal-files" class="modal hidden">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>File Browser</h3>
+      <div class="modal-path">
+        <button id="btn-path-up" class="icon-btn" title="Go up">⬆</button>
+        <span id="current-path">~</span>
+      </div>
+      <button id="btn-close-files" class="icon-btn">✕</button>
+    </div>
+    <div class="file-list" id="file-list">
+      <div class="loading">Loading...</div>
+    </div>
+    <div class="modal-footer">
+      <button id="btn-select-dir" class="action-btn">Select Folder for Agent</button>
+    </div>
+  </div>
+</div>
+
+<!-- Upload Manager Modal -->
+<div id="modal-uploads" class="modal hidden">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Uploaded Files</h3>
+      <button id="btn-close-uploads" class="icon-btn">✕</button>
+    </div>
+    <div class="upload-area" id="upload-area">
+      <div class="upload-dropzone" id="dropzone">
+        <p>Drop files here or <button id="btn-browse">browse</button></p>
+        <input type="file" id="file-input" multiple hidden />
+      </div>
+      <div id="upload-list"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

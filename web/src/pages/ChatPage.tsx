@@ -26,6 +26,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { HERMES_BASE_PATH } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { AgentMetricsBar } from "@/components/AgentMetricsBar";
 import { Copy, PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -53,7 +54,11 @@ function buildWsUrl(
 // channel — the previous PTY child terminates with the old WS, and its
 // channel auto-evicts when no subscribers remain.
 function generateChannelId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+  if (
+    typeof crypto !== "undefined" &&
+    crypto &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return crypto.randomUUID();
   }
   return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
@@ -104,7 +109,19 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
   return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
-export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
+export default function ChatPage({
+  isActive = true,
+  chatSystemMonitor = true,
+  chatByAgentProfile = true,
+  channelBumpKey = 0,
+  onProfileActivated,
+}: {
+  isActive?: boolean;
+  chatSystemMonitor?: boolean;
+  chatByAgentProfile?: boolean;
+  channelBumpKey?: number;
+  onProfileActivated?: () => void;
+}) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -156,7 +173,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  // channel re-creates when either resume or the bump key changes —
+  // bumpKey increments on profile switch so the PTY respawns under the new profile.
+  const channel = useMemo(
+    () => generateChannelId(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [resumeParam, channelBumpKey],
+  );
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -435,9 +458,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const useWebgl = terminalTierWidthPx(host) >= 768;
     if (useWebgl) {
       try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
+        let webgl: any = null;
+        try {
+          webgl = new WebglAddon();
+          webgl.onContextLoss(() => webgl.dispose());
+        } catch (ctorErr) {
+          console.warn("[hermes-chat] WebGL addon construction failed", ctorErr);
+        }
+        if (webgl) {
+          try {
+            term.loadAddon(webgl);
+          } catch (loadErr) {
+            console.warn("[hermes-chat] WebGL addon load failed", loadErr);
+          }
+        }
       } catch (err) {
         console.warn(
           "[hermes-chat] WebGL renderer unavailable; falling back to default",
@@ -779,7 +813,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} />
+            <ChatSidebar
+              channel={channel}
+              chatByAgentProfile={chatByAgentProfile}
+              onProfileActivated={onProfileActivated}
+            />
           </div>
         </div>
       </>,
@@ -808,6 +846,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
+          <AgentMetricsBar visible={chatSystemMonitor && isActive} />
+
           <div
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
@@ -847,7 +887,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
           >
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} />
+              <ChatSidebar
+              channel={channel}
+              chatByAgentProfile={chatByAgentProfile}
+              onProfileActivated={onProfileActivated}
+            />
             </div>
           </div>
         )}

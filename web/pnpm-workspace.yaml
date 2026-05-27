@@ -1,0 +1,3 @@
+allowBuilds:
+  esbuild: true
+  unicode-animations: true

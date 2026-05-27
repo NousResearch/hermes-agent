@@ -163,6 +163,116 @@ class TestResolveAutoMainFirst:
         assert mock_resolve.call_args.args[1] == "runtime-model"
 
 
+class TestResolveAutoCustomNoRuntime:
+    """Custom provider must keep aux routing when no live runtime override exists.
+
+    Regression for #33333: cron jobs and gateway background tasks have no
+    active CLI/gateway session, so ``runtime_base_url`` is empty. The custom
+    branch must resolve the endpoint via ``_resolve_custom_runtime()`` (the
+    same resolver the main CLI uses) instead of dropping to ``None`` and
+    falling through to the wrong provider.
+    """
+
+    def test_custom_no_runtime_resolves_via_resolve_custom_runtime(self):
+        """No runtime override → endpoint comes from _resolve_custom_runtime()."""
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="custom",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="local-model",
+        ), patch(
+            "agent.auxiliary_client._resolve_custom_runtime",
+            return_value=("https://my-endpoint.example/v1", "sk-cfg-key", None),
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "local-model")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto()
+
+        assert client is mock_client
+        assert model == "local-model"
+        mock_resolve.assert_called_once()
+        assert mock_resolve.call_args.args[0] == "custom"
+        assert mock_resolve.call_args.kwargs["explicit_base_url"] == "https://my-endpoint.example/v1"
+        assert mock_resolve.call_args.kwargs["explicit_api_key"] == "sk-cfg-key"
+
+    def test_custom_no_runtime_propagates_api_mode(self):
+        """api_mode from _resolve_custom_runtime() must reach resolve_provider_client."""
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="custom",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="codex-model",
+        ), patch(
+            "agent.auxiliary_client._resolve_custom_runtime",
+            return_value=("https://gw.example/v1", "sk-key", "codex_responses"),
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_resolve.return_value = (MagicMock(), "codex-model")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            _resolve_auto()
+
+        assert mock_resolve.call_args.kwargs["api_mode"] == "codex_responses"
+
+    def test_custom_with_runtime_override_skips_config_fallback(self):
+        """An active runtime base_url wins; _resolve_custom_runtime is not consulted."""
+        with patch(
+            "agent.auxiliary_client._resolve_custom_runtime",
+        ) as mock_custom_runtime, patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_resolve.return_value = (MagicMock(), "runtime-model")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            _resolve_auto(main_runtime={
+                "provider": "custom",
+                "model": "runtime-model",
+                "base_url": "https://live-session.example/v1",
+                "api_key": "sk-live",
+                "api_mode": "",
+            })
+
+        mock_custom_runtime.assert_not_called()
+        assert mock_resolve.call_args.args[0] == "custom"
+        assert mock_resolve.call_args.kwargs["explicit_base_url"] == "https://live-session.example/v1"
+        assert mock_resolve.call_args.kwargs["explicit_api_key"] == "sk-live"
+
+    def test_custom_no_runtime_no_config_does_not_fabricate_base_url(self, monkeypatch):
+        """No runtime and no resolvable custom endpoint → don't invent a base_url;
+        fall through to the aux chain instead."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        chain_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="custom",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="local-model",
+        ), patch(
+            "agent.auxiliary_client._resolve_custom_runtime",
+            return_value=(None, None, None),
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),
+        ) as mock_resolve, patch(
+            "agent.auxiliary_client._try_openrouter",
+            return_value=(chain_client, "google/gemini-3-flash-preview"),
+        ):
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto()
+
+        # Step 1 still attempts custom, but with no fabricated base_url.
+        assert mock_resolve.call_args.kwargs["explicit_base_url"] is None
+        # …and resolution falls through to the aux chain.
+        assert client is chain_client
+        assert model == "google/gemini-3-flash-preview"
+
+
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────
 
 

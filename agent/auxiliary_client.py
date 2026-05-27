@@ -1659,44 +1659,6 @@ def _read_main_provider() -> str:
     return ""
 
 
-def _read_main_base_url() -> str:
-    """Read the user's configured ``model.base_url`` from config.yaml.
-
-    Returns the stripped URL string or ``""`` if not configured.
-    Only meaningful when the provider is ``custom`` or ``custom:<name>``.
-    """
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        model_cfg = cfg.get("model", {})
-        if isinstance(model_cfg, dict):
-            base_url = str(model_cfg.get("base_url", "") or "").strip()
-            if base_url:
-                return base_url
-    except Exception:
-        pass
-    return ""
-
-
-def _read_main_api_key() -> str:
-    """Read the user's configured ``model.api_key`` from config.yaml.
-
-    Returns the stripped key string or ``""`` if not configured.
-    Only meaningful when the provider is ``custom`` or ``custom:<name>``.
-    """
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        model_cfg = cfg.get("model", {})
-        if isinstance(model_cfg, dict):
-            api_key = str(model_cfg.get("api_key", "") or "").strip()
-            if api_key:
-                return api_key
-    except Exception:
-        pass
-    return ""
-
-
 # Process-local override set by AIAgent at session/turn start. Single-threaded
 # per turn — no lock needed. Cleared by ``clear_runtime_main()``.
 _RUNTIME_MAIN_PROVIDER: str = ""
@@ -2989,20 +2951,26 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
         resolved_provider = main_provider
         explicit_base_url = None
         explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
+        explicit_api_mode = runtime_api_mode or None
+        if main_provider == "custom" or main_provider.startswith("custom:"):
             resolved_provider = "custom"
-            explicit_base_url = runtime_base_url
-            explicit_api_key = runtime_api_key or None
-        elif (main_provider == "custom" or main_provider.startswith("custom:")) and not runtime_base_url:
-            # No runtime override (cron / background tasks): fall back to
-            # model.base_url and model.api_key from config.yaml so that
-            # custom-provider users don't lose aux routing when no active
-            # CLI/gateway session is present.
-            resolved_provider = "custom"
-            cfg_base_url = _read_main_base_url()
-            if cfg_base_url:
-                explicit_base_url = cfg_base_url
-                explicit_api_key = _read_main_api_key() or None
+            if runtime_base_url:
+                # Active CLI/gateway session — use the live runtime override.
+                explicit_base_url = runtime_base_url
+                explicit_api_key = runtime_api_key or None
+            else:
+                # No runtime override (cron / background tasks): resolve the
+                # custom endpoint the same way the main CLI does. This covers
+                # config.yaml-saved endpoints, OPENAI_BASE_URL/OPENAI_API_KEY
+                # env setups, api_mode propagation for non-OpenAI gateways, and
+                # local-server / OpenRouter-fallback normalization — none of
+                # which a bare config.yaml read would handle.
+                custom_base, custom_key, custom_mode = _resolve_custom_runtime()
+                if custom_base:
+                    explicit_base_url = custom_base
+                    explicit_api_key = custom_key
+                    if custom_mode:
+                        explicit_api_mode = custom_mode
         elif runtime_api_key:
             # Pin auxiliary to the same api_key as the active main chat session
             # so that a working key is reused instead of re-selecting from the pool
@@ -3022,7 +2990,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
                 main_model,
                 explicit_base_url=explicit_base_url,
                 explicit_api_key=explicit_api_key,
-                api_mode=runtime_api_mode or None,
+                api_mode=explicit_api_mode,
             )
             if client is not None:
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",

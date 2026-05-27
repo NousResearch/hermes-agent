@@ -67,6 +67,25 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
+/** Per-message token breakdown badge shown on assistant messages. */
+function TokenBadge({
+  inputTokens,
+  outputTokens,
+  cacheReadTokens,
+}: {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+}) {
+  const totalIn = inputTokens + cacheReadTokens;
+  const cacheHit = totalIn > 0 ? (cacheReadTokens / totalIn * 100).toFixed(0) : "0";
+  return (
+    <span className="text-xs text-text-tertiary ml-auto whitespace-nowrap">
+      {formatTokens(totalIn)} in · {cacheHit}% cached · {formatTokens(outputTokens)} out
+    </span>
+  );
+}
+
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
 function SnippetHighlight({ snippet }: { snippet: string }) {
@@ -206,6 +225,13 @@ function MessageBubble({
           <span className="text-xs text-text-tertiary">
             {timeAgo(msg.timestamp)}
           </span>
+        )}
+        {msg.role === "assistant" && msg.api_input_tokens != null && (
+          <TokenBadge
+            inputTokens={msg.api_input_tokens}
+            outputTokens={msg.api_output_tokens ?? 0}
+            cacheReadTokens={msg.api_cache_read_tokens ?? 0}
+          />
         )}
       </div>
       {msg.content &&

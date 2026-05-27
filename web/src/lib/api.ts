@@ -572,6 +572,9 @@ export interface SessionMessage {
   tool_name?: string;
   tool_call_id?: string;
   timestamp?: number;
+  api_input_tokens?: number;
+  api_output_tokens?: number;
+  api_cache_read_tokens?: number;
 }
 
 export interface SessionMessagesResponse {

@@ -125,6 +125,7 @@ AUTHOR_MAP = {
     "piyushvp1@gmail.com": "thelumiereguy",
     "pnascimento9596@gmail.com": "pnascimento9596",
     "dskwelmcy@163.com": "dskwe",
+    "2182712990@qq.com": "yu-xin-c",
     "421774554@qq.com": "wuli666",
     "twebefy@gmail.com": "tw2818",
     "harish.kukreja@gmail.com": "counterposition",

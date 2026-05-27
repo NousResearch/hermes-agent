@@ -120,10 +120,6 @@ def _validate_skill_name(name: str) -> str:
     return _normalize_bundle_path(name, field_name="skill name", allow_nested=False)
 
 
-def _validate_category_name(category: str) -> str:
-    return _normalize_bundle_path(category, field_name="category", allow_nested=False)
-
-
 def _validate_install_parent_path(category: str) -> str:
     return _normalize_bundle_path(category, field_name="install parent path", allow_nested=True)
 

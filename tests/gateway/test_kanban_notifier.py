@@ -1,5 +1,7 @@
 import asyncio
+import logging
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -30,6 +32,23 @@ async def _run_one_notifier_tick(monkeypatch, runner):
         if delay == 5:
             return None
         runner._running = False
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    await runner._kanban_notifier_watcher(interval=1)
+
+
+async def _run_notifier_ticks(monkeypatch, runner, *, ticks: int):
+    real_sleep = asyncio.sleep
+    slept = 0
+
+    async def fake_sleep(delay):
+        nonlocal slept
+        if delay == 5:
+            return None
+        slept += 1
+        if slept >= ticks:
+            runner._running = False
         await real_sleep(0)
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
@@ -172,6 +191,65 @@ def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
     # still returns the event for retry on the next tick.
     assert adapter.attempts >= 1, "send should have been attempted at least once"
     assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
+
+
+def test_kanban_notifier_disables_board_on_disk_io_error(monkeypatch, caplog):
+    runner = _make_runner(RecordingAdapter())
+
+    calls = {"connect": 0}
+
+    def _connect(*args, **kwargs):
+        calls["connect"] += 1
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(
+        kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(kb, "connect", _connect)
+
+    with caplog.at_level(logging.ERROR, logger="gateway.run"):
+        asyncio.run(_run_notifier_ticks(monkeypatch, runner, ticks=2))
+
+    assert calls["connect"] == 1
+    assert any(
+        "hit SQLite storage error" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_kanban_notifier_disables_explicit_corrupt_board(monkeypatch, caplog, tmp_path):
+    runner = _make_runner(RecordingAdapter())
+
+    db_path = tmp_path / "kanban.db"
+    db_path.write_text("placeholder", encoding="utf-8")
+    backup_path = tmp_path / "kanban.db.corrupt.bak"
+
+    calls = {"connect": 0}
+
+    def _connect(*args, **kwargs):
+        calls["connect"] += 1
+        raise kb.KanbanDbCorruptError(
+            db_path,
+            backup_path,
+            "integrity_check returned 'row 7 missing from index idx_tasks_status'",
+        )
+
+    monkeypatch.setattr(
+        kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(kb, "connect", _connect)
+
+    with caplog.at_level(logging.ERROR, logger="gateway.run"):
+        asyncio.run(_run_notifier_ticks(monkeypatch, runner, ticks=2))
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("corrupt or not a valid SQLite database" in msg for msg in messages) == 1
+    assert calls["connect"] == 1
+    assert not any(record.exc_info for record in caplog.records)
 
 
 def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):

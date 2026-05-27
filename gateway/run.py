@@ -4848,6 +4848,38 @@ class GatewayRunner:
         if not notifier_profile:
             notifier_profile = self._active_profile_name()
             self._kanban_notifier_profile = notifier_profile
+        disabled_broken_boards: dict[str, tuple[str, int | None, int | None]] = {}
+
+        def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
+            path = _kb.kanban_db_path(slug)
+            try:
+                resolved = str(path.expanduser().resolve())
+            except Exception:
+                resolved = str(path)
+            try:
+                stat = path.stat()
+            except OSError:
+                return (resolved, None, None)
+            return (resolved, stat.st_mtime_ns, stat.st_size)
+
+        def _board_db_failure_kind(exc: Exception) -> Optional[str]:
+            if isinstance(exc, _kb.KanbanDbCorruptError):
+                return "invalid"
+            if not isinstance(exc, sqlite3.DatabaseError):
+                return None
+            msg = str(exc).lower()
+            if (
+                "file is not a database" in msg
+                or "database disk image is malformed" in msg
+            ):
+                return "invalid"
+            if (
+                "disk i/o error" in msg
+                or "readonly database" in msg
+                or "unable to open database file" in msg
+            ):
+                return "storage"
+            return None
 
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
@@ -4877,6 +4909,21 @@ class GatewayRunner:
                     for board_meta in boards:
                         slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
                         db_path = board_meta.get("db_path")
+                        fingerprint = _board_db_fingerprint(slug)
+                        disabled_fingerprint = disabled_broken_boards.get(slug)
+                        if disabled_fingerprint == fingerprint:
+                            logger.debug(
+                                "kanban notifier: board %s disabled for DB fingerprint %s",
+                                slug,
+                                fingerprint[0],
+                            )
+                            continue
+                        if disabled_fingerprint is not None:
+                            logger.info(
+                                "kanban notifier: board %s database changed; retrying notifier",
+                                slug,
+                            )
+                            disabled_broken_boards.pop(slug, None)
                         try:
                             resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(_kb.kanban_db_path(slug).resolve())
                         except Exception:
@@ -4888,12 +4935,9 @@ class GatewayRunner:
                             )
                             continue
                         seen_db_paths.add(resolved_db_path)
+                        conn = None
                         try:
                             conn = _kb.connect(board=slug)
-                        except Exception as exc:
-                            logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
-                            continue
-                        try:
                             # `connect()` runs the schema + idempotent migration
                             # on first open per process, so an explicit
                             # `init_db()` here would be redundant. Worse:
@@ -4947,8 +4991,36 @@ class GatewayRunner:
                                     "task": task,
                                     "board": slug,
                                 })
+                        except (_kb.KanbanDbCorruptError, sqlite3.DatabaseError) as exc:
+                            failure_kind = _board_db_failure_kind(exc)
+                            if failure_kind == "invalid":
+                                disabled_broken_boards[slug] = fingerprint
+                                logger.error(
+                                    "kanban notifier: board %s database %s is corrupt or not "
+                                    "a valid SQLite database; disabling notifications for this "
+                                    "board until the file changes or the gateway restarts. Move "
+                                    "or restore the file, then run `hermes kanban init` if you "
+                                    "need a fresh board.",
+                                    slug,
+                                    fingerprint[0],
+                                )
+                                continue
+                            if failure_kind == "storage":
+                                disabled_broken_boards[slug] = fingerprint
+                                logger.error(
+                                    "kanban notifier: board %s database %s hit SQLite storage "
+                                    "error (%s); disabling notifications for this board until "
+                                    "the file changes or the gateway restarts.",
+                                    slug,
+                                    fingerprint[0],
+                                    exc,
+                                )
+                                continue
+                            logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
+                            continue
                         finally:
-                            conn.close()
+                            if conn is not None:
+                                conn.close()
                     return deliveries
 
                 deliveries = await asyncio.to_thread(_collect)
@@ -5438,14 +5510,24 @@ class GatewayRunner:
                 return (resolved, None, None)
             return (resolved, stat.st_mtime_ns, stat.st_size)
 
-        def _is_corrupt_board_db_error(exc: Exception) -> bool:
+        def _board_db_failure_kind(exc: Exception) -> Optional[str]:
+            if isinstance(exc, _kb.KanbanDbCorruptError):
+                return "invalid"
             if not isinstance(exc, sqlite3.DatabaseError):
-                return False
+                return None
             msg = str(exc).lower()
-            return (
+            if (
                 "file is not a database" in msg
                 or "database disk image is malformed" in msg
-            )
+            ):
+                return "invalid"
+            if (
+                "disk i/o error" in msg
+                or "readonly database" in msg
+                or "unable to open database file" in msg
+            ):
+                return "storage"
+            return None
 
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
@@ -5483,17 +5565,29 @@ class GatewayRunner:
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
                 )
-            except sqlite3.DatabaseError as exc:
-                if _is_corrupt_board_db_error(exc):
+            except (_kb.KanbanDbCorruptError, sqlite3.DatabaseError) as exc:
+                failure_kind = _board_db_failure_kind(exc)
+                if failure_kind == "invalid":
                     disabled_corrupt_boards[slug] = fingerprint
                     logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; disabling dispatch for this board "
-                        "until the file changes or the gateway restarts. Move "
-                        "or restore the file, then run `hermes kanban init` if "
-                        "you need a fresh board.",
+                        "kanban dispatcher: board %s database %s is corrupt or "
+                        "not a valid SQLite database; disabling dispatch for this "
+                        "board until the file changes or the gateway restarts. "
+                        "Move or restore the file, then run `hermes kanban init` "
+                        "if you need a fresh board.",
                         slug,
                         fingerprint[0],
+                    )
+                    return None
+                if failure_kind == "storage":
+                    disabled_corrupt_boards[slug] = fingerprint
+                    logger.error(
+                        "kanban dispatcher: board %s database %s hit SQLite storage "
+                        "error (%s); disabling dispatch for this board until the "
+                        "file changes or the gateway restarts.",
+                        slug,
+                        fingerprint[0],
+                        exc,
                     )
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
@@ -5639,6 +5733,14 @@ class GatewayRunner:
                                     "kanban auto-decompose [%s]: %s → single task (no fanout)",
                                     slug, tid,
                                 )
+                        elif outcome.reason == _decomp.AUX_BUSY_REASON:
+                            logger.debug(
+                                "kanban auto-decompose [%s]: auxiliary provider busy on %s; "
+                                "deferring remaining triage tasks to the next tick",
+                                slug,
+                                tid,
+                            )
+                            return successes
                         else:
                             # Common no-op reasons (no aux client configured) shouldn't
                             # spam logs every tick. Log at debug.

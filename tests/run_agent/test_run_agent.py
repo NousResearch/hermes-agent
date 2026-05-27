@@ -95,6 +95,38 @@ def agent_with_memory_tool():
         return a
 
 
+def test_current_main_runtime_rehydrates_named_custom_provider(agent):
+    agent.provider = "custom"
+    agent.model = "qwen3.6-35b-uncensored"
+    agent.base_url = ""
+    agent.api_key = ""
+    agent.api_mode = ""
+
+    with (
+        patch("hermes_cli.config.load_config", return_value={
+            "model": {"provider": "custom:guardian"},
+        }),
+        patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "guardian-key",
+            "api_mode": "chat_completions",
+        }) as mock_resolve_runtime,
+    ):
+        runtime = agent._current_main_runtime()
+
+    assert runtime["provider"] == "custom:guardian"
+    assert runtime["base_url"] == "http://127.0.0.1:11434/v1"
+    assert runtime["api_key"] == "guardian-key"
+    assert runtime["api_mode"] == "chat_completions"
+    mock_resolve_runtime.assert_called_once_with(
+        requested="custom:guardian",
+        explicit_api_key=None,
+        explicit_base_url=None,
+        target_model="qwen3.6-35b-uncensored",
+    )
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()

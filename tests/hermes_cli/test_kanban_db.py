@@ -69,6 +69,28 @@ def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     assert "53 51 4c 69 74 17 03 03 00 13" in msg
 
 
+def test_write_txn_preserves_original_error_when_sqlite_already_aborted_transaction():
+    """Cleanup must not replace the original SQLite failure with rollback noise."""
+
+    class _Conn:
+        def __init__(self):
+            self.calls: list[str] = []
+            self.in_transaction = False
+
+        def execute(self, sql: str):
+            self.calls.append(sql)
+            return None
+
+    conn = _Conn()
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        with kb.write_txn(conn):
+            conn.in_transaction = False
+            raise sqlite3.OperationalError("disk I/O error")
+
+    assert conn.calls == ["BEGIN IMMEDIATE"]
+
+
 def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     """Legacy DBs missing additive indexed columns must migrate cleanly.
 

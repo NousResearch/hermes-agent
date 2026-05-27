@@ -347,3 +347,38 @@ def test_decompose_no_aux_client_configured(kanban_home):
 
     assert outcome.ok is False
     assert "no auxiliary client" in outcome.reason
+
+
+def test_decompose_guardian_busy_conflict_returns_aux_busy_reason(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="busy task", triage=True)
+
+    class _BusyError(Exception):
+        def __init__(self):
+            super().__init__("Error code: 409 - queue admission rejected")
+            self.status_code = 409
+            self.body = {
+                "error": {
+                    "code": "queue_admission_rejected",
+                    "reason": "api_key_already_has_running_request",
+                }
+            }
+
+    client = MagicMock()
+    client.chat.completions.create = MagicMock(side_effect=_BusyError())
+
+    patches = _patch_list_profiles(["orchestrator", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        with patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(client, "test-model"),
+        ), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert outcome.reason == decomp.AUX_BUSY_REASON

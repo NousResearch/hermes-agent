@@ -49,6 +49,9 @@ from hermes_cli import profiles as profiles_mod
 logger = logging.getLogger(__name__)
 
 
+AUX_BUSY_REASON = "auxiliary provider busy"
+
+
 _SYSTEM_PROMPT = """You are the Kanban decomposer for the Hermes Agent board.
 
 A user dropped a rough idea into the Triage column. Your job is to break it
@@ -268,6 +271,44 @@ def _normalize_assignee_choice(
     return chosen
 
 
+def _extract_api_error_info(exc: Exception) -> tuple[Optional[int], str, str]:
+    """Return ``(status_code, error_code, error_reason)`` for SDK errors."""
+    status_code = getattr(exc, "status_code", None)
+    if not isinstance(status_code, int):
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                response_body = response.json()
+            except Exception:
+                response_body = None
+            if isinstance(response_body, dict):
+                body = response_body
+    if not isinstance(body, dict):
+        body = {}
+    error_obj = body.get("error", {}) if isinstance(body.get("error"), dict) else {}
+    error_code = error_obj.get("code") or body.get("code") or ""
+    error_reason = error_obj.get("reason") or body.get("reason") or ""
+    return (
+        status_code if isinstance(status_code, int) else None,
+        str(error_code).strip(),
+        str(error_reason).strip(),
+    )
+
+
+def _is_aux_provider_busy(exc: Exception) -> bool:
+    """True when the auxiliary provider rejected work because the key is busy."""
+    status_code, error_code, error_reason = _extract_api_error_info(exc)
+    if status_code != 409:
+        return False
+    return (
+        error_code == "queue_admission_rejected"
+        or error_reason == "api_key_already_has_running_request"
+    )
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -339,7 +380,8 @@ def decompose_task(
         logger.info(
             "decompose: API call failed for %s (%s)", task_id, exc,
         )
-        return DecomposeOutcome(task_id, False, f"LLM error: {type(exc).__name__}")
+        reason = AUX_BUSY_REASON if _is_aux_provider_busy(exc) else f"LLM error: {type(exc).__name__}"
+        return DecomposeOutcome(task_id, False, reason)
 
     try:
         raw = resp.choices[0].message.content or ""

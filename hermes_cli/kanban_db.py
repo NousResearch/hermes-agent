@@ -1478,7 +1478,13 @@ def write_txn(conn: sqlite3.Connection):
     try:
         yield conn
     except Exception:
-        conn.execute("ROLLBACK")
+        # SQLite can auto-abort the transaction on hard failures like
+        # `disk I/O error`. In that state a best-effort rollback is fine,
+        # but a second `cannot rollback - no transaction is active` cleanup
+        # error must not mask the original failure.
+        if getattr(conn, "in_transaction", False):
+            with contextlib.suppress(sqlite3.DatabaseError):
+                conn.execute("ROLLBACK")
         raise
     else:
         conn.execute("COMMIT")

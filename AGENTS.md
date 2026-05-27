@@ -373,6 +373,10 @@ Non-secret settings (timeouts, thresholds, feature flags, paths, display
 preferences) belong in `config.yaml`, not `.env`. If internal code needs an
 env var mirror for backward compatibility, bridge it from `config.yaml` to
 the env var in code (see `gateway_timeout`, `terminal.cwd` → `TERMINAL_CWD`).
+`HERMES_API_TIMEOUT` is one of those legacy mirrors: streaming request paths
+still honor it as a hard wall-clock cap. For host-managed gateway deployments,
+prefer a `systemctl --user edit hermes-gateway.service` drop-in over writing
+non-secret timeout knobs into `~/.hermes/.env`.
 
 ### Config loaders (three paths — know which one you're in):
 
@@ -853,6 +857,14 @@ Isolation model:
 - After `kanban.failure_limit` consecutive non-success attempts on the
   same task (default: 2), the dispatcher auto-blocks it to prevent spin
   loops.
+- Corrupt boards fail closed. If `connect()` raises
+  `KanbanDbCorruptError`, the gateway notifier/dispatcher disables that
+  board fingerprint until the DB file changes or the process restarts,
+  instead of retrying every tick forever.
+- For pure index corruption, the cheapest repair is often:
+  `sqlite3 ~/.hermes/kanban/boards/<slug>/kanban.db 'REINDEX; PRAGMA integrity_check;'`
+  while the gateway is stopped. Escalate to `.recover` only if `REINDEX`
+  does not return `ok`.
 
 Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 

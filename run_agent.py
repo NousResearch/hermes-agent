@@ -837,13 +837,56 @@ class AIAgent:
 
     def _current_main_runtime(self) -> Dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""
-        return {
+        runtime = {
             "model": getattr(self, "model", "") or "",
             "provider": getattr(self, "provider", "") or "",
             "base_url": getattr(self, "base_url", "") or "",
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
         }
+
+        provider = str(runtime.get("provider") or "").strip().lower()
+        if provider != "custom":
+            return runtime
+
+        try:
+            from hermes_cli.config import load_config as _load_config
+
+            model_cfg = ((_load_config() or {}).get("model") or {})
+            configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        except Exception:
+            configured_provider = ""
+
+        if configured_provider in {"", "auto", "main", "custom"}:
+            return runtime
+
+        # Named custom providers are flattened to "custom" at runtime, but
+        # auxiliary routing needs the saved provider name to re-resolve the
+        # endpoint consistently for `provider: main` auxiliary tasks.
+        runtime["provider"] = configured_provider
+
+        if runtime["base_url"] and runtime["api_mode"]:
+            return runtime
+
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider as _resolve_runtime_provider
+
+            resolved = _resolve_runtime_provider(
+                requested=configured_provider,
+                explicit_api_key=runtime["api_key"] or None,
+                explicit_base_url=runtime["base_url"] or None,
+                target_model=runtime["model"] or None,
+            ) or {}
+        except Exception:
+            resolved = {}
+
+        if resolved:
+            runtime["base_url"] = runtime["base_url"] or str(resolved.get("base_url") or "")
+            runtime["api_key"] = runtime["api_key"] or str(resolved.get("api_key") or "")
+            runtime["api_mode"] = runtime["api_mode"] or str(resolved.get("api_mode") or "")
+            runtime["model"] = runtime["model"] or str(resolved.get("model") or "")
+
+        return runtime
 
     def _check_compression_model_feasibility(self) -> None:
         """Forwarder — see ``agent.conversation_compression.check_compression_model_feasibility``."""

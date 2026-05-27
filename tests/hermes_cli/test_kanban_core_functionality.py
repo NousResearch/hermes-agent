@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -3680,6 +3681,258 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     # added the review-column probe alongside the existing ready-column
     # probe, bumping this from 3 → 5.
     assert calls["connect"] == 5
+
+
+def test_gateway_dispatcher_disables_explicit_corrupt_board_without_traceback(
+    monkeypatch, tmp_path, caplog
+):
+    """Explicit KanbanDbCorruptError logs once and disables the board."""
+    import asyncio
+    import logging
+
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    corrupt_db = tmp_path / "kanban.db"
+    corrupt_db.write_text("placeholder", encoding="utf-8")
+    backup_db = tmp_path / "kanban.db.corrupt.bak"
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": _kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(
+        _kb,
+        "read_board_metadata",
+        lambda slug: {"slug": slug},
+    )
+    monkeypatch.setattr(_kb, "kanban_db_path", lambda board=None: corrupt_db)
+
+    calls = {"connect": 0, "to_thread": 0}
+
+    def _connect(*args, **kwargs):
+        calls["connect"] += 1
+        raise _kb.KanbanDbCorruptError(
+            corrupt_db,
+            backup_db,
+            "integrity_check returned 'row 7 missing from index idx_tasks_status'",
+        )
+
+    async def _to_thread(fn, *args, **kwargs):
+        calls["to_thread"] += 1
+        result = fn(*args, **kwargs)
+        if calls["to_thread"] >= 4:
+            runner._running = False
+        return result
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.ERROR, logger="gateway.run"):
+        asyncio.run(
+            asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=3.0,
+            )
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("corrupt or not a valid SQLite database" in msg for msg in messages) == 1
+    assert not any("tick failed on board" in msg for msg in messages)
+    assert not any(record.exc_info for record in caplog.records)
+    assert calls["connect"] >= 2
+
+
+def test_gateway_dispatcher_disables_storage_error_board_without_traceback(
+    monkeypatch, tmp_path, caplog
+):
+    """Disk I/O boards log one actionable error and stop retrying per tick."""
+    import asyncio
+    import logging
+    import sqlite3
+
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    broken_db = tmp_path / "kanban.db"
+    broken_db.write_text("placeholder", encoding="utf-8")
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": _kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(
+        _kb,
+        "read_board_metadata",
+        lambda slug: {"slug": slug},
+    )
+    monkeypatch.setattr(_kb, "kanban_db_path", lambda board=None: broken_db)
+
+    calls = {"connect": 0, "to_thread": 0}
+
+    def _connect(*args, **kwargs):
+        calls["connect"] += 1
+        raise sqlite3.OperationalError("disk I/O error")
+
+    async def _to_thread(fn, *args, **kwargs):
+        calls["to_thread"] += 1
+        result = fn(*args, **kwargs)
+        if calls["to_thread"] >= 4:
+            runner._running = False
+        return result
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.ERROR, logger="gateway.run"):
+        asyncio.run(
+            asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=3.0,
+            )
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("hit SQLite storage error" in msg for msg in messages) == 1
+    assert not any("tick failed on board" in msg for msg in messages)
+    assert not any(record.exc_info for record in caplog.records)
+    assert calls["connect"] == 5
+
+
+def test_gateway_dispatcher_auto_decompose_defers_after_aux_busy(
+    monkeypatch, tmp_path, caplog
+):
+    """A busy aux key should stop the rest of this tick's decompose attempts."""
+    import asyncio
+
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+    import hermes_cli.kanban_decompose as _decomp
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+                "auto_decompose": True,
+                "auto_decompose_per_tick": 3,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": _kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(
+        _kb,
+        "read_board_metadata",
+        lambda slug: {"slug": slug},
+    )
+    monkeypatch.setattr(
+        _kb,
+        "kanban_db_path",
+        lambda board=None: tmp_path / f"{board or _kb.DEFAULT_BOARD}.db",
+    )
+
+    class _DummyConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(_kb, "connect", lambda board=None: _DummyConn())
+    monkeypatch.setattr(
+        _kb,
+        "dispatch_once",
+        lambda *args, **kwargs: SimpleNamespace(
+            spawned=[],
+            reclaimed=0,
+            crashed=[],
+            timed_out=[],
+            promoted=0,
+            auto_blocked=[],
+        ),
+    )
+    monkeypatch.setattr(_kb, "has_spawnable_ready", lambda conn: False)
+    monkeypatch.setattr(_kb, "has_spawnable_review", lambda conn: False)
+
+    attempted: list[str] = []
+    monkeypatch.setattr(_decomp, "list_triage_ids", lambda: ["t1", "t2", "t3"])
+
+    def _decompose_task(task_id: str, author: Optional[str] = None):
+        attempted.append(task_id)
+        if task_id == "t1":
+            return _decomp.DecomposeOutcome(task_id, False, _decomp.AUX_BUSY_REASON)
+        return _decomp.DecomposeOutcome(task_id, True, "ok")
+
+    monkeypatch.setattr(_decomp, "decompose_task", _decompose_task)
+
+    async def _sleep(_delay):
+        return None
+
+    async def _to_thread(fn, *args, **kwargs):
+        result = fn(*args, **kwargs)
+        if fn.__name__ == "_ready_nonempty":
+            runner._running = False
+        return result
+
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.DEBUG, logger="gateway.run"):
+        asyncio.run(
+            asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=3.0,
+            )
+        )
+
+    assert attempted == ["t1"]
+    assert any(
+        "deferring remaining triage tasks to the next tick" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 # ---------------------------------------------------------------------------

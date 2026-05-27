@@ -12519,6 +12519,22 @@ Examples:
         help="Run AST-level analysis on Python files (opt-in diagnostic)",
     )
 
+    """
+        [NEW]: Added interactive flag to ask user to confirm
+        the generated skill
+
+        It adds an extra flag so that users can see what is being generated and
+        whether or not they want it to be in the skills of the agent
+    """
+    skills_audit.add_argument(
+        "--interactive", "-i",
+        action="store_true",
+        help=(
+            "Run a dry run curator review"
+            "and prompt for confirmation before consolidation/pruning"
+        )
+    )
+
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill"
     )

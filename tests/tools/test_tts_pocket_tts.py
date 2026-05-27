@@ -6,8 +6,9 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy")
 
 from tools import tts_tool
 from tools.tts_tool import (

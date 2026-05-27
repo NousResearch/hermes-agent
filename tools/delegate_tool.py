@@ -1344,6 +1344,13 @@ def _execute_rollbacks(
         return []
 
     import model_tools as _mt
+
+    # Import hook once at function top (avoid re-importing inside the per-item loop).
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+    except Exception:
+        _invoke_hook = None
+
     rollback_results: List[Dict[str, Any]] = []
 
     for item in rollback_items:
@@ -1360,8 +1367,14 @@ def _execute_rollbacks(
             continue
 
         child = None
+        _subagent_id = None  # initialised before try for finally-block access
         rb_entry: Dict[str, Any] = {"task_index": idx, "status": "error", "error": None}
+        # Heartbeat state for this rollback child — same pattern as _run_single_child.
+        _rb_hb_stop = threading.Event()
+
         try:
+            # Bug #4 fix: max(1, ...) ensures at least 1 iteration even when
+            # effective_max_iter is 0.
             child = _build_child_agent(
                 task_index=idx,
                 goal=f"ROLLBACK: {instruction}",
@@ -1372,7 +1385,7 @@ def _execute_rollbacks(
                 ),
                 toolsets=["terminal", "file"],
                 model=creds["model"],
-                max_iterations=min(10, effective_max_iter),
+                max_iterations=max(1, min(10, effective_max_iter)),
                 task_count=1,
                 parent_agent=parent_agent,
                 override_provider=creds["provider"],
@@ -1383,10 +1396,108 @@ def _execute_rollbacks(
             )
             child._delegate_saved_tool_names = parent_tool_names
 
+            # --- Bug #3 fix: TUI registration for rollback children ---
+            _raw_sid = getattr(child, "_subagent_id", None)
+            _subagent_id = _raw_sid if isinstance(_raw_sid, str) else None
+            if _subagent_id:
+                _raw_depth = getattr(child, "_delegate_depth", 1)
+                _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
+                _parent_sid = getattr(child, "_parent_subagent_id", None)
+                _register_subagent(
+                    {
+                        "subagent_id": _subagent_id,
+                        "parent_id": _parent_sid if isinstance(_parent_sid, str) else None,
+                        "depth": _tui_depth,
+                        "goal": f"ROLLBACK: {instruction}",
+                        "model": (
+                            getattr(child, "model", None)
+                            if isinstance(getattr(child, "model", None), str)
+                            else None
+                        ),
+                        "started_at": time.time(),
+                        "status": "running",
+                        "tool_count": 0,
+                        "agent": child,
+                    }
+                )
+
+            # --- Bug #2 fix: heartbeat thread for rollback children ---
+            # Same pattern as _run_single_child (~L1510-1587). Without this,
+            # the gateway inactivity timeout kills the parent while the
+            # rollback child is working.
+            def _rb_heartbeat_loop():
+                while not _rb_hb_stop.wait(_HEARTBEAT_INTERVAL):
+                    if parent_agent is None:
+                        continue
+                    touch = getattr(parent_agent, "_touch_activity", None)
+                    if not touch:
+                        continue
+                    desc = f"delegate_task: rollback subagent {idx} working"
+                    try:
+                        if child is not None:
+                            child_summary = child.get_activity_summary()
+                            child_tool = child_summary.get("current_tool")
+                            child_iter = child_summary.get("api_call_count", 0)
+                            child_max = child_summary.get("max_iterations", 0)
+                            if child_tool:
+                                desc = (
+                                    f"delegate_task: rollback subagent running "
+                                    f"{child_tool} (iteration {child_iter}/{child_max})"
+                                )
+                    except Exception:
+                        pass
+                    try:
+                        touch(desc)
+                    except Exception:
+                        pass
+
+            _rb_hb_thread = threading.Thread(target=_rb_heartbeat_loop, daemon=True)
+            _rb_hb_thread.start()
+
+            # --- Bug #1 fix: wrap run_conversation in ThreadPoolExecutor ---
+            # with timeout so a hung rollback child cannot block the parent
+            # indefinitely.  Reuses the same _get_child_timeout() pattern as
+            # _run_single_child (~L1640).
             rb_start = time.monotonic()
-            rb_result = child.run_conversation(
-                user_message=f"ROLLBACK: {instruction}",
+            child_timeout = _get_child_timeout()
+            _rb_executor = ThreadPoolExecutor(
+                max_workers=1,
+                initializer=_set_subagent_approval_cb,
+                initargs=(_get_subagent_approval_callback(),),
             )
+
+            def _rb_run():
+                return child.run_conversation(
+                    user_message=f"ROLLBACK: {instruction}",
+                )
+
+            _rb_future = _rb_executor.submit(_rb_run)
+            try:
+                rb_result = _rb_future.result(timeout=child_timeout)
+            except Exception as _rb_timeout_exc:
+                # Signal the child to stop so its thread can exit cleanly.
+                try:
+                    if hasattr(child, "interrupt"):
+                        child.interrupt()
+                    elif hasattr(child, "_interrupt_requested"):
+                        child._interrupt_requested = True
+                except Exception:
+                    pass
+
+                is_timeout = isinstance(
+                    _rb_timeout_exc, (FuturesTimeoutError, TimeoutError)
+                )
+                rb_duration = round(time.monotonic() - rb_start, 2)
+                logger.warning(
+                    "Rollback subagent %d %s after %.1fs",
+                    idx,
+                    "timed out" if is_timeout else f"raised {type(_rb_timeout_exc).__name__}",
+                    rb_duration,
+                )
+                raise
+            finally:
+                _rb_executor.shutdown(wait=False)
+
             rb_duration = round(time.monotonic() - rb_start, 2)
 
             rb_summary = rb_result.get("final_response") or ""
@@ -1420,6 +1531,13 @@ def _execute_rollbacks(
             rb_entry["error"] = str(exc)
 
         finally:
+            # Stop heartbeat thread so it doesn't keep touching parent activity
+            _rb_hb_stop.set()
+
+            # Unregister from TUI if we registered
+            if _subagent_id:
+                _unregister_subagent(_subagent_id)
+
             # Snapshot session_id before close (close may clear attributes in future)
             _child_sid = getattr(child, "session_id", "") if child is not None else ""
 
@@ -1448,19 +1566,19 @@ def _execute_rollbacks(
                         )
                     except Exception:
                         logger.debug("rollback on_delegation failed", exc_info=True)
-                # subagent_stop hook
-                try:
-                    from hermes_cli.plugins import invoke_hook as _invoke_hook
-                    _invoke_hook(
-                        "subagent_stop",
-                        parent_session_id=getattr(parent_agent, "session_id", None),
-                        child_role="rollback",
-                        child_summary=rb_entry.get("summary"),
-                        child_status=rb_entry.get("status"),
-                        duration_ms=int((rb_entry.get("duration_seconds") or 0) * 1000),
-                    )
-                except Exception:
-                    logger.debug("rollback subagent_stop hook failed", exc_info=True)
+                # subagent_stop hook (import moved to function top — bug #5 fix)
+                if _invoke_hook is not None:
+                    try:
+                        _invoke_hook(
+                            "subagent_stop",
+                            parent_session_id=getattr(parent_agent, "session_id", None),
+                            child_role="rollback",
+                            child_summary=rb_entry.get("summary"),
+                            child_status=rb_entry.get("status"),
+                            duration_ms=int((rb_entry.get("duration_seconds") or 0) * 1000),
+                        )
+                    except Exception:
+                        logger.debug("rollback subagent_stop hook failed", exc_info=True)
 
         rollback_results.append(rb_entry)
 

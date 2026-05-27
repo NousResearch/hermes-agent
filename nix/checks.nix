@@ -260,6 +260,20 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # Verify the messaging variant actually ships discord.py — regression
+        # guard for the lazy-install / [all] migration (2026-05-12): messaging
+        # deps were dropped from [all], so nix profile install users would get
+        # ImportError at runtime unless they use the #messaging or #full variant.
+        messaging-variant = pkgs.runCommand "hermes-messaging-variant" { } ''
+          set -e
+          echo "=== Checking discord.py importable from messaging variant ==="
+          ${self'.packages.messaging.hermesVenv}/bin/python3 -c \
+            "import discord; print(discord.__version__)"
+          echo "PASS: discord.py importable from messaging variant venv"
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # ── Config merge + round-trip test ────────────────────────────────
         # Tests the merge script (Nix activation behavior) across 7
         # scenarios, then verifies Python's load_config() reads correctly.

@@ -117,6 +117,12 @@ async def handle_ws(ws: Any) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     await ws.accept()
 
+    origin = ws.request.headers.get("origin", "")
+    allowed_origins = {"http://localhost", "http://127.0.0.1", "hermes://local"}
+    if origin and origin not in allowed_origins:
+        await ws.close(4001, "forbidden: bad origin")
+        return
+
     transport = WSTransport(ws, asyncio.get_running_loop())
 
     await transport.write_async(

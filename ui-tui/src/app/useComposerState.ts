@@ -267,12 +267,12 @@ export function useComposerState({
     [handleResolvedPaste, onClipboardPaste, querier]
   )
 
-  const openEditor = useCallback(async () => {
+  const openEditor = useCallback(async (initialText?: string) => {
     const dir = mkdtempSync(join(tmpdir(), 'hermes-'))
     const file = join(dir, 'prompt.md')
     const [cmd, ...args] = resolveEditor()
 
-    writeFileSync(file, [...inputBuf, input].join('\n'))
+    writeFileSync(file, initialText ?? [...inputBuf, input].join('\n'))
 
     let exitCode: null | number = null
 

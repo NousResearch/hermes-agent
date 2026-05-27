@@ -758,6 +758,7 @@ export function useMainApp(gw: GatewayClient) {
         composer: {
           enqueue: composerActions.enqueue,
           hasSelection,
+          openEditor: composerActions.openEditor,
           paste,
           queueRef: composerRefs.queueRef,
           selection,

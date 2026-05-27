@@ -811,11 +811,32 @@ class _CodexCompletionsAdapter:
                     elif "function_call" in _etype:
                         has_function_calls = True
                 _check_cancelled()
-                final = stream.get_final_response()
+                try:
+                    final = stream.get_final_response()
+                except TypeError as exc:
+                    err_text = str(exc)
+                    if (
+                        "NoneType" in err_text
+                        and "iterable" in err_text
+                        and (collected_output_items or collected_text_deltas)
+                    ):
+                        logger.warning(
+                            "Codex auxiliary Responses SDK failed to parse final "
+                            "response after streaming output; synthesizing from "
+                            "stream events. err=%s",
+                            err_text,
+                        )
+                        final = SimpleNamespace(output=None, usage=None)
+                    else:
+                        raise
 
-            # Backfill empty output from collected stream events
+            # Backfill empty/None output from collected stream events.  The
+            # chatgpt.com Codex backend can stream valid output items/text, then
+            # leave response.output as None while the OpenAI SDK parses the
+            # final response, which otherwise breaks title generation and other
+            # auxiliary tasks after the user-facing turn has already succeeded.
             _output = getattr(final, "output", None)
-            if isinstance(_output, list) and not _output:
+            if (isinstance(_output, list) and not _output) or _output is None:
                 if collected_output_items:
                     final.output = list(collected_output_items)
                     logger.debug(

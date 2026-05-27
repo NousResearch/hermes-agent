@@ -155,9 +155,10 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, final_response=None, final_error=None, events=None):
         self._final_response = final_response
         self._final_error = final_error
+        self._events = list(events or [])
 
     def __enter__(self):
         return self
@@ -166,7 +167,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -482,6 +483,61 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_synthesizes_response_after_sdk_none_output_parse_error(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="stream item ok")],
+    )
+    stream = _FakeResponsesStream(
+        events=[
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_text.delta", delta="stream item ok"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+        ],
+        final_error=TypeError("'NoneType' object is not iterable"),
+    )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: stream,
+            create=lambda **kwargs: _codex_message_response("fallback should not run"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.status == "completed"
+    assert response.output == [message_item]
+
+
+def test_run_codex_stream_synthesizes_response_when_sdk_parse_error_interrupts_iteration(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="iteration ok")],
+    )
+
+    class _ParseErrorStream(_FakeResponsesStream):
+        def __iter__(self):
+            yield SimpleNamespace(type="response.created")
+            yield SimpleNamespace(type="response.output_text.delta", delta="iteration ok")
+            yield SimpleNamespace(type="response.output_item.done", item=message_item)
+            raise TypeError("'NoneType' object is not iterable")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _ParseErrorStream(),
+            create=lambda **kwargs: _codex_message_response("fallback should not run"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.status == "completed"
+    assert response.output == [message_item]
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

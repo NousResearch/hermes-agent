@@ -246,12 +246,49 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             sum(len(p) for p in agent._codex_streamed_text_parts),
                             agent._client_log_context(),
                         )
-                final_response = stream.get_final_response()
+                try:
+                    final_response = stream.get_final_response()
+                except TypeError as exc:
+                    err_text = str(exc)
+                    if (
+                        "NoneType" in err_text
+                        and "iterable" in err_text
+                        and (collected_output_items or agent._codex_streamed_text_parts)
+                    ):
+                        logger.warning(
+                            "Codex Responses SDK failed to parse final response after "
+                            "streaming output items; synthesizing response from stream "
+                            "events. %s err=%s",
+                            agent._client_log_context(),
+                            err_text,
+                        )
+                        if collected_output_items:
+                            final_response = SimpleNamespace(
+                                output=list(collected_output_items),
+                                status="completed",
+                                usage=None,
+                                model=api_kwargs.get("model"),
+                            )
+                        else:
+                            assembled = "".join(agent._codex_streamed_text_parts)
+                            final_response = SimpleNamespace(
+                                output=[SimpleNamespace(
+                                    type="message",
+                                    role="assistant",
+                                    status="completed",
+                                    content=[SimpleNamespace(type="output_text", text=assembled)],
+                                )],
+                                status="completed",
+                                usage=None,
+                                model=api_kwargs.get("model"),
+                            )
+                    else:
+                        raise
                 # PATCH: ChatGPT Codex backend streams valid output items
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
                 _out = getattr(final_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if (isinstance(_out, list) and not _out) or _out is None:
                     if collected_output_items:
                         final_response.output = list(collected_output_items)
                         logger.debug(
@@ -271,6 +308,40 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
+        except TypeError as exc:
+            err_text = str(exc)
+            if (
+                "NoneType" in err_text
+                and "iterable" in err_text
+                and (collected_output_items or agent._codex_streamed_text_parts)
+            ):
+                logger.warning(
+                    "Codex Responses SDK failed while parsing stream after "
+                    "streaming output items; synthesizing response from stream "
+                    "events. %s err=%s",
+                    agent._client_log_context(),
+                    err_text,
+                )
+                if collected_output_items:
+                    return SimpleNamespace(
+                        output=list(collected_output_items),
+                        status="completed",
+                        usage=None,
+                        model=api_kwargs.get("model"),
+                    )
+                assembled = "".join(agent._codex_streamed_text_parts)
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=assembled)],
+                    )],
+                    status="completed",
+                    usage=None,
+                    model=api_kwargs.get("model"),
+                )
+            raise
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
@@ -414,7 +485,7 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
             if terminal_response is not None:
                 # Backfill empty output from collected stream events
                 _out = getattr(terminal_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if (isinstance(_out, list) and not _out) or _out is None:
                     if collected_output_items:
                         terminal_response.output = list(collected_output_items)
                         logger.debug(
@@ -433,6 +504,37 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
                             len(collected_text_deltas), len(assembled),
                         )
                 return terminal_response
+    except TypeError as exc:
+        err_text = str(exc)
+        if (
+            "NoneType" in err_text
+            and "iterable" in err_text
+            and (collected_output_items or collected_text_deltas)
+        ):
+            logger.warning(
+                "Codex create(stream=True) SDK parse failed after streaming "
+                "output items; synthesizing response from stream events. err=%s",
+                err_text,
+            )
+            if collected_output_items:
+                return SimpleNamespace(
+                    output=list(collected_output_items),
+                    status="completed",
+                    usage=None,
+                    model=fallback_kwargs.get("model"),
+                )
+            assembled = "".join(collected_text_deltas)
+            return SimpleNamespace(
+                output=[SimpleNamespace(
+                    type="message", role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text=assembled)],
+                )],
+                status="completed",
+                usage=None,
+                model=fallback_kwargs.get("model"),
+            )
+        raise
     finally:
         close_fn = getattr(stream_or_response, "close", None)
         if callable(close_fn):

@@ -1027,6 +1027,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             and base_url_host_matches(fb_base_url, "amazonaws.com")
         ):
             fb_api_mode = "bedrock_converse"
+        else:
+            # Fallback: use the same URL-based detection that
+            # determine_api_mode() and _resolve_explicit_runtime() use
+            # for direct provider switches.  This catches endpoints like
+            # Kimi's ``api.kimi.com/coding`` (Anthropic Messages) that
+            # the inline heuristics above miss.  See #22548.
+            from hermes_cli.runtime_provider import _detect_api_mode_for_url
+            detected = _detect_api_mode_for_url(fb_base_url)
+            if detected:
+                fb_api_mode = detected
 
         old_model = agent.model
 

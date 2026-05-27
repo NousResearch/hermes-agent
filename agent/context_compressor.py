@@ -919,6 +919,45 @@ class ContextCompressor(ContextEngine):
 
         return result, pruned
 
+    def prune_turn(
+        self,
+        messages: List[Dict[str, Any]],
+        protect_last_n: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """Per-turn lightweight pruning — no LLM call required.
+
+        Called after every tool execution cycle so old tool outputs are
+        summarized to 1-liners before context grows to the 50% compression
+        threshold. Critical for long coding / experiment loops where dozens
+        of file reads and terminal outputs accumulate between compressions.
+
+        Protects the last *protect_last_n* tool-call rounds at full fidelity
+        so the model retains enough recent context to reason about its work.
+        Everything older is replaced with an informative 1-line summary via
+        ``_prune_old_tool_results`` (no model call — purely heuristic).
+
+        Returns the (possibly shorter) message list; if there is not yet
+        enough history to prune, returns *messages* unchanged.
+        """
+        if not messages:
+            return messages
+
+        # Locate assistant messages that have tool_calls (each = one cycle).
+        tool_cycle_indices = [
+            i for i, m in enumerate(messages)
+            if m.get("role") == "assistant" and m.get("tool_calls")
+        ]
+        if len(tool_cycle_indices) <= protect_last_n:
+            return messages  # not enough history to prune yet
+
+        # Protect everything from the Nth-to-last cycle onward.
+        boundary = tool_cycle_indices[-protect_last_n]
+        protect_tail_count = len(messages) - boundary
+        pruned, count = self._prune_old_tool_results(messages, protect_tail_count)
+        if count and not self.quiet_mode:
+            logger.debug("Per-turn prune: %d old tool outputs summarized", count)
+        return pruned
+
     # ------------------------------------------------------------------
     # Summarization
     # ------------------------------------------------------------------
@@ -1327,8 +1366,15 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Pending User Asks
 [Questions or requests from the user that have NOT yet been answered or fulfilled. If none, write "None."]
 
+## Current File State
+[For each file that was modified or is central to the task, include:
+- File path + current status (modified/created/deleted)
+- Key content snippet or the most important change (exact code, not paraphrase)
+- If tests exist: test file path and last known pass/fail count
+This is the highest-value section for coding/experiment sessions — be specific.]
+
 ## Relevant Files
-[Files read, modified, or created — with brief note on each]
+[Other files read or referenced — with brief note on each]
 
 ## Remaining Work
 [What remains to be done — framed as context, not instructions]

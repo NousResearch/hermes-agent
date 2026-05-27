@@ -494,9 +494,27 @@ def compress_context(
     if todo_snapshot:
         compressed.append({"role": "user", "content": todo_snapshot})
 
-    agent._invalidate_system_prompt()
-    new_system_prompt = agent._build_system_prompt(system_message)
-    agent._cached_system_prompt = new_system_prompt
+    # Keep the system prompt stable across compression events by default.
+    #
+    # The old approach called _invalidate_system_prompt() here, which
+    # reloaded memory from disk and rebuilt the prompt — producing a
+    # different string every time and busting the Anthropic prefix cache
+    # on every compression event. The cache miss costs the same as a
+    # full uncached turn, wiping out the ~75% savings prompt caching
+    # normally provides.
+    #
+    # Most prompt content is safe to keep stable because it is session-
+    # invariant guidance or state the model already knows from this
+    # conversation. If compression rotates to a child session and the
+    # prompt contains session-scoped data (e.g. Session ID or external
+    # memory-provider blocks), we rebuild selectively after the rotation.
+    new_system_prompt = agent._cached_system_prompt
+    if new_system_prompt is None:
+        new_system_prompt = agent._build_system_prompt(system_message)
+        agent._cached_system_prompt = new_system_prompt
+
+    old_session_id = ""
+    created_new_session_row = False
 
     if agent._session_db:
         try:
@@ -522,14 +540,14 @@ def compress_context(
                 parent_session_id=old_session_id,
             )
             agent._session_db_created = True
+            created_new_session_row = True
             # Auto-number the title for the continuation session
             if old_title:
                 try:
-                    new_title = agent._session_db.get_next_title_in_lineage(old_title)
+                    new_title = agent._session_db.get_next_title_inlineage(old_title)
                     agent._session_db.set_session_title(agent.session_id, new_title)
                 except (ValueError, Exception) as e:
                     logger.debug("Could not propagate title on compression: %s", e)
-            agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
             # Reset flush cursor — new session starts with no messages written
             agent._last_flushed_db_idx = 0
         except Exception as e:
@@ -541,12 +559,11 @@ def compress_context(
     # rollover instead of re-initializing fresh per-session state.
     # See hermes-lcm#68. Built-in ContextCompressor ignores kwargs.
     try:
-        _old_sid = locals().get("old_session_id")
-        if _old_sid and hasattr(agent.context_compressor, "on_session_start"):
+        if old_session_id and hasattr(agent.context_compressor, "on_session_start"):
             agent.context_compressor.on_session_start(
                 agent.session_id or "",
                 boundary_reason="compression",
-                old_session_id=_old_sid,
+                old_session_id=old_session_id,
                 conversation_id=getattr(agent, "_gateway_session_key", None),
             )
     except Exception as _ce_err:
@@ -558,16 +575,25 @@ def compress_context(
     # the logical conversation continues; only the id and DB row rolled
     # over. See #6672.
     try:
-        _old_sid = locals().get("old_session_id")
-        if _old_sid and agent._memory_manager:
+        if old_session_id and agent._memory_manager:
             agent._memory_manager.on_session_switch(
                 agent.session_id or "",
-                parent_session_id=_old_sid,
+                parent_session_id=old_session_id,
                 reset=False,
                 reason="compression",
             )
     except Exception as _me_err:
         logger.debug("memory manager on_session_switch (compression): %s", _me_err)
+
+    if old_session_id and agent._should_refresh_system_prompt_after_compression():
+        new_system_prompt = agent._build_system_prompt(system_message)
+        agent._cached_system_prompt = new_system_prompt
+
+    if created_new_session_row and agent._session_db:
+        try:
+            agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+        except Exception as e:
+            logger.warning("Session DB update_system_prompt after compression failed: %s", e)
 
     # Warn on repeated compressions (quality degrades with each pass)
     _cc = agent.context_compressor.compression_count

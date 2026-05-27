@@ -434,7 +434,11 @@ def init_agent(
     # their tids explicitly.
     agent._tool_worker_threads: set[int] = set()
     agent._tool_worker_threads_lock = threading.Lock()
-    
+
+    # Serializes console output from concurrent tool worker threads so
+    # lines from different tools don't interleave mid-line.
+    agent._output_lock = threading.Lock()
+
     # Subagent delegation state
     agent._delegate_depth = 0        # 0 = top-level agent, incremented for children
     agent._active_children = []      # Running child AIAgents (for interrupt propagation)

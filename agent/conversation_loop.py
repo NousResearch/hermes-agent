@@ -546,9 +546,10 @@ def run_conversation(
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
 
-    # Track memory nudge trigger (turn-based, checked here).
-    # Skill trigger is checked AFTER the agent loop completes, based on
-    # how many tool iterations THIS turn used.
+    # Track memory and skill nudge triggers (both turn-based).
+    # Counting skill nudges by tool iterations (old approach) caused the
+    # review to fire on every single turn in heavy coding / experiment
+    # sessions (15+ tool calls/turn easily exceeds the interval=10 default).
     _should_review_memory = False
     if (agent._memory_nudge_interval > 0
             and "memory" in agent.valid_tool_names
@@ -557,6 +558,10 @@ def run_conversation(
         if agent._turns_since_memory >= agent._memory_nudge_interval:
             _should_review_memory = True
             agent._turns_since_memory = 0
+
+    if (agent._skill_nudge_interval > 0
+            and "skill_manage" in agent.valid_tool_names):
+        agent._iters_since_skill += 1
 
     # Add user message
     user_msg = {"role": "user", "content": user_message}
@@ -848,12 +853,6 @@ def run_conversation(
             except Exception as _step_err:
                 logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
 
-        # Track tool-calling iterations for skill nudge.
-        # Counter resets whenever skill_manage is actually used.
-        if (agent._skill_nudge_interval > 0
-                and "skill_manage" in agent.valid_tool_names):
-            agent._iters_since_skill += 1
-        
         # ── Pre-API-call /steer drain ──────────────────────────────────
         # If a /steer arrived during the previous API call (while the model
         # was thinking), drain it now — before we build api_messages — so
@@ -3882,6 +3881,14 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                # Per-turn lightweight pruning: replace old tool outputs
+                # with 1-line summaries without an LLM call. Prevents
+                # context from growing unboundedly between full compression
+                # events — essential for long coding / experiment loops
+                # where file reads and terminal outputs accumulate fast.
+                if agent.compression_enabled and hasattr(agent.context_compressor, "prune_turn"):
+                    messages = agent.context_compressor.prune_turn(messages)
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision

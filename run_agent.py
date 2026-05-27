@@ -1372,6 +1372,30 @@ class AIAgent:
         t = threading.Thread(target=target, daemon=True, name="bg-review")
         t.start()
 
+    def _prune_messages_for_review(
+        self, messages: List[Dict]
+    ) -> List[Dict]:
+        """Return a token-lean copy of *messages* fit for the background review agent.
+
+        The review agent only needs to understand what happened in the session —
+        what the user asked, what the assistant decided, which tools were called —
+        not the full byte-for-byte content of every file read or terminal output.
+        Passing the raw snapshot to a 16-iteration review agent on a large coding
+        session wastes the same input tokens as the session itself.
+
+        Strategy: keep all user/assistant text intact; replace every tool result
+        with an informative 1-liner (the same summaries used by full compression).
+        The last two messages are protected at full fidelity so the review agent
+        sees the final state.
+        """
+        compressor = getattr(self, "context_compressor", None)
+        if not messages or compressor is None or not hasattr(compressor, "_prune_old_tool_results"):
+            return messages
+        pruned, _ = compressor._prune_old_tool_results(
+            messages, protect_tail_count=2
+        )
+        return pruned
+
     def _build_memory_write_metadata(
         self,
         *,
@@ -2875,6 +2899,16 @@ class AIAgent:
         """Forwarder — see ``agent.system_prompt.invalidate_system_prompt``."""
         from agent.system_prompt import invalidate_system_prompt
         invalidate_system_prompt(self)
+
+    def _should_refresh_system_prompt_after_compression(self) -> bool:
+        """Return True when a compression split invalidates session-scoped prompt state.
+
+        Keep the cached prompt stable by default so Anthropic/OpenAI prefix
+        caches survive context compression. Rebuild only when the prompt
+        contains content that is tied to the physical session row and must
+        follow the child session created by compression.
+        """
+        return bool(self.pass_session_id)
 
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:

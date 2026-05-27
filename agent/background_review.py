@@ -478,7 +478,9 @@ def _run_review_in_thread(
                         "management tools. Other tools will be denied "
                         "at runtime — do not attempt them."
                     ),
-                    conversation_history=messages_snapshot,
+                    conversation_history=agent._prune_messages_for_review(
+                        messages_snapshot
+                    ),
                 )
             finally:
                 clear_thread_tool_whitelist()

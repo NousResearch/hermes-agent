@@ -159,3 +159,33 @@ class TestCompressionBoundaryHook:
             )
             assert compressed
             assert agent.session_id != original_sid
+
+    def test_refreshes_prompt_when_session_id_is_embedded(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            agent.pass_session_id = True
+
+            old_sid = agent.session_id
+            agent._cached_system_prompt = agent._build_system_prompt("sys")
+
+            compressor = MagicMock()
+            compressor.compress.return_value = [{"role": "user", "content": "summary"}]
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            compressor._last_aux_model_failure_model = None
+            compressor._last_aux_model_failure_error = None
+            agent.context_compressor = compressor
+
+            _compressed, new_prompt = agent._compress_context(
+                [{"role": "user", "content": "m"}], "sys", approx_tokens=100
+            )
+
+            assert f"Session ID: {old_sid}" not in new_prompt
+            assert f"Session ID: {agent.session_id}" in new_prompt
+            assert agent._cached_system_prompt == new_prompt

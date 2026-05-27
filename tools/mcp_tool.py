@@ -1503,10 +1503,19 @@ class MCPServerTask:
                     "(transport: http) if you need per-request values.",
                     self.name, sorted(templated_headers.keys()),
                 )
-            sse_headers = {
-                **static_headers,
-                **{k: _resolve_context_templates(v) for k, v in templated_headers.items()},
+            # Drop templated headers whose resolved value is empty —
+            # matches the HTTP path's per-request behavior (don't send
+            # ``X-Foo:`` with an empty value).  Without this, an SSE
+            # stream opened before any session context var is set would
+            # send an empty identity header for the connection's entire
+            # lifetime (CodeRabbit MAJOR; same fix mirrored to the
+            # legacy HTTP branch below).
+            sse_resolved_templated = {
+                k: resolved
+                for k, v in templated_headers.items()
+                if (resolved := _resolve_context_templates(v))
             }
+            sse_headers = {**static_headers, **sse_resolved_templated}
             _sse_kwargs: dict = {
                 "url": url,
                 "headers": sse_headers or None,
@@ -1657,10 +1666,15 @@ class MCPServerTask:
                     "Upgrade the mcp package if you need per-request values.",
                     self.name, sorted(templated_headers.keys()),
                 )
-            legacy_headers = {
-                **static_headers,
-                **{k: _resolve_context_templates(v) for k, v in templated_headers.items()},
+            # Same empty-drop discipline as the SSE branch above —
+            # avoid sending blank identity headers for the connection's
+            # entire lifetime when the context var is unset at startup.
+            legacy_resolved_templated = {
+                k: resolved
+                for k, v in templated_headers.items()
+                if (resolved := _resolve_context_templates(v))
             }
+            legacy_headers = {**static_headers, **legacy_resolved_templated}
             _http_kwargs: dict = {
                 "headers": legacy_headers,
                 "timeout": float(connect_timeout),

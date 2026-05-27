@@ -6,6 +6,45 @@ from unittest.mock import AsyncMock, patch
 from gateway.config import PlatformConfig
 
 
+def _clear_matrix_auth_env(monkeypatch):
+    for name in (
+        "MATRIX_ALLOWED_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "MATRIX_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _make_adapter_with_prompt(monkeypatch):
+    from gateway.platforms.matrix import MatrixAdapter, _MatrixApprovalPrompt
+
+    adapter = MatrixAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="tok",
+            extra={"homeserver": "https://matrix.example.org"},
+        )
+    )
+    # Resolve user_id so _is_self_sender doesn't defensively drop all traffic (#15763).
+    adapter._user_id = "@bot:example.org"
+    adapter._approval_prompts_by_event["$target"] = _MatrixApprovalPrompt(
+        session_key="sess-1", chat_id="!room:example.org", message_id="$target"
+    )
+    adapter._approval_prompt_by_session["sess-1"] = "$target"
+    return adapter
+
+
+def _reaction_event(sender):
+    content = {"m.relates_to": {"event_id": "$target", "key": "✅"}}
+    return types.SimpleNamespace(
+        sender=sender,
+        event_id=f"$react-{sender}",
+        room_id="!room:example.org",
+        content=content,
+    )
+
+
 class TestMatrixExecApprovalReactions:
     @pytest.mark.asyncio
     async def test_send_exec_approval_registers_prompt_and_seeds_reactions(self, monkeypatch):
@@ -58,3 +97,41 @@ class TestMatrixExecApprovalReactions:
         mock_resolve.assert_called_once_with("sess-1", "once")
         assert "$target" not in adapter._approval_prompts_by_event
         assert "sess-1" not in adapter._approval_prompt_by_session
+
+    @pytest.mark.asyncio
+    async def test_reaction_denied_when_matrix_allowlist_empty_and_global_mismatch(self, monkeypatch):
+        _clear_matrix_auth_env(monkeypatch)
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "@owner:example.org")
+        adapter = _make_adapter_with_prompt(monkeypatch)
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._on_reaction(_reaction_event("@attacker:example.org"))
+
+        mock_resolve.assert_not_called()
+        assert "$target" in adapter._approval_prompts_by_event
+        assert adapter._approval_prompt_by_session["sess-1"] == "$target"
+
+    @pytest.mark.asyncio
+    async def test_reaction_allowed_by_global_allowlist_when_matrix_allowlist_empty(self, monkeypatch):
+        _clear_matrix_auth_env(monkeypatch)
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "@owner:example.org")
+        adapter = _make_adapter_with_prompt(monkeypatch)
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._on_reaction(_reaction_event("@owner:example.org"))
+
+        mock_resolve.assert_called_once_with("sess-1", "once")
+        assert "$target" not in adapter._approval_prompts_by_event
+        assert "sess-1" not in adapter._approval_prompt_by_session
+
+    @pytest.mark.asyncio
+    async def test_reaction_denied_when_no_allowlist_is_configured(self, monkeypatch):
+        _clear_matrix_auth_env(monkeypatch)
+        adapter = _make_adapter_with_prompt(monkeypatch)
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._on_reaction(_reaction_event("@attacker:example.org"))
+
+        mock_resolve.assert_not_called()
+        assert "$target" in adapter._approval_prompts_by_event
+        assert adapter._approval_prompt_by_session["sess-1"] == "$target"

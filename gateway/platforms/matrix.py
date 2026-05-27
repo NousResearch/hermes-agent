@@ -485,10 +485,54 @@ class MatrixAdapter(BasePlatformAdapter):
         }
         self._approval_prompts_by_event: Dict[str, _MatrixApprovalPrompt] = {}
         self._approval_prompt_by_session: Dict[str, str] = {}
+        self.gateway_runner = None
         allowed_users_raw = os.getenv("MATRIX_ALLOWED_USERS", "")
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
         }
+
+    @staticmethod
+    def _env_flag_enabled(name: str) -> bool:
+        return os.getenv(name, "").strip().lower() in {"true", "1", "yes"}
+
+    @staticmethod
+    def _env_allowlist(name: str) -> Set[str]:
+        raw = os.getenv(name, "").strip()
+        return {item.strip() for item in raw.split(",") if item.strip()}
+
+    def _is_reaction_approval_authorized(self, sender: str, room_id: str) -> bool:
+        """Return True when a Matrix reaction sender may resolve approvals."""
+        if not sender:
+            return False
+
+        auth_fn = getattr(getattr(self, "gateway_runner", None), "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                source = self.build_source(
+                    chat_id=room_id,
+                    chat_type="group",
+                    user_id=sender,
+                )
+                return bool(auth_fn(source))
+            except Exception as exc:
+                logger.warning(
+                    "Matrix: approval reaction auth fell back after runner check failed: %s",
+                    exc,
+                )
+
+        if self._env_flag_enabled("MATRIX_ALLOW_ALL_USERS"):
+            return True
+
+        matrix_allowed = set(self._allowed_user_ids) or self._env_allowlist(
+            "MATRIX_ALLOWED_USERS"
+        )
+        global_allowed = self._env_allowlist("GATEWAY_ALLOWED_USERS")
+
+        if not matrix_allowed and not global_allowed:
+            return self._env_flag_enabled("GATEWAY_ALLOW_ALL_USERS")
+
+        allowed = matrix_allowed | global_allowed
+        return "*" in allowed or sender in allowed
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -2236,7 +2280,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if prompt and not prompt.resolved:
                 if room_id != prompt.chat_id:
                     return
-                if self._allowed_user_ids and sender not in self._allowed_user_ids:
+                if not self._is_reaction_approval_authorized(sender, room_id):
                     logger.info(
                         "Matrix: ignoring approval reaction from unauthorized user %s on %s",
                         sender, reacts_to,

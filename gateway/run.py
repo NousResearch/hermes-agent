@@ -6338,7 +6338,9 @@ class GatewayRunner:
             if not check_matrix_requirements():
                 logger.warning("Matrix: mautrix not installed or credentials not set. Run: pip install 'mautrix[encryption]'")
                 return None
-            return MatrixAdapter(config)
+            adapter = MatrixAdapter(config)
+            adapter.gateway_runner = self
+            return adapter
 
         elif platform == Platform.API_SERVER:
             from gateway.platforms.api_server import APIServerAdapter, check_api_server_requirements

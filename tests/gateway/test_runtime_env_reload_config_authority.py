@@ -51,3 +51,38 @@ def test_reload_runtime_env_keeps_env_max_iterations_when_config_omits_key(
     gateway_run._reload_runtime_env_preserving_config_authority()
 
     assert os.environ["HERMES_MAX_ITERATIONS"] == "123"
+
+
+def test_reload_runtime_env_invalidates_tool_availability_caches(
+    tmp_path: Path, monkeypatch
+) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    env_file = hermes_home / ".env"
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    monkeypatch.delenv("HASS_TOKEN", raising=False)
+
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
+
+    _clear_tool_defs_cache()
+    invalidate_check_fn_cache()
+    try:
+        unavailable = get_tool_definitions(
+            enabled_toolsets=["homeassistant"], quiet_mode=True
+        )
+        unavailable_names = {tool["function"]["name"] for tool in unavailable}
+        assert "ha_list_entities" not in unavailable_names
+
+        env_file.write_text("HASS_TOKEN=fresh-token\n", encoding="utf-8")
+        gateway_run._reload_runtime_env_preserving_config_authority()
+
+        available = get_tool_definitions(
+            enabled_toolsets=["homeassistant"], quiet_mode=True
+        )
+        available_names = {tool["function"]["name"] for tool in available}
+        assert "ha_list_entities" in available_names
+    finally:
+        _clear_tool_defs_cache()
+        invalidate_check_fn_cache()

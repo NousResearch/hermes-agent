@@ -103,3 +103,36 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_dotenv_reload_invalidates_tool_availability_caches(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+
+    monkeypatch.delenv("HASS_TOKEN", raising=False)
+
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
+
+    _clear_tool_defs_cache()
+    invalidate_check_fn_cache()
+    try:
+        unavailable = get_tool_definitions(
+            enabled_toolsets=["homeassistant"], quiet_mode=True
+        )
+        unavailable_names = {tool["function"]["name"] for tool in unavailable}
+        assert "ha_list_entities" not in unavailable_names
+
+        env_file.write_text("HASS_TOKEN=fresh-token\n", encoding="utf-8")
+        loaded = load_hermes_dotenv(hermes_home=home)
+
+        assert loaded == [env_file]
+        available = get_tool_definitions(
+            enabled_toolsets=["homeassistant"], quiet_mode=True
+        )
+        available_names = {tool["function"]["name"] for tool in available}
+        assert "ha_list_entities" in available_names
+    finally:
+        _clear_tool_defs_cache()
+        invalidate_check_fn_cache()

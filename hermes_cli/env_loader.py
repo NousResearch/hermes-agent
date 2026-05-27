@@ -156,6 +156,22 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     _sanitize_loaded_credentials()
 
 
+def _invalidate_tool_availability_caches() -> None:
+    """Clear tool availability caches after environment reloads.
+
+    Avoid importing ``model_tools`` solely to clear an empty cache: importing it
+    performs tool discovery. If the modules are loaded, their caches may be
+    stale; if they are not loaded, there is nothing to invalidate.
+    """
+    for module_name, function_name in (
+        ("tools.registry", "invalidate_check_fn_cache"),
+        ("model_tools", "_clear_tool_defs_cache"),
+    ):
+        clear_cache = getattr(sys.modules.get(module_name), function_name, None)
+        if callable(clear_cache):
+            clear_cache()
+
+
 def _sanitize_env_file_if_needed(path: Path) -> None:
     """Pre-sanitize a .env file before python-dotenv reads it.
 
@@ -243,6 +259,7 @@ def load_hermes_dotenv(
         loaded.append(project_env_path)
 
     _apply_external_secret_sources(home_path)
+    _invalidate_tool_availability_caches()
 
     return loaded
 

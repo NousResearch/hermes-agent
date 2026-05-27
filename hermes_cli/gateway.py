@@ -3061,6 +3061,11 @@ def launchd_restart():
             return
         if pid is not None:
             try:
+                from gateway.status import write_planned_restart_marker
+                write_planned_restart_marker(pid)
+            except Exception:
+                pass
+            try:
                 terminate_pid(pid, force=False)
             except (ProcessLookupError, PermissionError, OSError):
                 pid = None

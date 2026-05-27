@@ -762,6 +762,8 @@ _TAKEOVER_MARKER_FILENAME = ".gateway-takeover.json"
 _TAKEOVER_MARKER_TTL_S = 60  # Marker older than this is treated as stale
 _PLANNED_STOP_MARKER_FILENAME = ".gateway-planned-stop.json"
 _PLANNED_STOP_MARKER_TTL_S = 60
+_PLANNED_RESTART_MARKER_FILENAME = ".gateway-planned-restart.json"
+_PLANNED_RESTART_MARKER_TTL_S = 60
 
 
 def _get_takeover_marker_path() -> Path:
@@ -774,6 +776,12 @@ def _get_planned_stop_marker_path() -> Path:
     """Return the path to the intentional gateway stop marker file."""
     home = get_hermes_home()
     return home / _PLANNED_STOP_MARKER_FILENAME
+
+
+def _get_planned_restart_marker_path() -> Path:
+    """Return the path to the intentional gateway restart marker file."""
+    home = get_hermes_home()
+    return home / _PLANNED_RESTART_MARKER_FILENAME
 
 
 def _marker_is_stale(written_at: str, ttl_s: int) -> bool:
@@ -918,6 +926,46 @@ def clear_planned_stop_marker() -> None:
     """Remove the planned-stop marker unconditionally."""
     try:
         _get_planned_stop_marker_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def write_planned_restart_marker(target_pid: int) -> bool:
+    """Record that ``target_pid`` is being restarted intentionally.
+
+    Some launchd restart fallbacks send SIGTERM before ``kickstart -k``.  The
+    target gateway cannot distinguish that from an unexpected external kill
+    unless the CLI marks the PID first.  This marker lets the target report a
+    restart (not a shutdown) and exit with the service-restart code.
+    """
+    try:
+        target_start_time = _get_process_start_time(target_pid)
+        record = {
+            "target_pid": target_pid,
+            "target_start_time": target_start_time,
+            "restarter_pid": os.getpid(),
+            "written_at": _utc_now_iso(),
+        }
+        _write_json_file(_get_planned_restart_marker_path(), record)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def consume_planned_restart_marker_for_self() -> bool:
+    """Return True when the current process is being intentionally restarted."""
+    return _consume_pid_marker_for_self(
+        _get_planned_restart_marker_path(),
+        pid_field="target_pid",
+        start_time_field="target_start_time",
+        ttl_s=_PLANNED_RESTART_MARKER_TTL_S,
+    )
+
+
+def clear_planned_restart_marker() -> None:
+    """Remove the planned-restart marker unconditionally."""
+    try:
+        _get_planned_restart_marker_path().unlink(missing_ok=True)
     except OSError:
         pass
 

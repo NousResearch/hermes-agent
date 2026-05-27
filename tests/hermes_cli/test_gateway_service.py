@@ -566,6 +566,10 @@ class TestLaunchdServiceRecovery:
             "gateway.status.get_running_pid",
             lambda: 321,
         )
+        monkeypatch.setattr(
+            "gateway.status.write_planned_restart_marker",
+            lambda pid: calls.append(("restart-marker", pid)) or True,
+        )
 
         def fake_run(cmd, check=False, **kwargs):
             calls.append(cmd)
@@ -576,6 +580,7 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_restart()
 
         assert calls == [
+            ("restart-marker", 321),
             ("term", 321, False),
             ["launchctl", "kickstart", "-k", target],
         ]

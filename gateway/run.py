@@ -18321,6 +18321,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         except Exception as e:
             logger.debug("Takeover marker check failed: %s", e)
 
+        # Planned restart check: launchd restart fallbacks may send SIGTERM
+        # before `kickstart -k`.  The CLI writes a marker first so we can
+        # report a restart (not a shutdown) and exit with the restart code.
+        planned_restart = False
+        if not planned_takeover:
+            try:
+                from gateway.status import consume_planned_restart_marker_for_self
+                planned_restart = consume_planned_restart_marker_for_self()
+            except Exception as e:
+                logger.debug("Planned restart marker check failed: %s", e)
+
         # Planned stop check: service managers and `hermes gateway stop`
         # also send SIGTERM, which is indistinguishable from an unexpected
         # external kill unless the CLI marks it first. SIGINT comes from an
@@ -18328,7 +18339,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         planned_stop = False
         if received_signal == signal.SIGINT:
             planned_stop = True
-        elif not planned_takeover:
+        elif not planned_takeover and not planned_restart:
             try:
                 from gateway.status import consume_planned_stop_marker_for_self
                 planned_stop = consume_planned_stop_marker_for_self()
@@ -18355,6 +18366,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if planned_takeover:
             logger.info(
                 "Received %s as a planned --replace takeover — exiting cleanly",
+                _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM",
+            )
+        elif planned_restart:
+            runner._restart_requested = True
+            runner._restart_detached = False
+            runner._restart_via_service = True
+            logger.info(
+                "Received %s as a planned gateway restart — draining before service relaunch",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM",
             )
         elif planned_stop:

@@ -900,6 +900,72 @@ class TestPlannedStopMarker:
         assert ok is False
 
 
+class TestPlannedRestartMarker:
+    """Tests for intentional service restart markers."""
+
+    def test_write_marker_records_target_identity(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+
+        ok = status.write_planned_restart_marker(target_pid=12345)
+
+        assert ok is True
+        marker = tmp_path / ".gateway-planned-restart.json"
+        assert marker.exists()
+        payload = json.loads(marker.read_text())
+        assert payload["target_pid"] == 12345
+        assert payload["target_start_time"] == 42
+        assert payload["restarter_pid"] == os.getpid()
+        assert "written_at" in payload
+
+    def test_consume_returns_true_when_marker_names_self(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        ok = status.write_planned_restart_marker(target_pid=os.getpid())
+        assert ok is True
+
+        result = status.consume_planned_restart_marker_for_self()
+
+        assert result is True
+        assert not (tmp_path / ".gateway-planned-restart.json").exists()
+
+    def test_consume_returns_false_for_different_pid(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        ok = status.write_planned_restart_marker(target_pid=os.getpid() + 9999)
+        assert ok is True
+
+        result = status.consume_planned_restart_marker_for_self()
+
+        assert result is False
+        assert not (tmp_path / ".gateway-planned-restart.json").exists()
+
+    def test_clear_planned_restart_marker_is_idempotent(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+
+        status.clear_planned_restart_marker()
+        status.write_planned_restart_marker(target_pid=12345)
+        assert (tmp_path / ".gateway-planned-restart.json").exists()
+
+        status.clear_planned_restart_marker()
+
+        assert not (tmp_path / ".gateway-planned-restart.json").exists()
+        status.clear_planned_restart_marker()
+
+    def test_write_marker_returns_false_on_write_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def raise_oserror(*args, **kwargs):
+            raise OSError("simulated write failure")
+
+        monkeypatch.setattr(status, "_write_json_file", raise_oserror)
+
+        ok = status.write_planned_restart_marker(target_pid=12345)
+
+        assert ok is False
+
+
 class TestReadProcessCmdlinePsFallback:
     """Tests for _read_process_cmdline falling back to ps on non-Linux."""
 

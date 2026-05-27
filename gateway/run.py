@@ -3226,17 +3226,16 @@ class GatewayRunner:
         # Build a status-rich acknowledgment. Mobile chat defaults keep this
         # terse; detailed iteration/tool state is still available in logs and
         # can be opted in per platform via display.platforms.<platform>.busy_ack_detail.
+        from gateway.display_config import resolve_display_setting
         status_parts = []
-        busy_ack_detail_enabled = True
-        try:
-            from gateway.display_config import resolve_display_setting as _resolve_display_setting
-            _user_cfg = _load_gateway_config()
-            _platform_key = _platform_config_key(event.source.platform)
-            busy_ack_detail_enabled = bool(
-                _resolve_display_setting(_user_cfg, _platform_key, "busy_ack_detail", True)
+        busy_ack_detail_enabled = bool(
+            resolve_display_setting(
+                _load_gateway_config(),
+                _platform_config_key(event.source.platform),
+                "busy_ack_detail",
+                True,
             )
-        except Exception:
-            busy_ack_detail_enabled = True
+        )
 
         if busy_ack_detail_enabled and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
@@ -17430,18 +17429,14 @@ class GatewayRunner:
         # 0 = disable notifications.
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
-        try:
-            _notify_enabled = bool(
-                resolve_display_setting(
-                    user_config,
-                    platform_key,
-                    "long_running_notifications",
-                    True,
-                )
+        if not bool(
+            resolve_display_setting(
+                user_config,
+                platform_key,
+                "long_running_notifications",
+                True,
             )
-        except Exception:
-            _notify_enabled = True
-        if not _notify_enabled:
+        ):
             _NOTIFY_INTERVAL = None
         _notify_start = time.time()
 

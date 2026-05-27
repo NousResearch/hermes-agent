@@ -136,6 +136,112 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _hydrate_missing_runtime_route(
+    *,
+    agent,
+    model: str,
+    provider_name: Optional[str],
+    base_url: Any,
+    api_key: Any,
+    api_mode: Optional[str],
+) -> tuple[Optional[str], Any, Optional[str], Any]:
+    """Fill stripped direct-AIAgent runtime fields via the shared resolver.
+
+    Interactive CLI / gateway / cron paths resolve provider, base_url, api_mode,
+    credentials, and sometimes credential pools before constructing AIAgent.
+    Direct/library callers historically skipped that step, which left
+    ``provider`` / ``model`` blank and ``api_mode`` on the chat-completions
+    default even when the resolved backend was actually ChatGPT Codex.
+
+    That mismatch is enough to send Codex traffic to ``/chat/completions``
+    instead of the Responses/Codex path, which returns a Cloudflare challenge.
+    Keep the behavior narrow: only hydrate fields that the caller did not
+    supply explicitly.
+    """
+    explicit_base_url = _normalized_custom_base_url(base_url) or None
+    has_explicit_token_provider = callable(api_key) and not isinstance(api_key, str)
+    explicit_api_key = None
+    if isinstance(api_key, str):
+        explicit_api_key = api_key.strip() or None
+
+    needs_runtime_hydration = (
+        not explicit_base_url
+        and not explicit_api_key
+        and not has_explicit_token_provider
+        and (
+            not provider_name
+            or api_mode is None
+            or not str(model or "").strip()
+            or getattr(agent, "_credential_pool", None) is None
+        )
+    )
+    if not needs_runtime_hydration:
+        return provider_name, api_key, api_mode, base_url
+
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(
+            requested=provider_name,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+            target_model=str(model or "").strip() or None,
+        )
+    except Exception:
+        return provider_name, api_key, api_mode, base_url
+
+    resolved_provider = str(runtime.get("provider") or "").strip().lower() or None
+    if not provider_name and resolved_provider:
+        provider_name = resolved_provider
+        agent.provider = resolved_provider
+
+    resolved_base_url = _normalized_custom_base_url(runtime.get("base_url"))
+    if not explicit_base_url and resolved_base_url:
+        agent.base_url = resolved_base_url
+        base_url = resolved_base_url
+
+    resolved_api_key = runtime.get("api_key")
+    if not explicit_api_key and not has_explicit_token_provider and resolved_api_key:
+        api_key = resolved_api_key
+
+    resolved_api_mode = str(runtime.get("api_mode") or "").strip().lower()
+    if api_mode is None and resolved_api_mode:
+        api_mode = resolved_api_mode
+
+    if getattr(agent, "_credential_pool", None) is None:
+        agent._credential_pool = runtime.get("credential_pool")
+
+    runtime_model = str(runtime.get("model") or "").strip()
+    if runtime_model and not agent.model:
+        agent.model = runtime_model
+
+    if not agent.model:
+        try:
+            from hermes_cli.config import load_config as _load_agent_config
+
+            _model_cfg = (_load_agent_config().get("model") or {})
+            if isinstance(_model_cfg, dict):
+                configured_model = str(
+                    _model_cfg.get("default") or _model_cfg.get("model") or ""
+                ).strip()
+            else:
+                configured_model = str(_model_cfg or "").strip()
+            if configured_model:
+                agent.model = configured_model
+        except Exception:
+            pass
+
+    if not agent.model and provider_name:
+        try:
+            from hermes_cli.models import get_default_model_for_provider
+
+            agent.model = get_default_model_for_provider(provider_name) or agent.model
+        except Exception:
+            pass
+
+    return provider_name, api_key, api_mode, base_url
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -289,6 +395,14 @@ def init_agent(
     agent.provider = provider_name or ""
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
+    provider_name, api_key, api_mode, base_url = _hydrate_missing_runtime_route(
+        agent=agent,
+        model=agent.model,
+        provider_name=provider_name,
+        base_url=base_url,
+        api_key=api_key,
+        api_mode=api_mode,
+    )
     if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":

@@ -214,6 +214,37 @@ def test_api_mode_normalizes_provider_case(monkeypatch):
     assert agent.api_mode == "codex_responses"
 
 
+def test_direct_agent_init_hydrates_codex_runtime_from_shared_resolver(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "gpt-5.4-mini", "provider": "openai-codex"}},
+    )
+
+    agent = run_agent.AIAgent(
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="auth_smoke",
+    )
+
+    assert agent.provider == "openai-codex"
+    assert agent.api_mode == "codex_responses"
+    assert agent.base_url == "https://chatgpt.com/backend-api/codex"
+    assert agent.model == "gpt-5.4-mini"
+
+
 def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypatch):
     """GPT-5.x models need codex_responses even on OpenRouter.
 

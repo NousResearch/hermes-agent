@@ -182,11 +182,29 @@ def _responses_null_output_iterable_error(exc: BaseException) -> bool:
     return isinstance(exc, TypeError) and "NoneType" in text and "not iterable" in text
 
 
+def _codex_output_text_from_items(output_items: list) -> str:
+    text_parts: list[str] = []
+    for item in output_items:
+        if getattr(item, "type", None) != "message":
+            continue
+        content = getattr(item, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if getattr(part, "type", None) not in {"output_text", "text"}:
+                continue
+            text = getattr(part, "text", None)
+            if isinstance(text, str) and text:
+                text_parts.append(text)
+    return "".join(text_parts)
+
+
 def _codex_backfilled_response(output_items: list, text_parts: list, *, has_tool_calls: bool, model: str = None):
     """Build a minimal Responses-like object from events already streamed."""
     if output_items:
         return SimpleNamespace(
             output=list(output_items),
+            output_text=_codex_output_text_from_items(output_items),
             usage=None,
             status="completed",
             model=model,
@@ -200,6 +218,7 @@ def _codex_backfilled_response(output_items: list, text_parts: list, *, has_tool
                 status="completed",
                 content=[SimpleNamespace(type="output_text", text=assembled)],
             )],
+            output_text=assembled,
             usage=None,
             status="completed",
             model=model,

@@ -506,7 +506,7 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
 
 
 def test_run_codex_stream_falls_back_when_stream_iteration_parses_null_output(monkeypatch):
-    """Regression for #11179: the SDK can raise while iterating response.completed.
+    """Regression for #32991/#11179: SDK parsing can fail at response.completed.
 
     The failure happens before get_final_response(), so post-loop backfill alone is
     not enough. Preserve already streamed output_item.done events.
@@ -536,6 +536,7 @@ def test_run_codex_stream_falls_back_when_stream_iteration_parses_null_output(mo
 
     assert calls["stream"] == 1
     assert response.output == [output_item]
+    assert response.output_text == "stream item survived"
     assert response.status == "completed"
 
 

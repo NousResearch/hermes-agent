@@ -1057,7 +1057,11 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
         TransformedStreamAgent,
         session_id="sess-transformed-stream",
         config_data={
-            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "display": {
+                "tool_progress": "off",
+                "interim_assistant_messages": False,
+                "platforms": {"matrix": {"streaming": True}},
+            },
             "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
         },
         platform=Platform.MATRIX,

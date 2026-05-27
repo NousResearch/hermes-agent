@@ -7945,9 +7945,6 @@ class GatewayRunner:
         if _is_shared_multi_user and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
 
-        # Prepend channel context from history backfill (if any).  This
-        # happens after sender-prefix so the prefix only applies to the
-        # trigger message, not the backfill block.
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
 
@@ -13810,11 +13807,12 @@ class GatewayRunner:
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
         thread_id = getattr(source, "thread_id", None)
-        if thread_id is None:
-            return None
-        metadata: Dict[str, Any] = {"thread_id": thread_id}
+        metadata: Dict[str, Any] = {}
+        if thread_id is not None:
+            metadata["thread_id"] = thread_id
         if (
             getattr(source, "platform", None) == Platform.TELEGRAM
+            and thread_id is not None
             and getattr(source, "chat_type", None) == "dm"
         ):
             metadata["telegram_dm_topic_reply_fallback"] = True
@@ -13827,7 +13825,9 @@ class GatewayRunner:
             anchor = reply_to_message_id or getattr(source, "message_id", None)
             if anchor is not None:
                 metadata["telegram_reply_to_message_id"] = str(anchor)
-        return metadata
+        if getattr(source, "platform", None) == Platform.WECOM and reply_to_message_id:
+            metadata["reply_to_message_id"] = str(reply_to_message_id)
+        return metadata or None
 
     @staticmethod
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:
@@ -15709,6 +15709,26 @@ class GatewayRunner:
                 _adapter = self.adapters.get(source.platform)
                 if _adapter:
                     _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                    _adapter_supports_draft = False
+                    if not _adapter_supports_edit:
+                        try:
+                            _adapter_supports_draft = bool(
+                                _adapter.supports_draft_streaming(
+                                    chat_type=getattr(source, "chat_type", "") or "",
+                                    metadata=_thread_metadata,
+                                )
+                            )
+                        except Exception:
+                            _adapter_supports_draft = False
+                    if not _adapter_supports_edit and not _adapter_supports_draft:
+                        raise RuntimeError("skip streaming for non-editable platform")
+                    _stream_transport = _scfg.transport or "edit"
+                    if (
+                        not _adapter_supports_edit
+                        and _adapter_supports_draft
+                        and _stream_transport == "edit"
+                    ):
+                        _stream_transport = "draft"
                     _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
                     _buffer_only = False
                     if source.platform == Platform.MATRIX:
@@ -15729,7 +15749,7 @@ class GatewayRunner:
                         cursor=_effective_cursor,
                         buffer_only=_buffer_only,
                         fresh_final_after_seconds=_fresh_final_secs,
-                        transport=_scfg.transport or "edit",
+                        transport=_stream_transport,
                         chat_type=getattr(source, "chat_type", "") or "",
                     )
                     _stream_consumer = GatewayStreamConsumer(
@@ -16536,7 +16556,7 @@ class GatewayRunner:
                 "reply_to_message_id": event_message_id,
             }
         else:
-            _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+            _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id)
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -16661,14 +16681,34 @@ class GatewayRunner:
                     _adapter = self.adapters.get(source.platform)
                     if _adapter:
                         # Platforms that don't support editing sent messages
-                        # (e.g. QQ, WeChat) should skip streaming entirely —
-                        # without edit support, the consumer sends a partial
-                        # first message that can never be updated, resulting in
-                        # duplicate messages (partial + final).
+                        # (e.g. QQ, WeChat) should skip streaming unless they
+                        # expose a native draft/stream transport. Without either
+                        # capability, the consumer sends a partial first message
+                        # that can never be updated, resulting in duplicates.
                         _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                        _adapter_supports_draft = False
                         if not _adapter_supports_edit:
+                            try:
+                                _adapter_supports_draft = bool(
+                                    _adapter.supports_draft_streaming(
+                                        chat_type=getattr(source, "chat_type", "") or "",
+                                        metadata=_status_thread_metadata,
+                                    )
+                                )
+                            except Exception:
+                                _adapter_supports_draft = False
+                        if not _adapter_supports_edit and not _adapter_supports_draft:
                             raise RuntimeError("skip streaming for non-editable platform")
+                        _stream_transport = _scfg.transport or "edit"
+                        if (
+                            not _adapter_supports_edit
+                            and _adapter_supports_draft
+                            and _stream_transport == "edit"
+                        ):
+                            _stream_transport = "draft"
                         _effective_cursor = _scfg.cursor
+                        if not _adapter_supports_edit:
+                            _effective_cursor = ""
                         # Some Matrix clients render the streaming cursor
                         # as a visible tofu/white-box artifact.  Keep
                         # streaming text on Matrix, but suppress the cursor.
@@ -16691,7 +16731,7 @@ class GatewayRunner:
                             cursor=_effective_cursor,
                             buffer_only=_buffer_only,
                             fresh_final_after_seconds=_fresh_final_secs,
-                            transport=_scfg.transport or "edit",
+                            transport=_stream_transport,
                             chat_type=getattr(source, "chat_type", "") or "",
                         )
                         _stream_consumer = GatewayStreamConsumer(
@@ -17923,10 +17963,13 @@ class GatewayRunner:
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
                     _previewed = bool(result.get("response_previewed"))
+                    _content_delivered = bool(
+                        _sc and getattr(_sc, "final_content_delivered", False)
+                    )
                     _already_streamed = bool(
                         (_sc and getattr(_sc, "final_response_sent", False))
                         or _previewed
-                        or (_sc and getattr(_sc, "final_content_delivered", False))
+                        or _content_delivered
                     )
                     first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:

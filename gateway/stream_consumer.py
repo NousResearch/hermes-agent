@@ -151,9 +151,9 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
-        # Set when the final response content was sent to the user via
-        # streaming, even if the final edit (cursor removal etc.)
-        # subsequently failed.
+        # Set when the final response content reached the user via streaming,
+        # even if a subsequent cosmetic finalize/edit fails. Gateway delivery
+        # uses this to avoid duplicate final sends.
         self._final_content_delivered = False
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
@@ -199,8 +199,11 @@ class GatewayStreamConsumer:
 
     @property
     def final_content_delivered(self) -> bool:
-        """True when the final response content reached the user, even if
-        the subsequent cosmetic edit (cursor removal) failed."""
+        """True when final response content reached the user.
+
+        This can be true even if a later cosmetic finalization step failed,
+        for example when the visible content landed but cursor cleanup did not.
+        """
         return self._final_content_delivered
 
     async def _edit_message(
@@ -417,6 +420,9 @@ class GatewayStreamConsumer:
         if self._use_draft_streaming:
             type(self)._draft_id_counter += 1
             self._draft_id = type(self)._draft_id_counter
+            stream_limit = getattr(self.adapter, "STREAM_MESSAGE_MAX_BYTES", None)
+            if stream_limit:
+                _safe_limit = max(_safe_limit, int(stream_limit) - _len_fn(self.cfg.cursor) - 100)
             logger.debug(
                 "Stream consumer using native-draft transport (chat=%s draft_id=%s)",
                 self.chat_id, self._draft_id,
@@ -913,14 +919,17 @@ class GatewayStreamConsumer:
             return False
         return True
 
-    async def _send_draft_frame(self, text: str) -> bool:
-        """Emit a single animated draft frame for the current accumulated text.
+    async def _send_draft_frame(self, text: str, *, finish: bool = False) -> bool:
+        """Emit a single animated draft/native stream frame.
 
         Returns True when the frame landed.  On any failure, permanently
         disables drafts for the remainder of this run so subsequent frames
         flow through the edit-based path (which can adapt with flood-control
         backoff, etc.).  Drafts have no message_id and clear naturally on
         the client when the response finalizes via a regular sendMessage.
+        Adapters that support explicit native finalization (WeCom) may accept
+        the optional ``finish`` kwarg; older draft adapters ignore it through
+        the TypeError fallback below.
         """
         if self._draft_id is None:
             # Defensive: should never happen — _use_draft_streaming gate is
@@ -928,12 +937,24 @@ class GatewayStreamConsumer:
             self._use_draft_streaming = False
             return False
         try:
-            result = await self.adapter.send_draft(
-                chat_id=self.chat_id,
-                draft_id=self._draft_id,
-                content=text,
-                metadata=self.metadata,
-            )
+            send_draft = self.adapter.send_draft
+            try:
+                result = await send_draft(
+                    chat_id=self.chat_id,
+                    draft_id=self._draft_id,
+                    content=text,
+                    metadata=self.metadata,
+                    finish=finish,
+                )
+            except TypeError:
+                if finish:
+                    raise
+                result = await send_draft(
+                    chat_id=self.chat_id,
+                    draft_id=self._draft_id,
+                    content=text,
+                    metadata=self.metadata,
+                )
         except Exception as e:
             logger.debug(
                 "send_draft raised, disabling draft transport for this run: %s", e,
@@ -1147,32 +1168,38 @@ class GatewayStreamConsumer:
                 and len(_visible_stripped) < _MIN_NEW_MSG_CHARS):
             return True  # too short for a standalone message — accumulate more
 
-        # Native draft streaming: route mid-stream frames through send_draft.
-        # The final answer is delivered via the regular sendMessage path
-        # below — drafts have no message_id so we can't finalize them
-        # in-place; the regular sendMessage clears the draft naturally on
-        # the client and gives the user a real message in their history.
-        # Skip when:
-        #   * finalize=True (this is the final answer; needs to be a real message)
-        #   * an edit path is already established (message_id is set, e.g. after
-        #     a tool-boundary segment break where the prior text was finalized
-        #     as a real sendMessage and the next text segment continues editing
-        #     that one — staying on edit-based for that segment is correct).
-        if (
-            self._use_draft_streaming
-            and not finalize
-            and self._message_id is None
-        ):
-            # No-op skip: identical to the last frame we sent.
-            if text == self._last_sent_text:
-                return True
-            ok = await self._send_draft_frame(text)
-            if ok:
-                # Drafts mark "we put something on screen" but DO NOT set
-                # _already_sent — that flag gates the gateway's fallback
-                # final-send path and we still need that to fire so the
-                # user gets a real message (drafts have no message_id).
-                return True
+        # Native draft streaming: route frames through send_draft.
+        # Generic draft platforms (e.g. Telegram drafts) still need a regular
+        # final send, but adapters such as WeCom can mark
+        # REQUIRES_EDIT_FINALIZE=True to receive an explicit finish=True native
+        # stream frame instead.
+        if self._use_draft_streaming and self._message_id is None:
+            if text == self._last_sent_text and not (
+                finalize and self._adapter_requires_finalize
+            ):
+                if finalize and not self._adapter_requires_finalize:
+                    # Generic draft platforms: the last non-final draft frame
+                    # already showed this content, but the user still needs a
+                    # real persisted message. Fall through to adapter.send().
+                    pass
+                else:
+                    return True
+            elif finalize and self._adapter_requires_finalize:
+                # Reuse the draft frame path for WeCom-style native stream
+                # finalization; send_draft decides how to encode finish state.
+                ok = await self._send_draft_frame(text, finish=True)
+                if ok:
+                    self._already_sent = True
+                    self._final_response_sent = True
+                    self._final_content_delivered = True
+                    return True
+            elif not finalize:
+                ok = await self._send_draft_frame(text)
+                if ok:
+                    # Drafts mark "we put something on screen" but DO NOT set
+                    # _already_sent — generic draft platforms still need a real
+                    # final message to land through the fallback path.
+                    return True
             # Failure already disabled drafts for this run; fall through to
             # the regular edit/send path below.
         try:

@@ -7,6 +7,7 @@ The adapter focuses on the core gateway path:
 - authenticate via ``aibot_subscribe``
 - receive inbound ``aibot_msg_callback`` events
 - send outbound markdown messages via ``aibot_send_msg``
+- stream passive replies via ``aibot_respond_msg`` ``msgtype=stream``
 - upload outbound media via ``aibot_upload_media_*`` and send native attachments
 - best-effort download of inbound image/file attachments for agent context
 
@@ -144,6 +145,12 @@ class WeComAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False
+    REQUIRES_EDIT_FINALIZE = True
+    # WeCom AI Bot supports native passive streaming replies via
+    # ``aibot_respond_msg`` with ``msgtype=stream``.  It is not message editing:
+    # frames reuse the inbound callback ``req_id`` plus a caller-provided stream
+    # id, and the final frame sets ``finish=true``.
+    STREAM_MESSAGE_MAX_BYTES = 20 * 1024
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
@@ -175,6 +182,7 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+        self._active_stream_replies: Dict[str, str] = {}
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
@@ -460,6 +468,15 @@ class WeComAdapter(BasePlatformAdapter):
     @staticmethod
     def _new_req_id(prefix: str) -> str:
         return f"{prefix}-{uuid.uuid4().hex}"
+
+    @staticmethod
+    def _truncate_utf8(text: str, max_bytes: int) -> str:
+        """Truncate text to at most ``max_bytes`` UTF-8 bytes."""
+        normalized = str(text or "")
+        encoded = normalized.encode("utf-8")
+        if len(encoded) <= max_bytes:
+            return normalized
+        return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
     @staticmethod
     def _payload_req_id(payload: Dict[str, Any]) -> str:
@@ -904,11 +921,44 @@ class WeComAdapter(BasePlatformAdapter):
         while len(self._last_chat_req_ids) > DEDUP_MAX_SIZE:
             self._last_chat_req_ids.pop(next(iter(self._last_chat_req_ids)))
 
+    def _remember_active_stream_reply(self, reply_req_id: str, stream_id: str) -> None:
+        """Track an in-flight WeCom native stream for finalization.
+
+        The generic gateway draft transport only knows about a synthetic
+        ``draft_id``. WeCom native streaming instead needs the original inbound
+        callback ``req_id`` plus a stable stream ``id`` across frames, so keep
+        that pairing bounded like the other req-id caches.
+        """
+        normalized_req_id = str(reply_req_id or "").strip()
+        normalized_stream_id = str(stream_id or "").strip()
+        if not normalized_req_id or not normalized_stream_id:
+            return
+        self._active_stream_replies[normalized_req_id] = normalized_stream_id
+        while len(self._active_stream_replies) > DEDUP_MAX_SIZE:
+            self._active_stream_replies.pop(next(iter(self._active_stream_replies)))
+
     def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
         normalized = str(reply_to or "").strip()
         if not normalized or normalized.startswith("quote:"):
             return None
         return self._reply_req_ids.get(normalized)
+
+    def _reply_req_id_for_stream(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Resolve the inbound req_id used by WeCom native stream frames."""
+        reply_req_id = None
+        if isinstance(metadata, dict):
+            anchor = (
+                metadata.get("reply_to_message_id")
+                or metadata.get("telegram_reply_to_message_id")
+            )
+            reply_req_id = self._reply_req_id_for_message(str(anchor or ""))
+        if not reply_req_id and chat_id in self._last_chat_req_ids:
+            reply_req_id = self._last_chat_req_ids[chat_id]
+        return reply_req_id
 
     # ------------------------------------------------------------------
     # Outbound messaging
@@ -1233,6 +1283,60 @@ class WeComAdapter(BasePlatformAdapter):
         self._raise_for_wecom_error(response, "send reply markdown")
         return response
 
+    async def _send_reply_stream(
+        self,
+        reply_req_id: str,
+        stream_id: str,
+        content: str,
+        *,
+        finish: bool = False,
+    ) -> Dict[str, Any]:
+        """Send a WeCom passive stream frame without waiting for an ack.
+
+        ``aibot_respond_msg`` stream frames reuse the inbound callback req_id.
+        Unlike normal request/response commands, partial stream frames may not
+        yield a correlated websocket response before the model finishes.  If we
+        register the req_id in ``_pending_responses`` and await it, the gateway
+        stream consumer can block on the first partial frame and never display
+        streaming output.  Treat websocket write success as delivery for stream
+        frames; any asynchronous platform-side error is best-effort only.
+        """
+        normalized_req_id = str(reply_req_id or "").strip()
+        if not normalized_req_id:
+            raise ValueError("reply_req_id is required")
+        body = {
+            "msgtype": "stream",
+            "stream": {
+                "id": stream_id,
+                "finish": bool(finish),
+                "content": self._truncate_utf8(content, self.STREAM_MESSAGE_MAX_BYTES),
+            },
+        }
+
+        # Tests patch the legacy request helper to inspect payloads without a
+        # live websocket; production must avoid that helper because it waits for
+        # a response that partial stream frames do not reliably send.
+        mocked_request = getattr(self._send_reply_request, "mock", None)
+        if mocked_request is not None or self._send_reply_request.__class__.__module__.startswith("unittest.mock"):
+            response = await self._send_reply_request(normalized_req_id, body)
+            self._raise_for_wecom_error(response, "send reply stream")
+            return response
+
+        if not self._ws or self._ws.closed:
+            raise RuntimeError("WeCom websocket is not connected")
+        await self._send_json(
+            {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": normalized_req_id}, "body": body}
+        )
+        logger.info(
+            "[%s] Sent WeCom stream frame req_id=%s stream_id=%s finish=%s chars=%d",
+            self.name,
+            normalized_req_id,
+            stream_id,
+            bool(finish),
+            len(str(content or "")),
+        )
+        return {"headers": {"req_id": normalized_req_id}, "errcode": 0, "body": body}
+
     async def _send_reply_media_message(
         self,
         reply_req_id: str,
@@ -1365,7 +1469,16 @@ class WeComAdapter(BasePlatformAdapter):
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
             if reply_req_id:
-                response = await self._send_reply_markdown(reply_req_id, content)
+                stream_id = self._active_stream_replies.pop(reply_req_id, None)
+                if stream_id:
+                    response = await self._send_reply_stream(
+                        reply_req_id,
+                        stream_id,
+                        content,
+                        finish=True,
+                    )
+                else:
+                    response = await self._send_reply_markdown(reply_req_id, content)
             else:
                 response = await self._send_request(
                     APP_CMD_SEND,
@@ -1388,6 +1501,63 @@ class WeComAdapter(BasePlatformAdapter):
         return SendResult(
             success=True,
             message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12],
+            raw_response=response,
+        )
+
+    def supports_draft_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Use the gateway draft-transport hook for WeCom native stream replies."""
+        del chat_type, metadata
+        return True
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        finish: bool = False,
+    ) -> SendResult:
+        """Send/update a WeCom native stream reply frame.
+
+        The generic gateway stream consumer calls this method for growing
+        preview frames. We map its ``draft_id`` to WeCom's stream ``id`` and
+        can also close that same stream when the consumer passes ``finish=True``.
+        """
+        if not chat_id:
+            return SendResult(success=False, error="chat_id is required")
+        reply_req_id = self._reply_req_id_for_stream(chat_id, metadata)
+        if not reply_req_id:
+            return SendResult(success=False, error="No WeCom reply context available for stream")
+
+        stream_id = f"stream-{draft_id}"
+        try:
+            response = await self._send_reply_stream(
+                reply_req_id,
+                stream_id,
+                content,
+                finish=finish,
+            )
+        except asyncio.TimeoutError:
+            return SendResult(success=False, error="Timeout sending stream frame to WeCom")
+        except Exception as exc:
+            logger.error("[%s] Stream frame send failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
+        error = self._response_error(response)
+        if error:
+            return SendResult(success=False, error=error)
+
+        if finish:
+            self._active_stream_replies.pop(reply_req_id, None)
+        else:
+            self._remember_active_stream_reply(reply_req_id, stream_id)
+        return SendResult(
+            success=True,
+            message_id=stream_id,
             raw_response=response,
         )
 

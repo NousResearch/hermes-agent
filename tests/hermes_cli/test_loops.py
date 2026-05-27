@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from hermes_cli.loops import init_loop, loop_dir, run_loop, status_loop
+from hermes_cli.loops import close_loop, init_loop, loop_dir, run_loop, status_loop
 
 
 def test_init_loop_creates_simple_aaron_style_state(tmp_path):
@@ -77,6 +77,21 @@ def test_run_loop_selects_first_pending_story_and_returns_execution_prompt(tmp_p
     updated = json.loads(path.read_text(encoding="utf-8"))
     assert updated["userStories"][1]["status"] == "running"
     assert "Running: S1 — first" in (loop_dir("ship", root=tmp_path) / "status.md").read_text(encoding="utf-8")
+
+
+def test_close_loop_marks_closed_and_archives_state(tmp_path):
+    init_loop("done", root=tmp_path, title="Done loop")
+
+    result = close_loop("done", root=tmp_path)
+
+    path = loop_dir("done", root=tmp_path)
+    prd = json.loads((path / "prd.json").read_text(encoding="utf-8"))
+    archives = [child for child in (path / "archive").iterdir() if child.is_dir()]
+    assert prd["status"] == "closed"
+    assert "Status: closed" in result.text
+    assert "Archive:" in result.text
+    assert len(archives) == 1
+    assert (archives[0] / "prd.json").exists()
 
 
 def test_status_loop_reports_not_started_without_creating_state(tmp_path):

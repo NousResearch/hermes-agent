@@ -7621,6 +7621,9 @@ class GatewayRunner:
         if canonical == "goal":
             return await self._handle_goal_command(event)
 
+        if canonical == "loop":
+            return await self._handle_loop_command(event)
+
         if canonical == "subgoal":
             return await self._handle_subgoal_command(event)
 
@@ -10742,6 +10745,16 @@ class GatewayRunner:
             return None, None
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+
+    async def _handle_loop_command(self, event: "MessageEvent") -> str:
+        """Handle /loop for gateway platforms using the core file-backed loop state."""
+        args = (event.get_command_args() or "").strip()
+        try:
+            from hermes_cli.loops import loop_text
+            return loop_text(args or "status")
+        except Exception as exc:
+            logger.debug("loop command failed: %s", exc)
+            return f"/loop failed: {exc}"
 
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
         """Handle /goal for gateway platforms.

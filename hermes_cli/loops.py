@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from shutil import copy2
 from typing import Any
 
 DEFAULT_SLUG = "fruit-loop"
@@ -187,6 +188,28 @@ def run_loop(slug: str | None = None, *, root: str | Path | None = None) -> Loop
     return LoopResult(name, path, _story_prompt(name, path, prd, story))
 
 
+def close_loop(slug: str | None = None, *, root: str | Path | None = None) -> LoopResult:
+    name = slugify(slug)
+    path = loop_dir(name, root=root)
+    prd_path = path / "prd.json"
+    if not prd_path.exists():
+        return status_loop(name, root=root)
+
+    prd = _load_prd(prd_path)
+    prd["status"] = "closed"
+    prd["updatedAt"] = _now()
+    prd_path.write_text(json.dumps(prd, indent=2) + "\n")
+    archive_dir = path / "archive" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    for filename in ("prd.json", "progress.md", "status.md"):
+        source = path / filename
+        if source.exists():
+            copy2(source, archive_dir / filename)
+    text = _render(name, path, prd, status="closed") + f"\nArchive: {archive_dir}"
+    (path / "status.md").write_text(text + "\n")
+    return LoopResult(name, path, text)
+
+
 def loop_text(args: str, *, root: str | Path | None = None) -> str:
     parts = args.split()
     command = parts[0] if parts else "status"
@@ -198,5 +221,5 @@ def loop_text(args: str, *, root: str | Path | None = None) -> str:
     if command == "run":
         return run_loop(slug, root=root).text
     if command == "close":
-        return f"/loop close is next slice. State: {loop_dir(slug, root=root)}"
+        return close_loop(slug, root=root).text
     return "Usage: /loop [init|run|status|close] <slug>"

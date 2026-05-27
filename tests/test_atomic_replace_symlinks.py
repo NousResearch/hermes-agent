@@ -12,6 +12,7 @@ the codebase were migrated to the helper; these tests pin that invariant.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sys
@@ -158,3 +159,86 @@ def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
     assert link.is_symlink(), "symlink must be preserved"
     assert missing.exists(), "real target should now exist"
     assert missing.read_text(encoding="utf-8") == "created-through-link\n"
+
+
+# ─── Cross-device fallback (EXDEV) ─────────────────────────────────────────
+
+
+def test_atomic_replace_exdev_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When os.replace fails with EXDEV (cross-device link), the helper
+    falls back to shutil.copy2 + os.unlink so WSL→Windows symlinked configs
+    still update successfully.
+    """
+    import utils as utils_mod
+
+    target = tmp_path / "target.yaml"
+    target.write_text("old\n", encoding="utf-8")
+
+    original_replace = os.replace
+
+    def _raise_exdev(src: str, dst: str) -> None:
+        raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+
+    monkeypatch.setattr(os, "replace", _raise_exdev)
+
+    tmp = _write_tmp(tmp_path, "cross-device\n")
+    returned = atomic_replace(tmp, target)
+
+    assert Path(returned) == target
+    assert target.read_text(encoding="utf-8") == "cross-device\n"
+    assert not tmp.exists(), "temp file must be cleaned up after EXDEV fallback"
+
+
+def test_atomic_replace_exdev_fallback_via_symlink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """EXDEV fallback works when target is a symlink pointing to another fs."""
+    real = tmp_path / "real.yaml"
+    link = tmp_path / "link.yaml"
+    real.write_text("original\n", encoding="utf-8")
+    link.symlink_to(real)
+
+    def _raise_exdev(src: str, dst: str) -> None:
+        raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+
+    monkeypatch.setattr(os, "replace", _raise_exdev)
+
+    tmp = _write_tmp(tmp_path, "updated-via-symlink\n")
+    returned = atomic_replace(tmp, link)
+
+    assert link.is_symlink(), "symlink must be preserved even after EXDEV fallback"
+    assert Path(returned) == real
+    assert real.read_text(encoding="utf-8") == "updated-via-symlink\n"
+    assert not tmp.exists(), "temp file must be cleaned up after EXDEV fallback"
+
+
+def test_atomic_replace_exdev_does_not_swallow_other_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-EXDEV OSErrors from os.replace must propagate, not be silently caught."""
+    target = tmp_path / "target.yaml"
+    target.write_text("unchanged\n", encoding="utf-8")
+
+    def _raise_eacces(src: str, dst: str) -> None:
+        raise OSError(errno.EACCES, "Permission denied", dst)
+
+    monkeypatch.setattr(os, "replace", _raise_eacces)
+
+    tmp = _write_tmp(tmp_path, "should-not-land\n")
+    with pytest.raises(OSError, match="Permission denied"):
+        atomic_replace(tmp, target)
+
+    # Target should be untouched.
+    assert target.read_text(encoding="utf-8") == "unchanged\n"
+
+
+def test_atomic_yaml_write_exdev_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """End-to-end: atomic_yaml_write recovers from EXDEV during write."""
+    target = tmp_path / "config.yaml"
+    target.write_text("placeholder: true\n", encoding="utf-8")
+
+    def _raise_exdev(src: str, dst: str) -> None:
+        raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+
+    monkeypatch.setattr(os, "replace", _raise_exdev)
+
+    atomic_yaml_write(target, {"display": {"skin": "auto"}})
+
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert data == {"display": {"skin": "auto"}}

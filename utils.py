@@ -1,8 +1,10 @@
 """Shared utility functions for hermes-agent."""
 
+import errno
 import json
 import logging
 import os
+import shutil
 import stat
 import tempfile
 from pathlib import Path
@@ -73,12 +75,27 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     and non-existent paths the behavior is identical to a plain
     ``os.replace`` call.
 
+    When the temp file and resolved target live on different filesystems
+    (e.g. WSL symlink to a Windows-mounted path under ``/mnt/c/…``),
+    ``os.replace`` fails with ``EXDEV`` (errno 18).  In that case we
+    fall back to ``shutil.copy2`` + ``os.unlink``, which preserves
+    metadata and still leaves the destination file in place.
+
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
     """
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
-    os.replace(str(tmp_path), real_path)
+    try:
+        os.replace(str(tmp_path), real_path)
+    except OSError as exc:
+        # EXDEV = cross-device link (WSL symlink → Windows mount, etc.)
+        # Fall back to copy + unlink — preserves permissions via copy2.
+        if exc.errno == errno.EXDEV:
+            shutil.copy2(str(tmp_path), real_path)
+            os.unlink(str(tmp_path))
+        else:
+            raise
     return real_path
 
 

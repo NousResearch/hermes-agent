@@ -284,6 +284,46 @@ def _make_hermes_provider_class() -> Optional[type]:
             ):
                 storage.save_oauth_metadata(meta)
 
+        def _ensure_client_info_auth_method(self) -> None:
+            """Default missing client-secret auth method before token calls.
+
+            Supabase MCP dynamic client registration returns ``client_secret``
+            without ``token_endpoint_auth_method`` but its token endpoint still
+            requires the secret as a form parameter. The SDK only sends that
+            parameter when the method is explicit, so normalize before same-run
+            authorization-code exchange and refresh.
+            """
+            from tools.mcp_oauth import ensure_client_info_auth_method
+            ensure_client_info_auth_method(
+                self.context.client_info,
+                self._hermes_server_name,
+            )
+
+        async def _exchange_token_authorization_code(self, *args, **kwargs):  # type: ignore[override]
+            self._ensure_client_info_auth_method()
+            return await super()._exchange_token_authorization_code(*args, **kwargs)
+
+        async def _refresh_token(self):  # type: ignore[override]
+            self._ensure_client_info_auth_method()
+            return await super()._refresh_token()
+
+        async def _handle_token_response(self, response):  # type: ignore[override]
+            """Handle OAuth token response, accepting Supabase's 201 Created.
+
+            The MCP SDK accepts only HTTP 200. Supabase MCP currently returns
+            ``201 Created`` with a valid OAuth token JSON body after successful
+            authorization-code exchange, so normalize that success shape
+            instead of forcing a second browser OAuth loop.
+            """
+            if response.status_code != 201:
+                return await super()._handle_token_response(response)
+
+            from mcp.client.auth.utils import handle_token_response_scopes
+            token_response = await handle_token_response_scopes(response)
+            self.context.current_tokens = token_response
+            self.context.update_token_expiry(token_response)
+            await self.context.storage.set_tokens(token_response)
+
         async def async_auth_flow(self, request):  # type: ignore[override]
             # Pre-flow hook: ask the manager to refresh from disk if needed.
             # Any failure here is non-fatal — we just log and proceed with

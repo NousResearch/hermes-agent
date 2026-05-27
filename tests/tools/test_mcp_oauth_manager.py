@@ -164,3 +164,81 @@ def test_manager_fails_fast_noninteractive_without_cached_tokens(tmp_path, monke
         mgr.get_or_build_provider("linear", "https://mcp.linear.app/mcp", None)
 
     assert mgr._entries["linear"].provider is None
+
+
+@pytest.mark.asyncio
+async def test_hermes_provider_sends_dynamic_client_secret_when_method_missing(tmp_path, monkeypatch):
+    """Supabase-style DCR client_secret without method still reaches token body."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata
+
+    assert _HERMES_PROVIDER_CLS is not None
+    metadata = OAuthClientMetadata.model_validate({
+        "redirect_uris": ["http://127.0.0.1:58007/callback"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+    })
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="supabase",
+        server_url="https://mcp.supabase.com/mcp",
+        client_metadata=metadata,
+        storage=HermesTokenStorage("supabase"),
+        redirect_handler=None,
+        callback_handler=None,
+    )
+    provider.context.client_info = OAuthClientInformationFull.model_validate({
+        "client_id": "client-123",
+        "client_secret": "secret-456",
+        "redirect_uris": ["http://127.0.0.1:58007/callback"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+    })
+
+    request = await provider._exchange_token_authorization_code("auth-code", "verifier")
+    body = request.content.decode()
+
+    assert provider.context.client_info.token_endpoint_auth_method == "client_secret_post"
+    assert "client_secret=secret-456" in body
+
+
+@pytest.mark.asyncio
+async def test_hermes_provider_accepts_supabase_201_token_response(tmp_path, monkeypatch):
+    """Supabase token exchange returns 201 Created with valid token JSON."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import httpx
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
+    from mcp.shared.auth import OAuthClientMetadata
+
+    assert _HERMES_PROVIDER_CLS is not None
+    metadata = OAuthClientMetadata.model_validate({
+        "redirect_uris": ["http://127.0.0.1:58007/callback"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+    })
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="supabase",
+        server_url="https://mcp.supabase.com/mcp",
+        client_metadata=metadata,
+        storage=HermesTokenStorage("supabase"),
+        redirect_handler=None,
+        callback_handler=None,
+    )
+    response = httpx.Response(
+        201,
+        json={
+            "access_token": "access-123",
+            "refresh_token": "refresh-456",
+            "expires_in": 86400,
+            "token_type": "Bearer",
+        },
+        request=httpx.Request("POST", "https://api.supabase.com/oauth/token"),
+    )
+
+    await provider._handle_token_response(response)
+
+    assert provider.context.current_tokens is not None
+    assert provider.context.current_tokens.access_token == "access-123"
+    assert (tmp_path / "mcp-tokens" / "supabase.json").exists()

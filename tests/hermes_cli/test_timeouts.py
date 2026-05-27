@@ -43,6 +43,42 @@ def test_provider_timeout_used_when_no_model_override(monkeypatch, tmp_path):
     assert get_provider_request_timeout("ollama-local", "qwen3:32b") == 300.0
 
 
+def test_named_custom_provider_timeout_uses_custom_provider_entry(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        custom_providers:
+        - name: Guardian
+          base_url: http://127.0.0.1:11434/v1
+          request_timeout_seconds: 420
+          stale_timeout_seconds: 240
+        """,
+    )
+
+    assert get_provider_request_timeout("custom:guardian", "qwen3.6-35b-uncensored") == 420.0
+    assert get_provider_stale_timeout("custom:guardian", "qwen3.6-35b-uncensored") == 240.0
+
+
+def test_named_custom_provider_timeout_falls_back_to_generic_custom_provider(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        custom_providers:
+        - name: Guardian
+          base_url: http://127.0.0.1:11434/v1
+        providers:
+          custom:
+            request_timeout_seconds: 300
+            stale_timeout_seconds: 180
+        """,
+    )
+
+    assert get_provider_request_timeout("custom:guardian", "qwen3.6-35b-uncensored") == 300.0
+    assert get_provider_stale_timeout("custom:guardian", "qwen3.6-35b-uncensored") == 180.0
+
+
 def test_model_stale_timeout_override_wins(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_config(

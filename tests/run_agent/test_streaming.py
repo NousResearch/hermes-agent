@@ -878,6 +878,80 @@ class TestLocalGuardianStreaming:
         )
         assert mock_client.chat.completions.with_streaming_response.create.call_count == 1
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_local_guardian_keepalives_do_not_reset_stale_timeout(
+        self, mock_close, mock_create, monkeypatch,
+    ):
+        """Guardian keepalive comments should not hide a stream with no data chunks."""
+        from run_agent import AIAgent
+        import httpx
+
+        monkeypatch.delenv("HERMES_STREAM_RETRIES", raising=False)
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "1")
+        monkeypatch.setenv("HERMES_API_TIMEOUT", "999")
+
+        closed = {"value": False}
+
+        def _close_request(_client, reason=None):
+            closed["value"] = True
+
+        def _iter_lines():
+            while True:
+                if closed["value"]:
+                    raise httpx.ReadTimeout("stream stale timeout")
+                yield ": guardian-keepalive request_id=req-1"
+                yield ""
+
+        ticks = {"value": -2}
+
+        def _time():
+            ticks["value"] += 2
+            return ticks["value"]
+
+        mock_close.side_effect = _close_request
+
+        raw_response = MagicMock()
+        raw_response.__enter__ = MagicMock(return_value=raw_response)
+        raw_response.__exit__ = MagicMock(return_value=False)
+        raw_response.iter_lines.return_value = _iter_lines()
+        raw_response.http_response = SimpleNamespace(status_code=200, headers={})
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.with_streaming_response.create.return_value = raw_response
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="http://127.0.0.1:11434/v1",
+            provider="custom",
+            model="qwen3.6-35b-uncensored",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        with (
+            patch(
+                "run_agent.AIAgent._abort_request_openai_client",
+                side_effect=_close_request,
+            ) as mock_abort,
+            patch("agent.chat_completion_helpers.time.time", side_effect=_time),
+        ):
+            with pytest.raises(httpx.ReadTimeout):
+                agent._interruptible_streaming_api_call({})
+
+        assert any(
+            call.kwargs.get("reason") == "stale_stream_kill"
+            for call in mock_close.call_args_list
+        ) or any(
+            call.kwargs.get("reason") == "stale_stream_kill"
+            for call in mock_abort.call_args_list
+        )
+        assert mock_client.chat.completions.with_streaming_response.create.call_count == 1
+
 
 # ── Test: _has_stream_consumers ──────────────────────────────────────────
 

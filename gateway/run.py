@@ -18551,11 +18551,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.debug("Takeover marker check failed: %s", e)
 
         # Planned stop check: service managers and `hermes gateway stop`
-        # also send SIGTERM, which is indistinguishable from an unexpected
-        # external kill unless the CLI marks it first. SIGINT comes from an
-        # interactive Ctrl+C and is likewise an intentional foreground stop.
+        # also send SIGTERM. A systemd-managed SIGTERM is a normal unit stop;
+        # CLI/manual stops use the marker path. SIGINT comes from an interactive
+        # Ctrl+C and is likewise an intentional foreground stop.
         planned_stop = False
         if received_signal == signal.SIGINT:
+            planned_stop = True
+        elif received_signal == signal.SIGTERM and os.environ.get("INVOCATION_ID"):
             planned_stop = True
         elif not planned_takeover:
             try:

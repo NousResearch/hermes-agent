@@ -1569,9 +1569,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     first_delta_fired = {"done": False}
     deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
-    # Wall-clock timestamp of the last stream activity observed by Hermes.
-    # For most providers that means the last parsed chunk/event. The local
-    # Guardian route also updates this on SSE comment keepalives.
+    # Wall-clock timestamp of the last real stream data observed by Hermes.
+    # Transport keepalive comments keep sockets open, but they do not prove
+    # the model is still making progress.
     last_stream_activity_time = {"t": time.time()}
     # Absolute stream start time. Keepalive comments can keep a connection
     # looking alive forever on shared single-slot endpoints, so the provider
@@ -1829,8 +1829,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 agent._check_openrouter_cache_status(http_response)
 
                 for raw_line in response.iter_lines():
-                    last_stream_activity_time["t"] = time.time()
-
                     if agent._interrupt_requested:
                         break
 
@@ -1847,6 +1845,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     if not payload or payload == "[DONE]":
                         continue
 
+                    last_stream_activity_time["t"] = time.time()
                     yield ChatCompletionChunk.model_validate_json(payload)
 
         if _use_local_guardian_raw_stream:

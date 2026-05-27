@@ -982,7 +982,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
-            fb_api_mode = "codex_responses"
+            # GPT-5.5 OAuth should route through Codex app-server, not Responses streaming.
+            if str(fb_model or "").strip() == "gpt-5.5":
+                fb_api_mode = "codex_app_server"
+            else:
+                fb_api_mode = "codex_responses"
         elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
             fb_api_mode = "anthropic_messages"
         elif _fb_is_azure:

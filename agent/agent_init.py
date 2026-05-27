@@ -292,7 +292,13 @@ def init_agent(
     if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
-        agent.api_mode = "codex_responses"
+        # GPT-5.5 via ChatGPT/Codex OAuth must use the Codex app-server/CLI runtime.
+        # The direct Responses streaming backend can fail with:
+        # "'NoneType' object is not iterable".
+        if str(getattr(agent, "model", "") or "").strip() == "gpt-5.5":
+            agent.api_mode = "codex_app_server"
+        else:
+            agent.api_mode = "codex_responses"
     elif agent.provider in {"xai", "xai-oauth"}:
         agent.api_mode = "codex_responses"
     elif (provider_name is None) and (

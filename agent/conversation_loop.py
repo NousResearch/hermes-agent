@@ -663,6 +663,17 @@ def run_conversation(
     # all run inside Codex). Default Hermes path is bypassed entirely.
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
+    # Hard runtime guard: GPT-5.5 through ChatGPT/Codex OAuth must use
+    # the Codex app-server/CLI runtime, not the direct Responses streaming
+    # backend at chatgpt.com/backend-api/codex, which can fail with
+    # "'NoneType' object is not iterable".
+    if (
+        str(getattr(agent, "provider", "") or "").strip() == "openai-codex"
+        and str(getattr(agent, "model", "") or "").strip() == "gpt-5.5"
+        and str(getattr(agent, "api_mode", "") or "").strip() != "codex_app_server"
+    ):
+        agent.api_mode = "codex_app_server"
+
     if agent.api_mode == "codex_app_server":
         return agent._run_codex_app_server_turn(
             user_message=user_message,

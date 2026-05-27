@@ -168,15 +168,27 @@ class ResponsesApiTransport(ProviderTransport):
             if grok_supports_reasoning_effort(model):
                 kwargs["reasoning"] = {"effort": reasoning_effort}
         elif reasoning_enabled:
+            from agent.model_metadata import openai_responses_supports_reasoning
+
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
-            else:
+            elif is_codex_backend or openai_responses_supports_reasoning(model):
+                # The codex OAuth backend only serves reasoning models and its
+                # contract requires reasoning replay, so always send these for
+                # it. The direct OpenAI Responses endpoint also serves
+                # non-reasoning models (gpt-4.1, gpt-4o, ...) — gate those on
+                # the model so we don't send params they reject.
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
                 kwargs["include"] = (
                     ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
                 )
+            # else: a non-reasoning OpenAI model (gpt-4.1, gpt-4o, ...) reached
+            # the Responses API — e.g. as a fallback target on the direct
+            # api.openai.com endpoint. Omit reasoning/include entirely; sending
+            # include=["reasoning.encrypted_content"] returns HTTP 400
+            # "Encrypted content is not supported with this model."
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 

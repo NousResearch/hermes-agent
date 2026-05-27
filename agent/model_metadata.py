@@ -286,6 +286,37 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
 
 
+# OpenAI model families that accept the Responses API ``reasoning`` config and
+# ``include: ["reasoning.encrypted_content"]``. The codex OAuth backend only
+# serves these (gpt-5.x / codex-*), but the *direct* OpenAI endpoint also
+# serves non-reasoning models (gpt-4.1, gpt-4o, ...) on the Responses API —
+# those reject ``include`` with HTTP 400 "Encrypted content is not supported
+# with this model." Mirrors hermes_cli.models._AZURE_FOUNDRY_RESPONSES_PREFIXES.
+_OPENAI_RESPONSES_REASONING_PREFIXES = (
+    "codex",   # codex-*, codex-mini
+    "gpt-5",   # gpt-5, gpt-5.x, gpt-5-codex, gpt-5.x-codex
+    "o1",      # o1, o1-preview, o1-mini
+    "o3",      # o3, o3-mini
+    "o4",      # o4, o4-mini
+)
+
+
+def openai_responses_supports_reasoning(model: str) -> bool:
+    """Return True when an OpenAI Responses-API model accepts reasoning/include.
+
+    Used to gate ``reasoning`` + ``include:["reasoning.encrypted_content"]`` on
+    the direct-OpenAI / codex Responses path. Non-reasoning models (gpt-4.1,
+    gpt-4o, gpt-4-turbo, ...) return False so we omit those params instead of
+    triggering HTTP 400. Conservative: an unknown model returns False.
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    return any(name.startswith(prefix) for prefix in _OPENAI_RESPONSES_REASONING_PREFIXES)
+
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",

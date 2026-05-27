@@ -447,6 +447,28 @@ class TestBuildApiKwargsCodex:
         kwargs = agent._build_api_kwargs(messages)
         assert "reasoning.encrypted_content" in kwargs.get("include", [])
 
+    def test_omits_reasoning_include_for_direct_openai_non_reasoning_model(self, monkeypatch):
+        """gpt-4.1 on the direct OpenAI Responses endpoint (e.g. a fallback
+        target) must NOT receive reasoning/include — they 400 with "Encrypted
+        content is not supported with this model." Regression for the codex→
+        gpt-4.1 fallback failure."""
+        agent = _make_agent(monkeypatch, "custom", api_mode="codex_responses",
+                            base_url="https://api.openai.com/v1", model="gpt-4.1")
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "reasoning" not in kwargs
+        assert "include" not in kwargs
+
+    def test_includes_reasoning_for_direct_openai_reasoning_model(self, monkeypatch):
+        """gpt-5.x on the direct OpenAI Responses endpoint still gets
+        reasoning/include — only non-reasoning models are gated out."""
+        agent = _make_agent(monkeypatch, "custom", api_mode="codex_responses",
+                            base_url="https://api.openai.com/v1", model="gpt-5.4")
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["reasoning"]["effort"] == "medium"
+        assert "reasoning.encrypted_content" in kwargs.get("include", [])
+
     def test_tools_converted_to_responses_format(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
                             base_url="https://chatgpt.com/backend-api/codex")

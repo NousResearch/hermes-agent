@@ -6288,7 +6288,19 @@ class HermesCLI:
             )
         except Exception:
             return []
-        return [s for s in sessions if s.get("id") != self.session_id]
+        # Put the current session first if it exists
+        current = None
+        others = []
+        for s in sessions:
+            if s.get("id") == self.session_id:
+                current = s
+            else:
+                others.append(s)
+        result = []
+        if current:
+            result.append(current)
+        result.extend(others)
+        return result
 
     def _show_recent_sessions(self, *, reason: str = "history", limit: int = 10) -> bool:
         """Render recent sessions inline from the active chat TUI.

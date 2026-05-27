@@ -36,6 +36,8 @@ the port.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import hmac
 import json
 import logging
@@ -43,7 +45,7 @@ import os
 import sqlite3
 import time
 from dataclasses import asdict
-from typing import Any, Optional
+from typing import Any, Generator, Optional
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status as http_status
 from pydantic import BaseModel, Field
@@ -105,8 +107,9 @@ def _resolve_board(board: Optional[str]) -> Optional[str]:
     return normed
 
 
-def _conn(board: Optional[str] = None):
-    """Open a kanban_db connection, creating the schema on first use.
+@contextlib.contextmanager
+def _conn(board: Optional[str] = None) -> Generator[sqlite3.Connection, None, None]:
+    """Open a kanban_db connection, auto-close on exit.
 
     Every handler that mutates the DB goes through this so the plugin
     self-heals on a fresh install (no user-visible "no such table"
@@ -121,7 +124,8 @@ def _conn(board: Optional[str] = None):
         kanban_db.init_db(board=board)
     except Exception as exc:
         log.warning("kanban init_db failed: %s", exc)
-    return kanban_db.connect(board=board)
+    with kanban_db.use_conn(board=board) as conn:
+        yield conn
 
 
 # ---------------------------------------------------------------------------
@@ -371,8 +375,7 @@ def get_board(
     ``current`` pointer → ``default``).
     """
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         tasks = kanban_db.list_tasks(
             conn,
             tenant=tenant,
@@ -480,8 +483,6 @@ def get_board(
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -500,8 +501,7 @@ def get_task(
     ),
 ):
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         if (run_state_type is None) ^ (run_state_name is None):
             raise HTTPException(
                 status_code=400,
@@ -542,8 +542,6 @@ def get_task(
                 )
             ],
         }
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -568,45 +566,43 @@ class CreateTaskBody(BaseModel):
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
-    conn = _conn(board=board)
     try:
-        task_id = kanban_db.create_task(
-            conn,
-            title=payload.title,
-            body=payload.body,
-            assignee=payload.assignee,
-            created_by="dashboard",
-            workspace_kind=payload.workspace_kind,
-            workspace_path=payload.workspace_path,
-            tenant=payload.tenant,
-            priority=payload.priority,
-            parents=payload.parents,
-            triage=payload.triage,
-            idempotency_key=payload.idempotency_key,
-            max_runtime_seconds=payload.max_runtime_seconds,
-            skills=payload.skills,
-        )
-        task = kanban_db.get_task(conn, task_id)
-        body: dict[str, Any] = {"task": _task_dict(task) if task else None}
-        # Surface a dispatcher-presence warning so the UI can show a
-        # banner when a `ready` task would otherwise sit idle because no
-        # gateway is running (or dispatch_in_gateway=false). Only emit
-        # for ready+assigned tasks; triage/todo are expected to wait,
-        # and unassigned tasks can't be dispatched regardless.
-        if task and task.status == "ready" and task.assignee:
-            try:
-                from hermes_cli.kanban import _check_dispatcher_presence
-                running, message = _check_dispatcher_presence()
-                if not running and message:
-                    body["warning"] = message
-            except Exception:
-                # Probe failure must never block the create itself.
-                pass
-        return body
+        with _conn(board=board) as conn:
+            task_id = kanban_db.create_task(
+                conn,
+                title=payload.title,
+                body=payload.body,
+                assignee=payload.assignee,
+                created_by="dashboard",
+                workspace_kind=payload.workspace_kind,
+                workspace_path=payload.workspace_path,
+                tenant=payload.tenant,
+                priority=payload.priority,
+                parents=payload.parents,
+                triage=payload.triage,
+                idempotency_key=payload.idempotency_key,
+                max_runtime_seconds=payload.max_runtime_seconds,
+                skills=payload.skills,
+            )
+            task = kanban_db.get_task(conn, task_id)
+            body: dict[str, Any] = {"task": _task_dict(task) if task else None}
+            # Surface a dispatcher-presence warning so the UI can show a
+            # banner when a `ready` task would otherwise sit idle because no
+            # gateway is running (or dispatch_in_gateway=false). Only emit
+            # for ready+assigned tasks; triage/todo are expected to wait,
+            # and unassigned tasks can't be dispatched regardless.
+            if task and task.status == "ready" and task.assignee:
+                try:
+                    from hermes_cli.kanban import _check_dispatcher_presence
+                    running, message = _check_dispatcher_presence()
+                    if not running and message:
+                        body["warning"] = message
+                except Exception:
+                    # Probe failure must never block the create itself.
+                    pass
+            return body
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -631,8 +627,7 @@ class UpdateTaskBody(BaseModel):
 @router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
@@ -743,8 +738,6 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(updated) if updated else None}
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -754,14 +747,11 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 @router.delete("/tasks/{task_id}")
 def delete_task(task_id: str, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         ok = kanban_db.delete_task(conn, task_id)
         if not ok:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         return {"deleted": True, "task_id": task_id}
-    finally:
-        conn.close()
 
 
 def _parents_blocking_ready(
@@ -903,16 +893,13 @@ def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query
     if not payload.body.strip():
         raise HTTPException(status_code=400, detail="body is required")
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         if kanban_db.get_task(conn, task_id) is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         kanban_db.add_comment(
             conn, task_id, author=payload.author or "dashboard", body=payload.body,
         )
         return {"ok": True}
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -927,14 +914,12 @@ class LinkBody(BaseModel):
 @router.post("/links")
 def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
-    conn = _conn(board=board)
     try:
-        kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
-        return {"ok": True}
+        with _conn(board=board) as conn:
+            kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
+            return {"ok": True}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        conn.close()
 
 
 @router.delete("/links")
@@ -944,12 +929,9 @@ def delete_link(
     board: Optional[str] = Query(None),
 ):
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         ok = kanban_db.unlink_tasks(conn, parent_id, child_id)
         return {"ok": bool(ok)}
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -980,8 +962,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
         raise HTTPException(status_code=400, detail="ids is required")
     results: list[dict] = []
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         for tid in ids:
             entry: dict[str, Any] = {"id": tid, "ok": True}
             try:
@@ -1061,8 +1042,6 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                 entry.update(ok=False, error=str(e))
             results.append(entry)
         return {"results": results}
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1090,8 +1069,7 @@ def list_diagnostics(
     directly when it isn't.
     """
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         diags_by_task = _compute_task_diagnostics(conn, task_ids=None)
         if not diags_by_task:
             return {"diagnostics": [], "count": 0}
@@ -1144,8 +1122,6 @@ def list_diagnostics(
             "diagnostics": out,
             "count": sum(len(d["diagnostics"]) for d in out),
         }
-    finally:
-        conn.close()
 
 
 
@@ -1173,8 +1149,7 @@ def list_active_workers(
     its task without a second round-trip.
     """
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         rows = conn.execute(
             """
             SELECT
@@ -1216,8 +1191,6 @@ def list_active_workers(
             for row in rows
         ]
         return {"workers": workers, "count": len(workers), "checked_at": int(time.time())}
-    finally:
-        conn.close()
 
 
 @router.get("/runs/{run_id}")
@@ -1232,14 +1205,11 @@ def get_run_endpoint(
     404 when no such run exists.
     """
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         r = kanban_db.get_run(conn, run_id)
         if r is None:
             raise HTTPException(status_code=404, detail=f"run {run_id} not found")
         return {"run": _run_dict(r)}
-    finally:
-        conn.close()
 
 
 @router.get("/runs/{run_id}/inspect")
@@ -1261,13 +1231,10 @@ def inspect_run_endpoint(
     ``reason="psutil not available"``.
     """
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         r = kanban_db.get_run(conn, run_id)
         if r is None:
             raise HTTPException(status_code=404, detail=f"run {run_id} not found")
-    finally:
-        conn.close()
 
     if r.ended_at is not None:
         return {"run_id": run_id, "alive": False, "reason": "run already ended"}
@@ -1332,8 +1299,7 @@ def reclaim_task_endpoint(
     ``hermes kanban reclaim <task_id> --reason ...``.
     """
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         ok = kanban_db.reclaim_task(conn, task_id, reason=payload.reason)
         if not ok:
             raise HTTPException(
@@ -1344,8 +1310,6 @@ def reclaim_task_endpoint(
                 ),
             )
         return {"ok": True, "task_id": task_id}
-    finally:
-        conn.close()
 
 
 class SpecifyBody(BaseModel):
@@ -1423,8 +1387,7 @@ def reassign_task_endpoint(
     Maps 1:1 to ``hermes kanban reassign <task_id> <profile> [--reclaim]``.
     """
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         ok = kanban_db.reassign_task(
             conn, task_id,
             payload.profile or None,
@@ -1440,8 +1403,6 @@ def reassign_task_endpoint(
                 ),
             )
         return {"ok": True, "task_id": task_id, "assignee": payload.profile or None}
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1552,11 +1513,8 @@ def get_home_channels(
     subscribed_homes: set[tuple[str, str, str]] = set()
     if task_id:
         board = _resolve_board(board)
-        conn = _conn(board=board)
-        try:
+        with _conn(board=board) as conn:
             subs = kanban_db.list_notify_subs(conn, task_id)
-        finally:
-            conn.close()
         for sub in subs:
             key = (
                 str(sub.get("platform") or ""),
@@ -1588,8 +1546,7 @@ def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(Non
                    f"gateway.platforms.{platform}.home_channel in config.yaml.",
         )
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
@@ -1602,8 +1559,6 @@ def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(Non
             notifier_profile=_active_profile_name(),
         )
         return {"ok": True, "task_id": task_id, "home_channel": home}
-    finally:
-        conn.close()
 
 
 @router.delete("/tasks/{task_id}/home-subscribe/{platform}")
@@ -1617,8 +1572,7 @@ def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(N
             detail=f"No home channel configured for platform {platform!r}.",
         )
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         kanban_db.remove_notify_sub(
             conn,
             task_id=task_id,
@@ -1627,8 +1581,6 @@ def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(N
             thread_id=home["thread_id"] or None,
         )
         return {"ok": True, "task_id": task_id, "home_channel": home}
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1644,11 +1596,8 @@ def get_stats(board: Optional[str] = Query(None)):
     board themselves.
     """
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         return kanban_db.board_stats(conn)
-    finally:
-        conn.close()
 
 
 @router.get("/assignees")
@@ -1661,11 +1610,8 @@ def get_assignees(board: Optional[str] = Query(None)):
     appears in the picker before it's been given any task.
     """
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         return {"assignees": kanban_db.known_assignees(conn)}
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1687,11 +1633,8 @@ def get_task_log(
     generations, so disk usage per task is bounded at ~4 MiB.
     """
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         task = kanban_db.get_task(conn, task_id)
-    finally:
-        conn.close()
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     content = kanban_db.read_worker_log(task_id, tail_bytes=tail, board=board)
@@ -1719,8 +1662,7 @@ def dispatch(
     board: Optional[str] = Query(None),
 ):
     board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
+    with _conn(board=board) as conn:
         result = kanban_db.dispatch_once(
             conn, dry_run=dry_run, max_spawn=max_n, board=board,
         )
@@ -1729,8 +1671,6 @@ def dispatch(
             return asdict(result)
         except TypeError:
             return {"result": str(result)}
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------

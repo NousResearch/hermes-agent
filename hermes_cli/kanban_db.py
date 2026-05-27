@@ -85,7 +85,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Generator, Iterable, Optional
 
 from toolsets import get_toolset_names
 
@@ -1197,6 +1197,29 @@ def connect(
         conn.close()
         raise
     return conn
+
+
+@contextlib.contextmanager
+def use_conn(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> Generator[sqlite3.Connection, None, None]:
+    """Context manager: open a kanban DB connection, auto-close on exit.
+
+    Usage::
+
+        with kanban_db.use_conn(board=board) as conn:
+            tasks = kanban_db.list_tasks(conn, ...)
+
+    Callers that need to return a connection (rare — only the dispatcher)
+    can still call :func:`connect` directly with explicit ``try/finally``.
+    """
+    conn = connect(db_path=db_path, board=board)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def init_db(

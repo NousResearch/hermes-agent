@@ -3516,8 +3516,36 @@ def resolve_codex_runtime_credentials(
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
-    """Resolve runtime credentials from Hermes's own Codex token store."""
-    data = _read_codex_tokens()
+    """Resolve runtime credentials from Hermes's own Codex token store.
+
+    Falls back to the credential pool when the singleton (``providers.openai-codex.tokens``)
+    has no usable access_token but the pool (``credential_pool.openai-codex``) does. This
+    closes the divergence between the chat path (singleton-only via this function) and
+    the auxiliary path (pool-first via ``_read_codex_access_token``). Without this
+    fallback, a user whose tokens live only in the pool — for example after a manual
+    pool seed, a partial re-auth, or pool-only restoration from a backup — gets a bare
+    HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
+    credential. See issue #32992.
+    """
+    try:
+        data = _read_codex_tokens()
+    except AuthError:
+        pool_token = _pool_codex_access_token()
+        if pool_token:
+            base_url = (
+                os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+                or DEFAULT_CODEX_BASE_URL
+            )
+            return {
+                "provider": "openai-codex",
+                "base_url": base_url,
+                "api_key": pool_token,
+                "source": "credential_pool",
+                "last_refresh": None,
+                "auth_mode": "chatgpt",
+            }
+        raise
+
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
@@ -3553,6 +3581,46 @@ def resolve_codex_runtime_credentials(
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
     }
+
+
+def _pool_codex_access_token() -> str:
+    """Return the most-recent usable access_token from the openai-codex pool.
+
+    Used as a fallback by ``resolve_codex_runtime_credentials`` when the
+    singleton has no creds.  Reads ``credential_pool.openai-codex`` entries
+    directly from auth.json and picks the first non-empty access_token,
+    preferring entries that are not currently in an exhaustion cooldown.
+    Returns ``""`` when no usable entry is found (caller handles by raising
+    the original AuthError).
+    """
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return ""
+        entries = pool.get("openai-codex")
+        if not isinstance(entries, list):
+            return ""
+
+        def _entry_usable(entry: Dict[str, Any]) -> bool:
+            if not isinstance(entry, dict):
+                return False
+            token = entry.get("access_token")
+            if not isinstance(token, str) or not token.strip():
+                return False
+            # Skip entries currently in an exhaustion cooldown window.
+            reset_at = entry.get("last_error_reset_at")
+            if isinstance(reset_at, (int, float)) and reset_at > time.time():
+                return False
+            return True
+
+        for entry in entries:
+            if _entry_usable(entry):
+                return str(entry.get("access_token", "")).strip()
+    except Exception:
+        logger.debug("Codex pool fallback lookup failed", exc_info=True)
+    return ""
 
 
 # =============================================================================

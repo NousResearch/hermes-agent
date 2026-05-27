@@ -32,7 +32,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 try:
     import httpx
@@ -68,7 +68,7 @@ E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 def _auth_json_path() -> Path:
     """Resolve ``~/.hermes/auth.json`` honouring the active Hermes profile."""
     try:
-        from hermes_constants import get_hermes_home  # type: ignore
+        from hermes_constants import get_hermes_home
         return Path(get_hermes_home()) / "auth.json"
     except Exception:
         return Path(os.path.expanduser("~/.hermes")) / "auth.json"
@@ -203,7 +203,7 @@ def poll_for_token(
     client_id: str = DEFAULT_CLIENT_ID,
     timeout: Optional[int] = None,
     interval: Optional[int] = None,
-    on_pending: Optional[callable] = None,
+    on_pending: Optional[Callable[[], None]] = None,
 ) -> str:
     """Poll ``/api/auth/device/token`` until the user approves.
 
@@ -277,7 +277,7 @@ def login_device_flow(
     *,
     client_id: str = DEFAULT_CLIENT_ID,
     open_browser: bool = True,
-    on_user_code: Optional[callable] = None,
+    on_user_code: Optional[Callable[["DeviceCode"], None]] = None,
 ) -> str:
     """Run the full device-code login flow and persist the token.
 
@@ -536,7 +536,7 @@ def persist_webhook_signing_secret(
     if not has_secret:
         return False
     try:
-        from hermes_cli.config import save_env_value  # type: ignore
+        from hermes_cli.config import save_env_value
     except ImportError:
         return False
     try:
@@ -548,7 +548,7 @@ def persist_webhook_signing_secret(
         return False
     if on_summary is not None:
         try:
-            from hermes_constants import get_hermes_home  # type: ignore
+            from hermes_constants import get_hermes_home
             env_path = Path(get_hermes_home()) / ".env"
         except Exception:
             env_path = Path(os.path.expanduser("~/.hermes")) / ".env"

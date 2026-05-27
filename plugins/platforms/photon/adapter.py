@@ -513,10 +513,13 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def _supervise_sidecar(self, proc: subprocess.Popen) -> None:
         """Pump the sidecar's stdout/stderr into our logger."""
+        if proc.stdout is None:  # subprocess was launched without stdout=PIPE
+            return
+        stdout = proc.stdout
         loop = asyncio.get_event_loop()
         try:
             while True:
-                line = await loop.run_in_executor(None, proc.stdout.readline)
+                line = await loop.run_in_executor(None, stdout.readline)
                 if not line:
                     break
                 logger.info("[photon-sidecar] %s", line.decode("utf-8", "replace").rstrip())

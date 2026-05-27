@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -85,8 +86,65 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 1
-    assert "Kanban" in adapter.sent[0]["text"]
-    assert tid in adapter.sent[0]["text"]
+    assert adapter.sent[0]["text"] == "✔ notify once\ndone once"
+    assert "Kanban" not in adapter.sent[0]["text"]
+    assert tid not in adapter.sent[0]["text"]
+
+
+def test_kanban_notifier_message_uses_clean_human_facing_format():
+    task = SimpleNamespace(
+        title="Design Hermes orchestrator routing for fast chat and deep async work",
+        assignee="default",
+        result=None,
+    )
+    sub = {"task_id": "t_f11db821"}
+
+    done = GatewayRunner._format_kanban_notifier_message(
+        kind="completed",
+        task=task,
+        sub=sub,
+        event_payload={"summary": "Designed the routing plan and created the reusable skill.\nExtra details stay on the task."},
+    )
+    assert done == (
+        "✔ Design Hermes orchestrator routing for fast chat and deep async work\n"
+        "Designed the routing plan and created the reusable skill."
+    )
+
+    blocked = GatewayRunner._format_kanban_notifier_message(
+        kind="blocked",
+        task=SimpleNamespace(
+            title="Add backup recovery path for fatal gateway/provider errors",
+            assignee="default",
+            result=None,
+        ),
+        sub={"task_id": "t_abc123"},
+        event_payload={"reason": "stale-session provider failure; next step is fresh-session fallback."},
+    )
+    assert blocked == (
+        "⚠ Add backup recovery path for fatal gateway/provider errors\n"
+        "Blocked: stale-session provider failure; next step is fresh-session fallback."
+    )
+
+    for msg in (done, blocked):
+        assert msg is not None
+        assert "Kanban" not in msg
+        assert "@default" not in msg
+        assert "t_" not in msg
+
+
+def test_kanban_notifier_message_keeps_failure_states_actionable():
+    task = SimpleNamespace(title="Retry flaky worker", assignee="default", result=None)
+    sub = {"task_id": "t_hidden"}
+
+    assert GatewayRunner._format_kanban_notifier_message(
+        kind="crashed", task=task, sub=sub, event_payload={}
+    ) == "✖ Retry flaky worker\nWorker crashed; dispatcher will retry."
+    assert GatewayRunner._format_kanban_notifier_message(
+        kind="timed_out", task=task, sub=sub, event_payload={"limit_seconds": 90}
+    ) == "⏱ Retry flaky worker\nTimed out after 90s; dispatcher will retry."
+    assert GatewayRunner._format_kanban_notifier_message(
+        kind="gave_up", task=task, sub=sub, event_payload={}
+    ) == "✖ Retry flaky worker\nGave up after repeated spawn failures."
 
 
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):

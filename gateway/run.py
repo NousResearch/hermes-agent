@@ -4796,6 +4796,75 @@ class GatewayRunner:
         except Exception:
             return "default"
 
+    @staticmethod
+    def _kanban_notifier_clip(text: Any, max_chars: int, *, suffix: str = "…") -> str:
+        """Trim chat notifications while keeping them readable."""
+        cleaned = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if max_chars <= 0 or len(cleaned) <= max_chars:
+            return cleaned
+        suffix = suffix or ""
+        keep = max(0, max_chars - len(suffix))
+        return cleaned[:keep].rstrip() + suffix
+
+    @classmethod
+    def _format_kanban_notifier_message(
+        cls,
+        *,
+        kind: str,
+        task: Any,
+        sub: dict,
+        event_payload: Optional[dict],
+    ) -> Optional[str]:
+        """Build the human-facing kanban subscription notification text.
+
+        User-facing chat pings should read like reminder/cron messages: title
+        first, then one short human status line. Task IDs, assignee tags, board
+        labels, and other operational metadata stay in logs, the DB, and
+        ``hermes kanban show`` instead of the visible Signal/Telegram message.
+        """
+        payload = event_payload if isinstance(event_payload, dict) else {}
+        title = (getattr(task, "title", None) if task else None) or "Task"
+        title = cls._kanban_notifier_clip(re.sub(r"\s+", " ", str(title)), 160)
+
+        def first_line(value: Any, limit: int) -> str:
+            lines = str(value or "").strip().splitlines()
+            return cls._kanban_notifier_clip(lines[0], limit) if lines else ""
+
+        if kind == "completed":
+            status = ""
+            if payload.get("summary"):
+                status = first_line(payload["summary"], 220)
+            elif task and getattr(task, "result", None):
+                status = first_line(getattr(task, "result"), 220)
+            return f"✔ {title}" + (f"\n{status}" if status else "")
+
+        if kind == "blocked":
+            reason = first_line(payload.get("reason"), 220) if payload.get("reason") else ""
+            return f"⚠ {title}\nBlocked" + (f": {reason}" if reason else ".")
+
+        if kind == "gave_up":
+            status = "Gave up after repeated spawn failures."
+            if payload.get("error"):
+                err = first_line(payload["error"], 180)
+                status = f"{status} {err}"
+            return f"✖ {title}\n{status}"
+
+        if kind == "crashed":
+            return f"✖ {title}\nWorker crashed; dispatcher will retry."
+
+        if kind == "timed_out":
+            limit = None
+            if payload.get("limit_seconds"):
+                try:
+                    limit = int(payload["limit_seconds"])
+                except (TypeError, ValueError):
+                    limit = None
+            if limit:
+                return f"⏱ {title}\nTimed out after {limit}s; dispatcher will retry."
+            return f"⏱ {title}\nTimed out; dispatcher will retry."
+
+        return None
+
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
 
@@ -4980,61 +5049,15 @@ class GatewayRunner:
                             board_slug,
                         )
                         continue
-                    title = (task.title if task else sub["task_id"])[:120]
                     for ev in d["events"]:
                         kind = ev.kind
-                        # Identity prefix: attribute terminal pings to the
-                        # worker that did the work. Makes fleets (where one
-                        # chat subscribes to many tasks) legible at a glance.
-                        who = (task.assignee if task and task.assignee else None)
-                        tag = f"@{who} " if who else ""
-                        if kind == "completed":
-                            # Prefer the run's summary (the worker's
-                            # intentional human-facing handoff, carried
-                            # in the event payload), then fall back to
-                            # task.result for legacy rows written before
-                            # runs shipped.
-                            handoff = ""
-                            payload_summary = None
-                            if ev.payload and ev.payload.get("summary"):
-                                payload_summary = str(ev.payload["summary"])
-                            if payload_summary:
-                                h = payload_summary.strip().splitlines()[0][:200]
-                                handoff = f"\n{h}"
-                            elif task and task.result:
-                                r = task.result.strip().splitlines()[0][:160]
-                                handoff = f"\n{r}"
-                            msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
-                            )
-                        elif kind == "blocked":
-                            reason = ""
-                            if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
-                        elif kind == "gave_up":
-                            err = ""
-                            if ev.payload and ev.payload.get("error"):
-                                err = f"\n{str(ev.payload['error'])[:200]}"
-                            msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
-                            )
-                        elif kind == "crashed":
-                            msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
-                            )
-                        elif kind == "timed_out":
-                            limit = 0
-                            if ev.payload and ev.payload.get("limit_seconds"):
-                                limit = int(ev.payload["limit_seconds"])
-                            msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
-                            )
-                        else:
+                        msg = self._format_kanban_notifier_message(
+                            kind=kind,
+                            task=task,
+                            sub=sub,
+                            event_payload=getattr(ev, "payload", None),
+                        )
+                        if msg is None:
                             continue
                         metadata: dict[str, Any] = {}
                         if sub.get("thread_id"):

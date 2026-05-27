@@ -308,7 +308,7 @@ class TestMemoryManager:
                              if "budget" in str(c).lower()]
             assert len(warning_calls) >= 1
 
-    def test_schema_loading_failure_prevents_registration(self):
+    def test_schema_loading_failure_prevents_registration_issue_9948(self):
         """If get_tool_schemas() raises, the provider is NOT registered (fixes #9948)."""
         mgr = MemoryManager()
         bad = FakeMemoryProvider("bad")

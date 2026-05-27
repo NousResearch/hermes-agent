@@ -2648,6 +2648,144 @@ class GatewayRunner:
         else:
             pending_slot[session_key] = queued_event
 
+    def _queue_or_start_session_input(
+        self,
+        *,
+        session_key: str,
+        event: "MessageEvent",
+        adapter: Any,
+    ) -> str:
+        """Queue or start a synthetic event while preserving platform delivery."""
+        if adapter is None:
+            raise ValueError("adapter_unavailable")
+
+        heal = getattr(adapter, "_heal_stale_session_lock", None)
+        if callable(heal):
+            try:
+                heal(session_key)
+            except Exception as exc:
+                logger.debug("session input stale-lock heal failed for %s: %s", session_key, exc)
+
+        if session_key in getattr(adapter, "_active_sessions", {}):
+            self._enqueue_fifo(session_key, event, adapter)
+            return "queued"
+
+        starter = getattr(adapter, "_start_session_processing", None)
+        if callable(starter):
+            try:
+                if starter(event, session_key):
+                    return "started"
+            except Exception as exc:
+                logger.warning("session input start failed for %s: %s", session_key, exc)
+
+        self._enqueue_fifo(session_key, event, adapter)
+        return "queued"
+
+    async def inject_session_input(
+        self,
+        *,
+        session_key: str,
+        text: str,
+        mode: str = "auto",
+        fallback: str = "message",
+        input_visibility: str = "silent",
+        output_delivery: str = "conversation",
+        source_label: str = "api",
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Inject text into an existing gateway conversation.
+
+        This is the conversation-native companion to run-level steer: when a
+        gateway session has a running steerable agent, callers may steer it;
+        otherwise the same input can be queued or started as a normal gateway
+        message so the final response is delivered by the original platform
+        adapter.
+        """
+        text = (text or "").strip()
+        if not text:
+            return {"ok": False, "status": 400, "code": "invalid_input", "message": "Input text is required."}
+
+        mode = (mode or "auto").strip().lower()
+        fallback = (fallback or "message").strip().lower()
+        input_visibility = (input_visibility or "silent").strip().lower()
+        output_delivery = (output_delivery or "conversation").strip().lower()
+        if mode not in {"auto", "steer", "queue", "message", "normal"}:
+            return {"ok": False, "status": 400, "code": "invalid_mode", "message": "mode must be one of auto, steer, queue, message."}
+        if fallback not in {"reject", "queue", "message", "normal"}:
+            return {"ok": False, "status": 400, "code": "invalid_fallback", "message": "fallback must be one of reject, queue, message."}
+        if input_visibility != "silent":
+            return {"ok": False, "status": 400, "code": "unsupported_input_visibility", "message": "Only input_visibility=silent is currently supported."}
+        if output_delivery != "conversation":
+            return {"ok": False, "status": 400, "code": "unsupported_output_delivery", "message": "Only output_delivery=conversation is currently supported."}
+
+        entry = self.session_store.get_entry(session_key)
+        if entry is None:
+            return {"ok": False, "status": 404, "code": "session_not_found", "message": f"No gateway session found for key: {session_key}"}
+        if session_id and session_id != entry.session_id:
+            return {"ok": False, "status": 409, "code": "session_id_mismatch", "message": "Session id does not match the current entry for this session key."}
+        if entry.origin is None:
+            return {"ok": False, "status": 409, "code": "session_origin_missing", "message": "Session has no persisted platform origin for conversation delivery."}
+
+        adapter = self.adapters.get(entry.origin.platform)
+        if adapter is None:
+            return {"ok": False, "status": 409, "code": "adapter_unavailable", "message": f"Platform adapter is not connected: {entry.origin.platform.value}"}
+
+        running_agent = self._running_agents.get(session_key)
+        can_try_steer = (
+            mode in {"auto", "steer"}
+            and running_agent is not None
+            and running_agent is not _AGENT_PENDING_SENTINEL
+            and hasattr(running_agent, "steer")
+        )
+        if can_try_steer:
+            try:
+                if bool(running_agent.steer(text)):
+                    return {
+                        "ok": True,
+                        "object": "hermes.conversation.input",
+                        "session_key": session_key,
+                        "session_id": entry.session_id,
+                        "accepted": True,
+                        "action": "steered",
+                        "mode": mode,
+                        "fallback": fallback,
+                        "input_visibility": input_visibility,
+                        "output_delivery": output_delivery,
+                    }
+            except Exception as exc:
+                logger.warning("session input steer failed for %s: %s", session_key, exc)
+
+        if mode == "steer" and fallback == "reject":
+            return {"ok": False, "status": 409, "code": "not_steerable", "message": "Conversation has no active steerable run."}
+
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=entry.origin,
+            internal=True,
+            raw_message={
+                "synthetic": True,
+                "source": source_label,
+                "mode": mode,
+                "fallback": fallback,
+                "input_visibility": input_visibility,
+                "output_delivery": output_delivery,
+            },
+        )
+        action = self._queue_or_start_session_input(session_key=session_key, event=event, adapter=adapter)
+        return {
+            "ok": True,
+            "object": "hermes.conversation.input",
+            "session_key": session_key,
+            "session_id": entry.session_id,
+            "accepted": True,
+            "action": action,
+            "mode": mode,
+            "fallback": fallback,
+            "input_visibility": input_visibility,
+            "output_delivery": output_delivery,
+        }
+
     def _promote_queued_event(
         self,
         session_key: str,
@@ -6499,7 +6637,9 @@ class GatewayRunner:
             if not check_api_server_requirements():
                 logger.warning("API Server: aiohttp not installed")
                 return None
-            return APIServerAdapter(config)
+            adapter = APIServerAdapter(config)
+            adapter.gateway_runner = self
+            return adapter
 
         elif platform == Platform.WEBHOOK:
             from gateway.platforms.webhook import WebhookAdapter, check_webhook_requirements

@@ -19,6 +19,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
+- POST /v1/conversations/input         — inject input into a gateway conversation
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
@@ -1105,6 +1106,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
+                "conversation_input": True,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_resources": True,
@@ -1143,6 +1145,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "conversation_input": {"method": "POST", "path": "/v1/conversations/input"},
             },
         })
 
@@ -1667,6 +1670,59 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
+
+    async def _handle_conversation_input(self, request: "web.Request") -> "web.Response":
+        """POST /v1/conversations/input — inject input into a gateway conversation."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if not self._api_key:
+            return web.json_response(
+                _openai_error(
+                    "Conversation input requires API key authentication because it injects internal gateway messages. Configure API_SERVER_KEY.",
+                    code="api_key_required",
+                ),
+                status=403,
+            )
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response(_openai_error("Invalid JSON body", code="invalid_json"), status=400)
+
+        session_key = (body.get("session_key") or body.get("conversation_id") or "").strip()
+        text = body.get("input", body.get("text", ""))
+        if not session_key:
+            return web.json_response(_openai_error("session_key is required", param="session_key", code="missing_session_key"), status=400)
+
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None or not hasattr(runner, "inject_session_input"):
+            return web.json_response(
+                _openai_error("Gateway runner is unavailable; conversation delivery is not active.", code="gateway_runner_unavailable"),
+                status=409,
+            )
+
+        result = await runner.inject_session_input(
+            session_key=session_key,
+            text=str(text or ""),
+            mode=body.get("mode", "auto"),
+            fallback=body.get("fallback", "message"),
+            input_visibility=body.get("input_visibility", body.get("visibility", "silent")),
+            output_delivery=body.get("output_delivery", "conversation"),
+            source_label=body.get("source", "api"),
+            session_id=body.get("session_id"),
+        )
+        if not result.get("ok"):
+            status = int(result.get("status", 400))
+            return web.json_response(
+                _openai_error(
+                    result.get("message", "Conversation input failed."),
+                    code=result.get("code"),
+                    param=result.get("param"),
+                ),
+                status=status,
+            )
+        result.pop("ok", None)
+        return web.json_response(result, status=202)
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -4125,6 +4181,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            self._app.router.add_post("/v1/conversations/input", self._handle_conversation_input)
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the

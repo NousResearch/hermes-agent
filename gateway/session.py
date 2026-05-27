@@ -954,6 +954,12 @@ class SessionStore:
 
         return entry
 
+    def get_entry(self, session_key: str) -> Optional[SessionEntry]:
+        """Return the persisted entry for a session key, if known."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            return self._entries.get(session_key)
+
     def update_session(
         self,
         session_key: str,

@@ -372,6 +372,56 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
 # ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
+# Strip the model's own `usage:t=...` line before appending the gateway's
+# runtime footer.  The agent system prompt instructs models to emit a usage
+# line; when the gateway also injects token information in the runtime footer
+# (snapshot-diff values), we get two different numbers in the same reply.
+# Matching against the agent-prompt format (backtick-delimited, comma-separated
+# thousands, optional cached/reasoning suffixes) and stripping it avoids the
+# duplicate.  (issue #17592 / PR discussion)
+_AGENT_USAGE_LINE_RE = re.compile(
+    r'\n*`usage:t=[\d,]+ i=[\d,]+(?: \(\+ [\d,]+ c\))? o=[\d,]+(?: \(r [\d,]+\))?`[ \t]*$'
+)
+
+
+def _snapshot_agent_token_usage(agent: Any) -> "Dict[str, int]":
+    """Return cumulative token counters from an AIAgent instance."""
+    if agent is None:
+        return {}
+    keys = (
+        "input_tokens", "output_tokens", "total_tokens",
+        "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+        "prompt_tokens", "completion_tokens",
+    )
+    attr_map = {
+        "input_tokens": "session_input_tokens",
+        "output_tokens": "session_output_tokens",
+        "total_tokens": "session_total_tokens",
+        "cache_read_tokens": "session_cache_read_tokens",
+        "cache_write_tokens": "session_cache_write_tokens",
+        "reasoning_tokens": "session_reasoning_tokens",
+        "prompt_tokens": "session_prompt_tokens",
+        "completion_tokens": "session_completion_tokens",
+    }
+    snapshot: Dict[str, int] = {}
+    for key in keys:
+        try:
+            snapshot[key] = int(getattr(agent, attr_map[key], 0) or 0)
+        except (TypeError, ValueError):
+            snapshot[key] = 0
+    return snapshot
+
+
+def _diff_agent_token_usage(
+    before: "Dict[str, int]", after: "Dict[str, int]"
+) -> "Dict[str, int]":
+    """Return non-negative per-turn token usage deltas."""
+    keys = set(before or {}) | set(after or {})
+    return {
+        key: max(0, int((after or {}).get(key, 0)) - int((before or {}).get(key, 0)))
+        for key in keys
+    }
+
 
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
     """Best-effort conversion of stored gateway timestamps to epoch seconds.
@@ -8912,11 +8962,19 @@ class GatewayRunner:
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    token_usage=agent_result.get("token_usage") or {
+                        "input_tokens": agent_result.get("input_tokens", 0) or 0,
+                        "output_tokens": agent_result.get("output_tokens", 0) or 0,
+                    },
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent"):
+                # Strip the agent's self-reported usage line before the gateway
+                # appends its own token footer (they differ: the agent-side line
+                # is the model's estimate; ours is per-turn snapshot-diff).
+                response = _AGENT_USAGE_LINE_RE.sub('', response).rstrip()
                 response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
@@ -17168,6 +17226,7 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            _usage_before = _snapshot_agent_token_usage(agent)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -17223,6 +17282,10 @@ class GatewayRunner:
                     pass
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
+            _turn_usage = _diff_agent_token_usage(
+                _usage_before,
+                _snapshot_agent_token_usage(agent),
+            )
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
@@ -17264,6 +17327,7 @@ class GatewayRunner:
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "token_usage": _turn_usage,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -17424,6 +17488,7 @@ class GatewayRunner:
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
                 "context_length": _context_length,
+                "token_usage": _turn_usage,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),

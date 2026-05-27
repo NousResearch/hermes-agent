@@ -2476,6 +2476,63 @@ class TestVisionAutoSkipsKimiCoding:
 
 
 class TestCodexAuxiliaryAdapterTimeout:
+    def test_recovers_stream_parser_none_output_error_after_text_delta(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_text.delta", delta="Short title")
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):
+                raise AssertionError("stream parser error should bypass final response")
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "title this"}],
+        )
+
+        assert response.choices[0].message.content == "Short title"
+
+    def test_backfills_none_output_from_streamed_text_delta(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter((
+                    SimpleNamespace(type="response.output_text.delta", delta="summary"),
+                ))
+
+            def get_final_response(self):
+                return SimpleNamespace(output=None, usage=None)
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "summarize this"}],
+        )
+
+        assert response.choices[0].message.content == "summary"
+
     def test_forwards_timeout_to_responses_stream(self):
         class FakeStream:
             def __enter__(self):

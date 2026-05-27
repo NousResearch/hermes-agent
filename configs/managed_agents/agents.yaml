@@ -7,7 +7,7 @@ agents:
     aliases: [Hermes 技术翻译官, 技术翻译官, 技术中间层, 技术参谋, nesta]
     role_summary: 技术中间层、需求拆解、策略判断，承接原 nesta 职责。
     model_ref: deepseek_pro
-    skills: [hermes-subagent-delegation, hermes-multi-agent-research, hermes-gateway-debug, codebase-inspection, github-repo-risk-assessment, design-md, humanizer-zh]
+    skills: [hermes-subagent-delegation, hermes-multi-agent-research, hermes-gateway-debug, codebase-inspection, github-repo-risk-assessment, humanizer-zh]
     tools: [file, mcp-codegraph]
     permission: read_only
     can_delegate: false
@@ -21,7 +21,7 @@ agents:
     role_summary: 外部 Claude Code CLI 执行器；后端由 CC Switch 控制。
     model_ref: claude_opus
     runtime: claude_code_cli
-    skills: [github-pr-workflow, github-repo-management, github-issues, codebase-inspection, python-debugpy, node-inspect-debugger, nextjs-standalone-deployment, spike, open-design-ops]
+    skills: [github-pr-workflow, github-repo-management, github-issues, codebase-inspection, python-debugpy, node-inspect-debugger, nextjs-standalone-deployment, spike, open-design-ops, design-md, comfyui, html-anything]
     tools: [file, terminal, git, mcp-codegraph]
     permission: ask
     can_delegate: false
@@ -32,13 +32,13 @@ agents:
     name: DeepSeek 低成本快工
     role: fast_worker
     aliases: [DeepSeek 低成本快工, 低成本快工, 快工, 小改工, deepseek]
-    role_summary: 小改、小测试、低风险机械执行；不负责复杂重构和高风险操作。
+    role_summary: 小改、小测试、低风险机械执行；不负责复杂重构和高风险操作。外部搜索遵循 DeepSeek Worker Search Policy：本地优先，必要时用 anysearch-lite，已知 URL 用 scrapling-fetch。
     model_ref: deepseek_pro
-    skills: [codebase-inspection, spike, python-debugpy, node-inspect-debugger, debugging-hermes-tui-commands, github-issues]
+    skills: [codebase-inspection, spike, python-debugpy, node-inspect-debugger, debugging-hermes-tui-commands, github-issues, anysearch-lite]
     tools: [file, terminal]
     permission: ask
     can_delegate: false
-    capabilities: [small_fix, test_generation, bug_reproduction, spike, log_analysis]
+    capabilities: [small_fix, test_generation, bug_reproduction, spike, log_analysis, external_quick_check, url_extraction]
     risk_allowed: [R0, R1, R2]
 
   - agent_id: codex
@@ -48,7 +48,7 @@ agents:
     role_summary: 外部 Codex CLI 审查器；用于只读审查、架构/实现方案评估。
     model_ref: codex_cli
     runtime: codex_cli
-    skills: [codex-superpowers, github-code-review, github-repo-risk-assessment, codebase-inspection, playwright-mcp]
+    skills: [codex-superpowers, github-code-review, github-repo-risk-assessment, codebase-inspection]
     tools: [file, terminal, mcp-codegraph]
     permission: read_only
     can_delegate: false
@@ -65,7 +65,7 @@ agents:
     tools: [file, web]
     permission: ask
     can_delegate: false
-    capabilities: [research, information_synthesis, competitive_analysis, web_research, source_verification]
+    capabilities: [research, information_synthesis, competitive_analysis, web_research, source_verification, market_intelligence, competitor_monitoring, news_gathering]
     risk_allowed: [R0, R1, R2]
 
   - agent_id: pirlo
@@ -74,7 +74,7 @@ agents:
     aliases: [Pirlo 商业策划师, 商业策划师, 方案策划, 提案策划, pirlo]
     role_summary: 商业方案、PPT 提案、内容结构。
     model_ref: deepseek_pro
-    skills: [humanizer, humanizer-zh, claude-design, sketch, baoyu-infographic, baoyu-comic, architecture-diagram, comfyui]
+    skills: [humanizer, humanizer-zh, claude-design, sketch, baoyu-infographic, baoyu-comic, architecture-diagram, html-anything]
     tools: [file]
     permission: read_only
     can_delegate: false
@@ -98,13 +98,13 @@ agents:
     name: Ambrosini 质量门卫
     role: quality_gate
     aliases: [Ambrosini 质量门卫, 质量门卫, 验收官, 风险审核, ambrosini]
-    role_summary: 高风险验收、最终质量门。
+    role_summary: 高风险验收、最终质量门；可只读查询 CodeGraph 验证影响面。
     model_ref: deepseek_pro
-    skills: [codex-superpowers, github-code-review, playwright-mcp]
-    tools: [file]
+    skills: [codex-superpowers, github-code-review]
+    tools: [file, mcp-codegraph]
     permission: read_only
     can_delegate: false
-    capabilities: [review, validation, risk_assessment, release_gate]
+    capabilities: [review, validation, risk_assessment, release_gate, codegraph_search, codegraph_impact]
     risk_allowed: [R0, R1, R2, R3, R4]
 
 routing:
@@ -116,6 +116,34 @@ routing:
     mode: review_only
     agents: [codex]
     reason: unresolved_route_requires_review
+  capability_routes:
+    file_modification: claude
+    script_execution: claude
+    git_operations: claude
+    code_review: codex
+    implementation_planning: codex
+    technical_decomposition: hermes-internal
+    web_research: intelligence
+    file_reading_analysis: hermes-internal
+    strategy_decision: hermes-internal
+    creative_direction: hermes-internal
+    analysis: hermes-internal
+    decision_making: hermes-internal
+    market_intelligence: intelligence
+    competitor_monitoring: intelligence
+    news_gathering: intelligence
+    source_verification: intelligence
+    desktop_control: agent-tars
+    app_operation: agent-tars
+    screenshot: agent-tars
+    visual_gui_automation: agent-tars
+    browser_gui_operation: agent-tars
+    content_writing: pirlo
+    planning: pirlo
+    document_creation: pirlo
+    review: ambrosini
+    validation: ambrosini
+    risk_assessment: ambrosini
   rules:
     - id: readonly_lookup
       when:

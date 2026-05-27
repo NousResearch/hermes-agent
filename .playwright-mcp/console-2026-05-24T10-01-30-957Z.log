@@ -1,0 +1,4 @@
+[     978ms] [LOG] %c%s color: red; background: yellow; font-size: 24px; WARNING! @ /_/mss/boq-dots/_/js/k=boq-dots.DotsSplashUi_desktop_ms.en_US.R8BpzAozNek.2018.O/am=GAIFAAAAAGAmwIAB/d=1/excm=_b,_tp,search/ed=1/dg=0/wt=2/ujg=1/rs=ALs0n2N5cT6N74ajEukWzdg5RXrFZSy0Bg/dti=1/m=_b,_tp:283
+[     978ms] [LOG] %c%s font-size: 18px; Using this console may allow attackers to impersonate you and steal your information using an attack called Self-XSS.
+Do not enter or paste code that you do not understand. @ /_/mss/boq-dots/_/js/k=boq-dots.DotsSplashUi_desktop_ms.en_US.R8BpzAozNek.2018.O/am=GAIFAAAAAGAmwIAB/d=1/excm=_b,_tp,search/ed=1/dg=0/wt=2/ujg=1/rs=ALs0n2N5cT6N74ajEukWzdg5RXrFZSy0Bg/dti=1/m=_b,_tp:283
+[    1348ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://encrypted-tbn2.gstatic.com/faviconV2?url=https://marketingreport.one&client=NEWS_360&size=96&type=FAVICON&fallback_opts=TYPE,SIZE,URL:0

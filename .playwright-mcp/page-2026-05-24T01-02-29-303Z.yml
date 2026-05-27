@@ -1,0 +1,511 @@
+- generic [ref=e2]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - generic:
+        - link "到百度首页" [ref=e6] [cursor=pointer]:
+          - /url: /
+          - img "到百度首页" [ref=e7]
+        - generic [ref=e10]:
+          - textbox [ref=e13]: 懂球帝 品牌 营销 产品 最新
+          - generic [ref=e15]:
+            - generic [ref=e16]:
+              - img [ref=e18] [cursor=pointer]
+              - generic [ref=e21]:
+                - img [ref=e28] [cursor=pointer]
+                - img [ref=e34] [cursor=pointer]
+                - img [ref=e39] [cursor=pointer]
+            - button "百度一下" [ref=e43] [cursor=pointer]
+    - generic [ref=e44]:
+      - link "百度首页" [ref=e45] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e46] [cursor=pointer]: 设置
+      - link "登录" [ref=e47] [cursor=pointer]:
+        - /url: javascript:;
+  - generic [ref=e50]:
+    - link [ref=e51] [cursor=pointer]:
+      - /url: https://chat.baidu.com/search?word=%E6%87%82%E7%90%83%E5%B8%9D+%E5%93%81%E7%89%8C+%E8%90%A5%E9%94%80+%E4%BA%A7%E5%93%81+%E6%9C%80%E6%96%B0&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&pd=csaitab&setype=csaitab&extParamsJson=%7B%22enter_type%22%3A%22search_a_tab%22%2C%22sa%22%3A%22vs_tab%22%2C%22apagelid%22%3A%2217656155042509932322%22%2C%22ori_lid%22%3A%2217656155042509932322%22%7D
+      - img [ref=e52]
+    - generic [ref=e53]: 网页
+    - link "图片" [ref=e54] [cursor=pointer]:
+      - /url: http://image.baidu.com/i?tn=baiduimage&ps=1&ct=201326592&lm=-1&cl=2&nc=1&ie=utf-8&lid=f50743770006c722&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E6%87%82%E7%90%83%E5%B8%9D+%E5%93%81%E7%89%8C+%E8%90%A5%E9%94%80+%E4%BA%A7%E5%93%81+%E6%9C%80%E6%96%B0
+    - link "资讯" [ref=e55] [cursor=pointer]:
+      - /url: https://www.baidu.com/s?rtt=1&bsst=1&cl=2&tn=news&ie=utf-8&word=%E6%87%82%E7%90%83%E5%B8%9D+%E5%93%81%E7%89%8C+%E8%90%A5%E9%94%80+%E4%BA%A7%E5%93%81+%E6%9C%80%E6%96%B0
+    - link "视频" [ref=e56] [cursor=pointer]:
+      - /url: /sf/vsearch?pd=video&wd=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&tn=vsearch&lid=f50743770006c722&ie=utf-8&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_pq=f50743770006c722&rsv_t=f50743770006c722&rsv_spt=7&rsv_bp=1&f=8
+    - link "笔记" [ref=e57] [cursor=pointer]:
+      - /url: https://www.baidu.com/s?pd=note&rpf=pc&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E6%87%82%E7%90%83%E5%B8%9D+%E5%93%81%E7%89%8C+%E8%90%A5%E9%94%80+%E4%BA%A7%E5%93%81+%E6%9C%80%E6%96%B0
+    - link "地图" [ref=e58] [cursor=pointer]:
+      - /url: https://map.baidu.com/?newmap=1&ie=utf-8&from=pstab&s=s%26wd%3D%E6%87%82%E7%90%83%E5%B8%9D+%E5%93%81%E7%89%8C+%E8%90%A5%E9%94%80+%E4%BA%A7%E5%93%81+%E6%9C%80%E6%96%B0
+    - link "贴吧" [ref=e59] [cursor=pointer]:
+      - /url: http://tieba.baidu.com/f?fr=wwwt&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&kw=%E6%87%82%E7%90%83%E5%B8%9D+%E5%93%81%E7%89%8C+%E8%90%A5%E9%94%80+%E4%BA%A7%E5%93%81+%E6%9C%80%E6%96%B0
+    - link "文库" [ref=e60] [cursor=pointer]:
+      - /url: http://wenku.baidu.com/search?lm=0&od=0&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E6%87%82%E7%90%83%E5%B8%9D+%E5%93%81%E7%89%8C+%E8%90%A5%E9%94%80+%E4%BA%A7%E5%93%81+%E6%9C%80%E6%96%B0
+    - link "更多" [ref=e61] [cursor=pointer]:
+      - /url: http://www.baidu.com/more/
+    - generic [ref=e62] [cursor=pointer]: 搜索工具
+  - generic [ref=e63]:
+    - generic [ref=e64]:
+      - table [ref=e66]:
+        - rowgroup [ref=e67]:
+          - row "相关搜索  什么是营销  内容营销  懂球帝盈利模式  懂球帝方案群  跟懂球帝差不多的app  懂球帝属于哪个公司旗下    换一换 热搜榜 北京榜 民生榜 财经榜  习近平对山西煤矿事故作出重要指示 1 山西煤矿爆炸致82人遇难128人受伤 2 记者直击：凌晨3点救援机器人下井探测 新 3 首位来自香港的航天员为何是她 4 白宫附近传密集枪声 记者拍枪击现场 新 5 雪饼猴带400只小猴燃爆东北超 新 6 大学生“手搓”蝴蝶卖1500元1只 7 消息人士：美伊接近达成临时协议 8 老师讲台晕倒学生瞬间冲了上去 热 9 男子踩中蛇窝被毒蛇咬数口 休克昏迷 新 10 山西爆炸煤矿有重大违法行为 热 11 多人借汛情造谣博流量被处理 12 山西事故煤矿企业对作业人数统计不清 13 女子住院被朋友殴打昏迷数天后死亡 14 DeepSeek宣布：永久降价 热 15 俄称乌无人机袭击学校 已致21死" [ref=e68]:
+            - cell "相关搜索  什么是营销  内容营销  懂球帝盈利模式  懂球帝方案群  跟懂球帝差不多的app  懂球帝属于哪个公司旗下    换一换 热搜榜 北京榜 民生榜 财经榜  习近平对山西煤矿事故作出重要指示 1 山西煤矿爆炸致82人遇难128人受伤 2 记者直击：凌晨3点救援机器人下井探测 新 3 首位来自香港的航天员为何是她 4 白宫附近传密集枪声 记者拍枪击现场 新 5 雪饼猴带400只小猴燃爆东北超 新 6 大学生“手搓”蝴蝶卖1500元1只 7 消息人士：美伊接近达成临时协议 8 老师讲台晕倒学生瞬间冲了上去 热 9 男子踩中蛇窝被毒蛇咬数口 休克昏迷 新 10 山西爆炸煤矿有重大违法行为 热 11 多人借汛情造谣博流量被处理 12 山西事故煤矿企业对作业人数统计不清 13 女子住院被朋友殴打昏迷数天后死亡 14 DeepSeek宣布：永久降价 热 15 俄称乌无人机袭击学校 已致21死" [ref=e69]:
+              - generic [ref=e70]:
+                - generic [ref=e76]:
+                  - generic [ref=e78]: 相关搜索
+                  - generic [ref=e79]:
+                    - link " 什么是营销" [ref=e82] [cursor=pointer]:
+                      - /url: /s?wd=%E4%BB%80%E4%B9%88%E6%98%AF%E8%90%A5%E9%94%80&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=c702TI%2FzMp%2BamSzr9u2lbw4w%2B7OIGSAJmEk6jQilCc3XGZnejgX50yZjy8s&rfqid=f50743770006c722&rsv_dl=0_prs_28616_1&rq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsf=101631202
+                      - generic [ref=e83]:
+                        - generic [ref=e84]: 
+                        - generic [ref=e85]: 什么是营销
+                    - link " 内容营销" [ref=e88] [cursor=pointer]:
+                      - /url: /s?wd=%E5%86%85%E5%AE%B9%E8%90%A5%E9%94%80&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=c702TI%2FzMp%2BamSzr9u2lbw4w%2B7OIGSAJmEk6jQilCc3XGZnejgX50yZjy8s&rfqid=f50743770006c722&rsv_dl=0_prs_28616_2&rq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsf=101631202
+                      - generic [ref=e89]:
+                        - generic [ref=e90]: 
+                        - generic [ref=e91]: 内容营销
+                    - link " 懂球帝盈利模式" [ref=e94] [cursor=pointer]:
+                      - /url: /s?wd=%E6%87%82%E7%90%83%E5%B8%9D%E7%9B%88%E5%88%A9%E6%A8%A1%E5%BC%8F&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=c702TI%2FzMp%2BamSzr9u2lbw4w%2B7OIGSAJmEk6jQilCc3XGZnejgX50yZjy8s&rfqid=f50743770006c722&rsv_dl=0_prs_28616_3&rq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsf=101633403
+                      - generic [ref=e95]:
+                        - generic [ref=e96]: 
+                        - generic [ref=e97]: 懂球帝盈利模式
+                    - link " 懂球帝方案群" [ref=e100] [cursor=pointer]:
+                      - /url: /s?wd=%E6%87%82%E7%90%83%E5%B8%9D%E6%96%B9%E6%A1%88%E7%BE%A4&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=c702TI%2FzMp%2BamSzr9u2lbw4w%2B7OIGSAJmEk6jQilCc3XGZnejgX50yZjy8s&rfqid=f50743770006c722&rsv_dl=0_prs_28616_4&rq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsf=101633403
+                      - generic [ref=e101]:
+                        - generic [ref=e102]: 
+                        - generic [ref=e103]: 懂球帝方案群
+                    - link " 跟懂球帝差不多的app" [ref=e106] [cursor=pointer]:
+                      - /url: /s?wd=%E8%B7%9F%E6%87%82%E7%90%83%E5%B8%9D%E5%B7%AE%E4%B8%8D%E5%A4%9A%E7%9A%84app&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=c702TI%2FzMp%2BamSzr9u2lbw4w%2B7OIGSAJmEk6jQilCc3XGZnejgX50yZjy8s&rfqid=f50743770006c722&rsv_dl=0_prs_28616_5&rq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsf=101636803
+                      - generic [ref=e107]:
+                        - generic [ref=e108]: 
+                        - generic [ref=e109]: 跟懂球帝差不多的app
+                    - link " 懂球帝属于哪个公司旗下" [ref=e112] [cursor=pointer]:
+                      - /url: /s?wd=%E6%87%82%E7%90%83%E5%B8%9D%E5%B1%9E%E4%BA%8E%E5%93%AA%E4%B8%AA%E5%85%AC%E5%8F%B8%E6%97%97%E4%B8%8B&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=c702TI%2FzMp%2BamSzr9u2lbw4w%2B7OIGSAJmEk6jQilCc3XGZnejgX50yZjy8s&rfqid=f50743770006c722&rsv_dl=0_prs_28616_6&rq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsf=101636803
+                      - generic [ref=e113]:
+                        - generic [ref=e114]: 
+                        - generic [ref=e115]: 懂球帝属于哪个公司旗下
+                - generic [ref=e119]:
+                  - generic "百度热搜" [ref=e120]:
+                    - link " " [ref=e121] [cursor=pointer]:
+                      - /url: https://top.baidu.com/board?platform=pc&sa=pcindex_a_right
+                      - generic [ref=e122]: 
+                      - generic [ref=e123]: 
+                    - link " 换一换" [ref=e125] [cursor=pointer]:
+                      - /url: javascript:void(0);
+                      - generic [ref=e126]: 
+                      - text: 换一换
+                  - generic [ref=e127]:
+                    - generic [ref=e128] [cursor=pointer]: 热搜榜
+                    - generic [ref=e129] [cursor=pointer]: 北京榜
+                    - generic [ref=e130] [cursor=pointer]: 民生榜
+                    - generic [ref=e131] [cursor=pointer]: 财经榜
+                  - generic [ref=e133]:
+                    - generic [ref=e135]:
+                      - generic [ref=e137]: 
+                      - link "习近平对山西煤矿事故作出重要指示" [ref=e138] [cursor=pointer]:
+                        - /url: /s?wd=%E4%B9%A0%E8%BF%91%E5%B9%B3%E5%AF%B9%E5%B1%B1%E8%A5%BF%E7%85%A4%E7%9F%BF%E4%BA%8B%E6%95%85%E4%BD%9C%E5%87%BA%E9%87%8D%E8%A6%81%E6%8C%87%E7%A4%BA&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_1&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e140]:
+                      - generic [ref=e141]: "1"
+                      - link "山西煤矿爆炸致82人遇难128人受伤" [ref=e142] [cursor=pointer]:
+                        - /url: /s?wd=%E5%B1%B1%E8%A5%BF%E7%85%A4%E7%9F%BF%E7%88%86%E7%82%B8%E8%87%B482%E4%BA%BA%E9%81%87%E9%9A%BE128%E4%BA%BA%E5%8F%97%E4%BC%A4&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_2&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e144]:
+                      - generic [ref=e145]: "2"
+                      - link "记者直击：凌晨3点救援机器人下井探测" [ref=e146] [cursor=pointer]:
+                        - /url: /s?wd=%E8%AE%B0%E8%80%85%E7%9B%B4%E5%87%BB%EF%BC%9A%E5%87%8C%E6%99%A83%E7%82%B9%E6%95%91%E6%8F%B4%E6%9C%BA%E5%99%A8%E4%BA%BA%E4%B8%8B%E4%BA%95%E6%8E%A2%E6%B5%8B&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_3&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e147]: 新
+                    - generic [ref=e149]:
+                      - generic [ref=e150]: "3"
+                      - link "首位来自香港的航天员为何是她" [ref=e151] [cursor=pointer]:
+                        - /url: /s?wd=%E9%A6%96%E4%BD%8D%E6%9D%A5%E8%87%AA%E9%A6%99%E6%B8%AF%E7%9A%84%E8%88%AA%E5%A4%A9%E5%91%98%E4%B8%BA%E4%BD%95%E6%98%AF%E5%A5%B9&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_4&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e153]:
+                      - generic [ref=e154]: "4"
+                      - link "白宫附近传密集枪声 记者拍枪击现场" [ref=e155] [cursor=pointer]:
+                        - /url: /s?wd=%E7%99%BD%E5%AE%AB%E9%99%84%E8%BF%91%E4%BC%A0%E5%AF%86%E9%9B%86%E6%9E%AA%E5%A3%B0%20%E8%AE%B0%E8%80%85%E6%8B%8D%E6%9E%AA%E5%87%BB%E7%8E%B0%E5%9C%BA&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_5&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e156]: 新
+                    - generic [ref=e158]:
+                      - generic [ref=e159]: "5"
+                      - link "雪饼猴带400只小猴燃爆东北超" [ref=e160] [cursor=pointer]:
+                        - /url: /s?wd=%E9%9B%AA%E9%A5%BC%E7%8C%B4%E5%B8%A6400%E5%8F%AA%E5%B0%8F%E7%8C%B4%E7%87%83%E7%88%86%E4%B8%9C%E5%8C%97%E8%B6%85&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_6&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e161]: 新
+                    - generic [ref=e163]:
+                      - generic [ref=e164]: "6"
+                      - link "大学生“手搓”蝴蝶卖1500元1只" [ref=e165] [cursor=pointer]:
+                        - /url: /s?wd=%E5%A4%A7%E5%AD%A6%E7%94%9F%E2%80%9C%E6%89%8B%E6%90%93%E2%80%9D%E8%9D%B4%E8%9D%B6%E5%8D%961500%E5%85%831%E5%8F%AA&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_7&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e167]:
+                      - generic [ref=e168]: "7"
+                      - link "消息人士：美伊接近达成临时协议" [ref=e169] [cursor=pointer]:
+                        - /url: /s?wd=%E6%B6%88%E6%81%AF%E4%BA%BA%E5%A3%AB%EF%BC%9A%E7%BE%8E%E4%BC%8A%E6%8E%A5%E8%BF%91%E8%BE%BE%E6%88%90%E4%B8%B4%E6%97%B6%E5%8D%8F%E8%AE%AE&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_8&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e171]:
+                      - generic [ref=e172]: "8"
+                      - link "老师讲台晕倒学生瞬间冲了上去" [ref=e173] [cursor=pointer]:
+                        - /url: /s?wd=%E8%80%81%E5%B8%88%E8%AE%B2%E5%8F%B0%E6%99%95%E5%80%92%E5%AD%A6%E7%94%9F%E7%9E%AC%E9%97%B4%E5%86%B2%E4%BA%86%E4%B8%8A%E5%8E%BB&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_9&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e174]: 热
+                    - generic [ref=e176]:
+                      - generic [ref=e177]: "9"
+                      - link "男子踩中蛇窝被毒蛇咬数口 休克昏迷" [ref=e178] [cursor=pointer]:
+                        - /url: /s?wd=%E7%94%B7%E5%AD%90%E8%B8%A9%E4%B8%AD%E8%9B%87%E7%AA%9D%E8%A2%AB%E6%AF%92%E8%9B%87%E5%92%AC%E6%95%B0%E5%8F%A3%20%E4%BC%91%E5%85%8B%E6%98%8F%E8%BF%B7&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_10&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e179]: 新
+                    - generic [ref=e181]:
+                      - generic [ref=e182]: "10"
+                      - link "山西爆炸煤矿有重大违法行为" [ref=e183] [cursor=pointer]:
+                        - /url: /s?wd=%E5%B1%B1%E8%A5%BF%E7%88%86%E7%82%B8%E7%85%A4%E7%9F%BF%E6%9C%89%E9%87%8D%E5%A4%A7%E8%BF%9D%E6%B3%95%E8%A1%8C%E4%B8%BA&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_11&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e184]: 热
+                    - generic [ref=e186]:
+                      - generic [ref=e187]: "11"
+                      - link "多人借汛情造谣博流量被处理" [ref=e188] [cursor=pointer]:
+                        - /url: /s?wd=%E5%A4%9A%E4%BA%BA%E5%80%9F%E6%B1%9B%E6%83%85%E9%80%A0%E8%B0%A3%E5%8D%9A%E6%B5%81%E9%87%8F%E8%A2%AB%E5%A4%84%E7%90%86&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_12&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e190]:
+                      - generic [ref=e191]: "12"
+                      - link "山西事故煤矿企业对作业人数统计不清" [ref=e192] [cursor=pointer]:
+                        - /url: /s?wd=%E5%B1%B1%E8%A5%BF%E4%BA%8B%E6%95%85%E7%85%A4%E7%9F%BF%E4%BC%81%E4%B8%9A%E5%AF%B9%E4%BD%9C%E4%B8%9A%E4%BA%BA%E6%95%B0%E7%BB%9F%E8%AE%A1%E4%B8%8D%E6%B8%85&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_13&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e194]:
+                      - generic [ref=e195]: "13"
+                      - link "女子住院被朋友殴打昏迷数天后死亡" [ref=e196] [cursor=pointer]:
+                        - /url: /s?wd=%E5%A5%B3%E5%AD%90%E4%BD%8F%E9%99%A2%E8%A2%AB%E6%9C%8B%E5%8F%8B%E6%AE%B4%E6%89%93%E6%98%8F%E8%BF%B7%E6%95%B0%E5%A4%A9%E5%90%8E%E6%AD%BB%E4%BA%A1&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_14&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e198]:
+                      - generic [ref=e199]: "14"
+                      - link "DeepSeek宣布：永久降价" [ref=e200] [cursor=pointer]:
+                        - /url: /s?wd=DeepSeek%E5%AE%A3%E5%B8%83%EF%BC%9A%E6%B0%B8%E4%B9%85%E9%99%8D%E4%BB%B7&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_1_15_15&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e201]: 热
+                    - generic [ref=e203]:
+                      - generic [ref=e204]: "15"
+                      - link "俄称乌无人机袭击学校 已致21死" [ref=e205] [cursor=pointer]:
+                        - /url: /s?wd=%E4%BF%84%E7%A7%B0%E4%B9%8C%E6%97%A0%E4%BA%BA%E6%9C%BA%E8%A2%AD%E5%87%BB%E5%AD%A6%E6%A0%A1%20%E5%B7%B2%E8%87%B421%E6%AD%BB&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=01f1I%2B5TxJoek8yqBaFXNKWhYcqE80PbSx0wOVOQLKI1AFN%2B3aa0p8pi3Z8&rqid=f50743770006c722&rsf=e252d961db23dba1d93a9fafab44654b_16_30_16&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+      - generic [ref=e206]:
+        - generic [ref=e210]:
+          - heading "懂球帝广告投放" [level=3] [ref=e213]:
+            - link "懂球帝广告投放" [ref=e214] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=2YjzJWx3J9Ys0cDmB-Yzeete4RIvXbAZpMaJHkrcbCuu8pIfHjdpK-xGR7XaMbbmwwLl9yuPJAdgRH5mp6XSbq
+              - paragraph [ref=e217]:
+                - generic [ref=e220]:
+                  - emphasis [ref=e221]: 懂球帝
+                  - text: 广告投放
+          - generic [ref=e226]:
+            - text: 2016年7月12日
+            - generic [ref=e227]:
+              - emphasis [ref=e228]: 懂球帝
+              - text: 于2013年12月5日正式发布,目前已经成为全国规模及影响力标杆性的体育内容平台和社区,产品在球迷中受到广泛认可。懂球帝目前持有中超、德甲、足协杯等赛事版权,并不断完善用户的全方位体验。懂球帝一直致力于为中国足球、中国体育的发展贡献自己的力量。 懂球帝用户具有高净值(人均月收入超过8000元)、男性用户居多
+          - link "懂球帝官方" [ref=e233] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=2YjzJWx3J9Ys0cDmB-Yzeete4RIvXbAZpMaJHkrcbCuu8pIfHjdpK-xGR7XaMbbmwwLl9yuPJAdgRH5mp6XSbq
+            - generic [ref=e234]: 懂球帝官方
+            - generic [ref=e236]: 
+        - generic [ref=e240]:
+          - heading "懂球帝app下载 - 懂球帝app官网2026最新版v66.7.75安卓版 - 2265..." [level=3] [ref=e243]:
+            - link "懂球帝app下载 - 懂球帝app官网2026最新版v66.7.75安卓版 - 2265..." [ref=e244] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PnmSrgBr9wUyadwaS2JAhD5RAD8mH-ZRJZDVPkRXFJa5q
+              - paragraph [ref=e247]:
+                - generic [ref=e250]:
+                  - emphasis [ref=e251]: 懂球帝
+                  - text: app下载 - 懂球帝app官网2026
+                  - emphasis [ref=e252]: 最新版
+                  - text: v66.7.75安卓版 - 2265...
+          - generic [ref=e257]:
+            - text: 6天前
+            - generic [ref=e258]:
+              - text: "🛀🍲🥇第六步:🌋更新和激活(如果需要): 第一次启动"
+              - emphasis [ref=e259]: 懂球帝
+              - text: app软件时,可能需要联网激活或注册。 检查是否有可用的软件更新,以确保使用的是
+              - emphasis [ref=e260]: 最新
+              - text: 版本,这有助于修复已知的错误和提高软件性能。 特别说明:懂球帝app软件园提供的安装包中含有安卓模拟器和软件APK文件,电脑版需要先安装模拟器,然后再安装APK文件。
+          - link "广州仁爱天河医院" [ref=e265] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PnmSrgBr9wUyadwaS2JAhD5RAD8mH-ZRJZDVPkRXFJa5q
+            - generic [ref=e266]: 广州仁爱天河医院
+            - generic [ref=e268]: 
+        - generic [ref=e278]:
+          - heading "懂球帝广告投放指南:2024年精准营销首选足球媒体平台 - 看球直播网" [level=3] [ref=e281]:
+            - link "懂球帝广告投放指南:2024年精准营销首选足球媒体平台 - 看球直播网" [ref=e282] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=2YjzJWx3J9Ys0cDmB-YzejJx3X2z53JQOg7jxR33mqQuUsUgNxqpC3v-hRxV2K5p3rBS8b90mwWFDt79OcAnwa
+              - paragraph [ref=e285]:
+                - generic [ref=e288]:
+                  - emphasis [ref=e289]: 懂球帝
+                  - text: 广告投放指南:2024年精准
+                  - emphasis [ref=e290]: 营销
+                  - text: 首选足球媒体平台 - 看球直播网
+          - generic [ref=e295]:
+            - text: 2026年1月10日
+            - generic [ref=e296]:
+              - text: 2024年以来,
+              - emphasis [ref=e297]: 懂球帝
+              - text: 陆续与多家知名
+              - emphasis [ref=e298]: 品牌
+              - text: 达成战略合作,涵盖运动装备、
+              - emphasis [ref=e299]: 新
+              - text: 能源汽车、电商平台等领域。例如在今年欧洲杯预热期间,某运动品牌通过联合懂球帝发起“球迷预测争霸赛”,结合话题讨论、短视频传播与积分奖励机制,成功带动品牌曝光超3亿次,用户参与量突破百万。此类案例充分展现了懂球帝在整合
+              - emphasis [ref=e300]: 营销
+              - text: 中的强大运营能力。
+          - link "看球直播网" [ref=e305] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=2YjzJWx3J9Ys0cDmB-YzejJx3X2z53JQOg7jxR33mqQuUsUgNxqpC3v-hRxV2K5p3rBS8b90mwWFDt79OcAnwa
+            - generic [ref=e306]: 看球直播网
+            - generic [ref=e308]: 
+        - generic [ref=e310]:
+          - generic [ref=e311]: 大家还在搜
+          - generic [ref=e312]:
+            - link "什么是营销" [ref=e313] [cursor=pointer]:
+              - /url: /s?wd=%E4%BB%80%E4%B9%88%E6%98%AF%E8%90%A5%E9%94%80&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=6977nxbUlrdYfIIqENWhP8R3oTxYW59YMnWvpCTA2JQsQAsL35QxDkFuSkU&rsf=101631202&rsv_dl=0_prs_28608_1
+              - generic [ref=e315]: 什么是营销
+            - link "内容营销" [ref=e316] [cursor=pointer]:
+              - /url: /s?wd=%E5%86%85%E5%AE%B9%E8%90%A5%E9%94%80&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=6977nxbUlrdYfIIqENWhP8R3oTxYW59YMnWvpCTA2JQsQAsL35QxDkFuSkU&rsf=101631202&rsv_dl=0_prs_28608_2
+              - generic [ref=e318]: 内容营销
+            - link "懂球帝盈利模式" [ref=e319] [cursor=pointer]:
+              - /url: /s?wd=%E6%87%82%E7%90%83%E5%B8%9D%E7%9B%88%E5%88%A9%E6%A8%A1%E5%BC%8F&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=28f4CoPyRL4fWyilXb9VmOCaoAnu%2BzAt0tJ3lDpW%2B5Mo07Ai5WQiqs1gH7Q&rsf=101633403&rsv_dl=0_prs_28608_3
+              - generic [ref=e321]: 懂球帝盈利模式
+            - link "懂球帝方案群" [ref=e322] [cursor=pointer]:
+              - /url: /s?wd=%E6%87%82%E7%90%83%E5%B8%9D%E6%96%B9%E6%A1%88%E7%BE%A4&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=28f4CoPyRL4fWyilXb9VmOCaoAnu%2BzAt0tJ3lDpW%2B5Mo07Ai5WQiqs1gH7Q&rsf=101633403&rsv_dl=0_prs_28608_4
+              - generic [ref=e324]: 懂球帝方案群
+            - link "跟懂球帝差不多的app" [ref=e325] [cursor=pointer]:
+              - /url: /s?wd=%E8%B7%9F%E6%87%82%E7%90%83%E5%B8%9D%E5%B7%AE%E4%B8%8D%E5%A4%9A%E7%9A%84app&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=28f4CoPyRL4fWyilXb9VmOCaoAnu%2BzAt0tJ3lDpW%2B5Mo07Ai5WQiqs1gH7Q&rsf=101636803&rsv_dl=0_prs_28608_5
+              - generic [ref=e327]: 跟懂球帝差不多的app
+            - link "懂球帝属于哪个公司旗下" [ref=e328] [cursor=pointer]:
+              - /url: /s?wd=%E6%87%82%E7%90%83%E5%B8%9D%E5%B1%9E%E4%BA%8E%E5%93%AA%E4%B8%AA%E5%85%AC%E5%8F%B8%E6%97%97%E4%B8%8B&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=28f4CoPyRL4fWyilXb9VmOCaoAnu%2BzAt0tJ3lDpW%2B5Mo07Ai5WQiqs1gH7Q&rsf=101636803&rsv_dl=0_prs_28608_6
+              - generic [ref=e330]: 懂球帝属于哪个公司旗下
+            - link "类似懂球帝的app有哪些" [ref=e331] [cursor=pointer]:
+              - /url: /s?wd=%E7%B1%BB%E4%BC%BC%E6%87%82%E7%90%83%E5%B8%9D%E7%9A%84app%E6%9C%89%E5%93%AA%E4%BA%9B&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=28f4CoPyRL4fWyilXb9VmOCaoAnu%2BzAt0tJ3lDpW%2B5Mo07Ai5WQiqs1gH7Q&rsf=101633403&rsv_dl=0_prs_28608_7
+              - generic [ref=e333]: 类似懂球帝的app有哪些
+            - link "和懂球帝一样的app" [ref=e334] [cursor=pointer]:
+              - /url: /s?wd=%E5%92%8C%E6%87%82%E7%90%83%E5%B8%9D%E4%B8%80%E6%A0%B7%E7%9A%84app&usm=1&ie=utf-8&rsv_pq=f50743770006c722&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&rsv_t=28f4CoPyRL4fWyilXb9VmOCaoAnu%2BzAt0tJ3lDpW%2B5Mo07Ai5WQiqs1gH7Q&rsf=101633403&rsv_dl=0_prs_28608_8
+              - generic [ref=e336]: 和懂球帝一样的app
+        - generic [ref=e340]:
+          - heading "中国赞助商,重新打量世界杯|懂球帝" [level=3] [ref=e343]:
+            - link "中国赞助商,重新打量世界杯|懂球帝" [ref=e344] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWCGLMKCWQRzCCh9zvfGrc1hfDsS_OGQe_myd5nY5SuZNK-eUfe3wHpasm_FflxYidAa
+              - paragraph [ref=e347]:
+                - generic [ref=e350]:
+                  - text: 中国赞助商,重新打量世界杯|
+                  - emphasis [ref=e351]: 懂球帝
+          - generic [ref=e356]:
+            - text: 2026年5月15日
+            - generic [ref=e357]:
+              - text: 喜力花了30年让自己成为了欧冠的绑定
+              - emphasis [ref=e358]: 产品
+              - text: ",但在今天开通会员即可跳过所有广告,中场休息时观众也更倾向于在懂互联网社区里参与讨论。一条在社交媒体上病毒式传播的球迷向内容,能比电视广告或者场边的一块广告牌更有效地把"
+              - emphasis [ref=e359]: 品牌
+              - text: 送进普通人的视野,更老派的的长期投资现在看起来像是件傻事。 “性价比”在今天成为了重要...
+          - generic [ref=e360]:
+            - link [ref=e362] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWCGLMKCWQRzCCh9zvfGrc1hfDsS_OGQe_myd5nY5SuZNK-eUfe3wHpasm_FflxYidAa
+            - link [ref=e366] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWCGLMKCWQRzCCh9zvfGrc1hfDsS_OGQe_myd5nY5SuZNK-eUfe3wHpasm_FflxYidAa
+            - link [ref=e370] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWCGLMKCWQRzCCh9zvfGrc1hfDsS_OGQe_myd5nY5SuZNK-eUfe3wHpasm_FflxYidAa
+            - link "10" [ref=e374] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWCGLMKCWQRzCCh9zvfGrc1hfDsS_OGQe_myd5nY5SuZNK-eUfe3wHpasm_FflxYidAa
+              - generic [ref=e377]:
+                - generic [ref=e378]: 
+                - text: "10"
+          - link "懂球帝" [ref=e383] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWCGLMKCWQRzCCh9zvfGrc1hfDsS_OGQe_myd5nY5SuZNK-eUfe3wHpasm_FflxYidAa
+            - generic [ref=e384]: 懂球帝
+            - generic [ref=e386]: 
+        - generic [ref=e390]:
+          - heading "独具匠心做营销,懂球帝携手这些品牌玩转世界杯" [level=3] [ref=e393]:
+            - link "独具匠心做营销,懂球帝携手这些品牌玩转世界杯" [ref=e394] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=U7irskomgJbU4UNSPhwZ0gWZ_pYFJ2AYt1_8s56R2crC48CkQTHpHfTWkF40W3gG8EedRrQzAJP4bih0zokKuK
+              - paragraph [ref=e397]:
+                - generic [ref=e400]:
+                  - text: 独具匠心做
+                  - emphasis [ref=e401]: 营销
+                  - text: ","
+                  - emphasis [ref=e402]: 懂球帝
+                  - text: 携手这些
+                  - emphasis [ref=e403]: 品牌
+                  - text: 玩转世界杯
+          - generic [ref=e408]:
+            - text: 2023年1月19日
+            - generic [ref=e409]:
+              - text: 世界杯结束,但
+              - emphasis [ref=e410]: 品牌
+              - text: 的世界杯营销策略却留给了体育行业深度思考、充分延伸的空间。在2022 ECOTIME体育年会上,氪体邀请到邮人体育业务总监贲啸铮、
+              - emphasis [ref=e411]: 懂球帝营销
+              - text: 副总裁张梦轩、尼尔森体育中国区负责人马麟三位深耕于体育产业的大咖以圆桌会议的形式对这届世界杯呈现出的
+              - emphasis [ref=e412]: 营销新
+              - text: 趋势进行了深入探讨。
+          - link "ECO氪体" [ref=e417] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=U7irskomgJbU4UNSPhwZ0gWZ_pYFJ2AYt1_8s56R2crC48CkQTHpHfTWkF40W3gG8EedRrQzAJP4bih0zokKuK
+            - generic [ref=e418]: ECO氪体
+            - generic [ref=e420]: 
+        - generic [ref=e424]:
+          - heading "懂球帝营销 - 提供懂球帝营销方案以及最新体育营销案例 | 体育大..." [level=3] [ref=e427]:
+            - link "懂球帝营销 - 提供懂球帝营销方案以及最新体育营销案例 | 体育大..." [ref=e428] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=u00N8XyT9sDkv4j2WsZ-L6Rt7tE72AAt6Mb-_VZbJ-Eo1TeO6p7bgYgK4FtIN7UwpiJ4hbWlcOy36xpekF_qcq
+              - paragraph [ref=e431]:
+                - generic [ref=e434]:
+                  - emphasis [ref=e435]: 懂球帝营销
+                  - text: "- 提供懂球帝营销方案以及"
+                  - emphasis [ref=e436]: 最新
+                  - text: 体育营销案例 | 体育大...
+          - generic [ref=e442]:
+            - emphasis [ref=e443]: 懂球帝
+            - text: 创立年份:2013年 企业规模:50-150人 企业官网:http://www.dongqiudi.com/ 所属领域:体育 公司地点:北京市海淀区锦秋国际大厦B座1302室 发展阶段:C轮 企业主页 新闻动态 企业招聘 企业
+            - emphasis [ref=e444]: 营销
+            - text: 加载更多
+          - link "体育大生意" [ref=e449] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=u00N8XyT9sDkv4j2WsZ-L6Rt7tE72AAt6Mb-_VZbJ-Eo1TeO6p7bgYgK4FtIN7UwpiJ4hbWlcOy36xpekF_qcq
+            - generic [ref=e450]: 体育大生意
+            - generic [ref=e452]: 
+        - generic [ref=e456]:
+          - heading "赛场称帝,“懂球帝”如何运营出多元化壁垒" [level=3] [ref=e459]:
+            - link "赛场称帝,“懂球帝”如何运营出多元化壁垒" [ref=e460] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=P27dz7janutK9alP8rXm_NTBtvZZ7w-ZX9sbrBj9h5J7CLXVoFNl951MyGXOFemp2jhZqFVx5yRyWIHT5r6CO0Kaz3C_HoBFfzQcXTdS06zfIj7Kher2-uSo638qqf0gAwYCf-fiZeEGVzS8ABxoJh2vkdAEd9LC3nusH5Yrl1_pU4uITHosMjwJkSSGBkuQyqk531br1QdF8VexLTTJNMH0OOx7daAT6qk_naF1Ie_iG2anjrNqURB7ViKerhxmMItlOUvpa7Fje9bUe67xp_
+              - paragraph [ref=e463]:
+                - generic [ref=e466]:
+                  - text: 赛场称帝,“
+                  - emphasis [ref=e467]: 懂球帝
+                  - text: ”如何运营出多元化壁垒
+          - generic [ref=e472]:
+            - text: 2016年11月25日
+            - generic [ref=e473]:
+              - text: 每一个
+              - emphasis [ref=e474]: 产品
+              - text: 的成功,除了满足关键需求、运营有术外,必有市场之势。PC和移动交替之际,“
+              - emphasis [ref=e475]: 懂球帝
+              - text: ”突然出线,成为用户体量最大的足球APP。 文章拆解懂球帝全生命周期的运营策略,复盘它如何通过深度的内容和用户运营、场景化
+              - emphasis [ref=e476]: 营销
+              - text: 深耕出运营壁垒。 除了个人中心外,整...
+          - link "头像 馒头商学" [ref=e481] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=P27dz7janutK9alP8rXm_NTBtvZZ7w-ZX9sbrBj9h5J7CLXVoFNl951MyGXOFemp2jhZqFVx5yRyWIHT5r6CO0Kaz3C_HoBFfzQcXTdS06zfIj7Kher2-uSo638qqf0gAwYCf-fiZeEGVzS8ABxoJh2vkdAEd9LC3nusH5Yrl1_pU4uITHosMjwJkSSGBkuQyqk531br1QdF8VexLTTJNMH0OOx7daAT6qk_naF1Ie_iG2anjrNqURB7ViKerhxmMItlOUvpa7Fje9bUe67xp_
+            - img "头像" [ref=e484]
+            - generic [ref=e485]: 馒头商学
+            - generic [ref=e487]: 
+        - generic [ref=e491]:
+          - heading "背靠千万高质量月活用户 懂球帝成为球迷营销新选择? - 知乎" [level=3] [ref=e494]:
+            - link "背靠千万高质量月活用户 懂球帝成为球迷营销新选择? - 知乎" [ref=e495] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=1htSLI1jyOORdYIDcELTEb8keZnMsfc_yeIy45cI1rz4f4FLrHyq1XSJsbhPZ-ql
+              - paragraph [ref=e498]:
+                - generic [ref=e501]:
+                  - text: 背靠千万高质量月活用户
+                  - emphasis [ref=e502]: 懂球帝
+                  - text: 成为球迷
+                  - emphasis [ref=e503]: 营销新
+                  - text: 选择? - 知乎
+          - generic [ref=e504]:
+            - link [ref=e506] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=1htSLI1jyOORdYIDcELTEb8keZnMsfc_yeIy45cI1rz4f4FLrHyq1XSJsbhPZ-ql
+            - generic [ref=e511]:
+              - generic [ref=e516]:
+                - text: 2019年1月2日
+                - generic [ref=e517]:
+                  - text: 固特异
+                  - emphasis [ref=e518]: 品牌
+                  - text: 负责人表示,冠名拜仁中国行活动选择
+                  - emphasis [ref=e519]: 懂球帝
+                  - text: 进行战略合作,正是看中了懂球帝用户人群高收入、热爱生活、追求激情和挑战的特点,以期达成品牌与赛事的完美结合,同时,也形成了直达消费者内心的精准
+                  - emphasis [ref=e520]: 营销
+                  - text: 。 固特异轮胎橡胶公司欧洲、中东和非洲区总裁DarrenWells表示,从拜仁中国行活动与懂球帝的合作,对懂球帝在球迷募...
+              - link "头像 知乎" [ref=e525] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=1htSLI1jyOORdYIDcELTEb8keZnMsfc_yeIy45cI1rz4f4FLrHyq1XSJsbhPZ-ql
+                - img "头像" [ref=e528]
+                - generic [ref=e529]: 知乎
+                - generic [ref=e531]: 
+        - generic [ref=e535]:
+          - heading "...Visa世界杯宣传广告|曼城|巴塞罗那|坎波斯|哈兰德|亚马尔|懂球帝" [level=3] [ref=e538]:
+            - link "...Visa世界杯宣传广告|曼城|巴塞罗那|坎波斯|哈兰德|亚马尔|懂球帝" [ref=e539] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWCGLMKCWQRzCCh9zvfGrc1hfDsS_OGQe_myd5nY5SuZNKYIFonbe3kf7gTtPGo0nfca
+              - paragraph [ref=e542]:
+                - generic [ref=e545]:
+                  - text: ...Visa世界杯宣传广告|曼城|巴塞罗那|坎波斯|哈兰德|亚马尔|
+                  - emphasis [ref=e546]: 懂球帝
+          - generic [ref=e551]:
+            - text: 6天前
+            - generic [ref=e552]:
+              - text: 曼尼菲尔德守护者 @
+              - emphasis [ref=e553]: 懂球帝
+              - text: 刚刚 5月18日,Visa正式推出名为“Tap In”的世界杯全球
+              - emphasis [ref=e554]: 营销
+              - text: 活动,围绕球迷支付体验展开。据TA记者Melanie Anzidei报道,Visa已于周一正式启动这一世界杯营销计划,并邀请知名足球相关剧集《足球教练》演员杰森-苏戴奇斯以及多位足球明星参与,包括西班牙前锋亚马尔和挪威射手哈兰德。 该活动名称“...
+          - link "懂球帝" [ref=e559] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWCGLMKCWQRzCCh9zvfGrc1hfDsS_OGQe_myd5nY5SuZNKYIFonbe3kf7gTtPGo0nfca
+            - generic [ref=e560]: 懂球帝
+            - generic [ref=e562]: 
+      - generic [ref=e564]:
+        - generic [ref=e565]: 相关搜索
+        - table [ref=e566]:
+          - rowgroup [ref=e567]:
+            - row "什么是营销 内容营销" [ref=e568]:
+              - cell "什么是营销" [ref=e569]:
+                - link "什么是营销" [ref=e570] [cursor=pointer]:
+                  - /url: /s?wd=%E4%BB%80%E4%B9%88%E6%98%AF%E8%90%A5%E9%94%80&rsf=101631202&rsp=0&f=1&rs_src=0&rsv_pq=f50743770006c722&rsv_t=98b9x0T7AlKZ12dqM5FTwOMbkNuZZbRpPuQbShY9xs60VmOzdQb%2Fpu8XMuc&rsv_dl=brs_28338_1
+                  - generic [ref=e572]: 什么是营销
+              - cell "内容营销" [ref=e573]:
+                - link "内容营销" [ref=e574] [cursor=pointer]:
+                  - /url: /s?wd=%E5%86%85%E5%AE%B9%E8%90%A5%E9%94%80&rsf=101631202&rsp=1&f=1&rs_src=0&rsv_pq=f50743770006c722&rsv_t=98b9x0T7AlKZ12dqM5FTwOMbkNuZZbRpPuQbShY9xs60VmOzdQb%2Fpu8XMuc&rsv_dl=brs_28338_2
+                  - generic [ref=e576]: 内容营销
+            - row "懂球帝盈利模式 懂球帝方案群" [ref=e577]:
+              - cell "懂球帝盈利模式" [ref=e578]:
+                - link "懂球帝盈利模式" [ref=e579] [cursor=pointer]:
+                  - /url: /s?wd=%E6%87%82%E7%90%83%E5%B8%9D%E7%9B%88%E5%88%A9%E6%A8%A1%E5%BC%8F&rsf=101633403&rsp=2&f=1&rs_src=0&rsv_pq=f50743770006c722&rsv_t=98b9x0T7AlKZ12dqM5FTwOMbkNuZZbRpPuQbShY9xs60VmOzdQb%2Fpu8XMuc&rsv_dl=brs_28338_3
+                  - generic [ref=e581]: 懂球帝盈利模式
+              - cell "懂球帝方案群" [ref=e582]:
+                - link "懂球帝方案群" [ref=e583] [cursor=pointer]:
+                  - /url: /s?wd=%E6%87%82%E7%90%83%E5%B8%9D%E6%96%B9%E6%A1%88%E7%BE%A4&rsf=101633403&rsp=3&f=1&rs_src=0&rsv_pq=f50743770006c722&rsv_t=98b9x0T7AlKZ12dqM5FTwOMbkNuZZbRpPuQbShY9xs60VmOzdQb%2Fpu8XMuc&rsv_dl=brs_28338_4
+                  - generic [ref=e585]: 懂球帝方案群
+            - row "跟懂球帝差不多的app 懂球帝属于哪个公司旗下" [ref=e586]:
+              - cell "跟懂球帝差不多的app" [ref=e587]:
+                - link "跟懂球帝差不多的app" [ref=e588] [cursor=pointer]:
+                  - /url: /s?wd=%E8%B7%9F%E6%87%82%E7%90%83%E5%B8%9D%E5%B7%AE%E4%B8%8D%E5%A4%9A%E7%9A%84app&rsf=101636803&rsp=4&f=1&rs_src=0&rsv_pq=f50743770006c722&rsv_t=98b9x0T7AlKZ12dqM5FTwOMbkNuZZbRpPuQbShY9xs60VmOzdQb%2Fpu8XMuc&rsv_dl=brs_28338_5
+                  - generic [ref=e590]: 跟懂球帝差不多的app
+              - cell "懂球帝属于哪个公司旗下" [ref=e591]:
+                - link "懂球帝属于哪个公司旗下" [ref=e592] [cursor=pointer]:
+                  - /url: /s?wd=%E6%87%82%E7%90%83%E5%B8%9D%E5%B1%9E%E4%BA%8E%E5%93%AA%E4%B8%AA%E5%85%AC%E5%8F%B8%E6%97%97%E4%B8%8B&rsf=101636803&rsp=5&f=1&rs_src=0&rsv_pq=f50743770006c722&rsv_t=98b9x0T7AlKZ12dqM5FTwOMbkNuZZbRpPuQbShY9xs60VmOzdQb%2Fpu8XMuc&rsv_dl=brs_28338_6
+                  - generic [ref=e594]: 懂球帝属于哪个公司旗下
+            - row "和懂球帝一样的app 懂球帝的专家如何入驻" [ref=e595]:
+              - cell "和懂球帝一样的app" [ref=e596]:
+                - link "和懂球帝一样的app" [ref=e597] [cursor=pointer]:
+                  - /url: /s?wd=%E5%92%8C%E6%87%82%E7%90%83%E5%B8%9D%E4%B8%80%E6%A0%B7%E7%9A%84app&rsf=101633403&rsp=6&f=1&rs_src=0&rsv_pq=f50743770006c722&rsv_t=98b9x0T7AlKZ12dqM5FTwOMbkNuZZbRpPuQbShY9xs60VmOzdQb%2Fpu8XMuc&rsv_dl=brs_28338_7
+                  - generic [ref=e599]: 和懂球帝一样的app
+              - cell "懂球帝的专家如何入驻" [ref=e600]:
+                - link "懂球帝的专家如何入驻" [ref=e601] [cursor=pointer]:
+                  - /url: /s?wd=%E6%87%82%E7%90%83%E5%B8%9D%E7%9A%84%E4%B8%93%E5%AE%B6%E5%A6%82%E4%BD%95%E5%85%A5%E9%A9%BB&rsf=101636803&rsp=7&f=1&rs_src=0&rsv_pq=f50743770006c722&rsv_t=98b9x0T7AlKZ12dqM5FTwOMbkNuZZbRpPuQbShY9xs60VmOzdQb%2Fpu8XMuc&rsv_dl=brs_28338_8
+                  - generic [ref=e603]: 懂球帝的专家如何入驻
+            - row "懂球帝商城去哪了 营销和销售的区别" [ref=e604]:
+              - cell "懂球帝商城去哪了" [ref=e605]:
+                - link "懂球帝商城去哪了" [ref=e606] [cursor=pointer]:
+                  - /url: /s?wd=%E6%87%82%E7%90%83%E5%B8%9D%E5%95%86%E5%9F%8E%E5%8E%BB%E5%93%AA%E4%BA%86&rsf=101633403&rsp=8&f=1&rs_src=0&rsv_pq=f50743770006c722&rsv_t=98b9x0T7AlKZ12dqM5FTwOMbkNuZZbRpPuQbShY9xs60VmOzdQb%2Fpu8XMuc&rsv_dl=brs_28338_9
+                  - generic [ref=e608]: 懂球帝商城去哪了
+              - cell "营销和销售的区别" [ref=e609]:
+                - link "营销和销售的区别" [ref=e610] [cursor=pointer]:
+                  - /url: /s?wd=%E8%90%A5%E9%94%80%E5%92%8C%E9%94%80%E5%94%AE%E7%9A%84%E5%8C%BA%E5%88%AB&rsf=101631202&rsp=9&f=1&rs_src=0&rsv_pq=f50743770006c722&rsv_t=98b9x0T7AlKZ12dqM5FTwOMbkNuZZbRpPuQbShY9xs60VmOzdQb%2Fpu8XMuc&rsv_dl=brs_28338_10
+                  - generic [ref=e612]: 营销和销售的区别
+    - generic [ref=e615]:
+      - link "上一页":
+        - /url: ""
+        - img "上一页"
+      - strong [ref=e616]:
+        - generic [ref=e617]: "1"
+      - link "2" [ref=e618] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=f50743770006c722&rsv_t=d117i9ybb%2FsVUriAqFLbJx%2BSPMorO68fmO%2B81T0O7cHxw1cv64rV&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&wd=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&pn=10
+        - generic [ref=e619]: "2"
+      - link "3" [ref=e620] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=f50743770006c722&rsv_t=d117i9ybb%2FsVUriAqFLbJx%2BSPMorO68fmO%2B81T0O7cHxw1cv64rV&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&wd=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&pn=20
+        - generic [ref=e621]: "3"
+      - link "4" [ref=e622] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=f50743770006c722&rsv_t=d117i9ybb%2FsVUriAqFLbJx%2BSPMorO68fmO%2B81T0O7cHxw1cv64rV&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&wd=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&pn=30
+        - generic [ref=e623]: "4"
+      - link "5" [ref=e624] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=f50743770006c722&rsv_t=d117i9ybb%2FsVUriAqFLbJx%2BSPMorO68fmO%2B81T0O7cHxw1cv64rV&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&wd=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&pn=40
+        - generic [ref=e625]: "5"
+      - link "6" [ref=e626] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=f50743770006c722&rsv_t=d117i9ybb%2FsVUriAqFLbJx%2BSPMorO68fmO%2B81T0O7cHxw1cv64rV&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&wd=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&pn=50
+        - generic [ref=e627]: "6"
+      - link "7" [ref=e628] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=f50743770006c722&rsv_t=d117i9ybb%2FsVUriAqFLbJx%2BSPMorO68fmO%2B81T0O7cHxw1cv64rV&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&wd=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&pn=60
+        - generic [ref=e629]: "7"
+      - link "8" [ref=e630] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=f50743770006c722&rsv_t=d117i9ybb%2FsVUriAqFLbJx%2BSPMorO68fmO%2B81T0O7cHxw1cv64rV&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&wd=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&pn=70
+        - generic [ref=e631]: "8"
+      - link "9" [ref=e632] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=f50743770006c722&rsv_t=d117i9ybb%2FsVUriAqFLbJx%2BSPMorO68fmO%2B81T0O7cHxw1cv64rV&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&wd=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&pn=80
+        - generic [ref=e633]: "9"
+      - link "10" [ref=e634] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=f50743770006c722&rsv_t=d117i9ybb%2FsVUriAqFLbJx%2BSPMorO68fmO%2B81T0O7cHxw1cv64rV&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&wd=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&pn=90
+        - generic [ref=e635]: "10"
+      - link "下一页" [ref=e636] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=f50743770006c722&rsv_t=d117i9ybb%2FsVUriAqFLbJx%2BSPMorO68fmO%2B81T0O7cHxw1cv64rV&oq=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&wd=%E6%87%82%E7%90%83%E5%B8%9D%20%E5%93%81%E7%89%8C%20%E8%90%A5%E9%94%80%20%E4%BA%A7%E5%93%81%20%E6%9C%80%E6%96%B0&pn=10&rsv_page=1
+        - img "下一页" [ref=e637]
+    - generic [ref=e640]:
+      - link "帮助" [ref=e641] [cursor=pointer]:
+        - /url: " https://help.baidu.com/question?prod_id=1"
+      - link "举报" [ref=e642] [cursor=pointer]:
+        - /url: https://help.baidu.com/jubao?source=search
+      - link "用户反馈" [ref=e643] [cursor=pointer]:
+        - /url: javascript:;
+      - link "企业推广" [ref=e644] [cursor=pointer]:
+        - /url: https://e.baidu.com/lp/search/?refer=1298

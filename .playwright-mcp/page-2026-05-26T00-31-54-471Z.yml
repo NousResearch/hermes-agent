@@ -1,0 +1,78 @@
+- generic [active] [ref=e1]:
+  - link "欢迎进入 百度资讯搜索_直播吧 虎扑 腾讯体育 世界杯 版权 营销 2026,盲人用户使用操作智能引导，请按快捷键Ctrl+Alt+R；阅读详细操作说明请按快捷键Ctrl+Alt+问号键。":
+    - /url: javascript:void(0)
+    - img [ref=e2] [cursor=pointer]
+  - generic [ref=e3]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - link "到百度首页" [ref=e7] [cursor=pointer]:
+          - /url: /
+          - img "到百度首页" [ref=e8]
+        - generic [ref=e12]:
+          - textbox [ref=e15]: 直播吧 虎扑 腾讯体育 世界杯 版权 营销 2026
+          - generic [ref=e17]:
+            - generic [ref=e18]:
+              - img [ref=e20] [cursor=pointer]
+              - generic [ref=e23]:
+                - img [ref=e30] [cursor=pointer]
+                - img [ref=e36] [cursor=pointer]
+                - img [ref=e41] [cursor=pointer]
+            - button "百度一下" [ref=e45] [cursor=pointer]
+      - generic [ref=e46]:
+        - link "百度首页" [ref=e47] [cursor=pointer]:
+          - /url: /
+        - link "登录" [ref=e48] [cursor=pointer]:
+          - /url: https://passport.baidu.com/v2/?login&tpl=mn&u=http%3A%2F%2Fwww.baidu.com%2F
+    - generic [ref=e51]:
+      - link [ref=e52] [cursor=pointer]:
+        - /url: https://chat.baidu.com/search?word=%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E8%85%BE%E8%AE%AF%E4%BD%93%E8%82%B2+%E4%B8%96%E7%95%8C%E6%9D%AF+%E7%89%88%E6%9D%83+%E8%90%A5%E9%94%80+2026&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&pd=csaitab&setype=csaitab&extParamsJson=%7B%22enter_type%22%3A%22search_a_tab%22%2C%22sa%22%3A%22vs_tab%22%2C%22apagelid%22%3A%229497398608277645612%22%2C%22ori_lid%22%3A%229497398608277645612%22%7D
+        - img [ref=e53]
+      - link "网页" [ref=e54] [cursor=pointer]:
+        - /url: https://www.baidu.com/s?&wd=%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E8%85%BE%E8%AE%AF%E4%BD%93%E8%82%B2+%E4%B8%96%E7%95%8C%E6%9D%AF+%E7%89%88%E6%9D%83+%E8%90%A5%E9%94%80+2026
+      - link "图片" [ref=e55] [cursor=pointer]:
+        - /url: http://image.baidu.com/i?tn=baiduimage&ps=1&ct=201326592&lm=-1&cl=2&nc=1&ie=utf-8&lid=83cd89b700ada92c&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E8%85%BE%E8%AE%AF%E4%BD%93%E8%82%B2+%E4%B8%96%E7%95%8C%E6%9D%AF+%E7%89%88%E6%9D%83+%E8%90%A5%E9%94%80+2026
+      - generic [ref=e56]: 资讯
+      - link "视频" [ref=e57] [cursor=pointer]:
+        - /url: /sf/vsearch?pd=video&tn=vsearch&lid=83cd89b700ada92c&ie=utf-8&wd=%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E8%85%BE%E8%AE%AF%E4%BD%93%E8%82%B2+%E4%B8%96%E7%95%8C%E6%9D%AF+%E7%89%88%E6%9D%83+%E8%90%A5%E9%94%80+2026&rsv_spt=7&rsv_bp=1&f=8&oq=%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E8%85%BE%E8%AE%AF%E4%BD%93%E8%82%B2+%E4%B8%96%E7%95%8C%E6%9D%AF+%E7%89%88%E6%9D%83+%E8%90%A5%E9%94%80+2026&rsv_pq=83cd89b700ada92c
+      - link "笔记" [ref=e58] [cursor=pointer]:
+        - /url: https://www.baidu.com/s?pd=note&rpf=pc&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E8%85%BE%E8%AE%AF%E4%BD%93%E8%82%B2+%E4%B8%96%E7%95%8C%E6%9D%AF+%E7%89%88%E6%9D%83+%E8%90%A5%E9%94%80+2026
+      - link "地图" [ref=e59] [cursor=pointer]:
+        - /url: https://map.baidu.com/?newmap=1&ie=utf-8&from=pstab&s=s%26wd%3D%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E8%85%BE%E8%AE%AF%E4%BD%93%E8%82%B2+%E4%B8%96%E7%95%8C%E6%9D%AF+%E7%89%88%E6%9D%83+%E8%90%A5%E9%94%80+2026
+      - link "贴吧" [ref=e60] [cursor=pointer]:
+        - /url: http://tieba.baidu.com/f?fr=wwwt&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&kw=%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E8%85%BE%E8%AE%AF%E4%BD%93%E8%82%B2+%E4%B8%96%E7%95%8C%E6%9D%AF+%E7%89%88%E6%9D%83+%E8%90%A5%E9%94%80+2026
+      - link "文库" [ref=e61] [cursor=pointer]:
+        - /url: http://wenku.baidu.com/search?lm=0&od=0&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E8%85%BE%E8%AE%AF%E4%BD%93%E8%82%B2+%E4%B8%96%E7%95%8C%E6%9D%AF+%E7%89%88%E6%9D%83+%E8%90%A5%E9%94%80+2026
+      - link "更多" [ref=e62] [cursor=pointer]:
+        - /url: http://www.baidu.com/more/
+    - generic [ref=e64]:
+      - generic [ref=e65]:
+        - generic [ref=e66]: 百度为您找到相关资讯0个
+        - generic [ref=e69] [cursor=pointer]:
+          - text: 全部资讯
+          - generic [ref=e70]: 
+        - generic [ref=e71] [cursor=pointer]:
+          - text: 按时间排序
+          - generic [ref=e72]: 
+        - text: .
+      - generic [ref=e77]:
+        - generic [ref=e78]:
+          - text: 抱歉，没有找到与“
+          - emphasis [ref=e79]: 直播吧 虎扑 腾讯体育 世界杯 版权 营销 2026
+          - text: ” 相关的新闻内容。
+        - text: 百度建议您：
+        - generic [ref=e80]:
+          - text: 去百度网页中搜索
+          - link "\"直播吧 虎扑 腾讯体育 世界杯 版权 营销 2026\"" [ref=e81] [cursor=pointer]:
+            - /url: http://www.baidu.com/baidu?rsv_xinwen=2&word=%D6%B1%B2%A5%B0%C9+%BB%A2%C6%CB+%CC%DA%D1%B6%CC%E5%D3%FD+%CA%C0%BD%E7%B1%AD+%B0%E6%C8%A8+%D3%AA%CF%FA+2026
+        - generic [ref=e82]:
+          - text: 去百度知道提问
+          - link "\"我要提问\"" [ref=e83] [cursor=pointer]:
+            - /url: http://zhidao.baidu.com/new?word=%D6%B1%B2%A5%B0%C9+%BB%A2%C6%CB+%CC%DA%D1%B6%CC%E5%D3%FD+%CA%C0%BD%E7%B1%AD+%B0%E6%C8%A8+%D3%AA%CF%FA+2026
+        - generic [ref=e84]: 查看输入的文字是否有误
+  - generic [ref=e87]:
+    - link "帮助" [ref=e88] [cursor=pointer]:
+      - /url: http://www.baidu.com/search/news_help.html
+    - link "举报" [ref=e89] [cursor=pointer]:
+      - /url: //www.baidu.com/search/jubao.html
+    - link "企业推广" [ref=e90] [cursor=pointer]:
+      - /url: https://e.baidu.com/lp/search/?refer=1302

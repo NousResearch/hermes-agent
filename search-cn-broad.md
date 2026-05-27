@@ -1,0 +1,1962 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link "Google 新闻" [ref=e7] [cursor=pointer]:
+        - /url: ./?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+        - generic [ref=e9]: 新闻
+      - generic [ref=e10]:
+        - search [ref=e12]:
+          - combobox "搜索主题、地点和媒体" [ref=e19]: 蒙牛 OR 伊利 OR 剑南春 OR 比亚迪 OR 百威 OR 小米 OR 海信 世界杯
+          - button "高级搜索" [ref=e20] [cursor=pointer]:
+            - generic [ref=e21]:
+              - generic "高级搜索" [ref=e22]:
+                - img [ref=e23]
+              - tooltip [ref=e25]: 高级搜索
+          - button "清除搜索内容" [ref=e26] [cursor=pointer]:
+            - img [ref=e27]
+          - button "搜索" [ref=e30] [cursor=pointer]:
+            - img [ref=e31]
+        - generic [ref=e34]:
+          - generic [ref=e39]:
+            - button "帮助" [ref=e40] [cursor=pointer]:
+              - img [ref=e42]
+            - tooltip [ref=e44]: 帮助
+          - generic [ref=e49]:
+            - button "设置" [ref=e50] [cursor=pointer]:
+              - img [ref=e52]
+            - tooltip [ref=e55]: 设置
+      - generic [ref=e57]:
+        - button "Google 应用" [ref=e61] [cursor=pointer]:
+          - img [ref=e62]
+        - link "登录" [ref=e65] [cursor=pointer]:
+          - /url: https://accounts.google.com/ServiceLogin?passive=1209600&continue=https://news.google.com/search?q%3D%25E8%2592%2599%25E7%2589%259B%2BOR%2B%25E4%25BC%258A%25E5%2588%25A9%2BOR%2B%25E5%2589%2591%25E5%258D%2597%25E6%2598%25A5%2BOR%2B%25E6%25AF%2594%25E4%25BA%259A%25E8%25BF%25AA%2BOR%2B%25E7%2599%25BE%25E5%25A8%2581%2BOR%2B%25E5%25B0%258F%25E7%25B1%25B3%2BOR%2B%25E6%25B5%25B7%25E4%25BF%25A1%2B%25E4%25B8%2596%25E7%2595%258C%25E6%259D%25AF%26hl%3Dzh-CN%26gl%3DCN%26ceid%3DCN:zh-Hans%26when%3D1d&followup=https://news.google.com/search?q%3D%25E8%2592%2599%25E7%2589%259B%2BOR%2B%25E4%25BC%258A%25E5%2588%25A9%2BOR%2B%25E5%2589%2591%25E5%258D%2597%25E6%2598%25A5%2BOR%2B%25E6%25AF%2594%25E4%25BA%259A%25E8%25BF%25AA%2BOR%2B%25E7%2599%25BE%25E5%25A8%2581%2BOR%2B%25E5%25B0%258F%25E7%25B1%25B3%2BOR%2B%25E6%25B5%25B7%25E4%25BF%25A1%2B%25E4%25B8%2596%25E7%2595%258C%25E6%259D%25AF%26hl%3Dzh-CN%26gl%3DCN%26ceid%3DCN:zh-Hans%26when%3D1d&hl=zh-CN&ec=GAZAqgM
+    - navigation [ref=e68]:
+      - tablist [ref=e69]:
+        - tab "首页" [ref=e70] [cursor=pointer]:
+          - tab "首页" [ref=e71]
+        - tab "为您推荐" [ref=e72] [cursor=pointer]:
+          - tab "为您推荐" [ref=e73]
+        - tab "已关注" [ref=e74] [cursor=pointer]:
+          - tab "已关注" [ref=e75]
+        - tab "中国" [ref=e78] [cursor=pointer]:
+          - tab "中国" [ref=e79]
+        - tab "全球" [ref=e80] [cursor=pointer]:
+          - tab "全球" [ref=e81]
+        - tab "当地" [ref=e82] [cursor=pointer]:
+          - tab "当地" [ref=e83]
+        - tab "商业" [ref=e84] [cursor=pointer]:
+          - tab "商业" [ref=e85]
+        - tab "娱乐" [ref=e86] [cursor=pointer]:
+          - tab "娱乐" [ref=e87]
+        - tab "体育" [ref=e88] [cursor=pointer]:
+          - tab "体育" [ref=e89]
+  - main [ref=e93]:
+    - generic [ref=e95]:
+      - generic [ref=e98]:
+        - generic [ref=e99]:
+          - link [ref=e101] [cursor=pointer]:
+            - /url: ./read/CBMipwRBVV95cUxPcFRNUjgxTmtnX3NTaTVzS21tQkNiWFlmNUtXeWQ3OFBhTDVQamk3aHRWQmlOWWlJTFBsU1dBQjJkTTNRRDdKQXBpbmRoQ0E1RVJQSlRxRnZNUkJ1dnpfcGxTLXUxWXJqekIxS1NLZks2MDlFMDR0QTFxRERCSkluUThVejNOM3Y1NG9LZkNsUzU0eEJEdDFHa0tCM000Q1l5ZHEtNUdrOFEyRmlRYV9WMGNlLU1VNnlhMEZ3YzZnWHZoRzBobDBidzBPU3N5NWYzcGdtSDM4bVdsMFBXYjZTM3lhckttRFNMQTVndUU5ZFJSMmtvUjJIb29ZTXR2Y2pCXzM0cmY3Y2JWU1FQcG11d0NuNkhWclFacm1LbUkwRGlZNzVoWVY3QmxnM2VVN3EtWHhXOGV5WExNbGVoNzZFM2JfN05kaG5oM2hUejFmandmYlNScFhYWUpDWC1ranJnYnhsWG01UTRISW50N01mSHY0dHBmTGVURkg5YmtWMVZoeFB5a0plNzFzMTNZbDBlZzcxZWZMSWNUc2FVZTlLd1ptSmgydXZaMS1KWWtLTzJKa2M2Ui1UakdVQ3NPNXFlTFFhT1ZiU0ZIeTlZNmlqU2IzVk9peUtXMWo2NkhLa3VaXzEyamdXakJ6ak9wZk00a1JQRXI1alFCTnVwVWNLSXRHZkYtUDF5bGV3bzI1andab3lhMnNhTFphUnJwNVFGZlZaTXB4NA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+          - generic [ref=e103]:
+            - generic [ref=e104]:
+              - generic [ref=e107]: 新浪财经
+              - generic [ref=e111]:
+                - generic:
+                  - button "展开 - 5亿美元的豪赌：比如海信和蒙牛 应该有点坐立难安" [ref=e112] [cursor=pointer]:
+                    - img [ref=e114]
+                  - tooltip [ref=e116]: 展开
+            - link "5亿美元的豪赌：比如海信和蒙牛 应该有点坐立难安 - 新浪财经 - 4 天前" [ref=e117] [cursor=pointer]:
+              - /url: ./read/CBMipwRBVV95cUxPcFRNUjgxTmtnX3NTaTVzS21tQkNiWFlmNUtXeWQ3OFBhTDVQamk3aHRWQmlOWWlJTFBsU1dBQjJkTTNRRDdKQXBpbmRoQ0E1RVJQSlRxRnZNUkJ1dnpfcGxTLXUxWXJqekIxS1NLZks2MDlFMDR0QTFxRERCSkluUThVejNOM3Y1NG9LZkNsUzU0eEJEdDFHa0tCM000Q1l5ZHEtNUdrOFEyRmlRYV9WMGNlLU1VNnlhMEZ3YzZnWHZoRzBobDBidzBPU3N5NWYzcGdtSDM4bVdsMFBXYjZTM3lhckttRFNMQTVndUU5ZFJSMmtvUjJIb29ZTXR2Y2pCXzM0cmY3Y2JWU1FQcG11d0NuNkhWclFacm1LbUkwRGlZNzVoWVY3QmxnM2VVN3EtWHhXOGV5WExNbGVoNzZFM2JfN05kaG5oM2hUejFmandmYlNScFhYWUpDWC1ranJnYnhsWG01UTRISW50N01mSHY0dHBmTGVURkg5YmtWMVZoeFB5a0plNzFzMTNZbDBlZzcxZWZMSWNUc2FVZTlLd1ptSmgydXZaMS1KWWtLTzJKa2M2Ui1UakdVQ3NPNXFlTFFhT1ZiU0ZIeTlZNmlqU2IzVk9peUtXMWo2NkhLa3VaXzEyamdXakJ6ak9wZk00a1JQRXI1alFCTnVwVWNLSXRHZkYtUDF5bGV3bzI1andab3lhMnNhTFphUnJwNVFGZlZaTXB4NA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+              - text: 5亿美元的豪赌：比如海信和蒙牛 应该有点坐立难安
+          - figure [ref=e118]
+        - time [ref=e120]: 4 天前
+      - generic [ref=e121]:
+        - separator [ref=e123]
+        - generic [ref=e125]:
+          - generic [ref=e126]:
+            - link [ref=e128] [cursor=pointer]:
+              - /url: ./read/CBMidkFVX3lxTE5RZHhfeHNjcjZBQmFtdUtPTWVMZE9HNWNGR1ZSaENkaE9NQzJJd0NmWWxMdjV0MDA3LXdlTWMtUl9panRHaEV6QTlvNVRiYzNXZVBWNFpRU0lURVFhajI3NGhram42QXo5dVN0OEtHM1FBWlVOMWc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e130]:
+              - generic [ref=e131]:
+                - generic [ref=e134]: 新浪财经
+                - generic [ref=e138]:
+                  - generic:
+                    - button "展开 - 没有海信，世界杯什么也不是" [ref=e139] [cursor=pointer]:
+                      - img [ref=e141]
+                    - tooltip [ref=e143]: 展开
+              - link "没有海信，世界杯什么也不是 - 新浪财经 - 5 天前" [ref=e144] [cursor=pointer]:
+                - /url: ./read/CBMidkFVX3lxTE5RZHhfeHNjcjZBQmFtdUtPTWVMZE9HNWNGR1ZSaENkaE9NQzJJd0NmWWxMdjV0MDA3LXdlTWMtUl9panRHaEV6QTlvNVRiYzNXZVBWNFpRU0lURVFhajI3NGhram42QXo5dVN0OEtHM1FBWlVOMWc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 没有海信，世界杯什么也不是
+            - figure [ref=e145]
+          - time [ref=e147]: 5 天前
+      - generic [ref=e148]:
+        - separator [ref=e150]
+        - generic [ref=e152]:
+          - generic [ref=e153]:
+            - link [ref=e155] [cursor=pointer]:
+              - /url: ./read/CBMijwFBVV95cUxOZ0dFaUluRjg2NmwxaVA2ZjlsakNzSnZPaC12THZNWWd6SnF4MjJwV1BSZzRJdk9HSU1VQXFEQzd3ckxja08tUXc0a3Z1Qy13M1ppanJ6UEl5U3RqWlFnLXhUZ3BxWkthZWRNaU03cGhqWXhYTE9iYzJEOWJidktYVzluNzNGSnhJcllKdlNIbw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e157]:
+              - generic [ref=e158]:
+                - generic [ref=e161]: 21财经
+                - generic [ref=e165]:
+                  - generic:
+                    - button "展开 - 世界杯陷直播僵局，赞助方蒙牛“很受伤”丨消费一线" [ref=e166] [cursor=pointer]:
+                      - img [ref=e168]
+                    - tooltip [ref=e170]: 展开
+              - link "世界杯陷直播僵局，赞助方蒙牛“很受伤”丨消费一线 - 21财经 - 16 天前" [ref=e171] [cursor=pointer]:
+                - /url: ./read/CBMijwFBVV95cUxOZ0dFaUluRjg2NmwxaVA2ZjlsakNzSnZPaC12THZNWWd6SnF4MjJwV1BSZzRJdk9HSU1VQXFEQzd3ckxja08tUXc0a3Z1Qy13M1ppanJ6UEl5U3RqWlFnLXhUZ3BxWkthZWRNaU03cGhqWXhYTE9iYzJEOWJidktYVzluNzNGSnhJcllKdlNIbw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯陷直播僵局，赞助方蒙牛“很受伤”丨消费一线
+            - figure [ref=e172]
+          - time [ref=e174]: 16 天前
+      - generic [ref=e175]:
+        - separator [ref=e177]
+        - generic [ref=e179]:
+          - generic [ref=e180]:
+            - link [ref=e182] [cursor=pointer]:
+              - /url: ./read/CBMifEFVX3lxTFBmYlRTV1p1RVh0QU0wV3Y1ZmN1dTF1blo1YmJQQWF0OEVoYk03WXBGMzFsY3QtR0VoS1EzN2Zzek5wcXhhLWxPc2lIOTJkWE1wWlRrSmE0aDRCck1WWkVUUm5tbWNQZTJLTUt1aWpWN2dsWXBRRVZIOVRySWU?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e184]:
+              - generic [ref=e185]:
+                - generic [ref=e188]: 新华网
+                - generic [ref=e192]:
+                  - generic:
+                    - button "展开 - 海信RGB-Mini LED深度赋能2026世界杯VAR" [ref=e193] [cursor=pointer]:
+                      - img [ref=e195]
+                    - tooltip [ref=e197]: 展开
+              - link "海信RGB-Mini LED深度赋能2026世界杯VAR - 新华网 - 4月17日" [ref=e198] [cursor=pointer]:
+                - /url: ./read/CBMifEFVX3lxTFBmYlRTV1p1RVh0QU0wV3Y1ZmN1dTF1blo1YmJQQWF0OEVoYk03WXBGMzFsY3QtR0VoS1EzN2Zzek5wcXhhLWxPc2lIOTJkWE1wWlRrSmE0aDRCck1WWkVUUm5tbWNQZTJLTUt1aWpWN2dsWXBRRVZIOVRySWU?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信RGB-Mini LED深度赋能2026世界杯VAR
+            - figure [ref=e199]
+          - time [ref=e201]: 4月17日
+      - generic [ref=e202]:
+        - separator [ref=e204]
+        - generic [ref=e206]:
+          - generic [ref=e207]:
+            - link [ref=e209] [cursor=pointer]:
+              - /url: ./read/CBMifEFVX3lxTE1RZUl1a3JBYWFtVWdmb0I0bElKak9wenphMzVCVWhiM0NGSDI3VDB1alpad0F5V1FacEJaSmV3cjdYZUlvLUJvOHVBcEpwVkhIQWt1bC1IS05rS3BMNDhBUzV4M2pUa3M1OWVnT0xiRXU0aHdCZy0yTUhTNng?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e211]:
+              - generic [ref=e212]:
+                - generic [ref=e215]: 新华网
+                - generic [ref=e219]:
+                  - generic:
+                    - button "展开 - CES2026开幕，国际足联主席因凡蒂诺点赞海信世界杯定制产品" [ref=e220] [cursor=pointer]:
+                      - img [ref=e222]
+                    - tooltip [ref=e224]: 展开
+              - link "CES2026开幕，国际足联主席因凡蒂诺点赞海信世界杯定制产品 - 新华网 - 1月8日" [ref=e225] [cursor=pointer]:
+                - /url: ./read/CBMifEFVX3lxTE1RZUl1a3JBYWFtVWdmb0I0bElKak9wenphMzVCVWhiM0NGSDI3VDB1alpad0F5V1FacEJaSmV3cjdYZUlvLUJvOHVBcEpwVkhIQWt1bC1IS05rS3BMNDhBUzV4M2pUa3M1OWVnT0xiRXU0aHdCZy0yTUhTNng?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: CES2026开幕，国际足联主席因凡蒂诺点赞海信世界杯定制产品
+            - figure [ref=e226]
+          - time [ref=e228]: 1月8日
+      - generic [ref=e229]:
+        - separator [ref=e231]
+        - generic [ref=e233]:
+          - generic [ref=e234]:
+            - link [ref=e236] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE1KYW5XZkhjRHZ3VTJLamRXWHB6Z3VwNUdBemVKVWJISEdXd1p6ZGk2Ukg4RDNickRCcFRadm1QUmJGdFZLUGRtSDU1c1VFUVdQcjVBWEFkd0ZoZjd3eGpQd21XWQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e238]:
+              - generic [ref=e239]:
+                - generic [ref=e242]: 新浪网
+                - generic [ref=e246]:
+                  - generic:
+                    - button "展开 - 海信" [ref=e247] [cursor=pointer]:
+                      - img [ref=e249]
+                    - tooltip [ref=e251]: 展开
+              - link "海信 - 新浪网 - 5 天前" [ref=e252] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE1KYW5XZkhjRHZ3VTJLamRXWHB6Z3VwNUdBemVKVWJISEdXd1p6ZGk2Ukg4RDNickRCcFRadm1QUmJGdFZLUGRtSDU1c1VFUVdQcjVBWEFkd0ZoZjd3eGpQd21XWQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信
+            - figure [ref=e253]
+          - time [ref=e255]: 5 天前
+      - generic [ref=e256]:
+        - separator [ref=e258]
+        - generic [ref=e260]:
+          - generic [ref=e261]:
+            - link [ref=e263] [cursor=pointer]:
+              - /url: ./read/CBMirwJBVV95cUxNemROUEZnLUV4UGtkMklSMGVlZ1RkUGpSQ3BDRlZRNlh5LTVzYmFmcUFGLXI4aUphNGtWNXBTd1ZpMnFFa2JEQWVQZjM0NVZxTjdMY0RPMG8teXlxZUV4eEpGUkhMQjJwQzR4RlI2TlZ2Ym82VzM2Tlhtb2JpVTZLLWZLMGF0cVNZeHM1cHBfb1k5ZjFfY0pqUXI5MW12NkQtTHVmbVVPdzI3NklzZkl5bTBIUzA4WkVjbVF1RXM1RWR4MVlwa29KVE5Ma2cteXhRdXJmU1VNZHcweXRGMV9hWGJsWGNnamNJNUxNYTRhSTVIa3I2eUtxMFR4bmRqeWZxUng5YlhHM3ZfMFZsWXlaM3dJbWNJX0hLVm1IZkhjWkNCemthSFloZUU2U3c0dXM?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e265]:
+              - generic [ref=e266]:
+                - generic [ref=e269]: 新浪财经
+                - generic [ref=e273]:
+                  - generic:
+                    - button "展开 - 百威英博：销量回暖反弹 借今夏世界杯冲刺新一轮增长" [ref=e274] [cursor=pointer]:
+                      - img [ref=e276]
+                    - tooltip [ref=e278]: 展开
+              - link "百威英博：销量回暖反弹 借今夏世界杯冲刺新一轮增长 - 新浪财经 - 4 天前" [ref=e279] [cursor=pointer]:
+                - /url: ./read/CBMirwJBVV95cUxNemROUEZnLUV4UGtkMklSMGVlZ1RkUGpSQ3BDRlZRNlh5LTVzYmFmcUFGLXI4aUphNGtWNXBTd1ZpMnFFa2JEQWVQZjM0NVZxTjdMY0RPMG8teXlxZUV4eEpGUkhMQjJwQzR4RlI2TlZ2Ym82VzM2Tlhtb2JpVTZLLWZLMGF0cVNZeHM1cHBfb1k5ZjFfY0pqUXI5MW12NkQtTHVmbVVPdzI3NklzZkl5bTBIUzA4WkVjbVF1RXM1RWR4MVlwa29KVE5Ma2cteXhRdXJmU1VNZHcweXRGMV9hWGJsWGNnamNJNUxNYTRhSTVIa3I2eUtxMFR4bmRqeWZxUng5YlhHM3ZfMFZsWXlaM3dJbWNJX0hLVm1IZkhjWkNCemthSFloZUU2U3c0dXM?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 百威英博：销量回暖反弹 借今夏世界杯冲刺新一轮增长
+            - figure [ref=e280]
+          - time [ref=e282]: 4 天前
+      - generic [ref=e283]:
+        - separator [ref=e285]
+        - generic [ref=e287]:
+          - generic [ref=e288]:
+            - link [ref=e290] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE5ENzl1cGlBRmUzVXBOTXBRcnhtQnJYMFNSUm42TkJDUjFDdExPZWdzQW1EQXBLX0w4QXp6UlNYbXRhSmh3ejRseFRBLTg3bmoyQ0RoX2xNajJ3cU41SVhLQ3pUYw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e292]:
+              - generic [ref=e293]:
+                - generic [ref=e296]: 新浪网
+                - generic [ref=e300]:
+                  - generic:
+                    - button "展开 - 苏醒看世界杯_新浪新闻" [ref=e301] [cursor=pointer]:
+                      - img [ref=e303]
+                    - tooltip [ref=e305]: 展开
+              - link "苏醒看世界杯_新浪新闻 - 新浪网 - 6 天前" [ref=e306] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE5ENzl1cGlBRmUzVXBOTXBRcnhtQnJYMFNSUm42TkJDUjFDdExPZWdzQW1EQXBLX0w4QXp6UlNYbXRhSmh3ejRseFRBLTg3bmoyQ0RoX2xNajJ3cU41SVhLQ3pUYw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 苏醒看世界杯_新浪新闻
+            - figure [ref=e307]
+          - time [ref=e309]: 6 天前
+      - generic [ref=e310]:
+        - separator [ref=e312]
+        - generic [ref=e314]:
+          - generic [ref=e315]:
+            - link [ref=e317] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTFBLb25Gb1pHaG5NOFdfWVJBUkZwOGNUbFMwQTNyUm5pQWJYeXd3YU1ZUExoRnVNWmc0UUh5RGhxckdNYjVkN1czempFdWJWWFBHZmN3c3ZFZGxoY19iellRRVIzYw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e319]:
+              - generic [ref=e320]:
+                - generic [ref=e323]: 新浪网
+                - generic [ref=e327]:
+                  - generic:
+                    - button "展开 - 支付宝" [ref=e328] [cursor=pointer]:
+                      - img [ref=e330]
+                    - tooltip [ref=e332]: 展开
+              - link "支付宝 - 新浪网 - 7 天前" [ref=e333] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTFBLb25Gb1pHaG5NOFdfWVJBUkZwOGNUbFMwQTNyUm5pQWJYeXd3YU1ZUExoRnVNWmc0UUh5RGhxckdNYjVkN1czempFdWJWWFBHZmN3c3ZFZGxoY19iellRRVIzYw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 支付宝
+            - figure [ref=e334]
+          - time [ref=e336]: 7 天前
+      - generic [ref=e337]:
+        - separator [ref=e339]
+        - generic [ref=e341]:
+          - generic [ref=e342]:
+            - link [ref=e344] [cursor=pointer]:
+              - /url: ./read/CBMiVkFVX3lxTE5Ib2syNEFTNW15NFdVYldnU0FxRkNNQWlvb3piSkxiUE1ySVhBN3Y4RDUtMXJmOVRoU2U4V0s1SmMzTmpHMndUM1gxNlFLWjJDRDdhdmRB?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e346]:
+              - generic [ref=e347]:
+                - generic [ref=e350]: 搜狐网
+                - generic [ref=e354]:
+                  - generic:
+                    - button "展开 - 世界杯“早场”难题？海信冰箱请来“苏醒”：该你上场了！" [ref=e355] [cursor=pointer]:
+                      - img [ref=e357]
+                    - tooltip [ref=e359]: 展开
+              - link "世界杯“早场”难题？海信冰箱请来“苏醒”：该你上场了！ - 搜狐网 - 5 天前" [ref=e360] [cursor=pointer]:
+                - /url: ./read/CBMiVkFVX3lxTE5Ib2syNEFTNW15NFdVYldnU0FxRkNNQWlvb3piSkxiUE1ySVhBN3Y4RDUtMXJmOVRoU2U4V0s1SmMzTmpHMndUM1gxNlFLWjJDRDdhdmRB?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯“早场”难题？海信冰箱请来“苏醒”：该你上场了！
+            - figure [ref=e361]
+          - time [ref=e363]: 5 天前
+      - generic [ref=e364]:
+        - separator [ref=e366]
+        - generic [ref=e368]:
+          - generic [ref=e369]:
+            - link [ref=e371] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTFBMSmlSemtadk9aRmNQcUZHTjVuSlVSUkJhLW5oMU92NTU4b2VURkVOQkNnS001TmVyTTJhNUdoNm5Pc29GNlk4OVdfc1BUdUJPQ1ViTnlJVzlMWDdvVmVxMDlHOA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e373]:
+              - generic [ref=e374]:
+                - generic [ref=e377]: 新浪网
+                - generic [ref=e381]:
+                  - generic:
+                    - button "展开 - 苏醒任海信世界杯大使_新浪新闻" [ref=e382] [cursor=pointer]:
+                      - img [ref=e384]
+                    - tooltip [ref=e386]: 展开
+              - link "苏醒任海信世界杯大使_新浪新闻 - 新浪网 - 7 天前" [ref=e387] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTFBMSmlSemtadk9aRmNQcUZHTjVuSlVSUkJhLW5oMU92NTU4b2VURkVOQkNnS001TmVyTTJhNUdoNm5Pc29GNlk4OVdfc1BUdUJPQ1ViTnlJVzlMWDdvVmVxMDlHOA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 苏醒任海信世界杯大使_新浪新闻
+            - figure [ref=e388]
+          - time [ref=e390]: 7 天前
+      - generic [ref=e391]:
+        - separator [ref=e393]
+        - generic [ref=e395]:
+          - generic [ref=e396]:
+            - link [ref=e398] [cursor=pointer]:
+              - /url: ./read/CBMiV0FVX3lxTE9vZXF2Vm1Gc1hha1EzU1VUTU03bFhrdlhoeGl4WVVpS29aQ3N6OEZiRFJlbHVZc2I3ejhya0Q0T1hxWFk3MXpuZF95TEViR09HTnR2b1hUaw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e400]:
+              - generic [ref=e401]:
+                - generic [ref=e404]: 潮新闻
+                - generic [ref=e408]:
+                  - generic:
+                    - button "展开 - 世界杯面临“转播危机”，中国赞助商们坐得住吗？" [ref=e409] [cursor=pointer]:
+                      - img [ref=e411]
+                    - tooltip [ref=e413]: 展开
+              - link "世界杯面临“转播危机”，中国赞助商们坐得住吗？ - 潮新闻 - 18 天前" [ref=e414] [cursor=pointer]:
+                - /url: ./read/CBMiV0FVX3lxTE9vZXF2Vm1Gc1hha1EzU1VUTU03bFhrdlhoeGl4WVVpS29aQ3N6OEZiRFJlbHVZc2I3ejhya0Q0T1hxWFk3MXpuZF95TEViR09HTnR2b1hUaw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯面临“转播危机”，中国赞助商们坐得住吗？
+            - figure [ref=e415]
+          - time [ref=e417]: 18 天前
+      - generic [ref=e418]:
+        - separator [ref=e420]
+        - generic [ref=e422]:
+          - generic [ref=e423]:
+            - link [ref=e425] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE9RbGw1NFA2T2dBX3l3RkJJbmNuWThoYWJYSHFobDJKQ1lGLUhTNmM2ZjltcUJKUWZVbjFRemxNUnZIY3dNdU13UnpvaHp5SlQ2QXlWbVpFVHRUMG1jNmotT2Ficw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e427]:
+              - generic [ref=e428]:
+                - generic [ref=e431]: 中华网生活
+                - generic [ref=e435]:
+                  - generic:
+                    - button "展开 - 梅西+哈兰德联袂登场！百威助阵2026年国际足联世界杯™：每一杯，你我都在" [ref=e436] [cursor=pointer]:
+                      - img [ref=e438]
+                    - tooltip [ref=e440]: 展开
+              - link "梅西+哈兰德联袂登场！百威助阵2026年国际足联世界杯™：每一杯，你我都在 - 中华网生活 - 12 天前" [ref=e441] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE9RbGw1NFA2T2dBX3l3RkJJbmNuWThoYWJYSHFobDJKQ1lGLUhTNmM2ZjltcUJKUWZVbjFRemxNUnZIY3dNdU13UnpvaHp5SlQ2QXlWbVpFVHRUMG1jNmotT2Ficw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 梅西+哈兰德联袂登场！百威助阵2026年国际足联世界杯™：每一杯，你我都在
+            - figure [ref=e442]
+          - time [ref=e444]: 12 天前
+      - generic [ref=e445]:
+        - separator [ref=e447]
+        - generic [ref=e449]:
+          - generic [ref=e450]:
+            - link [ref=e452] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTFBhT2NQSnF1dVhUV2dVWkZYaE9JOUZtbE9jbEVrbWk0VFpLX2xnMDlrcnVIQXdiQWxFRDhtc1pfUWVtZFBPcXh5WW5aZ3B6YWVRakhmbl81X3BQREhXQzQ3U2tVZw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e454]:
+              - generic [ref=e455]:
+                - generic [ref=e458]: 新浪网
+                - generic [ref=e462]:
+                  - generic:
+                    - button "展开 - 苏醒海信世界杯品牌大使_新浪新闻" [ref=e463] [cursor=pointer]:
+                      - img [ref=e465]
+                    - tooltip [ref=e467]: 展开
+              - link "苏醒海信世界杯品牌大使_新浪新闻 - 新浪网 - 7 天前" [ref=e468] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTFBhT2NQSnF1dVhUV2dVWkZYaE9JOUZtbE9jbEVrbWk0VFpLX2xnMDlrcnVIQXdiQWxFRDhtc1pfUWVtZFBPcXh5WW5aZ3B6YWVRakhmbl81X3BQREhXQzQ3U2tVZw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 苏醒海信世界杯品牌大使_新浪新闻
+            - figure [ref=e469]
+          - time [ref=e471]: 7 天前
+      - generic [ref=e472]:
+        - separator [ref=e474]
+        - generic [ref=e476]:
+          - generic [ref=e477]:
+            - link [ref=e479] [cursor=pointer]:
+              - /url: ./read/CBMiW0FVX3lxTE1aSXNKVGhnenQ5X3Brd1VldjN3bDNfQU43MHMzQ2J0T2NMMUxBZ1NidWcyTkJKVGh3cEpTYmhWaXZVY0tsVUFmMmpiNExZbVFKN1JKSkh0c3JTdE0?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e481]:
+              - generic [ref=e482]:
+                - generic [ref=e485]: 风闻
+                - generic [ref=e489]:
+                  - generic:
+                    - button "展开 - 世界杯还离不开中国，联想蒙牛可以松口气了" [ref=e490] [cursor=pointer]:
+                      - img [ref=e492]
+                    - tooltip [ref=e494]: 展开
+              - link "世界杯还离不开中国，联想蒙牛可以松口气了 - 风闻 - 8 天前" [ref=e495] [cursor=pointer]:
+                - /url: ./read/CBMiW0FVX3lxTE1aSXNKVGhnenQ5X3Brd1VldjN3bDNfQU43MHMzQ2J0T2NMMUxBZ1NidWcyTkJKVGh3cEpTYmhWaXZVY0tsVUFmMmpiNExZbVFKN1JKSkh0c3JTdE0?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯还离不开中国，联想蒙牛可以松口气了
+            - figure [ref=e496]
+          - time [ref=e498]: 8 天前
+      - generic [ref=e499]:
+        - separator [ref=e501]
+        - generic [ref=e503]:
+          - generic [ref=e504]:
+            - link [ref=e506] [cursor=pointer]:
+              - /url: ./read/CBMifEFVX3lxTE83ZnFabHVNNWYtQ25Hc3pRNkhTY0U3NFdZMUhqZzRvZHFtcWNmamJHZmhHN2tHajZwYkRGSGdaTVFwYkV2NTFuVE9MNGo3TndzTDc3Y0tidmdhcFhIenctMDBJN0R0UTFDbW00aEJ0eDc3R3dMTU1iREFFc0I?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e508]:
+              - generic [ref=e509]:
+                - generic [ref=e512]: 新华网
+                - generic [ref=e516]:
+                  - generic:
+                    - button "展开 - 海信世界杯定制套系大薄荷2.0正式发布" [ref=e517] [cursor=pointer]:
+                      - img [ref=e519]
+                    - tooltip [ref=e521]: 展开
+              - link "海信世界杯定制套系大薄荷2.0正式发布 - 新华网 - 4月17日" [ref=e522] [cursor=pointer]:
+                - /url: ./read/CBMifEFVX3lxTE83ZnFabHVNNWYtQ25Hc3pRNkhTY0U3NFdZMUhqZzRvZHFtcWNmamJHZmhHN2tHajZwYkRGSGdaTVFwYkV2NTFuVE9MNGo3TndzTDc3Y0tidmdhcFhIenctMDBJN0R0UTFDbW00aEJ0eDc3R3dMTU1iREFFc0I?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信世界杯定制套系大薄荷2.0正式发布
+            - figure [ref=e523]
+          - time [ref=e525]: 4月17日
+      - generic [ref=e526]:
+        - separator [ref=e528]
+        - generic [ref=e530]:
+          - generic [ref=e531]:
+            - link [ref=e533] [cursor=pointer]:
+              - /url: ./read/CBMifEFVX3lxTE1zNnFuLWJZbFlNR3JzYWZSX04tczVfWGNGYWk0YTY2RUtQZjFuVTAzajRKbEpSSTRkcW13eW9aYWhyd2N1cV8tTkVEaHJ3WTlWUUZOZk01Tlh4eWptMVlWdGZwTUhuZms2UWJ2NkdvZlRnV3dwVlhjbkhOWjY?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e535]:
+              - generic [ref=e536]:
+                - generic [ref=e539]: 新华网
+                - generic [ref=e543]:
+                  - generic:
+                    - button "展开 - 海信RGB-Mini LED电视UX领衔 海信世界杯定制产品亮相" [ref=e544] [cursor=pointer]:
+                      - img [ref=e546]
+                    - tooltip [ref=e548]: 展开
+              - link "海信RGB-Mini LED电视UX领衔 海信世界杯定制产品亮相 - 新华网 - 3月6日" [ref=e549] [cursor=pointer]:
+                - /url: ./read/CBMifEFVX3lxTE1zNnFuLWJZbFlNR3JzYWZSX04tczVfWGNGYWk0YTY2RUtQZjFuVTAzajRKbEpSSTRkcW13eW9aYWhyd2N1cV8tTkVEaHJ3WTlWUUZOZk01Tlh4eWptMVlWdGZwTUhuZms2UWJ2NkdvZlRnV3dwVlhjbkhOWjY?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信RGB-Mini LED电视UX领衔 海信世界杯定制产品亮相
+            - figure [ref=e550]
+          - time [ref=e552]: 3月6日
+      - generic [ref=e553]:
+        - separator [ref=e555]
+        - generic [ref=e557]:
+          - generic [ref=e558]:
+            - link [ref=e560] [cursor=pointer]:
+              - /url: ./read/CBMifEFVX3lxTE5wUXljdjRDdVZKRERFNjdWNkpaYXNWT3MwaHZKZ3RYVV9kOFRiS0JCdE9HSHFGOXFEUFNsbzFSQXVFRElIckgzc2hhdTQ4dXZtQmkwSTlROXE2X1lCR1Y5eGNvRkpwbC1OVm5zUUVRblhseHprcXNmbHd2bU0?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e562]:
+              - generic [ref=e563]:
+                - generic [ref=e566]: 新华网
+                - generic [ref=e570]:
+                  - generic:
+                    - button "展开 - 海信世界杯定制产品斩获多项 AWE 艾普兰大奖" [ref=e571] [cursor=pointer]:
+                      - img [ref=e573]
+                    - tooltip [ref=e575]: 展开
+              - link "海信世界杯定制产品斩获多项 AWE 艾普兰大奖 - 新华网 - 3月14日" [ref=e576] [cursor=pointer]:
+                - /url: ./read/CBMifEFVX3lxTE5wUXljdjRDdVZKRERFNjdWNkpaYXNWT3MwaHZKZ3RYVV9kOFRiS0JCdE9HSHFGOXFEUFNsbzFSQXVFRElIckgzc2hhdTQ4dXZtQmkwSTlROXE2X1lCR1Y5eGNvRkpwbC1OVm5zUUVRblhseHprcXNmbHd2bU0?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信世界杯定制产品斩获多项 AWE 艾普兰大奖
+            - figure [ref=e577]
+          - time [ref=e579]: 3月14日
+      - generic [ref=e580]:
+        - separator [ref=e582]
+        - generic [ref=e584]:
+          - generic [ref=e585]:
+            - link [ref=e587] [cursor=pointer]:
+              - /url: ./read/CBMifkFVX3lxTE51VU9rYVI0OXpackp2akVtVmUtNVEzbnFYX2wyNmdobEpLSmtpMHFUSW5qSmF4bWRkeVQ3S2RncnVPNW1zeGE5Z216dE9EekJvdHRvSUpZVWN1WkVQQ1FXRVNyTjJ2TmZEWUdwRmEtWkNBYVpzZ1YxZnVqbDRvZw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e589]:
+              - generic [ref=e590]:
+                - generic [ref=e593]: 新浪财经
+                - generic [ref=e597]:
+                  - generic:
+                    - button "展开 - 龚俊主演蒙牛世界杯续集，一句台词引爆全网二创！" [ref=e598] [cursor=pointer]:
+                      - img [ref=e600]
+                    - tooltip [ref=e602]: 展开
+              - link "龚俊主演蒙牛世界杯续集，一句台词引爆全网二创！ - 新浪财经 - 21 天前" [ref=e603] [cursor=pointer]:
+                - /url: ./read/CBMifkFVX3lxTE51VU9rYVI0OXpackp2akVtVmUtNVEzbnFYX2wyNmdobEpLSmtpMHFUSW5qSmF4bWRkeVQ3S2RncnVPNW1zeGE5Z216dE9EekJvdHRvSUpZVWN1WkVQQ1FXRVNyTjJ2TmZEWUdwRmEtWkNBYVpzZ1YxZnVqbDRvZw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 龚俊主演蒙牛世界杯续集，一句台词引爆全网二创！
+            - figure [ref=e604]
+          - time [ref=e606]: 21 天前
+      - generic [ref=e607]:
+        - separator [ref=e609]
+        - generic [ref=e611]:
+          - generic [ref=e612]:
+            - link [ref=e614] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTFBOR25TRUZvc29rR0E2NVJKcmVsallOemFPWGFQY1BrbUpVSG5STzVUMUJERDVOVHp0U2pHcElmR1AzMUdNdmxhdlBBSF9CdmoxMHhZY0h1OE11N3hZN2ItQkppVQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e616]:
+              - generic [ref=e617]:
+                - generic [ref=e620]: 新浪网
+                - generic [ref=e624]:
+                  - generic:
+                    - button "展开 - 蒙牛世界杯宣传片承载青春回忆_新浪新闻" [ref=e625] [cursor=pointer]:
+                      - img [ref=e627]
+                    - tooltip [ref=e629]: 展开
+              - link "蒙牛世界杯宣传片承载青春回忆_新浪新闻 - 新浪网 - 21 天前" [ref=e630] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTFBOR25TRUZvc29rR0E2NVJKcmVsallOemFPWGFQY1BrbUpVSG5STzVUMUJERDVOVHp0U2pHcElmR1AzMUdNdmxhdlBBSF9CdmoxMHhZY0h1OE11N3hZN2ItQkppVQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 蒙牛世界杯宣传片承载青春回忆_新浪新闻
+            - figure [ref=e631]
+          - time [ref=e633]: 21 天前
+      - generic [ref=e634]:
+        - separator [ref=e636]
+        - generic [ref=e638]:
+          - generic [ref=e639]:
+            - link [ref=e641] [cursor=pointer]:
+              - /url: ./read/CBMiSEFVX3lxTE1fV1lZemYxdDlPQzF6U2pqcTBMYnpQZkxBeVczSjZhdWwtbVlwT0FQR3Y5TklyU0poZFhaYm9JLXhHdG9KU21WWQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e643]:
+              - generic [ref=e644]:
+                - generic [ref=e647]: 手机鳳凰網
+                - generic [ref=e651]:
+                  - generic:
+                    - button "展开 - 青春不过几届世界杯：蒙牛再续世界杯青春回忆，致敬中国球迷的“要强”" [ref=e652] [cursor=pointer]:
+                      - img [ref=e654]
+                    - tooltip [ref=e656]: 展开
+              - link "青春不过几届世界杯：蒙牛再续世界杯青春回忆，致敬中国球迷的“要强” - 手机鳳凰網 - 19 天前" [ref=e657] [cursor=pointer]:
+                - /url: ./read/CBMiSEFVX3lxTE1fV1lZemYxdDlPQzF6U2pqcTBMYnpQZkxBeVczSjZhdWwtbVlwT0FQR3Y5TklyU0poZFhaYm9JLXhHdG9KU21WWQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 青春不过几届世界杯：蒙牛再续世界杯青春回忆，致敬中国球迷的“要强”
+            - figure [ref=e658]
+          - time [ref=e660]: 19 天前
+      - generic [ref=e661]:
+        - separator [ref=e663]
+        - generic [ref=e665]:
+          - generic [ref=e666]:
+            - link [ref=e668] [cursor=pointer]:
+              - /url: ./read/CBMifkFVX3lxTE1VY0xoMzBTTkVxOUlXeVhJdkpETmJid2QzZVQ3NHlNOVRaeHBzYktUV185WEMwajQwbHM0SnVhTGI5SFVzS21yeDNOYjBrQ2hBUzhaOENWMVgxLWxQRERUaUxxSjV4QTkyWm9ueHNObWZVUUtEOXJDTEg5cFdtZw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e670]:
+              - generic [ref=e671]:
+                - generic [ref=e674]: 新浪财经
+                - generic [ref=e678]:
+                  - generic:
+                    - button "展开 - 龚俊主演的蒙牛世界杯宣传片《青春不过几届世界杯2》在哪里能看？" [ref=e679] [cursor=pointer]:
+                      - img [ref=e681]
+                    - tooltip [ref=e683]: 展开
+              - link "龚俊主演的蒙牛世界杯宣传片《青春不过几届世界杯2》在哪里能看？ - 新浪财经 - 21 天前" [ref=e684] [cursor=pointer]:
+                - /url: ./read/CBMifkFVX3lxTE1VY0xoMzBTTkVxOUlXeVhJdkpETmJid2QzZVQ3NHlNOVRaeHBzYktUV185WEMwajQwbHM0SnVhTGI5SFVzS21yeDNOYjBrQ2hBUzhaOENWMVgxLWxQRERUaUxxSjV4QTkyWm9ueHNObWZVUUtEOXJDTEg5cFdtZw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 龚俊主演的蒙牛世界杯宣传片《青春不过几届世界杯2》在哪里能看？
+            - figure [ref=e685]
+          - time [ref=e687]: 21 天前
+      - generic [ref=e688]:
+        - separator [ref=e690]
+        - generic [ref=e692]:
+          - generic [ref=e693]:
+            - link [ref=e695] [cursor=pointer]:
+              - /url: ./read/CBMiZ0FVX3lxTFBMOVBtRkM4ZzRydHRkbURUS21uQklnUVNndTZ4TkxGbXgtWTNVZllucVpXbXpGa3U3eklxMFVKUWNqUEZYbF9DZ0FiT28xUTRPbWcxdms2cWdYN19saFR2SlV5aG1TSHM?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e697]:
+              - generic [ref=e698]:
+                - generic [ref=e701]: rmzxw.com.cn
+                - generic [ref=e705]:
+                  - generic:
+                    - button "展开 - “苏超要强少年团”暨蒙牛世界杯小旗手全国招募在南京启动" [ref=e706] [cursor=pointer]:
+                      - img [ref=e708]
+                    - tooltip [ref=e710]: 展开
+              - link "“苏超要强少年团”暨蒙牛世界杯小旗手全国招募在南京启动 - rmzxw.com.cn - 4月24日" [ref=e711] [cursor=pointer]:
+                - /url: ./read/CBMiZ0FVX3lxTFBMOVBtRkM4ZzRydHRkbURUS21uQklnUVNndTZ4TkxGbXgtWTNVZllucVpXbXpGa3U3eklxMFVKUWNqUEZYbF9DZ0FiT28xUTRPbWcxdms2cWdYN19saFR2SlV5aG1TSHM?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: “苏超要强少年团”暨蒙牛世界杯小旗手全国招募在南京启动
+            - figure [ref=e712]
+          - time [ref=e714]: 4月24日
+      - generic [ref=e715]:
+        - separator [ref=e717]
+        - generic [ref=e719]:
+          - generic [ref=e720]:
+            - link [ref=e722] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE1OU2g2YlpXZTRWT3hCdGxDNEs5YnRsS2E4ai1FZ09iLTJmenRDeEtIX1BNY09VWUhhTW1ZR3lfb0hJVk5SZTlLNjVRMm5ZOXNVazRiSnJvYlY0VDRUcWhubkoyUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e724]:
+              - generic [ref=e725]:
+                - generic [ref=e728]: 新浪网
+                - generic [ref=e732]:
+                  - generic:
+                    - button "展开 - 海信全场景显示技术发布_新浪新闻" [ref=e733] [cursor=pointer]:
+                      - img [ref=e735]
+                    - tooltip [ref=e737]: 展开
+              - link "海信全场景显示技术发布_新浪新闻 - 新浪网 - 17 天前" [ref=e738] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE1OU2g2YlpXZTRWT3hCdGxDNEs5YnRsS2E4ai1FZ09iLTJmenRDeEtIX1BNY09VWUhhTW1ZR3lfb0hJVk5SZTlLNjVRMm5ZOXNVazRiSnJvYlY0VDRUcWhubkoyUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信全场景显示技术发布_新浪新闻
+            - figure [ref=e739]
+          - time [ref=e741]: 17 天前
+      - generic [ref=e742]:
+        - separator [ref=e744]
+        - generic [ref=e746]:
+          - generic [ref=e747]:
+            - link [ref=e749] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE54ZFJVUjFlSXRfLTZJcjFsVzA3NGQ5SWt0bVNQV2NrcVhPM0dVODlWUnFTZkM3aEpYdTBUYzZvbGkydXdDeDJfbTEzd1VjNnpmbmg2Q2lsVmsxTlRiZnE2OEMyTQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e751]:
+              - generic [ref=e752]:
+                - generic [ref=e755]: 新浪网
+                - generic [ref=e759]:
+                  - generic:
+                    - button "展开 - 龚俊蒙牛世界杯播放量破3300万_新浪新闻" [ref=e760] [cursor=pointer]:
+                      - img [ref=e762]
+                    - tooltip [ref=e764]: 展开
+              - link "龚俊蒙牛世界杯播放量破3300万_新浪新闻 - 新浪网 - 20 天前" [ref=e765] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE54ZFJVUjFlSXRfLTZJcjFsVzA3NGQ5SWt0bVNQV2NrcVhPM0dVODlWUnFTZkM3aEpYdTBUYzZvbGkydXdDeDJfbTEzd1VjNnpmbmg2Q2lsVmsxTlRiZnE2OEMyTQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 龚俊蒙牛世界杯播放量破3300万_新浪新闻
+            - figure [ref=e766]
+          - time [ref=e768]: 20 天前
+      - generic [ref=e769]:
+        - separator [ref=e771]
+        - generic [ref=e773]:
+          - generic [ref=e774]:
+            - link [ref=e776] [cursor=pointer]:
+              - /url: ./read/CBMidkFVX3lxTE9DVDU0N25ZN1g4SUtiQlRZQVZkRXdRbExQNE1lVUQycmFDeXBMTXdSbEhfTVF2czNmZjdmM0tVNG1qVFFmT29TUG1PS01XbG5JcjFhRHF0MVFSTGthYTVGdnNnY0Q0OTBodGNtVmlXcm5XdkhUdWc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e778]:
+              - generic [ref=e779]:
+                - generic [ref=e782]: 新浪财经
+                - generic [ref=e786]:
+                  - generic:
+                    - button "展开 - 国际足联秘书长到访蒙牛集团：将携手推动中国足球事业发展" [ref=e787] [cursor=pointer]:
+                      - img [ref=e789]
+                    - tooltip [ref=e791]: 展开
+              - link "国际足联秘书长到访蒙牛集团：将携手推动中国足球事业发展 - 新浪财经 - 9 天前" [ref=e792] [cursor=pointer]:
+                - /url: ./read/CBMidkFVX3lxTE9DVDU0N25ZN1g4SUtiQlRZQVZkRXdRbExQNE1lVUQycmFDeXBMTXdSbEhfTVF2czNmZjdmM0tVNG1qVFFmT29TUG1PS01XbG5JcjFhRHF0MVFSTGthYTVGdnNnY0Q0OTBodGNtVmlXcm5XdkhUdWc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 国际足联秘书长到访蒙牛集团：将携手推动中国足球事业发展
+            - figure [ref=e793]
+          - time [ref=e795]: 9 天前
+      - generic [ref=e796]:
+        - separator [ref=e798]
+        - generic [ref=e800]:
+          - generic [ref=e801]:
+            - link [ref=e803] [cursor=pointer]:
+              - /url: ./read/CBMihgFBVV95cUxOSW5tMk5EVS13NXlSdVJ4dV9oc2VPS0RGSVhkbkloWk85dHF4dnhwdWF1b0xUQ0tRZVotYkZjX2gybHNpMWxTU2JHQmR3Vnh6MVNweHZYZ2NCRDRaTWFjbC0wUmdIR3lnZms0UE5mZHk3UTNSNXJxcXllQmhHdGtJeG96V2pOUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e805]:
+              - generic [ref=e806]:
+                - generic [ref=e809]: 中国江苏网
+                - generic [ref=e813]:
+                  - generic:
+                    - button "展开 - 从“百城马拉松”到“百年世界杯”：蒙牛深绑体育背后的价值逻辑" [ref=e814] [cursor=pointer]:
+                      - img [ref=e816]
+                    - tooltip [ref=e818]: 展开
+              - link "从“百城马拉松”到“百年世界杯”：蒙牛深绑体育背后的价值逻辑 - 中国江苏网 - 4月24日" [ref=e819] [cursor=pointer]:
+                - /url: ./read/CBMihgFBVV95cUxOSW5tMk5EVS13NXlSdVJ4dV9oc2VPS0RGSVhkbkloWk85dHF4dnhwdWF1b0xUQ0tRZVotYkZjX2gybHNpMWxTU2JHQmR3Vnh6MVNweHZYZ2NCRDRaTWFjbC0wUmdIR3lnZms0UE5mZHk3UTNSNXJxcXllQmhHdGtJeG96V2pOUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 从“百城马拉松”到“百年世界杯”：蒙牛深绑体育背后的价值逻辑
+            - figure [ref=e820]
+          - time [ref=e822]: 4月24日
+      - generic [ref=e823]:
+        - separator [ref=e825]
+        - generic [ref=e827]:
+          - generic [ref=e828]:
+            - link [ref=e830] [cursor=pointer]:
+              - /url: ./read/CBMimgFBVV95cUxNNXZwblkzdXdMYU13QlR1UVdtYjdvcGhMZU9aWlRucDZTQ3FkOUpEQ0dxRDB3NWRBanBWcnppMG5EWEZUOFJYVXE1aERhSGNtcktXVDR2cUdtNF9Wam9pekVWb3dLT3NQN05xeDlGaEdlU1plLW1fRl9FY1ZtbTFlYUtzZ0R6RDNpNEYxekl6X0JFM3c0dU5HUG9B?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e832]:
+              - generic [ref=e833]:
+                - generic [ref=e836]: 新华网
+                - generic [ref=e840]:
+                  - generic:
+                    - button "展开 - 国际足联：2026美加墨世界杯视频助理裁判系统将采用中国显示技术" [ref=e841] [cursor=pointer]:
+                      - img [ref=e843]
+                    - tooltip [ref=e845]: 展开
+              - link "国际足联：2026美加墨世界杯视频助理裁判系统将采用中国显示技术 - 新华网 - 4月16日" [ref=e846] [cursor=pointer]:
+                - /url: ./read/CBMimgFBVV95cUxNNXZwblkzdXdMYU13QlR1UVdtYjdvcGhMZU9aWlRucDZTQ3FkOUpEQ0dxRDB3NWRBanBWcnppMG5EWEZUOFJYVXE1aERhSGNtcktXVDR2cUdtNF9Wam9pekVWb3dLT3NQN05xeDlGaEdlU1plLW1fRl9FY1ZtbTFlYUtzZ0R6RDNpNEYxekl6X0JFM3c0dU5HUG9B?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 国际足联：2026美加墨世界杯视频助理裁判系统将采用中国显示技术
+            - figure [ref=e847]
+          - time [ref=e849]: 4月16日
+      - generic [ref=e850]:
+        - separator [ref=e852]
+        - generic [ref=e854]:
+          - generic [ref=e855]:
+            - link [ref=e857] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE1RSkRhMjlIUlBHc3N3MndHQk9jR3pKMlFtVlpuMkVqXzM3MEdqV2hOSUFQZ0hZeUNGT1JrTUo2Tlk1a0s4QnlmTWJHZnlWclE1MHFiOGtHdTVDY1RzQXZ3MHNobw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e859]:
+              - generic [ref=e860]:
+                - generic [ref=e863]: 新浪网
+                - generic [ref=e867]:
+                  - generic:
+                    - button "展开 - 苏超要强少年团招募_新浪新闻" [ref=e868] [cursor=pointer]:
+                      - img [ref=e870]
+                    - tooltip [ref=e872]: 展开
+              - link "苏超要强少年团招募_新浪新闻 - 新浪网 - 18 天前" [ref=e873] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE1RSkRhMjlIUlBHc3N3MndHQk9jR3pKMlFtVlpuMkVqXzM3MEdqV2hOSUFQZ0hZeUNGT1JrTUo2Tlk1a0s4QnlmTWJHZnlWclE1MHFiOGtHdTVDY1RzQXZ3MHNobw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 苏超要强少年团招募_新浪新闻
+            - figure [ref=e874]
+          - time [ref=e876]: 18 天前
+      - generic [ref=e877]:
+        - separator [ref=e879]
+        - generic [ref=e881]:
+          - generic [ref=e882]:
+            - link [ref=e884] [cursor=pointer]:
+              - /url: ./read/CBMif0FVX3lxTFA0UUFFNDJVajRMVmNNVlFVZGFJYXN3SXdSbFhpQkJHSlAwY3VYUktRanFTTVZqaEdVY0c5dmxiOEZxUTRELS0zMlNUUVo4d09JcXVwZUliWVc0VUxNTmwzdy1BaGRIUjJYaEhBSUtIZHY0OHoxVk9BZ0l4VlNzMlk?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e886]:
+              - generic [ref=e887]:
+                - generic [ref=e890]: 新浪财经
+                - generic [ref=e894]:
+                  - generic:
+                    - button "展开 - 蒙牛联合江苏台选拔6少年赴世界杯护旗" [ref=e895] [cursor=pointer]:
+                      - img [ref=e897]
+                    - tooltip [ref=e899]: 展开
+              - link "蒙牛联合江苏台选拔6少年赴世界杯护旗 - 新浪财经 - 23 天前" [ref=e900] [cursor=pointer]:
+                - /url: ./read/CBMif0FVX3lxTFA0UUFFNDJVajRMVmNNVlFVZGFJYXN3SXdSbFhpQkJHSlAwY3VYUktRanFTTVZqaEdVY0c5dmxiOEZxUTRELS0zMlNUUVo4d09JcXVwZUliWVc0VUxNTmwzdy1BaGRIUjJYaEhBSUtIZHY0OHoxVk9BZ0l4VlNzMlk?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 蒙牛联合江苏台选拔6少年赴世界杯护旗
+            - figure [ref=e901]
+          - time [ref=e903]: 23 天前
+      - generic [ref=e904]:
+        - separator [ref=e906]
+        - generic [ref=e908]:
+          - generic [ref=e909]:
+            - link [ref=e911] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE9yQlEzUGswY25WbXVaNkM3R1ZnMVRvY0Zzd2QtNHFSVEpRRW1tRlkzaXR6V0tIejJRRHdEQjhQWFR1ckJhUFItN2pzQ0pYUU5sVENyUkxrLU9ENXBXMHZSTWNhOA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e913]:
+              - generic [ref=e914]:
+                - generic [ref=e917]: 新浪网
+                - generic [ref=e921]:
+                  - generic:
+                    - button "展开 - 龚俊蒙牛世界杯大片_新浪新闻" [ref=e922] [cursor=pointer]:
+                      - img [ref=e924]
+                    - tooltip [ref=e926]: 展开
+              - link "龚俊蒙牛世界杯大片_新浪新闻 - 新浪网 - 23 天前" [ref=e927] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE9yQlEzUGswY25WbXVaNkM3R1ZnMVRvY0Zzd2QtNHFSVEpRRW1tRlkzaXR6V0tIejJRRHdEQjhQWFR1ckJhUFItN2pzQ0pYUU5sVENyUkxrLU9ENXBXMHZSTWNhOA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 龚俊蒙牛世界杯大片_新浪新闻
+            - figure [ref=e928]
+          - time [ref=e930]: 23 天前
+      - generic [ref=e931]:
+        - separator [ref=e933]
+        - generic [ref=e935]:
+          - generic [ref=e936]:
+            - link [ref=e938] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE5fT3hyd0Nya3FwUkZ3MDh3TnM0eHlmN0txTVFXRi1LV0hUb21fLU11Ui1QR3U2QXFYV2dFMjRnUGxSWFN5Z3JFaTdMa0xxVlNkRFI0U1BIQnZNZnlIRGwwdS1Hcw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e940]:
+              - generic [ref=e941]:
+                - generic [ref=e944]: 新浪网
+                - generic [ref=e948]:
+                  - generic:
+                    - button "展开 - 青岛龚俊蒙牛世界杯大屏_新浪新闻" [ref=e949] [cursor=pointer]:
+                      - img [ref=e951]
+                    - tooltip [ref=e953]: 展开
+              - link "青岛龚俊蒙牛世界杯大屏_新浪新闻 - 新浪网 - 20 天前" [ref=e954] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE5fT3hyd0Nya3FwUkZ3MDh3TnM0eHlmN0txTVFXRi1LV0hUb21fLU11Ui1QR3U2QXFYV2dFMjRnUGxSWFN5Z3JFaTdMa0xxVlNkRFI0U1BIQnZNZnlIRGwwdS1Hcw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 青岛龚俊蒙牛世界杯大屏_新浪新闻
+            - figure [ref=e955]
+          - time [ref=e957]: 20 天前
+      - generic [ref=e958]:
+        - separator [ref=e960]
+        - generic [ref=e962]:
+          - generic [ref=e963]:
+            - link [ref=e965] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE5IZFAzSTN5dkxqbms0NUp0a1R2NWx0UmVJd3dLc2t6RWJrQW9HczNxc184Z3pBR3otczBlcko5cndzLXRCZEJycU5kNnlKVXpUUlBSMlg1QjBrSGlEeF9vV2h5dw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e967]:
+              - generic [ref=e968]:
+                - generic [ref=e971]: 新浪网
+                - generic [ref=e975]:
+                  - generic:
+                    - button "展开 - 海信Vidda发布六款3C新品_新浪新闻" [ref=e976] [cursor=pointer]:
+                      - img [ref=e978]
+                    - tooltip [ref=e980]: 展开
+              - link "海信Vidda发布六款3C新品_新浪新闻 - 新浪网 - 17 天前" [ref=e981] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE5IZFAzSTN5dkxqbms0NUp0a1R2NWx0UmVJd3dLc2t6RWJrQW9HczNxc184Z3pBR3otczBlcko5cndzLXRCZEJycU5kNnlKVXpUUlBSMlg1QjBrSGlEeF9vV2h5dw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信Vidda发布六款3C新品_新浪新闻
+            - figure [ref=e982]
+          - time [ref=e984]: 17 天前
+      - generic [ref=e985]:
+        - separator [ref=e987]
+        - generic [ref=e989]:
+          - generic [ref=e990]:
+            - link [ref=e992] [cursor=pointer]:
+              - /url: ./read/CBMieEFVX3lxTE1mTEhTeXRZUUlXZDlRM1RhMXhGdnB2anZhTjJwazI5aElaOFpNQ212dlo4WTFKc3JSZmU1aGdBVll4SlZXSk1lQnk5OFUyYXBKcFkwd3U1T2REWUtjLS1QR2doUU5hY2dmck1DekpTZk8xZ2x3eFRUMg?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e994]:
+              - generic [ref=e995]:
+                - generic [ref=e998]: 新浪财经
+                - generic [ref=e1002]:
+                  - generic:
+                    - button "展开 - 青春不过几届世界杯：蒙牛再续世界杯青春回忆，致敬中国球迷的“要强”" [ref=e1003] [cursor=pointer]:
+                      - img [ref=e1005]
+                    - tooltip [ref=e1007]: 展开
+              - link "青春不过几届世界杯：蒙牛再续世界杯青春回忆，致敬中国球迷的“要强” - 新浪财经 - 11 天前" [ref=e1008] [cursor=pointer]:
+                - /url: ./read/CBMieEFVX3lxTE1mTEhTeXRZUUlXZDlRM1RhMXhGdnB2anZhTjJwazI5aElaOFpNQ212dlo4WTFKc3JSZmU1aGdBVll4SlZXSk1lQnk5OFUyYXBKcFkwd3U1T2REWUtjLS1QR2doUU5hY2dmck1DekpTZk8xZ2x3eFRUMg?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 青春不过几届世界杯：蒙牛再续世界杯青春回忆，致敬中国球迷的“要强”
+            - figure [ref=e1009]
+          - time [ref=e1011]: 11 天前
+      - generic [ref=e1012]:
+        - separator [ref=e1014]
+        - generic [ref=e1016]:
+          - generic [ref=e1017]:
+            - link [ref=e1019] [cursor=pointer]:
+              - /url: ./read/CBMidkFVX3lxTE44N2hPZVVDNnh4dC0yWklmOHFTQTNjYmZ0M253cmtEOGt6WHg1OUdfV3JrOWs2Zk9jUzg5eTd5U082T1gycy1JZGl6N0hWdzVFWFBHQUVKSlI1NjFOYWx4YzE3R3JHdHFsV2twMGdPMWFDY2Z4T0E?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1021]:
+              - generic [ref=e1022]:
+                - generic [ref=e1025]: 新浪财经
+                - generic [ref=e1029]:
+                  - generic:
+                    - button "展开 - 看不了世界杯？海信、TCL或将“血亏”" [ref=e1030] [cursor=pointer]:
+                      - img [ref=e1032]
+                    - tooltip [ref=e1034]: 展开
+              - link "看不了世界杯？海信、TCL或将“血亏” - 新浪财经 - 17 天前" [ref=e1035] [cursor=pointer]:
+                - /url: ./read/CBMidkFVX3lxTE44N2hPZVVDNnh4dC0yWklmOHFTQTNjYmZ0M253cmtEOGt6WHg1OUdfV3JrOWs2Zk9jUzg5eTd5U082T1gycy1JZGl6N0hWdzVFWFBHQUVKSlI1NjFOYWx4YzE3R3JHdHFsV2twMGdPMWFDY2Z4T0E?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 看不了世界杯？海信、TCL或将“血亏”
+            - figure [ref=e1036]
+          - time [ref=e1038]: 17 天前
+      - generic [ref=e1039]:
+        - separator [ref=e1041]
+        - generic [ref=e1043]:
+          - generic [ref=e1044]:
+            - link [ref=e1046] [cursor=pointer]:
+              - /url: ./read/CBMiZkFVX3lxTE1DVi15dk1jZlhFOVdqN096SXUyeFZpOUtFMTE2VnF4d2Y5YWNxVVpHdkJLTk5pLWpfQjgxYUNpdFVqdnhFdnpqd1BkNmtLYWczeDlUbHR5QU4xcC1FRnMyTGZNUkdHdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1048]:
+              - generic [ref=e1049]:
+                - generic [ref=e1052]: 昆明信息港
+                - generic [ref=e1056]:
+                  - generic:
+                    - button "展开 - “苏超要强少年团”暨蒙牛世界杯小旗手全国招募正式启动" [ref=e1057] [cursor=pointer]:
+                      - img [ref=e1059]
+                    - tooltip [ref=e1061]: 展开
+              - link "“苏超要强少年团”暨蒙牛世界杯小旗手全国招募正式启动 - 昆明信息港 - 4月21日" [ref=e1062] [cursor=pointer]:
+                - /url: ./read/CBMiZkFVX3lxTE1DVi15dk1jZlhFOVdqN096SXUyeFZpOUtFMTE2VnF4d2Y5YWNxVVpHdkJLTk5pLWpfQjgxYUNpdFVqdnhFdnpqd1BkNmtLYWczeDlUbHR5QU4xcC1FRnMyTGZNUkdHdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: “苏超要强少年团”暨蒙牛世界杯小旗手全国招募正式启动
+            - figure [ref=e1063]
+          - time [ref=e1065]: 4月21日
+      - generic [ref=e1066]:
+        - separator [ref=e1068]
+        - generic [ref=e1070]:
+          - generic [ref=e1071]:
+            - link [ref=e1073] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTFAtWVVwMlJRN0xBNGg3UWdvUHFocFh3Q0R1UkgxQk5IUHJXczU2NFRMclVNQWRiR1k4SnpoQngyaWZqb3l5cllrVW5zdkI5ZW92ZEpwNDBVVnduM29Zb3kzN1FKTQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1075]:
+              - generic [ref=e1076]:
+                - generic [ref=e1079]: 新浪网
+                - generic [ref=e1083]:
+                  - generic:
+                    - button "展开 - 三星停止在华销售家电_新浪新闻" [ref=e1084] [cursor=pointer]:
+                      - img [ref=e1086]
+                    - tooltip [ref=e1088]: 展开
+              - link "三星停止在华销售家电_新浪新闻 - 新浪网 - 17 天前" [ref=e1089] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTFAtWVVwMlJRN0xBNGg3UWdvUHFocFh3Q0R1UkgxQk5IUHJXczU2NFRMclVNQWRiR1k4SnpoQngyaWZqb3l5cllrVW5zdkI5ZW92ZEpwNDBVVnduM29Zb3kzN1FKTQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 三星停止在华销售家电_新浪新闻
+            - figure [ref=e1090]
+          - time [ref=e1092]: 17 天前
+      - generic [ref=e1093]:
+        - separator [ref=e1095]
+        - generic [ref=e1097]:
+          - generic [ref=e1098]:
+            - link [ref=e1100] [cursor=pointer]:
+              - /url: ./read/CBMieEFVX3lxTE5CTTVfZ2YzTkVPLUhlTHhZZmc0MkRMVEY0YzdyUUpRMHI4ZURtekJFMWtwOVNtc2RlUUNJLUNsS2FjS1AxT1hJMkNRWTVrbjlvYVE2bjR3TlhFdWpjemJsMXdUdG5vYnFnUkJNWmZOWmluR1pYeXdMNw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1102]:
+              - generic [ref=e1103]:
+                - generic [ref=e1106]: 新浪财经
+                - generic [ref=e1110]:
+                  - generic:
+                    - button "展开 - 青春不过几届世界杯：蒙牛再续世界杯青春回忆，致敬中国球迷的“要强”" [ref=e1111] [cursor=pointer]:
+                      - img [ref=e1113]
+                    - tooltip [ref=e1115]: 展开
+              - link "青春不过几届世界杯：蒙牛再续世界杯青春回忆，致敬中国球迷的“要强” - 新浪财经 - 19 天前" [ref=e1116] [cursor=pointer]:
+                - /url: ./read/CBMieEFVX3lxTE5CTTVfZ2YzTkVPLUhlTHhZZmc0MkRMVEY0YzdyUUpRMHI4ZURtekJFMWtwOVNtc2RlUUNJLUNsS2FjS1AxT1hJMkNRWTVrbjlvYVE2bjR3TlhFdWpjemJsMXdUdG5vYnFnUkJNWmZOWmluR1pYeXdMNw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 青春不过几届世界杯：蒙牛再续世界杯青春回忆，致敬中国球迷的“要强”
+            - figure [ref=e1117]
+          - time [ref=e1119]: 19 天前
+      - generic [ref=e1120]:
+        - separator [ref=e1122]
+        - generic [ref=e1124]:
+          - generic [ref=e1125]:
+            - link [ref=e1127] [cursor=pointer]:
+              - /url: ./read/CBMimgFBVV95cUxPSlNMTHExVlozam9XYlNDRjNoQWowalIyNVZnQmJaeTlwUHVGc3ZiYmc4VndXTG5FZnRoY0h3dTNKQlIxUWE3UU5WWktBOTZLeVlYN1RmT2toT09aU1dQd3lmVFRvZ3pMZUkyN3dPZmpwZGptSWl3T2FtUDUtTUdYZW9IazBsNkpDc3FiWS1wdmtOYzRPaHNnUVFR?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1129]:
+              - generic [ref=e1130]:
+                - generic [ref=e1133]: 新华网
+                - generic [ref=e1137]:
+                  - generic:
+                    - button "展开 - 从“迈胜杯”到世界杯：蒙牛媒体足球赛鸣哨 携手全民足球共赴“美加墨之约”" [ref=e1138] [cursor=pointer]:
+                      - img [ref=e1140]
+                    - tooltip [ref=e1142]: 展开
+              - link "从“迈胜杯”到世界杯：蒙牛媒体足球赛鸣哨 携手全民足球共赴“美加墨之约” - 新华网 - 4月13日" [ref=e1143] [cursor=pointer]:
+                - /url: ./read/CBMimgFBVV95cUxPSlNMTHExVlozam9XYlNDRjNoQWowalIyNVZnQmJaeTlwUHVGc3ZiYmc4VndXTG5FZnRoY0h3dTNKQlIxUWE3UU5WWktBOTZLeVlYN1RmT2toT09aU1dQd3lmVFRvZ3pMZUkyN3dPZmpwZGptSWl3T2FtUDUtTUdYZW9IazBsNkpDc3FiWS1wdmtOYzRPaHNnUVFR?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 从“迈胜杯”到世界杯：蒙牛媒体足球赛鸣哨 携手全民足球共赴“美加墨之约”
+            - figure [ref=e1144]
+          - time [ref=e1146]: 4月13日
+      - generic [ref=e1147]:
+        - separator [ref=e1149]
+        - generic [ref=e1151]:
+          - generic [ref=e1152]:
+            - link [ref=e1154] [cursor=pointer]:
+              - /url: ./read/CBMiXkFVX3lxTFB6ZXZoSjVKN1ZreEhLdVgxd0pDdGkwbFNnc2JkeXBGaUVqSE1zOVFCR0hMQVF6VDl2Z2t1aHNmQ1RYU2Rwa19mV2RReWZJYmQ1ZWw5UVF3OTVuMklXS1E?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1156]:
+              - generic [ref=e1157]:
+                - generic [ref=e1160]: 中华网
+                - generic [ref=e1164]:
+                  - generic:
+                    - button "展开 - AI科技贯穿全场景，海信世界杯定制产品电视、冰箱、空调、洗衣机集体亮相贵阳" [ref=e1165] [cursor=pointer]:
+                      - img [ref=e1167]
+                    - tooltip [ref=e1169]: 展开
+              - link "AI科技贯穿全场景，海信世界杯定制产品电视、冰箱、空调、洗衣机集体亮相贵阳 - 中华网 - 4月27日" [ref=e1170] [cursor=pointer]:
+                - /url: ./read/CBMiXkFVX3lxTFB6ZXZoSjVKN1ZreEhLdVgxd0pDdGkwbFNnc2JkeXBGaUVqSE1zOVFCR0hMQVF6VDl2Z2t1aHNmQ1RYU2Rwa19mV2RReWZJYmQ1ZWw5UVF3OTVuMklXS1E?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: AI科技贯穿全场景，海信世界杯定制产品电视、冰箱、空调、洗衣机集体亮相贵阳
+            - figure [ref=e1171]
+          - time [ref=e1173]: 4月27日
+      - generic [ref=e1174]:
+        - separator [ref=e1176]
+        - generic [ref=e1178]:
+          - generic [ref=e1179]:
+            - link [ref=e1181] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE9mYTZtWWlaTE1JaUtCWVJfWFpDcTd6OHRQX0stQ0hEN0hjWHIwcS1DNWxDemYtNHFyNlB0VFlOdmlFM1FSdVhka0hCZ2pTYVRBeERQUHVsYTB2TS1Vc0thcUNDNA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1183]:
+              - generic [ref=e1184]:
+                - generic [ref=e1187]: 新浪网
+                - generic [ref=e1191]:
+                  - generic:
+                    - button "展开 - 中国赞助商投入超5亿美元_新浪新闻" [ref=e1192] [cursor=pointer]:
+                      - img [ref=e1194]
+                    - tooltip [ref=e1196]: 展开
+              - link "中国赞助商投入超5亿美元_新浪新闻 - 新浪网 - 19 天前" [ref=e1197] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE9mYTZtWWlaTE1JaUtCWVJfWFpDcTd6OHRQX0stQ0hEN0hjWHIwcS1DNWxDemYtNHFyNlB0VFlOdmlFM1FSdVhka0hCZ2pTYVRBeERQUHVsYTB2TS1Vc0thcUNDNA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 中国赞助商投入超5亿美元_新浪新闻
+            - figure [ref=e1198]
+          - time [ref=e1200]: 19 天前
+      - generic [ref=e1201]:
+        - separator [ref=e1203]
+        - generic [ref=e1205]:
+          - generic [ref=e1206]:
+            - link [ref=e1208] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTFByVDYyQ3g4T25Pd05Vc05oZzVNZW14TTltc0s5UE5qTTUyYkNhRzBUS2lMRUd6V0hqOEcwNjJWZHcwNTFhc1dsdHQtTEtCQ1k5bmJKaENnZUxXVjVQSWRMdVBJcw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1210]:
+              - generic [ref=e1211]:
+                - generic [ref=e1214]: 新浪网
+                - generic [ref=e1218]:
+                  - generic:
+                    - button "展开 - 海信" [ref=e1219] [cursor=pointer]:
+                      - img [ref=e1221]
+                    - tooltip [ref=e1223]: 展开
+              - link "海信 - 新浪网 - 21 天前" [ref=e1224] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTFByVDYyQ3g4T25Pd05Vc05oZzVNZW14TTltc0s5UE5qTTUyYkNhRzBUS2lMRUd6V0hqOEcwNjJWZHcwNTFhc1dsdHQtTEtCQ1k5bmJKaENnZUxXVjVQSWRMdVBJcw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信
+            - figure [ref=e1225]
+          - time [ref=e1227]: 21 天前
+      - generic [ref=e1228]:
+        - separator [ref=e1230]
+        - generic [ref=e1232]:
+          - generic [ref=e1233]:
+            - link [ref=e1235] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE15Y25Sck9aTVA4RjhfeEdLVEhyd0tsN1RXRmw4UmhDNWN1YUFMV1BVcTlnU251ZGJmRy1oQlB6Um1odjY0bHltak40NTF4YjVVMTB0YU9CYWpOYUJVWG8xck5wcw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1237]:
+              - generic [ref=e1238]:
+                - generic [ref=e1241]: 新浪网
+                - generic [ref=e1245]:
+                  - generic:
+                    - button "展开 - 蒙牛拍龚俊世界杯怀旧大片_新浪新闻" [ref=e1246] [cursor=pointer]:
+                      - img [ref=e1248]
+                    - tooltip [ref=e1250]: 展开
+              - link "蒙牛拍龚俊世界杯怀旧大片_新浪新闻 - 新浪网 - 4月30日" [ref=e1251] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE15Y25Sck9aTVA4RjhfeEdLVEhyd0tsN1RXRmw4UmhDNWN1YUFMV1BVcTlnU251ZGJmRy1oQlB6Um1odjY0bHltak40NTF4YjVVMTB0YU9CYWpOYUJVWG8xck5wcw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 蒙牛拍龚俊世界杯怀旧大片_新浪新闻
+            - figure [ref=e1252]
+          - time [ref=e1254]: 4月30日
+      - generic [ref=e1255]:
+        - separator [ref=e1257]
+        - generic [ref=e1259]:
+          - generic [ref=e1260]:
+            - link [ref=e1262] [cursor=pointer]:
+              - /url: ./read/CBMib0FVX3lxTFBtX1I0Vm9oQkNpMzZ1RmlqUTRBWXBvVzdqQXEwQnFGR1NhNEVPNzFXZVVzZ01HWWZuS1hsVW9WcTBMODE3NU5PWnRBaTdEQWcxb0NHTUs1ZTkzaWRocVlZd3NBN2dILURuZlhCWFNDdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1264]:
+              - generic [ref=e1265]:
+                - generic [ref=e1268]: 中国网
+                - generic [ref=e1272]:
+                  - generic:
+                    - button "展开 - 海信世界杯定制空调新品揭晓！国内首款滑盖空调智慧风E5正式发布" [ref=e1273] [cursor=pointer]:
+                      - img [ref=e1275]
+                    - tooltip [ref=e1277]: 展开
+              - link "海信世界杯定制空调新品揭晓！国内首款滑盖空调智慧风E5正式发布 - 中国网 - 3月6日" [ref=e1278] [cursor=pointer]:
+                - /url: ./read/CBMib0FVX3lxTFBtX1I0Vm9oQkNpMzZ1RmlqUTRBWXBvVzdqQXEwQnFGR1NhNEVPNzFXZVVzZ01HWWZuS1hsVW9WcTBMODE3NU5PWnRBaTdEQWcxb0NHTUs1ZTkzaWRocVlZd3NBN2dILURuZlhCWFNDdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信世界杯定制空调新品揭晓！国内首款滑盖空调智慧风E5正式发布
+            - figure [ref=e1279]
+          - time [ref=e1281]: 3月6日
+      - generic [ref=e1282]:
+        - separator [ref=e1284]
+        - generic [ref=e1286]:
+          - generic [ref=e1287]:
+            - link [ref=e1289] [cursor=pointer]:
+              - /url: ./read/CBMifkFVX3lxTE9RcHJ6MDhmRldEU0NwV0pWT3MyV09JTnVrYk5TdDFuVU5yZTFGR1JiUVNuUk1NdG9FR1dlSUxSM1QxYWFiX3NSQUFpWDUtQVN0eVlBcUotdmcyQ2N6SlZabU9aOW1nSVhCMU9yMk1NQzY0RGtWV0lZNmZuWXJZQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1291]:
+              - generic [ref=e1292]:
+                - generic [ref=e1295]: 新浪财经
+                - generic [ref=e1299]:
+                  - generic:
+                    - button "展开 - 龚俊在世界杯预热活动中给粉丝准备了哪些专属福利？" [ref=e1300] [cursor=pointer]:
+                      - img [ref=e1302]
+                    - tooltip [ref=e1304]: 展开
+              - link "龚俊在世界杯预热活动中给粉丝准备了哪些专属福利？ - 新浪财经 - 21 天前" [ref=e1305] [cursor=pointer]:
+                - /url: ./read/CBMifkFVX3lxTE9RcHJ6MDhmRldEU0NwV0pWT3MyV09JTnVrYk5TdDFuVU5yZTFGR1JiUVNuUk1NdG9FR1dlSUxSM1QxYWFiX3NSQUFpWDUtQVN0eVlBcUotdmcyQ2N6SlZabU9aOW1nSVhCMU9yMk1NQzY0RGtWV0lZNmZuWXJZQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 龚俊在世界杯预热活动中给粉丝准备了哪些专属福利？
+          - time [ref=e1307]: 21 天前
+      - generic [ref=e1308]:
+        - separator [ref=e1310]
+        - generic [ref=e1312]:
+          - generic [ref=e1313]:
+            - link [ref=e1315] [cursor=pointer]:
+              - /url: ./read/CBMid0FVX3lxTE5ES3REWERNT0c2MWt6alg0VFpoeFZmTUJTaDZTUmRsaU9uYlNIblRLbEVzZzRDcTZpb3ZfNF8wRUs2MEppWHl0OEdHWTRzaDV3Y2VoR2d2VzFOVDhPaVVsQXdnMVZibkRoREp6eTlfUEk0Y21IS1Rn?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1317]:
+              - generic [ref=e1318]:
+                - generic [ref=e1321]: 手机新浪网
+                - generic [ref=e1325]:
+                  - generic:
+                    - button "展开 - 中国技术里程碑：海信RGB-Mini LED深度赋能2026世界杯VAR" [ref=e1326] [cursor=pointer]:
+                      - img [ref=e1328]
+                    - tooltip [ref=e1330]: 展开
+              - link "中国技术里程碑：海信RGB-Mini LED深度赋能2026世界杯VAR - 手机新浪网 - 4月16日" [ref=e1331] [cursor=pointer]:
+                - /url: ./read/CBMid0FVX3lxTE5ES3REWERNT0c2MWt6alg0VFpoeFZmTUJTaDZTUmRsaU9uYlNIblRLbEVzZzRDcTZpb3ZfNF8wRUs2MEppWHl0OEdHWTRzaDV3Y2VoR2d2VzFOVDhPaVVsQXdnMVZibkRoREp6eTlfUEk0Y21IS1Rn?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 中国技术里程碑：海信RGB-Mini LED深度赋能2026世界杯VAR
+            - figure [ref=e1332]
+          - time [ref=e1334]: 4月16日
+      - generic [ref=e1335]:
+        - separator [ref=e1337]
+        - generic [ref=e1339]:
+          - generic [ref=e1340]:
+            - link [ref=e1342] [cursor=pointer]:
+              - /url: ./read/CBMiX0FVX3lxTE1ySjh4ZHBxUk5YS2hRRnRTenlJMEN4VGROb0JQbkhTMklnMFR4dmJPUE16VXoyVi1NZDBRZ2xNcUZKZDBZMzc2am1kblV1aGRqNS1kaFRzN3FzcURTX05j?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1344]:
+              - generic [ref=e1345]:
+                - generic [ref=e1348]: 4A广告网
+                - generic [ref=e1352]:
+                  - generic:
+                    - button "展开 - 姆巴佩世界杯广告出圈，精神状态太抽象了" [ref=e1353] [cursor=pointer]:
+                      - img [ref=e1355]
+                    - tooltip [ref=e1357]: 展开
+              - link "姆巴佩世界杯广告出圈，精神状态太抽象了 - 4A广告网 - 10 天前" [ref=e1358] [cursor=pointer]:
+                - /url: ./read/CBMiX0FVX3lxTE1ySjh4ZHBxUk5YS2hRRnRTenlJMEN4VGROb0JQbkhTMklnMFR4dmJPUE16VXoyVi1NZDBRZ2xNcUZKZDBZMzc2am1kblV1aGRqNS1kaFRzN3FzcURTX05j?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 姆巴佩世界杯广告出圈，精神状态太抽象了
+            - figure [ref=e1359]
+          - time [ref=e1361]: 10 天前
+      - generic [ref=e1362]:
+        - separator [ref=e1364]
+        - generic [ref=e1366]:
+          - generic [ref=e1367]:
+            - link [ref=e1369] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE1KTE1GNjgtR0p2Sm9XYkotTHBMczdvMlRIZWtRRW9wVGxuVjFSREs2VTJGXzZVUjZHVG1fQjVjZnVkUE9vVlY3ckZNcGViTGVLM1JBX1poWmxlcDJjNXJnU21rMA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1371]:
+              - generic [ref=e1372]:
+                - generic [ref=e1375]: 新浪网
+                - generic [ref=e1379]:
+                  - generic:
+                    - button "展开 - ❤️20260504 野生办营爸比拍摄蒙牛世界杯宣传片花絮" [ref=e1380] [cursor=pointer]:
+                      - img [ref=e1382]
+                    - tooltip [ref=e1384]: 展开
+              - link "❤️20260504 野生办营爸比拍摄蒙牛世界杯宣传片花絮 - 新浪网 - 19 天前" [ref=e1385] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE1KTE1GNjgtR0p2Sm9XYkotTHBMczdvMlRIZWtRRW9wVGxuVjFSREs2VTJGXzZVUjZHVG1fQjVjZnVkUE9vVlY3ckZNcGViTGVLM1JBX1poWmxlcDJjNXJnU21rMA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: ❤️20260504 野生办营爸比拍摄蒙牛世界杯宣传片花絮
+            - figure [ref=e1386]
+          - time [ref=e1388]: 19 天前
+      - generic [ref=e1389]:
+        - separator [ref=e1391]
+        - generic [ref=e1393]:
+          - generic [ref=e1394]:
+            - link [ref=e1396] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE1OQWM0eGJGSjhYU1ZJWHhweVlwVFpVbW4wbXk5R2JfUWJSRGF1ME1pX18zd2tySDJlNXY4bjlnVjF4Qi0ta0NrT2twWlhVYk41cDFISFFkdEJvMFR4WFRjS2xRYw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1398]:
+              - generic [ref=e1399]:
+                - generic [ref=e1402]: 新浪网
+                - generic [ref=e1406]:
+                  - generic:
+                    - button "展开 - 蒙牛广告拍摄_新浪新闻" [ref=e1407] [cursor=pointer]:
+                      - img [ref=e1409]
+                    - tooltip [ref=e1411]: 展开
+              - link "蒙牛广告拍摄_新浪新闻 - 新浪网 - 21 天前" [ref=e1412] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE1OQWM0eGJGSjhYU1ZJWHhweVlwVFpVbW4wbXk5R2JfUWJSRGF1ME1pX18zd2tySDJlNXY4bjlnVjF4Qi0ta0NrT2twWlhVYk41cDFISFFkdEJvMFR4WFRjS2xRYw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 蒙牛广告拍摄_新浪新闻
+            - figure [ref=e1413]
+          - time [ref=e1415]: 21 天前
+      - generic [ref=e1416]:
+        - separator [ref=e1418]
+        - generic [ref=e1420]:
+          - generic [ref=e1421]:
+            - link [ref=e1423] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTFA3Q0Nwbk1nblMzX2dCQzFqWUUtaDB4M0d3enB6T2FXQjdpcGZTd1J5TDlETmZISFB3VGFHdFgtcEp2ek0yajhNMUxuNW9Hb3RSR3RTWlZWQ3Via2YySzlBUk1mNA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1425]:
+              - generic [ref=e1426]:
+                - generic [ref=e1429]: 中华网生活
+                - generic [ref=e1433]:
+                  - generic:
+                    - button "展开 - AI科技贯穿全场景，海信世界杯定制产品电视、冰箱、空调、洗衣机集体亮相贵阳" [ref=e1434] [cursor=pointer]:
+                      - img [ref=e1436]
+                    - tooltip [ref=e1438]: 展开
+              - link "AI科技贯穿全场景，海信世界杯定制产品电视、冰箱、空调、洗衣机集体亮相贵阳 - 中华网生活 - 4月26日" [ref=e1439] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTFA3Q0Nwbk1nblMzX2dCQzFqWUUtaDB4M0d3enB6T2FXQjdpcGZTd1J5TDlETmZISFB3VGFHdFgtcEp2ek0yajhNMUxuNW9Hb3RSR3RTWlZWQ3Via2YySzlBUk1mNA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: AI科技贯穿全场景，海信世界杯定制产品电视、冰箱、空调、洗衣机集体亮相贵阳
+            - figure [ref=e1440]
+          - time [ref=e1442]: 4月26日
+      - generic [ref=e1443]:
+        - separator [ref=e1445]
+        - generic [ref=e1447]:
+          - generic [ref=e1448]:
+            - link [ref=e1450] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTFA0ZnJOVy1DeXhvbkpnSTFkNVVnbUlDVm10RFBWc0ptbFVYUVA4MWlJYnBMbVhKeng1cGpJTHNvWXZ3VkpRTGE3a0lmSkZmZmNFNGNlUUh4S3ZWcUpKbVFLY1NsYw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1452]:
+              - generic [ref=e1453]:
+                - generic [ref=e1456]: 新浪网
+                - generic [ref=e1460]:
+                  - generic:
+                    - button "展开 - 蒙牛世界杯多人助演_新浪新闻" [ref=e1461] [cursor=pointer]:
+                      - img [ref=e1463]
+                    - tooltip [ref=e1465]: 展开
+              - link "蒙牛世界杯多人助演_新浪新闻 - 新浪网 - 21 天前" [ref=e1466] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTFA0ZnJOVy1DeXhvbkpnSTFkNVVnbUlDVm10RFBWc0ptbFVYUVA4MWlJYnBMbVhKeng1cGpJTHNvWXZ3VkpRTGE3a0lmSkZmZmNFNGNlUUh4S3ZWcUpKbVFLY1NsYw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 蒙牛世界杯多人助演_新浪新闻
+            - figure [ref=e1467]
+          - time [ref=e1469]: 21 天前
+      - generic [ref=e1470]:
+        - separator [ref=e1472]
+        - generic [ref=e1474]:
+          - generic [ref=e1475]:
+            - link [ref=e1477] [cursor=pointer]:
+              - /url: ./read/CBMifEFVX3lxTFB2SkZlcUdaTnNjRHE1OWp0ZGVKRXJmRUJnc2xBcDlNSXlzUGEyTjczMmNOczNydWpUc3kxQzFLbWhKYUZEaGRfcHlsOFlHc3JpVk9Od2R3T0dXU2o1djNGc1pEUFFFTHpvTHhwT2g4aEktR3MxWVprYlVkS24?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1479]:
+              - generic [ref=e1480]:
+                - generic [ref=e1483]: 新华网
+                - generic [ref=e1487]:
+                  - generic:
+                    - button "展开 - 海信CES 2026：最新RGB-Mini LED产品将亮相，世界杯定制产品蓄势待发" [ref=e1488] [cursor=pointer]:
+                      - img [ref=e1490]
+                    - tooltip [ref=e1492]: 展开
+              - link "海信CES 2026：最新RGB-Mini LED产品将亮相，世界杯定制产品蓄势待发 - 新华网 - 1月5日" [ref=e1493] [cursor=pointer]:
+                - /url: ./read/CBMifEFVX3lxTFB2SkZlcUdaTnNjRHE1OWp0ZGVKRXJmRUJnc2xBcDlNSXlzUGEyTjczMmNOczNydWpUc3kxQzFLbWhKYUZEaGRfcHlsOFlHc3JpVk9Od2R3T0dXU2o1djNGc1pEUFFFTHpvTHhwT2g4aEktR3MxWVprYlVkS24?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信CES 2026：最新RGB-Mini LED产品将亮相，世界杯定制产品蓄势待发
+            - figure [ref=e1494]
+          - time [ref=e1496]: 1月5日
+      - generic [ref=e1497]:
+        - separator [ref=e1499]
+        - generic [ref=e1501]:
+          - generic [ref=e1502]:
+            - link [ref=e1504] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTFBaZzVsTm5SaUxSQzk5c2NZTExTTUFSem5iWFVSV2hRT0UyTzlQQzBUOW8xZThPRURLcDlHRnFXejlxREpSdks2ZXVuZnJLVXhldFFkbkZkVDlCUmloazFZZ2FsSQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1506]:
+              - generic [ref=e1507]:
+                - generic [ref=e1510]: 新浪网
+                - generic [ref=e1514]:
+                  - generic:
+                    - button "展开 - 龚俊拍摄蒙牛世界杯宣传片_新浪新闻" [ref=e1515] [cursor=pointer]:
+                      - img [ref=e1517]
+                    - tooltip [ref=e1519]: 展开
+              - link "龚俊拍摄蒙牛世界杯宣传片_新浪新闻 - 新浪网 - 4月27日" [ref=e1520] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTFBaZzVsTm5SaUxSQzk5c2NZTExTTUFSem5iWFVSV2hRT0UyTzlQQzBUOW8xZThPRURLcDlHRnFXejlxREpSdks2ZXVuZnJLVXhldFFkbkZkVDlCUmloazFZZ2FsSQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 龚俊拍摄蒙牛世界杯宣传片_新浪新闻
+            - figure [ref=e1521]
+          - time [ref=e1523]: 4月27日
+      - generic [ref=e1524]:
+        - separator [ref=e1526]
+        - generic [ref=e1528]:
+          - generic [ref=e1529]:
+            - link [ref=e1531] [cursor=pointer]:
+              - /url: ./read/CBMiX0FVX3lxTE9kOTJfNkdVYVhnSTZ5bXJMTWQ4WUhXMUF5VGZnUEszSlVuSm1aclJqaFlpZllOdHFNNWRXVVFqVjNTd3Q3RURwQXFkRG5fWFZnMnZfSVdXcU9idWNYWElj?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1533]:
+              - generic [ref=e1534]:
+                - generic [ref=e1537]: ECO氪体
+                - generic [ref=e1541]:
+                  - generic:
+                    - button "展开 - 从连续赞助到核心场景，海信完成世界杯的「身份升级」" [ref=e1542] [cursor=pointer]:
+                      - img [ref=e1544]
+                    - tooltip [ref=e1546]: 展开
+              - link "从连续赞助到核心场景，海信完成世界杯的「身份升级」 - ECO氪体 - 4月21日" [ref=e1547] [cursor=pointer]:
+                - /url: ./read/CBMiX0FVX3lxTE9kOTJfNkdVYVhnSTZ5bXJMTWQ4WUhXMUF5VGZnUEszSlVuSm1aclJqaFlpZllOdHFNNWRXVVFqVjNTd3Q3RURwQXFkRG5fWFZnMnZfSVdXcU9idWNYWElj?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 从连续赞助到核心场景，海信完成世界杯的「身份升级」
+            - figure [ref=e1548]
+          - time [ref=e1550]: 4月21日
+      - generic [ref=e1551]:
+        - separator [ref=e1553]
+        - generic [ref=e1555]:
+          - generic [ref=e1556]:
+            - link [ref=e1558] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE15S1pkNkc1eVkteENyemdPblVMUWhwVGR5TXZXYUc5R1EwNDRwV1o0NFp1TldUUWMyRmRxUUFCOWI4TnpvZC1USFZycXpuc0dtXy1OZVltQnNMa2MzZmd6VDhDYw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1560]:
+              - generic [ref=e1561]:
+                - generic [ref=e1564]: 新浪网
+                - generic [ref=e1568]:
+                  - generic:
+                    - button "展开 - 龚俊参与拍摄的蒙牛世界杯宣传片要来啦" [ref=e1569] [cursor=pointer]:
+                      - img [ref=e1571]
+                    - tooltip [ref=e1573]: 展开
+              - link "龚俊参与拍摄的蒙牛世界杯宣传片要来啦 - 新浪网 - 4月28日" [ref=e1574] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE15S1pkNkc1eVkteENyemdPblVMUWhwVGR5TXZXYUc5R1EwNDRwV1o0NFp1TldUUWMyRmRxUUFCOWI4TnpvZC1USFZycXpuc0dtXy1OZVltQnNMa2MzZmd6VDhDYw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 龚俊参与拍摄的蒙牛世界杯宣传片要来啦
+            - figure [ref=e1575]
+          - time [ref=e1577]: 4月28日
+      - generic [ref=e1578]:
+        - separator [ref=e1580]
+        - generic [ref=e1582]:
+          - generic [ref=e1583]:
+            - link [ref=e1585] [cursor=pointer]:
+              - /url: ./read/CBMieEFVX3lxTE9CYjZTVUJaQUZ2cUtySnYzZi1DY095Tmtkb2pVNFRUYWgtY0JHR2gyZS04TXlfTGRXT0R6bkZQczVqTjJOYmlPa2hWLVpXbVFjckpZempka3hmV1lIXzZwRThjNXhqZ3BhdjhCeVlfUWF0djNuTkx5cw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1587]:
+              - generic [ref=e1588]:
+                - generic [ref=e1591]: 新浪新闻_手机新浪网
+                - generic [ref=e1595]:
+                  - generic:
+                    - button "展开 - 侯明昊做客海信直播间点赞世界杯定制产品，解锁沉浸式观赛体验" [ref=e1596] [cursor=pointer]:
+                      - img [ref=e1598]
+                    - tooltip [ref=e1600]: 展开
+              - link "侯明昊做客海信直播间点赞世界杯定制产品，解锁沉浸式观赛体验 - 新浪新闻_手机新浪网 - 4月14日" [ref=e1601] [cursor=pointer]:
+                - /url: ./read/CBMieEFVX3lxTE9CYjZTVUJaQUZ2cUtySnYzZi1DY095Tmtkb2pVNFRUYWgtY0JHR2gyZS04TXlfTGRXT0R6bkZQczVqTjJOYmlPa2hWLVpXbVFjckpZempka3hmV1lIXzZwRThjNXhqZ3BhdjhCeVlfUWF0djNuTkx5cw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 侯明昊做客海信直播间点赞世界杯定制产品，解锁沉浸式观赛体验
+            - figure [ref=e1602]
+          - time [ref=e1604]: 4月14日
+      - generic [ref=e1605]:
+        - separator [ref=e1607]
+        - generic [ref=e1609]:
+          - generic [ref=e1610]:
+            - link [ref=e1612] [cursor=pointer]:
+              - /url: ./read/CBMiYEFVX3lxTE9vUlBSS2RjcktKOXdNNkFjUUtMRWs4U21pTVBuTmVPMmJ1SjdhcTNUaTFSWFJTNmhweXRhQ0ZtLUZEeURGclZ3RnYybjZ6TDJFZTdGVDhIM2NfWTI5czFJVg?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1614]:
+              - generic [ref=e1615]:
+                - generic [ref=e1618]: 光明网
+                - generic [ref=e1622]:
+                  - generic:
+                    - button "展开 - 海信RGB-Mini LED技术将入驻2026世界杯视频裁判中心" [ref=e1623] [cursor=pointer]:
+                      - img [ref=e1625]
+                    - tooltip [ref=e1627]: 展开
+              - link "海信RGB-Mini LED技术将入驻2026世界杯视频裁判中心 - 光明网 - 4月16日" [ref=e1628] [cursor=pointer]:
+                - /url: ./read/CBMiYEFVX3lxTE9vUlBSS2RjcktKOXdNNkFjUUtMRWs4U21pTVBuTmVPMmJ1SjdhcTNUaTFSWFJTNmhweXRhQ0ZtLUZEeURGclZ3RnYybjZ6TDJFZTdGVDhIM2NfWTI5czFJVg?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信RGB-Mini LED技术将入驻2026世界杯视频裁判中心
+            - figure [ref=e1629]
+          - time [ref=e1631]: 4月16日
+      - generic [ref=e1632]:
+        - separator [ref=e1634]
+        - generic [ref=e1636]:
+          - generic [ref=e1637]:
+            - link [ref=e1639] [cursor=pointer]:
+              - /url: ./read/CBMiakFVX3lxTFBWVTdjci1qcEMxeDRlb3pIaEFoTUQ4TlFWNkxXdlM0NmRKNVRpbFlVd3h3dW5uYXdXQ01qamxvQ2FpV3d1ZUZYcUR6NzY4Q1RUU2ZRNmZWeGpYeHFmN0xmMmZvYWVNcndfM3c?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1641]:
+              - generic [ref=e1642]:
+                - generic [ref=e1645]: jstv.com
+                - generic [ref=e1649]:
+                  - generic:
+                    - button "展开 - “苏超”现场+世界杯决赛，一次报名全解锁？_荔枝新闻" [ref=e1650] [cursor=pointer]:
+                      - img [ref=e1652]
+                    - tooltip [ref=e1654]: 展开
+              - link "“苏超”现场+世界杯决赛，一次报名全解锁？_荔枝新闻 - jstv.com - 4月22日" [ref=e1655] [cursor=pointer]:
+                - /url: ./read/CBMiakFVX3lxTFBWVTdjci1qcEMxeDRlb3pIaEFoTUQ4TlFWNkxXdlM0NmRKNVRpbFlVd3h3dW5uYXdXQ01qamxvQ2FpV3d1ZUZYcUR6NzY4Q1RUU2ZRNmZWeGpYeHFmN0xmMmZvYWVNcndfM3c?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: “苏超”现场+世界杯决赛，一次报名全解锁？_荔枝新闻
+            - figure [ref=e1656]
+          - time [ref=e1658]: 4月22日
+      - generic [ref=e1659]:
+        - separator [ref=e1661]
+        - generic [ref=e1663]:
+          - generic [ref=e1664]:
+            - link [ref=e1666] [cursor=pointer]:
+              - /url: ./read/CBMia0FVX3lxTFBjN0hsWXFiM3lMczJZTFFINVZWalc1c0p5YkZUcXRjSUc2N0dBQlpuQ0pqV1NzbWhSWl9RMWVPc1I1QmR3UkFsVEJCQVBILXh3bGpOMGtCbTFidjZHMzFfckVUZVF1VkxRRHZn?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1668]:
+              - generic [ref=e1669]:
+                - generic [ref=e1672]: 新华报业网
+                - generic [ref=e1676]:
+                  - generic:
+                    - button "展开 - 海信世界杯定制产品Ai家Ⅱ PRO荣获2026年艾普兰金奖" [ref=e1677] [cursor=pointer]:
+                      - img [ref=e1679]
+                    - tooltip [ref=e1681]: 展开
+              - link "海信世界杯定制产品Ai家Ⅱ PRO荣获2026年艾普兰金奖 - 新华报业网 - 3月13日" [ref=e1682] [cursor=pointer]:
+                - /url: ./read/CBMia0FVX3lxTFBjN0hsWXFiM3lMczJZTFFINVZWalc1c0p5YkZUcXRjSUc2N0dBQlpuQ0pqV1NzbWhSWl9RMWVPc1I1QmR3UkFsVEJCQVBILXh3bGpOMGtCbTFidjZHMzFfckVUZVF1VkxRRHZn?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信世界杯定制产品Ai家Ⅱ PRO荣获2026年艾普兰金奖
+            - figure [ref=e1683]
+          - time [ref=e1685]: 3月13日
+      - generic [ref=e1686]:
+        - separator [ref=e1688]
+        - generic [ref=e1690]:
+          - generic [ref=e1691]:
+            - link [ref=e1693] [cursor=pointer]:
+              - /url: ./read/CBMiUkFVX3lxTFB5LXVaTnJnRVRuUnhCcGcwQlowRkw2dGp4cFVtSjc1QTFDeHBpUmVFRTFqQlBCZGIyRkx0ZGRLdGNvTy1IbVVqVFUzeTROd29xanc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1695]:
+              - generic [ref=e1696]:
+                - generic [ref=e1699]: 搜狐网
+                - generic [ref=e1703]:
+                  - generic:
+                    - button "展开 - “苏超要强少年团”暨蒙牛世界杯小旗手全国招募正式启动" [ref=e1704] [cursor=pointer]:
+                      - img [ref=e1706]
+                    - tooltip [ref=e1708]: 展开
+              - link "“苏超要强少年团”暨蒙牛世界杯小旗手全国招募正式启动 - 搜狐网 - 4月21日" [ref=e1709] [cursor=pointer]:
+                - /url: ./read/CBMiUkFVX3lxTFB5LXVaTnJnRVRuUnhCcGcwQlowRkw2dGp4cFVtSjc1QTFDeHBpUmVFRTFqQlBCZGIyRkx0ZGRLdGNvTy1IbVVqVFUzeTROd29xanc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: “苏超要强少年团”暨蒙牛世界杯小旗手全国招募正式启动
+            - figure [ref=e1710]
+          - time [ref=e1712]: 4月21日
+      - generic [ref=e1713]:
+        - separator [ref=e1715]
+        - generic [ref=e1717]:
+          - generic [ref=e1718]:
+            - link [ref=e1720] [cursor=pointer]:
+              - /url: ./read/CBMiTkFVX3lxTE8zNEd0VWxtRzFGUE1IaGt5RjRDaFk1cHpkVDJLRk1rWDYwUHVPWnM0UHQtZ0FQVmo2NEdPdUdNSmU1YjE5bjhFbFI5TXFPUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1722]:
+              - generic [ref=e1723]:
+                - generic [ref=e1726]: 雷科技
+                - generic [ref=e1730]:
+                  - generic:
+                    - button "展开 - 携手 FIFA 世界杯，海信激光电视要让家庭影院普及！" [ref=e1731] [cursor=pointer]:
+                      - img [ref=e1733]
+                    - tooltip [ref=e1735]: 展开
+              - link "携手 FIFA 世界杯，海信激光电视要让家庭影院普及！ - 雷科技 - 3月6日" [ref=e1736] [cursor=pointer]:
+                - /url: ./read/CBMiTkFVX3lxTE8zNEd0VWxtRzFGUE1IaGt5RjRDaFk1cHpkVDJLRk1rWDYwUHVPWnM0UHQtZ0FQVmo2NEdPdUdNSmU1YjE5bjhFbFI5TXFPUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 携手 FIFA 世界杯，海信激光电视要让家庭影院普及！
+            - figure [ref=e1737]
+          - time [ref=e1739]: 3月6日
+      - generic [ref=e1740]:
+        - separator [ref=e1742]
+        - generic [ref=e1744]:
+          - generic [ref=e1745]:
+            - link [ref=e1747] [cursor=pointer]:
+              - /url: ./read/CBMiV0FVX3lxTE96Y2MxeFBNVmtVWU9XYUV3c2Z2NkJtVmRtRzNmTnc0NFVzbHEwLURGRGdmUnJHZmI2XzJ2U2xmTU9nOG5jTkdsUmx1U0cwRnZQQUxRaXpESQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1749]:
+              - generic [ref=e1750]:
+                - generic [ref=e1753]: 美通社
+                - generic [ref=e1757]:
+                  - generic:
+                    - button "展开 - 海信启动2026年国际足联世界杯™ 倒计时展示新一代家庭娱乐与智慧生活产品" [ref=e1758] [cursor=pointer]:
+                      - img [ref=e1760]
+                    - tooltip [ref=e1762]: 展开
+              - link "海信启动2026年国际足联世界杯™ 倒计时展示新一代家庭娱乐与智慧生活产品 - 美通社 - 4月21日" [ref=e1763] [cursor=pointer]:
+                - /url: ./read/CBMiV0FVX3lxTE96Y2MxeFBNVmtVWU9XYUV3c2Z2NkJtVmRtRzNmTnc0NFVzbHEwLURGRGdmUnJHZmI2XzJ2U2xmTU9nOG5jTkdsUmx1U0cwRnZQQUxRaXpESQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信启动2026年国际足联世界杯™ 倒计时展示新一代家庭娱乐与智慧生活产品
+            - figure [ref=e1764]
+          - time [ref=e1766]: 4月21日
+      - generic [ref=e1767]:
+        - separator [ref=e1769]
+        - generic [ref=e1771]:
+          - generic [ref=e1772]:
+            - link [ref=e1774] [cursor=pointer]:
+              - /url: ./read/CBMiYkFVX3lxTE16RU1xX3ZRUTBaMWpPWVZkTUZpLUtRRy1SMWxxTVc4bW1NeS1VZXZuZTVsUUxYLWxkUTBsbUZBdHFuWGpGZGJ2UUd3by15c1lmVmZEMVQ4c3ZlbmttcWVRc3N3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1776]:
+              - generic [ref=e1777]:
+                - generic [ref=e1780]: 潮新闻
+                - generic [ref=e1784]:
+                  - generic:
+                    - button "展开 - 从“迈胜杯”到世界杯：蒙牛媒体足球赛鸣哨，携全民足球共赴“美加墨之约”" [ref=e1785] [cursor=pointer]:
+                      - img [ref=e1787]
+                    - tooltip [ref=e1789]: 展开
+              - link "从“迈胜杯”到世界杯：蒙牛媒体足球赛鸣哨，携全民足球共赴“美加墨之约” - 潮新闻 - 4月15日" [ref=e1790] [cursor=pointer]:
+                - /url: ./read/CBMiYkFVX3lxTE16RU1xX3ZRUTBaMWpPWVZkTUZpLUtRRy1SMWxxTVc4bW1NeS1VZXZuZTVsUUxYLWxkUTBsbUZBdHFuWGpGZGJ2UUd3by15c1lmVmZEMVQ4c3ZlbmttcWVRc3N3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 从“迈胜杯”到世界杯：蒙牛媒体足球赛鸣哨，携全民足球共赴“美加墨之约”
+            - figure [ref=e1791]
+          - time [ref=e1793]: 4月15日
+      - generic [ref=e1794]:
+        - separator [ref=e1796]
+        - generic [ref=e1798]:
+          - generic [ref=e1799]:
+            - link [ref=e1801] [cursor=pointer]:
+              - /url: ./read/CBMia0FVX3lxTE5lQktHM094NlFxaXA1RXQ3cHRUSmhVdlpvMkc5V0J6X1E3SmV4NGdOZ2EyRUs1S3pMcFNTNGZfY1ZoTGtCcWtxV2dKbnVrTGZhd1RlcGJvUGtyVnBjQ05hM09ZQjl3QnFoMEtR?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1803]:
+              - generic [ref=e1804]:
+                - generic [ref=e1807]: 新华报业网
+                - generic [ref=e1811]:
+                  - generic:
+                    - button "展开 - 世界杯定制产品背后的“灯塔智造” 海信Ai家II PRO这样炼成" [ref=e1812] [cursor=pointer]:
+                      - img [ref=e1814]
+                    - tooltip [ref=e1816]: 展开
+              - link "世界杯定制产品背后的“灯塔智造” 海信Ai家II PRO这样炼成 - 新华报业网 - 3月16日" [ref=e1817] [cursor=pointer]:
+                - /url: ./read/CBMia0FVX3lxTE5lQktHM094NlFxaXA1RXQ3cHRUSmhVdlpvMkc5V0J6X1E3SmV4NGdOZ2EyRUs1S3pMcFNTNGZfY1ZoTGtCcWtxV2dKbnVrTGZhd1RlcGJvUGtyVnBjQ05hM09ZQjl3QnFoMEtR?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯定制产品背后的“灯塔智造” 海信Ai家II PRO这样炼成
+            - figure [ref=e1818]
+          - time [ref=e1820]: 3月16日
+      - generic [ref=e1821]:
+        - separator [ref=e1823]
+        - generic [ref=e1825]:
+          - generic [ref=e1826]:
+            - link [ref=e1828] [cursor=pointer]:
+              - /url: ./read/CBMiakFVX3lxTFBDcHZzWG8zazNtdlZkQXItZFdwb1hxS3FOSmwzTHppQkhVcFA5U3V2cE5PZ1V1OXk3RTdjQnd6Wm9pNFB6SGdFT3otSTFndUMtQlNIZlljQ2RtOHIyZUpmcXg3VkFXbTMzbVE?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1830]:
+              - generic [ref=e1831]:
+                - generic [ref=e1834]: 齐鲁网
+                - generic [ref=e1838]:
+                  - generic:
+                    - button "展开 - 海信官宣世界杯营销四大升级 从产品到服务承包你的全周期观赛体验" [ref=e1839] [cursor=pointer]:
+                      - img [ref=e1841]
+                    - tooltip [ref=e1843]: 展开
+              - link "海信官宣世界杯营销四大升级 从产品到服务承包你的全周期观赛体验 - 齐鲁网 - 3月5日 - 作者：辛鹏" [ref=e1844] [cursor=pointer]:
+                - /url: ./read/CBMiakFVX3lxTFBDcHZzWG8zazNtdlZkQXItZFdwb1hxS3FOSmwzTHppQkhVcFA5U3V2cE5PZ1V1OXk3RTdjQnd6Wm9pNFB6SGdFT3otSTFndUMtQlNIZlljQ2RtOHIyZUpmcXg3VkFXbTMzbVE?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信官宣世界杯营销四大升级 从产品到服务承包你的全周期观赛体验
+            - figure [ref=e1845]
+          - generic [ref=e1846]:
+            - time [ref=e1847]: 3月5日
+            - separator [ref=e1848]
+            - generic [ref=e1849]: 作者：辛鹏
+      - generic [ref=e1850]:
+        - separator [ref=e1852]
+        - generic [ref=e1854]:
+          - generic [ref=e1855]:
+            - link [ref=e1857] [cursor=pointer]:
+              - /url: ./read/CBMiVkFVX3lxTE1WTU50emsxSHk2ZU53QTM0ZmFaaFJrNzFtNE5qTzJIS2xnaGdLTDFVOC11TmMyRUpWdUx0d3Z0dHNablA5cXhUVGVBOHJPeVI2d1dSSHhn?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1859]:
+              - generic [ref=e1860]:
+                - generic [ref=e1863]: news.tom.com
+                - generic [ref=e1867]:
+                  - generic:
+                    - button "展开 - “苏超要强少年团”暨蒙牛世界杯小旗手全国招募在南京启动" [ref=e1868] [cursor=pointer]:
+                      - img [ref=e1870]
+                    - tooltip [ref=e1872]: 展开
+              - link "“苏超要强少年团”暨蒙牛世界杯小旗手全国招募在南京启动 - news.tom.com - 4月24日" [ref=e1873] [cursor=pointer]:
+                - /url: ./read/CBMiVkFVX3lxTE1WTU50emsxSHk2ZU53QTM0ZmFaaFJrNzFtNE5qTzJIS2xnaGdLTDFVOC11TmMyRUpWdUx0d3Z0dHNablA5cXhUVGVBOHJPeVI2d1dSSHhn?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: “苏超要强少年团”暨蒙牛世界杯小旗手全国招募在南京启动
+            - figure [ref=e1874]
+          - time [ref=e1876]: 4月24日
+      - generic [ref=e1877]:
+        - separator [ref=e1879]
+        - generic [ref=e1881]:
+          - generic [ref=e1882]:
+            - link [ref=e1884] [cursor=pointer]:
+              - /url: ./read/CBMia0FVX3lxTE9kNS1iOGtRdlpDbExxR25TUVBVUjdmRXhkc2ZDOTdMWGNvT21BbzhmWlA0d0RvdjVFRE9kejZ1Zk5iRDhMeVpyS1B2QkU4RWMwTERwLUdlbG11UGJpWFhZWFp1TlphUjVnZ1Rj?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1886]:
+              - generic [ref=e1887]:
+                - generic [ref=e1890]: 财富号
+                - generic [ref=e1894]:
+                  - generic:
+                    - button "展开 - 海信发布世界杯定制套系大薄荷2.0" [ref=e1895] [cursor=pointer]:
+                      - img [ref=e1897]
+                    - tooltip [ref=e1899]: 展开
+              - link "海信发布世界杯定制套系大薄荷2.0 - 财富号 - 4月17日" [ref=e1900] [cursor=pointer]:
+                - /url: ./read/CBMia0FVX3lxTE9kNS1iOGtRdlpDbExxR25TUVBVUjdmRXhkc2ZDOTdMWGNvT21BbzhmWlA0d0RvdjVFRE9kejZ1Zk5iRDhMeVpyS1B2QkU4RWMwTERwLUdlbG11UGJpWFhZWFp1TlphUjVnZ1Rj?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信发布世界杯定制套系大薄荷2.0
+            - figure [ref=e1901]
+          - time [ref=e1903]: 4月17日
+      - generic [ref=e1904]:
+        - separator [ref=e1906]
+        - generic [ref=e1908]:
+          - generic [ref=e1909]:
+            - link [ref=e1911] [cursor=pointer]:
+              - /url: ./read/CBMiVEFVX3lxTE1xYjRzQ0N2V0xJcjlKZzVMelVDbG9uZThfd2dwRnhPbVNoRlJob1NmdnkwdUstUnJGVHBpVDhidXNoRDNHaFlrbWZZTkQxVHE0TjJNUg?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1913]:
+              - generic [ref=e1914]:
+                - generic [ref=e1917]: 中国家电网
+                - generic [ref=e1921]:
+                  - generic:
+                    - button "展开 - 对话陈靖可：有了海信冰箱这台“制冰神机”，深夜看世界杯终于有了最佳“搭子”" [ref=e1922] [cursor=pointer]:
+                      - img [ref=e1924]
+                    - tooltip [ref=e1926]: 展开
+              - link "对话陈靖可：有了海信冰箱这台“制冰神机”，深夜看世界杯终于有了最佳“搭子” - 中国家电网 - 4月24日" [ref=e1927] [cursor=pointer]:
+                - /url: ./read/CBMiVEFVX3lxTE1xYjRzQ0N2V0xJcjlKZzVMelVDbG9uZThfd2dwRnhPbVNoRlJob1NmdnkwdUstUnJGVHBpVDhidXNoRDNHaFlrbWZZTkQxVHE0TjJNUg?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 对话陈靖可：有了海信冰箱这台“制冰神机”，深夜看世界杯终于有了最佳“搭子”
+            - figure [ref=e1928]
+          - time [ref=e1930]: 4月24日
+      - generic [ref=e1931]:
+        - separator [ref=e1933]
+        - generic [ref=e1935]:
+          - generic [ref=e1936]:
+            - link [ref=e1938] [cursor=pointer]:
+              - /url: ./read/CBMiYkFVX3lxTFAzUVduZ2Fycnl3V3kzZGJUTl9la2g4cWY4bm1OZlQzUTZaRTU1eFlTOTNnbVBMY3RSX2xMdUdUM3Z1N0NCemYyMWhnUnFFUnBycW9DZzZWY0R2RDJuTzRxUFhR?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1940]:
+              - generic [ref=e1941]:
+                - generic [ref=e1944]: 中国家电网
+                - generic [ref=e1948]:
+                  - generic:
+                    - button "展开 - 海信官宣世界杯营销四大升级，从产品到服务承包你的全周期观赛体验-新闻中心" [ref=e1949] [cursor=pointer]:
+                      - img [ref=e1951]
+                    - tooltip [ref=e1953]: 展开
+              - link "海信官宣世界杯营销四大升级，从产品到服务承包你的全周期观赛体验-新闻中心 - 中国家电网 - 3月5日" [ref=e1954] [cursor=pointer]:
+                - /url: ./read/CBMiYkFVX3lxTFAzUVduZ2Fycnl3V3kzZGJUTl9la2g4cWY4bm1OZlQzUTZaRTU1eFlTOTNnbVBMY3RSX2xMdUdUM3Z1N0NCemYyMWhnUnFFUnBycW9DZzZWY0R2RDJuTzRxUFhR?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信官宣世界杯营销四大升级，从产品到服务承包你的全周期观赛体验-新闻中心
+            - figure [ref=e1955]
+          - time [ref=e1957]: 3月5日
+      - generic [ref=e1958]:
+        - separator [ref=e1960]
+        - generic [ref=e1962]:
+          - generic [ref=e1963]:
+            - link [ref=e1965] [cursor=pointer]:
+              - /url: ./read/CBMiW0FVX3lxTE9aeEZ3dGh1amRORUctbTRYNGNQZ0IzS1dpUkQ1cHNJd0xYb0FQWFA3cktuTHRaVHl1aXQ0QjA0WTlZVWhIeEhzamEzQmI1WUtiVEJmRGRMNGFIdDQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1967]:
+              - generic [ref=e1968]:
+                - generic [ref=e1971]: 投影时代
+                - generic [ref=e1975]:
+                  - generic:
+                    - button "展开 - 【世界杯定制产品背后的“灯塔智造” 海信Ai家II PRO这样炼成】PjTime.COM 行业新闻海信" [ref=e1976] [cursor=pointer]:
+                      - img [ref=e1978]
+                    - tooltip [ref=e1980]: 展开
+              - link "【世界杯定制产品背后的“灯塔智造” 海信Ai家II PRO这样炼成】PjTime.COM 行业新闻海信 - 投影时代 - 3月16日" [ref=e1981] [cursor=pointer]:
+                - /url: ./read/CBMiW0FVX3lxTE9aeEZ3dGh1amRORUctbTRYNGNQZ0IzS1dpUkQ1cHNJd0xYb0FQWFA3cktuTHRaVHl1aXQ0QjA0WTlZVWhIeEhzamEzQmI1WUtiVEJmRGRMNGFIdDQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 【世界杯定制产品背后的“灯塔智造” 海信Ai家II PRO这样炼成】PjTime.COM 行业新闻海信
+            - figure [ref=e1982]
+          - time [ref=e1984]: 3月16日
+      - generic [ref=e1985]:
+        - separator [ref=e1987]
+        - generic [ref=e1989]:
+          - generic [ref=e1990]:
+            - link [ref=e1992] [cursor=pointer]:
+              - /url: ./read/CBMiiAJBVV95cUxQTS1nQlplT2w3Z0RTUFdsbFpmWWhfelpMZm03T19abnZ3QWY5RjR0aGlPcndReVJCMlhSTjVWS0t0aURhVWlQV3FwWmtqR2o1ZDhGVDc4aEptLXBlU0RwOFlWU0N5UlY5d0xvNnpTTWR0Yk16aGhURWpnRnE1Y2tXaEoyeDc1OU1PbTBEaHluYk95bVZTcFVoRHdUdTQzSEVGWGs5UE8wUzVjMWl1RkFhQVh6bnZXOXFjRFdKNERaZVhiZlBtQVJSbC1LQ09lZFBQUS1aT3JJM2tsNUl4aFpxZks5WXd6N1ZyZzVGcjNWRllldDNyWXBjVV9EcmtSQ1QtcDcxMGtLQ3Y?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1994]:
+              - generic [ref=e1995]:
+                - generic [ref=e1998]: 新浪财经
+                - generic [ref=e2002]:
+                  - generic:
+                    - button "展开 - 世界杯定制产品背后的“灯塔智造” 海信Ai家II PRO这样炼成|中央空调|加湿器|除湿机|环境电器|工厂_手机新浪网" [ref=e2003] [cursor=pointer]:
+                      - img [ref=e2005]
+                    - tooltip [ref=e2007]: 展开
+              - link "世界杯定制产品背后的“灯塔智造” 海信Ai家II PRO这样炼成|中央空调|加湿器|除湿机|环境电器|工厂_手机新浪网 - 新浪财经 - 4月25日" [ref=e2008] [cursor=pointer]:
+                - /url: ./read/CBMiiAJBVV95cUxQTS1nQlplT2w3Z0RTUFdsbFpmWWhfelpMZm03T19abnZ3QWY5RjR0aGlPcndReVJCMlhSTjVWS0t0aURhVWlQV3FwWmtqR2o1ZDhGVDc4aEptLXBlU0RwOFlWU0N5UlY5d0xvNnpTTWR0Yk16aGhURWpnRnE1Y2tXaEoyeDc1OU1PbTBEaHluYk95bVZTcFVoRHdUdTQzSEVGWGs5UE8wUzVjMWl1RkFhQVh6bnZXOXFjRFdKNERaZVhiZlBtQVJSbC1LQ09lZFBQUS1aT3JJM2tsNUl4aFpxZks5WXd6N1ZyZzVGcjNWRllldDNyWXBjVV9EcmtSQ1QtcDcxMGtLQ3Y?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯定制产品背后的“灯塔智造” 海信Ai家II PRO这样炼成|中央空调|加湿器|除湿机|环境电器|工厂_手机新浪网
+            - figure [ref=e2009]
+          - time [ref=e2011]: 4月25日
+      - generic [ref=e2012]:
+        - separator [ref=e2014]
+        - generic [ref=e2016]:
+          - generic [ref=e2017]:
+            - link [ref=e2019] [cursor=pointer]:
+              - /url: ./read/CBMiU0FVX3lxTFBWeFhMdHpOajBpb2J2SDhDaHl1R19hM0JqdUhwdTBBY2RpdU5IRmVBY0VmSXZfMFc5eXBXQVpRQktObHh0MEM5ZGdaTGZ2Y2ZaVTZj?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2021]:
+              - generic [ref=e2022]:
+                - generic [ref=e2025]: 中国报业
+                - generic [ref=e2029]:
+                  - generic:
+                    - button "展开 - AWE 2026：海信全场景新品预热世界杯，以足球热情点亮智慧生活" [ref=e2030] [cursor=pointer]:
+                      - img [ref=e2032]
+                    - tooltip [ref=e2034]: 展开
+              - link "AWE 2026：海信全场景新品预热世界杯，以足球热情点亮智慧生活 - 中国报业 - 3月18日" [ref=e2035] [cursor=pointer]:
+                - /url: ./read/CBMiU0FVX3lxTFBWeFhMdHpOajBpb2J2SDhDaHl1R19hM0JqdUhwdTBBY2RpdU5IRmVBY0VmSXZfMFc5eXBXQVpRQktObHh0MEM5ZGdaTGZ2Y2ZaVTZj?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: AWE 2026：海信全场景新品预热世界杯，以足球热情点亮智慧生活
+            - figure [ref=e2036]
+          - time [ref=e2038]: 3月18日
+      - generic [ref=e2039]:
+        - separator [ref=e2041]
+        - generic [ref=e2043]:
+          - generic [ref=e2044]:
+            - link [ref=e2046] [cursor=pointer]:
+              - /url: ./read/CBMif0FVX3lxTE1iOHpiZG14M2RBVF8tZlMyTnZBZXN2NW9sazRBZGk0MTU1bndScHctcE9hMkxaWFNEdU1LYmRpaHM3Ry13dTcxdTVscjByVmUxRUlCWTZBbGV0czNyanJGV3UzM2dnbEp2NFFMR05uamRwMFJma2hrOU1vSkNVVzg?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2048]:
+              - generic [ref=e2049]:
+                - generic [ref=e2052]: 新浪财经
+                - generic [ref=e2056]:
+                  - generic:
+                    - button "展开 - 海信世界杯定制套系大薄荷 2.0 正式发布：AI 时代，重新定义年轻人的第一套智能家电" [ref=e2057] [cursor=pointer]:
+                      - img [ref=e2059]
+                    - tooltip [ref=e2061]: 展开
+              - link "海信世界杯定制套系大薄荷 2.0 正式发布：AI 时代，重新定义年轻人的第一套智能家电 - 新浪财经 - 4月15日" [ref=e2062] [cursor=pointer]:
+                - /url: ./read/CBMif0FVX3lxTE1iOHpiZG14M2RBVF8tZlMyTnZBZXN2NW9sazRBZGk0MTU1bndScHctcE9hMkxaWFNEdU1LYmRpaHM3Ry13dTcxdTVscjByVmUxRUlCWTZBbGV0czNyanJGV3UzM2dnbEp2NFFMR05uamRwMFJma2hrOU1vSkNVVzg?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信世界杯定制套系大薄荷 2.0 正式发布：AI 时代，重新定义年轻人的第一套智能家电
+            - figure [ref=e2063]
+          - time [ref=e2065]: 4月15日
+      - generic [ref=e2066]:
+        - separator [ref=e2068]
+        - generic [ref=e2070]:
+          - generic [ref=e2071]:
+            - link [ref=e2073] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE5OYzg4Z0Y3NW5fV3BLTWZRT0Nzb1pnZ0N1YXZJMkpUeVA1TVkwUVJfU2RLVGg3c1RsTDlrYXE1QUZPZnItVmoxbEZXc0Y3MkFIQmVHamNwa1FFR3pfaVlLYU5KTQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2075]:
+              - generic [ref=e2076]:
+                - generic [ref=e2079]: 新浪网
+                - generic [ref=e2083]:
+                  - generic:
+                    - button "展开 - 蒙牛成为2026世界杯赞助商_新浪新闻" [ref=e2084] [cursor=pointer]:
+                      - img [ref=e2086]
+                    - tooltip [ref=e2088]: 展开
+              - link "蒙牛成为2026世界杯赞助商_新浪新闻 - 新浪网 - 3月15日" [ref=e2089] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE5OYzg4Z0Y3NW5fV3BLTWZRT0Nzb1pnZ0N1YXZJMkpUeVA1TVkwUVJfU2RLVGg3c1RsTDlrYXE1QUZPZnItVmoxbEZXc0Y3MkFIQmVHamNwa1FFR3pfaVlLYU5KTQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 蒙牛成为2026世界杯赞助商_新浪新闻
+            - figure [ref=e2090]
+          - time [ref=e2092]: 3月15日
+      - generic [ref=e2093]:
+        - separator [ref=e2095]
+        - generic [ref=e2097]:
+          - generic [ref=e2098]:
+            - link [ref=e2100] [cursor=pointer]:
+              - /url: ./read/CBMiTEFVX3lxTE5jUE1ZSlo1RkkzOUZ0NHBjSjZSZktjS3NmY0JnczBYUWJCaDZ0VW5tOHFnX3Fmbm00cE56UnZIak1WbUV0dm9MV1NRSlU?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2102]:
+              - generic [ref=e2103]:
+                - generic [ref=e2106]: 极客公园
+                - generic [ref=e2110]:
+                  - generic:
+                    - button "展开 - 海信世界杯定制产品发布 首创技术+AI科技为用户打造极致观赛体验" [ref=e2111] [cursor=pointer]:
+                      - img [ref=e2113]
+                    - tooltip [ref=e2115]: 展开
+              - link "海信世界杯定制产品发布 首创技术+AI科技为用户打造极致观赛体验 - 极客公园 - 3月5日" [ref=e2116] [cursor=pointer]:
+                - /url: ./read/CBMiTEFVX3lxTE5jUE1ZSlo1RkkzOUZ0NHBjSjZSZktjS3NmY0JnczBYUWJCaDZ0VW5tOHFnX3Fmbm00cE56UnZIak1WbUV0dm9MV1NRSlU?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信世界杯定制产品发布 首创技术+AI科技为用户打造极致观赛体验
+            - figure [ref=e2117]
+          - time [ref=e2119]: 3月5日
+      - generic [ref=e2120]:
+        - separator [ref=e2122]
+        - generic [ref=e2124]:
+          - generic [ref=e2125]:
+            - link [ref=e2127] [cursor=pointer]:
+              - /url: ./read/CBMigAFBVV95cUxQdG1kX0kxTC1uc0V5aXlYbHFMeGh6eU5UN051SHoyc0lJa2lHWlkwZFkyUFMxTkxGQTlVNWtsTWEtWWtRblJkdzhpdzZLWTVFd0szTzZ0bnNXN2lRXzkxOHZzdGx5OE5MTVhOOHJTb3pjUy1DTlJLRXU0X3kxSFhFSg?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2129]:
+              - generic [ref=e2130]:
+                - generic [ref=e2133]: qiye.eastday.com
+                - generic [ref=e2137]:
+                  - generic:
+                    - button "展开 - 年轻人的AI 畅爽生活提案：海信世界杯定制套系大薄荷2.0，让家成为理想国-企业频道" [ref=e2138] [cursor=pointer]:
+                      - img [ref=e2140]
+                    - tooltip [ref=e2142]: 展开
+              - link "年轻人的AI 畅爽生活提案：海信世界杯定制套系大薄荷2.0，让家成为理想国-企业频道 - qiye.eastday.com - 4月15日" [ref=e2143] [cursor=pointer]:
+                - /url: ./read/CBMigAFBVV95cUxQdG1kX0kxTC1uc0V5aXlYbHFMeGh6eU5UN051SHoyc0lJa2lHWlkwZFkyUFMxTkxGQTlVNWtsTWEtWWtRblJkdzhpdzZLWTVFd0szTzZ0bnNXN2lRXzkxOHZzdGx5OE5MTVhOOHJTb3pjUy1DTlJLRXU0X3kxSFhFSg?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 年轻人的AI 畅爽生活提案：海信世界杯定制套系大薄荷2.0，让家成为理想国-企业频道
+            - figure [ref=e2144]
+          - time [ref=e2146]: 4月15日
+      - generic [ref=e2147]:
+        - separator [ref=e2149]
+        - generic [ref=e2151]:
+          - generic [ref=e2152]:
+            - link [ref=e2154] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTE9Gd1psZmpPTmNKNFc5Z2ZuMWMzYTg0VnYxcC14RVBMTVJrMlFETUQwLVZ3QkMtZGxNVmw4ZjI5N2JabnJLLTlzVjZTRTdtT05VZmxZeXAtNFNvWmZzdmZaSDNPd09tVU9xWEZkeVhxd0FrUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2156]:
+              - generic [ref=e2157]:
+                - generic [ref=e2160]: content.foshanplus.com
+                - generic [ref=e2164]:
+                  - generic:
+                    - button "展开 - 海信世界杯定制套系大薄荷2.0正式发布" [ref=e2165] [cursor=pointer]:
+                      - img [ref=e2167]
+                    - tooltip [ref=e2169]: 展开
+              - link "海信世界杯定制套系大薄荷2.0正式发布 - content.foshanplus.com - 4月17日" [ref=e2170] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTE9Gd1psZmpPTmNKNFc5Z2ZuMWMzYTg0VnYxcC14RVBMTVJrMlFETUQwLVZ3QkMtZGxNVmw4ZjI5N2JabnJLLTlzVjZTRTdtT05VZmxZeXAtNFNvWmZzdmZaSDNPd09tVU9xWEZkeVhxd0FrUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信世界杯定制套系大薄荷2.0正式发布
+            - figure [ref=e2171]
+          - time [ref=e2173]: 4月17日
+      - generic [ref=e2174]:
+        - separator [ref=e2176]
+        - generic [ref=e2178]:
+          - generic [ref=e2179]:
+            - link [ref=e2181] [cursor=pointer]:
+              - /url: ./read/CBMibkFVX3lxTE5EZkN6N3hDRFo1QkhsNTUxY3RkS1JISkNLZWZjWnZGM3ZhSHF5T0E1ZVZMVF9qLUxnalBYdUxNMGI0SkVQQ0xsVUphLU1qa0lFYnpudXBtWV9NbW12NTZtaEM5UVM4cjA3OEhfdlhn?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2183]:
+              - generic [ref=e2184]:
+                - generic [ref=e2187]: 荆楚网
+                - generic [ref=e2191]:
+                  - generic:
+                    - button "展开 - 海信公布世界杯超级权益，猜中冠军最高可享3000元现金红包" [ref=e2192] [cursor=pointer]:
+                      - img [ref=e2194]
+                    - tooltip [ref=e2196]: 展开
+              - link "海信公布世界杯超级权益，猜中冠军最高可享3000元现金红包 - 荆楚网 - 3月6日" [ref=e2197] [cursor=pointer]:
+                - /url: ./read/CBMibkFVX3lxTE5EZkN6N3hDRFo1QkhsNTUxY3RkS1JISkNLZWZjWnZGM3ZhSHF5T0E1ZVZMVF9qLUxnalBYdUxNMGI0SkVQQ0xsVUphLU1qa0lFYnpudXBtWV9NbW12NTZtaEM5UVM4cjA3OEhfdlhn?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信公布世界杯超级权益，猜中冠军最高可享3000元现金红包
+            - figure [ref=e2198]
+          - time [ref=e2200]: 3月6日
+      - generic [ref=e2201]:
+        - separator [ref=e2203]
+        - generic [ref=e2205]:
+          - generic [ref=e2206]:
+            - link [ref=e2208] [cursor=pointer]:
+              - /url: ./read/CBMiTkFVX3lxTE1IZmNjMnhJcmVrM1VuVXJyTW95VjBBRWJ2Y21WMXVaOUFYdXZWMEw0SmxxbF9BUWJRSDJMVGlJUFRDbkRIbFhIVzhTNko0QQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2210]:
+              - generic [ref=e2211]:
+                - generic [ref=e2214]: 36kr.com
+                - generic [ref=e2218]:
+                  - generic:
+                    - button "展开 - 海信发布世界杯定制产品，有AI功能的电视、空调、洗衣机集中上新丨最前线" [ref=e2219] [cursor=pointer]:
+                      - img [ref=e2221]
+                    - tooltip [ref=e2223]: 展开
+              - link "海信发布世界杯定制产品，有AI功能的电视、空调、洗衣机集中上新丨最前线 - 36kr.com - 3月5日" [ref=e2224] [cursor=pointer]:
+                - /url: ./read/CBMiTkFVX3lxTE1IZmNjMnhJcmVrM1VuVXJyTW95VjBBRWJ2Y21WMXVaOUFYdXZWMEw0SmxxbF9BUWJRSDJMVGlJUFRDbkRIbFhIVzhTNko0QQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信发布世界杯定制产品，有AI功能的电视、空调、洗衣机集中上新丨最前线
+            - figure [ref=e2225]
+          - time [ref=e2227]: 3月5日
+      - generic [ref=e2228]:
+        - separator [ref=e2230]
+        - generic [ref=e2232]:
+          - generic [ref=e2233]:
+            - link [ref=e2235] [cursor=pointer]:
+              - /url: ./read/CBMiaEFVX3lxTE5fQl9KWUxmQVpvalpzSlg1M3lBdnN3OEVIZENwYi15ZlZ4LTIxMjZ6dDhKLWZIbU1pdzJIeHNZMjRLbFhtdU4zR2syelpadUdZOGt0c2h2dy1QUm5jblJXaF82c01NWXZS?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2237]:
+              - generic [ref=e2238]:
+                - generic [ref=e2241]: 紫牛新闻
+                - generic [ref=e2245]:
+                  - generic:
+                    - button "展开 - 国际足联官宣：海信RGB-Mini LED技术将入驻2026世界杯视频裁判中心" [ref=e2246] [cursor=pointer]:
+                      - img [ref=e2248]
+                    - tooltip [ref=e2250]: 展开
+              - link "国际足联官宣：海信RGB-Mini LED技术将入驻2026世界杯视频裁判中心 - 紫牛新闻 - 4月16日" [ref=e2251] [cursor=pointer]:
+                - /url: ./read/CBMiaEFVX3lxTE5fQl9KWUxmQVpvalpzSlg1M3lBdnN3OEVIZENwYi15ZlZ4LTIxMjZ6dDhKLWZIbU1pdzJIeHNZMjRLbFhtdU4zR2syelpadUdZOGt0c2h2dy1QUm5jblJXaF82c01NWXZS?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 国际足联官宣：海信RGB-Mini LED技术将入驻2026世界杯视频裁判中心
+            - figure [ref=e2252]
+          - time [ref=e2254]: 4月16日
+      - generic [ref=e2255]:
+        - separator [ref=e2257]
+        - generic [ref=e2259]:
+          - generic [ref=e2260]:
+            - link [ref=e2262] [cursor=pointer]:
+              - /url: ./read/CBMiswFBVV95cUxPQWxKbDVvWGxyNHRjcjFnOHlxbVRXTUE0c1BYZ1B1WjdrcU1KZlNReGlFSy1IWG1kR1cwSTR3aWw0aE9mRWEzV2tKQ09KZGhNc201bnlvdkNhOUxtRkJSbDdIblJ3dHZNTFVtbzgwLWl3Wmh2U0dzQkJQU1Q5d3VpM0VUSk5LamVCdWxlWXNkQmFmaUlBdkdsNEZMeF9PVU44NlVhc0w3X1FZQV8tMjFRYUZ4OA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2264]:
+              - generic [ref=e2265]:
+                - generic [ref=e2268]: 东方财富
+                - generic [ref=e2272]:
+                  - generic:
+                    - button "展开 - AWE 2026：海信全场景新品预热世界杯，以足球热情点亮智慧生活" [ref=e2273] [cursor=pointer]:
+                      - img [ref=e2275]
+                    - tooltip [ref=e2277]: 展开
+              - link "AWE 2026：海信全场景新品预热世界杯，以足球热情点亮智慧生活 - 东方财富 - 3月13日" [ref=e2278] [cursor=pointer]:
+                - /url: ./read/CBMiswFBVV95cUxPQWxKbDVvWGxyNHRjcjFnOHlxbVRXTUE0c1BYZ1B1WjdrcU1KZlNReGlFSy1IWG1kR1cwSTR3aWw0aE9mRWEzV2tKQ09KZGhNc201bnlvdkNhOUxtRkJSbDdIblJ3dHZNTFVtbzgwLWl3Wmh2U0dzQkJQU1Q5d3VpM0VUSk5LamVCdWxlWXNkQmFmaUlBdkdsNEZMeF9PVU44NlVhc0w3X1FZQV8tMjFRYUZ4OA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: AWE 2026：海信全场景新品预热世界杯，以足球热情点亮智慧生活
+            - figure [ref=e2279]
+          - time [ref=e2281]: 3月13日
+      - generic [ref=e2282]:
+        - separator [ref=e2284]
+        - generic [ref=e2286]:
+          - generic [ref=e2287]:
+            - link [ref=e2289] [cursor=pointer]:
+              - /url: ./read/CBMiakFVX3lxTE5tVVFPM2lWN2UtM3JZeXJmQTVTbWh6RVhIMFNIaE1GVm1vXzJMTllhOXRtMkdZQThUdmtGN09jNVpyWGx0bkhuckJLZTlYZnh3UEF6dHh3cWFaYW9yc3BWbE1zcUZSZU1FM2c?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2291]:
+              - generic [ref=e2292]:
+                - generic [ref=e2295]: jstv.com
+                - generic [ref=e2299]:
+                  - generic:
+                    - button "展开 - 少年请注意！免费去世界杯现场的机会来了！_荔枝新闻" [ref=e2300] [cursor=pointer]:
+                      - img [ref=e2302]
+                    - tooltip [ref=e2304]: 展开
+              - link "少年请注意！免费去世界杯现场的机会来了！_荔枝新闻 - jstv.com - 4月22日" [ref=e2305] [cursor=pointer]:
+                - /url: ./read/CBMiakFVX3lxTE5tVVFPM2lWN2UtM3JZeXJmQTVTbWh6RVhIMFNIaE1GVm1vXzJMTllhOXRtMkdZQThUdmtGN09jNVpyWGx0bkhuckJLZTlYZnh3UEF6dHh3cWFaYW9yc3BWbE1zcUZSZU1FM2c?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 少年请注意！免费去世界杯现场的机会来了！_荔枝新闻
+            - figure [ref=e2306]
+          - time [ref=e2308]: 4月22日
+      - generic [ref=e2309]:
+        - separator [ref=e2311]
+        - generic [ref=e2313]:
+          - generic [ref=e2314]:
+            - link [ref=e2316] [cursor=pointer]:
+              - /url: ./read/CBMihAFBVV95cUxNSzh2M1BQSDJMWHVDb040RERpVFJIejI3TVlFeDhsV21CUndPOVZ5Y0lTaGRvZUhQRXdlSnBDaHc4MlVTV0I1R1NJd04zTm5MdDdoR193OGxrVHlodkIxYzltUERqVUxBdndYSTU3VUpDVXppZXdXZTRieWhmN0VwSER6UEE?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2318]:
+              - generic [ref=e2319]:
+                - generic [ref=e2322]: 新浪财经
+                - generic [ref=e2326]:
+                  - generic:
+                    - button "展开 - AI科技燃动绿茵海信世界杯定制产品太原首发圆满举行" [ref=e2327] [cursor=pointer]:
+                      - img [ref=e2329]
+                    - tooltip [ref=e2331]: 展开
+              - link "AI科技燃动绿茵海信世界杯定制产品太原首发圆满举行 - 新浪财经 - 4月5日" [ref=e2332] [cursor=pointer]:
+                - /url: ./read/CBMihAFBVV95cUxNSzh2M1BQSDJMWHVDb040RERpVFJIejI3TVlFeDhsV21CUndPOVZ5Y0lTaGRvZUhQRXdlSnBDaHc4MlVTV0I1R1NJd04zTm5MdDdoR193OGxrVHlodkIxYzltUERqVUxBdndYSTU3VUpDVXppZXdXZTRieWhmN0VwSER6UEE?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: AI科技燃动绿茵海信世界杯定制产品太原首发圆满举行
+          - time [ref=e2334]: 4月5日
+      - generic [ref=e2335]:
+        - separator [ref=e2337]
+        - generic [ref=e2339]:
+          - generic [ref=e2340]:
+            - link [ref=e2342] [cursor=pointer]:
+              - /url: ./read/CBMia0FVX3lxTE1RbVFreXExbHR3VUpPT3A4YThlbG5BLVlBUnJpNGs4WDdsRmRXTGhMVVdpMm8wVl83S2E4NUxmbC1Pa0tOSnQ4QTlIOUdaenZsd3lxMUFUcGFXWFE0akZZNXI5SmZFZ0dlSzZN?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2344]:
+              - generic [ref=e2345]:
+                - generic [ref=e2348]: 新华报业网
+                - generic [ref=e2352]:
+                  - generic:
+                    - button "展开 - 从“迈胜杯”到世界杯：蒙牛媒体足球赛鸣哨，携全民足球共赴“美加墨之约”" [ref=e2353] [cursor=pointer]:
+                      - img [ref=e2355]
+                    - tooltip [ref=e2357]: 展开
+              - link "从“迈胜杯”到世界杯：蒙牛媒体足球赛鸣哨，携全民足球共赴“美加墨之约” - 新华报业网 - 4月14日" [ref=e2358] [cursor=pointer]:
+                - /url: ./read/CBMia0FVX3lxTE1RbVFreXExbHR3VUpPT3A4YThlbG5BLVlBUnJpNGs4WDdsRmRXTGhMVVdpMm8wVl83S2E4NUxmbC1Pa0tOSnQ4QTlIOUdaenZsd3lxMUFUcGFXWFE0akZZNXI5SmZFZ0dlSzZN?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 从“迈胜杯”到世界杯：蒙牛媒体足球赛鸣哨，携全民足球共赴“美加墨之约”
+            - figure [ref=e2359]
+          - time [ref=e2361]: 4月14日
+      - generic [ref=e2362]:
+        - separator [ref=e2364]
+        - generic [ref=e2366]:
+          - generic [ref=e2367]:
+            - link [ref=e2369] [cursor=pointer]:
+              - /url: ./read/CBMiSEFVX3lxTFBvaUtIaUFqOW5xOFQxN3BWUEQtaGViaFNQbTUzOVNwUTNPRDJGampreDJwa1ZNUUdMeHZCX1lFcjFEc1ZTUmYzLQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2371]:
+              - generic [ref=e2372]:
+                - generic [ref=e2375]: 手机鳳凰網
+                - generic [ref=e2379]:
+                  - generic:
+                    - button "展开 - 2026世界杯商战烽烟乍起：海信发布营销策略 欲重构全球家电版图" [ref=e2380] [cursor=pointer]:
+                      - img [ref=e2382]
+                    - tooltip [ref=e2384]: 展开
+              - link "2026世界杯商战烽烟乍起：海信发布营销策略 欲重构全球家电版图 - 手机鳳凰網 - 3月6日" [ref=e2385] [cursor=pointer]:
+                - /url: ./read/CBMiSEFVX3lxTFBvaUtIaUFqOW5xOFQxN3BWUEQtaGViaFNQbTUzOVNwUTNPRDJGampreDJwa1ZNUUdMeHZCX1lFcjFEc1ZTUmYzLQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2026世界杯商战烽烟乍起：海信发布营销策略 欲重构全球家电版图
+            - figure [ref=e2386]
+          - time [ref=e2388]: 3月6日
+      - generic [ref=e2389]:
+        - separator [ref=e2391]
+        - generic [ref=e2393]:
+          - generic [ref=e2394]:
+            - link [ref=e2396] [cursor=pointer]:
+              - /url: ./read/CBMigwFBVV95cUxOLUFUREpfa3hmcFpIV0lnTHlJY0xCRFJLT0JDVHp3SEszSG9jb0tBMTFXTGdPd3ZtRDFwb2FjSEJGX3Uwejh6eXhGSU9iRldyaEtBUUxaV2t5ZVBJRkItWVpySlRtZGNkazAyaU0zelp2N090ZjgzY1dQdDl0MGlnZW02Zw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2398]:
+              - generic [ref=e2399]:
+                - generic [ref=e2402]: 新浪财经
+                - generic [ref=e2406]:
+                  - generic:
+                    - button "展开 - “苏超要强少年团”暨蒙牛世界杯小旗手全国招募正式启动" [ref=e2407] [cursor=pointer]:
+                      - img [ref=e2409]
+                    - tooltip [ref=e2411]: 展开
+              - link "“苏超要强少年团”暨蒙牛世界杯小旗手全国招募正式启动 - 新浪财经 - 4月21日" [ref=e2412] [cursor=pointer]:
+                - /url: ./read/CBMigwFBVV95cUxOLUFUREpfa3hmcFpIV0lnTHlJY0xCRFJLT0JDVHp3SEszSG9jb0tBMTFXTGdPd3ZtRDFwb2FjSEJGX3Uwejh6eXhGSU9iRldyaEtBUUxaV2t5ZVBJRkItWVpySlRtZGNkazAyaU0zelp2N090ZjgzY1dQdDl0MGlnZW02Zw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: “苏超要强少年团”暨蒙牛世界杯小旗手全国招募正式启动
+          - time [ref=e2414]: 4月21日
+      - generic [ref=e2415]:
+        - separator [ref=e2417]
+        - generic [ref=e2419]:
+          - generic [ref=e2420]:
+            - link [ref=e2422] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE91alQzOXI2Q2IwcWxfal9iQ2tWd1d0T1BFZEFneEZmZW9LZUJUSGxwbU1zWlgyMDY1WlJ2VGI1QlRJU2FSMzhHTGp3Z1BOVm1lREpUQXExZWpGTnNJSVhBZ1BBcw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2424]:
+              - generic [ref=e2425]:
+                - generic [ref=e2428]: 新浪网
+                - generic [ref=e2432]:
+                  - generic:
+                    - button "展开 - 海信京东超级品牌日，侯明昊直播现场一手高清大图来啦！[打call][哇][点赞]小猴的球迷属性根本藏不住，和猕猴桃一起现场体验海信世界杯定制产品，提前为世界杯顶配观赛体验做好准备！相信小侯的选择，全面换新就选海信，一起为2026美加墨世界杯做好准备！这" [ref=e2433] [cursor=pointer]:
+                      - img [ref=e2435]
+                    - tooltip [ref=e2437]: 展开
+              - link "海信京东超级品牌日，侯明昊直播现场一手高清大图来啦！[打call][哇][点赞]小猴的球迷属性根本藏不住，和猕猴桃一起现场体验海信世界杯定制产品，提前为世界杯顶配观赛体验做好准备！相信小侯的选择，全面换新就选海信，一起为2026美加墨世界杯做好准备！这 - 新浪网 - 4月11日" [ref=e2438] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE91alQzOXI2Q2IwcWxfal9iQ2tWd1d0T1BFZEFneEZmZW9LZUJUSGxwbU1zWlgyMDY1WlJ2VGI1QlRJU2FSMzhHTGp3Z1BOVm1lREpUQXExZWpGTnNJSVhBZ1BBcw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信京东超级品牌日，侯明昊直播现场一手高清大图来啦！[打call][哇][点赞]小猴的球迷属性根本藏不住，和猕猴桃一起现场体验海信世界杯定制产品，提前为世界杯顶配观赛体验做好准备！相信小侯的选择，全面换新就选海信，一起为2026美加墨世界杯做好准备！这
+            - figure [ref=e2439]
+          - time [ref=e2441]: 4月11日
+      - generic [ref=e2442]:
+        - separator [ref=e2444]
+        - generic [ref=e2446]:
+          - generic [ref=e2447]:
+            - link [ref=e2449] [cursor=pointer]:
+              - /url: ./read/CBMidkFVX3lxTE5PWkNhVzkwOEVsQUNkTlJwV3ZsUVJYZmlHaEdkM0c1VGdjQTl6ODFjTWNGeXRXM2lfOHlMNDlteWxwRWlyUjU4MXVSSGdxMHJvMFU3dGp4UV81dDFsSFN4UEppaDBCdHA3SHota0w3Zl9tUW1aQnc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2451]:
+              - generic [ref=e2452]:
+                - generic [ref=e2455]: 上海热线
+                - generic [ref=e2459]:
+                  - generic:
+                    - button "展开 - CES2026开展首日 海信携AI科技及世界杯定制产品闪耀亮相" [ref=e2460] [cursor=pointer]:
+                      - img [ref=e2462]
+                    - tooltip [ref=e2464]: 展开
+              - link "CES2026开展首日 海信携AI科技及世界杯定制产品闪耀亮相 - 上海热线 - 1月7日" [ref=e2465] [cursor=pointer]:
+                - /url: ./read/CBMidkFVX3lxTE5PWkNhVzkwOEVsQUNkTlJwV3ZsUVJYZmlHaEdkM0c1VGdjQTl6ODFjTWNGeXRXM2lfOHlMNDlteWxwRWlyUjU4MXVSSGdxMHJvMFU3dGp4UV81dDFsSFN4UEppaDBCdHA3SHota0w3Zl9tUW1aQnc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: CES2026开展首日 海信携AI科技及世界杯定制产品闪耀亮相
+            - figure [ref=e2466]
+          - time [ref=e2468]: 1月7日
+      - generic [ref=e2469]:
+        - separator [ref=e2471]
+        - generic [ref=e2473]:
+          - generic [ref=e2474]:
+            - link [ref=e2476] [cursor=pointer]:
+              - /url: ./read/CBMiswFBVV95cUxPYmc3OXBhZHc0bzlaTTNBX3lIQ3IxTWFHbkVlNWI5UDc2dHdqVEo1azVrbFcwdU4zT1k4R0xNcFBGUDJVTFQ1LU1jaVVMbEF5SWhuTGMtY0R6VGhBSTkxQUo5LTVjRU8zeFdUdHpVODctMjhSTDh2Q2RMVkc2LWdnQVpCQm83RlJTZU85TW1fNXUtN0ZkV3F0LUxybVF5S1o3aTFEUXJlMUhxYlBtM1hiblFlMA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2478]:
+              - generic [ref=e2479]:
+                - generic [ref=e2482]: 东方财富
+                - generic [ref=e2486]:
+                  - generic:
+                    - button "展开 - 海信发布世界杯定制套系大薄荷2.0" [ref=e2487] [cursor=pointer]:
+                      - img [ref=e2489]
+                    - tooltip [ref=e2491]: 展开
+              - link "海信发布世界杯定制套系大薄荷2.0 - 东方财富 - 4月17日" [ref=e2492] [cursor=pointer]:
+                - /url: ./read/CBMiswFBVV95cUxPYmc3OXBhZHc0bzlaTTNBX3lIQ3IxTWFHbkVlNWI5UDc2dHdqVEo1azVrbFcwdU4zT1k4R0xNcFBGUDJVTFQ1LU1jaVVMbEF5SWhuTGMtY0R6VGhBSTkxQUo5LTVjRU8zeFdUdHpVODctMjhSTDh2Q2RMVkc2LWdnQVpCQm83RlJTZU85TW1fNXUtN0ZkV3F0LUxybVF5S1o3aTFEUXJlMUhxYlBtM1hiblFlMA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信发布世界杯定制套系大薄荷2.0
+            - figure [ref=e2493]
+          - time [ref=e2495]: 4月17日
+      - generic [ref=e2496]:
+        - separator [ref=e2498]
+        - generic [ref=e2500]:
+          - generic [ref=e2501]:
+            - link [ref=e2503] [cursor=pointer]:
+              - /url: ./read/CBMif0FVX3lxTE9xdkF4Y0dHR1VUbWpaUnJrNzRSeVFrMmlScWExSUNhSUJHYjlwWmFKZmxucElrZjlnOUZEbVpRWWQ3Skx5NTBuZ3hvOWl2WFdvcVhJSGdSbnI1Ry1yeUdHNGt4S3hkZDlRNFlTMjBhbjEtR1NYZUlpcDkxVmRIWFk?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2505]:
+              - generic [ref=e2506]:
+                - generic [ref=e2509]: 新浪财经
+                - generic [ref=e2513]:
+                  - generic:
+                    - button "展开 - 有AI更有爱！海信世界杯定制产品亮相AWE2026，重构“主动服务”智慧生活" [ref=e2514] [cursor=pointer]:
+                      - img [ref=e2516]
+                    - tooltip [ref=e2518]: 展开
+              - link "有AI更有爱！海信世界杯定制产品亮相AWE2026，重构“主动服务”智慧生活 - 新浪财经 - 3月12日" [ref=e2519] [cursor=pointer]:
+                - /url: ./read/CBMif0FVX3lxTE9xdkF4Y0dHR1VUbWpaUnJrNzRSeVFrMmlScWExSUNhSUJHYjlwWmFKZmxucElrZjlnOUZEbVpRWWQ3Skx5NTBuZ3hvOWl2WFdvcVhJSGdSbnI1Ry1yeUdHNGt4S3hkZDlRNFlTMjBhbjEtR1NYZUlpcDkxVmRIWFk?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 有AI更有爱！海信世界杯定制产品亮相AWE2026，重构“主动服务”智慧生活
+            - figure [ref=e2520]
+          - time [ref=e2522]: 3月12日
+      - generic [ref=e2523]:
+        - separator [ref=e2525]
+        - generic [ref=e2527]:
+          - generic [ref=e2528]:
+            - link [ref=e2530] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE9JTDdPb1dfQVBVVmVKUXhCSDM2R3RsbklaYjNoakJmWUtIMDFUaGYyb3NTTXN6Umc1S3VJelpCOTROTjNKcFZKUjN0UDhqT2pfclJKcTdaMndYaVBQNzNEMHlCdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2532]:
+              - generic [ref=e2533]:
+                - generic [ref=e2536]: 新浪网
+                - generic [ref=e2540]:
+                  - generic:
+                    - button "展开 - 蒙牛启动世界杯小旗手招募_新浪新闻" [ref=e2541] [cursor=pointer]:
+                      - img [ref=e2543]
+                    - tooltip [ref=e2545]: 展开
+              - link "蒙牛启动世界杯小旗手招募_新浪新闻 - 新浪网 - 4月20日" [ref=e2546] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE9JTDdPb1dfQVBVVmVKUXhCSDM2R3RsbklaYjNoakJmWUtIMDFUaGYyb3NTTXN6Umc1S3VJelpCOTROTjNKcFZKUjN0UDhqT2pfclJKcTdaMndYaVBQNzNEMHlCdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 蒙牛启动世界杯小旗手招募_新浪新闻
+            - figure [ref=e2547]
+          - time [ref=e2549]: 4月20日
+      - generic [ref=e2550]:
+        - separator [ref=e2552]
+        - generic [ref=e2554]:
+          - generic [ref=e2555]:
+            - link [ref=e2557] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE1JcVFTbmNndENPVm9WQzlPdzQtLXZiWnNNRHowTEZQODlFVHhvZDlYZ09BRXhNUWRVR0x0YVpQWTZQdXhOeDhTeEFiMEZTM3oyMkM4NkVjd2I3OWZ6RDhOTFh3VQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2559]:
+              - generic [ref=e2560]:
+                - generic [ref=e2563]: 新浪网
+                - generic [ref=e2567]:
+                  - generic:
+                    - button "展开 - 蒙牛助力中国少年赴世界杯_新浪新闻" [ref=e2568] [cursor=pointer]:
+                      - img [ref=e2570]
+                    - tooltip [ref=e2572]: 展开
+              - link "蒙牛助力中国少年赴世界杯_新浪新闻 - 新浪网 - 4月11日" [ref=e2573] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE1JcVFTbmNndENPVm9WQzlPdzQtLXZiWnNNRHowTEZQODlFVHhvZDlYZ09BRXhNUWRVR0x0YVpQWTZQdXhOeDhTeEFiMEZTM3oyMkM4NkVjd2I3OWZ6RDhOTFh3VQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 蒙牛助力中国少年赴世界杯_新浪新闻
+            - figure [ref=e2574]
+          - time [ref=e2576]: 4月11日
+      - generic [ref=e2577]:
+        - separator [ref=e2579]
+        - generic [ref=e2581]:
+          - generic [ref=e2582]:
+            - link [ref=e2584] [cursor=pointer]:
+              - /url: ./read/CBMiTkFVX3lxTE5FUGhPbnFRY1RIYmprOHV3bnZiTW9KR0ZKanlmSmhpYlV3U001YnFGeGtnU2NreHpwZm9qNzNGSXRCdWdGWS1Cb0FkTm9pQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2586]:
+              - generic [ref=e2587]:
+                - generic [ref=e2590]: 雷科技
+                - generic [ref=e2594]:
+                  - generic:
+                    - button "展开 - 150吋海信激光电视探索X1 Ultra来了！刷新家庭影院“天花板”" [ref=e2595] [cursor=pointer]:
+                      - img [ref=e2597]
+                    - tooltip [ref=e2599]: 展开
+              - link "150吋海信激光电视探索X1 Ultra来了！刷新家庭影院“天花板” - 雷科技 - 3月6日" [ref=e2600] [cursor=pointer]:
+                - /url: ./read/CBMiTkFVX3lxTE5FUGhPbnFRY1RIYmprOHV3bnZiTW9KR0ZKanlmSmhpYlV3U001YnFGeGtnU2NreHpwZm9qNzNGSXRCdWdGWS1Cb0FkTm9pQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 150吋海信激光电视探索X1 Ultra来了！刷新家庭影院“天花板”
+            - figure [ref=e2601]
+          - time [ref=e2603]: 3月6日
+      - generic [ref=e2604]:
+        - separator [ref=e2606]
+        - generic [ref=e2608]:
+          - generic [ref=e2609]:
+            - link [ref=e2611] [cursor=pointer]:
+              - /url: ./read/CBMiaEFVX3lxTE5sd0FVX3NIUmpnck9jcjdHNGpwVEN3eDhtemxRSzNsR1Exb09pOXB1SV9FQmZwa0EyVmN6UVlsX1A3Zzh1aGpSY3hFRTVveU9uOEZFX2lHSzA4X1BlU1V2QTdWU1QwVWJF?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2613]:
+              - generic [ref=e2614]:
+                - generic [ref=e2617]: 人民网
+                - generic [ref=e2621]:
+                  - generic:
+                    - button "展开 - 从“百城马拉松”到“百年世界杯”：蒙牛深绑体育背后的价值逻辑" [ref=e2622] [cursor=pointer]:
+                      - img [ref=e2624]
+                    - tooltip [ref=e2626]: 展开
+              - link "从“百城马拉松”到“百年世界杯”：蒙牛深绑体育背后的价值逻辑 - 人民网 - 4月17日" [ref=e2627] [cursor=pointer]:
+                - /url: ./read/CBMiaEFVX3lxTE5sd0FVX3NIUmpnck9jcjdHNGpwVEN3eDhtemxRSzNsR1Exb09pOXB1SV9FQmZwa0EyVmN6UVlsX1A3Zzh1aGpSY3hFRTVveU9uOEZFX2lHSzA4X1BlU1V2QTdWU1QwVWJF?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 从“百城马拉松”到“百年世界杯”：蒙牛深绑体育背后的价值逻辑
+            - figure [ref=e2628]
+          - time [ref=e2630]: 4月17日
+      - generic [ref=e2631]:
+        - separator [ref=e2633]
+        - generic [ref=e2635]:
+          - generic [ref=e2636]:
+            - link [ref=e2638] [cursor=pointer]:
+              - /url: ./read/CBMia0FVX3lxTE1hNnRuZWFLalBlOW5XUllFWUR3cGhJY2QzQXk5aDJwVkVvS1FqQy03R2lFNlVscGxlZ3RrMHdBNThfdzZiMHc4Wk5rbjVLeUh2T0Fuc3FkNk9yLVJoYXAyQnhYUEVnRkhodnZv?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2640]:
+              - generic [ref=e2641]:
+                - generic [ref=e2644]: 新华报业网
+                - generic [ref=e2648]:
+                  - generic:
+                    - button "展开 - “大力神杯”来中国 海信世界杯全球官方指定空调即将重磅发布！" [ref=e2649] [cursor=pointer]:
+                      - img [ref=e2651]
+                    - tooltip [ref=e2653]: 展开
+              - link "“大力神杯”来中国 海信世界杯全球官方指定空调即将重磅发布！ - 新华报业网 - 12月12日" [ref=e2654] [cursor=pointer]:
+                - /url: ./read/CBMia0FVX3lxTE1hNnRuZWFLalBlOW5XUllFWUR3cGhJY2QzQXk5aDJwVkVvS1FqQy03R2lFNlVscGxlZ3RrMHdBNThfdzZiMHc4Wk5rbjVLeUh2T0Fuc3FkNk9yLVJoYXAyQnhYUEVnRkhodnZv?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: “大力神杯”来中国 海信世界杯全球官方指定空调即将重磅发布！
+            - figure [ref=e2655]
+          - time [ref=e2657]: 12月12日
+      - generic [ref=e2658]:
+        - separator [ref=e2660]
+        - generic [ref=e2662]:
+          - generic [ref=e2663]:
+            - link [ref=e2665] [cursor=pointer]:
+              - /url: ./read/CBMibkFVX3lxTE5QdWdMT2ZrVXlkMTVMSHRlT2xaWHk4QTdqLTk5d1p0MUVFS2ZzQ20tdGVPSVAwcG85ZTEweGFSTUJkWHVrVkxaaVNrRTJxT0x2b1VEQmprNUZUM2kzbHRSTmtfNjNHaFQ2S01oa3dR?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2667]:
+              - generic [ref=e2668]:
+                - generic [ref=e2671]: 风闻
+                - generic [ref=e2675]:
+                  - generic:
+                    - button "展开 - 从连续赞助到核心场景，海信完成世界杯的「身份升级」" [ref=e2676] [cursor=pointer]:
+                      - img [ref=e2678]
+                    - tooltip [ref=e2680]: 展开
+              - link "从连续赞助到核心场景，海信完成世界杯的「身份升级」 - 风闻 - 4月21日" [ref=e2681] [cursor=pointer]:
+                - /url: ./read/CBMibkFVX3lxTE5QdWdMT2ZrVXlkMTVMSHRlT2xaWHk4QTdqLTk5d1p0MUVFS2ZzQ20tdGVPSVAwcG85ZTEweGFSTUJkWHVrVkxaaVNrRTJxT0x2b1VEQmprNUZUM2kzbHRSTmtfNjNHaFQ2S01oa3dR?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 从连续赞助到核心场景，海信完成世界杯的「身份升级」
+            - figure [ref=e2682]
+          - time [ref=e2684]: 4月21日
+      - generic [ref=e2685]:
+        - separator [ref=e2687]
+        - generic [ref=e2689]:
+          - generic [ref=e2690]:
+            - link [ref=e2692] [cursor=pointer]:
+              - /url: ./read/CBMiiwFBVV95cUxQY1ZDSXpUV18xc0UyRXhOVVEzSU1DWGNzTE1EMmdrZjBBOHpUTlUzM1Zkem5XTnlaSzhHTVVWcjVUbWkxTHd5VXkwR2tPTEM5aHFGcTlNY0NmYXlrbXd3Tmk1RkM1d2VHT3J2ZXFEVU5LMVNUa0p2Q0kwMU9sRDRZWkREUGNCX2hLOGt3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2694]:
+              - generic [ref=e2695]:
+                - generic [ref=e2698]: 中国江苏网
+                - generic [ref=e2702]:
+                  - generic:
+                    - button "展开 - 从“迈胜杯”到世界杯：蒙牛媒体足球赛鸣哨，携全民足球共赴“美加墨之约”" [ref=e2703] [cursor=pointer]:
+                      - img [ref=e2705]
+                    - tooltip [ref=e2707]: 展开
+              - link "从“迈胜杯”到世界杯：蒙牛媒体足球赛鸣哨，携全民足球共赴“美加墨之约” - 中国江苏网 - 4月23日" [ref=e2708] [cursor=pointer]:
+                - /url: ./read/CBMiiwFBVV95cUxQY1ZDSXpUV18xc0UyRXhOVVEzSU1DWGNzTE1EMmdrZjBBOHpUTlUzM1Zkem5XTnlaSzhHTVVWcjVUbWkxTHd5VXkwR2tPTEM5aHFGcTlNY0NmYXlrbXd3Tmk1RkM1d2VHT3J2ZXFEVU5LMVNUa0p2Q0kwMU9sRDRZWkREUGNCX2hLOGt3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 从“迈胜杯”到世界杯：蒙牛媒体足球赛鸣哨，携全民足球共赴“美加墨之约”
+            - figure [ref=e2709]
+          - time [ref=e2711]: 4月23日
+      - generic [ref=e2712]:
+        - separator [ref=e2714]
+        - generic [ref=e2716]:
+          - generic [ref=e2717]:
+            - link [ref=e2719] [cursor=pointer]:
+              - /url: ./read/CBMiTkFVX3lxTE8xZGI5NVg0QnRwQVdiY3luNkRtWWVKT2ZNdnQwQWM3UUVtbjVFWTJwNTlKNTVGNW9qR0RxdFZXRlk4SlBLUkNtaFBGd1Q2Zw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2721]:
+              - generic [ref=e2722]:
+                - generic [ref=e2725]: 36kr.com
+                - generic [ref=e2729]:
+                  - generic:
+                    - button "展开 - 决战世界杯，海信与TCL贴身肉搏" [ref=e2730] [cursor=pointer]:
+                      - img [ref=e2732]
+                    - tooltip [ref=e2734]: 展开
+              - link "决战世界杯，海信与TCL贴身肉搏 - 36kr.com - 1月19日" [ref=e2735] [cursor=pointer]:
+                - /url: ./read/CBMiTkFVX3lxTE8xZGI5NVg0QnRwQVdiY3luNkRtWWVKT2ZNdnQwQWM3UUVtbjVFWTJwNTlKNTVGNW9qR0RxdFZXRlk4SlBLUkNtaFBGd1Q2Zw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 决战世界杯，海信与TCL贴身肉搏
+            - figure [ref=e2736]
+          - time [ref=e2738]: 1月19日
+      - generic [ref=e2739]:
+        - separator [ref=e2741]
+        - generic [ref=e2743]:
+          - generic [ref=e2744]:
+            - link [ref=e2746] [cursor=pointer]:
+              - /url: ./read/CBMieEFVX3lxTE1HRjQtb0hHN2tlQ3JXTHlWM2YxRDNjVDM5QlU1QW92Vy1qYXZXa2paaEQ1ZWtYek9DZnBIUjN2Xy13MDZRd1U5bXowajFaVkhZdWNsQlB0YWxIcTYzZUNNVUlfWkJ4aFU4RVplOHQ0aXRFa2J6YUF1OA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2748]:
+              - generic [ref=e2749]:
+                - generic [ref=e2752]: 新浪财经
+                - generic [ref=e2756]:
+                  - generic:
+                    - button "展开 - 海信世界杯新品闪耀中原：郑州营销盛会引领行业新趋势" [ref=e2757] [cursor=pointer]:
+                      - img [ref=e2759]
+                    - tooltip [ref=e2761]: 展开
+              - link "海信世界杯新品闪耀中原：郑州营销盛会引领行业新趋势 - 新浪财经 - 3月26日" [ref=e2762] [cursor=pointer]:
+                - /url: ./read/CBMieEFVX3lxTE1HRjQtb0hHN2tlQ3JXTHlWM2YxRDNjVDM5QlU1QW92Vy1qYXZXa2paaEQ1ZWtYek9DZnBIUjN2Xy13MDZRd1U5bXowajFaVkhZdWNsQlB0YWxIcTYzZUNNVUlfWkJ4aFU4RVplOHQ0aXRFa2J6YUF1OA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信世界杯新品闪耀中原：郑州营销盛会引领行业新趋势
+            - figure [ref=e2763]
+          - time [ref=e2765]: 3月26日
+      - generic [ref=e2766]:
+        - separator [ref=e2768]
+        - generic [ref=e2770]:
+          - generic [ref=e2771]:
+            - link [ref=e2773] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE12UHBqRDFkeDJ4TmxPNlFCNEdIY0czRzhJZnJ3a3p4SnZFM3hnV3ViMzRZX191MDJkN0JaRGVWS1RablMtZTJHWUY4ODRBc21tMU9sdXNhSDlDSnBnQWc2cmpYMA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e2775]:
+              - generic [ref=e2776]:
+                - generic [ref=e2779]: 新浪网
+                - generic [ref=e2783]:
+                  - generic:
+                    - button "展开 - 蒙牛冰淇淋随变组合装50支 84" [ref=e2784] [cursor=pointer]:
+                      - img [ref=e2786]
+                    - tooltip [ref=e2788]: 展开
+              - link "蒙牛冰淇淋随变组合装50支 84 - 新浪网 - 4月25日" [ref=e2789] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE12UHBqRDFkeDJ4TmxPNlFCNEdIY0czRzhJZnJ3a3p4SnZFM3hnV3ViMzRZX191MDJkN0JaRGVWS1RablMtZTJHWUY4ODRBc21tMU9sdXNhSDlDSnBnQWc2cmpYMA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 蒙牛冰淇淋随变组合装50支 84
+            - figure [ref=e2790]
+          - time [ref=e2792]: 4月25日
+    - complementary [ref=e2793]:
+      - generic [ref=e2795]:
+        - generic [ref=e2798]:
+          - heading "蒙牛 OR 伊利 OR 剑南春 OR 比亚迪 OR 百威 OR 小米 OR 海信 世界杯" [level=2] [ref=e2799]
+          - generic [ref=e2800]: 搜索结果
+        - generic [ref=e2803]:
+          - button "保存此搜索条目 - 蒙牛 OR 伊利 OR 剑南春 OR 比亚迪 OR 百威 OR 小米 OR 海信 世界杯" [ref=e2805]:
+            - img [ref=e2809]
+            - generic [ref=e2811]: 保存
+          - tooltip [ref=e2812]: 保存此搜索条目

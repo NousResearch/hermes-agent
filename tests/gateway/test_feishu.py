@@ -330,6 +330,53 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(fake_loop.calls, 2)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_websocket_future_exit_notifies_gateway_for_retry(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        async def run_test():
+            adapter = FeishuAdapter(PlatformConfig())
+            handler = AsyncMock()
+            adapter.set_fatal_error_handler(handler)
+            future = asyncio.get_running_loop().create_future()
+            adapter._ws_future = future
+            future.set_result(None)
+
+            with patch("gateway.status.write_runtime_status"):
+                adapter._mark_connected()
+                await adapter._watch_websocket_future(future)
+
+            self.assertEqual(adapter.fatal_error_code, "feishu_ws_stopped")
+            self.assertTrue(adapter.fatal_error_retryable)
+            handler.assert_awaited_once_with(adapter)
+
+        asyncio.run(run_test())
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_websocket_future_expected_shutdown_does_not_notify_gateway(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        async def run_test():
+            adapter = FeishuAdapter(PlatformConfig())
+            handler = AsyncMock()
+            adapter.set_fatal_error_handler(handler)
+            adapter._ws_expected_shutdown = True
+            future = asyncio.get_running_loop().create_future()
+            adapter._ws_future = future
+            future.set_result(None)
+
+            with patch("gateway.status.write_runtime_status"):
+                adapter._mark_connected()
+                adapter._ws_expected_shutdown = True
+                await adapter._watch_websocket_future(future)
+
+            self.assertFalse(adapter.has_fatal_error)
+            handler.assert_not_awaited()
+
+        asyncio.run(run_test())
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_updates_existing_feishu_message(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

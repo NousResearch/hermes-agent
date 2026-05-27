@@ -1,0 +1,374 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - button "跳至内容" [ref=e3] [cursor=pointer]:
+      - generic [ref=e5]: 跳至内容
+    - button "辅助功能反馈" [ref=e6] [cursor=pointer]:
+      - generic [ref=e8]: 辅助功能反馈
+    - generic [ref=e9]:
+      - link "返回到必应搜索" [ref=e10] [cursor=pointer]:
+        - /url: /?FORM=Z9FD1
+        - heading "返回到必应搜索" [level=1] [ref=e11]
+      - search [ref=e12]:
+        - button "搜索" [ref=e15] [cursor=pointer]
+        - searchbox "在此处输入你的搜索 — 输入时会显示搜索建议" [ref=e16]: 世界杯 2026 营销 赞助
+        - button "使用图像搜索" [ref=e22] [cursor=pointer]
+    - complementary "帐户奖励和偏好设置" [ref=e24]:
+      - button "Microsoft Rewards" [ref=e25] [cursor=pointer]
+      - link "登录" [ref=e26] [cursor=pointer]:
+        - /url: javascript:void(0)
+        - generic "登录" [ref=e27]
+    - navigation "主菜单" [ref=e28]:
+      - list [ref=e29]:
+        - listitem [ref=e30]:
+          - link "全部" [ref=e31] [cursor=pointer]:
+            - /url: /?scope=web&FORM=HDRSC1
+        - listitem [ref=e32]:
+          - link "搜索" [ref=e33] [cursor=pointer]:
+            - /url: /copilotsearch?q=%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80+%e8%b5%9e%e5%8a%a9&FORM=CSSCOP
+            - img [ref=e34]
+            - text: 搜索
+        - listitem [ref=e36]:
+          - link "图片" [ref=e37] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=141a272eed23b1415e294c3bcc8a5682857b87894e75fa794baa06b7c5f4f324JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L2ltYWdlcy9zZWFyY2g_cT0lZTQlYjglOTYlZTclOTUlOGMlZTYlOWQlYWYrMjAyNislZTglOTAlYTUlZTklOTQlODArJWU4JWI1JTllJWU1JThhJWE5JkZPUk09SERSU0Mz&ntb=1
+        - listitem [ref=e38]:
+          - link "视频" [ref=e39] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=5d5161c2a490cc920f051a63e1739bbaedf46242701290e19fee326ea14ba680JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0lZTQlYjglOTYlZTclOTUlOGMlZTYlOWQlYWYrMjAyNislZTglOTAlYTUlZTklOTQlODArJWU4JWI1JTllJWU1JThhJWE5JkZPUk09SERSU0M0&ntb=1
+        - listitem [ref=e40]:
+          - link "地图" [ref=e41] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=9091a933aaf82321652ccd9ce0b4445c3aa3fadf2d163c213168686a03de0127JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L21hcHM_cT0lZTQlYjglOTYlZTclOTUlOGMlZTYlOWQlYWYrMjAyNislZTglOTAlYTUlZTklOTQlODArJWU4JWI1JTllJWU1JThhJWE5JkZPUk09SERSU0M2&ntb=1
+        - listitem [ref=e42]:
+          - link "资讯" [ref=e43] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=29908ad7c4f5c4a425c9b85827d17758024757a44335c3f0f11b66016fed8771JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L25ld3Mvc2VhcmNoP3E9JWU0JWI4JTk2JWU3JTk1JThjJWU2JTlkJWFmKzIwMjYrJWU4JTkwJWE1JWU5JTk0JTgwKyVlOCViNSU5ZSVlNSU4YSVhOSZGT1JNPUhEUlNDNw&ntb=1
+        - listitem [ref=e44]:
+          - link "Copilot" [ref=e45] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=987bdb961c5c5cf639a11c12eae4d6b24592faa2afa7c625113c54b0e0ba5c63JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L2NoYXQ_cHJvbXB0PSVlNCViOCU5NiVlNyU5NSU4YyVlNiU5ZCVhZisyMDI2KyVlOCU5MCVhNSVlOSU5NCU4MCslZTglYjUlOWUlZTUlOGElYTkmc2VuZHF1ZXJ5PTEmRk9STT1TQ0NPRFg&ntb=1
+        - listitem [ref=e46]:
+          - button "更多" [ref=e47] [cursor=pointer]:
+            - img [ref=e49]
+            - text: 更多
+  - main "搜索结果" [ref=e52]:
+    - generic [ref=e53]:
+      - list [ref=e54]:
+        - listitem [ref=e55]:
+          - generic [ref=e57]:
+            - generic [ref=e58]:
+              - heading "Copilot 搜索品牌打造" [level=2] [ref=e59]:
+                - link "Copilot 搜索品牌打造" [ref=e60] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=d5e2f7cf60d379cd8619c9a0058088e11e80d79e0d1670212b53acc9f8d59defJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L2NvcGlsb3RzZWFyY2g_cT0lZTQlYjglOTYlZTclOTUlOGMlZTYlOWQlYWYrMjAyNislZTglOTAlYTUlZTklOTQlODArJWU4JWI1JTllJWU1JThhJWE5JmZvcm09Q1NCUkFORA&ntb=1
+              - button "此摘要由 AI 通过多个网上来源生成。在“基于来源”下找到用于此摘要的来源链接。在此处详细了解必应搜索结果。" [ref=e66]:
+                - button "信息" [ref=e67]:
+                  - img [ref=e68]
+            - region "Copilot 搜索" [ref=e72]:
+              - generic [ref=e79]: 正在阅读来源并理解
+      - list [ref=e80]:
+        - listitem [ref=e81]:
+          - link "新浪财经" [ref=e83] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=d32ef63d8f253b47247d381ff1ba436fbea1fc51be6831eb06e74d01ca2db199JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9maW5hbmNlLnNpbmEuY29tLmNuL3dtLzIwMjYtMDUtMjQvZG9jLWluaHl5YXF0NjE2NjYxMC5zaHRtbA&ntb=1
+            - generic [ref=e88]:
+              - generic [ref=e89]: 新浪财经
+              - generic [ref=e92]: https://finance.sina.com.cn › wm
+          - heading "“钞能力”显现：中国赞助商影响世界杯|世界杯_新浪财经_新浪网" [level=2] [ref=e93]:
+            - link "“钞能力”显现：中国赞助商影响世界杯|世界杯_新浪财经_新浪网" [ref=e94] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=d32ef63d8f253b47247d381ff1ba436fbea1fc51be6831eb06e74d01ca2db199JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9maW5hbmNlLnNpbmEuY29tLmNuL3dtLzIwMjYtMDUtMjQvZG9jLWluaHl5YXF0NjE2NjYxMC5zaHRtbA&ntb=1
+          - paragraph [ref=e96]: 10 小时之前 · 蒙牛不仅是2018年、2022年FIFA世界杯以及2023年女足世界杯的全球官方赞助商，还连续成为2026年美加墨世界杯™、2030年世界杯和2027年女足世界杯的全球 ...
+        - listitem [ref=e97]:
+          - link "新浪财经" [ref=e99] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=50fd22778c9cfeda74a340b864be6c62cb607796bd4a877af680039336a540e4JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9maW5hbmNlLnNpbmEuY24vMjAyNi0wNS0yNC9kZXRhaWwtaW5oeXlhcXQ2MTY2NjEwLmQuaHRtbD92dD00&ntb=1
+            - generic [ref=e104]:
+              - generic [ref=e105]: 新浪财经
+              - generic [ref=e108]: https://finance.sina.cn
+          - heading "“钞能力”显现：中国赞助商影响世界杯|美加墨世界杯|国际足联|蒙牛|谈 …" [level=2] [ref=e109]:
+            - link "“钞能力”显现：中国赞助商影响世界杯|美加墨世界杯|国际足联|蒙牛|谈 …" [ref=e110] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=50fd22778c9cfeda74a340b864be6c62cb607796bd4a877af680039336a540e4JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9maW5hbmNlLnNpbmEuY24vMjAyNi0wNS0yNC9kZXRhaWwtaW5oeXlhcXQ2MTY2NjEwLmQuaHRtbD92dD00&ntb=1
+          - paragraph [ref=e112]: 10 小时之前 · 蒙牛不仅是2018年、2022年FIFA世界杯以及2023年女足世界杯的全球官方赞助商，还连续成为2026年美加墨世界杯™、2030年世界杯和2027年女足世界杯的全球官方赞助商。 我们要看到， …
+        - listitem [ref=e113]:
+          - link "哔哩哔哩" [ref=e115] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=dd64637751c822e252d764e4d51dfdc461a68fdd2e2a68fcbcee96342c9fdfd4JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cuYmlsaWJpbGkuY29tL3ZpZGVvL0JWMTR1R2o2c0V5Zy8&ntb=1
+            - generic [ref=e120]:
+              - generic [ref=e121]: 哔哩哔哩
+              - generic [ref=e124]: https://www.bilibili.com › video
+          - heading "不止赞助！2026 世界杯的 “中国引擎”！_哔哩哔哩_bilibili" [level=2] [ref=e125]:
+            - link "不止赞助！2026 世界杯的 “中国引擎”！_哔哩哔哩_bilibili" [ref=e126] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=dd64637751c822e252d764e4d51dfdc461a68fdd2e2a68fcbcee96342c9fdfd4JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cuYmlsaWJpbGkuY29tL3ZpZGVvL0JWMTR1R2o2c0V5Zy8&ntb=1
+          - generic [ref=e128]:
+            - 'link "不止赞助！2026 世界杯的 “中国引擎”！_哔哩哔哩_bilibili · 时长: 7 分钟11 秒 · 单击以播放。" [ref=e135] [cursor=pointer]':
+              - /url: https://www.bing.com/ck/a?!&&p=bc0b88070b9ac543deb72483f818cd568f77256641160da4c4cda3ce05e0acceJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0lZTQlYjglOTYlZTclOTUlOGMlZTYlOWQlYWYrMjAyNislZTglOTAlYTUlZTklOTQlODArJWU4JWI1JTllJWU1JThhJWE5JnZpZXc9ZGV0YWlsJm1pZD02QTc0MUJBNDUyRTY4MEY0MkFCRjZBNzQxQkE0NTJFNjgwRjQyQUJGJmNodXJsPSZydT0lMmZzZWFyY2glM2ZxJTNkJTI1RTQlMjVCOCUyNTk2JTI1RTclMjU5NSUyNThDJTI1RTYlMjU5RCUyNUFGJTJiMjAyNiUyYiUyNUU4JTI1OTAlMjVBNSUyNUU5JTI1OTQlMjU4MCUyYiUyNUU4JTI1QjUlMjU5RSUyNUU1JTI1OEElMjVBOSUyNmZpbHRlcnMlM2RleDElMjUzYSUyNTIyZXoxJTI1MjIlMjZzZXRsYW5nJTNkemgtY24lMjZxZnQlM2QlMmJmaWx0ZXJ1aSUyNTNBYWdlLWx0MTQ0MCZtbXNjbj12d3JjJkZPUk09V1JWT1JD&ntb=1
+              - generic [ref=e145]: 7:11
+            - paragraph [ref=e146]: 10 小时之前 · ，恭喜央视!赢了与国际足联的2026世界杯转播费之战!，央视用超低价拿下转播权，日韩网友酸了，凭啥中国有资格谈价格？ ，德媒：中国的太阳能革命！ ，中央广播电视总台宣布已获得2026年美加墨世界杯版权，中国大陆地 …
+            - generic [ref=e148]:
+              - list [ref=e149]:
+                - listitem [ref=e150]:
+                  - generic [ref=e151]: "作者: 老外热议中国"
+              - list [ref=e152]:
+                - listitem [ref=e153]:
+                  - generic [ref=e154]: "查看次数: 12"
+        - listitem [ref=e155]:
+          - link "网通社汽车" [ref=e157] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=6b8cb66c607bf35a3d5744ee77c6d5a85331cf0117fcdac86c70c746236bf540JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cDovL3d3dy5uZXdzMThhLmNvbS9uZXdzL3N0b3J5c18yNTkwNTMuaHRtbA&ntb=1
+            - generic [ref=e162]:
+              - generic [ref=e163]: 网通社汽车
+              - generic [ref=e166]: http://www.news18a.com › news
+          - heading "网通社汽车-更新-更全-更权威的全球汽车资讯" [level=2] [ref=e167]:
+            - link "网通社汽车-更新-更全-更权威的全球汽车资讯" [ref=e168] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=6b8cb66c607bf35a3d5744ee77c6d5a85331cf0117fcdac86c70c746236bf540JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cDovL3d3dy5uZXdzMThhLmNvbS9uZXdzL3N0b3J5c18yNTkwNTMuaHRtbA&ntb=1
+          - paragraph [ref=e170]: 10 小时之前 · 5月22日官宣，合作覆盖2026年、2030年世界杯，甚至延伸到2027年、2031年女足世界杯。 一个成立不到三年的品牌，直接押注世界顶级足球IP，手笔不小。 这件事，让我想起2003年吉利 …
+        - listitem [ref=e171]:
+          - link "搜狐" [ref=e173] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=05808571262aa5d9fbee8da6d949cfb8c05b6127d7cc744bd705229f1215318dJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cuc29odS5jb20vYS8xMDI2NzYxNTIzXzEyMjM0NDk1OA&ntb=1
+            - generic [ref=e178]:
+              - generic [ref=e179]: 搜狐
+              - generic [ref=e182]: https://www.sohu.com
+          - heading "6000万美金的“骨折价”：国际足联为何对中国市场大让步？_南美足联_ …" [level=2] [ref=e183]:
+            - link "6000万美金的“骨折价”：国际足联为何对中国市场大让步？_南美足联_ …" [ref=e184] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=05808571262aa5d9fbee8da6d949cfb8c05b6127d7cc744bd705229f1215318dJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cuc29odS5jb20vYS8xMDI2NzYxNTIzXzEyMjM0NDk1OA&ntb=1
+          - paragraph [ref=e186]: 10 小时之前 · 5月15日下午，中央广播电视总台与国际足联共同宣布，就世界杯新周期版权合作达成共识。这份协议的核心数字让外界颇感意外——2026年美加墨世界杯的版权费最终定格在6000万美元。 …
+        - listitem [ref=e187]:
+          - link "网易" [ref=e189] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=07c5b2f8373924991ee7be2c5544c4d767b3382fe8b24e3059a05db7a05eb6d0JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cuMTYzLmNvbS9keS9hcnRpY2xlL0tUTUU3S1ZQMDUyOTgxOFAuaHRtbA&ntb=1
+            - generic [ref=e194]:
+              - generic [ref=e195]: 网易
+              - generic [ref=e198]: https://www.163.com › dy › article
+          - heading "C罗，投资了一个世界杯“免费频道”！ - 网易" [level=2] [ref=e199]:
+            - link "C罗，投资了一个世界杯“免费频道”！ - 网易" [ref=e200] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=07c5b2f8373924991ee7be2c5544c4d767b3382fe8b24e3059a05db7a05eb6d0JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cuMTYzLmNvbS9keS9hcnRpY2xlL0tUTUU3S1ZQMDUyOTgxOFAuaHRtbA&ntb=1
+          - paragraph [ref=e202]: 10 小时之前 · 在巴西互联网世界里，他更像是“体育圈主播＋娱乐化解说＋YouTube顶流”的混合体。 2022年卡塔尔世界杯，CazéTV获得了部分赛事版权，并开始在YouTube上试水免费直播。 不少巴西 …
+        - listitem [ref=e203]:
+          - link "dahecube.com" [ref=e205] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=3ef32a6cdb39563267fa2ad1a800eb44fd69296d348e250b9a42f7f07f7e738cJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9hcHAuZGFoZWN1YmUuY29tL253ZWIvbmV3cy8yMDI2MDUyMy8yNzQ4NTVuMGM3MmZkNzlkYzcuaHRt&ntb=1
+            - generic [ref=e210]:
+              - generic [ref=e211]: dahecube.com
+              - generic [ref=e214]: https://app.dahecube.com › nweb › news
+          - heading "高端显示关注度上升 海信RGB-Mini LED电视进入6·18销售榜" [level=2] [ref=e215]:
+            - link "高端显示关注度上升 海信RGB-Mini LED电视进入6·18销售榜" [ref=e216] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=3ef32a6cdb39563267fa2ad1a800eb44fd69296d348e250b9a42f7f07f7e738cJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9hcHAuZGFoZWN1YmUuY29tL253ZWIvbmV3cy8yMDI2MDUyMy8yNzQ4NTVuMGM3MmZkNzlkYzcuaHRt&ntb=1
+          - paragraph [ref=e218]: 1 天前 · 市场分析指出，6·18初期的销售数据反映出消费者对高端显示技术的关注度持续上升。此外，2026年世界杯赛事临近，海信作为官方赞助商，其RGB-Mini LED电视产品有望借助赛事窗口进一 …
+        - listitem [ref=e219]:
+          - link "同花顺财经" [ref=e221] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=d5e07fc525617c8cc68f25fd858a680cd6ed3fc63364a3344b924f6af0ac20b0JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9uZXdzLjEwanFrYS5jb20uY24vZmllbGQvMjAyNjA1MjMvNjc2OTIzNzA3LnNodG1s&ntb=1
+            - generic [ref=e226]:
+              - generic [ref=e227]: 同花顺财经
+              - generic [ref=e230]: https://news.10jqka.com.cn › field
+          - heading "高端显示关注度上升 海信RGB-Mini LED电视进入6·18销售榜" [level=2] [ref=e231]:
+            - link "高端显示关注度上升 海信RGB-Mini LED电视进入6·18销售榜":
+              - /url: https://www.bing.com/ck/a?!&&p=d5e07fc525617c8cc68f25fd858a680cd6ed3fc63364a3344b924f6af0ac20b0JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9uZXdzLjEwanFrYS5jb20uY24vZmllbGQvMjAyNjA1MjMvNjc2OTIzNzA3LnNodG1s&ntb=1
+          - paragraph [ref=e233]: 1 天前 · 市场分析指出，6.18初期的销售数据反映出消费者对高端显示技术的关注度持续上升。 此外，2026年世界杯赛事临近，海信作为官方赞助商，其RGB-Mini LED电视产品有望借助赛事窗口进一 …
+        - listitem [ref=e234]:
+          - link "yyzqteam.com" [ref=e236] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=5d5567d80fd969a6db7e7f91fadf80d706e892d6f1f30c058eaa37e522f20032JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cueXl6cXRlYW0uY29tL3NoaWppZWJlaS83MTYxMDQuaHRtbA&ntb=1
+            - generic [ref=e241]:
+              - generic [ref=e242]: yyzqteam.com
+              - generic [ref=e245]: https://www.yyzqteam.com › shijiebei
+          - heading "世界杯球衣赞助商的产品推荐理由 - 一叶知秋工具箱官网" [level=2] [ref=e246]:
+            - link "世界杯球衣赞助商的产品推荐理由 - 一叶知秋工具箱官网":
+              - /url: https://www.bing.com/ck/a?!&&p=5d5567d80fd969a6db7e7f91fadf80d706e892d6f1f30c058eaa37e522f20032JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cueXl6cXRlYW0uY29tL3NoaWppZWJlaS83MTYxMDQuaHRtbA&ntb=1
+          - paragraph [ref=e248]: 10 小时之前 · 一、品牌定位与形象提升 世界杯球衣赞助商的核心目标是提升品牌在全球范围内的知名度和影响力。 耐克（Nike）作为多次世界杯球衣的赞助商，通过其标志性的设计和技术创新，将品牌 …
+        - listitem [ref=e249]:
+          - link "SocialBeta" [ref=e251] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=29eb0836ba912bdad50336e574f50d28e17c45e56f58ac39a0fa7f1734884d96JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9zb2NpYWxiZXRhLmNvbS9hcnRpY2xlLzExMTEyMg&ntb=1
+            - generic [ref=e256]:
+              - generic [ref=e257]: SocialBeta
+              - generic [ref=e260]: https://socialbeta.com › article
+          - heading "【营销周报】年度重磅｜2026 十大趋势：算法时代，「人」本答 …" [level=2] [ref=e261]:
+            - link "【营销周报】年度重磅｜2026 十大趋势：算法时代，「人」本答 …":
+              - /url: https://www.bing.com/ck/a?!&&p=29eb0836ba912bdad50336e574f50d28e17c45e56f58ac39a0fa7f1734884d96JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9zb2NpYWxiZXRhLmNvbS9hcnRpY2xlLzExMTEyMg&ntb=1
+          - paragraph [ref=e263]: 10 小时之前 · 前瞻 2026 年世界杯，随着参赛队伍扩军至 48 队，赛事周期较 2022 年延长 34%，消费窗口也被显著拉长。 随着赛事规模和周期升级，叠加品牌提前布局和衍生品赛道的崛起，报告预测赛 …
+        - listitem [ref=e264]:
+          - generic [ref=e266]:
+            - heading "世界杯 2026 营销 赞助 的视频" [level=2] [ref=e268]:
+              - link "世界杯 2026 营销 赞助 的视频" [ref=e269] [cursor=pointer]:
+                - /url: https://www.bing.com/ck/a?!&&p=8667d6f8be38cf554c34c76d7bb3624f3c6abf6d74c684017d23ce47f879455bJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0lZTQlYjglOTYlZTclOTUlOGMlZTYlOWQlYWYrMjAyNislZTglOTAlYTUlZTklOTQlODArJWU4JWI1JTllJWU1JThhJWE5JnFwdnQ9JWU0JWI4JTk2JWU3JTk1JThjJWU2JTlkJWFmKzIwMjYrJWU4JTkwJWE1JWU5JTk0JTgwKyVlOCViNSU5ZSVlNSU4YSVhOSZGT1JNPVZEUkU&ntb=1
+            - list "请使用箭头键进行导航" [ref=e276]:
+              - listitem [ref=e277]:
+                - link "足球 世界 杯 2026" [ref=e278] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=f8edd85ad984431ed76992d1498b4df9be746a4e1245fa674f4999102dc22e0bJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0lZTglYjYlYjMlZTclOTAlODMrJWU0JWI4JTk2JWU3JTk1JThjKyVlNiU5ZCVhZisyMDI2JnFmdD0rZmlsdGVydWklM2FhZ2UtbHQxNDQwJkZPUk09VkFSU1FQ&ntb=1
+                  - generic "足球 世界 杯 2026" [ref=e281]
+              - listitem [ref=e282]:
+                - link "2026 足球 世界 杯" [ref=e283] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=5ebce6acf3634ad7c39862ce0a5653d28a18bc5b5f9a8f7f290d5b7534aa6e97JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlOCViNiViMyVlNyU5MCU4MyslZTQlYjglOTYlZTclOTUlOGMrJWU2JTlkJWFmJnFmdD0rZmlsdGVydWklM2FhZ2UtbHQxNDQwJkZPUk09VkFSU1FQ&ntb=1
+                  - generic "2026 足球 世界 杯" [ref=e286]
+              - listitem [ref=e287]:
+                - link "2026 年 足球 世界 杯" [ref=e288] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=bbf5e67114408654626ee44ab0a17fb439368b6b478638926623057f44349ea5JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNSViOSViNCslZTglYjYlYjMlZTclOTAlODMrJWU0JWI4JTk2JWU3JTk1JThjKyVlNiU5ZCVhZiZxZnQ9K2ZpbHRlcnVpJTNhYWdlLWx0MTQ0MCZGT1JNPVZBUlNRUA&ntb=1
+                  - generic "2026 年 足球 世界 杯" [ref=e291]
+              - listitem [ref=e292]:
+                - link "足球 2026 世界 杯" [ref=e293] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=0c92608e74eb2b1cf2ca34e916f2552c6b8dc261afb41f77710e223f3afde773JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0lZTglYjYlYjMlZTclOTAlODMrMjAyNislZTQlYjglOTYlZTclOTUlOGMrJWU2JTlkJWFmJnFmdD0rZmlsdGVydWklM2FhZ2UtbHQxNDQwJkZPUk09VkFSU1FQ&ntb=1
+                  - generic "足球 2026 世界 杯" [ref=e296]
+              - listitem [ref=e297]:
+                - link "2026 世界 杯 冠军 预测" [ref=e298] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=74723354f44808709c35b48f7589f7f32861eca251fd85103a81d9af217691d1JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNCViOCU5NiVlNyU5NSU4YyslZTYlOWQlYWYrJWU1JTg2JWEwJWU1JTg2JTliKyVlOSVhMiU4NCVlNiViNSU4YiZxZnQ9K2ZpbHRlcnVpJTNhYWdlLWx0MTQ0MCZGT1JNPVZBUlNRUA&ntb=1
+                  - generic "2026 世界 杯 冠军 预测" [ref=e301]
+              - listitem [ref=e302]:
+                - link "2026 世界 杯 预测" [ref=e303] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=a8598d96c3243e6dc554158667c14837ac6218d1b970e82dc26d1912f1dd2ba5JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNCViOCU5NiVlNyU5NSU4YyslZTYlOWQlYWYrJWU5JWEyJTg0JWU2JWI1JThiJnFmdD0rZmlsdGVydWklM2FhZ2UtbHQxNDQwJkZPUk09VkFSU1FQ&ntb=1
+                  - generic "2026 世界 杯 预测" [ref=e306]
+              - listitem [ref=e307]:
+                - link "2026 世界 杯 时间" [ref=e308] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=2904b9861220eeab62508e7d3eb714dff988171794589d9881ac761eca018c52JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNCViOCU5NiVlNyU5NSU4YyslZTYlOWQlYWYrJWU2JTk3JWI2JWU5JTk3JWI0JnFmdD0rZmlsdGVydWklM2FhZ2UtbHQxNDQwJkZPUk09VkFSU1FQ&ntb=1
+                  - generic "2026 世界 杯 时间" [ref=e311]
+              - listitem [ref=e312]:
+                - link "2026 年 世界 杯 举办 国家" [ref=e313] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=84d5f4bc5fa098ed24e81362f7c483ae4b6c81bf0f67de437365470b4d2b4f5dJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNSViOSViNCslZTQlYjglOTYlZTclOTUlOGMrJWU2JTlkJWFmKyVlNCViOCViZSVlNSU4YSU5ZSslZTUlOWIlYmQlZTUlYWUlYjYmcWZ0PStmaWx0ZXJ1aSUzYWFnZS1sdDE0NDAmRk9STT1WQVJTUVA&ntb=1
+                  - generic "2026 年 世界 杯 举办 国家" [ref=e316]
+              - listitem [ref=e317]:
+                - link "2026 世界 杯 预选 赛" [ref=e318] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=7703be3a03bc943bc095fd740c830c0cf6e3aba85a4465cf5b0628fb2e3e4adbJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNCViOCU5NiVlNyU5NSU4YyslZTYlOWQlYWYrJWU5JWEyJTg0JWU5JTgwJTg5KyVlOCViNSU5YiZxZnQ9K2ZpbHRlcnVpJTNhYWdlLWx0MTQ0MCZGT1JNPVZBUlNRUA&ntb=1
+                  - generic "2026 世界 杯 预选 赛" [ref=e321]
+              - listitem [ref=e322]:
+                - link "2026 世界 杯 分组" [ref=e323] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=27a68f509a020863672022a0a5b84a1fa7fd35f9af02d0039d327e42c546a49aJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNCViOCU5NiVlNyU5NSU4YyslZTYlOWQlYWYrJWU1JTg4JTg2JWU3JWJiJTg0JnFmdD0rZmlsdGVydWklM2FhZ2UtbHQxNDQwJkZPUk09VkFSU1FQ&ntb=1
+                  - generic "2026 世界 杯 分组" [ref=e326]
+              - listitem [ref=e327]:
+                - link "世界 杯 2026" [ref=e328] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=6dbcfd79422d2fd3513e6b29a699656585b0aa65ad082736f8604fd5737da3c1JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0lZTQlYjglOTYlZTclOTUlOGMrJWU2JTlkJWFmKzIwMjYmcWZ0PStmaWx0ZXJ1aSUzYWFnZS1sdDE0NDAmRk9STT1WQVJTUVA&ntb=1
+                  - generic "世界 杯 2026" [ref=e331]
+              - listitem [ref=e332]:
+                - link "2026 世界 杯 预选 赛 直播" [ref=e333] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=277408cdba932ba23ab677ec126f9f4d7e74a81446ffa0eb47ba6559139fa49bJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNCViOCU5NiVlNyU5NSU4YyslZTYlOWQlYWYrJWU5JWEyJTg0JWU5JTgwJTg5KyVlOCViNSU5YislZTclOWIlYjQlZTYlOTIlYWQmcWZ0PStmaWx0ZXJ1aSUzYWFnZS1sdDE0NDAmRk9STT1WQVJTUVA&ntb=1
+                  - generic "2026 世界 杯 预选 赛 直播" [ref=e336]
+              - listitem [ref=e337]:
+                - link "2026 世界 杯" [ref=e338] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=92b69f309413ab8cd2fb816fcb3bc0f110468242765abbf11c3b2c9b4e05db73JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNCViOCU5NiVlNyU5NSU4YyslZTYlOWQlYWYmcWZ0PStmaWx0ZXJ1aSUzYWFnZS1sdDE0NDAmRk9STT1WQVJTUVA&ntb=1
+                  - generic "2026 世界 杯" [ref=e341]
+              - listitem [ref=e342]:
+                - link "2026 年 世界 杯 预选 赛" [ref=e343] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=ff1951b3dd238b55e648e53c5e408badcc220af38a75262a938bc0570bbd5124JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNSViOSViNCslZTQlYjglOTYlZTclOTUlOGMrJWU2JTlkJWFmKyVlOSVhMiU4NCVlOSU4MCU4OSslZTglYjUlOWImcWZ0PStmaWx0ZXJ1aSUzYWFnZS1sdDE0NDAmRk9STT1WQVJTUVA&ntb=1
+                  - generic "2026 年 世界 杯 预选 赛" [ref=e346]
+              - listitem [ref=e347]:
+                - link "2025 全球 总 决赛" [ref=e348] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=a3ba30fca0536f566ba6cbfdd7257e6ff98253a934bcec078eb666ba57baece9JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI1KyVlNSU4NSVhOCVlNyU5MCU4MyslZTYlODAlYmIrJWU1JTg2JWIzJWU4JWI1JTliJnFmdD0rZmlsdGVydWklM2FhZ2UtbHQxNDQwJkZPUk09VkFSU1FQ&ntb=1
+                  - generic "2025 全球 总 决赛" [ref=e351]
+              - listitem [ref=e352]:
+                - link "2026 年 的 世界 杯" [ref=e353] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=76667b36389090ae352ffadff5fc929cd5518a03611b80caf6ca6d1a57edca6eJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNSViOSViNCslZTclOWElODQrJWU0JWI4JTk2JWU3JTk1JThjKyVlNiU5ZCVhZiZxZnQ9K2ZpbHRlcnVpJTNhYWdlLWx0MTQ0MCZGT1JNPVZBUlNRUA&ntb=1
+                  - generic "2026 年 的 世界 杯" [ref=e356]
+              - listitem [ref=e357]:
+                - link "2026 世界 杯 预选 赛 直播 回放" [ref=e358] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=30073ef8790ceb6587a63d1222922272b80c9eafad522bb70a8f094c23f794f9JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNCViOCU5NiVlNyU5NSU4YyslZTYlOWQlYWYrJWU5JWEyJTg0JWU5JTgwJTg5KyVlOCViNSU5YislZTclOWIlYjQlZTYlOTIlYWQrJWU1JTliJTllJWU2JTk0JWJlJnFmdD0rZmlsdGVydWklM2FhZ2UtbHQxNDQwJkZPUk09VkFSU1FQ&ntb=1
+                  - generic "2026 世界 杯 预选 赛 直播 回放" [ref=e361]
+              - listitem [ref=e362]:
+                - link "2026 世界 杯 分组 抽签" [ref=e363] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=c3e8b49a51af103d3ea1f591f13562396d06606b9f77c1562c2e072656f92ac4JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNCViOCU5NiVlNyU5NSU4YyslZTYlOWQlYWYrJWU1JTg4JTg2JWU3JWJiJTg0KyVlNiU4YSViZCVlNyVhZCViZSZxZnQ9K2ZpbHRlcnVpJTNhYWdlLWx0MTQ0MCZGT1JNPVZBUlNRUA&ntb=1
+                  - generic "2026 世界 杯 分组 抽签" [ref=e366]
+              - listitem [ref=e367]:
+                - link "2025 年 足球 世界 杯" [ref=e368] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=48e61ba72b4cf9d68e663f010af2dd4f2633dc54415d2f2250449d393216064aJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI1KyVlNSViOSViNCslZTglYjYlYjMlZTclOTAlODMrJWU0JWI4JTk2JWU3JTk1JThjKyVlNiU5ZCVhZiZxZnQ9K2ZpbHRlcnVpJTNhYWdlLWx0MTQ0MCZGT1JNPVZBUlNRUA&ntb=1
+                  - generic "2025 年 足球 世界 杯" [ref=e371]
+              - listitem [ref=e372]:
+                - link "2026 世界 杯 举办 地" [ref=e373] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=ddfba6c134a5b796e140fe03d3ed31f4f5f4b68d37b6ed118e513fffc48e0e2bJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2KyVlNCViOCU5NiVlNyU5NSU4YyslZTYlOWQlYWYrJWU0JWI4JWJlJWU1JThhJTllKyVlNSU5YyViMCZxZnQ9K2ZpbHRlcnVpJTNhYWdlLWx0MTQ0MCZGT1JNPVZBUlNRUA&ntb=1
+                  - generic "2026 世界 杯 举办 地" [ref=e376]
+            - generic [ref=e378]:
+              - 'link "2026世界杯投注平台推荐｜热门体育竞猜网站推广平台大全来源: YouTube · 时长: 35 秒 · 上传时间: 3 小时之前 · 上传人: 2026世界杯最佳投注平台网站——世界杯全赛程安排 · 单击以播放。 · 2026世界杯即将火热开赛，全球球迷共同关注每一场精彩对决！想了解更多世界杯赛事分析、热门球队动态与足球资讯，欢迎关注我们的体育交流平台。每日更新世界杯赛程、热门比赛前瞻与精彩看点，与广大球迷一起畅聊足球盛宴！官网：0600.win 网站：cl259.com ..." [ref=e381] [cursor=pointer]':
+                - /url: https://www.bing.com/ck/a?!&&p=25b1936df0a4c0fc35b13c340c78ab0335ccac232c76703f9b667842e09a34dfJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9yaXZlcnZpZXcvcmVsYXRlZHZpZGVvP3E9JWU0JWI4JTk2JWU3JTk1JThjJWU2JTlkJWFmKzIwMjYrJWU4JTkwJWE1JWU5JTk0JTgwKyVlOCViNSU5ZSVlNSU4YSVhOSZtaWQ9QzNFMTkwMTA3RUU5QjlDMDJGRDVDM0UxOTAxMDdFRTlCOUMwMkZENSZjaHVybD0mbW1zY249c3R2byZGT1JNPVZJUkU&ntb=1
+                - generic [ref=e382]:
+                  - generic [ref=e391]: 0:35
+                  - generic [ref=e392]:
+                    - generic "2026世界杯投注平台推荐｜热门体育竞猜网站推广平台大全" [ref=e393]:
+                      - text: "2026"
+                      - strong [ref=e394]: 世界杯
+                      - text: 投注平台推荐｜热门体育竞猜网站推广平台大全
+                    - generic [ref=e395]:
+                      - generic [ref=e396]:
+                        - img "视频源网站" [ref=e397]
+                        - text: YouTube · 2026世界杯最佳投注平台网站——世界杯全赛程安排
+                      - generic [ref=e398]: 3 小时之前
+              - 'link "[国际足球]总台发布2026世界杯融媒体传播服务方案来源: CCTV · 时长: 1 分钟57 秒 · 上传时间: 6 天之前 · 上传人: 钱睿斌 · 单击以播放。 · 北京时间5月17日，中央广播电视总台正式发布2026世界杯融媒体传播服务方案，确认获得美加墨世界杯版权，并公布了转播计划、节目矩阵及解说阵容。" [ref=e401] [cursor=pointer]':
+                - /url: https://www.bing.com/ck/a?!&&p=50832a9efe915b7e2f38ef04337cbf7f5b89bc42d0852e1de3777ed18c537584JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly90di5jY3R2LmNvbS8yMDI2LzA1LzE4L1ZJREV5N0lhSzhNY3VBSXR0OUFaZndiaDI2MDUxOC5zaHRtbA&ntb=1
+                - generic [ref=e402]:
+                  - generic [ref=e411]: 1:57
+                  - generic [ref=e412]:
+                    - generic "[国际足球]总台发布2026世界杯融媒体传播服务方案" [ref=e413]:
+                      - text: "[国际足球]总台发布2026"
+                      - strong [ref=e414]: 世界杯
+                      - text: 融媒体传播服务方案
+                    - generic [ref=e415]:
+                      - generic [ref=e416]: CCTV · 钱睿斌
+                      - generic [ref=e417]: 6 天之前
+              - 'link "重磅喜讯！央视成功拿下2026世界杯中国大陆独家转播权，美加墨足球盛宴即将开启，NG体育同步解锁超多赛事干货！来源: bilibili · 时长: 12 秒 · 上传时间: 22 小时之前 · 上传人: bili_19927562416 · 单击以播放。 · 重磅喜讯！央视成功拿下2026世界杯中国大陆独家转播权，美加墨足球盛宴即将开启，NG体育同步解锁超多赛事干货！" [ref=e420] [cursor=pointer]':
+                - /url: https://www.bing.com/ck/a?!&&p=452d3c317d9feadd53f523d294c8f5c71ef50cf69b80f9d0fbaf1c6f54e0a1beJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9yaXZlcnZpZXcvcmVsYXRlZHZpZGVvP3E9JWU0JWI4JTk2JWU3JTk1JThjJWU2JTlkJWFmKzIwMjYrJWU4JTkwJWE1JWU5JTk0JTgwKyVlOCViNSU5ZSVlNSU4YSVhOSZtaWQ9Q0UwMTMzMzg0NUYzOUQxMkU0QTNDRTAxMzMzODQ1RjM5RDEyRTRBMyZjaHVybD0mRk9STT1WSVJF&ntb=1
+                - generic [ref=e421]:
+                  - generic [ref=e430]: 0:12
+                  - generic [ref=e431]:
+                    - generic "重磅喜讯！央视成功拿下2026世界杯中国大陆独家转播权，美加墨足球盛宴即将开启，NG体育同步解锁超多赛事干货！" [ref=e432]:
+                      - text: 重磅喜讯！央视成功拿下2026
+                      - strong [ref=e433]: 世界杯
+                      - text: 中国大陆独家转播权，美加墨足球盛宴即将开启，NG体育同步解锁超多赛事干货！
+                    - generic [ref=e434]:
+                      - generic [ref=e435]: bilibili · bili_19927562416
+                      - generic [ref=e436]: 22 小时之前
+        - listitem [ref=e437]:
+          - generic [ref=e438]:
+            - heading "深入了解 世界杯 2026 营销 赞助" [level=2] [ref=e439]:
+              - text: 深入了解
+              - strong [ref=e440]: 世界杯 2026 营销 赞助
+            - list [ref=e441]:
+              - listitem [ref=e442]:
+                - link "2026世界杯全球官方赞助商" [ref=e443] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=6110025521d93767ff41d37aa83a15cbf5d83913442ce8aff019aa4f6a029e9fJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPTIwMjYlZTQlYjglOTYlZTclOTUlOGMlZTYlOWQlYWYlZTUlODUlYTglZTclOTAlODMlZTUlYWUlOTglZTYlOTYlYjklZTglYjUlOWUlZTUlOGElYTklZTUlOTUlODYmRk9STT1RU1JFMQ&ntb=1
+                  - generic [ref=e445]:
+                    - text: "2026"
+                    - strong [ref=e446]: 世界杯全球官方赞助商
+              - listitem [ref=e447]:
+                - link "2026世界杯 赞助商 中国" [ref=e448] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=35284722fa0e7c902add0ba9759cbd1dc1acb3812986a3e8b229473bc54d5845JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPTIwMjYlZTQlYjglOTYlZTclOTUlOGMlZTYlOWQlYWYrJWU4JWI1JTllJWU1JThhJWE5JWU1JTk1JTg2KyVlNCViOCVhZCVlNSU5YiViZCZGT1JNPVFTUkUy&ntb=1
+                  - generic [ref=e450]:
+                    - text: 2026世界杯
+                    - strong [ref=e451]: 赞助商 中国
+              - listitem [ref=e452]:
+                - link "26年世界杯赞助商" [ref=e453] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=c6b1446e95a1d4e6c50798d7747773382b86e844037e6cb37121ca5bb1fdc85aJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPTI2JWU1JWI5JWI0JWU0JWI4JTk2JWU3JTk1JThjJWU2JTlkJWFmJWU4JWI1JTllJWU1JThhJWE5JWU1JTk1JTg2JkZPUk09UVNSRTM&ntb=1
+                  - strong [ref=e456]: 26年世界杯赞助商
+              - listitem [ref=e457]:
+                - link "2026世界杯海信赞助" [ref=e458] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=dadc3d70a4620cdb7b22093f9f11dc41f3539c153ee8b749a1d9384519e6821cJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPTIwMjYlZTQlYjglOTYlZTclOTUlOGMlZTYlOWQlYWYlZTYlYjUlYjclZTQlYmYlYTElZTglYjUlOWUlZTUlOGElYTkmRk9STT1RU1JFNA&ntb=1
+                  - generic [ref=e460]:
+                    - text: "2026"
+                    - strong [ref=e461]: 世界杯海信赞助
+              - listitem [ref=e462]:
+                - link "2026世界杯赞助商名单" [ref=e463] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=4d0830ba93e907127670d8eb6828c085f76cb46564f7619f0fe98763d9a19dadJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPTIwMjYlZTQlYjglOTYlZTclOTUlOGMlZTYlOWQlYWYlZTglYjUlOWUlZTUlOGElYTklZTUlOTUlODYlZTUlOTAlOGQlZTUlOGQlOTUmRk9STT1RU1JFNQ&ntb=1
+                  - generic [ref=e465]:
+                    - text: "2026"
+                    - strong [ref=e466]: 世界杯赞助商名单
+              - listitem [ref=e467]:
+                - link "美加墨世界杯中国赞助商" [ref=e468] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=93796850939431dec44bb41572a578686ca34f03cf50fc375acce8deb4ba2db5JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPSVlNyViZSU4ZSVlNSU4YSVhMCVlNSVhMiVhOCVlNCViOCU5NiVlNyU5NSU4YyVlNiU5ZCVhZiVlNCViOCVhZCVlNSU5YiViZCVlOCViNSU5ZSVlNSU4YSVhOSVlNSU5NSU4NiZGT1JNPVFTUkU2&ntb=1
+                  - strong [ref=e471]: 美加墨世界杯中国赞助商
+              - listitem [ref=e472]:
+                - link "世界杯官方赞助商" [ref=e473] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=996836f615edbc9a81ebbbaed25af1a0e0d47876cf108e6d31cbe555ef6c1c4dJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPSVlNCViOCU5NiVlNyU5NSU4YyVlNiU5ZCVhZiVlNSVhZSU5OCVlNiU5NiViOSVlOCViNSU5ZSVlNSU4YSVhOSVlNSU5NSU4NiZGT1JNPVFTUkU3&ntb=1
+                  - strong [ref=e476]: 世界杯官方赞助商
+              - listitem [ref=e477]:
+                - link "世界杯中国赞助商" [ref=e478] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=8ec70d0c62779a223e02f945b67712d7f539b36695a15bbffcb53c0242e4d77dJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPSVlNCViOCU5NiVlNyU5NSU4YyVlNiU5ZCVhZiVlNCViOCVhZCVlNSU5YiViZCVlOCViNSU5ZSVlNSU4YSVhOSVlNSU5NSU4NiZGT1JNPVFTUkU4&ntb=1
+                  - strong [ref=e481]: 世界杯中国赞助商
+        - listitem [ref=e482]:
+          - link "某些结果已被删除" [ref=e484] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=bec781b4419a9a8d587953809d30d5a012822d07dfdb826cb2842f5f89aa9bf7JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cDovL2dvLm1pY3Jvc29mdC5jb20vZndsaW5rLz9MaW5rSUQ9NjE3MzUw&ntb=1
+        - listitem [ref=e485]:
+          - navigation "世界杯 2026 营销 赞助 的更多搜索结果":
+            - list:
+              - listitem [ref=e486]:
+                - generic "第 1 页" [ref=e487]: "1"
+              - listitem [ref=e488]:
+                - link "第 2 页" [ref=e489] [cursor=pointer]:
+                  - /url: /search?q=%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80+%e8%b5%9e%e5%8a%a9&filters=ex1%3a%22ez1%22&setlang=zh-cn&qft=+filterui%3aage-lt1440&FPIG=3E45435056CE440CB3839E15A6B017DC&first=11&FORM=PERE
+                  - text: "2"
+              - listitem [ref=e490]:
+                - link "第 3 页" [ref=e491] [cursor=pointer]:
+                  - /url: /search?q=%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80+%e8%b5%9e%e5%8a%a9&filters=ex1%3a%22ez1%22&setlang=zh-cn&qft=+filterui%3aage-lt1440&FPIG=3E45435056CE440CB3839E15A6B017DC&first=21&FORM=PERE1
+                  - text: "3"
+              - listitem [ref=e492]:
+                - link "下一页" [ref=e493] [cursor=pointer]:
+                  - /url: /search?q=%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80+%e8%b5%9e%e5%8a%a9&filters=ex1%3a%22ez1%22&setlang=zh-cn&qft=+filterui%3aage-lt1440&FPIG=3E45435056CE440CB3839E15A6B017DC&first=11&FORM=PORE
+      - complementary "更多结果"
+  - contentinfo [ref=e494]:
+    - generic [ref=e495]:
+      - list:
+        - listitem [ref=e496]:
+          - link "隐私" [ref=e497] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=df0149fa057fc559ce30c62bba35e74dfd92cbc94d8223e71ec17e693497dd96JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cDovL2dvLm1pY3Jvc29mdC5jb20vZndsaW5rLz9MaW5rSWQ9NTIxODM5&ntb=1
+        - listitem [ref=e498]:
+          - link "条款" [ref=e499] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=61ac7533428edf9f0c85de9b8639568d20e4391333d47c16d8deb16885681b92JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cDovL2dvLm1pY3Jvc29mdC5jb20vZndsaW5rLz9MaW5rSUQ9MjQ2MzM4&ntb=1

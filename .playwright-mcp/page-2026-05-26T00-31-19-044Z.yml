@@ -1,0 +1,248 @@
+- generic [active] [ref=e1]:
+  - link "欢迎进入 百度资讯搜索_世界杯 2026 营销 蒙牛 伊利 赞助 品牌,盲人用户使用操作智能引导，请按快捷键Ctrl+Alt+R；阅读详细操作说明请按快捷键Ctrl+Alt+问号键。":
+    - /url: javascript:void(0)
+    - img [ref=e2] [cursor=pointer]
+  - generic [ref=e3]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - link "到百度首页" [ref=e7] [cursor=pointer]:
+          - /url: /
+          - img "到百度首页" [ref=e8]
+        - generic [ref=e12]:
+          - textbox [ref=e15]: 世界杯 2026 营销 蒙牛 伊利 赞助 品牌
+          - generic [ref=e17]:
+            - generic [ref=e18]:
+              - img [ref=e20] [cursor=pointer]
+              - generic [ref=e23]:
+                - img [ref=e30] [cursor=pointer]
+                - img [ref=e36] [cursor=pointer]
+                - img [ref=e41] [cursor=pointer]
+            - button "百度一下" [ref=e45] [cursor=pointer]
+      - generic [ref=e46]:
+        - link "百度首页" [ref=e47] [cursor=pointer]:
+          - /url: /
+        - link "登录" [ref=e48] [cursor=pointer]:
+          - /url: https://passport.baidu.com/v2/?login&tpl=mn&u=http%3A%2F%2Fwww.baidu.com%2F
+    - generic [ref=e51]:
+      - link [ref=e52] [cursor=pointer]:
+        - /url: https://chat.baidu.com/search?word=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E4%BC%8A%E5%88%A9+%E8%B5%9E%E5%8A%A9+%E5%93%81%E7%89%8C&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&pd=csaitab&setype=csaitab&extParamsJson=%7B%22enter_type%22%3A%22search_a_tab%22%2C%22sa%22%3A%22vs_tab%22%2C%22apagelid%22%3A%2211595098036226395741%22%2C%22ori_lid%22%3A%2211595098036226395741%22%7D
+        - img [ref=e53]
+      - link "网页" [ref=e54] [cursor=pointer]:
+        - /url: https://www.baidu.com/s?&wd=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E4%BC%8A%E5%88%A9+%E8%B5%9E%E5%8A%A9+%E5%93%81%E7%89%8C
+      - link "图片" [ref=e55] [cursor=pointer]:
+        - /url: http://image.baidu.com/i?tn=baiduimage&ps=1&ct=201326592&lm=-1&cl=2&nc=1&ie=utf-8&lid=a0ea103b011a8e5d&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E4%BC%8A%E5%88%A9+%E8%B5%9E%E5%8A%A9+%E5%93%81%E7%89%8C
+      - generic [ref=e56]: 资讯
+      - link "视频" [ref=e57] [cursor=pointer]:
+        - /url: /sf/vsearch?pd=video&tn=vsearch&lid=a0ea103b011a8e5d&ie=utf-8&wd=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E4%BC%8A%E5%88%A9+%E8%B5%9E%E5%8A%A9+%E5%93%81%E7%89%8C&rsv_spt=7&rsv_bp=1&f=8&oq=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E4%BC%8A%E5%88%A9+%E8%B5%9E%E5%8A%A9+%E5%93%81%E7%89%8C&rsv_pq=a0ea103b011a8e5d
+      - link "笔记" [ref=e58] [cursor=pointer]:
+        - /url: https://www.baidu.com/s?pd=note&rpf=pc&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E4%BC%8A%E5%88%A9+%E8%B5%9E%E5%8A%A9+%E5%93%81%E7%89%8C
+      - link "地图" [ref=e59] [cursor=pointer]:
+        - /url: https://map.baidu.com/?newmap=1&ie=utf-8&from=pstab&s=s%26wd%3D%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E4%BC%8A%E5%88%A9+%E8%B5%9E%E5%8A%A9+%E5%93%81%E7%89%8C
+      - link "贴吧" [ref=e60] [cursor=pointer]:
+        - /url: http://tieba.baidu.com/f?fr=wwwt&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&kw=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E4%BC%8A%E5%88%A9+%E8%B5%9E%E5%8A%A9+%E5%93%81%E7%89%8C
+      - link "文库" [ref=e61] [cursor=pointer]:
+        - /url: http://wenku.baidu.com/search?lm=0&od=0&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E4%BC%8A%E5%88%A9+%E8%B5%9E%E5%8A%A9+%E5%93%81%E7%89%8C
+      - link "更多" [ref=e62] [cursor=pointer]:
+        - /url: http://www.baidu.com/more/
+    - generic [ref=e63]:
+      - generic [ref=e64]:
+        - generic [ref=e65]:
+          - generic [ref=e66]: 百度为您找到相关资讯2个
+          - generic [ref=e69] [cursor=pointer]:
+            - text: 全部资讯
+            - generic [ref=e70]: 
+          - generic [ref=e71] [cursor=pointer]:
+            - text: 按时间排序
+            - generic [ref=e72]: 
+          - text: .
+        - generic [ref=e77]:
+          - generic "百度热搜" [ref=e78]:
+            - link " " [ref=e79] [cursor=pointer]:
+              - /url: https://top.baidu.com/board?platform=pc&sa=pcindex_a_right
+              - generic [ref=e80]: 
+              - generic [ref=e81]: 
+            - link " 换一换" [ref=e83] [cursor=pointer]:
+              - /url: javascript:void(0);
+              - generic [ref=e84]: 
+              - text: 换一换
+          - generic [ref=e85]:
+            - generic [ref=e86] [cursor=pointer]: 热搜榜
+            - generic [ref=e87] [cursor=pointer]: 北京榜
+            - generic [ref=e88] [cursor=pointer]: 民生榜
+            - generic [ref=e89] [cursor=pointer]: 财经榜
+          - generic [ref=e91]:
+            - generic [ref=e93]:
+              - generic [ref=e95]: 
+              - link "习近平同塞尔维亚总统举行会谈" [ref=e96] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E4%B9%A0%E8%BF%91%E5%B9%B3%E5%90%8C%E5%A1%9E%E5%B0%94%E7%BB%B4%E4%BA%9A%E6%80%BB%E7%BB%9F%E4%B8%BE%E8%A1%8C%E4%BC%9A%E8%B0%88&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=2071UdNzZxOmuKICoAQk6%2FudHeSEW%2BWLjWxlhDhBgeiCjDu8tzT%2Bb5zCkA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_1&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e98]:
+              - generic [ref=e99]: "1"
+              - link "今年天气系统出现异常" [ref=e100] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E4%BB%8A%E5%B9%B4%E5%A4%A9%E6%B0%94%E7%B3%BB%E7%BB%9F%E5%87%BA%E7%8E%B0%E5%BC%82%E5%B8%B8&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_2&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e101]: 新
+            - generic [ref=e103]:
+              - generic [ref=e104]: "2"
+              - link "留神峪煤矿瓦斯爆炸三大疑问追踪" [ref=e105] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E7%95%99%E7%A5%9E%E5%B3%AA%E7%85%A4%E7%9F%BF%E7%93%A6%E6%96%AF%E7%88%86%E7%82%B8%E4%B8%89%E5%A4%A7%E7%96%91%E9%97%AE%E8%BF%BD%E8%B8%AA&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_3&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e106]: 新
+            - generic [ref=e108]:
+              - generic [ref=e109]: "3"
+              - link "多地迎来强降雨 自驾出行需谨慎" [ref=e110] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E5%A4%9A%E5%9C%B0%E8%BF%8E%E6%9D%A5%E5%BC%BA%E9%99%8D%E9%9B%A8%20%E8%87%AA%E9%A9%BE%E5%87%BA%E8%A1%8C%E9%9C%80%E8%B0%A8%E6%85%8E&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_4&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e112]:
+              - generic [ref=e113]: "4"
+              - link "行车记录仪时速不到60 监控抓拍121" [ref=e114] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E8%A1%8C%E8%BD%A6%E8%AE%B0%E5%BD%95%E4%BB%AA%E6%97%B6%E9%80%9F%E4%B8%8D%E5%88%B060%20%E7%9B%91%E6%8E%A7%E6%8A%93%E6%8B%8D121&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_5&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e115]: 热
+            - generic [ref=e117]:
+              - generic [ref=e118]: "5"
+              - link "盒马“粉木耳”包装惹争议" [ref=e119] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E7%9B%92%E9%A9%AC%E2%80%9C%E7%B2%89%E6%9C%A8%E8%80%B3%E2%80%9D%E5%8C%85%E8%A3%85%E6%83%B9%E4%BA%89%E8%AE%AE&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_6&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e120]: 热
+            - generic [ref=e122]:
+              - generic [ref=e123]: "6"
+              - link "武契奇哽咽：男人最开心时可以流泪" [ref=e124] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E6%AD%A6%E5%A5%91%E5%A5%87%E5%93%BD%E5%92%BD%EF%BC%9A%E7%94%B7%E4%BA%BA%E6%9C%80%E5%BC%80%E5%BF%83%E6%97%B6%E5%8F%AF%E4%BB%A5%E6%B5%81%E6%B3%AA&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_7&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e125]: 热
+            - generic [ref=e127]:
+              - generic [ref=e128]: "7"
+              - link "郑钦文落泪：我该从低级别赛事打起" [ref=e129] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E9%83%91%E9%92%A6%E6%96%87%E8%90%BD%E6%B3%AA%EF%BC%9A%E6%88%91%E8%AF%A5%E4%BB%8E%E4%BD%8E%E7%BA%A7%E5%88%AB%E8%B5%9B%E4%BA%8B%E6%89%93%E8%B5%B7&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_8&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e130]: 新
+            - generic [ref=e132]:
+              - generic [ref=e133]: "8"
+              - link "燃油车齐降价 捷豹路虎打对折" [ref=e134] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E7%87%83%E6%B2%B9%E8%BD%A6%E9%BD%90%E9%99%8D%E4%BB%B7%20%E6%8D%B7%E8%B1%B9%E8%B7%AF%E8%99%8E%E6%89%93%E5%AF%B9%E6%8A%98&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_9&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e135]: 热
+            - generic [ref=e137]:
+              - generic [ref=e138]: "9"
+              - link "鲁比奥40度高温天穿西装参观泰姬陵" [ref=e139] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E9%B2%81%E6%AF%94%E5%A5%A540%E5%BA%A6%E9%AB%98%E6%B8%A9%E5%A4%A9%E7%A9%BF%E8%A5%BF%E8%A3%85%E5%8F%82%E8%A7%82%E6%B3%B0%E5%A7%AC%E9%99%B5&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_10&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e140]: 新
+            - generic [ref=e142]:
+              - generic [ref=e143]: "10"
+              - link "85岁英国教授在中国1个月涨粉超百万" [ref=e144] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=85%E5%B2%81%E8%8B%B1%E5%9B%BD%E6%95%99%E6%8E%88%E5%9C%A8%E4%B8%AD%E5%9B%BD1%E4%B8%AA%E6%9C%88%E6%B6%A8%E7%B2%89%E8%B6%85%E7%99%BE%E4%B8%87&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_11&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e145]: 热
+            - generic [ref=e147]:
+              - generic [ref=e148]: "11"
+              - link "“湖北宜昌水悦城积水”系去年视频" [ref=e149] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E2%80%9C%E6%B9%96%E5%8C%97%E5%AE%9C%E6%98%8C%E6%B0%B4%E6%82%A6%E5%9F%8E%E7%A7%AF%E6%B0%B4%E2%80%9D%E7%B3%BB%E5%8E%BB%E5%B9%B4%E8%A7%86%E9%A2%91&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_12&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e151]:
+              - generic [ref=e152]: "12"
+              - link "30岁男子患癌后想凭意念消除癌细胞" [ref=e153] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=30%E5%B2%81%E7%94%B7%E5%AD%90%E6%82%A3%E7%99%8C%E5%90%8E%E6%83%B3%E5%87%AD%E6%84%8F%E5%BF%B5%E6%B6%88%E9%99%A4%E7%99%8C%E7%BB%86%E8%83%9E&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_13&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e155]:
+              - generic [ref=e156]: "13"
+              - link "西安一女孩在街上遭陌生男子殴打" [ref=e157] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E8%A5%BF%E5%AE%89%E4%B8%80%E5%A5%B3%E5%AD%A9%E5%9C%A8%E8%A1%97%E4%B8%8A%E9%81%AD%E9%99%8C%E7%94%9F%E7%94%B7%E5%AD%90%E6%AE%B4%E6%89%93&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_14&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e159]:
+              - generic [ref=e160]: "14"
+              - link "偷拍被开除男生未入围公务员体检" [ref=e161] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E5%81%B7%E6%8B%8D%E8%A2%AB%E5%BC%80%E9%99%A4%E7%94%B7%E7%94%9F%E6%9C%AA%E5%85%A5%E5%9B%B4%E5%85%AC%E5%8A%A1%E5%91%98%E4%BD%93%E6%A3%80&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_1_15_15&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e163]:
+              - generic [ref=e164]: "15"
+              - link "美军称在伊朗南部实施自卫打击" [ref=e165] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E7%BE%8E%E5%86%9B%E7%A7%B0%E5%9C%A8%E4%BC%8A%E6%9C%97%E5%8D%97%E9%83%A8%E5%AE%9E%E6%96%BD%E8%87%AA%E5%8D%AB%E6%89%93%E5%87%BB&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=a0ea103b011a8e5d&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E8%90%A5%E9%94%80%20%E8%92%99%E7%89%9B%20%E4%BC%8A%E5%88%A9%20%E8%B5%9E%E5%8A%A9%20%E5%93%81%E7%89%8C&rsv_t=a339Tl6kpZrtDmn6LJEICeTMgG55k1ucFyVYv62rJapyleCQh1%2FboF0MeA&rqid=a0ea103b011a8e5d&rsf=7d8c5ed0d581f3955bb4c3ed5fa64cc9_16_30_16&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e166]: 新
+        - generic [ref=e170]:
+          - generic [ref=e172]:
+            - heading "标题：2026乳业嘉年华登陆成都,借势足球世界杯大年打造欢乐派对" [level=3] [ref=e173]:
+              - link "标题：2026乳业嘉年华登陆成都,借势足球世界杯大年打造欢乐派对" [ref=e174] [cursor=pointer]:
+                - /url: http://news.10jqka.com.cn/20260525/c676951195.shtml
+                - emphasis [ref=e175]: "2026"
+                - text: 乳业嘉年华登陆成都,借势足球
+                - emphasis [ref=e176]: 世界杯
+                - text: 大年打造欢乐派对
+            - generic [ref=e178]:
+              - text: 昨天17:41
+              - generic "摘要 从单盒到整箱,人人有奖,“金靴传奇”档位每日限量20份,可抱走整箱牛奶。 各品牌也拿出了自己的“足球绝活”:伊利在外场搭建了1000平方米的“乳品(884125)很行”乐园。蒙牛推出“要强加冕.冠军之路”集章打卡,整点大屏互动摇手机比拼带球速度,每场前5名赢小礼品。卫岗 摘要结束，点击查看详情" [ref=e179]: 从单盒到整箱,人人有奖,“金靴传奇”档位每日限量20份,可抱走整箱牛奶。 各品牌也拿出了自己的“足球绝活”:伊利在外场搭建了1000平方米的“乳品(884125)很行”乐园。蒙牛推出“要强加冕.冠军之路”集章打卡,整点大屏互动摇手机比拼带球速度,每场前5名赢小礼品。卫岗...
+              - link "新闻来源：同花顺财经" [ref=e181] [cursor=pointer]:
+                - /url: http://news.10jqka.com.cn/20260525/c676951195.shtml
+                - text: 同花顺财经
+          - generic [ref=e183]:
+            - heading "标题：央视“放弃”世界杯,那些天价赞助的品牌怎么办?" [level=3] [ref=e184]:
+              - link "标题：央视“放弃”世界杯,那些天价赞助的品牌怎么办?" [ref=e185] [cursor=pointer]:
+                - /url: https://baijiahao.baidu.com/s?id=1865229205535068550&wfr=spider&for=pc
+                - text: 央视“放弃”
+                - emphasis [ref=e186]: 世界杯
+                - text: ",那些天价"
+                - emphasis [ref=e187]: 赞助
+                - text: 的
+                - emphasis [ref=e188]: 品牌
+                - text: 怎么办?
+            - generic [ref=e189]:
+              - link [ref=e191] [cursor=pointer]:
+                - /url: https://baijiahao.baidu.com/s?id=1865229205535068550&wfr=spider&for=pc
+                - img [ref=e194]
+              - generic [ref=e195]:
+                - text: 5月15日
+                - generic "摘要 据外媒预测，本届世界杯的赞助与营销收入将达到 25 亿到 30 亿美元。从阿迪达斯、可口可乐、乐高、乐事、雀巢、ZURU，到海信、蒙牛、vivo，从国际到国内的赞助商阵容持续扩大，甚至还出 摘要结束，点击查看详情" [ref=e196]:
+                  - text: 据外媒预测，
+                  - emphasis [ref=e197]: 本届世界杯的赞助与营销收入将达到 25 亿到 30 亿美元
+                  - text: 。从阿迪达斯、可口可乐、乐高、乐事、雀巢、ZURU，到海信、蒙牛、vivo，从国际到国内的赞助商阵容持续扩大，甚至还出...
+                - link "新闻来源：钛媒体APP" [ref=e199] [cursor=pointer]:
+                  - /url: https://baijiahao.baidu.com/s?id=1865229205535068550&wfr=spider&for=pc
+                  - img [ref=e202]
+                  - text: 钛媒体APP
+        - link "去网页搜：世界杯 2026 营销 蒙牛 伊利 赞助 品牌" [ref=e205] [cursor=pointer]:
+          - /url: http://www.baidu.com/s?rsv_xinwen=1&wd=%CA%C0%BD%E7%B1%AD+2026+%D3%AA%CF%FA+%C3%C9%C5%A3+%D2%C1%C0%FB+%D4%DE%D6%FA+%C6%B7%C5%C6
+          - img [ref=e206]
+          - text: 去网页搜：世界杯 2026 营销 蒙牛 伊利 赞助 品牌
+        - generic [ref=e209]:
+          - generic [ref=e210]: 相关搜索
+          - table [ref=e211]:
+            - rowgroup [ref=e212]:
+              - row "蒙牛世界杯赞助多少钱 蒙牛世界杯营销" [ref=e213]:
+                - cell "蒙牛世界杯赞助多少钱" [ref=e214]:
+                  - link "蒙牛世界杯赞助多少钱" [ref=e215] [cursor=pointer]:
+                    - /url: /s?wd=%E8%92%99%E7%89%9B%E4%B8%96%E7%95%8C%E6%9D%AF%E8%B5%9E%E5%8A%A9%E5%A4%9A%E5%B0%91%E9%92%B1&tn=news&rtt=4&x_bfe_rqs=03E80&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e217]: 蒙牛世界杯赞助多少钱
+                - cell "蒙牛世界杯营销" [ref=e218]:
+                  - link "蒙牛世界杯营销" [ref=e219] [cursor=pointer]:
+                    - /url: /s?wd=%E8%92%99%E7%89%9B%E4%B8%96%E7%95%8C%E6%9D%AF%E8%90%A5%E9%94%80&tn=news&rtt=4&x_bfe_rqs=03E80&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e221]: 蒙牛世界杯营销
+              - row "蒙牛奥运会赞助商 伊利投资了什么" [ref=e222]:
+                - cell "蒙牛奥运会赞助商" [ref=e223]:
+                  - link "蒙牛奥运会赞助商" [ref=e224] [cursor=pointer]:
+                    - /url: /s?wd=%E8%92%99%E7%89%9B%E5%A5%A5%E8%BF%90%E4%BC%9A%E8%B5%9E%E5%8A%A9%E5%95%86&tn=news&rtt=4&x_bfe_rqs=03E80&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e226]: 蒙牛奥运会赞助商
+                - cell "伊利投资了什么" [ref=e227]:
+                  - link "伊利投资了什么" [ref=e228] [cursor=pointer]:
+                    - /url: /s?wd=%E4%BC%8A%E5%88%A9%E6%8A%95%E8%B5%84%E4%BA%86%E4%BB%80%E4%B9%88&tn=news&rtt=4&x_bfe_rqs=03E80&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e230]: 伊利投资了什么
+              - row "伊利牛奶谁代言的 世界杯梅西蒙牛广告" [ref=e231]:
+                - cell "伊利牛奶谁代言的" [ref=e232]:
+                  - link "伊利牛奶谁代言的" [ref=e233] [cursor=pointer]:
+                    - /url: /s?wd=%E4%BC%8A%E5%88%A9%E7%89%9B%E5%A5%B6%E8%B0%81%E4%BB%A3%E8%A8%80%E7%9A%84&tn=news&rtt=4&x_bfe_rqs=03E80&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e235]: 伊利牛奶谁代言的
+                - cell "世界杯梅西蒙牛广告" [ref=e236]:
+                  - link "世界杯梅西蒙牛广告" [ref=e237] [cursor=pointer]:
+                    - /url: /s?wd=%E4%B8%96%E7%95%8C%E6%9D%AF%E6%A2%85%E8%A5%BF%E8%92%99%E7%89%9B%E5%B9%BF%E5%91%8A&tn=news&rtt=4&x_bfe_rqs=03E80&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e239]: 世界杯梅西蒙牛广告
+              - row "伊利推出的新产品 蒙牛vs伊利" [ref=e240]:
+                - cell "伊利推出的新产品" [ref=e241]:
+                  - link "伊利推出的新产品" [ref=e242] [cursor=pointer]:
+                    - /url: /s?wd=%E4%BC%8A%E5%88%A9%E6%8E%A8%E5%87%BA%E7%9A%84%E6%96%B0%E4%BA%A7%E5%93%81&tn=news&rtt=4&x_bfe_rqs=03E80&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e244]: 伊利推出的新产品
+                - cell "蒙牛vs伊利" [ref=e245]:
+                  - link "蒙牛vs伊利" [ref=e246] [cursor=pointer]:
+                    - /url: /s?wd=%E8%92%99%E7%89%9Bvs%E4%BC%8A%E5%88%A9&tn=news&rtt=4&x_bfe_rqs=03E80&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e248]: 蒙牛vs伊利
+              - row "蒙牛伊利等乳企将亮相 新 伊利乳业是世界500强吗" [ref=e249]:
+                - cell "蒙牛伊利等乳企将亮相 新" [ref=e250]:
+                  - link "蒙牛伊利等乳企将亮相 新" [ref=e251] [cursor=pointer]:
+                    - /url: /s?wd=%E8%92%99%E7%89%9B%E4%BC%8A%E5%88%A9%E7%AD%89%E4%B9%B3%E4%BC%81%E5%B0%86%E4%BA%AE%E7%9B%B8&tn=news&rtt=4&x_bfe_rqs=03E80&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e253]: 蒙牛伊利等乳企将亮相
+                    - generic [ref=e254]: 新
+                - cell "伊利乳业是世界500强吗" [ref=e255]:
+                  - link "伊利乳业是世界500强吗" [ref=e256] [cursor=pointer]:
+                    - /url: /s?wd=%E4%BC%8A%E5%88%A9%E4%B9%B3%E4%B8%9A%E6%98%AF%E4%B8%96%E7%95%8C500%E5%BC%BA%E5%90%97&tn=news&rtt=4&x_bfe_rqs=03E80&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e258]: 伊利乳业是世界500强吗
+      - generic [ref=e261]:
+        - link "帮助" [ref=e262] [cursor=pointer]:
+          - /url: http://www.baidu.com/search/news_help.html
+        - link "举报" [ref=e263] [cursor=pointer]:
+          - /url: //www.baidu.com/search/jubao.html
+        - link "企业推广" [ref=e264] [cursor=pointer]:
+          - /url: https://e.baidu.com/lp/search/?refer=1302

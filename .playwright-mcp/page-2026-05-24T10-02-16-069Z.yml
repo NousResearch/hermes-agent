@@ -1,0 +1,234 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - button "跳至内容" [ref=e3] [cursor=pointer]:
+      - generic [ref=e5]: 跳至内容
+    - button "辅助功能反馈" [ref=e6] [cursor=pointer]:
+      - generic [ref=e8]: 辅助功能反馈
+    - generic [ref=e9]:
+      - link "返回到必应搜索" [ref=e10] [cursor=pointer]:
+        - /url: /?FORM=Z9FD1
+        - heading "返回到必应搜索" [level=1] [ref=e11]
+      - search [ref=e12]:
+        - button "搜索" [ref=e15] [cursor=pointer]
+        - searchbox "在此处输入你的搜索 — 输入时会显示搜索建议" [ref=e16]: 小米 世界杯 2026 营销
+        - button "使用图像搜索" [ref=e22] [cursor=pointer]
+    - complementary "帐户奖励和偏好设置" [ref=e24]:
+      - button "Microsoft Rewards" [ref=e25] [cursor=pointer]:
+        - generic [ref=e27]:
+          - generic [ref=e28]: Rewards
+          - img [ref=e30]
+      - link "登录" [ref=e42] [cursor=pointer]:
+        - /url: javascript:void(0)
+        - generic "登录" [ref=e43]
+    - navigation "主菜单" [ref=e44]:
+      - list [ref=e45]:
+        - listitem [ref=e46]:
+          - link "全部" [ref=e47] [cursor=pointer]:
+            - /url: /?scope=web&FORM=HDRSC1
+        - listitem [ref=e48]:
+          - link "搜索" [ref=e49] [cursor=pointer]:
+            - /url: /copilotsearch?q=%e5%b0%8f%e7%b1%b3+%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80&FORM=CSSCOP
+            - img [ref=e50]
+            - text: 搜索
+        - listitem [ref=e52]:
+          - link "购物" [ref=e53] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=a2f756176b85c0c4fdd8d9a415db9397c47668ba1a9952ac5d168406d8c47e63JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3Nob3AvdG9waWNzP3E9JWU1JWIwJThmJWU3JWIxJWIzKyVlNCViOCU5NiVlNyU5NSU4YyVlNiU5ZCVhZisyMDI2KyVlOCU5MCVhNSVlOSU5NCU4MCZGT1JNPVNIT1BUQg&ntb=1
+        - listitem [ref=e54]:
+          - link "图片" [ref=e55] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=d472083ee1cae4d6f5cf48fa08c262ab4d88eae320576bb7f2610b93f66a3129JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L2ltYWdlcy9zZWFyY2g_cT0lZTUlYjAlOGYlZTclYjElYjMrJWU0JWI4JTk2JWU3JTk1JThjJWU2JTlkJWFmKzIwMjYrJWU4JTkwJWE1JWU5JTk0JTgwJkZPUk09SERSU0Mz&ntb=1
+        - listitem [ref=e56]:
+          - link "视频" [ref=e57] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=fd2f5011bba7366bfcbbd201a4ed9a236d04fdef195f0f153efaf9f855609eaeJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0lZTUlYjAlOGYlZTclYjElYjMrJWU0JWI4JTk2JWU3JTk1JThjJWU2JTlkJWFmKzIwMjYrJWU4JTkwJWE1JWU5JTk0JTgwJkZPUk09SERSU0M0&ntb=1
+        - listitem [ref=e58]:
+          - link "地图" [ref=e59] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=ddabcfece3fad5c036a1315de53de329e7ff6027caae6ff9adb9d76947f74e95JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L21hcHM_cT0lZTUlYjAlOGYlZTclYjElYjMrJWU0JWI4JTk2JWU3JTk1JThjJWU2JTlkJWFmKzIwMjYrJWU4JTkwJWE1JWU5JTk0JTgwJkZPUk09SERSU0M2&ntb=1
+        - listitem [ref=e60]:
+          - link "Copilot" [ref=e61] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=29cf0e2ac6a6760c73941ce6d22b1784087d719b1a635138c4204a7ab659aaa9JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L2NoYXQ_cHJvbXB0PSVlNSViMCU4ZiVlNyViMSViMyslZTQlYjglOTYlZTclOTUlOGMlZTYlOWQlYWYrMjAyNislZTglOTAlYTUlZTklOTQlODAmc2VuZHF1ZXJ5PTEmRk9STT1TQ0NPRFg&ntb=1
+        - listitem [ref=e62]:
+          - button "更多" [ref=e63] [cursor=pointer]:
+            - img [ref=e65]
+            - text: 更多
+  - main "搜索结果" [ref=e68]:
+    - generic [ref=e69]:
+      - list [ref=e70]:
+        - listitem [ref=e71]:
+          - generic [ref=e73]:
+            - generic [ref=e74]:
+              - heading "Copilot 搜索品牌打造" [level=2] [ref=e75]:
+                - link "Copilot 搜索品牌打造" [ref=e76] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=397193954ebb7edec59dde33ce30fc8e99a8fb70d6adfb59350747a5533c5ef4JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L2NvcGlsb3RzZWFyY2g_cT0lZTUlYjAlOGYlZTclYjElYjMrJWU0JWI4JTk2JWU3JTk1JThjJWU2JTlkJWFmKzIwMjYrJWU4JTkwJWE1JWU5JTk0JTgwJmZvcm09Q1NCUkFORA&ntb=1
+                  - img "Copilot 搜索品牌打造" [ref=e81]
+              - button "此摘要由 AI 通过多个网上来源生成。在“基于来源”下找到用于此摘要的来源链接。在此处详细了解必应搜索结果。" [ref=e82]:
+                - button "信息" [ref=e83]:
+                  - img [ref=e84]
+            - region "Copilot 搜索" [ref=e88]:
+              - generic [ref=e94]: 正在阅读来源并理解
+      - list [ref=e95]:
+        - listitem [ref=e96]:
+          - generic [ref=e97]:
+            - text: 包含
+            - link "小米 世界 杯 2026 销售" [ref=e98] [cursor=pointer]:
+              - /url: /search?q=%e5%b0%8f%e7%b1%b3+%e4%b8%96%e7%95%8c+%e6%9d%af+2026+%e9%94%80%e5%94%ae&FORM=AWRE
+              - text: 小米 世界 杯 2026
+              - strong [ref=e99]: 销售
+            - text: 的结果。
+          - generic [ref=e100]:
+            - text: 是否只需要
+            - link "小米 世界杯 2026 营销" [ref=e101] [cursor=pointer]:
+              - /url: /search?q=%2b%e5%b0%8f%e7%b1%b3+%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80&filters=rcrse%3a%221%22&FORM=RCRE
+            - text: 的结果?
+        - listitem [ref=e102]:
+          - generic [ref=e103]:
+            - link "浏览此图像" [ref=e106] [cursor=pointer]:
+              - /url: /images/search?view=detailV2&ccid=kVAfE8o/&id=E10B945AF4CD86B7B84803EB73B3BFE6271600F3&thid=OIP.kVAfE8o_M75NT9nxEVSvCwHaDF&mediaurl=https://picx.zhimg.com/v2-f9fd9139277d6ebe28aea47e100a05d6_720w.jpg?source=172ae18b&q=%e5%b0%8f%e7%b1%b3+%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80&ck=66298034BE4D8327B38CDDFABBD8570C&idpp=rc&expw=720&exph=300&form=rc2idp
+            - generic [ref=e108]:
+              - link "知乎专栏" [ref=e110] [cursor=pointer]:
+                - /url: https://www.bing.com/ck/a?!&&p=14a4761d8ddc177a402816a6aecc2f0923a06e9d66113434b0816dac7537c8aaJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly96aHVhbmxhbi56aGlodS5jb20vcC8xOTk0MTg0MzI1MDQyODM1NzY4&ntb=1
+                - generic [ref=e115]:
+                  - generic [ref=e116]: 知乎专栏
+                  - generic [ref=e119]: https://zhuanlan.zhihu.com
+              - heading "2026美加墨世界杯营销 I 案例剖析：从多重维度破解世 …" [level=2] [ref=e120]:
+                - link "2026美加墨世界杯营销 I 案例剖析：从多重维度破解世 …" [ref=e121] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=14a4761d8ddc177a402816a6aecc2f0923a06e9d66113434b0816dac7537c8aaJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly96aHVhbmxhbi56aGlodS5jb20vcC8xOTk0MTg0MzI1MDQyODM1NzY4&ntb=1
+              - paragraph [ref=e122]: 2026年1月12日 · 本文将以品牌营销案例分析的形式，从不同维度展示世界杯营销的决胜之道，为有意参与美加墨世界杯营销的企业提供思路指引。 在2026这个体 …
+        - listitem [ref=e124]:
+          - link "雪球" [ref=e126] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=fbcfbc67c01740c144a60cadd87cb859c42ad3a2a43eaf4bf5ad7d776b53f7e2JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly94dWVxaXUuY29tLzE4MzUxMTk1MzMvMzUzMjYwMzc4&ntb=1
+            - generic [ref=e131]:
+              - generic [ref=e132]: 雪球
+              - generic [ref=e135]: https://xueqiu.com
+          - heading "2026 年美加墨世界杯，哪些标的值得提前布局 - 雪球" [level=2] [ref=e136]:
+            - link "2026 年美加墨世界杯，哪些标的值得提前布局 - 雪球" [ref=e137] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=fbcfbc67c01740c144a60cadd87cb859c42ad3a2a43eaf4bf5ad7d776b53f7e2JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly94dWVxaXUuY29tLzE4MzUxMTk1MzMvMzUzMjYwMzc4&ntb=1
+          - paragraph [ref=e139]: 2025年9月18日 · 全球化布局：通过世界杯平台，中国企业可进一步渗透北美、欧洲市场，如海信计划在 2026 年将海外收入占比提升至 60%。 结论 2026 年世界杯不仅是足球赛事的巅峰对决，更是中国科技 …
+        - listitem [ref=e140]:
+          - link "xiaomi-tui.com" [ref=e142] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=525ca3d55a634da1b6a636d220e4e17c3669d1e30bd9bf557592d8a4aa4019a8JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cueGlhb21pLXR1aS5jb20vengvNjY1Lmh0bWw&ntb=1
+            - generic [ref=e147]:
+              - generic [ref=e148]: xiaomi-tui.com
+              - generic [ref=e151]: https://www.xiaomi-tui.com › zx
+          - heading "小米广告| 品牌赛事无缝融合，解锁世界杯营销新范式" [level=2] [ref=e152]:
+            - link "小米广告| 品牌赛事无缝融合，解锁世界杯营销新范式" [ref=e153] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=525ca3d55a634da1b6a636d220e4e17c3669d1e30bd9bf557592d8a4aa4019a8JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cueGlhb21pLXR1aS5jb20vengvNjY1Lmh0bWw&ntb=1
+          - paragraph [ref=e155]: 2023年11月20日 · 北京现代此次携手小米广告营销，借势世界杯强化品牌影响力，聚焦大屏营销，打通小米系统层与咪咕内容层资源，将新车与赛事信息创意结合，无缝融入世界杯内容流，赋能新车关注 …
+        - listitem [ref=e156]:
+          - link "hk-wc26-officialhub.com" [ref=e158] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=18a4e6e84f39c14b10b154734396bb02900e139577dc040dc19d8351f5c3d6dbJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9oay13YzI2LW9mZmljaWFsaHViLmNvbS8yMDI2LXdvcmxkLWN1cC1zcG9ydHMtYnJhbmQtbWFya2V0aW5nLWNhbXBhaWduLWludGVncmF0ZWQtc3RyYXRlZ3k&ntb=1
+            - generic [ref=e163]:
+              - generic [ref=e164]: hk-wc26-officialhub.com
+              - generic [ref=e167]: https://hk-wc26-officialhub.com
+          - heading "2026世界杯体育品牌营销战役：赛前造势、赛中引爆、赛后收割的整 …" [level=2] [ref=e168]:
+            - link "2026世界杯体育品牌营销战役：赛前造势、赛中引爆、赛后收割的整 …" [ref=e169] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=18a4e6e84f39c14b10b154734396bb02900e139577dc040dc19d8351f5c3d6dbJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9oay13YzI2LW9mZmljaWFsaHViLmNvbS8yMDI2LXdvcmxkLWN1cC1zcG9ydHMtYnJhbmQtbWFya2V0aW5nLWNhbXBhaWduLWludGVncmF0ZWQtc3RyYXRlZ3k&ntb=1
+          - paragraph [ref=e171]: 2026年4月6日 · 同样是赞助与投放，有人只换来热闹，有人却把热度变成订单与用户资产。 本文以“2026世界杯 体育品牌”营销战役为主线，拆解从赛前到赛后可复制的创意、社媒、短视频与线下联动 …
+        - listitem [ref=e172]:
+          - generic [ref=e173]:
+            - link "浏览此图像" [ref=e176] [cursor=pointer]:
+              - /url: /images/search?view=detailV2&ccid=+szF0Ex4&id=06428236049017FFEAC704E846DC66C5A3E90B93&thid=OIP.-szF0Ex4UEiC7eMIPi5tcQHaEg&mediaurl=https://chuhaizhinan.com/wp-content/uploads/2023/07/image-4830.png&q=%e5%b0%8f%e7%b1%b3+%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80&ck=F82BAF3E0AB9002B10C5DDA169CEE4E9&idpp=rc&expw=807&exph=492&form=rc2idp
+            - generic [ref=e178]:
+              - link "chuhaizhinan.com" [ref=e180] [cursor=pointer]:
+                - /url: https://www.bing.com/ck/a?!&&p=855222a24cfa7c6a184708da0ecf72c071d976cacd72cb6e128006dba1871340JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9jaHVoYWl6aGluYW4uY29tLzIwMjMvMDcvMjMveGlhb21pLXdvcmxkLWN1cC1jYXNlLw&ntb=1
+                - generic [ref=e185]:
+                  - generic [ref=e186]: chuhaizhinan.com
+                  - generic [ref=e189]: https://chuhaizhinan.com › xiaomi-world-cup-case
+              - heading "案例分析 | 借势营销怎么做？小米在世界杯上给出了答案" [level=2] [ref=e190]:
+                - link "案例分析 | 借势营销怎么做？小米在世界杯上给出了答案" [ref=e191] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=855222a24cfa7c6a184708da0ecf72c071d976cacd72cb6e128006dba1871340JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9jaHVoYWl6aGluYW4uY29tLzIwMjMvMDcvMjMveGlhb21pLXdvcmxkLWN1cC1jYXNlLw&ntb=1
+              - paragraph [ref=e192]: 2023年7月23日 · 本次世界杯借势营销，小米抓住本地消费者感兴趣的⽐分竞猜形式，降低参与活动门槛，仅需留言即可参与活动，从而大幅提高了帖文的互动率， …
+        - listitem [ref=e194]:
+          - link "Duoke" [ref=e196] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=d8b061b0fb7b868259fee50cf2393f4ca17fdaf95078e52a0ef94b151ab83af6JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cuZHVva2UuY29tL3poLUNOL2Jsb2cvYXJ0aWNsZS80MDAtSWduaXRlLXRoZS0yMDI2LUZJRkEtV29ybGQtQ3VwLUEtR3VpZGUtdG8tUHJvZHVjdC1TZWxlY3Rpb24tYW5kLU1hcmtldGluZy1vbi1NZXJjYWRvLUxpYnJl&ntb=1
+            - generic [ref=e201]:
+              - generic [ref=e202]: Duoke
+              - generic [ref=e205]: https://www.duoke.com › zh-CN › blog › article
+          - heading "点燃2026世界杯！美客多世界杯选品与营销指南" [level=2] [ref=e206]:
+            - link "点燃2026世界杯！美客多世界杯选品与营销指南" [ref=e207] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=d8b061b0fb7b868259fee50cf2393f4ca17fdaf95078e52a0ef94b151ab83af6JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cuZHVva2UuY29tL3poLUNOL2Jsb2cvYXJ0aWNsZS80MDAtSWduaXRlLXRoZS0yMDI2LUZJRkEtV29ybGQtQ3VwLUEtR3VpZGUtdG8tUHJvZHVjdC1TZWxlY3Rpb24tYW5kLU1hcmtldGluZy1vbi1NZXJjYWRvLUxpYnJl&ntb=1
+          - paragraph [ref=e209]: 比较推荐的方式是： “低客单引流 + 高客单组合销售”。 先通过助威用品、球迷小商品吸引流量，再通过观赛设备、组合套餐提升整体客单价和利润空间。 世界杯不仅是一场全球体育赛事，更是拉美市场 …
+        - listitem [ref=e210]:
+          - link "sina.cn" [ref=e212] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=f5c12712100a5a02c7a43a5cc0d2add36dae862fa78da17f2277a89522fcc03dJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9rLnNpbmEuY24vYXJ0aWNsZV83ODc5OTk1OTExXzFkNWFmMzIwNzA2ODAxdm9wcy5odG1s&ntb=1
+            - generic [ref=e217]:
+              - generic [ref=e218]: sina.cn
+              - generic [ref=e221]: https://k.sina.cn
+          - heading "2026年美加墨世界杯的中国赞助商投入了多少钱？" [level=2] [ref=e222]:
+            - link "2026年美加墨世界杯的中国赞助商投入了多少钱？" [ref=e223] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=f5c12712100a5a02c7a43a5cc0d2add36dae862fa78da17f2277a89522fcc03dJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9rLnNpbmEuY24vYXJ0aWNsZV83ODc5OTk1OTExXzFkNWFmMzIwNzA2ODAxdm9wcy5odG1s&ntb=1
+          - paragraph [ref=e225]: 2026年美加墨世界杯开幕前夕，中国赞助商以超5亿美元的投入成为赛事商业版图的核心力量，却在转播权僵局中面临巨额曝光价值缩水的风险，折射出中国企业在全球体育营销中的角色蜕变。 一、赞助 …
+        - listitem [ref=e226]:
+          - link "抖音" [ref=e228] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=c4ae800cc424165608af1b69980b362a604ad374a933de45fef768e28fd33c5aJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cuZG91eWluLmNvbS9zZWFyY2gvMjAyNiVFNCVCOCU5NiVFNyU5NSU4QyVFNiU5RCVBRiVFOCU5MCVBNSVFOSU5NCU4MA&ntb=1
+            - generic [ref=e233]:
+              - generic [ref=e234]: 抖音
+              - generic [ref=e237]: https://www.douyin.com › search
+          - heading "2026世界杯营销 - 抖音" [level=2] [ref=e238]:
+            - link "2026世界杯营销 - 抖音":
+              - /url: https://www.bing.com/ck/a?!&&p=c4ae800cc424165608af1b69980b362a604ad374a933de45fef768e28fd33c5aJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cuZG91eWluLmNvbS9zZWFyY2gvMjAyNiVFNCVCOCU5NiVFNyU5NSU4QyVFNiU5RCVBRiVFOCU5MCVBNSVFOSU5NCU4MA&ntb=1
+          - paragraph [ref=e240]: 00:07 6月份即将要举行的美加墨世界杯可是全世界球迷的盛会，TikTok就是首选平台。 这波全民的热情就是2026年最强的消费力，但是里边有一个坑可能大多数人都会踩错。 00:52 所以商家端现在就去 …
+        - listitem [ref=e241]:
+          - generic [ref=e242]:
+            - link "浏览此图像" [ref=e245] [cursor=pointer]:
+              - /url: /images/search?view=detailV2&ccid=flxa/ggX&id=7EEE2CC38B13E67DB7E9C25BC42A3B486A3C5BA9&thid=OIP.flxa_ggXQuGWfjs3J3Kp2QEsCo&mediaurl=https://img-s.msn.cn/tenant/amp/entityid/AA1TXAoP.img?w=1400&h=788&m=4&q=100&q=%e5%b0%8f%e7%b1%b3+%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80&ck=E38CD2C59E47EF2FB6EDAC04588969C9&idpp=rc&expw=1400&exph=788&form=rc2idp
+            - generic [ref=e247]:
+              - link "MSN" [ref=e249] [cursor=pointer]:
+                - /url: https://www.bing.com/ck/a?!&&p=6ab899d2871d6cc0f09af2141bc53fc57abcf0d873e4e5f688585b83313b9d35JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cubXNuLmNuL3poLWNuL3Nwb3J0cy9zb2NjZXIvMjAyNiVFNyVCRSU4RSVFNSU4QSVBMCVFNSVBMiVBOCVFNCVCOCU5NiVFNyU5NSU4QyVFNiU5RCVBRiVFOCU5MCVBNSVFOSU5NCU4MC1pLSVFNiU4QSU4QSVFNiU4RiVBMSVFNSU5MyU4MSVFNyU4OSU4QyVFNiVCRiU4MCVFNiVCNCVCQiVFNyU5QSU4NCVFOCVCRiU5QiVFNSU4QyU5NiVFNSU5MiU4QyVFOCVCRCVBQyVFNSU4RiU5OC0lRTQlQkMlODElRTQlQjglOUElRTUlODYlQjMlRTglODMlOUMlRTQlQjglOTYlRTclOTUlOEMlRTYlOUQlQUYlRTglOTAlQTUlRTklOTQlODAlRTclOUElODQlRTUlODUlQjMlRTklOTQlQUUlRTclODIlQjkvYXItQUExVFhxQ3I&ntb=1
+                - generic [ref=e254]:
+                  - generic [ref=e255]: MSN
+                  - generic [ref=e258]: https://www.msn.cn › zh-cn › sports › soccer
+              - heading "2026美加墨世界杯营销 I 把握品牌激活的进化和转 …" [level=2] [ref=e259]:
+                - link "2026美加墨世界杯营销 I 把握品牌激活的进化和转 …" [ref=e260] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=6ab899d2871d6cc0f09af2141bc53fc57abcf0d873e4e5f688585b83313b9d35JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cubXNuLmNuL3poLWNuL3Nwb3J0cy9zb2NjZXIvMjAyNiVFNyVCRSU4RSVFNSU4QSVBMCVFNSVBMiVBOCVFNCVCOCU5NiVFNyU5NSU4QyVFNiU5RCVBRiVFOCU5MCVBNSVFOSU5NCU4MC1pLSVFNiU4QSU4QSVFNiU4RiVBMSVFNSU5MyU4MSVFNyU4OSU4QyVFNiVCRiU4MCVFNiVCNCVCQiVFNyU5QSU4NCVFOCVCRiU5QiVFNSU4QyU5NiVFNSU5MiU4QyVFOCVCRCVBQyVFNSU4RiU5OC0lRTQlQkMlODElRTQlQjglOUElRTUlODYlQjMlRTglODMlOUMlRTQlQjglOTYlRTclOTUlOEMlRTYlOUQlQUYlRTglOTAlQTUlRTklOTQlODAlRTclOUElODQlRTUlODUlQjMlRTklOTQlQUUlRTclODIlQjkvYXItQUExVFhxQ3I&ntb=1
+              - paragraph [ref=e261]: 在2026这个体育大年，美加墨世界杯无疑是皇冠上的明珠。 本届世界杯将成为史上规模最大、商业影响力最强的足球盛会。 赛事将于2026年6月11日至7月19日由 …
+        - listitem [ref=e263]:
+          - link "cn-official-ffwc.com" [ref=e265] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=a308847c5b750a40bd323fd86b6a2f4d7651ff277d1c963a46552daef4bd231fJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9jbi1vZmZpY2lhbC1mZndjLmNvbS8yMDI2LXdvcmxkLWN1cC1vdXRkb29yLWFkcy1zcG9uc29yc2hpcC1mYW4tY29uc3VtcHRpb24tY2hlY2tpbi1lY29ub215&ntb=1
+            - generic [ref=e270]:
+              - generic [ref=e271]: cn-official-ffwc.com
+              - generic [ref=e274]: https://cn-official-ffwc.com
+          - heading "2026世界杯场外广告：赞助格局重排、球迷消费路径改写与线下打卡 …" [level=2] [ref=e275]:
+            - link "2026世界杯场外广告：赞助格局重排、球迷消费路径改写与线下打卡 …":
+              - /url: https://www.bing.com/ck/a?!&&p=a308847c5b750a40bd323fd86b6a2f4d7651ff277d1c963a46552daef4bd231fJmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9jbi1vZmZpY2lhbC1mZndjLmNvbS8yMDI2LXdvcmxkLWN1cC1vdXRkb29yLWFkcy1zcG9uc29yc2hpcC1mYW4tY29uc3VtcHRpb24tY2hlY2tpbi1lY29ub215&ntb=1
+          - paragraph [ref=e277]: 2026年4月11日 · 当镜头不在球场，注意力反而更“贵”。 从赞助商与非赞助品牌的创意博弈出发，拆解2026世界杯场外广告如何在社交媒体二次爆红，并给中小品牌一套可复制的创意与预算打法。
+        - listitem [ref=e278]:
+          - generic [ref=e279]:
+            - text: 包含
+            - link "小米 世界 杯 2026 销售" [ref=e280] [cursor=pointer]:
+              - /url: /search?q=%e5%b0%8f%e7%b1%b3+%e4%b8%96%e7%95%8c+%e6%9d%af+2026+%e9%94%80%e5%94%ae&FORM=AWRE1
+              - text: 小米 世界 杯 2026
+              - strong [ref=e281]: 销售
+            - text: 的结果。
+          - generic [ref=e282]:
+            - text: 是否只需要
+            - link "小米 世界杯 2026 营销" [ref=e283] [cursor=pointer]:
+              - /url: /search?q=%2b%e5%b0%8f%e7%b1%b3+%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80&filters=rcrse%3a%221%22&FORM=RCRE1
+            - text: 的结果?
+        - listitem [ref=e284]:
+          - link "某些结果已被删除" [ref=e286] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=bec781b4419a9a8d587953809d30d5a012822d07dfdb826cb2842f5f89aa9bf7JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cDovL2dvLm1pY3Jvc29mdC5jb20vZndsaW5rLz9MaW5rSUQ9NjE3MzUw&ntb=1
+        - listitem [ref=e287]:
+          - navigation "小米 世界杯 2026 营销 的更多搜索结果":
+            - list:
+              - listitem [ref=e288]:
+                - generic "第 1 页" [ref=e289]: "1"
+              - listitem [ref=e290]:
+                - link "第 2 页" [ref=e291] [cursor=pointer]:
+                  - /url: /search?q=%e5%b0%8f%e7%b1%b3+%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80&setlang=zh-cn&qft=+filterui%3aage-lt1440&FPIG=4919EAF8E8B84852A40A3BD5CEED546F&first=11&FORM=PERE
+                  - text: "2"
+              - listitem [ref=e292]:
+                - link "第 3 页" [ref=e293] [cursor=pointer]:
+                  - /url: /search?q=%e5%b0%8f%e7%b1%b3+%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80&setlang=zh-cn&qft=+filterui%3aage-lt1440&FPIG=4919EAF8E8B84852A40A3BD5CEED546F&first=21&FORM=PERE1
+                  - text: "3"
+              - listitem [ref=e294]:
+                - link "下一页" [ref=e295] [cursor=pointer]:
+                  - /url: /search?q=%e5%b0%8f%e7%b1%b3+%e4%b8%96%e7%95%8c%e6%9d%af+2026+%e8%90%a5%e9%94%80&setlang=zh-cn&qft=+filterui%3aage-lt1440&FPIG=4919EAF8E8B84852A40A3BD5CEED546F&first=11&FORM=PORE
+      - complementary "更多结果"
+  - contentinfo [ref=e296]:
+    - generic [ref=e297]:
+      - list:
+        - listitem [ref=e298]:
+          - link "隐私" [ref=e299] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=df0149fa057fc559ce30c62bba35e74dfd92cbc94d8223e71ec17e693497dd96JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cDovL2dvLm1pY3Jvc29mdC5jb20vZndsaW5rLz9MaW5rSWQ9NTIxODM5&ntb=1
+        - listitem [ref=e300]:
+          - link "条款" [ref=e301] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=61ac7533428edf9f0c85de9b8639568d20e4391333d47c16d8deb16885681b92JmltdHM9MTc3OTU4MDgwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cDovL2dvLm1pY3Jvc29mdC5jb20vZndsaW5rLz9MaW5rSUQ9MjQ2MzM4&ntb=1

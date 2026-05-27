@@ -1,0 +1,578 @@
+- generic [ref=e2]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - generic:
+        - link "到百度首页" [ref=e6] [cursor=pointer]:
+          - /url: /
+          - img "到百度首页" [ref=e7]
+        - generic [ref=e10]:
+          - textbox [ref=e13]: 体育营销 2026 最新 足球
+          - generic [ref=e15]:
+            - generic [ref=e16]:
+              - img [ref=e18] [cursor=pointer]
+              - generic [ref=e21]:
+                - img [ref=e28] [cursor=pointer]
+                - img [ref=e34] [cursor=pointer]
+                - img [ref=e39] [cursor=pointer]
+            - button "百度一下" [ref=e43] [cursor=pointer]
+    - generic [ref=e44]:
+      - link "百度首页" [ref=e45] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e46] [cursor=pointer]: 设置
+      - link "登录" [ref=e47] [cursor=pointer]:
+        - /url: javascript:;
+  - generic [ref=e50]:
+    - link [ref=e51] [cursor=pointer]:
+      - /url: https://chat.baidu.com/search?word=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0+%E8%B6%B3%E7%90%83&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&pd=csaitab&setype=csaitab&extParamsJson=%7B%22enter_type%22%3A%22search_a_tab%22%2C%22sa%22%3A%22vs_tab%22%2C%22apagelid%22%3A%2215093678026438742094%22%2C%22ori_lid%22%3A%2215093678026438742094%22%7D
+      - img [ref=e52]
+    - generic [ref=e53]: 网页
+    - link "图片" [ref=e54] [cursor=pointer]:
+      - /url: http://image.baidu.com/i?tn=baiduimage&ps=1&ct=201326592&lm=-1&cl=2&nc=1&ie=utf-8&lid=d17784320000104e&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0+%E8%B6%B3%E7%90%83
+    - link "资讯" [ref=e55] [cursor=pointer]:
+      - /url: https://www.baidu.com/s?rtt=1&bsst=1&cl=2&tn=news&ie=utf-8&word=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0+%E8%B6%B3%E7%90%83
+    - link "视频" [ref=e56] [cursor=pointer]:
+      - /url: /sf/vsearch?pd=video&wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&tn=vsearch&lid=d17784320000104e&ie=utf-8&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_pq=d17784320000104e&rsv_t=d17784320000104e&rsv_spt=7&rsv_bp=1&f=8
+    - link "笔记" [ref=e57] [cursor=pointer]:
+      - /url: https://www.baidu.com/s?pd=note&rpf=pc&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0+%E8%B6%B3%E7%90%83
+    - link "地图" [ref=e58] [cursor=pointer]:
+      - /url: https://map.baidu.com/?newmap=1&ie=utf-8&from=pstab&s=s%26wd%3D%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0+%E8%B6%B3%E7%90%83
+    - link "贴吧" [ref=e59] [cursor=pointer]:
+      - /url: http://tieba.baidu.com/f?fr=wwwt&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&kw=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0+%E8%B6%B3%E7%90%83
+    - link "文库" [ref=e60] [cursor=pointer]:
+      - /url: http://wenku.baidu.com/search?lm=0&od=0&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0+%E8%B6%B3%E7%90%83
+    - link "更多" [ref=e61] [cursor=pointer]:
+      - /url: http://www.baidu.com/more/
+    - generic [ref=e62] [cursor=pointer]: 搜索工具
+  - generic [ref=e63]:
+    - generic [ref=e64]:
+      - table [ref=e66]:
+        - rowgroup [ref=e67]:
+          - row "相关搜索  今天足球比赛结果  最近足球赛事  天下足球疯狂的足球2022  最火的足球论坛  爆棚足球论坛官网首页  足球媒体最新预测    换一换 热搜榜 北京榜 民生榜 财经榜  习近平对山西煤矿事故作出重要指示 1 山西煤矿爆炸致82人遇难128人受伤 2 记者直击：凌晨3点救援机器人下井探测 新 3 首位来自香港的航天员为何是她 4 白宫附近传密集枪声 记者拍枪击现场 新 5 雪饼猴带400只小猴燃爆东北超 新 6 大学生“手搓”蝴蝶卖1500元1只 7 消息人士：美伊接近达成临时协议 8 老师讲台晕倒学生瞬间冲了上去 热 9 男子踩中蛇窝被毒蛇咬数口 休克昏迷 新 10 山西爆炸煤矿有重大违法行为 热 11 多人借汛情造谣博流量被处理 12 山西事故煤矿企业对作业人数统计不清 13 女子住院被朋友殴打昏迷数天后死亡 14 DeepSeek宣布：永久降价 热 15 俄称乌无人机袭击学校 已致21死" [ref=e68]:
+            - cell "相关搜索  今天足球比赛结果  最近足球赛事  天下足球疯狂的足球2022  最火的足球论坛  爆棚足球论坛官网首页  足球媒体最新预测    换一换 热搜榜 北京榜 民生榜 财经榜  习近平对山西煤矿事故作出重要指示 1 山西煤矿爆炸致82人遇难128人受伤 2 记者直击：凌晨3点救援机器人下井探测 新 3 首位来自香港的航天员为何是她 4 白宫附近传密集枪声 记者拍枪击现场 新 5 雪饼猴带400只小猴燃爆东北超 新 6 大学生“手搓”蝴蝶卖1500元1只 7 消息人士：美伊接近达成临时协议 8 老师讲台晕倒学生瞬间冲了上去 热 9 男子踩中蛇窝被毒蛇咬数口 休克昏迷 新 10 山西爆炸煤矿有重大违法行为 热 11 多人借汛情造谣博流量被处理 12 山西事故煤矿企业对作业人数统计不清 13 女子住院被朋友殴打昏迷数天后死亡 14 DeepSeek宣布：永久降价 热 15 俄称乌无人机袭击学校 已致21死" [ref=e69]:
+              - generic [ref=e70]:
+                - generic [ref=e76]:
+                  - generic [ref=e78]: 相关搜索
+                  - generic [ref=e79]:
+                    - link " 今天足球比赛结果" [ref=e82] [cursor=pointer]:
+                      - /url: /s?wd=%E4%BB%8A%E5%A4%A9%E8%B6%B3%E7%90%83%E6%AF%94%E8%B5%9B%E7%BB%93%E6%9E%9C&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=6eb1bqXQmVjHOmrIm%2FTSn5Nbtv7sppajtn0%2BB2FsFzFLVio4kT%2ByDdJo04E&rfqid=d17784320000104e&rsv_dl=0_prs_28616_1&rq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsf=101631202
+                      - generic [ref=e83]:
+                        - generic [ref=e84]: 
+                        - generic [ref=e85]: 今天足球比赛结果
+                    - link " 最近足球赛事" [ref=e88] [cursor=pointer]:
+                      - /url: /s?wd=%E6%9C%80%E8%BF%91%E8%B6%B3%E7%90%83%E8%B5%9B%E4%BA%8B&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=6eb1bqXQmVjHOmrIm%2FTSn5Nbtv7sppajtn0%2BB2FsFzFLVio4kT%2ByDdJo04E&rfqid=d17784320000104e&rsv_dl=0_prs_28616_2&rq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsf=101631202
+                      - generic [ref=e89]:
+                        - generic [ref=e90]: 
+                        - generic [ref=e91]: 最近足球赛事
+                    - link " 天下足球疯狂的足球2022" [ref=e94] [cursor=pointer]:
+                      - /url: /s?wd=%E5%A4%A9%E4%B8%8B%E8%B6%B3%E7%90%83%E7%96%AF%E7%8B%82%E7%9A%84%E8%B6%B3%E7%90%832022&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=6eb1bqXQmVjHOmrIm%2FTSn5Nbtv7sppajtn0%2BB2FsFzFLVio4kT%2ByDdJo04E&rfqid=d17784320000104e&rsv_dl=0_prs_28616_3&rq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsf=101636803
+                      - generic [ref=e95]:
+                        - generic [ref=e96]: 
+                        - generic [ref=e97]: 天下足球疯狂的足球2022
+                    - link " 最火的足球论坛" [ref=e100] [cursor=pointer]:
+                      - /url: /s?wd=%E6%9C%80%E7%81%AB%E7%9A%84%E8%B6%B3%E7%90%83%E8%AE%BA%E5%9D%9B&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=6eb1bqXQmVjHOmrIm%2FTSn5Nbtv7sppajtn0%2BB2FsFzFLVio4kT%2ByDdJo04E&rfqid=d17784320000104e&rsv_dl=0_prs_28616_4&rq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsf=101633403
+                      - generic [ref=e101]:
+                        - generic [ref=e102]: 
+                        - generic [ref=e103]: 最火的足球论坛
+                    - link " 爆棚足球论坛官网首页" [ref=e106] [cursor=pointer]:
+                      - /url: /s?wd=%E7%88%86%E6%A3%9A%E8%B6%B3%E7%90%83%E8%AE%BA%E5%9D%9B%E5%AE%98%E7%BD%91%E9%A6%96%E9%A1%B5&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=6eb1bqXQmVjHOmrIm%2FTSn5Nbtv7sppajtn0%2BB2FsFzFLVio4kT%2ByDdJo04E&rfqid=d17784320000104e&rsv_dl=0_prs_28616_5&rq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsf=101636803
+                      - generic [ref=e107]:
+                        - generic [ref=e108]: 
+                        - generic [ref=e109]: 爆棚足球论坛官网首页
+                    - link " 足球媒体最新预测" [ref=e112] [cursor=pointer]:
+                      - /url: /s?wd=%E8%B6%B3%E7%90%83%E5%AA%92%E4%BD%93%E6%9C%80%E6%96%B0%E9%A2%84%E6%B5%8B&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=6eb1bqXQmVjHOmrIm%2FTSn5Nbtv7sppajtn0%2BB2FsFzFLVio4kT%2ByDdJo04E&rfqid=d17784320000104e&rsv_dl=0_prs_28616_6&rq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsf=101633403
+                      - generic [ref=e113]:
+                        - generic [ref=e114]: 
+                        - generic [ref=e115]: 足球媒体最新预测
+                - generic [ref=e119]:
+                  - generic "百度热搜" [ref=e120]:
+                    - link " " [ref=e121] [cursor=pointer]:
+                      - /url: https://top.baidu.com/board?platform=pc&sa=pcindex_a_right
+                      - generic [ref=e122]: 
+                      - generic [ref=e123]: 
+                    - link " 换一换" [ref=e125] [cursor=pointer]:
+                      - /url: javascript:void(0);
+                      - generic [ref=e126]: 
+                      - text: 换一换
+                  - generic [ref=e127]:
+                    - generic [ref=e128] [cursor=pointer]: 热搜榜
+                    - generic [ref=e129] [cursor=pointer]: 北京榜
+                    - generic [ref=e130] [cursor=pointer]: 民生榜
+                    - generic [ref=e131] [cursor=pointer]: 财经榜
+                  - generic [ref=e133]:
+                    - generic [ref=e135]:
+                      - generic [ref=e137]: 
+                      - link "习近平对山西煤矿事故作出重要指示" [ref=e138] [cursor=pointer]:
+                        - /url: /s?wd=%E4%B9%A0%E8%BF%91%E5%B9%B3%E5%AF%B9%E5%B1%B1%E8%A5%BF%E7%85%A4%E7%9F%BF%E4%BA%8B%E6%95%85%E4%BD%9C%E5%87%BA%E9%87%8D%E8%A6%81%E6%8C%87%E7%A4%BA&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=6eb1bqXQmVjHOmrIm%2FTSn5Nbtv7sppajtn0%2BB2FsFzFLVio4kT%2ByDdJo04E&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_1&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e140]:
+                      - generic [ref=e141]: "1"
+                      - link "山西煤矿爆炸致82人遇难128人受伤" [ref=e142] [cursor=pointer]:
+                        - /url: /s?wd=%E5%B1%B1%E8%A5%BF%E7%85%A4%E7%9F%BF%E7%88%86%E7%82%B8%E8%87%B482%E4%BA%BA%E9%81%87%E9%9A%BE128%E4%BA%BA%E5%8F%97%E4%BC%A4&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_2&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e144]:
+                      - generic [ref=e145]: "2"
+                      - link "记者直击：凌晨3点救援机器人下井探测" [ref=e146] [cursor=pointer]:
+                        - /url: /s?wd=%E8%AE%B0%E8%80%85%E7%9B%B4%E5%87%BB%EF%BC%9A%E5%87%8C%E6%99%A83%E7%82%B9%E6%95%91%E6%8F%B4%E6%9C%BA%E5%99%A8%E4%BA%BA%E4%B8%8B%E4%BA%95%E6%8E%A2%E6%B5%8B&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_3&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e147]: 新
+                    - generic [ref=e149]:
+                      - generic [ref=e150]: "3"
+                      - link "首位来自香港的航天员为何是她" [ref=e151] [cursor=pointer]:
+                        - /url: /s?wd=%E9%A6%96%E4%BD%8D%E6%9D%A5%E8%87%AA%E9%A6%99%E6%B8%AF%E7%9A%84%E8%88%AA%E5%A4%A9%E5%91%98%E4%B8%BA%E4%BD%95%E6%98%AF%E5%A5%B9&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_4&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e153]:
+                      - generic [ref=e154]: "4"
+                      - link "白宫附近传密集枪声 记者拍枪击现场" [ref=e155] [cursor=pointer]:
+                        - /url: /s?wd=%E7%99%BD%E5%AE%AB%E9%99%84%E8%BF%91%E4%BC%A0%E5%AF%86%E9%9B%86%E6%9E%AA%E5%A3%B0%20%E8%AE%B0%E8%80%85%E6%8B%8D%E6%9E%AA%E5%87%BB%E7%8E%B0%E5%9C%BA&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_5&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e156]: 新
+                    - generic [ref=e158]:
+                      - generic [ref=e159]: "5"
+                      - link "雪饼猴带400只小猴燃爆东北超" [ref=e160] [cursor=pointer]:
+                        - /url: /s?wd=%E9%9B%AA%E9%A5%BC%E7%8C%B4%E5%B8%A6400%E5%8F%AA%E5%B0%8F%E7%8C%B4%E7%87%83%E7%88%86%E4%B8%9C%E5%8C%97%E8%B6%85&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_6&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e161]: 新
+                    - generic [ref=e163]:
+                      - generic [ref=e164]: "6"
+                      - link "大学生“手搓”蝴蝶卖1500元1只" [ref=e165] [cursor=pointer]:
+                        - /url: /s?wd=%E5%A4%A7%E5%AD%A6%E7%94%9F%E2%80%9C%E6%89%8B%E6%90%93%E2%80%9D%E8%9D%B4%E8%9D%B6%E5%8D%961500%E5%85%831%E5%8F%AA&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_7&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e167]:
+                      - generic [ref=e168]: "7"
+                      - link "消息人士：美伊接近达成临时协议" [ref=e169] [cursor=pointer]:
+                        - /url: /s?wd=%E6%B6%88%E6%81%AF%E4%BA%BA%E5%A3%AB%EF%BC%9A%E7%BE%8E%E4%BC%8A%E6%8E%A5%E8%BF%91%E8%BE%BE%E6%88%90%E4%B8%B4%E6%97%B6%E5%8D%8F%E8%AE%AE&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_8&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e171]:
+                      - generic [ref=e172]: "8"
+                      - link "老师讲台晕倒学生瞬间冲了上去" [ref=e173] [cursor=pointer]:
+                        - /url: /s?wd=%E8%80%81%E5%B8%88%E8%AE%B2%E5%8F%B0%E6%99%95%E5%80%92%E5%AD%A6%E7%94%9F%E7%9E%AC%E9%97%B4%E5%86%B2%E4%BA%86%E4%B8%8A%E5%8E%BB&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_9&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e174]: 热
+                    - generic [ref=e176]:
+                      - generic [ref=e177]: "9"
+                      - link "男子踩中蛇窝被毒蛇咬数口 休克昏迷" [ref=e178] [cursor=pointer]:
+                        - /url: /s?wd=%E7%94%B7%E5%AD%90%E8%B8%A9%E4%B8%AD%E8%9B%87%E7%AA%9D%E8%A2%AB%E6%AF%92%E8%9B%87%E5%92%AC%E6%95%B0%E5%8F%A3%20%E4%BC%91%E5%85%8B%E6%98%8F%E8%BF%B7&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_10&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e179]: 新
+                    - generic [ref=e181]:
+                      - generic [ref=e182]: "10"
+                      - link "山西爆炸煤矿有重大违法行为" [ref=e183] [cursor=pointer]:
+                        - /url: /s?wd=%E5%B1%B1%E8%A5%BF%E7%88%86%E7%82%B8%E7%85%A4%E7%9F%BF%E6%9C%89%E9%87%8D%E5%A4%A7%E8%BF%9D%E6%B3%95%E8%A1%8C%E4%B8%BA&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_11&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e184]: 热
+                    - generic [ref=e186]:
+                      - generic [ref=e187]: "11"
+                      - link "多人借汛情造谣博流量被处理" [ref=e188] [cursor=pointer]:
+                        - /url: /s?wd=%E5%A4%9A%E4%BA%BA%E5%80%9F%E6%B1%9B%E6%83%85%E9%80%A0%E8%B0%A3%E5%8D%9A%E6%B5%81%E9%87%8F%E8%A2%AB%E5%A4%84%E7%90%86&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_12&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e190]:
+                      - generic [ref=e191]: "12"
+                      - link "山西事故煤矿企业对作业人数统计不清" [ref=e192] [cursor=pointer]:
+                        - /url: /s?wd=%E5%B1%B1%E8%A5%BF%E4%BA%8B%E6%95%85%E7%85%A4%E7%9F%BF%E4%BC%81%E4%B8%9A%E5%AF%B9%E4%BD%9C%E4%B8%9A%E4%BA%BA%E6%95%B0%E7%BB%9F%E8%AE%A1%E4%B8%8D%E6%B8%85&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_13&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e194]:
+                      - generic [ref=e195]: "13"
+                      - link "女子住院被朋友殴打昏迷数天后死亡" [ref=e196] [cursor=pointer]:
+                        - /url: /s?wd=%E5%A5%B3%E5%AD%90%E4%BD%8F%E9%99%A2%E8%A2%AB%E6%9C%8B%E5%8F%8B%E6%AE%B4%E6%89%93%E6%98%8F%E8%BF%B7%E6%95%B0%E5%A4%A9%E5%90%8E%E6%AD%BB%E4%BA%A1&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_14&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e198]:
+                      - generic [ref=e199]: "14"
+                      - link "DeepSeek宣布：永久降价" [ref=e200] [cursor=pointer]:
+                        - /url: /s?wd=DeepSeek%E5%AE%A3%E5%B8%83%EF%BC%9A%E6%B0%B8%E4%B9%85%E9%99%8D%E4%BB%B7&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_1_15_15&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e201]: 热
+                    - generic [ref=e203]:
+                      - generic [ref=e204]: "15"
+                      - link "俄称乌无人机袭击学校 已致21死" [ref=e205] [cursor=pointer]:
+                        - /url: /s?wd=%E4%BF%84%E7%A7%B0%E4%B9%8C%E6%97%A0%E4%BA%BA%E6%9C%BA%E8%A2%AD%E5%87%BB%E5%AD%A6%E6%A0%A1%20%E5%B7%B2%E8%87%B421%E6%AD%BB&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=f2caXCWwcA3%2FH47BsXwRC70sgMymcfsa69GA2b68D5Cbk5ti5TpxL7cdAto&rqid=d17784320000104e&rsf=e252d961db23dba1d93a9fafab44654b_16_30_16&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+      - generic [ref=e206]:
+        - generic [ref=e210]:
+          - heading "2026年夏日足球盛典即将开场,品牌出海营销方式变了吗?" [level=3] [ref=e213]:
+            - link "2026年夏日足球盛典即将开场,品牌出海营销方式变了吗?" [ref=e214] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=ziJkGOYcNy0frSIKIqhjqW1TJp7EJSRGHezy4wLMmv_jbOsVmRacYD41gASkAKkPDIzcqMKP2c81lCN-XjHcVG77k6WvfC51t11Qbr0suHC
+              - paragraph [ref=e217]:
+                - generic [ref=e220]:
+                  - emphasis [ref=e221]: "2026"
+                  - text: 年夏日
+                  - emphasis [ref=e222]: 足球
+                  - text: 盛典即将开场,品牌出海
+                  - emphasis [ref=e223]: 营销
+                  - text: 方式变了吗?
+          - generic [ref=e224]:
+            - link [ref=e226] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=ziJkGOYcNy0frSIKIqhjqW1TJp7EJSRGHezy4wLMmv_jbOsVmRacYD41gASkAKkPDIzcqMKP2c81lCN-XjHcVG77k6WvfC51t11Qbr0suHC
+            - generic [ref=e231]:
+              - generic [ref=e236]:
+                - text: 2026年5月12日
+                - generic [ref=e237]:
+                  - text: 这也给很多预算相对有限、但希望借助
+                  - emphasis [ref=e238]: 体育
+                  - text: 情绪与当地消费者建立联系的出海品牌，带来了新的机会。她透露，从品类上看，除了传统的大型消费电子、游戏等出海行业外，越来越多的新品牌、新品类，也开始更开放地尝试
+                  - emphasis [ref=e239]: 体育营销
+                  - text: ，并探索与全球消费者建立情感共鸣的机会。原标题：《
+                  - emphasis [ref=e240]: "2026"
+                  - text: 年夏日
+                  - emphasis [ref=e241]: 足球
+                  - text: 盛典即将开场，品牌出海营销方式变了吗？》栏目主编：戎兵 本文作者...
+              - link "头像  上观新闻" [ref=e246] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=ziJkGOYcNy0frSIKIqhjqW1TJp7EJSRGHezy4wLMmv_jbOsVmRacYD41gASkAKkPDIzcqMKP2c81lCN-XjHcVG77k6WvfC51t11Qbr0suHC
+                - generic [ref=e247]:
+                  - img "头像" [ref=e249]
+                  - generic [ref=e251]: 
+                - generic [ref=e252]: 上观新闻
+                - generic [ref=e254]: 
+        - generic [ref=e258]:
+          - heading "流量密码还是自毁根基?国际足联“黑红”营销激怒全球球迷" [level=3] [ref=e261]:
+            - link "流量密码还是自毁根基?国际足联“黑红”营销激怒全球球迷" [ref=e262] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=P27dz7janutK9alP8rXm_NNvsfoxoxGsv_31QEHYs6G4hi-T9vwsYkl62Iw6nnjPlb4GaUcXOb4A5tg6VexP8cQdimuZdnGsmcm6t-SVN2i
+              - paragraph [ref=e265]:
+                - generic [ref=e268]:
+                  - text: 流量密码还是自毁根基?国际足联“黑红”
+                  - emphasis [ref=e269]: 营销
+                  - text: 激怒全球球迷
+          - generic [ref=e270]:
+            - link [ref=e272] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=P27dz7janutK9alP8rXm_NNvsfoxoxGsv_31QEHYs6G4hi-T9vwsYkl62Iw6nnjPlb4GaUcXOb4A5tg6VexP8cQdimuZdnGsmcm6t-SVN2i
+            - generic [ref=e277]:
+              - generic [ref=e282]:
+                - text: 2026年5月8日
+                - generic [ref=e283]:
+                  - text: 从“#FIFAForgotCR7”话题在至少十七个国家登上热搜，到
+                  - emphasis [ref=e284]: "2026"
+                  - text: 年美加墨世界杯
+                  - emphasis [ref=e285]: 最新
+                  - text: 海报中美国队球员占据视觉中心引发美、墨、加三国球迷的集体不满，国际足联的
+                  - emphasis [ref=e286]: 营销
+                  - text: 部门似乎陷入了一种奇特的循环：制造争议，引爆流量，然后在一片骂声中悄然撤换或保持沉默。这究竟是连续的低级失误，还是一场精心计算的“黑红”流量游戏？...
+              - link "头像 小鲤鱼教体育" [ref=e291] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=P27dz7janutK9alP8rXm_NNvsfoxoxGsv_31QEHYs6G4hi-T9vwsYkl62Iw6nnjPlb4GaUcXOb4A5tg6VexP8cQdimuZdnGsmcm6t-SVN2i
+                - img "头像" [ref=e294]
+                - generic [ref=e295]: 小鲤鱼教体育
+                - generic [ref=e297]: 
+        - generic [ref=e301]:
+          - heading "体育营销只谈商业?TA早已站上社会价值新高度!" [level=3] [ref=e304]:
+            - link "体育营销只谈商业?TA早已站上社会价值新高度!" [ref=e305] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWC00MM3IuoKw9sXGAmQ5NFQP0cpNWUxkFyysO9yZegyB0JWvZ_y_Ofk2PDsu9mQtYLH4i0KjW2QzbejeJn_5Rn83
+              - paragraph [ref=e308]:
+                - generic [ref=e311]:
+                  - emphasis [ref=e312]: 体育营销
+                  - text: 只谈商业?TA早已站上社会价值
+                  - emphasis [ref=e313]: 新
+                  - text: 高度!
+          - generic [ref=e318]:
+            - text: 2026年4月24日
+            - generic [ref=e319]:
+              - emphasis [ref=e320]: "2026"
+              - text: 年4月20日,蒙牛作为2026江苏省城市
+              - emphasis [ref=e321]: 足球
+              - text: 联赛全媒体活动赞助商,携手江苏省广播电视总台开启“2026苏超要强少年团暨蒙牛世界杯小旗手”全国招募,跳出纯商业
+              - emphasis [ref=e322]: 营销
+              - text: 的框架,旨在用品牌力量为中国足球少年的梦想托举。 这是一次面向中国足球未来的社会责任践行,蒙牛抛开商业诉求,将遴选6位12-17岁热爱足球的少年,送上20...
+          - generic [ref=e323]:
+            - link [ref=e325] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWC00MM3IuoKw9sXGAmQ5NFQP0cpNWUxkFyysO9yZegyB0JWvZ_y_Ofk2PDsu9mQtYLH4i0KjW2QzbejeJn_5Rn83
+            - link [ref=e329] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWC00MM3IuoKw9sXGAmQ5NFQP0cpNWUxkFyysO9yZegyB0JWvZ_y_Ofk2PDsu9mQtYLH4i0KjW2QzbejeJn_5Rn83
+            - link [ref=e333] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWC00MM3IuoKw9sXGAmQ5NFQP0cpNWUxkFyysO9yZegyB0JWvZ_y_Ofk2PDsu9mQtYLH4i0KjW2QzbejeJn_5Rn83
+            - link "8" [ref=e337] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWC00MM3IuoKw9sXGAmQ5NFQP0cpNWUxkFyysO9yZegyB0JWvZ_y_Ofk2PDsu9mQtYLH4i0KjW2QzbejeJn_5Rn83
+              - generic [ref=e340]:
+                - generic [ref=e341]: 
+                - text: "8"
+          - link "微博" [ref=e346] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWC00MM3IuoKw9sXGAmQ5NFQP0cpNWUxkFyysO9yZegyB0JWvZ_y_Ofk2PDsu9mQtYLH4i0KjW2QzbejeJn_5Rn83
+            - generic [ref=e347]: 微博
+            - generic [ref=e349]: 
+        - generic [ref=e353]:
+          - heading "禹唐体育|打造体育营销第一平台" [level=3] [ref=e356]:
+            - link "禹唐体育|打造体育营销第一平台" [ref=e357] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=2YjzJWx3J9Ys0cDmB-YzegnMM6PVGo4HFPQxcaUfYTuFQnMWarlGceOW-ipbPc4GQl2IbMFkPzOzWkEOQDs0m_
+              - paragraph [ref=e360]:
+                - generic [ref=e363]:
+                  - text: 禹唐体育|打造
+                  - emphasis [ref=e364]: 体育营销
+                  - text: 第一平台
+          - generic [ref=e369]:
+            - text: 2026年1月6日
+            - generic [ref=e370]:
+              - text: 禹唐体育:一站式
+              - emphasis [ref=e371]: 体育营销
+              - text: 专业服务 纵观
+              - emphasis [ref=e372]: "2026"
+              - text: 年的体育营销市场,国际三大赛的引领价值占据主导,大众参与和竞技类赛事供给同样充足,但是对于品牌方而言,营销预算等因素的制约决定着选择匹配度高的资源比任何时候都重要。 禹唐体育将通过自己的专业服务辅助品牌方在大赛营销、品牌曝光、人群触达、品牌出海等方面的核心需求匹配,...
+          - link "xiangmu.ytsports.cn/news-297...htm..." [ref=e377] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=2YjzJWx3J9Ys0cDmB-YzegnMM6PVGo4HFPQxcaUfYTuFQnMWarlGceOW-ipbPc4GQl2IbMFkPzOzWkEOQDs0m_
+            - generic [ref=e378]: xiangmu.ytsports.cn/news-297...htm...
+            - generic [ref=e380]: 
+        - generic [ref=e384]:
+          - heading "乐高让梅西、C罗罕见同框,2026世界杯营销,品牌都在玩新套路" [level=3] [ref=e387]:
+            - link "乐高让梅西、C罗罕见同框,2026世界杯营销,品牌都在玩新套路" [ref=e388] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=l1ZgPzC0F5xQfUp03mmAeMErm89eUZJJJYtHAEbc_KDWtsSMBmIPVbnFGgXl7zJJxfpNfx49WYojRMPIjUnzOK
+              - paragraph [ref=e391]:
+                - generic [ref=e394]:
+                  - text: 乐高让梅西、C罗罕见同框,
+                  - emphasis [ref=e395]: "2026"
+                  - text: 世界杯
+                  - emphasis [ref=e396]: 营销
+                  - text: ",品牌都在玩"
+                  - emphasis [ref=e397]: 新
+                  - text: 套路
+          - generic [ref=e398]:
+            - link [ref=e400] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=l1ZgPzC0F5xQfUp03mmAeMErm89eUZJJJYtHAEbc_KDWtsSMBmIPVbnFGgXl7zJJxfpNfx49WYojRMPIjUnzOK
+            - generic [ref=e405]:
+              - generic [ref=e410]:
+                - text: 2026年4月12日
+                - generic [ref=e411]:
+                  - text: 世界杯大幕将启,未来两个月,品牌
+                  - emphasis [ref=e412]: 营销
+                  - text: 的密度与烈度将持续升级。48支球队的巅峰对决、104场比赛的热血瞬间,加之AI
+                  - emphasis [ref=e413]: 新
+                  - text: 技术的深度参与,将为
+                  - emphasis [ref=e414]: 体育
+                  - text: (884258)营销注入全新活力。 当创意、情绪、科技与格局碰撞,
+                  - emphasis [ref=e415]: "2026"
+                  - text: 年美加墨世界杯,不仅将见证
+                  - emphasis [ref=e416]: 足球
+                  - text: 的荣耀与梦想,更将书写品牌体育(884258)营销的全新篇章。
+              - link "同花顺财经" [ref=e421] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=l1ZgPzC0F5xQfUp03mmAeMErm89eUZJJJYtHAEbc_KDWtsSMBmIPVbnFGgXl7zJJxfpNfx49WYojRMPIjUnzOK
+                - generic [ref=e422]: 同花顺财经
+                - generic [ref=e424]: 
+        - generic [ref=e426]:
+          - generic [ref=e427]: 大家还在搜
+          - generic [ref=e428]:
+            - link "今天足球比赛结果" [ref=e429] [cursor=pointer]:
+              - /url: /s?wd=%E4%BB%8A%E5%A4%A9%E8%B6%B3%E7%90%83%E6%AF%94%E8%B5%9B%E7%BB%93%E6%9E%9C&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=cc26drmOaLb%2B2Q%2BSP7Q%2BUDUd%2BICtMMNgYzibKiDgGWrQqyx78De8OoF4h2E&rsf=101631202&rsv_dl=0_prs_28608_1
+              - generic [ref=e431]: 今天足球比赛结果
+            - link "最近足球赛事" [ref=e432] [cursor=pointer]:
+              - /url: /s?wd=%E6%9C%80%E8%BF%91%E8%B6%B3%E7%90%83%E8%B5%9B%E4%BA%8B&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=cc26drmOaLb%2B2Q%2BSP7Q%2BUDUd%2BICtMMNgYzibKiDgGWrQqyx78De8OoF4h2E&rsf=101631202&rsv_dl=0_prs_28608_2
+              - generic [ref=e434]: 最近足球赛事
+            - link "天下足球疯狂的足球2022" [ref=e435] [cursor=pointer]:
+              - /url: /s?wd=%E5%A4%A9%E4%B8%8B%E8%B6%B3%E7%90%83%E7%96%AF%E7%8B%82%E7%9A%84%E8%B6%B3%E7%90%832022&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=cc26drmOaLb%2B2Q%2BSP7Q%2BUDUd%2BICtMMNgYzibKiDgGWrQqyx78De8OoF4h2E&rsf=101636803&rsv_dl=0_prs_28608_3
+              - generic [ref=e437]: 天下足球疯狂的足球2022
+            - link "最火的足球论坛" [ref=e438] [cursor=pointer]:
+              - /url: /s?wd=%E6%9C%80%E7%81%AB%E7%9A%84%E8%B6%B3%E7%90%83%E8%AE%BA%E5%9D%9B&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=cc26drmOaLb%2B2Q%2BSP7Q%2BUDUd%2BICtMMNgYzibKiDgGWrQqyx78De8OoF4h2E&rsf=101633403&rsv_dl=0_prs_28608_4
+              - generic [ref=e440]: 最火的足球论坛
+            - link "爆棚足球论坛官网首页" [ref=e441] [cursor=pointer]:
+              - /url: /s?wd=%E7%88%86%E6%A3%9A%E8%B6%B3%E7%90%83%E8%AE%BA%E5%9D%9B%E5%AE%98%E7%BD%91%E9%A6%96%E9%A1%B5&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=cc26drmOaLb%2B2Q%2BSP7Q%2BUDUd%2BICtMMNgYzibKiDgGWrQqyx78De8OoF4h2E&rsf=101636803&rsv_dl=0_prs_28608_5
+              - generic [ref=e443]: 爆棚足球论坛官网首页
+            - link "足球媒体最新预测" [ref=e444] [cursor=pointer]:
+              - /url: /s?wd=%E8%B6%B3%E7%90%83%E5%AA%92%E4%BD%93%E6%9C%80%E6%96%B0%E9%A2%84%E6%B5%8B&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=cc26drmOaLb%2B2Q%2BSP7Q%2BUDUd%2BICtMMNgYzibKiDgGWrQqyx78De8OoF4h2E&rsf=101633403&rsv_dl=0_prs_28608_6
+              - generic [ref=e446]: 足球媒体最新预测
+            - link "竞彩足球改革" [ref=e447] [cursor=pointer]:
+              - /url: /s?wd=%E7%AB%9E%E5%BD%A9%E8%B6%B3%E7%90%83%E6%94%B9%E9%9D%A9&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=cc26drmOaLb%2B2Q%2BSP7Q%2BUDUd%2BICtMMNgYzibKiDgGWrQqyx78De8OoF4h2E&rsf=101633403&rsv_dl=0_prs_28608_7
+              - generic [ref=e449]: 竞彩足球改革
+            - link "足球营销" [ref=e450] [cursor=pointer]:
+              - /url: /s?wd=%E8%B6%B3%E7%90%83%E8%90%A5%E9%94%80&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=cc26drmOaLb%2B2Q%2BSP7Q%2BUDUd%2BICtMMNgYzibKiDgGWrQqyx78De8OoF4h2E&rsf=101633403&rsv_dl=0_prs_28608_8
+              - generic [ref=e452]: 足球营销
+            - link "足球十四五规划" [ref=e453] [cursor=pointer]:
+              - /url: /s?wd=%E8%B6%B3%E7%90%83%E5%8D%81%E5%9B%9B%E4%BA%94%E8%A7%84%E5%88%92&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=cc26drmOaLb%2B2Q%2BSP7Q%2BUDUd%2BICtMMNgYzibKiDgGWrQqyx78De8OoF4h2E&rsf=101633403&rsv_dl=0_prs_28608_9
+              - generic [ref=e455]: 足球十四五规划
+            - link "足球赛程" [ref=e456] [cursor=pointer]:
+              - /url: /s?wd=%E8%B6%B3%E7%90%83%E8%B5%9B%E7%A8%8B&ie=utf-8&rsv_pq=d17784320000104e&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&rsv_t=cc26drmOaLb%2B2Q%2BSP7Q%2BUDUd%2BICtMMNgYzibKiDgGWrQqyx78De8OoF4h2E&rsf=101631202&rsv_dl=0_prs_28608_10
+              - generic [ref=e458]: 足球赛程
+        - generic [ref=e462]:
+          - heading "瓜分全球60亿观众注意力,足球盛夏涌现中国品牌出海新机遇" [level=3] [ref=e465]:
+            - link "瓜分全球60亿观众注意力,足球盛夏涌现中国品牌出海新机遇" [ref=e466] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=P27dz7janutK9alP8rXm_NNvsfoxoxGsv_31QEHYs6J8QAYty__nUSsTAuKaXsxleyMH0lBZG59ouX5rZxryNQ4ZxxPqdFaVhuM3F9wKeOW
+              - paragraph [ref=e469]:
+                - generic [ref=e472]:
+                  - text: 瓜分全球60亿观众注意力,
+                  - emphasis [ref=e473]: 足球
+                  - text: 盛夏涌现中国品牌出海
+                  - emphasis [ref=e474]: 新
+                  - text: 机遇
+          - generic [ref=e475]:
+            - link [ref=e477] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=P27dz7janutK9alP8rXm_NNvsfoxoxGsv_31QEHYs6J8QAYty__nUSsTAuKaXsxleyMH0lBZG59ouX5rZxryNQ4ZxxPqdFaVhuM3F9wKeOW
+            - generic [ref=e482]:
+              - generic [ref=e487]:
+                - text: 2026年5月11日
+                - generic [ref=e488]:
+                  - text: 一个月后，
+                  - emphasis [ref=e489]: "2026"
+                  - text: 年美加墨世界杯将吹响号角，运动热情点燃
+                  - emphasis [ref=e490]: 足球
+                  - text: 盛夏。日前，广告科技公司The Trade Desk（简称TTD）发布了一项针对2026年夏日足球盛典
+                  - emphasis [ref=e491]: 营销
+                  - text: 洞察的专项调研。调研显示，今夏这场传统
+                  - emphasis [ref=e492]: 体育
+                  - text: 赛事的全球影响力进一步提升——在欧洲各年龄层持续升温，并在北美借助举办地效应突破传统体育迷圈层。作为历史上首次由三个...
+              - link "头像  南方都市报" [ref=e497] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=P27dz7janutK9alP8rXm_NNvsfoxoxGsv_31QEHYs6J8QAYty__nUSsTAuKaXsxleyMH0lBZG59ouX5rZxryNQ4ZxxPqdFaVhuM3F9wKeOW
+                - generic [ref=e498]:
+                  - img "头像" [ref=e500]
+                  - generic [ref=e502]: 
+                - generic [ref=e503]: 南方都市报
+                - generic [ref=e505]: 
+        - generic [ref=e509]:
+          - heading "世界杯营销七十年,谁在定义世界杯?Morketing2026体育营销特辑①" [level=3] [ref=e512]:
+            - link "世界杯营销七十年,谁在定义世界杯?Morketing2026体育营销特辑①" [ref=e513] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=P27dz7janutK9alP8rXm_NNvsfoxoxGsv_31QEHYs6JJWfK8ir59VA8-qehOyElI27S0ZvzRKHna2osyq9TT8_6gy4HnUGIR5Z_pQdHkjOm
+              - paragraph [ref=e516]:
+                - generic [ref=e519]:
+                  - text: 世界杯营销七十年,谁在定义世界杯?Morketing
+                  - emphasis [ref=e520]: 2026体育营销
+                  - text: 特辑①
+          - generic [ref=e521]:
+            - link [ref=e523] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=P27dz7janutK9alP8rXm_NNvsfoxoxGsv_31QEHYs6JJWfK8ir59VA8-qehOyElI27S0ZvzRKHna2osyq9TT8_6gy4HnUGIR5Z_pQdHkjOm
+            - generic [ref=e528]:
+              - generic [ref=e533]:
+                - text: 2026年4月28日
+                - generic [ref=e534]:
+                  - text: 这下好处一串串地来了国际足联从一个穷得叮当响、靠情怀续命的机构，慢慢变成每年营收几十亿美元的超级“印钞机”；阿迪达斯也顺势在
+                  - emphasis [ref=e535]: 足球
+                  - text: 领域坐上了王座。顺着这个逻辑往下走，电视时代的世界杯
+                  - emphasis [ref=e536]: 营销
+                  - text: 格局就基本定型了。1978年，可口可乐摘下“官方赞助商”的帽子，一戴就是46年不摘，到
+                  - emphasis [ref=e537]: "2026"
+                  - text: 年依然在列，直接变成世界...
+              - link "头像 理性看市场" [ref=e542] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=P27dz7janutK9alP8rXm_NNvsfoxoxGsv_31QEHYs6JJWfK8ir59VA8-qehOyElI27S0ZvzRKHna2osyq9TT8_6gy4HnUGIR5Z_pQdHkjOm
+                - img "头像" [ref=e545]
+                - generic [ref=e546]: 理性看市场
+                - generic [ref=e548]: 
+        - generic [ref=e552]:
+          - heading "把握品牌激活的进化和转变——企业决胜世界杯营销的关键点_百科TA说" [level=3] [ref=e555]:
+            - link "把握品牌激活的进化和转变——企业决胜世界杯营销的关键点_百科TA说" [ref=e556] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZ9s9qcoAUCfL3hqtATWMLmxmSXHt5p6zAEJHWCayvRViweNTjyoGggzjy3d6I2vCFxy_ozPD5L1Mn6O9kcg_AuUh2xGMu-QpN-mv8PgC3ipa
+              - paragraph [ref=e559]:
+                - generic [ref=e562]:
+                  - text: 把握品牌激活的进化和转变——企业决胜世界杯
+                  - emphasis [ref=e563]: 营销
+                  - text: 的关键点_百科TA说
+          - generic [ref=e568]:
+            - text: 2026年1月14日
+            - generic [ref=e569]:
+              - text: 企业的世界杯营销要跳出传统
+              - emphasis [ref=e570]: 体育营销
+              - text: 的藩篱,充分整合数据、内容、影响者、粉丝,深度激发技术、互动、体验、品牌叙事综合赋能的体系价值。 在
+              - emphasis [ref=e571]: "2026"
+              - text: 这个体育大年,美加墨世界杯无疑是皇冠上的明珠。本届世界杯将成为史上规模最大、商业影响力最强的
+              - emphasis [ref=e572]: 足球
+              - text: 盛会。赛事将于2026年6月11日至7月19日由美国、加拿大和墨西哥联合举...
+          - link "百度百科" [ref=e577] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZ9s9qcoAUCfL3hqtATWMLmxmSXHt5p6zAEJHWCayvRViweNTjyoGggzjy3d6I2vCFxy_ozPD5L1Mn6O9kcg_AuUh2xGMu-QpN-mv8PgC3ipa
+            - generic [ref=e578]: 百度百科
+            - generic [ref=e580]: 
+        - generic [ref=e584]:
+          - heading "专家剖析,案例详解——“2026世界杯营销案例分享与资源推介”直播..." [level=3] [ref=e587]:
+            - link "专家剖析,案例详解——“2026世界杯营销案例分享与资源推介”直播..." [ref=e588] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=gumy5Po7zcv7RBkYyDTTwiVN-M05aM4_3R3rVkEy5fmCiSlGhbR11nhpzFd2ms4V
+              - paragraph [ref=e591]:
+                - generic [ref=e594]:
+                  - text: 专家剖析,案例详解——“
+                  - emphasis [ref=e595]: "2026"
+                  - text: 世界杯
+                  - emphasis [ref=e596]: 营销
+                  - text: 案例分享与资源推介”直播...
+          - generic [ref=e601]:
+            - text: 2026年1月14日
+            - generic [ref=e602]:
+              - text: 在
+              - emphasis [ref=e603]: "2026"
+              - text: 这个
+              - emphasis [ref=e604]: 体育
+              - text: 大年,美加墨世界杯无疑是皇冠上的明珠。本届世界杯将成为史上规模最大、商业影响力最强的
+              - emphasis [ref=e605]: 足球
+              - text: 盛会。赛事将于2026年6月11日至7月19日由美国、加拿大和墨西哥联合举办,其扩容至48支球队的赛制与北美举办地共同构筑了前所未有的
+              - emphasis [ref=e606]: 营销
+              - text: 平台。
+          - generic [ref=e607]:
+            - link [ref=e609] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=gumy5Po7zcv7RBkYyDTTwiVN-M05aM4_3R3rVkEy5fmCiSlGhbR11nhpzFd2ms4V
+            - link [ref=e613] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=gumy5Po7zcv7RBkYyDTTwiVN-M05aM4_3R3rVkEy5fmCiSlGhbR11nhpzFd2ms4V
+            - link [ref=e617] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=gumy5Po7zcv7RBkYyDTTwiVN-M05aM4_3R3rVkEy5fmCiSlGhbR11nhpzFd2ms4V
+            - link "6" [ref=e621] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=gumy5Po7zcv7RBkYyDTTwiVN-M05aM4_3R3rVkEy5fmCiSlGhbR11nhpzFd2ms4V
+              - generic [ref=e624]:
+                - generic [ref=e625]: 
+                - text: "6"
+          - link "禹唐体育" [ref=e630] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=gumy5Po7zcv7RBkYyDTTwiVN-M05aM4_3R3rVkEy5fmCiSlGhbR11nhpzFd2ms4V
+            - generic [ref=e631]: 禹唐体育
+            - generic [ref=e633]: 
+      - generic [ref=e635]:
+        - generic [ref=e636]: 相关搜索
+        - table [ref=e637]:
+          - rowgroup [ref=e638]:
+            - row "今天足球比赛结果 最近足球赛事" [ref=e639]:
+              - cell "今天足球比赛结果" [ref=e640]:
+                - link "今天足球比赛结果" [ref=e641] [cursor=pointer]:
+                  - /url: /s?wd=%E4%BB%8A%E5%A4%A9%E8%B6%B3%E7%90%83%E6%AF%94%E8%B5%9B%E7%BB%93%E6%9E%9C&rsf=101631202&rsp=0&f=1&rs_src=0&rsv_pq=d17784320000104e&rsv_t=7e2di%2Bq4WZj%2BIGd9nXf0ScdA7ZhBVi%2BVsIWh%2BKux5PXH3yJpzahP%2FRpX1D0&rsv_dl=brs_28338_1
+                  - generic [ref=e643]: 今天足球比赛结果
+              - cell "最近足球赛事" [ref=e644]:
+                - link "最近足球赛事" [ref=e645] [cursor=pointer]:
+                  - /url: /s?wd=%E6%9C%80%E8%BF%91%E8%B6%B3%E7%90%83%E8%B5%9B%E4%BA%8B&rsf=101631202&rsp=1&f=1&rs_src=0&rsv_pq=d17784320000104e&rsv_t=7e2di%2Bq4WZj%2BIGd9nXf0ScdA7ZhBVi%2BVsIWh%2BKux5PXH3yJpzahP%2FRpX1D0&rsv_dl=brs_28338_2
+                  - generic [ref=e647]: 最近足球赛事
+            - row "爆棚足球论坛官网首页 足球营销" [ref=e648]:
+              - cell "爆棚足球论坛官网首页" [ref=e649]:
+                - link "爆棚足球论坛官网首页" [ref=e650] [cursor=pointer]:
+                  - /url: /s?wd=%E7%88%86%E6%A3%9A%E8%B6%B3%E7%90%83%E8%AE%BA%E5%9D%9B%E5%AE%98%E7%BD%91%E9%A6%96%E9%A1%B5&rsf=101636803&rsp=2&f=1&rs_src=0&rsv_pq=d17784320000104e&rsv_t=7e2di%2Bq4WZj%2BIGd9nXf0ScdA7ZhBVi%2BVsIWh%2BKux5PXH3yJpzahP%2FRpX1D0&rsv_dl=brs_28338_3
+                  - generic [ref=e652]: 爆棚足球论坛官网首页
+              - cell "足球营销" [ref=e653]:
+                - link "足球营销" [ref=e654] [cursor=pointer]:
+                  - /url: /s?wd=%E8%B6%B3%E7%90%83%E8%90%A5%E9%94%80&rsf=101633403&rsp=3&f=1&rs_src=0&rsv_pq=d17784320000104e&rsv_t=7e2di%2Bq4WZj%2BIGd9nXf0ScdA7ZhBVi%2BVsIWh%2BKux5PXH3yJpzahP%2FRpX1D0&rsv_dl=brs_28338_4
+                  - generic [ref=e656]: 足球营销
+            - row "最火的足球论坛 竞彩足球改革" [ref=e657]:
+              - cell "最火的足球论坛" [ref=e658]:
+                - link "最火的足球论坛" [ref=e659] [cursor=pointer]:
+                  - /url: /s?wd=%E6%9C%80%E7%81%AB%E7%9A%84%E8%B6%B3%E7%90%83%E8%AE%BA%E5%9D%9B&rsf=101633403&rsp=4&f=1&rs_src=0&rsv_pq=d17784320000104e&rsv_t=7e2di%2Bq4WZj%2BIGd9nXf0ScdA7ZhBVi%2BVsIWh%2BKux5PXH3yJpzahP%2FRpX1D0&rsv_dl=brs_28338_5
+                  - generic [ref=e661]: 最火的足球论坛
+              - cell "竞彩足球改革" [ref=e662]:
+                - link "竞彩足球改革" [ref=e663] [cursor=pointer]:
+                  - /url: /s?wd=%E7%AB%9E%E5%BD%A9%E8%B6%B3%E7%90%83%E6%94%B9%E9%9D%A9&rsf=101633403&rsp=5&f=1&rs_src=0&rsv_pq=d17784320000104e&rsv_t=7e2di%2Bq4WZj%2BIGd9nXf0ScdA7ZhBVi%2BVsIWh%2BKux5PXH3yJpzahP%2FRpX1D0&rsv_dl=brs_28338_6
+                  - generic [ref=e665]: 竞彩足球改革
+            - row "足球媒体最新预测 足球赛程" [ref=e666]:
+              - cell "足球媒体最新预测" [ref=e667]:
+                - link "足球媒体最新预测" [ref=e668] [cursor=pointer]:
+                  - /url: /s?wd=%E8%B6%B3%E7%90%83%E5%AA%92%E4%BD%93%E6%9C%80%E6%96%B0%E9%A2%84%E6%B5%8B&rsf=101633403&rsp=6&f=1&rs_src=0&rsv_pq=d17784320000104e&rsv_t=7e2di%2Bq4WZj%2BIGd9nXf0ScdA7ZhBVi%2BVsIWh%2BKux5PXH3yJpzahP%2FRpX1D0&rsv_dl=brs_28338_7
+                  - generic [ref=e670]: 足球媒体最新预测
+              - cell "足球赛程" [ref=e671]:
+                - link "足球赛程" [ref=e672] [cursor=pointer]:
+                  - /url: /s?wd=%E8%B6%B3%E7%90%83%E8%B5%9B%E7%A8%8B&rsf=101631202&rsp=7&f=1&rs_src=0&rsv_pq=d17784320000104e&rsv_t=7e2di%2Bq4WZj%2BIGd9nXf0ScdA7ZhBVi%2BVsIWh%2BKux5PXH3yJpzahP%2FRpX1D0&rsv_dl=brs_28338_8
+                  - generic [ref=e674]: 足球赛程
+            - row "足球十四五规划 足球市场化改革" [ref=e675]:
+              - cell "足球十四五规划" [ref=e676]:
+                - link "足球十四五规划" [ref=e677] [cursor=pointer]:
+                  - /url: /s?wd=%E8%B6%B3%E7%90%83%E5%8D%81%E5%9B%9B%E4%BA%94%E8%A7%84%E5%88%92&rsf=101633403&rsp=8&f=1&rs_src=0&rsv_pq=d17784320000104e&rsv_t=7e2di%2Bq4WZj%2BIGd9nXf0ScdA7ZhBVi%2BVsIWh%2BKux5PXH3yJpzahP%2FRpX1D0&rsv_dl=brs_28338_9
+                  - generic [ref=e679]: 足球十四五规划
+              - cell "足球市场化改革" [ref=e680]:
+                - link "足球市场化改革" [ref=e681] [cursor=pointer]:
+                  - /url: /s?wd=%E8%B6%B3%E7%90%83%E5%B8%82%E5%9C%BA%E5%8C%96%E6%94%B9%E9%9D%A9&rsf=101633403&rsp=9&f=1&rs_src=0&rsv_pq=d17784320000104e&rsv_t=7e2di%2Bq4WZj%2BIGd9nXf0ScdA7ZhBVi%2BVsIWh%2BKux5PXH3yJpzahP%2FRpX1D0&rsv_dl=brs_28338_10
+                  - generic [ref=e683]: 足球市场化改革
+    - generic [ref=e686]:
+      - link "上一页":
+        - /url: ""
+        - img "上一页"
+      - strong [ref=e687]:
+        - generic [ref=e688]: "1"
+      - link "2" [ref=e689] [cursor=pointer]:
+        - /url: /s?usm=0&ie=utf-8&f=0&rsv_pq=d17784320000104e&rsv_t=d76aEW%2FZAdc0jmocgAWmkMx1nKIiS9ONXOvtA8Xl5tZQtL3OV606&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&pn=10
+        - generic [ref=e690]: "2"
+      - link "3" [ref=e691] [cursor=pointer]:
+        - /url: /s?usm=0&ie=utf-8&f=0&rsv_pq=d17784320000104e&rsv_t=d76aEW%2FZAdc0jmocgAWmkMx1nKIiS9ONXOvtA8Xl5tZQtL3OV606&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&pn=20
+        - generic [ref=e692]: "3"
+      - link "4" [ref=e693] [cursor=pointer]:
+        - /url: /s?usm=0&ie=utf-8&f=0&rsv_pq=d17784320000104e&rsv_t=d76aEW%2FZAdc0jmocgAWmkMx1nKIiS9ONXOvtA8Xl5tZQtL3OV606&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&pn=30
+        - generic [ref=e694]: "4"
+      - link "5" [ref=e695] [cursor=pointer]:
+        - /url: /s?usm=0&ie=utf-8&f=0&rsv_pq=d17784320000104e&rsv_t=d76aEW%2FZAdc0jmocgAWmkMx1nKIiS9ONXOvtA8Xl5tZQtL3OV606&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&pn=40
+        - generic [ref=e696]: "5"
+      - link "6" [ref=e697] [cursor=pointer]:
+        - /url: /s?usm=0&ie=utf-8&f=0&rsv_pq=d17784320000104e&rsv_t=d76aEW%2FZAdc0jmocgAWmkMx1nKIiS9ONXOvtA8Xl5tZQtL3OV606&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&pn=50
+        - generic [ref=e698]: "6"
+      - link "7" [ref=e699] [cursor=pointer]:
+        - /url: /s?usm=0&ie=utf-8&f=0&rsv_pq=d17784320000104e&rsv_t=d76aEW%2FZAdc0jmocgAWmkMx1nKIiS9ONXOvtA8Xl5tZQtL3OV606&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&pn=60
+        - generic [ref=e700]: "7"
+      - link "8" [ref=e701] [cursor=pointer]:
+        - /url: /s?usm=0&ie=utf-8&f=0&rsv_pq=d17784320000104e&rsv_t=d76aEW%2FZAdc0jmocgAWmkMx1nKIiS9ONXOvtA8Xl5tZQtL3OV606&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&pn=70
+        - generic [ref=e702]: "8"
+      - link "9" [ref=e703] [cursor=pointer]:
+        - /url: /s?usm=0&ie=utf-8&f=0&rsv_pq=d17784320000104e&rsv_t=d76aEW%2FZAdc0jmocgAWmkMx1nKIiS9ONXOvtA8Xl5tZQtL3OV606&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&pn=80
+        - generic [ref=e704]: "9"
+      - link "10" [ref=e705] [cursor=pointer]:
+        - /url: /s?usm=0&ie=utf-8&f=0&rsv_pq=d17784320000104e&rsv_t=d76aEW%2FZAdc0jmocgAWmkMx1nKIiS9ONXOvtA8Xl5tZQtL3OV606&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&pn=90
+        - generic [ref=e706]: "10"
+      - link "下一页" [ref=e707] [cursor=pointer]:
+        - /url: /s?usm=0&ie=utf-8&f=0&rsv_pq=d17784320000104e&rsv_t=d76aEW%2FZAdc0jmocgAWmkMx1nKIiS9ONXOvtA8Xl5tZQtL3OV606&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%20%E8%B6%B3%E7%90%83&pn=10&rsv_page=1
+        - img "下一页" [ref=e708]
+    - generic [ref=e711]:
+      - link "帮助" [ref=e712] [cursor=pointer]:
+        - /url: " https://help.baidu.com/question?prod_id=1"
+      - link "举报" [ref=e713] [cursor=pointer]:
+        - /url: https://help.baidu.com/jubao?source=search
+      - link "用户反馈" [ref=e714] [cursor=pointer]:
+        - /url: javascript:;
+      - link "企业推广" [ref=e715] [cursor=pointer]:
+        - /url: https://e.baidu.com/lp/search/?refer=1298

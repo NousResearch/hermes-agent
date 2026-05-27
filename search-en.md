@@ -1,0 +1,2067 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link "Google News" [ref=e7] [cursor=pointer]:
+        - /url: ./?hl=en-US&gl=US&ceid=US%3Aen
+        - generic [ref=e9]: News
+      - generic [ref=e10]:
+        - search [ref=e12]:
+          - combobox "Search for topics, locations & sources" [ref=e19]: "\"World Cup\" \"2026\" sponsor OR marketing OR campaign"
+          - button "Advanced search" [ref=e20] [cursor=pointer]:
+            - generic [ref=e21]:
+              - generic "Advanced search" [ref=e22]:
+                - img [ref=e23]
+              - tooltip [ref=e25]: Advanced search
+          - button "Clear search" [ref=e26] [cursor=pointer]:
+            - img [ref=e27]
+          - button "Search" [ref=e30] [cursor=pointer]:
+            - img [ref=e31]
+        - generic [ref=e34]:
+          - generic [ref=e39]:
+            - button "Help" [ref=e40] [cursor=pointer]:
+              - img [ref=e42]
+            - tooltip [ref=e44]: Help
+          - generic [ref=e49]:
+            - button "Settings" [ref=e50] [cursor=pointer]:
+              - img [ref=e52]
+            - tooltip [ref=e55]: Settings
+      - generic [ref=e57]:
+        - button "Google apps" [ref=e61] [cursor=pointer]:
+          - img [ref=e62]
+        - link "Sign in" [ref=e65] [cursor=pointer]:
+          - /url: https://accounts.google.com/ServiceLogin?passive=1209600&continue=https://news.google.com/search?q%3D%2522World%2BCup%2522%2B%25222026%2522%2Bsponsor%2BOR%2Bmarketing%2BOR%2Bcampaign%26hl%3Den-US%26gl%3DUS%26ceid%3DUS:en%26when%3D1d&followup=https://news.google.com/search?q%3D%2522World%2BCup%2522%2B%25222026%2522%2Bsponsor%2BOR%2Bmarketing%2BOR%2Bcampaign%26hl%3Den-US%26gl%3DUS%26ceid%3DUS:en%26when%3D1d&hl=en-US&ec=GAZAqgM
+    - navigation [ref=e68]:
+      - tablist [ref=e69]:
+        - tab "Home" [ref=e70] [cursor=pointer]:
+          - tab "Home" [ref=e71]
+        - tab "For you" [ref=e72] [cursor=pointer]:
+          - tab "For you" [ref=e73]
+        - tab "Following" [ref=e74] [cursor=pointer]:
+          - tab "Following" [ref=e75]
+        - tab "U.S." [ref=e78] [cursor=pointer]:
+          - tab "U.S." [ref=e79]
+        - tab "World" [ref=e80] [cursor=pointer]:
+          - tab "World" [ref=e81]
+        - tab "Local" [ref=e82] [cursor=pointer]:
+          - tab "Local" [ref=e83]
+        - tab "Business" [ref=e84] [cursor=pointer]:
+          - tab "Business" [ref=e85]
+        - tab "Technology" [ref=e86] [cursor=pointer]:
+          - tab "Technology" [ref=e87]
+        - tab "Entertainment" [ref=e88] [cursor=pointer]:
+          - tab "Entertainment" [ref=e89]
+        - tab "Sports" [ref=e90] [cursor=pointer]:
+          - tab "Sports" [ref=e91]
+        - tab "Science" [ref=e92] [cursor=pointer]:
+          - tab "Science" [ref=e93]
+        - tab "Health" [ref=e94] [cursor=pointer]:
+          - tab "Health" [ref=e95]
+  - main [ref=e99]:
+    - generic [ref=e101]:
+      - generic [ref=e104]:
+        - generic [ref=e105]:
+          - link [ref=e107] [cursor=pointer]:
+            - /url: ./read/CBMigwFBVV95cUxQdnpFLTQzMWVTVDBLZEt4UDBreFdpaVVWTGV3S21POHJaYjdlcld4VXV4Nmtqa1prZzBKQVFITFlnQ3hLakVzR29CQjdHbHpxLV9HaE9GbFZqNGFibGhHR2ZxLTNYMUJuUGh3NjktNkkzSC1UdFNXc3g3eWliMmNzdDk4TQ?hl=en-US&gl=US&ceid=US%3Aen
+          - generic [ref=e109]:
+            - generic [ref=e110]:
+              - generic [ref=e113]: Brand Innovators
+              - generic [ref=e117]:
+                - generic:
+                  - button "More - Brand Innovators FIFA World Cup Ad Tracker 2026" [ref=e118] [cursor=pointer]:
+                    - img [ref=e120]
+                  - tooltip [ref=e122]: More
+            - link "Brand Innovators FIFA World Cup Ad Tracker 2026 - Brand Innovators - 5 days ago - By Dianna Dilworth" [ref=e123] [cursor=pointer]:
+              - /url: ./read/CBMigwFBVV95cUxQdnpFLTQzMWVTVDBLZEt4UDBreFdpaVVWTGV3S21POHJaYjdlcld4VXV4Nmtqa1prZzBKQVFITFlnQ3hLakVzR29CQjdHbHpxLV9HaE9GbFZqNGFibGhHR2ZxLTNYMUJuUGh3NjktNkkzSC1UdFNXc3g3eWliMmNzdDk4TQ?hl=en-US&gl=US&ceid=US%3Aen
+              - text: Brand Innovators FIFA World Cup Ad Tracker 2026
+          - figure [ref=e124]
+        - generic [ref=e125]:
+          - time [ref=e126]: 5 days ago
+          - separator [ref=e127]
+          - generic [ref=e128]: By Dianna Dilworth
+      - generic [ref=e129]:
+        - separator [ref=e131]
+        - generic [ref=e133]:
+          - generic [ref=e134]:
+            - link [ref=e136] [cursor=pointer]:
+              - /url: ./read/CBMif0FVX3lxTE9mVzJEMFpWZ1VfOWlOZE1fcFhwRWgxWkc3Q3lJOHh1SHF6aTljSDV0Xzl1LUVCVFNQYmIyT2llclppc1VWdjJoTjF5eHhYMFRZd0dmNFpGTmtMQ1l3YThSOEFwTlByRzhaUUVxUndxbDI5eS1rNFpWWExLeWlteFk?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e138]:
+              - generic [ref=e139]:
+                - generic [ref=e142]: Florida International University
+                - generic [ref=e146]:
+                  - generic:
+                    - button "More - World Cup 2026 impact could reach beyond tourism" [ref=e147] [cursor=pointer]:
+                      - img [ref=e149]
+                    - tooltip [ref=e151]: More
+              - link "World Cup 2026 impact could reach beyond tourism - Florida International University - 7 days ago - By Michelle Lopez" [ref=e152] [cursor=pointer]:
+                - /url: ./read/CBMif0FVX3lxTE9mVzJEMFpWZ1VfOWlOZE1fcFhwRWgxWkc3Q3lJOHh1SHF6aTljSDV0Xzl1LUVCVFNQYmIyT2llclppc1VWdjJoTjF5eHhYMFRZd0dmNFpGTmtMQ1l3YThSOEFwTlByRzhaUUVxUndxbDI5eS1rNFpWWExLeWlteFk?hl=en-US&gl=US&ceid=US%3Aen
+                - text: World Cup 2026 impact could reach beyond tourism
+            - figure [ref=e153]
+          - generic [ref=e154]:
+            - time [ref=e155]: 7 days ago
+            - separator [ref=e156]
+            - generic [ref=e157]: By Michelle Lopez
+      - generic [ref=e158]:
+        - separator [ref=e160]
+        - generic [ref=e162]:
+          - generic [ref=e163]:
+            - link [ref=e165] [cursor=pointer]:
+              - /url: ./read/CBMiuAFBVV95cUxQOFpWWXF1ZUxBY0lxbUpYOFBaeHUyZ280OWtpd3l6SXNuZzRXUUcxMFVrWDVsNmZSNXhqU0VVTFJwS0NSLXJVdE42M1JabjNWNlZ6UnhkX1owUmFydEVFSGxzSmlUeW9IM2ZIZ29HbzRqdjk5ejJ4NkZYdTJCeEhoeERoV2I2Y1IyNC1NRVczOWI2TkRVUHZVVzVVWWdzTTdrUTZNN3ZGOUEtRmJnZHAtanNSS0JhdHdM?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e167]:
+              - generic [ref=e168]:
+                - generic [ref=e171]: Seattle FIFA World Cup
+                - generic [ref=e175]:
+                  - generic:
+                    - button "More - Washington State Invited to Join “How We Pride” Campaign Ahead of FIFA World Cup 2026™" [ref=e176] [cursor=pointer]:
+                      - img [ref=e178]
+                    - tooltip [ref=e180]: More
+              - link "Washington State Invited to Join “How We Pride” Campaign Ahead of FIFA World Cup 2026™ - Seattle FIFA World Cup - 6 days ago" [ref=e181] [cursor=pointer]:
+                - /url: ./read/CBMiuAFBVV95cUxQOFpWWXF1ZUxBY0lxbUpYOFBaeHUyZ280OWtpd3l6SXNuZzRXUUcxMFVrWDVsNmZSNXhqU0VVTFJwS0NSLXJVdE42M1JabjNWNlZ6UnhkX1owUmFydEVFSGxzSmlUeW9IM2ZIZ29HbzRqdjk5ejJ4NkZYdTJCeEhoeERoV2I2Y1IyNC1NRVczOWI2TkRVUHZVVzVVWWdzTTdrUTZNN3ZGOUEtRmJnZHAtanNSS0JhdHdM?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Washington State Invited to Join “How We Pride” Campaign Ahead of FIFA World Cup 2026™
+            - figure [ref=e182]
+          - time [ref=e184]: 6 days ago
+      - generic [ref=e185]:
+        - separator [ref=e187]
+        - generic [ref=e189]:
+          - generic [ref=e190]:
+            - link [ref=e192] [cursor=pointer]:
+              - /url: ./read/CBMiywFBVV95cUxPRWJIMWZxWEFXZF9hU2ZkVzRQZUVONUEtN3F4WExKNHNQODAzclN6cVMwX2N5aDFmOXlkUkxIQ3JQdlNySjBqTjZib0daZmlHUzI5bFdsZnVHdVVmYnNtTDU0bGdkMTNITUlEYzdpemdqZ3pZZU03Q3N4WDZSVXJZRDl1QjRnNXhUT2RrVVFNYmltaGtTSHpuTENxRkY2Y0RKeVVsSl8wckJnTE04SVUydDg0NXBnUFFnaXpZR0R2TGJla3JwdURrZ1M0dw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e194]:
+              - generic [ref=e195]:
+                - generic [ref=e198]: SB Nation
+                - generic [ref=e202]:
+                  - generic:
+                    - button "More - Newcastle’s Owners PIF Confirmed as 2026 World Cup Sponsor" [ref=e203] [cursor=pointer]:
+                      - img [ref=e205]
+                    - tooltip [ref=e207]: More
+              - link "Newcastle’s Owners PIF Confirmed as 2026 World Cup Sponsor - SB Nation - 10 hours ago - By Antonio Losada" [ref=e208] [cursor=pointer]:
+                - /url: ./read/CBMiywFBVV95cUxPRWJIMWZxWEFXZF9hU2ZkVzRQZUVONUEtN3F4WExKNHNQODAzclN6cVMwX2N5aDFmOXlkUkxIQ3JQdlNySjBqTjZib0daZmlHUzI5bFdsZnVHdVVmYnNtTDU0bGdkMTNITUlEYzdpemdqZ3pZZU03Q3N4WDZSVXJZRDl1QjRnNXhUT2RrVVFNYmltaGtTSHpuTENxRkY2Y0RKeVVsSl8wckJnTE04SVUydDg0NXBnUFFnaXpZR0R2TGJla3JwdURrZ1M0dw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Newcastle’s Owners PIF Confirmed as 2026 World Cup Sponsor
+            - figure [ref=e209]
+          - generic [ref=e210]:
+            - time [ref=e211]: 10 hours ago
+            - separator [ref=e212]
+            - generic [ref=e213]: By Antonio Losada
+      - generic [ref=e214]:
+        - separator [ref=e216]
+        - generic [ref=e218]:
+          - generic [ref=e219]:
+            - link [ref=e221] [cursor=pointer]:
+              - /url: ./read/CBMiowFBVV95cUxNOE55Y213T01TNW5zZ21RRHRyUk9nR1Q2S3FMZWY3TUlFTUdzZDlWMzUxdll6UTF3eFhHdU1vLXU3em5Kclo3T254OEhBWGhtX0tIVl9jRnJrMUt0bkhRZEZmMnVKbVZxb1dSVUdZaTZNMUluUV96RjJtSEJMQ0JTWS1MRUhqSzBUcU1ZVVVyYzBmZTNrVFNvN1ZZRzNVeldURmNB0gGoAUFVX3lxTE5PZG9TdXZtdU81bDJUWXV0Z1d2c3daNU4zWk1DZ2Jnck1fSWlCUDZXTVdKX21kMmcycmpPeHQ5WDlhRGh1bmxsVE1mTjJReXB4cjEzTkNhOFZhWVhreHZPWG5GbElYMkxSd0dBdEFoVXkxNk03UEE4MFJieWw4akNGUTVVT3Y4cVhrd2dqSzdUblAxRnR1ODZ4ajJPbWFQalc3b18yVUgtVQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e223]:
+              - generic [ref=e224]:
+                - generic [ref=e227]: Al Jazeera
+                - generic [ref=e231]:
+                  - generic:
+                    - button "More - Who are the star players missing from World Cup 2026?" [ref=e232] [cursor=pointer]:
+                      - img [ref=e234]
+                    - tooltip [ref=e236]: More
+              - link "Who are the star players missing from World Cup 2026? - Al Jazeera - 2 days ago - By Manasi Pathak" [ref=e237] [cursor=pointer]:
+                - /url: ./read/CBMiowFBVV95cUxNOE55Y213T01TNW5zZ21RRHRyUk9nR1Q2S3FMZWY3TUlFTUdzZDlWMzUxdll6UTF3eFhHdU1vLXU3em5Kclo3T254OEhBWGhtX0tIVl9jRnJrMUt0bkhRZEZmMnVKbVZxb1dSVUdZaTZNMUluUV96RjJtSEJMQ0JTWS1MRUhqSzBUcU1ZVVVyYzBmZTNrVFNvN1ZZRzNVeldURmNB0gGoAUFVX3lxTE5PZG9TdXZtdU81bDJUWXV0Z1d2c3daNU4zWk1DZ2Jnck1fSWlCUDZXTVdKX21kMmcycmpPeHQ5WDlhRGh1bmxsVE1mTjJReXB4cjEzTkNhOFZhWVhreHZPWG5GbElYMkxSd0dBdEFoVXkxNk03UEE4MFJieWw4akNGUTVVT3Y4cVhrd2dqSzdUblAxRnR1ODZ4ajJPbWFQalc3b18yVUgtVQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Who are the star players missing from World Cup 2026?
+            - figure [ref=e238]
+          - generic [ref=e239]:
+            - time [ref=e240]: 2 days ago
+            - separator [ref=e241]
+            - generic [ref=e242]: By Manasi Pathak
+      - generic [ref=e243]:
+        - separator [ref=e245]
+        - generic [ref=e247]:
+          - generic [ref=e248]:
+            - link [ref=e250] [cursor=pointer]:
+              - /url: ./read/CBMiugFBVV95cUxOTHZZMzlKSWFWWnE4MnlMQmxxSGxtdWtUdUxhWm1NV256MFB1NHVZdkFlT3lKSmliOWlybkZKVncwOXJaLTViSjhrVUZGTTJXM1ByRXM4VEJGdDVERi02UUwzbUpFcmJtdTQxdWlLYU5hODZaNHBXakVSelNVRjVmT2ViVlNsNU9MZExJNWdvOGdtdmk1VEpFQ3JucU56ZUxxOWRGS0IwbEFzQWdya0U2LVhYUzd0MGlXcHc?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e252]:
+              - generic [ref=e253]:
+                - generic [ref=e256]: Loeb & Loeb LLP
+                - generic [ref=e260]:
+                  - generic:
+                    - 'button "More - The Sports Law Playbook: 2026 FIFA World Cup and Unauthorized Marketing" [ref=e261] [cursor=pointer]':
+                      - img [ref=e263]
+                    - tooltip [ref=e265]: More
+              - 'link "The Sports Law Playbook: 2026 FIFA World Cup and Unauthorized Marketing - Loeb &amp; Loeb LLP - 13 days ago" [ref=e266] [cursor=pointer]':
+                - /url: ./read/CBMiugFBVV95cUxOTHZZMzlKSWFWWnE4MnlMQmxxSGxtdWtUdUxhWm1NV256MFB1NHVZdkFlT3lKSmliOWlybkZKVncwOXJaLTViSjhrVUZGTTJXM1ByRXM4VEJGdDVERi02UUwzbUpFcmJtdTQxdWlLYU5hODZaNHBXakVSelNVRjVmT2ViVlNsNU9MZExJNWdvOGdtdmk1VEpFQ3JucU56ZUxxOWRGS0IwbEFzQWdya0U2LVhYUzd0MGlXcHc?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "The Sports Law Playbook: 2026 FIFA World Cup and Unauthorized Marketing"
+            - figure [ref=e267]
+          - time [ref=e269]: 13 days ago
+      - generic [ref=e270]:
+        - separator [ref=e272]
+        - generic [ref=e274]:
+          - generic [ref=e275]:
+            - link [ref=e277] [cursor=pointer]:
+              - /url: ./read/CBMiuAFBVV95cUxQTUZENVhBYzNnRFdyUTdwdWpfLWlLNngxYUZmM1BiV2d1U1VIQ3BEN1Q0ckpnd1dFX1JjMDNtS2VTYVNDcEF0dnlUTjFfVzIxcWFNWkRKSGdlR09EX1BqMEZGMWZidURDXzQzZXp2cGNjVkdrMzVxMFFkSW1GX01panBPaEp4UFpnMlBBcm5UT1p2YVd4SDI3a3E4NERkRHFuMDJpcTBsanZxZl8yZllCN2FhNmwtdDZt?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e279]:
+              - generic [ref=e280]:
+                - generic [ref=e283]: ESPN
+                - generic [ref=e287]:
+                  - generic:
+                    - 'button "More - Meet England''s 2026 World Cup squad: All 26 players picked by Thomas Tuchel and why" [ref=e288] [cursor=pointer]':
+                      - img [ref=e290]
+                    - tooltip [ref=e292]: More
+              - 'link "Meet England''s 2026 World Cup squad: All 26 players picked by Thomas Tuchel and why - ESPN - 2 days ago" [ref=e293] [cursor=pointer]':
+                - /url: ./read/CBMiuAFBVV95cUxQTUZENVhBYzNnRFdyUTdwdWpfLWlLNngxYUZmM1BiV2d1U1VIQ3BEN1Q0ckpnd1dFX1JjMDNtS2VTYVNDcEF0dnlUTjFfVzIxcWFNWkRKSGdlR09EX1BqMEZGMWZidURDXzQzZXp2cGNjVkdrMzVxMFFkSW1GX01panBPaEp4UFpnMlBBcm5UT1p2YVd4SDI3a3E4NERkRHFuMDJpcTBsanZxZl8yZllCN2FhNmwtdDZt?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "Meet England's 2026 World Cup squad: All 26 players picked by Thomas Tuchel and why"
+            - figure [ref=e294]
+          - time [ref=e296]: 2 days ago
+      - generic [ref=e297]:
+        - separator [ref=e299]
+        - generic [ref=e301]:
+          - generic [ref=e302]:
+            - link [ref=e304] [cursor=pointer]:
+              - /url: ./read/CBMiqgFBVV95cUxObk9iMDNqbURCd0pNMzhoUjBWemVmSEUwUlhxYWJzYkR0enRXd0poM0h3TEcxN1BQUHN6UmFJaFRkUVREOEJldXh1dnk0TDhmNGllTVV6WTEwLVVEZlVoQXBPZ0RNUXdqMWo0NlhyTE10bF9XQUJWY0wyMUl2LWJwMkxpQ3NBUHRqcHdUMlRRUnpXeUFJRnppdFhTT2lzMi1nZDh2VGstWVRXZw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e306]:
+              - generic [ref=e307]:
+                - generic [ref=e310]: olympics.com
+                - generic [ref=e314]:
+                  - generic:
+                    - 'button "More - FIFA World Cup 2026: Jordan dream big on debut - All players, full squad list, key stats and schedule" [ref=e315] [cursor=pointer]':
+                      - img [ref=e317]
+                    - tooltip [ref=e319]: More
+              - 'link "FIFA World Cup 2026: Jordan dream big on debut - All players, full squad list, key stats and schedule - olympics.com - 6 days ago - By Manasi Pathak" [ref=e320] [cursor=pointer]':
+                - /url: ./read/CBMiqgFBVV95cUxObk9iMDNqbURCd0pNMzhoUjBWemVmSEUwUlhxYWJzYkR0enRXd0poM0h3TEcxN1BQUHN6UmFJaFRkUVREOEJldXh1dnk0TDhmNGllTVV6WTEwLVVEZlVoQXBPZ0RNUXdqMWo0NlhyTE10bF9XQUJWY0wyMUl2LWJwMkxpQ3NBUHRqcHdUMlRRUnpXeUFJRnppdFhTT2lzMi1nZDh2VGstWVRXZw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "FIFA World Cup 2026: Jordan dream big on debut - All players, full squad list, key stats and schedule"
+            - figure [ref=e321]
+          - generic [ref=e322]:
+            - time [ref=e323]: 6 days ago
+            - separator [ref=e324]
+            - generic [ref=e325]: By Manasi Pathak
+      - generic [ref=e326]:
+        - separator [ref=e328]
+        - generic [ref=e330]:
+          - generic [ref=e331]:
+            - link [ref=e333] [cursor=pointer]:
+              - /url: ./read/CBMikAFBVV95cUxPVjhudjRCN2xyWklYQnlDY1hTbmRsOWMxMG9RLUt0aks4VjNRUGI2a1Nua2JOelJZNmNMcXpSSlhFLU1xZTZtT1d3MDFrSHNwcWtaaVR3Q19ncUJOUmota1NYQnZXSkQ3OEE3dzFxZ0dJVGpGY2dUbG1uTHViNVlpYnVtbWFhYlBuUUpXN3ZNMkc?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e335]:
+              - generic [ref=e336]:
+                - generic [ref=e339]: Branding in Asia
+                - generic [ref=e343]:
+                  - generic:
+                    - button "More - Nike Unveils 42-Strong Lineup for World Cup 2026 Campaign" [ref=e344] [cursor=pointer]:
+                      - img [ref=e346]
+                    - tooltip [ref=e348]: More
+              - link "Nike Unveils 42-Strong Lineup for World Cup 2026 Campaign - Branding in Asia - 3 days ago" [ref=e349] [cursor=pointer]:
+                - /url: ./read/CBMikAFBVV95cUxPVjhudjRCN2xyWklYQnlDY1hTbmRsOWMxMG9RLUt0aks4VjNRUGI2a1Nua2JOelJZNmNMcXpSSlhFLU1xZTZtT1d3MDFrSHNwcWtaaVR3Q19ncUJOUmota1NYQnZXSkQ3OEE3dzFxZ0dJVGpGY2dUbG1uTHViNVlpYnVtbWFhYlBuUUpXN3ZNMkc?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Nike Unveils 42-Strong Lineup for World Cup 2026 Campaign
+            - figure [ref=e350]
+          - time [ref=e352]: 3 days ago
+      - generic [ref=e353]:
+        - separator [ref=e355]
+        - generic [ref=e357]:
+          - generic [ref=e358]:
+            - link [ref=e360] [cursor=pointer]:
+              - /url: ./read/CBMiuwFBVV95cUxQalcyeTZtbXd0cC1rcVBmWVdrSE9HSXg2TkdfaDZRLU1PX3dpc2FJcDJwZVBwNmFJU0NGQUhYX2ZkUllIb0QyZDBBVlhxNUthMUJITURmdkFFanJvNExSQ2lVa3Z4YUduMng1cGZ5S1J2eGZDcjRxU0xBUFpPLU0yRmxqTXdhWC0xMDRaZTNyX3AwRTBIMW8tbUlYc1Naa3FDZzZTcnJpQjRxTG1nYkxvT1AwT1hLRDJ0S0xJ0gG7AUFVX3lxTFB3d1EzMlp6YjdwdVRSalYzd05XVVZaY051UGduS0piQUcwcTBVR0VKRHR4UHlTd2pKZi13YWM1NGpPaVBYWlRfNTcxampsYm9Bby04NEZIcGdIUl9JTXFKZThZWXdZdEJZNGtyUGtueENRV3JBUFYtV1BsazUzbWFZYmdlSy1TYV9JRkVETmFoQkgtZXpTTV93c2JiR0xLaUJwMUJsY2prUDBHS09kcWtGTXBUSDd3SWlJUVE?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e362]:
+              - generic [ref=e363]:
+                - generic [ref=e366]: FOX Sports
+                - generic [ref=e370]:
+                  - generic:
+                    - 'button "More - Portugal World Cup 2026 Preview: Best Players, Roster, History" [ref=e371] [cursor=pointer]':
+                      - img [ref=e373]
+                    - tooltip [ref=e375]: More
+              - 'link "Portugal World Cup 2026 Preview: Best Players, Roster, History - FOX Sports - 4 days ago" [ref=e376] [cursor=pointer]':
+                - /url: ./read/CBMiuwFBVV95cUxQalcyeTZtbXd0cC1rcVBmWVdrSE9HSXg2TkdfaDZRLU1PX3dpc2FJcDJwZVBwNmFJU0NGQUhYX2ZkUllIb0QyZDBBVlhxNUthMUJITURmdkFFanJvNExSQ2lVa3Z4YUduMng1cGZ5S1J2eGZDcjRxU0xBUFpPLU0yRmxqTXdhWC0xMDRaZTNyX3AwRTBIMW8tbUlYc1Naa3FDZzZTcnJpQjRxTG1nYkxvT1AwT1hLRDJ0S0xJ0gG7AUFVX3lxTFB3d1EzMlp6YjdwdVRSalYzd05XVVZaY051UGduS0piQUcwcTBVR0VKRHR4UHlTd2pKZi13YWM1NGpPaVBYWlRfNTcxampsYm9Bby04NEZIcGdIUl9JTXFKZThZWXdZdEJZNGtyUGtueENRV3JBUFYtV1BsazUzbWFZYmdlSy1TYV9JRkVETmFoQkgtZXpTTV93c2JiR0xLaUJwMUJsY2prUDBHS09kcWtGTXBUSDd3SWlJUVE?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "Portugal World Cup 2026 Preview: Best Players, Roster, History"
+            - figure [ref=e377]
+          - time [ref=e379]: 4 days ago
+      - generic [ref=e380]:
+        - separator [ref=e382]
+        - generic [ref=e384]:
+          - generic [ref=e385]:
+            - link [ref=e387] [cursor=pointer]:
+              - /url: ./read/CBMi4AFBVV95cUxQd1U5UTRGUUZNTEhaMlllZUxjZUNjOThJSUoxUmpkSEYtaUowNzVjUGRwOHhYRVF5NGh0dWJndmc3UldiWDVFbW1RN0lEQVdsVkxTdU84aTQzZEZqWFM1WjNwdDNIQnpIS3FyVUtyUVJFMUZtYm1Zc0NROTNZOFlaYWp4anlnMk9nQVEycGU5X3BsTFAwdTZuYmF2Y3JXanQySDRHZzNtUVE2bmpRS21zdTFiODF5VjM4MGRYampLd0VjUWszXzBZNzVRMG5ZZzlxMEJvOFFwcEdWaTJMMzRpTA?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e389]:
+              - generic [ref=e390]:
+                - generic [ref=e393]: Bristol Myers Squibb
+                - generic [ref=e397]:
+                  - generic:
+                    - button "More - Bristol Myers Squibb Launches “Won't Lose” Media Campaign Ahead of FIFA World Cup 2026" [ref=e398] [cursor=pointer]:
+                      - img [ref=e400]
+                    - tooltip [ref=e402]: More
+              - link "Bristol Myers Squibb Launches “Won't Lose” Media Campaign Ahead of FIFA World Cup 2026 - Bristol Myers Squibb - 21 days ago" [ref=e403] [cursor=pointer]:
+                - /url: ./read/CBMi4AFBVV95cUxQd1U5UTRGUUZNTEhaMlllZUxjZUNjOThJSUoxUmpkSEYtaUowNzVjUGRwOHhYRVF5NGh0dWJndmc3UldiWDVFbW1RN0lEQVdsVkxTdU84aTQzZEZqWFM1WjNwdDNIQnpIS3FyVUtyUVJFMUZtYm1Zc0NROTNZOFlaYWp4anlnMk9nQVEycGU5X3BsTFAwdTZuYmF2Y3JXanQySDRHZzNtUVE2bmpRS21zdTFiODF5VjM4MGRYampLd0VjUWszXzBZNzVRMG5ZZzlxMEJvOFFwcEdWaTJMMzRpTA?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Bristol Myers Squibb Launches “Won't Lose” Media Campaign Ahead of FIFA World Cup 2026
+            - figure [ref=e404]
+          - time [ref=e406]: 21 days ago
+      - generic [ref=e407]:
+        - separator [ref=e409]
+        - generic [ref=e411]:
+          - generic [ref=e412]:
+            - link [ref=e414] [cursor=pointer]:
+              - /url: ./read/CBMihgFBVV95cUxQekhlNWVwSWtMR1hVYmh0ckoyS2FkYWxUTnVXM2g3cG92My1ORjQ2YVJ2cWdUd0hOckl4cEJhMkNqcGF2SE14eDFiYkowb0ZuOVYzU0poMjgwUFpUN0R6YVlYRTJWVkR0aE04QXdOcXZHMU9fRURDbXVqOFR6M205SUptRWJNdw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e416]:
+              - generic [ref=e417]:
+                - generic [ref=e420]: Hyundai
+                - generic [ref=e424]:
+                  - generic:
+                    - 'button "More - Next Starts Now: Bringing the Future Forward at 2026 FIFA World Cup™" [ref=e425] [cursor=pointer]':
+                      - img [ref=e427]
+                    - tooltip [ref=e429]: More
+              - 'link "Next Starts Now: Bringing the Future Forward at 2026 FIFA World Cup™ - Hyundai - 3 days ago" [ref=e430] [cursor=pointer]':
+                - /url: ./read/CBMihgFBVV95cUxQekhlNWVwSWtMR1hVYmh0ckoyS2FkYWxUTnVXM2g3cG92My1ORjQ2YVJ2cWdUd0hOckl4cEJhMkNqcGF2SE14eDFiYkowb0ZuOVYzU0poMjgwUFpUN0R6YVlYRTJWVkR0aE04QXdOcXZHMU9fRURDbXVqOFR6M205SUptRWJNdw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "Next Starts Now: Bringing the Future Forward at 2026 FIFA World Cup™"
+            - figure [ref=e431]
+          - time [ref=e433]: 3 days ago
+      - generic [ref=e434]:
+        - separator [ref=e436]
+        - generic [ref=e438]:
+          - generic [ref=e439]:
+            - link [ref=e441] [cursor=pointer]:
+              - /url: ./read/CBMid0FVX3lxTE9uR0V0alpNTy03a2ZJbE9GdGdEV3ZNNlY1X1QzZEw4V0pBdEFiYktOYXdBUEh0WXpvQmFiMi1YQ0ZreFZ0alRhSXkxNkFpRkJnVTk0TUpHZWZodGJ5TUR5enJpbmtIYXM2VWdhY0hfOGFKTllLVEZN?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e443]:
+              - generic [ref=e444]:
+                - generic [ref=e447]: The Drum
+                - generic [ref=e451]:
+                  - generic:
+                    - 'button "More - World Cup 2026 ads: Watch all the big brand spots released so far" [ref=e452] [cursor=pointer]':
+                      - img [ref=e454]
+                    - tooltip [ref=e456]: More
+              - 'link "World Cup 2026 ads: Watch all the big brand spots released so far - The Drum - 24 days ago" [ref=e457] [cursor=pointer]':
+                - /url: ./read/CBMid0FVX3lxTE9uR0V0alpNTy03a2ZJbE9GdGdEV3ZNNlY1X1QzZEw4V0pBdEFiYktOYXdBUEh0WXpvQmFiMi1YQ0ZreFZ0alRhSXkxNkFpRkJnVTk0TUpHZWZodGJ5TUR5enJpbmtIYXM2VWdhY0hfOGFKTllLVEZN?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "World Cup 2026 ads: Watch all the big brand spots released so far"
+            - figure [ref=e458]
+          - time [ref=e460]: 24 days ago
+      - generic [ref=e461]:
+        - separator [ref=e463]
+        - generic [ref=e465]:
+          - generic [ref=e466]:
+            - link [ref=e468] [cursor=pointer]:
+              - /url: ./read/CBMirAFBVV95cUxQRUZMSTVEczYyQk5MZHJTc1ZSMVRmeUpJbTl2ajBQWlZyWkRZeW1FcEhNR250RnItSjVVajY1c05BTmc5QmxWalhoRDBsQS1QaG1udDB4cXUxcDd2dEFpeS1sM3dES1RNcGdndTZ1ano1b1hxdzVfOWVzXzRRa1h0N05KWmFUR04wWkxZaUs4Zkw3MlFqd1RzTUo0WnVtT09MdXlNRTBVS3ROT1NT?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e470]:
+              - generic [ref=e471]:
+                - generic [ref=e474]: Fast Company
+                - generic [ref=e478]:
+                  - generic:
+                    - button "More - The unique marketing strategy behind Lay’s FIFA World Cup 2026 campaigns" [ref=e479] [cursor=pointer]:
+                      - img [ref=e481]
+                    - tooltip [ref=e483]: More
+              - link "The unique marketing strategy behind Lay’s FIFA World Cup 2026 campaigns - Fast Company - 21 days ago" [ref=e484] [cursor=pointer]:
+                - /url: ./read/CBMirAFBVV95cUxQRUZMSTVEczYyQk5MZHJTc1ZSMVRmeUpJbTl2ajBQWlZyWkRZeW1FcEhNR250RnItSjVVajY1c05BTmc5QmxWalhoRDBsQS1QaG1udDB4cXUxcDd2dEFpeS1sM3dES1RNcGdndTZ1ano1b1hxdzVfOWVzXzRRa1h0N05KWmFUR04wWkxZaUs4Zkw3MlFqd1RzTUo0WnVtT09MdXlNRTBVS3ROT1NT?hl=en-US&gl=US&ceid=US%3Aen
+                - text: The unique marketing strategy behind Lay’s FIFA World Cup 2026 campaigns
+            - figure [ref=e485]
+          - time [ref=e487]: 21 days ago
+      - generic [ref=e488]:
+        - separator [ref=e490]
+        - generic [ref=e492]:
+          - generic [ref=e493]:
+            - link [ref=e495] [cursor=pointer]:
+              - /url: ./read/CBMi0wFBVV95cUxOVEkyb0l1QTBJREc5UHdvMDkxVkVjeGdFSHFZWmlzeEZZNUtBZG9kSU00REtYaVNDR0RyTGc2REdjeUxsRU5IRzdtQ1VBSWRXdFhrSW5aV0ZkblJjTllFSlVOOHBxWFp0LVN0R2tZN3hQakpzQW4zTVZaX2dJOVpLeEFHN2w0MEdIZGRqWElsbElUcDFuV0FqTVBMekxpU2gxc0tCVUd1X2tGMzhpUjMybXQ5OVZGRDdhWEpaR25OazMxOGFfSUxzX3hBUkZFdkJtbWxV?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e497]:
+              - generic [ref=e498]:
+                - generic [ref=e501]: Food & Beverage Outlook
+                - generic [ref=e505]:
+                  - generic:
+                    - button "More - Lays Target ‘Bandwagon Fans’ in Will Ferrell FIFA World Cup 2026 Marketing Push" [ref=e506] [cursor=pointer]:
+                      - img [ref=e508]
+                    - tooltip [ref=e510]: More
+              - link "Lays Target ‘Bandwagon Fans’ in Will Ferrell FIFA World Cup 2026 Marketing Push - Food &amp; Beverage Outlook - 7 days ago" [ref=e511] [cursor=pointer]:
+                - /url: ./read/CBMi0wFBVV95cUxOVEkyb0l1QTBJREc5UHdvMDkxVkVjeGdFSHFZWmlzeEZZNUtBZG9kSU00REtYaVNDR0RyTGc2REdjeUxsRU5IRzdtQ1VBSWRXdFhrSW5aV0ZkblJjTllFSlVOOHBxWFp0LVN0R2tZN3hQakpzQW4zTVZaX2dJOVpLeEFHN2w0MEdIZGRqWElsbElUcDFuV0FqTVBMekxpU2gxc0tCVUd1X2tGMzhpUjMybXQ5OVZGRDdhWEpaR25OazMxOGFfSUxzX3hBUkZFdkJtbWxV?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Lays Target ‘Bandwagon Fans’ in Will Ferrell FIFA World Cup 2026 Marketing Push
+            - figure [ref=e512]
+          - time [ref=e514]: 7 days ago
+      - generic [ref=e515]:
+        - separator [ref=e517]
+        - generic [ref=e519]:
+          - generic [ref=e520]:
+            - link [ref=e522] [cursor=pointer]:
+              - /url: ./read/CBMifEFVX3lxTFBhd2d6bC1FcG80aXRsNFpxN29yTm8ySXpSRlBKWUlhLWp5QTdBa09aMlNBTXVZajNicFFxT0UwRF8wS2Fkc3drU0x6ckhWTU5jSGp4ZE1Rdm1xQ0FJRmw2ZmFuYlFDQjg2YkRWTVNyZnprUnc0c1VleE15ZGo?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e524]:
+              - generic [ref=e525]:
+                - generic [ref=e528]: The Virginian-Pilot
+                - generic [ref=e532]:
+                  - generic:
+                    - button "More - Mexico launches a last-minute World Cup campaign to stop a homophobic chant" [ref=e533] [cursor=pointer]:
+                      - img [ref=e535]
+                    - tooltip [ref=e537]: More
+              - link "Mexico launches a last-minute World Cup campaign to stop a homophobic chant - The Virginian-Pilot - 2 days ago - By Carlos Rodriguez" [ref=e538] [cursor=pointer]:
+                - /url: ./read/CBMifEFVX3lxTFBhd2d6bC1FcG80aXRsNFpxN29yTm8ySXpSRlBKWUlhLWp5QTdBa09aMlNBTXVZajNicFFxT0UwRF8wS2Fkc3drU0x6ckhWTU5jSGp4ZE1Rdm1xQ0FJRmw2ZmFuYlFDQjg2YkRWTVNyZnprUnc0c1VleE15ZGo?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Mexico launches a last-minute World Cup campaign to stop a homophobic chant
+            - figure [ref=e539]
+          - generic [ref=e540]:
+            - time [ref=e541]: 2 days ago
+            - separator [ref=e542]
+            - generic [ref=e543]: By Carlos Rodriguez
+      - generic [ref=e544]:
+        - separator [ref=e546]
+        - generic [ref=e548]:
+          - generic [ref=e549]:
+            - link [ref=e551] [cursor=pointer]:
+              - /url: ./read/CBMirAFBVV95cUxNMGhSYlFWY0ZwSUFlRkgwTzB5TnB6NkFHOXRLeTZnOUxwekVvY2lyYnV5YWs1TmdNdXg3dFNIcHhJd3U4NkhnNG04VWNwZ3N0N1UxR0JEaEJ1b3RqLUJqRHZnMGVJZDV2b2JEcFJCeG1aWXotU24tbk9XWklTOFlHNU50dy0xOXFoUWZPcTlXbko4N2JkcVFiTWZiMk9xemVDRWFmWV9nUTRNWnUt?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e553]:
+              - generic [ref=e554]:
+                - generic [ref=e557]: Morocco World News
+                - generic [ref=e561]:
+                  - generic:
+                    - button "More - Ouahbi to Announce Morocco’s Final World Cup Squad on May 26" [ref=e562] [cursor=pointer]:
+                      - img [ref=e564]
+                    - tooltip [ref=e566]: More
+              - link "Ouahbi to Announce Morocco’s Final World Cup Squad on May 26 - Morocco World News - 3 hours ago - By Abderrahim Kabbour" [ref=e567] [cursor=pointer]:
+                - /url: ./read/CBMirAFBVV95cUxNMGhSYlFWY0ZwSUFlRkgwTzB5TnB6NkFHOXRLeTZnOUxwekVvY2lyYnV5YWs1TmdNdXg3dFNIcHhJd3U4NkhnNG04VWNwZ3N0N1UxR0JEaEJ1b3RqLUJqRHZnMGVJZDV2b2JEcFJCeG1aWXotU24tbk9XWklTOFlHNU50dy0xOXFoUWZPcTlXbko4N2JkcVFiTWZiMk9xemVDRWFmWV9nUTRNWnUt?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Ouahbi to Announce Morocco’s Final World Cup Squad on May 26
+            - figure [ref=e568]
+          - generic [ref=e569]:
+            - time [ref=e570]: 3 hours ago
+            - separator [ref=e571]
+            - generic [ref=e572]: By Abderrahim Kabbour
+      - generic [ref=e573]:
+        - separator [ref=e575]
+        - generic [ref=e577]:
+          - generic [ref=e578]:
+            - link [ref=e580] [cursor=pointer]:
+              - /url: ./read/CBMitwFBVV95cUxQUzJGVHFxdWFzM002ZzUzMWUyengzVm1ucERjbTN3YWVZNUI2NndCYTQzYTVDUGFxS3B6VGZOQWNyVFFaTHhiOEZtMnJiY2tSWVlwamJXYzBOY25RR3ZwTjdIWGNHZWZ6RnB5TW9QbjJiaEtXZDg1U1RzLWNLYXlhRG5hQ3dGX0t3aVhrV0N0T2dPUEdRdjg5Ml9WSzVUTFlaRXlRdk1PWDlPTDljNHB2ZWUzdE0tamc?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e582]:
+              - generic [ref=e583]:
+                - generic [ref=e586]: ESPN
+                - generic [ref=e590]:
+                  - generic:
+                    - button "More - Saudi Arabia investment fund joins 2026 World Cup as official supporter" [ref=e591] [cursor=pointer]:
+                      - img [ref=e593]
+                    - tooltip [ref=e595]: More
+              - link "Saudi Arabia investment fund joins 2026 World Cup as official supporter - ESPN - 11 days ago" [ref=e596] [cursor=pointer]:
+                - /url: ./read/CBMitwFBVV95cUxQUzJGVHFxdWFzM002ZzUzMWUyengzVm1ucERjbTN3YWVZNUI2NndCYTQzYTVDUGFxS3B6VGZOQWNyVFFaTHhiOEZtMnJiY2tSWVlwamJXYzBOY25RR3ZwTjdIWGNHZWZ6RnB5TW9QbjJiaEtXZDg1U1RzLWNLYXlhRG5hQ3dGX0t3aVhrV0N0T2dPUEdRdjg5Ml9WSzVUTFlaRXlRdk1PWDlPTDljNHB2ZWUzdE0tamc?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Saudi Arabia investment fund joins 2026 World Cup as official supporter
+            - figure [ref=e597]
+          - time [ref=e599]: 11 days ago
+      - generic [ref=e600]:
+        - separator [ref=e602]
+        - generic [ref=e604]:
+          - generic [ref=e605]:
+            - link [ref=e607] [cursor=pointer]:
+              - /url: ./read/CBMiwwFBVV95cUxPNy04aXFiRVJkVkR1WWhrRUItSktmYW1jMkFYck93aDRxVzdKRUY1RlM2TlU3eGthamwybWl0VnhJV1dVY3dodG1CM3VRQi1LVzFfVEZwWFpGbzJFN2xTMTNITENCZzdlTHNleE5fQWdsSHZPVjVSdGptVVR6dE5LaThJLV91Uy1ubFlmNEFVTVdEQWhDVjN6MnF5MWxJXzFyT2JxdVNndVJ1blBiQjlBYXFJQkJpbUdwLVZYR3d6dFVRNWs?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e609]:
+              - generic [ref=e610]:
+                - generic [ref=e613]: FOX Sports
+                - generic [ref=e617]:
+                  - generic:
+                    - button "More - FOX Sports Unveils FIFA World Cup 2026™ Campaign Inviting America to Dream Big This Summer" [ref=e618] [cursor=pointer]:
+                      - img [ref=e620]
+                    - tooltip [ref=e622]: More
+              - link "FOX Sports Unveils FIFA World Cup 2026™ Campaign Inviting America to Dream Big This Summer - FOX Sports - 21 days ago" [ref=e623] [cursor=pointer]:
+                - /url: ./read/CBMiwwFBVV95cUxPNy04aXFiRVJkVkR1WWhrRUItSktmYW1jMkFYck93aDRxVzdKRUY1RlM2TlU3eGthamwybWl0VnhJV1dVY3dodG1CM3VRQi1LVzFfVEZwWFpGbzJFN2xTMTNITENCZzdlTHNleE5fQWdsSHZPVjVSdGptVVR6dE5LaThJLV91Uy1ubFlmNEFVTVdEQWhDVjN6MnF5MWxJXzFyT2JxdVNndVJ1blBiQjlBYXFJQkJpbUdwLVZYR3d6dFVRNWs?hl=en-US&gl=US&ceid=US%3Aen
+                - text: FOX Sports Unveils FIFA World Cup 2026™ Campaign Inviting America to Dream Big This Summer
+            - figure [ref=e624]
+          - time [ref=e626]: 21 days ago
+      - generic [ref=e627]:
+        - separator [ref=e629]
+        - generic [ref=e631]:
+          - generic [ref=e632]:
+            - link [ref=e634] [cursor=pointer]:
+              - /url: ./read/CBMisgFBVV95cUxOZExya3J5dURVeVFRaF92NGNCVE5veThFRnZiTEVnU19GWlBBdzJLQWRKSlhzOHR5QTNTVVlEVXYxRGNpWHNNbkRFd3ZSSnBjWE92eU9zVE9pSGhWaVM0S1hXeW1vZU9VY0Z0M0Ztc2UyaDBIb25VX0ZqaEduRXVIZXktcFdjeEZRVkhrVTVYY0h2a254eG1IdUI5MFFMekFQeVZaSFhlUGN1dHhiY05Hek5B?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e636]:
+              - generic [ref=e637]:
+                - generic [ref=e640]: olympics.com
+                - generic [ref=e644]:
+                  - generic:
+                    - button "More - Emma Aicher ready to challenge Mikaela Shiffrin for overall World Cup Crystal Globe in 2026-27 season" [ref=e645] [cursor=pointer]:
+                      - img [ref=e647]
+                    - tooltip [ref=e649]: More
+              - link "Emma Aicher ready to challenge Mikaela Shiffrin for overall World Cup Crystal Globe in 2026-27 season - olympics.com - 2 days ago" [ref=e650] [cursor=pointer]:
+                - /url: ./read/CBMisgFBVV95cUxOZExya3J5dURVeVFRaF92NGNCVE5veThFRnZiTEVnU19GWlBBdzJLQWRKSlhzOHR5QTNTVVlEVXYxRGNpWHNNbkRFd3ZSSnBjWE92eU9zVE9pSGhWaVM0S1hXeW1vZU9VY0Z0M0Ztc2UyaDBIb25VX0ZqaEduRXVIZXktcFdjeEZRVkhrVTVYY0h2a254eG1IdUI5MFFMekFQeVZaSFhlUGN1dHhiY05Hek5B?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Emma Aicher ready to challenge Mikaela Shiffrin for overall World Cup Crystal Globe in 2026-27 season
+            - figure [ref=e651]
+          - time [ref=e653]: 2 days ago
+      - generic [ref=e654]:
+        - separator [ref=e656]
+        - generic [ref=e658]:
+          - generic [ref=e659]:
+            - link [ref=e661] [cursor=pointer]:
+              - /url: ./read/CBMikwFBVV95cUxQMkdRblJXMmViNV83eE5JYTNJR29oQ0hhT2UzTVQ2eHZfTEs3S1FuRndsYS1uRzYxTnhDamJQX2pXUWM0OGtGakxlbFJTdkgzM3NRbHQwMm9Za3pGMmdYajVoOHRLUUhSRUFhajVfdlFMSmJMOTJBWFI4djJWeTA2RFNDRW9rdW1xem9QMTJGTlhNeHc?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e663]:
+              - generic [ref=e664]:
+                - generic [ref=e667]: The Home Depot
+                - generic [ref=e671]:
+                  - generic:
+                    - button "More - The Home Depot Teams Up with David Beckham to Bring the FIFA World Cup 2026™ To Backyards Across the Country" [ref=e672] [cursor=pointer]:
+                      - img [ref=e674]
+                    - tooltip [ref=e676]: More
+              - link "The Home Depot Teams Up with David Beckham to Bring the FIFA World Cup 2026™ To Backyards Across the Country - The Home Depot - Mar 19" [ref=e677] [cursor=pointer]:
+                - /url: ./read/CBMikwFBVV95cUxQMkdRblJXMmViNV83eE5JYTNJR29oQ0hhT2UzTVQ2eHZfTEs3S1FuRndsYS1uRzYxTnhDamJQX2pXUWM0OGtGakxlbFJTdkgzM3NRbHQwMm9Za3pGMmdYajVoOHRLUUhSRUFhajVfdlFMSmJMOTJBWFI4djJWeTA2RFNDRW9rdW1xem9QMTJGTlhNeHc?hl=en-US&gl=US&ceid=US%3Aen
+                - text: The Home Depot Teams Up with David Beckham to Bring the FIFA World Cup 2026™ To Backyards Across the Country
+            - figure [ref=e678]
+          - time [ref=e680]: Mar 19
+      - generic [ref=e681]:
+        - separator [ref=e683]
+        - generic [ref=e685]:
+          - generic [ref=e686]:
+            - link [ref=e688] [cursor=pointer]:
+              - /url: ./read/CBMirwFBVV95cUxQVy1manVtakZBa1pSbko0dTNaalpuYlhXTy1ZWDd3NGQyWjlhc0hONHpVRTdXZU5peXJ4ZWpnTlQtQXZ4b3AzQldydU9RY2p1bUdvMDBsc2lyb3pxSmloS1I3amJhVS0zUUpzVnZjSG9KbjU5MkpuSmRPS3lNUGxveFdFUXo2OWlqaklLeUc5Rlp6X1ZWOHpGUDhyM1VQUWN0d3RtRmhlMkpqdXRDZWtN?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e690]:
+              - generic [ref=e691]:
+                - generic [ref=e694]: Forbes
+                - generic [ref=e698]:
+                  - generic:
+                    - button "More - Inside The Marketing Machine Powering The 2026 World Cup" [ref=e699] [cursor=pointer]:
+                      - img [ref=e701]
+                    - tooltip [ref=e703]: More
+              - link "Inside The Marketing Machine Powering The 2026 World Cup - Forbes - Apr 18 - By Clemente A. Lisi" [ref=e704] [cursor=pointer]:
+                - /url: ./read/CBMirwFBVV95cUxQVy1manVtakZBa1pSbko0dTNaalpuYlhXTy1ZWDd3NGQyWjlhc0hONHpVRTdXZU5peXJ4ZWpnTlQtQXZ4b3AzQldydU9RY2p1bUdvMDBsc2lyb3pxSmloS1I3amJhVS0zUUpzVnZjSG9KbjU5MkpuSmRPS3lNUGxveFdFUXo2OWlqaklLeUc5Rlp6X1ZWOHpGUDhyM1VQUWN0d3RtRmhlMkpqdXRDZWtN?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Inside The Marketing Machine Powering The 2026 World Cup
+            - figure [ref=e705]
+          - generic [ref=e706]:
+            - time [ref=e707]: Apr 18
+            - separator [ref=e708]
+            - generic [ref=e709]: By Clemente A. Lisi
+      - generic [ref=e710]:
+        - separator [ref=e712]
+        - generic [ref=e714]:
+          - generic [ref=e715]:
+            - link [ref=e717] [cursor=pointer]:
+              - /url: ./read/CBMiuwFBVV95cUxQTlVybl9IbG1iaThDb2t2MFpyd3BUTUFuNGctT05JODNyMGt4OFFBV0VvcnlObUVfSkJZNllBVm80ZlIyakFyZm9SMVV2ZVdRSmlMd3NOWFhnTVFDVUg3eURaRi1PRGVGSDlBcW1mS2ZHaDRRZ0Jtdzc3TG5HTjFWRFZxLVZLTG53bkpMS2VqX3l0a1RFNUlqUkx5bkhsOFU3UHJVeUl1aHJLaVViMTJ3UF9SNGM4S1ZIZl9r?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e719]:
+              - generic [ref=e720]:
+                - generic [ref=e723]: Stock Titan
+                - generic [ref=e727]:
+                  - generic:
+                    - button "More - Jason Sudeikis leads Visa 'Tap In' World Cup fan campaign" [ref=e728] [cursor=pointer]:
+                      - img [ref=e730]
+                    - tooltip [ref=e732]: More
+              - link "Jason Sudeikis leads Visa 'Tap In' World Cup fan campaign - Stock Titan - 7 days ago" [ref=e733] [cursor=pointer]:
+                - /url: ./read/CBMiuwFBVV95cUxQTlVybl9IbG1iaThDb2t2MFpyd3BUTUFuNGctT05JODNyMGt4OFFBV0VvcnlObUVfSkJZNllBVm80ZlIyakFyZm9SMVV2ZVdRSmlMd3NOWFhnTVFDVUg3eURaRi1PRGVGSDlBcW1mS2ZHaDRRZ0Jtdzc3TG5HTjFWRFZxLVZLTG53bkpMS2VqX3l0a1RFNUlqUkx5bkhsOFU3UHJVeUl1aHJLaVViMTJ3UF9SNGM4S1ZIZl9r?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Jason Sudeikis leads Visa 'Tap In' World Cup fan campaign
+            - figure [ref=e734]
+          - time [ref=e736]: 7 days ago
+      - generic [ref=e737]:
+        - separator [ref=e739]
+        - generic [ref=e741]:
+          - generic [ref=e742]:
+            - link [ref=e744] [cursor=pointer]:
+              - /url: ./read/CBMie0FVX3lxTE9oWjhFR0VfRFBDenhEVVpuUHpveWRpMjZJTGwwUG1kWDhoNVdKM2dFUi1lRmVHTmVaQ1FjdzRfVEFWa1RDYi1EbGY0blhmcGFvQjBGbERqb2hGNmduNDlkQ3RJVmlFbUJ4N2llN3czQXZKN04zUXJVajVuRQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e746]:
+              - generic [ref=e747]:
+                - generic [ref=e750]: City of Santa Clara (.gov)
+                - generic [ref=e754]:
+                  - generic:
+                    - 'button "More - Celebrate Santa Clara: 2026 Community Events" [ref=e755] [cursor=pointer]':
+                      - img [ref=e757]
+                    - tooltip [ref=e759]: More
+              - 'link "Celebrate Santa Clara: 2026 Community Events - City of Santa Clara (.gov) - 4 days ago" [ref=e760] [cursor=pointer]':
+                - /url: ./read/CBMie0FVX3lxTE9oWjhFR0VfRFBDenhEVVpuUHpveWRpMjZJTGwwUG1kWDhoNVdKM2dFUi1lRmVHTmVaQ1FjdzRfVEFWa1RDYi1EbGY0blhmcGFvQjBGbERqb2hGNmduNDlkQ3RJVmlFbUJ4N2llN3czQXZKN04zUXJVajVuRQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "Celebrate Santa Clara: 2026 Community Events"
+            - figure [ref=e761]
+          - time [ref=e763]: 4 days ago
+      - generic [ref=e764]:
+        - separator [ref=e766]
+        - generic [ref=e768]:
+          - generic [ref=e769]:
+            - link [ref=e771] [cursor=pointer]:
+              - /url: ./read/CBMisAFBVV95cUxQbExzTjdzWDhJTVdVQUpFbWFadll0VWE0d01sMHZTcHFPelM3ZWZkVENrd0VlRXA1VkxDUFlqR1gtUnoyMDRqT0NzcjdXNDRER0s0RC1KTWkwZm1VQjFfRlBPaHNvUzV2b2NTc2hSZ2lGd3l0cWRwdVIxLUtleHNLSV9oS0hSZzhTV3ZvR0w3QTFSaERmY1RNY0FyOU9vQ3FPYkhNZ3pTNzBSVE9PaUwwbQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e773]:
+              - generic [ref=e774]:
+                - generic [ref=e777]: The Coca-Cola Company
+                - generic [ref=e781]:
+                  - generic:
+                    - button "More - Coca-Cola Puts Fan Emotions First in FIFA World Cup 2026™ Campaign" [ref=e782] [cursor=pointer]:
+                      - img [ref=e784]
+                    - tooltip [ref=e786]: More
+              - link "Coca-Cola Puts Fan Emotions First in FIFA World Cup 2026™ Campaign - The Coca-Cola Company - Jan 27" [ref=e787] [cursor=pointer]:
+                - /url: ./read/CBMisAFBVV95cUxQbExzTjdzWDhJTVdVQUpFbWFadll0VWE0d01sMHZTcHFPelM3ZWZkVENrd0VlRXA1VkxDUFlqR1gtUnoyMDRqT0NzcjdXNDRER0s0RC1KTWkwZm1VQjFfRlBPaHNvUzV2b2NTc2hSZ2lGd3l0cWRwdVIxLUtleHNLSV9oS0hSZzhTV3ZvR0w3QTFSaERmY1RNY0FyOU9vQ3FPYkhNZ3pTNzBSVE9PaUwwbQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Coca-Cola Puts Fan Emotions First in FIFA World Cup 2026™ Campaign
+            - figure [ref=e788]
+          - time [ref=e790]: Jan 27
+      - generic [ref=e791]:
+        - separator [ref=e793]
+        - generic [ref=e795]:
+          - generic [ref=e796]:
+            - link [ref=e798] [cursor=pointer]:
+              - /url: ./read/CBMi3wFBVV95cUxQODhCNG15aU84eU1GVkVzWEdQTXJ6d2FuMWJQNjR2eWY2TkRpNXJreEVvaXFrRm9IVHpxSEx4ZFExZ3BweXljc0NqREgzM3NVaFE4alB3aHJVSWFMRDIzQ1VUcWVWVUtuR1BpYnZWSnZ4aG5VZ0JDT2hKUHpDTkJmQzRURHZUbDg2T3gyVy02b19yRU5MaFhKV2F5OUlPZnRsMEFTcHQxYnpnbnRMZTVScWYzR2gzWC12eUtMUzdfV3oxcE9yWnAyWFdJN0hYZDNHSGp3MjE5SkpyU2VJQ1Vr?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e800]:
+              - generic [ref=e801]:
+                - generic [ref=e804]: PR Newswire
+                - generic [ref=e808]:
+                  - generic:
+                    - button "More - Hyundai Motor Brings Spirit of FIFA World Cup 2026™ to Driver's Seats with New Display Theme" [ref=e809] [cursor=pointer]:
+                      - img [ref=e811]
+                    - tooltip [ref=e813]: More
+              - link "Hyundai Motor Brings Spirit of FIFA World Cup 2026™ to Driver's Seats with New Display Theme - PR Newswire - 13 days ago" [ref=e814] [cursor=pointer]:
+                - /url: ./read/CBMi3wFBVV95cUxQODhCNG15aU84eU1GVkVzWEdQTXJ6d2FuMWJQNjR2eWY2TkRpNXJreEVvaXFrRm9IVHpxSEx4ZFExZ3BweXljc0NqREgzM3NVaFE4alB3aHJVSWFMRDIzQ1VUcWVWVUtuR1BpYnZWSnZ4aG5VZ0JDT2hKUHpDTkJmQzRURHZUbDg2T3gyVy02b19yRU5MaFhKV2F5OUlPZnRsMEFTcHQxYnpnbnRMZTVScWYzR2gzWC12eUtMUzdfV3oxcE9yWnAyWFdJN0hYZDNHSGp3MjE5SkpyU2VJQ1Vr?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Hyundai Motor Brings Spirit of FIFA World Cup 2026™ to Driver's Seats with New Display Theme
+            - figure [ref=e815]
+          - time [ref=e817]: 13 days ago
+      - generic [ref=e818]:
+        - separator [ref=e820]
+        - generic [ref=e822]:
+          - generic [ref=e823]:
+            - link [ref=e825] [cursor=pointer]:
+              - /url: ./read/CBMi8wFBVV95cUxOVHctU21JaFdlVlY0MmpmRHRGUmF1QTMwOVRSTFVYemtWY1doeHgwNmpyeFgxNDFjVmhpNi1PYmtQYUVVNEx4Tko4ZTFSMElKYlNaZFpJTG5DM3lIYmtLQzJvM1Zwa1FQNXgzaEVhQk43OFRRUWNWOGRxZlhfUWMwaTQzb3BES1Y1UW1QemhTTDJvdVBQbzVfSWRXdE5vYUt4cm1hT0dKMWVKYmlRQzIxTDFsN1dtU0RuNk9vblgtd3dPbzZaXzE4LWpYRnhlMVBGRDJjLUtoTl8ySkgyY3ZONFc1cjFqOExWX05RT09odjczVVXSAfsBQVVfeXFMTzNBVm5pM09YTWZnT2lvamMxYmVKX1U1b1V1RTIzMnFYZkhVU1lZdUVSU2RLNVF5MGxhQ0MwRVp1bHdpVENSRjNhNWFvaXF3ZE9TRE5mWVAyVXlWNzlodUhva0RVWjFobGVqbkNIdnRFMkd5Z3ZSYmNobURCblg1MDdmaUozNlhWNHhPNktFQzI3eEpvWmlpa0x0T0ZYaVlwRzJZSVVYN2NZUWtxMDA4RG1zdjNjVHBhdE9fUHJpYUNyblQxc090NlBRbW43SUN3U1FZWFpyWXNrQi12QXFnNmxhTEhtQWdtRkplemxBak1CQW1rdm1mbFRHZnM?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e827]:
+              - generic [ref=e828]:
+                - generic [ref=e831]: NDTV Profit
+                - generic [ref=e835]:
+                  - generic:
+                    - 'button "More - FIFA World Cup 2026: Erling Haaland Leads Norway''s Return After 28-Year Wait — Full Squad, Key Records, History And Fixtures" [ref=e836] [cursor=pointer]':
+                      - img [ref=e838]
+                    - tooltip [ref=e840]: More
+              - 'link "FIFA World Cup 2026: Erling Haaland Leads Norway''s Return After 28-Year Wait — Full Squad, Key Records, History And Fixtures - NDTV Profit - 14 hours ago - By Dustin Yarde" [ref=e841] [cursor=pointer]':
+                - /url: ./read/CBMi8wFBVV95cUxOVHctU21JaFdlVlY0MmpmRHRGUmF1QTMwOVRSTFVYemtWY1doeHgwNmpyeFgxNDFjVmhpNi1PYmtQYUVVNEx4Tko4ZTFSMElKYlNaZFpJTG5DM3lIYmtLQzJvM1Zwa1FQNXgzaEVhQk43OFRRUWNWOGRxZlhfUWMwaTQzb3BES1Y1UW1QemhTTDJvdVBQbzVfSWRXdE5vYUt4cm1hT0dKMWVKYmlRQzIxTDFsN1dtU0RuNk9vblgtd3dPbzZaXzE4LWpYRnhlMVBGRDJjLUtoTl8ySkgyY3ZONFc1cjFqOExWX05RT09odjczVVXSAfsBQVVfeXFMTzNBVm5pM09YTWZnT2lvamMxYmVKX1U1b1V1RTIzMnFYZkhVU1lZdUVSU2RLNVF5MGxhQ0MwRVp1bHdpVENSRjNhNWFvaXF3ZE9TRE5mWVAyVXlWNzlodUhva0RVWjFobGVqbkNIdnRFMkd5Z3ZSYmNobURCblg1MDdmaUozNlhWNHhPNktFQzI3eEpvWmlpa0x0T0ZYaVlwRzJZSVVYN2NZUWtxMDA4RG1zdjNjVHBhdE9fUHJpYUNyblQxc090NlBRbW43SUN3U1FZWFpyWXNrQi12QXFnNmxhTEhtQWdtRkplemxBak1CQW1rdm1mbFRHZnM?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "FIFA World Cup 2026: Erling Haaland Leads Norway's Return After 28-Year Wait — Full Squad, Key Records, History And Fixtures"
+            - figure [ref=e842]
+          - generic [ref=e843]:
+            - time [ref=e844]: 14 hours ago
+            - separator [ref=e845]
+            - generic [ref=e846]: By Dustin Yarde
+      - generic [ref=e847]:
+        - separator [ref=e849]
+        - generic [ref=e851]:
+          - generic [ref=e852]:
+            - link [ref=e854] [cursor=pointer]:
+              - /url: ./read/CBMie0FVX3lxTE1wSHlvR1cwaWQ5bzZEZ0FhaTFRRUhUeV9mSUc2LVBHZzJBb1h6cXRoTUQyUHItZl9seEdyODI3VGE1eTVHa19XOXhEQi1vNEp3eXNrN1BaQnNmblMtWVRhdXlTcnBHUlg2cjlqcHRBMUJsWmM0V3lGSnFCYw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e856]:
+              - generic [ref=e857]:
+                - generic [ref=e860]: Arsenal.com
+                - generic [ref=e864]:
+                  - generic:
+                    - button "More - Every Arsenal player called up for 2026 World Cup" [ref=e865] [cursor=pointer]:
+                      - img [ref=e867]
+                    - tooltip [ref=e869]: More
+              - link "Every Arsenal player called up for 2026 World Cup - Arsenal.com - 3 days ago - By Jonathon Rogers" [ref=e870] [cursor=pointer]:
+                - /url: ./read/CBMie0FVX3lxTE1wSHlvR1cwaWQ5bzZEZ0FhaTFRRUhUeV9mSUc2LVBHZzJBb1h6cXRoTUQyUHItZl9seEdyODI3VGE1eTVHa19XOXhEQi1vNEp3eXNrN1BaQnNmblMtWVRhdXlTcnBHUlg2cjlqcHRBMUJsWmM0V3lGSnFCYw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Every Arsenal player called up for 2026 World Cup
+            - figure [ref=e871]
+          - generic [ref=e872]:
+            - time [ref=e873]: 3 days ago
+            - separator [ref=e874]
+            - generic [ref=e875]: By Jonathon Rogers
+      - generic [ref=e876]:
+        - separator [ref=e878]
+        - generic [ref=e880]:
+          - generic [ref=e881]:
+            - link [ref=e883] [cursor=pointer]:
+              - /url: ./read/CBMi2wFBVV95cUxPNWNlc3F4bXU1RnVjeEtpUzRlaHM0Q1E4SDRxMTdRdjhqZlUyXzV4R25KTW1MaGVkZU0tVF90LUFvc1d6bnB6VVFGdlh0X25udWktNmdZVldKQ3lMSUxUZmUydjlNaGRzQ1E5V3BiQVltQ0lvZFRLQkhBNEVwd3oxRF9GV2JBTkZCWVVOelU2aEh0U2g5WHJ3anU2NjZaSWg2cWZPQkQzZ2pnX0s5ZEQyWkVCZHZ3SjZLVnRLaHlucnhBM1d4UEZhYUpmV09CM19nWkxELVhOaUVjTjA?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e885]:
+              - generic [ref=e886]:
+                - generic [ref=e889]: The Washington Post
+                - generic [ref=e893]:
+                  - generic:
+                    - button "More - FIFA signs another World Cup sponsor deal with the gambling industry" [ref=e894] [cursor=pointer]:
+                      - img [ref=e896]
+                    - tooltip [ref=e898]: More
+              - link "FIFA signs another World Cup sponsor deal with the gambling industry - The Washington Post - 6 days ago - By Graham Dunbar" [ref=e899] [cursor=pointer]:
+                - /url: ./read/CBMi2wFBVV95cUxPNWNlc3F4bXU1RnVjeEtpUzRlaHM0Q1E4SDRxMTdRdjhqZlUyXzV4R25KTW1MaGVkZU0tVF90LUFvc1d6bnB6VVFGdlh0X25udWktNmdZVldKQ3lMSUxUZmUydjlNaGRzQ1E5V3BiQVltQ0lvZFRLQkhBNEVwd3oxRF9GV2JBTkZCWVVOelU2aEh0U2g5WHJ3anU2NjZaSWg2cWZPQkQzZ2pnX0s5ZEQyWkVCZHZ3SjZLVnRLaHlucnhBM1d4UEZhYUpmV09CM19nWkxELVhOaUVjTjA?hl=en-US&gl=US&ceid=US%3Aen
+                - text: FIFA signs another World Cup sponsor deal with the gambling industry
+            - figure [ref=e900]
+          - generic [ref=e901]:
+            - time [ref=e902]: 6 days ago
+            - separator [ref=e903]
+            - generic [ref=e904]: By Graham Dunbar
+      - generic [ref=e905]:
+        - separator [ref=e907]
+        - generic [ref=e909]:
+          - generic [ref=e910]:
+            - link [ref=e912] [cursor=pointer]:
+              - /url: ./read/CBMi7wFBVV95cUxNQ2FkLUxlUV8wWGltSklHa01BV3FmMGg3NjZpeUYtR1lyMEdESlNPTnFnbllreHFLYXBHdGNPcjZsMHRuOE55X1JRR2pFQ0R1aVhNVW9SRTN4dHNCLUtXYWlqRVlFY25Lel9pLTlhdXFhYVZ4MmNCU0tYTDB1M0d2Z191ZzRpNzhXWlBySFZLUVAzR0liN2pPbHFLV3BuVWZvNVpuMUdQb2xaaEh3bXlTWTBPVjZSUTM4eV9PcE9oVWkwMjNoOFdDajBMVWhDNVRyVGZLWWlTd3Zmc0F1bmlqTnNYOG42UlZDOVU3ZVI1UQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e914]:
+              - generic [ref=e915]:
+                - generic [ref=e918]: PR Newswire
+                - generic [ref=e922]:
+                  - generic:
+                    - button "More - Hisense Kicks Off FIFA World Cup 2026™ Campaign, Bringing Fans Closer Through \"Innovating a Brighter Life\"" [ref=e923] [cursor=pointer]:
+                      - img [ref=e925]
+                    - tooltip [ref=e927]: More
+              - link "Hisense Kicks Off FIFA World Cup 2026™ Campaign, Bringing Fans Closer Through \"Innovating a Brighter Life\" - PR Newswire - 15 days ago" [ref=e928] [cursor=pointer]:
+                - /url: ./read/CBMi7wFBVV95cUxNQ2FkLUxlUV8wWGltSklHa01BV3FmMGg3NjZpeUYtR1lyMEdESlNPTnFnbllreHFLYXBHdGNPcjZsMHRuOE55X1JRR2pFQ0R1aVhNVW9SRTN4dHNCLUtXYWlqRVlFY25Lel9pLTlhdXFhYVZ4MmNCU0tYTDB1M0d2Z191ZzRpNzhXWlBySFZLUVAzR0liN2pPbHFLV3BuVWZvNVpuMUdQb2xaaEh3bXlTWTBPVjZSUTM4eV9PcE9oVWkwMjNoOFdDajBMVWhDNVRyVGZLWWlTd3Zmc0F1bmlqTnNYOG42UlZDOVU3ZVI1UQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Hisense Kicks Off FIFA World Cup 2026™ Campaign, Bringing Fans Closer Through "Innovating a Brighter Life"
+            - figure [ref=e929]
+          - time [ref=e931]: 15 days ago
+      - generic [ref=e932]:
+        - separator [ref=e934]
+        - generic [ref=e936]:
+          - generic [ref=e937]:
+            - link [ref=e939] [cursor=pointer]:
+              - /url: ./read/CBMi9gFBVV95cUxQQVRuZzRsOEQ3Zm9fMmNVRFo0RlN0WEJORHpaZndPOFhwZnUyM2dkamI4cmFpV1llMzdQT0QtbWNUU2tSVWo5Z1pBRzhyV3hYWEJ2UFBQNU01a0tfcDdKalN2VHFLZkNfV0RYY1dEN0loNjNEUktGQ044STZ0SS1pUXYtLTJ6RWItR2dCZ2Uwa0E3TzlWNDJRQ1QyTTlicXYyYXBXOTJfazBEcGM4UXJrdUxxU2Zwb0g1SE4tNWtxTnJCdFpyMmhvZmdwNmhOSC04Q0FEcUFSdkFUeGhkdUNYNnJ3TVFaRjJXdGtXcDZuZ2NZaFJTWFHSAfwBQVVfeXFMTkpmSW8xSWk1Ym9kNlZORlFfa1NLQTd3R21lSTFMaDFIc25HckdzNXN0blVpa2ZfOXJKUEw0cDVuZGxhNVlhdkh3M3ZDczdhVUQzWHMwY0RnU2E0R1dFeEVrTF9EVlJmTDBOT2JhOC1xeWRlZ3VxcTFzMENTcjFFdkJiTFNVUzlPTW1QLU1KdllWcVhLa000S29BVGJfNnlxdTVGUURNREZjYjVGRWp3V2Z0MS1zN2thUF9kd0ItaVVncVRSZE95TXN0bm1pbVJZVDNjSFNfTEpzWUFxLXF5anJrYmdEa2NaWGZ2emhvcWhZdW5MR0hkUzBFZTFv?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e941]:
+              - generic [ref=e942]:
+                - generic [ref=e945]: Sportstar
+                - generic [ref=e949]:
+                  - generic:
+                    - button "More - USA squad for FIFA World Cup 2026 — Full list of players; Reyna, Pulisic included" [ref=e950] [cursor=pointer]:
+                      - img [ref=e952]
+                    - tooltip [ref=e954]: More
+              - link "USA squad for FIFA World Cup 2026 — Full list of players; Reyna, Pulisic included - Sportstar - 21 hours ago" [ref=e955] [cursor=pointer]:
+                - /url: ./read/CBMi9gFBVV95cUxQQVRuZzRsOEQ3Zm9fMmNVRFo0RlN0WEJORHpaZndPOFhwZnUyM2dkamI4cmFpV1llMzdQT0QtbWNUU2tSVWo5Z1pBRzhyV3hYWEJ2UFBQNU01a0tfcDdKalN2VHFLZkNfV0RYY1dEN0loNjNEUktGQ044STZ0SS1pUXYtLTJ6RWItR2dCZ2Uwa0E3TzlWNDJRQ1QyTTlicXYyYXBXOTJfazBEcGM4UXJrdUxxU2Zwb0g1SE4tNWtxTnJCdFpyMmhvZmdwNmhOSC04Q0FEcUFSdkFUeGhkdUNYNnJ3TVFaRjJXdGtXcDZuZ2NZaFJTWFHSAfwBQVVfeXFMTkpmSW8xSWk1Ym9kNlZORlFfa1NLQTd3R21lSTFMaDFIc25HckdzNXN0blVpa2ZfOXJKUEw0cDVuZGxhNVlhdkh3M3ZDczdhVUQzWHMwY0RnU2E0R1dFeEVrTF9EVlJmTDBOT2JhOC1xeWRlZ3VxcTFzMENTcjFFdkJiTFNVUzlPTW1QLU1KdllWcVhLa000S29BVGJfNnlxdTVGUURNREZjYjVGRWp3V2Z0MS1zN2thUF9kd0ItaVVncVRSZE95TXN0bm1pbVJZVDNjSFNfTEpzWUFxLXF5anJrYmdEa2NaWGZ2emhvcWhZdW5MR0hkUzBFZTFv?hl=en-US&gl=US&ceid=US%3Aen
+                - text: USA squad for FIFA World Cup 2026 — Full list of players; Reyna, Pulisic included
+            - figure [ref=e956]
+          - time [ref=e958]: 21 hours ago
+      - generic [ref=e959]:
+        - separator [ref=e961]
+        - generic [ref=e963]:
+          - generic [ref=e964]:
+            - link [ref=e966] [cursor=pointer]:
+              - /url: ./read/CBMiggFBVV95cUxQY2tFYWpBR0hNUWI3RHRNMl84Y0JzNVZGcE1BTDVrNU5WTVl0Y24yZ0VEQ1dDcVdjRFpJNzRNZDVBOWFnbGdPTVh1U2pES3VRbTE5Z2NsdmxrVUZpaWlJQk02OFk1Sk92YlBQLWNsVHRaRzBNNDN5Zk9rcnVZSFY2Z3pn?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e968]:
+              - generic [ref=e969]:
+                - generic [ref=e972]: The Football Week
+                - generic [ref=e976]:
+                  - generic:
+                    - button "More - The Commercial Value of the 2026 FIFA World Cup" [ref=e977] [cursor=pointer]:
+                      - img [ref=e979]
+                    - tooltip [ref=e981]: More
+              - link "The Commercial Value of the 2026 FIFA World Cup - The Football Week - 8 days ago - By Jamie Khan" [ref=e982] [cursor=pointer]:
+                - /url: ./read/CBMiggFBVV95cUxQY2tFYWpBR0hNUWI3RHRNMl84Y0JzNVZGcE1BTDVrNU5WTVl0Y24yZ0VEQ1dDcVdjRFpJNzRNZDVBOWFnbGdPTVh1U2pES3VRbTE5Z2NsdmxrVUZpaWlJQk02OFk1Sk92YlBQLWNsVHRaRzBNNDN5Zk9rcnVZSFY2Z3pn?hl=en-US&gl=US&ceid=US%3Aen
+                - text: The Commercial Value of the 2026 FIFA World Cup
+            - figure [ref=e983]
+          - generic [ref=e984]:
+            - time [ref=e985]: 8 days ago
+            - separator [ref=e986]
+            - generic [ref=e987]: By Jamie Khan
+      - generic [ref=e988]:
+        - separator [ref=e990]
+        - generic [ref=e992]:
+          - generic [ref=e993]:
+            - link [ref=e995] [cursor=pointer]:
+              - /url: ./read/CBMilwFBVV95cUxPQVNoZDN5MzlsTWZ5cHJQdElKdUY4MUhIMnJISHFocWprZUtyY2VrZVVWc0cwN3FzSGNwOUJ0NEw1Q05xU1VVTHlzeFlWZlRFZzVWWHBRNmVWM1ExUU5uNFoxNFZ3bzQ4bVFMMXdFeHkzck5rRlZuVDdwOXRDYWJpbUpWZFBZRlY0TUZpQUYteHhWdlh1NXhF?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e997]:
+              - generic [ref=e998]:
+                - generic [ref=e1001]: Sports Illustrated
+                - generic [ref=e1005]:
+                  - generic:
+                    - button "More - Brilliant or Ridiculous? Commercial Campaign Predicts Dramatic U.S. Victory at 2026 World Cup" [ref=e1006] [cursor=pointer]:
+                      - img [ref=e1008]
+                    - tooltip [ref=e1010]: More
+              - link "Brilliant or Ridiculous? Commercial Campaign Predicts Dramatic U.S. Victory at 2026 World Cup - Sports Illustrated - 20 days ago - By Sophia Vesely" [ref=e1011] [cursor=pointer]:
+                - /url: ./read/CBMilwFBVV95cUxPQVNoZDN5MzlsTWZ5cHJQdElKdUY4MUhIMnJISHFocWprZUtyY2VrZVVWc0cwN3FzSGNwOUJ0NEw1Q05xU1VVTHlzeFlWZlRFZzVWWHBRNmVWM1ExUU5uNFoxNFZ3bzQ4bVFMMXdFeHkzck5rRlZuVDdwOXRDYWJpbUpWZFBZRlY0TUZpQUYteHhWdlh1NXhF?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Brilliant or Ridiculous? Commercial Campaign Predicts Dramatic U.S. Victory at 2026 World Cup
+            - figure [ref=e1012]
+          - generic [ref=e1013]:
+            - time [ref=e1014]: 20 days ago
+            - separator [ref=e1015]
+            - generic [ref=e1016]: By Sophia Vesely
+      - generic [ref=e1017]:
+        - separator [ref=e1019]
+        - generic [ref=e1021]:
+          - generic [ref=e1022]:
+            - link [ref=e1024] [cursor=pointer]:
+              - /url: ./read/CBMif0FVX3lxTE5NSVpKUl9ScFRTd054SnV5U2dBcGxBMGxyZ2FrWlN6UmpoMElVMGFfYmE2bW1oUVU4TFVkSHBKUXBXcFRvakZnVVNjMG40a0E1bUFDUVItUUlGSHZVZVZpYnlGYXZGc2NOZkxzN2ozZU1wU0RaY0xuVkg1aV9fdmM?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1026]:
+              - generic [ref=e1027]:
+                - generic [ref=e1030]: Radio Times
+                - generic [ref=e1034]:
+                  - generic:
+                    - button "More - When does the Premier League 2026/27 season start? Fixture release and key dates" [ref=e1035] [cursor=pointer]:
+                      - img [ref=e1037]
+                    - tooltip [ref=e1039]: More
+              - link "When does the Premier League 2026/27 season start? Fixture release and key dates - Radio Times - 11 hours ago - By Ned Holmes" [ref=e1040] [cursor=pointer]:
+                - /url: ./read/CBMif0FVX3lxTE5NSVpKUl9ScFRTd054SnV5U2dBcGxBMGxyZ2FrWlN6UmpoMElVMGFfYmE2bW1oUVU4TFVkSHBKUXBXcFRvakZnVVNjMG40a0E1bUFDUVItUUlGSHZVZVZpYnlGYXZGc2NOZkxzN2ozZU1wU0RaY0xuVkg1aV9fdmM?hl=en-US&gl=US&ceid=US%3Aen
+                - text: When does the Premier League 2026/27 season start? Fixture release and key dates
+            - figure [ref=e1041]
+          - generic [ref=e1042]:
+            - time [ref=e1043]: 11 hours ago
+            - separator [ref=e1044]
+            - generic [ref=e1045]: By Ned Holmes
+      - generic [ref=e1046]:
+        - separator [ref=e1048]
+        - generic [ref=e1050]:
+          - generic [ref=e1051]:
+            - link [ref=e1053] [cursor=pointer]:
+              - /url: ./read/CBMimAFBVV95cUxPUHg1NEtuTmk4VVVzLV9KTjEwRGJFZHNENFdJMTlXcW1PNVFiZHdwdlVQci1BMWZaZkppV3V3N2JLa0hQajNVYVR4TUZ0Y3VSaE9jZGdEYnZzcU1fS3FaXzVDVk5hSFZxWjc1M05meVMtLWpUWXA0dVh5czdCNFc2dC1xTjlWMUdzZ1BhLXNsWTRhd0drWDhzMw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1055]:
+              - generic [ref=e1056]:
+                - generic [ref=e1059]: Campaign US
+                - generic [ref=e1063]:
+                  - generic:
+                    - 'button "More - World Cup 2026 round-up: Adidas, Coca-Cola, Samsung and more" [ref=e1064] [cursor=pointer]':
+                      - img [ref=e1066]
+                    - tooltip [ref=e1068]: More
+              - 'link "World Cup 2026 round-up: Adidas, Coca-Cola, Samsung and more - Campaign US - 11 days ago" [ref=e1069] [cursor=pointer]':
+                - /url: ./read/CBMimAFBVV95cUxPUHg1NEtuTmk4VVVzLV9KTjEwRGJFZHNENFdJMTlXcW1PNVFiZHdwdlVQci1BMWZaZkppV3V3N2JLa0hQajNVYVR4TUZ0Y3VSaE9jZGdEYnZzcU1fS3FaXzVDVk5hSFZxWjc1M05meVMtLWpUWXA0dVh5czdCNFc2dC1xTjlWMUdzZ1BhLXNsWTRhd0drWDhzMw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "World Cup 2026 round-up: Adidas, Coca-Cola, Samsung and more"
+            - figure [ref=e1070]
+          - time [ref=e1072]: 11 days ago
+      - generic [ref=e1073]:
+        - separator [ref=e1075]
+        - generic [ref=e1077]:
+          - generic [ref=e1078]:
+            - link [ref=e1080] [cursor=pointer]:
+              - /url: ./read/CBMiqgFBVV95cUxOaFl5eWhjbHpxcS1ra3ZfVVFmRDJHUmY0a2MtU1RCTzNta2RRek9fekRLam9DQ21mZUtxYm15Z1hmN0MxMmhSMnZFajJISUZiVl9ZTUwyN0NQbVJBYUZmYkRnMjg0T2R1UG9GdGZXLW9YRTZZV1RfQ09Ma2xCWGJDbmFSQzVtWElJV3VSMmp1clNpcVZzanFqNEhEOXZLRGFRcmJTWjd3cUN3UQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1082]:
+              - generic [ref=e1083]:
+                - generic [ref=e1086]: olympics.com
+                - generic [ref=e1090]:
+                  - generic:
+                    - 'button "More - FIFA World Cup 2026: Mexico chase breakthrough on home soil - All players, full squad list, key stats and schedule" [ref=e1091] [cursor=pointer]':
+                      - img [ref=e1093]
+                    - tooltip [ref=e1095]: More
+              - 'link "FIFA World Cup 2026: Mexico chase breakthrough on home soil - All players, full squad list, key stats and schedule - olympics.com - 13 days ago - By Manasi Pathak" [ref=e1096] [cursor=pointer]':
+                - /url: ./read/CBMiqgFBVV95cUxOaFl5eWhjbHpxcS1ra3ZfVVFmRDJHUmY0a2MtU1RCTzNta2RRek9fekRLam9DQ21mZUtxYm15Z1hmN0MxMmhSMnZFajJISUZiVl9ZTUwyN0NQbVJBYUZmYkRnMjg0T2R1UG9GdGZXLW9YRTZZV1RfQ09Ma2xCWGJDbmFSQzVtWElJV3VSMmp1clNpcVZzanFqNEhEOXZLRGFRcmJTWjd3cUN3UQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "FIFA World Cup 2026: Mexico chase breakthrough on home soil - All players, full squad list, key stats and schedule"
+            - figure [ref=e1097]
+          - generic [ref=e1098]:
+            - time [ref=e1099]: 13 days ago
+            - separator [ref=e1100]
+            - generic [ref=e1101]: By Manasi Pathak
+      - generic [ref=e1102]:
+        - separator [ref=e1104]
+        - generic [ref=e1106]:
+          - generic [ref=e1107]:
+            - link [ref=e1109] [cursor=pointer]:
+              - /url: ./read/CBMiowFBVV95cUxOeDluV3ZKeEo2NFN0VW9iaVNmNHloNS1RSUFqY0NqMmR1NGF1dU9LVzNNYl9CMnBTaUFGU3FVUm45Tmk0SjlPUnRfM1c1Ym9GTC1vdHY1MHZXaEo3WHkxcFlXTWFyeldBN1pYYXpHWDBEdXBIOG5fMF9rYllfdkFoZjBnM2k1RlVXOE1EM00wZ1I3MUgyenAzRE5DeG03YkF4bWNz?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1111]:
+              - generic [ref=e1112]:
+                - generic [ref=e1115]: SportsPro
+                - generic [ref=e1119]:
+                  - generic:
+                    - button "More - Fifa claims 2026 World Cup sponsorship sellout" [ref=e1120] [cursor=pointer]:
+                      - img [ref=e1122]
+                    - tooltip [ref=e1124]: More
+              - link "Fifa claims 2026 World Cup sponsorship sellout - SportsPro - Mar 27 - By Sam Carp" [ref=e1125] [cursor=pointer]:
+                - /url: ./read/CBMiowFBVV95cUxOeDluV3ZKeEo2NFN0VW9iaVNmNHloNS1RSUFqY0NqMmR1NGF1dU9LVzNNYl9CMnBTaUFGU3FVUm45Tmk0SjlPUnRfM1c1Ym9GTC1vdHY1MHZXaEo3WHkxcFlXTWFyeldBN1pYYXpHWDBEdXBIOG5fMF9rYllfdkFoZjBnM2k1RlVXOE1EM00wZ1I3MUgyenAzRE5DeG03YkF4bWNz?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Fifa claims 2026 World Cup sponsorship sellout
+            - figure [ref=e1126]
+          - generic [ref=e1127]:
+            - time [ref=e1128]: Mar 27
+            - separator [ref=e1129]
+            - generic [ref=e1130]: By Sam Carp
+      - generic [ref=e1131]:
+        - separator [ref=e1133]
+        - generic [ref=e1135]:
+          - generic [ref=e1136]:
+            - link [ref=e1138] [cursor=pointer]:
+              - /url: ./read/CBMirgFBVV95cUxQaGgzR3RuV0s0VWVfS0U3RDE2X0NfN0t6Rno3ZmR1bmNua21KRnA4MTRCMkd6MTN1MW51UmNqNHZPeTN1Nmppd3dkYVZURU5GQ2JEMGtJb3VnSnBZRkVUc1ptazF4WUdneG9oUmNqREdZSE9tT0lha1U4bXdScGVRUEx4dXJkYlVwbGhPdDRUYWR6dnBZMGlxZDQyQ1lmV1ZGSUxPaEpvM0RuTnRwNlE?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1140]:
+              - generic [ref=e1141]:
+                - generic [ref=e1144]: WWD
+                - generic [ref=e1148]:
+                  - generic:
+                    - button "More - Flavor Flav, Ashley Nicole Moss, and More Star in Lotto’s 2026 World Cup Soccer Campaign" [ref=e1149] [cursor=pointer]:
+                      - img [ref=e1151]
+                    - tooltip [ref=e1153]: More
+              - link "Flavor Flav, Ashley Nicole Moss, and More Star in Lotto’s 2026 World Cup Soccer Campaign - WWD - 18 days ago - By Karla Rodriguez" [ref=e1154] [cursor=pointer]:
+                - /url: ./read/CBMirgFBVV95cUxQaGgzR3RuV0s0VWVfS0U3RDE2X0NfN0t6Rno3ZmR1bmNua21KRnA4MTRCMkd6MTN1MW51UmNqNHZPeTN1Nmppd3dkYVZURU5GQ2JEMGtJb3VnSnBZRkVUc1ptazF4WUdneG9oUmNqREdZSE9tT0lha1U4bXdScGVRUEx4dXJkYlVwbGhPdDRUYWR6dnBZMGlxZDQyQ1lmV1ZGSUxPaEpvM0RuTnRwNlE?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Flavor Flav, Ashley Nicole Moss, and More Star in Lotto’s 2026 World Cup Soccer Campaign
+            - figure [ref=e1155]
+          - generic [ref=e1156]:
+            - time [ref=e1157]: 18 days ago
+            - separator [ref=e1158]
+            - generic [ref=e1159]: By Karla Rodriguez
+      - generic [ref=e1160]:
+        - separator [ref=e1162]
+        - generic [ref=e1164]:
+          - generic [ref=e1165]:
+            - link [ref=e1167] [cursor=pointer]:
+              - /url: ./read/CBMieEFVX3lxTE1oWWNvSnMtMlNYV2lEb1VGaDlWY0RXcUNveU5FVmlYWlhmQjdQOEl2SWhMY1UxakhJdUdRZFpxWkFPUVlNRzFqS2wwcU0wUENSZHhKUk55NHFXZ3VneTlnTFU1RXNVZHhhQ0laNjBDZU13TGRfVUJQMw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1169]:
+              - generic [ref=e1170]:
+                - generic [ref=e1173]: canada.ca
+                - generic [ref=e1177]:
+                  - generic:
+                    - button "More - Canada welcomes the FIFA World Cup 2026™" [ref=e1178] [cursor=pointer]:
+                      - img [ref=e1180]
+                    - tooltip [ref=e1182]: More
+              - link "Canada welcomes the FIFA World Cup 2026™ - canada.ca - 3 days ago" [ref=e1183] [cursor=pointer]:
+                - /url: ./read/CBMieEFVX3lxTE1oWWNvSnMtMlNYV2lEb1VGaDlWY0RXcUNveU5FVmlYWlhmQjdQOEl2SWhMY1UxakhJdUdRZFpxWkFPUVlNRzFqS2wwcU0wUENSZHhKUk55NHFXZ3VneTlnTFU1RXNVZHhhQ0laNjBDZU13TGRfVUJQMw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Canada welcomes the FIFA World Cup 2026™
+            - figure [ref=e1184]
+          - time [ref=e1186]: 3 days ago
+      - generic [ref=e1187]:
+        - separator [ref=e1189]
+        - generic [ref=e1191]:
+          - generic [ref=e1192]:
+            - link [ref=e1194] [cursor=pointer]:
+              - /url: ./read/CBMivwFBVV95cUxPSFB5Smc3eFRDREJRVU5HOGstS3FZbEJzZTJ4TjF0Zkdlb1dnTjJWWUE3VURLZTZsNWp0aF84WVdhbFdKWFU3QkVSQUxQZEpJQnl5YzktRGRmSDJ1czhTRmVOeUlTSDdWbWZlU2I1bHlHRXVxeGtJdVpyeGYwTWVKTXJsMFpiRl9lc2N2MklmbkVOUl9zQnZkQTNSZ2VDUjVhM2IwSFB5TENWZHlwUDBOemx1VWJqMWNqMDRrM1RHbw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1196]:
+              - generic [ref=e1197]:
+                - generic [ref=e1200]: The Peninsula Qatar
+                - generic [ref=e1204]:
+                  - generic:
+                    - 'button "More - FIFA World Cup 2026: Aspetar announces team Iraq''s joining partners network" [ref=e1205] [cursor=pointer]':
+                      - img [ref=e1207]
+                    - tooltip [ref=e1209]: More
+              - 'link "FIFA World Cup 2026: Aspetar announces team Iraq''s joining partners network - The Peninsula Qatar - 9 hours ago" [ref=e1210] [cursor=pointer]':
+                - /url: ./read/CBMivwFBVV95cUxPSFB5Smc3eFRDREJRVU5HOGstS3FZbEJzZTJ4TjF0Zkdlb1dnTjJWWUE3VURLZTZsNWp0aF84WVdhbFdKWFU3QkVSQUxQZEpJQnl5YzktRGRmSDJ1czhTRmVOeUlTSDdWbWZlU2I1bHlHRXVxeGtJdVpyeGYwTWVKTXJsMFpiRl9lc2N2MklmbkVOUl9zQnZkQTNSZ2VDUjVhM2IwSFB5TENWZHlwUDBOemx1VWJqMWNqMDRrM1RHbw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "FIFA World Cup 2026: Aspetar announces team Iraq's joining partners network"
+            - figure [ref=e1211]
+          - time [ref=e1213]: 9 hours ago
+      - generic [ref=e1214]:
+        - separator [ref=e1216]
+        - generic [ref=e1218]:
+          - generic [ref=e1219]:
+            - link [ref=e1221] [cursor=pointer]:
+              - /url: ./read/CBMirAFBVV95cUxObzJ4dmIyRTh0LXg1NVhLVEI5ZlpPR0YzdUktZEctTnVDM3dGRlA1Q09NQTJCU0ZaaWREVVpaMHQ4akdFM0wyVDZqTmFKbXl3NWVnNmhSd0l1ZWlNUkp3WnhVclRFMGlYUktqSEFnNXBNTTBwbFUyWEs5R2EyUm9vc0M0V1o0TmphMWk0U3VPOS1MeVFpSEt1TlNlblA1al9VdzRqOVpnMWRDaUpo0gGyAUFVX3lxTE85WndNUzhTSEhkZkhycG9YVndaM1lyZGZJajFHV3BVX240N3kyNUNVME91d2E5RUNyWmtiUndPOXdUVFA2blEyZUJxa3VDQXNYUlRaQks3b3RialBmQktacDJwN0U3Tl9WME8xLWRfSk9BaVRuTXlKcXM2VlNxWGNMZVBMSlBtbnVWQV9fWjM2V0x2MUFUN254TzhJWFppN29VT3JmXzlTMlU5dDhQR2VxWUE?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1223]:
+              - generic [ref=e1224]:
+                - generic [ref=e1227]: Al Jazeera
+                - generic [ref=e1231]:
+                  - generic:
+                    - button "More - What’s the full match schedule, groups and format for World Cup 2026?" [ref=e1232] [cursor=pointer]:
+                      - img [ref=e1234]
+                    - tooltip [ref=e1236]: More
+              - link "What’s the full match schedule, groups and format for World Cup 2026? - Al Jazeera - 18 days ago - By Hafsa Adil" [ref=e1237] [cursor=pointer]:
+                - /url: ./read/CBMirAFBVV95cUxObzJ4dmIyRTh0LXg1NVhLVEI5ZlpPR0YzdUktZEctTnVDM3dGRlA1Q09NQTJCU0ZaaWREVVpaMHQ4akdFM0wyVDZqTmFKbXl3NWVnNmhSd0l1ZWlNUkp3WnhVclRFMGlYUktqSEFnNXBNTTBwbFUyWEs5R2EyUm9vc0M0V1o0TmphMWk0U3VPOS1MeVFpSEt1TlNlblA1al9VdzRqOVpnMWRDaUpo0gGyAUFVX3lxTE85WndNUzhTSEhkZkhycG9YVndaM1lyZGZJajFHV3BVX240N3kyNUNVME91d2E5RUNyWmtiUndPOXdUVFA2blEyZUJxa3VDQXNYUlRaQks3b3RialBmQktacDJwN0U3Tl9WME8xLWRfSk9BaVRuTXlKcXM2VlNxWGNMZVBMSlBtbnVWQV9fWjM2V0x2MUFUN254TzhJWFppN29VT3JmXzlTMlU5dDhQR2VxWUE?hl=en-US&gl=US&ceid=US%3Aen
+                - text: What’s the full match schedule, groups and format for World Cup 2026?
+            - figure [ref=e1238]
+          - generic [ref=e1239]:
+            - time [ref=e1240]: 18 days ago
+            - separator [ref=e1241]
+            - generic [ref=e1242]: By Hafsa Adil
+      - generic [ref=e1243]:
+        - separator [ref=e1245]
+        - generic [ref=e1247]:
+          - generic [ref=e1248]:
+            - link [ref=e1250] [cursor=pointer]:
+              - /url: ./read/CBMi_AFBVV95cUxQODFTbUZkLXNybDJwVHZVbk5Ub1JFbzV6SkJzTkRHMEtmS0dIYUx3OW05T0dIdVI5SkNEUERicGVrNWhnZWpYd2ZlOTE0S0ZEZ0kzMTUzV2cweXlSQjZ3Mm1MdWN5MDlLUjZLRG82NUs4b1NlLVlVdWRjRHZ0bnh0WXNGRmNjVGJGaHpBaW5qNFdQYzlObVRPYWxPRHZKR3JfeENlVjVWa3Q4TmpmZnViSmVFMlEwU1NzRGJnX0xJRS1uQVdLYWRaZXhyM2gwcUREcXd4Q3d5RFhIdGZZMDBBYV9xcGp1WmZwSW5pR2x6WXE0LW1KM0ZFVFhYU3o?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1252]:
+              - generic [ref=e1253]:
+                - generic [ref=e1256]: LA Galaxy
+                - generic [ref=e1260]:
+                  - generic:
+                    - button "More - LA Galaxy Launch 100-Day Countdown to FIFA World Cup 2026™ with Expanded Community Events, Coastal Soccer Celebration & Enhanced Experiences" [ref=e1261] [cursor=pointer]:
+                      - img [ref=e1263]
+                    - tooltip [ref=e1265]: More
+              - link "LA Galaxy Launch 100-Day Countdown to FIFA World Cup 2026™ with Expanded Community Events, Coastal Soccer Celebration & Enhanced Experiences - LA Galaxy - Mar 3" [ref=e1266] [cursor=pointer]:
+                - /url: ./read/CBMi_AFBVV95cUxQODFTbUZkLXNybDJwVHZVbk5Ub1JFbzV6SkJzTkRHMEtmS0dIYUx3OW05T0dIdVI5SkNEUERicGVrNWhnZWpYd2ZlOTE0S0ZEZ0kzMTUzV2cweXlSQjZ3Mm1MdWN5MDlLUjZLRG82NUs4b1NlLVlVdWRjRHZ0bnh0WXNGRmNjVGJGaHpBaW5qNFdQYzlObVRPYWxPRHZKR3JfeENlVjVWa3Q4TmpmZnViSmVFMlEwU1NzRGJnX0xJRS1uQVdLYWRaZXhyM2gwcUREcXd4Q3d5RFhIdGZZMDBBYV9xcGp1WmZwSW5pR2x6WXE0LW1KM0ZFVFhYU3o?hl=en-US&gl=US&ceid=US%3Aen
+                - text: LA Galaxy Launch 100-Day Countdown to FIFA World Cup 2026™ with Expanded Community Events, Coastal Soccer Celebration & Enhanced Experiences
+            - figure [ref=e1267]
+          - time [ref=e1269]: Mar 3
+      - generic [ref=e1270]:
+        - separator [ref=e1272]
+        - generic [ref=e1274]:
+          - generic [ref=e1275]:
+            - link [ref=e1277] [cursor=pointer]:
+              - /url: ./read/CBMitAFBVV95cUxOaS02d3dCS1J0MU5qeEtHb0Ric0s3bDQxOVdfMTRlUi1aajI0X3MyNDdyNUpKaW5pd2hWYlpaUGNibWNvRW0zYTZIR2RVU19DbjJ4Qk9kTDZiSnY4N2VTLWJVU2FZZmgxckJHSDRWaFkxWThYWmFKc0FHc2NWRDJLNkZWaHZhNTJLSlE2SHcwQ0o5OHphMkFVWnJEVlBhM2E4bHRvR1Z1VnhZcGMxVDROZWhYcWw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1279]:
+              - generic [ref=e1280]:
+                - generic [ref=e1283]: Global Cosmetics News
+                - generic [ref=e1287]:
+                  - generic:
+                    - button "More - Dove Men+Care launches FIFA World Cup 2026 skincare campaign for football fans" [ref=e1288] [cursor=pointer]:
+                      - img [ref=e1290]
+                    - tooltip [ref=e1292]: More
+              - link "Dove Men+Care launches FIFA World Cup 2026 skincare campaign for football fans - Global Cosmetics News - 11 days ago" [ref=e1293] [cursor=pointer]:
+                - /url: ./read/CBMitAFBVV95cUxOaS02d3dCS1J0MU5qeEtHb0Ric0s3bDQxOVdfMTRlUi1aajI0X3MyNDdyNUpKaW5pd2hWYlpaUGNibWNvRW0zYTZIR2RVU19DbjJ4Qk9kTDZiSnY4N2VTLWJVU2FZZmgxckJHSDRWaFkxWThYWmFKc0FHc2NWRDJLNkZWaHZhNTJLSlE2SHcwQ0o5OHphMkFVWnJEVlBhM2E4bHRvR1Z1VnhZcGMxVDROZWhYcWw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Dove Men+Care launches FIFA World Cup 2026 skincare campaign for football fans
+            - figure [ref=e1294]
+          - time [ref=e1296]: 11 days ago
+      - generic [ref=e1297]:
+        - separator [ref=e1299]
+        - generic [ref=e1301]:
+          - generic [ref=e1302]:
+            - link [ref=e1304] [cursor=pointer]:
+              - /url: ./read/CBMiygFBVV95cUxOMkZMWEhwUW9ZSWgtVVQ5M1BCSUtfN3NNTHpvRHF3cHR6VVF4YWhzZGJlUml6WE0wSFk2N1dKbGREMXBLakY4bG5TUFlxNy1kbkYtU3Q2aGdfcEFSQmJRcE4xdWlxT2VJYTMyUzhZcWxjaUtKWC1OR2VQcnVVektYQlpjT2hXaEJ5MUNaajJlOGNZNVR6XzZKSnFhczNQTXBoYkxRbEQ1eFVxN3liZUpsMEpPdVFINWhnNkYyelBidVY0OGRkWlNWcDdn?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1306]:
+              - generic [ref=e1307]:
+                - generic [ref=e1310]: Comcast Corporation
+                - generic [ref=e1314]:
+                  - generic:
+                    - button "More - Telemundo Unveils Most Extensive Spanish-Language FIFA World Cup™ Presentation in Broadcast Television History as It Marks 100-Day Countdown to FIFA World Cup 2026™" [ref=e1315] [cursor=pointer]:
+                      - img [ref=e1317]
+                    - tooltip [ref=e1319]: More
+              - link "Telemundo Unveils Most Extensive Spanish-Language FIFA World Cup™ Presentation in Broadcast Television History as It Marks 100-Day Countdown to FIFA World Cup 2026™ - Comcast Corporation - Mar 2" [ref=e1320] [cursor=pointer]:
+                - /url: ./read/CBMiygFBVV95cUxOMkZMWEhwUW9ZSWgtVVQ5M1BCSUtfN3NNTHpvRHF3cHR6VVF4YWhzZGJlUml6WE0wSFk2N1dKbGREMXBLakY4bG5TUFlxNy1kbkYtU3Q2aGdfcEFSQmJRcE4xdWlxT2VJYTMyUzhZcWxjaUtKWC1OR2VQcnVVektYQlpjT2hXaEJ5MUNaajJlOGNZNVR6XzZKSnFhczNQTXBoYkxRbEQ1eFVxN3liZUpsMEpPdVFINWhnNkYyelBidVY0OGRkWlNWcDdn?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Telemundo Unveils Most Extensive Spanish-Language FIFA World Cup™ Presentation in Broadcast Television History as It Marks 100-Day Countdown to FIFA World Cup 2026™
+            - figure [ref=e1321]
+          - time [ref=e1323]: Mar 2
+      - generic [ref=e1324]:
+        - separator [ref=e1326]
+        - generic [ref=e1328]:
+          - generic [ref=e1329]:
+            - link [ref=e1331] [cursor=pointer]:
+              - /url: ./read/CBMixwFBVV95cUxQVEhLcEsxS3U0M2FIRlNLNk04MkZWVXRrTDA4LVVmV2Fhcm9JT2xmQ1hzbXl5NTNIOGxsTXo5bkgyYy11NVEtR0RpbjlMd0dacVNDUWJPSkVsVlB3MFdwZEpOMU5RWVljak1ncDhMTFAxV3NOcnkyVFVuRC1mVEZGWVdhb3BzU1E0VjIxeTFuZGtaMVduOF80c1RwTm83cTRaZF8yZkMzcEphUGxkYTFMXzAySDdYemxKVnlDd1JlMldYdlBQWVo4?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1333]:
+              - generic [ref=e1334]:
+                - generic [ref=e1337]: Morningstar
+                - generic [ref=e1341]:
+                  - generic:
+                    - button "More - Lay's Launches Two Unique Creative Campaigns for FIFA World Cup 2026™" [ref=e1342] [cursor=pointer]:
+                      - img [ref=e1344]
+                    - tooltip [ref=e1346]: More
+              - link "Lay's Launches Two Unique Creative Campaigns for FIFA World Cup 2026™ - Morningstar - 20 days ago" [ref=e1347] [cursor=pointer]:
+                - /url: ./read/CBMixwFBVV95cUxQVEhLcEsxS3U0M2FIRlNLNk04MkZWVXRrTDA4LVVmV2Fhcm9JT2xmQ1hzbXl5NTNIOGxsTXo5bkgyYy11NVEtR0RpbjlMd0dacVNDUWJPSkVsVlB3MFdwZEpOMU5RWVljak1ncDhMTFAxV3NOcnkyVFVuRC1mVEZGWVdhb3BzU1E0VjIxeTFuZGtaMVduOF80c1RwTm83cTRaZF8yZkMzcEphUGxkYTFMXzAySDdYemxKVnlDd1JlMldYdlBQWVo4?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Lay's Launches Two Unique Creative Campaigns for FIFA World Cup 2026™
+            - figure [ref=e1348]
+          - time [ref=e1350]: 20 days ago
+      - generic [ref=e1351]:
+        - separator [ref=e1353]
+        - generic [ref=e1355]:
+          - generic [ref=e1356]:
+            - link [ref=e1358] [cursor=pointer]:
+              - /url: ./read/CBMiwwFBVV95cUxOa1NjTm9GT19nM3RYR1VfTC1RWkhuWmdMbzJ3Y0xHQ3JJdnMxNUdMLU1CZ3hUb1YwQU50bFYyYTdyelkxY0tMbl9FSkZmX3haN2l4eGJkSFhNWDlQS2xRb0dMOWNnYWFsZENBeExjTmNKWllfYzVhM1FmeVFQbDFPNXpGOTVieVBtanZWXzVDbnVoeUpJMzdQZjVrVXdEbVE2dVd3TWxiYW5JdkFsQnRRVWFrR1F3c3B4elN5Mkh4NzVFWGfSAcgBQVVfeXFMTThwZGNsM09BdmdUUFJTMXdtRFhlakFTR0hjajBMb21VZU80aGZlLWg4VFY1MmdRcEhNRmR4bktGVWdxMGZITWZqM3V5eDQtMTBmanRTc2ZQZGxKR3ZyLVZMMlVqdlFzNHVZdkMycUtaX0F1aXlQMUFocThSa3RDaWlDR2lNNzZMRUZUSml6d3NxSTJSME1XM2cxTnFNLTFKb3h6Qzlrb1NkMmt0ZnFZVHF0MUduSG5HdldRSVZhRnlJWGhvZ0tXLVU?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1360]:
+              - generic [ref=e1361]:
+                - generic [ref=e1364]: Qatar Tribune
+                - generic [ref=e1368]:
+                  - generic:
+                    - button "More - Al Annabi players exude confidence, say they all focused on World Cup 2026" [ref=e1369] [cursor=pointer]:
+                      - img [ref=e1371]
+                    - tooltip [ref=e1373]: More
+              - link "Al Annabi players exude confidence, say they all focused on World Cup 2026 - Qatar Tribune - 2 hours ago" [ref=e1374] [cursor=pointer]:
+                - /url: ./read/CBMiwwFBVV95cUxOa1NjTm9GT19nM3RYR1VfTC1RWkhuWmdMbzJ3Y0xHQ3JJdnMxNUdMLU1CZ3hUb1YwQU50bFYyYTdyelkxY0tMbl9FSkZmX3haN2l4eGJkSFhNWDlQS2xRb0dMOWNnYWFsZENBeExjTmNKWllfYzVhM1FmeVFQbDFPNXpGOTVieVBtanZWXzVDbnVoeUpJMzdQZjVrVXdEbVE2dVd3TWxiYW5JdkFsQnRRVWFrR1F3c3B4elN5Mkh4NzVFWGfSAcgBQVVfeXFMTThwZGNsM09BdmdUUFJTMXdtRFhlakFTR0hjajBMb21VZU80aGZlLWg4VFY1MmdRcEhNRmR4bktGVWdxMGZITWZqM3V5eDQtMTBmanRTc2ZQZGxKR3ZyLVZMMlVqdlFzNHVZdkMycUtaX0F1aXlQMUFocThSa3RDaWlDR2lNNzZMRUZUSml6d3NxSTJSME1XM2cxTnFNLTFKb3h6Qzlrb1NkMmt0ZnFZVHF0MUduSG5HdldRSVZhRnlJWGhvZ0tXLVU?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Al Annabi players exude confidence, say they all focused on World Cup 2026
+            - figure [ref=e1375]
+          - time [ref=e1377]: 2 hours ago
+      - generic [ref=e1378]:
+        - separator [ref=e1380]
+        - generic [ref=e1382]:
+          - generic [ref=e1383]:
+            - link [ref=e1385] [cursor=pointer]:
+              - /url: ./read/CBMisgFBVV95cUxNQlZocy0zWnZ4ZUJLVm9Ob3I0ZUQ0eXpOclE3U3dzTXZxTDhTLU5RSG5hOFdfVTdPNW9CUVZ6b3JFTTVHQlMtNExsdzZnXzlPTF9adXY1cUZWaUUxOC1nZHVORFhnRDVDOUVXdVlQejhSYVNZaVgtTjdzc2V0cnBfTFVIaFAyR1c0c0hTY2VLUzBfQ2c2QUk0SWZ5MTNUaTZGMERGNDZPWXZmWXFjU0R5Wkh3?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1387]:
+              - generic [ref=e1388]:
+                - generic [ref=e1391]: Sports Business Journal
+                - generic [ref=e1395]:
+                  - generic:
+                    - button "More - 2026 FIFA World Cup Sponsors and Host City Supporters" [ref=e1396] [cursor=pointer]:
+                      - img [ref=e1398]
+                    - tooltip [ref=e1400]: More
+              - link "2026 FIFA World Cup Sponsors and Host City Supporters - Sports Business Journal - Oct 29, 2025" [ref=e1401] [cursor=pointer]:
+                - /url: ./read/CBMisgFBVV95cUxNQlZocy0zWnZ4ZUJLVm9Ob3I0ZUQ0eXpOclE3U3dzTXZxTDhTLU5RSG5hOFdfVTdPNW9CUVZ6b3JFTTVHQlMtNExsdzZnXzlPTF9adXY1cUZWaUUxOC1nZHVORFhnRDVDOUVXdVlQejhSYVNZaVgtTjdzc2V0cnBfTFVIaFAyR1c0c0hTY2VLUzBfQ2c2QUk0SWZ5MTNUaTZGMERGNDZPWXZmWXFjU0R5Wkh3?hl=en-US&gl=US&ceid=US%3Aen
+                - text: 2026 FIFA World Cup Sponsors and Host City Supporters
+            - figure [ref=e1402]
+          - time [ref=e1404]: Oct 29, 2025
+      - generic [ref=e1405]:
+        - separator [ref=e1407]
+        - generic [ref=e1409]:
+          - generic [ref=e1410]:
+            - link [ref=e1412] [cursor=pointer]:
+              - /url: ./read/CBMiygFBVV95cUxOVUlkSGt2M1Zxb1lLVVJvMDY5b1hBUzl0TlhIMTBJVjdpR25RY1hHcVlxT0E3R0FvdUMwSDA4b3hiaTl5M0gtc3JOMk9fNDVOa2JUMzZxWjM2emc4N2U3ME9ET1hiY3N6cHhyMWlhQWkwVTM3QUpZVW1lTU9sRW0weDJzQTJwcXF2VnZDeWVtVUZkcGFGemlPcFdzSUZWUGJEYUpIT3FidW9VNzNPZ3hfUXcxcG5vV0VYczhQdG12WnZPcl80UGIxQi1n?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1414]:
+              - generic [ref=e1415]:
+                - generic [ref=e1418]: Public Investment Fund
+                - generic [ref=e1422]:
+                  - generic:
+                    - button "More - PIF | PIF named as Official Tournament Supporter of FIFA World Cup 2026" [ref=e1423] [cursor=pointer]:
+                      - img [ref=e1425]
+                    - tooltip [ref=e1427]: More
+              - link "PIF | PIF named as Official Tournament Supporter of FIFA World Cup 2026 - Public Investment Fund - 11 days ago" [ref=e1428] [cursor=pointer]:
+                - /url: ./read/CBMiygFBVV95cUxOVUlkSGt2M1Zxb1lLVVJvMDY5b1hBUzl0TlhIMTBJVjdpR25RY1hHcVlxT0E3R0FvdUMwSDA4b3hiaTl5M0gtc3JOMk9fNDVOa2JUMzZxWjM2emc4N2U3ME9ET1hiY3N6cHhyMWlhQWkwVTM3QUpZVW1lTU9sRW0weDJzQTJwcXF2VnZDeWVtVUZkcGFGemlPcFdzSUZWUGJEYUpIT3FidW9VNzNPZ3hfUXcxcG5vV0VYczhQdG12WnZPcl80UGIxQi1n?hl=en-US&gl=US&ceid=US%3Aen
+                - text: PIF | PIF named as Official Tournament Supporter of FIFA World Cup 2026
+            - figure [ref=e1429]
+          - time [ref=e1431]: 11 days ago
+      - generic [ref=e1432]:
+        - separator [ref=e1434]
+        - generic [ref=e1436]:
+          - generic [ref=e1437]:
+            - link [ref=e1439] [cursor=pointer]:
+              - /url: ./read/CBMieEFVX3lxTFBZMzhSZFprLS1Xbjd1bk9tWkpVUUpKbGdBRXNBR1BkQUZrcHl3N2ZZeHNRYVkxdUotbUtRS3pWU0toTUNzcnI0cnJrdTFMWllRRFdsWUctS0EtbGh5d0JwZVVCZEpSTVBjUEJ3WHBjYmJadHBUeGVVMw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1441]:
+              - generic [ref=e1442]:
+                - generic [ref=e1445]: Goal.com
+                - generic [ref=e1449]:
+                  - generic:
+                    - 'button "More - World Cup 2026 kits: Argentina, Brazil, Spain, England & all the top teams'' jerseys revealed" [ref=e1450] [cursor=pointer]':
+                      - img [ref=e1452]
+                    - tooltip [ref=e1454]: More
+              - 'link "World Cup 2026 kits: Argentina, Brazil, Spain, England & all the top teams'' jerseys revealed - Goal.com - 2 days ago - By Renuka Odedra" [ref=e1455] [cursor=pointer]':
+                - /url: ./read/CBMieEFVX3lxTFBZMzhSZFprLS1Xbjd1bk9tWkpVUUpKbGdBRXNBR1BkQUZrcHl3N2ZZeHNRYVkxdUotbUtRS3pWU0toTUNzcnI0cnJrdTFMWllRRFdsWUctS0EtbGh5d0JwZVVCZEpSTVBjUEJ3WHBjYmJadHBUeGVVMw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "World Cup 2026 kits: Argentina, Brazil, Spain, England & all the top teams' jerseys revealed"
+            - figure [ref=e1456]
+          - generic [ref=e1457]:
+            - time [ref=e1458]: 2 days ago
+            - separator [ref=e1459]
+            - generic [ref=e1460]: By Renuka Odedra
+      - generic [ref=e1461]:
+        - separator [ref=e1463]
+        - generic [ref=e1465]:
+          - generic [ref=e1466]:
+            - link [ref=e1468] [cursor=pointer]:
+              - /url: ./read/CBMi-AFBVV95cUxNeW9JZVV6ZmFWcV9lQlR3X2YzZDlhc25nbUJod005Q1FKUW5GZGstYVBPcGs5ZjFXaUNQcTJSWkpTcFNlVTNXdjkzbFRtYURsNjAzQUtiVUVFb2NuWTZXUzJrcmJKQkdObDdVbEJ3WmJhZkYycmY4Z0RtM3d4djN1S1NhaWFFR2hVaVRQdHUtV3ZvY2Z3ZGtWcS03RXRuS3hJWWc1ZTY2X0J1R3ZvVHFzcmtuYm5XR2xNU2x1YzNkdUxtZmxWSk8xczJldl9WSUpfcVJudElWZE9EczB4YXJYRGZ2Q05URi1xc3R3UXNBSk9tb3Z4Ym43SA?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1470]:
+              - generic [ref=e1471]:
+                - generic [ref=e1474]: PR Newswire
+                - generic [ref=e1478]:
+                  - generic:
+                    - button "More - Valvoline™ Global Celebrates and Protects Every Fan's Road to the Game in New FIFA World Cup 2026™ Campaign" [ref=e1479] [cursor=pointer]:
+                      - img [ref=e1481]
+                    - tooltip [ref=e1483]: More
+              - link "Valvoline™ Global Celebrates and Protects Every Fan's Road to the Game in New FIFA World Cup 2026™ Campaign - PR Newswire - Apr 17" [ref=e1484] [cursor=pointer]:
+                - /url: ./read/CBMi-AFBVV95cUxNeW9JZVV6ZmFWcV9lQlR3X2YzZDlhc25nbUJod005Q1FKUW5GZGstYVBPcGs5ZjFXaUNQcTJSWkpTcFNlVTNXdjkzbFRtYURsNjAzQUtiVUVFb2NuWTZXUzJrcmJKQkdObDdVbEJ3WmJhZkYycmY4Z0RtM3d4djN1S1NhaWFFR2hVaVRQdHUtV3ZvY2Z3ZGtWcS03RXRuS3hJWWc1ZTY2X0J1R3ZvVHFzcmtuYm5XR2xNU2x1YzNkdUxtZmxWSk8xczJldl9WSUpfcVJudElWZE9EczB4YXJYRGZ2Q05URi1xc3R3UXNBSk9tb3Z4Ym43SA?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Valvoline™ Global Celebrates and Protects Every Fan's Road to the Game in New FIFA World Cup 2026™ Campaign
+            - figure [ref=e1485]
+          - time [ref=e1487]: Apr 17
+      - generic [ref=e1488]:
+        - separator [ref=e1490]
+        - generic [ref=e1492]:
+          - generic [ref=e1493]:
+            - link [ref=e1495] [cursor=pointer]:
+              - /url: ./read/CBMixgFBVV95cUxQdkIya182SVU0U05xQ2FaaDRkTFAzNkVVYUQ2a1lxYW5CaS0wRV9DQU9XNUEzekM1WlZkdXR6X0RkdTVqSEhQRDVkelhGVGZKSGNqRElHcGo3OUd2X0U0cWNmU3ViQV83VUdMSXZtSmZnZXNYY3Fib1pXaVRYRUJldEM1VzBCT0gwWm1tSkFqUGxkUGQzcHVkWndhLUo1ZnpJRFhxcGpvMmlFMlhHdXlLOTZqaERfQ1hNZ0duWF82X3dhekpXYkE?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1497]:
+              - generic [ref=e1498]:
+                - generic [ref=e1501]: www.christiandaily.com
+                - generic [ref=e1505]:
+                  - generic:
+                    - button "More - World Cup 2026 outreach campaign aims to equip 100,000 Christians to host friends, neighbors" [ref=e1506] [cursor=pointer]:
+                      - img [ref=e1508]
+                    - tooltip [ref=e1510]: More
+              - link "World Cup 2026 outreach campaign aims to equip 100,000 Christians to host friends, neighbors - www.christiandaily.com - 19 days ago" [ref=e1511] [cursor=pointer]:
+                - /url: ./read/CBMixgFBVV95cUxQdkIya182SVU0U05xQ2FaaDRkTFAzNkVVYUQ2a1lxYW5CaS0wRV9DQU9XNUEzekM1WlZkdXR6X0RkdTVqSEhQRDVkelhGVGZKSGNqRElHcGo3OUd2X0U0cWNmU3ViQV83VUdMSXZtSmZnZXNYY3Fib1pXaVRYRUJldEM1VzBCT0gwWm1tSkFqUGxkUGQzcHVkWndhLUo1ZnpJRFhxcGpvMmlFMlhHdXlLOTZqaERfQ1hNZ0duWF82X3dhekpXYkE?hl=en-US&gl=US&ceid=US%3Aen
+                - text: World Cup 2026 outreach campaign aims to equip 100,000 Christians to host friends, neighbors
+            - figure [ref=e1512]
+          - time [ref=e1514]: 19 days ago
+      - generic [ref=e1515]:
+        - separator [ref=e1517]
+        - generic [ref=e1519]:
+          - generic [ref=e1520]:
+            - link [ref=e1522] [cursor=pointer]:
+              - /url: ./read/CBMitAFBVV95cUxNUUNxVWlidUloSU53RjVRWFVlRTd2cUx3REpGQVBaRnNoTjNQX285R1VPaHcteE1FeS12c3JZaFlGT3ltSzZVTHhoMm1nb0V0U3JtVWhVM09BeV8xQUlpXzFWenJyRnFVY2dzN04xazJSUmdGaEh4ZkQxQTdBNUZ3Y011NEttLVB6VHhNZ29MZTc3WnhNcFBubUdoeThkbDZXV3QzeWdxSDE4LTVqT0hxUjRPa1A?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1524]:
+              - generic [ref=e1525]:
+                - generic [ref=e1528]: Adgully.com
+                - generic [ref=e1532]:
+                  - generic:
+                    - button "More - S8UL onboards Campa Energy as Title Sponsor for Esports World Cup 2026 campaign" [ref=e1533] [cursor=pointer]:
+                      - img [ref=e1535]
+                    - tooltip [ref=e1537]: More
+              - link "S8UL onboards Campa Energy as Title Sponsor for Esports World Cup 2026 campaign - Adgully.com - 3 days ago" [ref=e1538] [cursor=pointer]:
+                - /url: ./read/CBMitAFBVV95cUxNUUNxVWlidUloSU53RjVRWFVlRTd2cUx3REpGQVBaRnNoTjNQX285R1VPaHcteE1FeS12c3JZaFlGT3ltSzZVTHhoMm1nb0V0U3JtVWhVM09BeV8xQUlpXzFWenJyRnFVY2dzN04xazJSUmdGaEh4ZkQxQTdBNUZ3Y011NEttLVB6VHhNZ29MZTc3WnhNcFBubUdoeThkbDZXV3QzeWdxSDE4LTVqT0hxUjRPa1A?hl=en-US&gl=US&ceid=US%3Aen
+                - text: S8UL onboards Campa Energy as Title Sponsor for Esports World Cup 2026 campaign
+          - time [ref=e1540]: 3 days ago
+      - generic [ref=e1541]:
+        - separator [ref=e1543]
+        - generic [ref=e1545]:
+          - generic [ref=e1546]:
+            - link [ref=e1548] [cursor=pointer]:
+              - /url: ./read/CBMidEFVX3lxTE84T3diTl8zaHZXTzVJVWQ5enIybi1OSkQzeWZaTWhmMkotaDZZRXRNM1NRMndiS1lqMzh0NzNwUFhBeTZxSWxvQzZoVi1WSm05T3RwYkZXY0VlZ0pTM0w3X1VvLUNZQTl5X3dONU4zZkJRQjdD?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1550]:
+              - generic [ref=e1551]:
+                - generic [ref=e1554]: NJBIZ
+                - generic [ref=e1558]:
+                  - generic:
+                    - button "More - Newark launches FIFA World Cup 2026 fan campaign" [ref=e1559] [cursor=pointer]:
+                      - img [ref=e1561]
+                    - tooltip [ref=e1563]: More
+              - link "Newark launches FIFA World Cup 2026 fan campaign - NJBIZ - Apr 15 - By Matthew Fazelpoor" [ref=e1564] [cursor=pointer]:
+                - /url: ./read/CBMidEFVX3lxTE84T3diTl8zaHZXTzVJVWQ5enIybi1OSkQzeWZaTWhmMkotaDZZRXRNM1NRMndiS1lqMzh0NzNwUFhBeTZxSWxvQzZoVi1WSm05T3RwYkZXY0VlZ0pTM0w3X1VvLUNZQTl5X3dONU4zZkJRQjdD?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Newark launches FIFA World Cup 2026 fan campaign
+            - figure [ref=e1565]
+          - generic [ref=e1566]:
+            - time [ref=e1567]: Apr 15
+            - separator [ref=e1568]
+            - generic [ref=e1569]: By Matthew Fazelpoor
+      - generic [ref=e1570]:
+        - separator [ref=e1572]
+        - generic [ref=e1574]:
+          - generic [ref=e1575]:
+            - link [ref=e1577] [cursor=pointer]:
+              - /url: ./read/CBMi5AFBVV95cUxNV0Y0bk8yUTRCektvY210WUN3dVBleGlqYzhNbk9fNGtSN1d6SFZyaWxjZHV0Ui1acERDOHZvc29tVDFscmsxRlNiTUlTZVV5RUw0WVozQzdiVWFBbkR6Vng3XzFPczhtdG5Lczd6VG9IYTVrSmkxd0hOV0hxRzVMcm5BS0h3YXJkdXFwS3R3TndhSlE1NG1Jd3JhYVVEQzRkNVp5QmY3YVdSTjdJWXFhMDFBMWw1VnRQYlV1eWE4UmprTTQ4NU84bjVBRDVhc3otVEJFTUh6RWNFR0xLeGltcXNpbzI?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1579]:
+              - generic [ref=e1580]:
+                - generic [ref=e1583]: Hypebeast
+                - generic [ref=e1587]:
+                  - generic:
+                    - button "More - \"I Know About Football, Benito:\" Timothée Chalamet Teases Massive adidas World Cup Campaign Alongside Bad Bunny and Lionel Messi" [ref=e1588] [cursor=pointer]:
+                      - img [ref=e1590]
+                    - tooltip [ref=e1592]: More
+              - link "\"I Know About Football, Benito:\" Timothée Chalamet Teases Massive adidas World Cup Campaign Alongside Bad Bunny and Lionel Messi - Hypebeast - 19 days ago - By Joyce Li" [ref=e1593] [cursor=pointer]:
+                - /url: ./read/CBMi5AFBVV95cUxNV0Y0bk8yUTRCektvY210WUN3dVBleGlqYzhNbk9fNGtSN1d6SFZyaWxjZHV0Ui1acERDOHZvc29tVDFscmsxRlNiTUlTZVV5RUw0WVozQzdiVWFBbkR6Vng3XzFPczhtdG5Lczd6VG9IYTVrSmkxd0hOV0hxRzVMcm5BS0h3YXJkdXFwS3R3TndhSlE1NG1Jd3JhYVVEQzRkNVp5QmY3YVdSTjdJWXFhMDFBMWw1VnRQYlV1eWE4UmprTTQ4NU84bjVBRDVhc3otVEJFTUh6RWNFR0xLeGltcXNpbzI?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "\"I Know About Football, Benito:\" Timothée Chalamet Teases Massive adidas World Cup Campaign Alongside Bad Bunny and Lionel Messi"
+            - figure [ref=e1594]
+          - generic [ref=e1595]:
+            - time [ref=e1596]: 19 days ago
+            - separator [ref=e1597]
+            - generic [ref=e1598]: By Joyce Li
+      - generic [ref=e1599]:
+        - separator [ref=e1601]
+        - generic [ref=e1603]:
+          - generic [ref=e1604]:
+            - link [ref=e1606] [cursor=pointer]:
+              - /url: ./read/CBMiqwFBVV95cUxOc1ozZ29ISF9jUnpZYmxyYUExUzFaTGxfUTRzUnllT2tmMkJtVEZtZTlMaVZmSU9JcFM3bXp5ZnlRbDRZRi1seDJJNXNWNXlFZkRmbExmdlJJNFlQTnE1d2s3Vkk0WlFXNXQ3YWF1NEtqalU4TDBKdFBpVVY4NWxwNEVQeV9yNDU3M0gzcWJtbUk3OF9wQ25vdi1ITVZUTVBLSGpVZHJmZ2w0RWs?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1608]:
+              - generic [ref=e1609]:
+                - generic [ref=e1612]: Card Player
+                - generic [ref=e1616]:
+                  - generic:
+                    - button "More - Seminole Hard Rock Hollywood To Sponsor 2026 World Cup - Poker News" [ref=e1617] [cursor=pointer]:
+                      - img [ref=e1619]
+                    - tooltip [ref=e1621]: More
+              - link "Seminole Hard Rock Hollywood To Sponsor 2026 World Cup - Poker News - Card Player - 11 days ago - By Sean Chaffin" [ref=e1622] [cursor=pointer]:
+                - /url: ./read/CBMiqwFBVV95cUxOc1ozZ29ISF9jUnpZYmxyYUExUzFaTGxfUTRzUnllT2tmMkJtVEZtZTlMaVZmSU9JcFM3bXp5ZnlRbDRZRi1seDJJNXNWNXlFZkRmbExmdlJJNFlQTnE1d2s3Vkk0WlFXNXQ3YWF1NEtqalU4TDBKdFBpVVY4NWxwNEVQeV9yNDU3M0gzcWJtbUk3OF9wQ25vdi1ITVZUTVBLSGpVZHJmZ2w0RWs?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Seminole Hard Rock Hollywood To Sponsor 2026 World Cup - Poker News
+            - figure [ref=e1623]
+          - generic [ref=e1624]:
+            - time [ref=e1625]: 11 days ago
+            - separator [ref=e1626]
+            - generic [ref=e1627]: By Sean Chaffin
+      - generic [ref=e1628]:
+        - separator [ref=e1630]
+        - generic [ref=e1632]:
+          - generic [ref=e1633]:
+            - link [ref=e1635] [cursor=pointer]:
+              - /url: ./read/CBMinwFBVV95cUxORHUzNkdGTk9rbEp3NzFoSHd6amVZMEJVdW10WmRnMFJ1MWFaMEVVX3RQM1FWQlE5ZF8zOVRwa1JHdGJmRVdvYk1NeHA4WGcxd0xzdzBfQ04wamVXSW1QUW5pZ3lxbmpOSUttd0ZyeUFhZ05TM3prZGEzbVEwdmNVZFpMMWkwRjd4UkJZREJ2MWw5TzlXU3VxTy13UVJJZVU?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1637]:
+              - generic [ref=e1638]:
+                - generic [ref=e1641]: Fisher Phillips LLP
+                - generic [ref=e1645]:
+                  - generic:
+                    - button "More - Comprehensive Checklist to Help Businesses Prepare for Soccer’s 2026 World Cup" [ref=e1646] [cursor=pointer]:
+                      - img [ref=e1648]
+                    - tooltip [ref=e1650]: More
+              - link "Comprehensive Checklist to Help Businesses Prepare for Soccer’s 2026 World Cup - Fisher Phillips LLP - Apr 7" [ref=e1651] [cursor=pointer]:
+                - /url: ./read/CBMinwFBVV95cUxORHUzNkdGTk9rbEp3NzFoSHd6amVZMEJVdW10WmRnMFJ1MWFaMEVVX3RQM1FWQlE5ZF8zOVRwa1JHdGJmRVdvYk1NeHA4WGcxd0xzdzBfQ04wamVXSW1QUW5pZ3lxbmpOSUttd0ZyeUFhZ05TM3prZGEzbVEwdmNVZFpMMWkwRjd4UkJZREJ2MWw5TzlXU3VxTy13UVJJZVU?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Comprehensive Checklist to Help Businesses Prepare for Soccer’s 2026 World Cup
+            - figure [ref=e1652]
+          - time [ref=e1654]: Apr 7
+      - generic [ref=e1655]:
+        - separator [ref=e1657]
+        - generic [ref=e1659]:
+          - generic [ref=e1660]:
+            - link [ref=e1662] [cursor=pointer]:
+              - /url: ./read/CBMitwFBVV95cUxObkFaNUw3QW1OTlhfekZ6TDNCTWJnc1hpXzFrbEFtTnF3bzZmck1KMEZpT1I1U0lVX2VLMnk0dllJamI3NzRGcjFtZllsM1lFZnhfc1k3ZWZyNmdyb0dwMEJKblhGMW11R29KbE9nOEdreUdEVUhScUxCQ2xCTFI5cVA1UTI5b2F4eXJ2c3MxaGdOTXJuTVV2TTJXMnpoLWVNRmNUX21WRzFrNk05ZjR2VEdtTXJTVG8?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1664]:
+              - generic [ref=e1665]:
+                - generic [ref=e1668]: Mexico Business News
+                - generic [ref=e1672]:
+                  - generic:
+                    - 'button "More - 2026 World Cup: Ambush Marketing Risks Under Mexico''s FLPIP Law" [ref=e1673] [cursor=pointer]':
+                      - img [ref=e1675]
+                    - tooltip [ref=e1677]: More
+              - 'link "2026 World Cup: Ambush Marketing Risks Under Mexico''s FLPIP Law - Mexico Business News - 10 days ago - By Eduardo Castaneda" [ref=e1678] [cursor=pointer]':
+                - /url: ./read/CBMitwFBVV95cUxObkFaNUw3QW1OTlhfekZ6TDNCTWJnc1hpXzFrbEFtTnF3bzZmck1KMEZpT1I1U0lVX2VLMnk0dllJamI3NzRGcjFtZllsM1lFZnhfc1k3ZWZyNmdyb0dwMEJKblhGMW11R29KbE9nOEdreUdEVUhScUxCQ2xCTFI5cVA1UTI5b2F4eXJ2c3MxaGdOTXJuTVV2TTJXMnpoLWVNRmNUX21WRzFrNk05ZjR2VEdtTXJTVG8?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "2026 World Cup: Ambush Marketing Risks Under Mexico's FLPIP Law"
+            - figure [ref=e1679]
+          - generic [ref=e1680]:
+            - time [ref=e1681]: 10 days ago
+            - separator [ref=e1682]
+            - generic [ref=e1683]: By Eduardo Castaneda
+      - generic [ref=e1684]:
+        - separator [ref=e1686]
+        - generic [ref=e1688]:
+          - generic [ref=e1689]:
+            - link [ref=e1691] [cursor=pointer]:
+              - /url: ./read/CBMigAFBVV95cUxOYXU1UDFWREVTV3pTUkVncERxcjZrZVhiRUp0SzNNVS1mcjlubzEwLWdoOXAxUjZld0tTeWFxc3lGYlE4Y0drTWlSZmlFRmNHZEtpYkhIa3BDNllST1pGUEw4amptV2VyOFZCbXlPVWFnTEJhWGhmV0lQWVlDZDdWSQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1693]:
+              - generic [ref=e1694]:
+                - generic [ref=e1697]: Original Football | David Skilling
+                - generic [ref=e1701]:
+                  - generic:
+                    - 'button "More - World Cup 2026 Sponsors: Who’s Paying for Football’s Biggest Show, and What They’re Buying" [ref=e1702] [cursor=pointer]':
+                      - img [ref=e1704]
+                    - tooltip [ref=e1706]: More
+              - 'link "World Cup 2026 Sponsors: Who’s Paying for Football’s Biggest Show, and What They’re Buying - Original Football | David Skilling - Mar 24 - By David Skilling" [ref=e1707] [cursor=pointer]':
+                - /url: ./read/CBMigAFBVV95cUxOYXU1UDFWREVTV3pTUkVncERxcjZrZVhiRUp0SzNNVS1mcjlubzEwLWdoOXAxUjZld0tTeWFxc3lGYlE4Y0drTWlSZmlFRmNHZEtpYkhIa3BDNllST1pGUEw4amptV2VyOFZCbXlPVWFnTEJhWGhmV0lQWVlDZDdWSQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "World Cup 2026 Sponsors: Who’s Paying for Football’s Biggest Show, and What They’re Buying"
+            - figure [ref=e1708]
+          - generic [ref=e1709]:
+            - time [ref=e1710]: Mar 24
+            - separator [ref=e1711]
+            - generic [ref=e1712]: By David Skilling
+      - generic [ref=e1713]:
+        - separator [ref=e1715]
+        - generic [ref=e1717]:
+          - generic [ref=e1718]:
+            - link [ref=e1720] [cursor=pointer]:
+              - /url: ./read/CBMi5AFBVV95cUxPYWJHY2RtOEE1MFFuVVItOWRjaWFSNnBXdUs5QW56WHc5WWx5cDlFRF9NZFF6RDJUNFhTZXlwOXFROGRlNl9jcXk1Tk5EbUtxcUttUlRweTVMSFBNMEx0WmJtcmFfbDcwTDN6OHl0N2lxQnlKRUhlVTVuZTVocGM5UFVxV21rYXR4ekJOc0NEWng0eTRQTXNPdkJlTDN5bEVHOGVhUEVJeTdkcUJQbjRMMGc1SEZkR2hGUWJLVEVsTGNlbDlQMXgwcFA3NjEwUE9wdVVJbG9WSmc3SjRRWTJOZkFGS3o?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1722]:
+              - generic [ref=e1723]:
+                - generic [ref=e1726]: PR Newswire
+                - generic [ref=e1730]:
+                  - generic:
+                    - button "More - Hyundai Motor Unveils \"Next Starts Now\" Campaign, Set to Showcase Robotics at FIFA World Cup 2026™" [ref=e1731] [cursor=pointer]:
+                      - img [ref=e1733]
+                    - tooltip [ref=e1735]: More
+              - link "Hyundai Motor Unveils \"Next Starts Now\" Campaign, Set to Showcase Robotics at FIFA World Cup 2026™ - PR Newswire - Apr 1" [ref=e1736] [cursor=pointer]:
+                - /url: ./read/CBMi5AFBVV95cUxPYWJHY2RtOEE1MFFuVVItOWRjaWFSNnBXdUs5QW56WHc5WWx5cDlFRF9NZFF6RDJUNFhTZXlwOXFROGRlNl9jcXk1Tk5EbUtxcUttUlRweTVMSFBNMEx0WmJtcmFfbDcwTDN6OHl0N2lxQnlKRUhlVTVuZTVocGM5UFVxV21rYXR4ekJOc0NEWng0eTRQTXNPdkJlTDN5bEVHOGVhUEVJeTdkcUJQbjRMMGc1SEZkR2hGUWJLVEVsTGNlbDlQMXgwcFA3NjEwUE9wdVVJbG9WSmc3SjRRWTJOZkFGS3o?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Hyundai Motor Unveils "Next Starts Now" Campaign, Set to Showcase Robotics at FIFA World Cup 2026™
+            - figure [ref=e1737]
+          - time [ref=e1739]: Apr 1
+      - generic [ref=e1740]:
+        - separator [ref=e1742]
+        - generic [ref=e1744]:
+          - generic [ref=e1745]:
+            - link [ref=e1747] [cursor=pointer]:
+              - /url: ./read/CBMiZ0FVX3lxTE1XVzhQbVliMGRSMzJVTUk4T1FLWDRsbzUxNjJOb211bnQ5cjN0MVFVSnRuY0JkYTBldWNSQUl2UW5rLVdWUVNlbzRDVWV5WEhXekowYVBMemM5RnRIalNoZE9hT3B5VTQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1749]:
+              - generic [ref=e1750]:
+                - generic [ref=e1753]: The Home Depot
+                - generic [ref=e1757]:
+                  - generic:
+                    - button "More - The Home Depot is the Official Home Improvement Supporter of the FIFA World Cup 2026™" [ref=e1758] [cursor=pointer]:
+                      - img [ref=e1760]
+                    - tooltip [ref=e1762]: More
+              - link "The Home Depot is the Official Home Improvement Supporter of the FIFA World Cup 2026™ - The Home Depot - Dec 5" [ref=e1763] [cursor=pointer]:
+                - /url: ./read/CBMiZ0FVX3lxTE1XVzhQbVliMGRSMzJVTUk4T1FLWDRsbzUxNjJOb211bnQ5cjN0MVFVSnRuY0JkYTBldWNSQUl2UW5rLVdWUVNlbzRDVWV5WEhXekowYVBMemM5RnRIalNoZE9hT3B5VTQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: The Home Depot is the Official Home Improvement Supporter of the FIFA World Cup 2026™
+            - figure [ref=e1764]
+          - time [ref=e1766]: Dec 5
+      - generic [ref=e1767]:
+        - separator [ref=e1769]
+        - generic [ref=e1771]:
+          - generic [ref=e1772]:
+            - link [ref=e1774] [cursor=pointer]:
+              - /url: ./read/CBMisgFBVV95cUxQeGtmY0JwWDRtY2c5WDl4bDdnaXBlQ0RlaGpXTENqbXdqWGVZSFVnLTAzLWNiNjZpelJHdG5iR2oyZldOWWVhUHBqVk5qV3NPWmVUUmoyYW96T2JMdWM4aUFMNUxxRmVVblJBRHZHbzRkcldPMGY4TW8tSHBmYk5tVjlxalUxZ3VvVTQwZ21vN2dPNGJVUFlrb1hUcDdLTlM4YWtGYlh0c2xCRHJPOG1uVXJB0gG3AUFVX3lxTE05LWVXSlRrMjdJTkQzWlY2SWEzV0xiOUNGUWI5eXAwR1hHOTU2dGdnb3ZMNlIwQzR5WkZVZXFQNEZDYmhranduR3RPUjBaQUpHZVU4MkRHdVk0TUVIelAtel9YVV9wUkg5emJCM1JrMUpXQzhuQ2pFRG9PVXBqTlhYTUtVUmswekZLRm1fUllnLWc2MHA3T0pzaF96Rzk3ak9VdDdlQUdIZHBrZTQxbVZQX1V1R2hmcw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1776]:
+              - generic [ref=e1777]:
+                - generic [ref=e1780]: Al Jazeera
+                - generic [ref=e1784]:
+                  - generic:
+                    - button "More - Saudi investment fund seals FIFA deal as official World Cup 2026 supporter" [ref=e1785] [cursor=pointer]:
+                      - img [ref=e1787]
+                    - tooltip [ref=e1789]: More
+              - link "Saudi investment fund seals FIFA deal as official World Cup 2026 supporter - Al Jazeera - 11 days ago" [ref=e1790] [cursor=pointer]:
+                - /url: ./read/CBMisgFBVV95cUxQeGtmY0JwWDRtY2c5WDl4bDdnaXBlQ0RlaGpXTENqbXdqWGVZSFVnLTAzLWNiNjZpelJHdG5iR2oyZldOWWVhUHBqVk5qV3NPWmVUUmoyYW96T2JMdWM4aUFMNUxxRmVVblJBRHZHbzRkcldPMGY4TW8tSHBmYk5tVjlxalUxZ3VvVTQwZ21vN2dPNGJVUFlrb1hUcDdLTlM4YWtGYlh0c2xCRHJPOG1uVXJB0gG3AUFVX3lxTE05LWVXSlRrMjdJTkQzWlY2SWEzV0xiOUNGUWI5eXAwR1hHOTU2dGdnb3ZMNlIwQzR5WkZVZXFQNEZDYmhranduR3RPUjBaQUpHZVU4MkRHdVk0TUVIelAtel9YVV9wUkg5emJCM1JrMUpXQzhuQ2pFRG9PVXBqTlhYTUtVUmswekZLRm1fUllnLWc2MHA3T0pzaF96Rzk3ak9VdDdlQUdIZHBrZTQxbVZQX1V1R2hmcw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Saudi investment fund seals FIFA deal as official World Cup 2026 supporter
+            - figure [ref=e1791]
+          - time [ref=e1793]: 11 days ago
+      - generic [ref=e1794]:
+        - separator [ref=e1796]
+        - generic [ref=e1798]:
+          - generic [ref=e1799]:
+            - link [ref=e1801] [cursor=pointer]:
+              - /url: ./read/CBMiiwFBVV95cUxQdWhmLWlFSllRdHRLS2VWZHNiUDAtVnBndEhwTU5ySEFNVUc0QVIxR0FLaHNVQWctQ3dxVlZOWHlqUThNZjk5aWJlUnBONkZMNVFCRGV2LWZ6TXZ1Ml9pcjB4Ump1SlJJTmhlT0NuRFVDMU02RWFqN3NrNjcxZ05EdkJTZmVJYjVlM2Qw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1803]:
+              - generic [ref=e1804]:
+                - generic [ref=e1807]: Scottish Grocer & Convenience Retailer
+                - generic [ref=e1811]:
+                  - generic:
+                    - button "More - Tennent’s kicks off Fifa World Cup activity" [ref=e1812] [cursor=pointer]:
+                      - img [ref=e1814]
+                    - tooltip [ref=e1816]: More
+              - link "Tennent’s kicks off Fifa World Cup activity - Scottish Grocer &amp; Convenience Retailer - 1 hour ago" [ref=e1817] [cursor=pointer]:
+                - /url: ./read/CBMiiwFBVV95cUxQdWhmLWlFSllRdHRLS2VWZHNiUDAtVnBndEhwTU5ySEFNVUc0QVIxR0FLaHNVQWctQ3dxVlZOWHlqUThNZjk5aWJlUnBONkZMNVFCRGV2LWZ6TXZ1Ml9pcjB4Ump1SlJJTmhlT0NuRFVDMU02RWFqN3NrNjcxZ05EdkJTZmVJYjVlM2Qw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Tennent’s kicks off Fifa World Cup activity
+            - figure [ref=e1818]
+          - time [ref=e1820]: 1 hour ago
+      - generic [ref=e1821]:
+        - separator [ref=e1823]
+        - generic [ref=e1825]:
+          - generic [ref=e1826]:
+            - link [ref=e1828] [cursor=pointer]:
+              - /url: ./read/CBMiuwFBVV95cUxQWTNNVXF6SnlkZ05OdTVoYlQyblhIdWRybnE4dHdISC1WanZLVlUwZGZab1JocGpESjRsVGRHcmsyb3ZEX0tRTWg3X0o2UVBLTHBndEozZDFrQjNJUFlJMXNlYU1jWUhXRHFmb3FYOWRrb1FXdGp3OVptZkxIOWNoVFYyUV96LUpadmJZSHVmeExvYWRuZ0h5MXRVeHlCMjIwZkV1RUpQancwazdlbklaUUk0bGFSdVZ2Snpj?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1830]:
+              - generic [ref=e1831]:
+                - generic [ref=e1834]: City of Renton (.gov)
+                - generic [ref=e1838]:
+                  - generic:
+                    - button "More - 2026 FIFA World Cup city resource guide for residents & businesses" [ref=e1839] [cursor=pointer]:
+                      - img [ref=e1841]
+                    - tooltip [ref=e1843]: More
+              - link "2026 FIFA World Cup city resource guide for residents & businesses - City of Renton (.gov) - Mar 6" [ref=e1844] [cursor=pointer]:
+                - /url: ./read/CBMiuwFBVV95cUxQWTNNVXF6SnlkZ05OdTVoYlQyblhIdWRybnE4dHdISC1WanZLVlUwZGZab1JocGpESjRsVGRHcmsyb3ZEX0tRTWg3X0o2UVBLTHBndEozZDFrQjNJUFlJMXNlYU1jWUhXRHFmb3FYOWRrb1FXdGp3OVptZkxIOWNoVFYyUV96LUpadmJZSHVmeExvYWRuZ0h5MXRVeHlCMjIwZkV1RUpQancwazdlbklaUUk0bGFSdVZ2Snpj?hl=en-US&gl=US&ceid=US%3Aen
+                - text: 2026 FIFA World Cup city resource guide for residents & businesses
+            - figure [ref=e1845]
+          - time [ref=e1847]: Mar 6
+      - generic [ref=e1848]:
+        - separator [ref=e1850]
+        - generic [ref=e1852]:
+          - generic [ref=e1853]:
+            - link [ref=e1855] [cursor=pointer]:
+              - /url: ./read/CBMie0FVX3lxTE5FY0NpZUdQZ2ptT3VwN0dldEYtb2FzNWlYa0lLWmVqTU9EUWduY3JDcHNyUDdvVEUtbFpmTG5kM2R4aHBReC1FTHgxQVQyU0k1OU0zMFhTT2xGa2NMT2tTQ2RCMlBtaENKRkd5bi1hNXZvYkxoWUphd1JBdw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1857]:
+              - generic [ref=e1858]:
+                - generic [ref=e1861]: MRSC
+                - generic [ref=e1865]:
+                  - generic:
+                    - 'button "More - A Peek Behind the Pitch: Washington Local Governments Prepare for the World Cup™" [ref=e1866] [cursor=pointer]':
+                      - img [ref=e1868]
+                    - tooltip [ref=e1870]: More
+              - 'link "A Peek Behind the Pitch: Washington Local Governments Prepare for the World Cup™ - MRSC - Feb 9 - By Leah Lacivita" [ref=e1871] [cursor=pointer]':
+                - /url: ./read/CBMie0FVX3lxTE5FY0NpZUdQZ2ptT3VwN0dldEYtb2FzNWlYa0lLWmVqTU9EUWduY3JDcHNyUDdvVEUtbFpmTG5kM2R4aHBReC1FTHgxQVQyU0k1OU0zMFhTT2xGa2NMT2tTQ2RCMlBtaENKRkd5bi1hNXZvYkxoWUphd1JBdw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "A Peek Behind the Pitch: Washington Local Governments Prepare for the World Cup™"
+            - figure [ref=e1872]
+          - generic [ref=e1873]:
+            - time [ref=e1874]: Feb 9
+            - separator [ref=e1875]
+            - generic [ref=e1876]: By Leah Lacivita
+      - generic [ref=e1877]:
+        - separator [ref=e1879]
+        - generic [ref=e1881]:
+          - generic [ref=e1882]:
+            - link [ref=e1884] [cursor=pointer]:
+              - /url: ./read/CBMizAFBVV95cUxOYzFmZnlKaWxYN1NKNHVVQkhrazF5azZxMmw2bHV2dnotbWthZGtjZ01IWmZrcVZfbWctTlZPcXZidkVfSTlzV01uZ3lEdG9hcUpYMDNnTFpyTEw5SEt5SmRVbkp5czc3enR2RGUxZXJHd0dzQ2I4SjdnMjllZlItcWd1UHMxYnB0dUh5QUEyaUlQck91eUNZWFNFaTRRWjJPQWVmTWRhd0pPdktjV3diaDRsSkV6Z2diZ3JQbTEwcnE0a0pzdGhfMGhkcDc?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1886]:
+              - generic [ref=e1887]:
+                - generic [ref=e1890]: Hospitality Net
+                - generic [ref=e1894]:
+                  - generic:
+                    - button "More - The 2026 World Cup won’t deliver demand the way hotels expected. Here’s how to respond." [ref=e1895] [cursor=pointer]:
+                      - img [ref=e1897]
+                    - tooltip [ref=e1899]: More
+              - link "The 2026 World Cup won’t deliver demand the way hotels expected. Here’s how to respond. - Hospitality Net - 24 days ago" [ref=e1900] [cursor=pointer]:
+                - /url: ./read/CBMizAFBVV95cUxOYzFmZnlKaWxYN1NKNHVVQkhrazF5azZxMmw2bHV2dnotbWthZGtjZ01IWmZrcVZfbWctTlZPcXZidkVfSTlzV01uZ3lEdG9hcUpYMDNnTFpyTEw5SEt5SmRVbkp5czc3enR2RGUxZXJHd0dzQ2I4SjdnMjllZlItcWd1UHMxYnB0dUh5QUEyaUlQck91eUNZWFNFaTRRWjJPQWVmTWRhd0pPdktjV3diaDRsSkV6Z2diZ3JQbTEwcnE0a0pzdGhfMGhkcDc?hl=en-US&gl=US&ceid=US%3Aen
+                - text: The 2026 World Cup won’t deliver demand the way hotels expected. Here’s how to respond.
+            - figure [ref=e1901]
+          - time [ref=e1903]: 24 days ago
+      - generic [ref=e1904]:
+        - separator [ref=e1906]
+        - generic [ref=e1908]:
+          - generic [ref=e1909]:
+            - link [ref=e1911] [cursor=pointer]:
+              - /url: ./read/CBMilgFBVV95cUxNQUxtNk1jYWlra0pJTWkxRno5b29taWV6T1l2eHNIXzV6RVZyWEpjODMzWldQNElqVEVqTmZieVdCX1N0Tk1iMzZpZTg1aUh5NUUtbGxrTWg3MUhBamlFakFMSEhna0RDODFiSjJsYkFsUXJ5NzZCc2s4SWZCVWcxSFlkSzFsaDkzU0UyUmdjNC1hanRxSFE?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1913]:
+              - generic [ref=e1914]:
+                - generic [ref=e1917]: Airbnb Newsroom
+                - generic [ref=e1921]:
+                  - generic:
+                    - button "More - Airbnb and Philadelphia Soccer 2026 to offer free SEPTA rides home" [ref=e1922] [cursor=pointer]:
+                      - img [ref=e1924]
+                    - tooltip [ref=e1926]: More
+              - link "Airbnb and Philadelphia Soccer 2026 to offer free SEPTA rides home - Airbnb Newsroom - Apr 20" [ref=e1927] [cursor=pointer]:
+                - /url: ./read/CBMilgFBVV95cUxNQUxtNk1jYWlra0pJTWkxRno5b29taWV6T1l2eHNIXzV6RVZyWEpjODMzWldQNElqVEVqTmZieVdCX1N0Tk1iMzZpZTg1aUh5NUUtbGxrTWg3MUhBamlFakFMSEhna0RDODFiSjJsYkFsUXJ5NzZCc2s4SWZCVWcxSFlkSzFsaDkzU0UyUmdjNC1hanRxSFE?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Airbnb and Philadelphia Soccer 2026 to offer free SEPTA rides home
+          - time [ref=e1929]: Apr 20
+      - generic [ref=e1930]:
+        - separator [ref=e1932]
+        - generic [ref=e1934]:
+          - generic [ref=e1935]:
+            - link [ref=e1937] [cursor=pointer]:
+              - /url: ./read/CBMigAJBVV95cUxNTS1pejFVWDNNeXJPNkhMNFJpQjZxbzZTejRUcXp0SlBfOWdXQnkxNFpSN1Vsc2pCcmRhNTBlOFV4bGNBbXhuQ0hrYTJQUXBXZ2ZxbVZMVXhWcElJUUxpWlZpM2lFSXpFdDNhU0FhU1dWWllKb1pyamJlYjZoRVhhejJpUHFBcjlNVFRqTkNrZnY5ZkNpRC01T0JYY3BKZ0gybHgtd3JJbFkxbHd1WXVISkFUX1lLTWd0cHJfdEhqZ09rSjI4M1V2TEhYVzh2WVJndzFJYzczVy1zejh0dkw5X1VfWTBvQmUwWmNERXVzdkIwUnV6WVFHbnlnZDRJUVRV?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1939]:
+              - generic [ref=e1940]:
+                - generic [ref=e1943]: The Coca-Cola Company
+                - generic [ref=e1947]:
+                  - generic:
+                    - button "More - Coca-Cola and Real Thing Records Unite Music, Culture and Football with Coca-Cola’s Anthem for FIFA World Cup 2026™ “JUMP” Release" [ref=e1948] [cursor=pointer]:
+                      - img [ref=e1950]
+                    - tooltip [ref=e1952]: More
+              - link "Coca-Cola and Real Thing Records Unite Music, Culture and Football with Coca-Cola’s Anthem for FIFA World Cup 2026™ “JUMP” Release - The Coca-Cola Company - Mar 6" [ref=e1953] [cursor=pointer]:
+                - /url: ./read/CBMigAJBVV95cUxNTS1pejFVWDNNeXJPNkhMNFJpQjZxbzZTejRUcXp0SlBfOWdXQnkxNFpSN1Vsc2pCcmRhNTBlOFV4bGNBbXhuQ0hrYTJQUXBXZ2ZxbVZMVXhWcElJUUxpWlZpM2lFSXpFdDNhU0FhU1dWWllKb1pyamJlYjZoRVhhejJpUHFBcjlNVFRqTkNrZnY5ZkNpRC01T0JYY3BKZ0gybHgtd3JJbFkxbHd1WXVISkFUX1lLTWd0cHJfdEhqZ09rSjI4M1V2TEhYVzh2WVJndzFJYzczVy1zejh0dkw5X1VfWTBvQmUwWmNERXVzdkIwUnV6WVFHbnlnZDRJUVRV?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Coca-Cola and Real Thing Records Unite Music, Culture and Football with Coca-Cola’s Anthem for FIFA World Cup 2026™ “JUMP” Release
+            - figure [ref=e1954]
+          - time [ref=e1956]: Mar 6
+      - generic [ref=e1957]:
+        - separator [ref=e1959]
+        - generic [ref=e1961]:
+          - generic [ref=e1962]:
+            - link [ref=e1964] [cursor=pointer]:
+              - /url: ./read/CBMi3AFBVV95cUxPRWV2M05KeHQ0THQ3NHRudHFvYnBxWXgweUZ3OGZjQ052a2E4MnNraFhUN3pHamlzTWUtZk1xWGRnSTR6UjduVDhfRF9YTkV6WjJaT05NRlBYV19udXppRnhZbFpobkhWWlBSU2Zqa1JvVGtWOE1GM3JmbXlmanZxTUlfUWlRZ1lvSDJHVzFldWhBZTVoa1VINkU4NlFZOXg0c1p3cG1fdmd2WUVyZnBPOV9sSi1vazVndlJpLXl5S0g3UnhrWWRpdF96ajhJblI1bGhQdDNhTnBkTEp0?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1966]:
+              - generic [ref=e1967]:
+                - generic [ref=e1970]: Bank of America
+                - generic [ref=e1974]:
+                  - generic:
+                    - button "More - Visa, Street Soccer USA and Bank of America to Bring Visa Street Soccer Parks to Every FIFA World Cup 2026™ Host City in the U.S." [ref=e1975] [cursor=pointer]:
+                      - img [ref=e1977]
+                    - tooltip [ref=e1979]: More
+              - link "Visa, Street Soccer USA and Bank of America to Bring Visa Street Soccer Parks to Every FIFA World Cup 2026™ Host City in the U.S. - Bank of America - Mar 28" [ref=e1980] [cursor=pointer]:
+                - /url: ./read/CBMi3AFBVV95cUxPRWV2M05KeHQ0THQ3NHRudHFvYnBxWXgweUZ3OGZjQ052a2E4MnNraFhUN3pHamlzTWUtZk1xWGRnSTR6UjduVDhfRF9YTkV6WjJaT05NRlBYV19udXppRnhZbFpobkhWWlBSU2Zqa1JvVGtWOE1GM3JmbXlmanZxTUlfUWlRZ1lvSDJHVzFldWhBZTVoa1VINkU4NlFZOXg0c1p3cG1fdmd2WUVyZnBPOV9sSi1vazVndlJpLXl5S0g3UnhrWWRpdF96ajhJblI1bGhQdDNhTnBkTEp0?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Visa, Street Soccer USA and Bank of America to Bring Visa Street Soccer Parks to Every FIFA World Cup 2026™ Host City in the U.S.
+            - figure [ref=e1981]
+          - time [ref=e1983]: Mar 28
+      - generic [ref=e1984]:
+        - separator [ref=e1986]
+        - generic [ref=e1988]:
+          - generic [ref=e1989]:
+            - link [ref=e1991] [cursor=pointer]:
+              - /url: ./read/CBMivAFBVV95cUxNQlhmTzctSFdWTEViRGt1bTFXb1o0SHlUODVpV2JpVjBVb2UwcXE0SFhpOUtuWmZPSjNSUU5hNWEydUkxWlNyTXBiMzVzNEd4ckRNWXlpa1ZRdE1RdDdnSnZUWWR5SEVIOVhhdWY0OE5mTU5kelZiSF9iZTFiT25TYW1pbzJnMkxOTGdMYThLYlhkeFVPdjdyT2d0NFpmWW50X1p6cmZwSjJobS1IMlhCQkZRZ3E2a1dkQ2N6M9IB0AFBVV95cUxNdjRPbE5sbDY1bmZvZVJ4UmFWTkREZUpfOTBzYXBjM2oteW1qQVV3dGhaYWdONFc2bmhaVGVtaXhhSzB4dUxGODVYNXJCZUJqb3VwQmtWLWJiYXpTajktYzAwODFyRnhPaTVaTF9ETDNHWndEZktoMjhQTDZZcExpWGJmTGluSXNDaVcta1gtVW05cERzYnQwSVBJblVyU0dQdTFQcV9ERzdrRVlJOWlXNGhtX3YtR0VHWmg5YWZ0aWFEU1Z3MFdoVHFNRWh1NHR0?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e1993]:
+              - generic [ref=e1994]:
+                - generic [ref=e1997]: Diario AS
+                - generic [ref=e2001]:
+                  - generic:
+                    - button "More - World Cup 2026 brings together Messi, Zidane, Bellingham, Yamal... and Bad Bunny" [ref=e2002] [cursor=pointer]:
+                      - img [ref=e2004]
+                    - tooltip [ref=e2006]: More
+              - link "World Cup 2026 brings together Messi, Zidane, Bellingham, Yamal... and Bad Bunny - Diario AS - 19 days ago" [ref=e2007] [cursor=pointer]:
+                - /url: ./read/CBMivAFBVV95cUxNQlhmTzctSFdWTEViRGt1bTFXb1o0SHlUODVpV2JpVjBVb2UwcXE0SFhpOUtuWmZPSjNSUU5hNWEydUkxWlNyTXBiMzVzNEd4ckRNWXlpa1ZRdE1RdDdnSnZUWWR5SEVIOVhhdWY0OE5mTU5kelZiSF9iZTFiT25TYW1pbzJnMkxOTGdMYThLYlhkeFVPdjdyT2d0NFpmWW50X1p6cmZwSjJobS1IMlhCQkZRZ3E2a1dkQ2N6M9IB0AFBVV95cUxNdjRPbE5sbDY1bmZvZVJ4UmFWTkREZUpfOTBzYXBjM2oteW1qQVV3dGhaYWdONFc2bmhaVGVtaXhhSzB4dUxGODVYNXJCZUJqb3VwQmtWLWJiYXpTajktYzAwODFyRnhPaTVaTF9ETDNHWndEZktoMjhQTDZZcExpWGJmTGluSXNDaVcta1gtVW05cERzYnQwSVBJblVyU0dQdTFQcV9ERzdrRVlJOWlXNGhtX3YtR0VHWmg5YWZ0aWFEU1Z3MFdoVHFNRWh1NHR0?hl=en-US&gl=US&ceid=US%3Aen
+                - text: World Cup 2026 brings together Messi, Zidane, Bellingham, Yamal... and Bad Bunny
+            - figure [ref=e2008]
+          - time [ref=e2010]: 19 days ago
+      - generic [ref=e2011]:
+        - separator [ref=e2013]
+        - generic [ref=e2015]:
+          - generic [ref=e2016]:
+            - link [ref=e2018] [cursor=pointer]:
+              - /url: ./read/CBMiiwFBVV95cUxOck96M0tqY1ZIamJnZFdQWlBGQUptM0gxTlFIUlhXTDVMTXdocE9oYzJ1OWFHVS1zT0FlblUwMzI5VkV2MG5RV1VOSk85ek9uakk4SEVhRzdNYWNuRG1hSkxRM2NCSzRDVGJ0RWZlZGNsenkyaWNXRmt6U1ZFTjZNcm9yeWgxUmE0YlFB?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2020]:
+              - generic [ref=e2021]:
+                - generic [ref=e2024]: DesignRush
+                - generic [ref=e2028]:
+                  - generic:
+                    - button "More - Budweiser's FIFA World Cup 2026 Campaign Stars Erling Haaland and Jürgen Klopp" [ref=e2029] [cursor=pointer]:
+                      - img [ref=e2031]
+                    - tooltip [ref=e2033]: More
+              - link "Budweiser's FIFA World Cup 2026 Campaign Stars Erling Haaland and Jürgen Klopp - DesignRush - Apr 28 - By Coral Cripps" [ref=e2034] [cursor=pointer]:
+                - /url: ./read/CBMiiwFBVV95cUxOck96M0tqY1ZIamJnZFdQWlBGQUptM0gxTlFIUlhXTDVMTXdocE9oYzJ1OWFHVS1zT0FlblUwMzI5VkV2MG5RV1VOSk85ek9uakk4SEVhRzdNYWNuRG1hSkxRM2NCSzRDVGJ0RWZlZGNsenkyaWNXRmt6U1ZFTjZNcm9yeWgxUmE0YlFB?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Budweiser's FIFA World Cup 2026 Campaign Stars Erling Haaland and Jürgen Klopp
+            - figure [ref=e2035]
+          - generic [ref=e2036]:
+            - time [ref=e2037]: Apr 28
+            - separator [ref=e2038]
+            - generic [ref=e2039]: By Coral Cripps
+      - generic [ref=e2040]:
+        - separator [ref=e2042]
+        - generic [ref=e2044]:
+          - generic [ref=e2045]:
+            - link [ref=e2047] [cursor=pointer]:
+              - /url: ./read/CBMipAFBVV95cUxOU2dEWDhYTlczZnZwTmxSd0IzenJMSTRpQi1yWUg0dE5zQkVnRlZidWNmVnplbTNWeUVBRmNEN3h3TjJrcEZXT1hsSzRDZTZyN3cxNlpPdXNENkptSm42TlJmNEx6RWlNZmlhUllYM0VQUUV4Z3ppcWxmb1E3WmVYUXMtV2ZxUnhoZ3VjTnh3SThVaG92bU9SQzFJY0NTQnJVRnp2eg?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2049]:
+              - generic [ref=e2050]:
+                - generic [ref=e2053]: Forbes
+                - generic [ref=e2057]:
+                  - generic:
+                    - button "More - How Brands Can Make The Most Of The 2026 World Cup" [ref=e2058] [cursor=pointer]:
+                      - img [ref=e2060]
+                    - tooltip [ref=e2062]: More
+              - link "How Brands Can Make The Most Of The 2026 World Cup - Forbes - Oct 13, 2025 - By Steve Price" [ref=e2063] [cursor=pointer]:
+                - /url: ./read/CBMipAFBVV95cUxOU2dEWDhYTlczZnZwTmxSd0IzenJMSTRpQi1yWUg0dE5zQkVnRlZidWNmVnplbTNWeUVBRmNEN3h3TjJrcEZXT1hsSzRDZTZyN3cxNlpPdXNENkptSm42TlJmNEx6RWlNZmlhUllYM0VQUUV4Z3ppcWxmb1E3WmVYUXMtV2ZxUnhoZ3VjTnh3SThVaG92bU9SQzFJY0NTQnJVRnp2eg?hl=en-US&gl=US&ceid=US%3Aen
+                - text: How Brands Can Make The Most Of The 2026 World Cup
+            - figure [ref=e2064]
+          - generic [ref=e2065]:
+            - time [ref=e2066]: Oct 13, 2025
+            - separator [ref=e2067]
+            - generic [ref=e2068]: By Steve Price
+      - generic [ref=e2069]:
+        - separator [ref=e2071]
+        - generic [ref=e2073]:
+          - generic [ref=e2074]:
+            - link [ref=e2076] [cursor=pointer]:
+              - /url: ./read/CBMiggFBVV95cUxQOENGbHJBVUhIR0ttRHp3VC1CMFNZdGxiTmdXY2tRZmFWekplSjF1eUdKNHJXY1pyTW53QXo5ci1BTldaRHFvQnlfaVF2UFpVRk9Fd3RVVHpDQ0tRTWpnOTlZNlJubDdteENjdnhYZmZ3cG5Vck95Z3ljWmp5ckN0eXBn?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2078]:
+              - generic [ref=e2079]:
+                - generic [ref=e2082]: Ad Age
+                - generic [ref=e2086]:
+                  - generic:
+                    - button "More - How brands are using access to break through World Cup clutter" [ref=e2087] [cursor=pointer]:
+                      - img [ref=e2089]
+                    - tooltip [ref=e2091]: More
+              - link "How brands are using access to break through World Cup clutter - Ad Age - Apr 13 - By Jon Springer" [ref=e2092] [cursor=pointer]:
+                - /url: ./read/CBMiggFBVV95cUxQOENGbHJBVUhIR0ttRHp3VC1CMFNZdGxiTmdXY2tRZmFWekplSjF1eUdKNHJXY1pyTW53QXo5ci1BTldaRHFvQnlfaVF2UFpVRk9Fd3RVVHpDQ0tRTWpnOTlZNlJubDdteENjdnhYZmZ3cG5Vck95Z3ljWmp5ckN0eXBn?hl=en-US&gl=US&ceid=US%3Aen
+                - text: How brands are using access to break through World Cup clutter
+            - figure [ref=e2093]
+          - generic [ref=e2094]:
+            - time [ref=e2095]: Apr 13
+            - separator [ref=e2096]
+            - generic [ref=e2097]: By Jon Springer
+      - generic [ref=e2098]:
+        - separator [ref=e2100]
+        - generic [ref=e2102]:
+          - generic [ref=e2103]:
+            - link [ref=e2105] [cursor=pointer]:
+              - /url: ./read/CBMi3AFBVV95cUxQWVRZNjQxZGNuRnFUeFRDVTNqYTAybTBMVDg2N3ViQjhjMzNyUE5FWk1qQl9qaFVCNHl6aUx6NWs4aXpSN3k5aUIwOTFEOV9kUkZhdE9Nc2FPUUtjczRCXzk3QnVESTZyaGRhM3NDQ0NuU2JyVl81RnczNjdYRWZDTHRPOEJHcGVsNlBwQzN6QXR4S2hwbzdwLTlkQnA1bllNOVVPY2pQSFhwdV8wbjZYbWxUNkY3WVZnaWpUdzhHVU1Cdm9mNjh3QWc5Rnk0a1N0SW9jMTliVU1Obnht?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2107]:
+              - generic [ref=e2108]:
+                - generic [ref=e2111]: Bank of America
+                - generic [ref=e2115]:
+                  - generic:
+                    - button "More - BofA Teams with Visa to Offer Cardholders a Chance to Win a Trip to the FIFA World Cup 2026™" [ref=e2116] [cursor=pointer]:
+                      - img [ref=e2118]
+                    - tooltip [ref=e2120]: More
+              - link "BofA Teams with Visa to Offer Cardholders a Chance to Win a Trip to the FIFA World Cup 2026™ - Bank of America - Mar 19" [ref=e2121] [cursor=pointer]:
+                - /url: ./read/CBMi3AFBVV95cUxQWVRZNjQxZGNuRnFUeFRDVTNqYTAybTBMVDg2N3ViQjhjMzNyUE5FWk1qQl9qaFVCNHl6aUx6NWs4aXpSN3k5aUIwOTFEOV9kUkZhdE9Nc2FPUUtjczRCXzk3QnVESTZyaGRhM3NDQ0NuU2JyVl81RnczNjdYRWZDTHRPOEJHcGVsNlBwQzN6QXR4S2hwbzdwLTlkQnA1bllNOVVPY2pQSFhwdV8wbjZYbWxUNkY3WVZnaWpUdzhHVU1Cdm9mNjh3QWc5Rnk0a1N0SW9jMTliVU1Obnht?hl=en-US&gl=US&ceid=US%3Aen
+                - text: BofA Teams with Visa to Offer Cardholders a Chance to Win a Trip to the FIFA World Cup 2026™
+            - figure [ref=e2122]
+          - time [ref=e2124]: Mar 19
+      - generic [ref=e2125]:
+        - separator [ref=e2127]
+        - generic [ref=e2129]:
+          - generic [ref=e2130]:
+            - link [ref=e2132] [cursor=pointer]:
+              - /url: ./read/CBMinwFBVV95cUxNaEpqMWFRejJUTzN3b2dCdUVVMC1kZ1hfYzNfVDZNQVBRU3ROSW9hdnFNTm5oNzZyUmFpa3AwUF9SQlBEZmY3QmNpdFB0amFZdmJQNjlpTTJTdHZpTG5Bb1g1TXctRGc3NWR0SXY5ak5YWGM4cmItaE0zdU92c0RpektDRHVLU20tcENNMjRiMnBDVlA2cjZSRHdQSV9ndkE?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2134]:
+              - generic [ref=e2135]:
+                - generic [ref=e2138]: Sportfive
+                - generic [ref=e2142]:
+                  - generic:
+                    - 'button "More - FIFA World Cup 2026: How Brands Leverage a Nation’s Attention to Stand Out" [ref=e2143] [cursor=pointer]':
+                      - img [ref=e2145]
+                    - tooltip [ref=e2147]: More
+              - 'link "FIFA World Cup 2026: How Brands Leverage a Nation’s Attention to Stand Out - Sportfive - Oct 29, 2025" [ref=e2148] [cursor=pointer]':
+                - /url: ./read/CBMinwFBVV95cUxNaEpqMWFRejJUTzN3b2dCdUVVMC1kZ1hfYzNfVDZNQVBRU3ROSW9hdnFNTm5oNzZyUmFpa3AwUF9SQlBEZmY3QmNpdFB0amFZdmJQNjlpTTJTdHZpTG5Bb1g1TXctRGc3NWR0SXY5ak5YWGM4cmItaE0zdU92c0RpektDRHVLU20tcENNMjRiMnBDVlA2cjZSRHdQSV9ndkE?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "FIFA World Cup 2026: How Brands Leverage a Nation’s Attention to Stand Out"
+            - figure [ref=e2149]
+          - time [ref=e2151]: Oct 29, 2025
+      - generic [ref=e2152]:
+        - separator [ref=e2154]
+        - generic [ref=e2156]:
+          - generic [ref=e2157]:
+            - link [ref=e2159] [cursor=pointer]:
+              - /url: ./read/CBMiYkFVX3lxTE5PaWFWMHZPM0xlLXFKZHFXTGZlaldpZHR2THNzWklkTDFSZFV6bGdRZ1lGTmhheGVBM005YmpDTEliUF9pZFBSckRyTW9lR01BT0hRT1ZnM3I0Si04a3NYM1VR?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2161]:
+              - generic [ref=e2162]:
+                - generic [ref=e2165]: Global Times
+                - generic [ref=e2169]:
+                  - generic:
+                    - button "More - Vancouver launches FIFA World Cup 2026 \"Know Before You Go\" campaign" [ref=e2170] [cursor=pointer]:
+                      - img [ref=e2172]
+                    - tooltip [ref=e2174]: More
+              - link "Vancouver launches FIFA World Cup 2026 \"Know Before You Go\" campaign - Global Times - 18 days ago" [ref=e2175] [cursor=pointer]:
+                - /url: ./read/CBMiYkFVX3lxTE5PaWFWMHZPM0xlLXFKZHFXTGZlaldpZHR2THNzWklkTDFSZFV6bGdRZ1lGTmhheGVBM005YmpDTEliUF9pZFBSckRyTW9lR01BT0hRT1ZnM3I0Si04a3NYM1VR?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Vancouver launches FIFA World Cup 2026 "Know Before You Go" campaign
+            - figure [ref=e2176]
+          - time [ref=e2178]: 18 days ago
+      - generic [ref=e2179]:
+        - separator [ref=e2181]
+        - generic [ref=e2183]:
+          - generic [ref=e2184]:
+            - link [ref=e2186] [cursor=pointer]:
+              - /url: ./read/CBMi2AFBVV95cUxPMUYweC04YTlrMU5qaUdUenhTbTBvT2IxZzlWVERGRWdCRk1nN2NQXzdKbHItVm4xUXhSVUNPQkNKcFhhMG9CMXVId0pJM2Jia3JVOWprM2EwSUtMOS1xdWtUaXUtc2l6dWs0YlNaQkpmTncxU1hwb1hpVnBhbktwZmlLaDZCUHVOZnAwMEh5TmR6aGVCaW1xQTFFOTkwLXJYbExZelU3ZjgyMVY5bldSN2FSZU92cW9vWml4dUdTMGo2WXlCZDROdUhuTF9xQ1NLd2lJN2pROUc?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2188]:
+              - generic [ref=e2189]:
+                - generic [ref=e2192]: PR Newswire
+                - generic [ref=e2196]:
+                  - generic:
+                    - button "More - Kick it in Newark for FIFA World Cup 2026™, Rising as the Region's Go-To Fan Destination" [ref=e2197] [cursor=pointer]:
+                      - img [ref=e2199]
+                    - tooltip [ref=e2201]: More
+              - link "Kick it in Newark for FIFA World Cup 2026™, Rising as the Region's Go-To Fan Destination - PR Newswire - Apr 14" [ref=e2202] [cursor=pointer]:
+                - /url: ./read/CBMi2AFBVV95cUxPMUYweC04YTlrMU5qaUdUenhTbTBvT2IxZzlWVERGRWdCRk1nN2NQXzdKbHItVm4xUXhSVUNPQkNKcFhhMG9CMXVId0pJM2Jia3JVOWprM2EwSUtMOS1xdWtUaXUtc2l6dWs0YlNaQkpmTncxU1hwb1hpVnBhbktwZmlLaDZCUHVOZnAwMEh5TmR6aGVCaW1xQTFFOTkwLXJYbExZelU3ZjgyMVY5bldSN2FSZU92cW9vWml4dUdTMGo2WXlCZDROdUhuTF9xQ1NLd2lJN2pROUc?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Kick it in Newark for FIFA World Cup 2026™, Rising as the Region's Go-To Fan Destination
+            - figure [ref=e2203]
+          - time [ref=e2205]: Apr 14
+      - generic [ref=e2206]:
+        - separator [ref=e2208]
+        - generic [ref=e2210]:
+          - generic [ref=e2211]:
+            - link [ref=e2213] [cursor=pointer]:
+              - /url: ./read/CBMieEFVX3lxTE54X3ZQN3NDWFZtVVZHTDBKdVRXaWhSLXczQ1J6aGQ1WjRRQmR1YldLRl9ZMlVrMXdLZnp1cktHVTVEdDctb01ZM2FaRktGejNGOW1EQmllWE5NU2V0VEluTkhaNHZsTGMtN3BGWG1rT1VEUTZOd09iNA?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2215]:
+              - generic [ref=e2216]:
+                - generic [ref=e2219]: The Drum
+                - generic [ref=e2223]:
+                  - generic:
+                    - 'button "More - New rules of the game: 3 ways to score the 2026 World Cup marketing opportunity" [ref=e2224] [cursor=pointer]':
+                      - img [ref=e2226]
+                    - tooltip [ref=e2228]: More
+              - 'link "New rules of the game: 3 ways to score the 2026 World Cup marketing opportunity - The Drum - Dec 18 - By Maria Greaves" [ref=e2229] [cursor=pointer]':
+                - /url: ./read/CBMieEFVX3lxTE54X3ZQN3NDWFZtVVZHTDBKdVRXaWhSLXczQ1J6aGQ1WjRRQmR1YldLRl9ZMlVrMXdLZnp1cktHVTVEdDctb01ZM2FaRktGejNGOW1EQmllWE5NU2V0VEluTkhaNHZsTGMtN3BGWG1rT1VEUTZOd09iNA?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "New rules of the game: 3 ways to score the 2026 World Cup marketing opportunity"
+            - figure [ref=e2230]
+          - generic [ref=e2231]:
+            - time [ref=e2232]: Dec 18
+            - separator [ref=e2233]
+            - generic [ref=e2234]: By Maria Greaves
+      - generic [ref=e2235]:
+        - separator [ref=e2237]
+        - generic [ref=e2239]:
+          - generic [ref=e2240]:
+            - link [ref=e2242] [cursor=pointer]:
+              - /url: ./read/CBMigwFBVV95cUxNaElMRFVHRXJ3UlNtRUdpOUFuQ3lCZkpTZ0dmeVV1RDRJQndmWExZR2gzT25OazlqYzAtNkh6SHFQX1p0aTlYcEV1NjlYZHhCbzY0TWNKVGNIQXZVdUgtTDhRS2t1TTkzYVBja0VnQVAwb2I3SUx5NGJlckp5cHJXRjNlNA?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2244]:
+              - generic [ref=e2245]:
+                - generic [ref=e2248]: YouTube Official Blog
+                - generic [ref=e2252]:
+                  - generic:
+                    - 'button "More - It’s official: YouTube and FIFA team up for the FIFA World Cup 2026™" [ref=e2253] [cursor=pointer]':
+                      - img [ref=e2255]
+                    - tooltip [ref=e2257]: More
+              - 'link "It’s official: YouTube and FIFA team up for the FIFA World Cup 2026™ - YouTube Official Blog - Mar 17" [ref=e2258] [cursor=pointer]':
+                - /url: ./read/CBMigwFBVV95cUxNaElMRFVHRXJ3UlNtRUdpOUFuQ3lCZkpTZ0dmeVV1RDRJQndmWExZR2gzT25OazlqYzAtNkh6SHFQX1p0aTlYcEV1NjlYZHhCbzY0TWNKVGNIQXZVdUgtTDhRS2t1TTkzYVBja0VnQVAwb2I3SUx5NGJlckp5cHJXRjNlNA?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "It’s official: YouTube and FIFA team up for the FIFA World Cup 2026™"
+            - figure [ref=e2259]
+          - time [ref=e2261]: Mar 17
+      - generic [ref=e2262]:
+        - separator [ref=e2264]
+        - generic [ref=e2266]:
+          - generic [ref=e2267]:
+            - link [ref=e2269] [cursor=pointer]:
+              - /url: ./read/CBMivAFBVV95cUxQUVdXdzhaN1dlQkx3TmlJU2RYS1BIdFVwcG14QkFjVmhVelV4ZDBNQmhzMFBXOGJQZUxlbHhManhuc21KNXpMdG1XTWc4WHFhLUNBb051ZlBqSW1WRGJkZjZiZC02U0Y3V1RfVzFjU3ZUSUx6bm05d1JRWmVNWWlMcWhhREUwaDdhWXVfRXRzd05yU09KR3JQVlN2aXVjQXQ4VkQ0V0FST0VhLUlDNGRhNld5M1dSRzdoaTB5Zg?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2271]:
+              - generic [ref=e2272]:
+                - generic [ref=e2275]: SoccerBible
+                - generic [ref=e2279]:
+                  - generic:
+                    - button "More - adidas Pull Out The Big Guns For Backyard Legends World Cup 2026 Campaign Film" [ref=e2280] [cursor=pointer]:
+                      - img [ref=e2282]
+                    - tooltip [ref=e2284]: More
+              - link "adidas Pull Out The Big Guns For Backyard Legends World Cup 2026 Campaign Film - SoccerBible - 18 days ago - By Daniel Jones" [ref=e2285] [cursor=pointer]:
+                - /url: ./read/CBMivAFBVV95cUxQUVdXdzhaN1dlQkx3TmlJU2RYS1BIdFVwcG14QkFjVmhVelV4ZDBNQmhzMFBXOGJQZUxlbHhManhuc21KNXpMdG1XTWc4WHFhLUNBb051ZlBqSW1WRGJkZjZiZC02U0Y3V1RfVzFjU3ZUSUx6bm05d1JRWmVNWWlMcWhhREUwaDdhWXVfRXRzd05yU09KR3JQVlN2aXVjQXQ4VkQ0V0FST0VhLUlDNGRhNld5M1dSRzdoaTB5Zg?hl=en-US&gl=US&ceid=US%3Aen
+                - text: adidas Pull Out The Big Guns For Backyard Legends World Cup 2026 Campaign Film
+            - figure [ref=e2286]
+          - generic [ref=e2287]:
+            - time [ref=e2288]: 18 days ago
+            - separator [ref=e2289]
+            - generic [ref=e2290]: By Daniel Jones
+      - generic [ref=e2291]:
+        - separator [ref=e2293]
+        - generic [ref=e2295]:
+          - generic [ref=e2296]:
+            - link [ref=e2298] [cursor=pointer]:
+              - /url: ./read/CBMivAFBVV95cUxQTnZ6WUhVYndHbDdMbUZMQlRLYS14U0tmb0dRa05JSjFVOWRkeE43UDg0UU4xLU1xbjRxVmFTYk4tZHQyRXg1bS04WWktUlhyLWphZWVKQ0o3M2gxWWlCeTU2S1lVcG5TYnE2WXJHNHJVMjhuX3ozdDZ1cnVSVWtmNGpBYnNKdlJMakdka1l1RlZTUjc5UXFaVjRCbDlObTNuaHN0alFCWUd1Yy04ckhOeEhkOHZfZmlzNTNFVw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2300]:
+              - generic [ref=e2301]:
+                - generic [ref=e2304]: American Civil Liberties Union
+                - generic [ref=e2308]:
+                  - generic:
+                    - button "More - ACLU Joins Coalition Calling For FIFA to Uphold Human Rights Ahead 2026 World Cup" [ref=e2309] [cursor=pointer]:
+                      - img [ref=e2311]
+                    - tooltip [ref=e2313]: More
+              - link "ACLU Joins Coalition Calling For FIFA to Uphold Human Rights Ahead 2026 World Cup - American Civil Liberties Union - Apr 23" [ref=e2314] [cursor=pointer]:
+                - /url: ./read/CBMivAFBVV95cUxQTnZ6WUhVYndHbDdMbUZMQlRLYS14U0tmb0dRa05JSjFVOWRkeE43UDg0UU4xLU1xbjRxVmFTYk4tZHQyRXg1bS04WWktUlhyLWphZWVKQ0o3M2gxWWlCeTU2S1lVcG5TYnE2WXJHNHJVMjhuX3ozdDZ1cnVSVWtmNGpBYnNKdlJMakdka1l1RlZTUjc5UXFaVjRCbDlObTNuaHN0alFCWUd1Yy04ckhOeEhkOHZfZmlzNTNFVw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: ACLU Joins Coalition Calling For FIFA to Uphold Human Rights Ahead 2026 World Cup
+            - figure [ref=e2315]
+          - time [ref=e2317]: Apr 23
+      - generic [ref=e2318]:
+        - separator [ref=e2320]
+        - generic [ref=e2322]:
+          - generic [ref=e2323]:
+            - link [ref=e2325] [cursor=pointer]:
+              - /url: ./read/CBMipwFBVV95cUxOMFA2OUF4enhGQUxJODhuODgzbzRUQTV6QklCaEE0NFhhMFdXZ2lIY3prYm5DZU0tRExXNU8tYS1ETllSSGkzbTZBWmQzODFtS3BfekJ5LWhrNi1USWZtZkNLWDBRMTJXNmpoR1pRUExQMmVNVFVGTGFHb29LMWVOSndjR2hmVW14RTI3eW1TLUdNN1pLMVo5RHdLb2otVUFIOWFic1puVQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2327]:
+              - generic [ref=e2328]:
+                - generic [ref=e2331]: ROI-NJ
+                - generic [ref=e2335]:
+                  - generic:
+                    - button "More - ‘Kick It in Newark’ campaign launched for FIFA World Cup 2026" [ref=e2336] [cursor=pointer]:
+                      - img [ref=e2338]
+                    - tooltip [ref=e2340]: More
+              - link "‘Kick It in Newark’ campaign launched for FIFA World Cup 2026 - ROI-NJ - Apr 15" [ref=e2341] [cursor=pointer]:
+                - /url: ./read/CBMipwFBVV95cUxOMFA2OUF4enhGQUxJODhuODgzbzRUQTV6QklCaEE0NFhhMFdXZ2lIY3prYm5DZU0tRExXNU8tYS1ETllSSGkzbTZBWmQzODFtS3BfekJ5LWhrNi1USWZtZkNLWDBRMTJXNmpoR1pRUExQMmVNVFVGTGFHb29LMWVOSndjR2hmVW14RTI3eW1TLUdNN1pLMVo5RHdLb2otVUFIOWFic1puVQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: ‘Kick It in Newark’ campaign launched for FIFA World Cup 2026
+            - figure [ref=e2342]
+          - time [ref=e2344]: Apr 15
+      - generic [ref=e2345]:
+        - separator [ref=e2347]
+        - generic [ref=e2349]:
+          - generic [ref=e2350]:
+            - link [ref=e2352] [cursor=pointer]:
+              - /url: ./read/CBMi_wFBVV95cUxNamRlQnMyNXNzSHZxbWZoQzFwNEU2akNrWEJYa0YxTXBHOHZjNHlCcEowWnBiRXRaWEZHTU4tZjNMMGhBSzdxU0NXSGdhbWpfQzJSNWtPTUxmVUlMTUhqRkZ0ZENlNUZPc3VEWWllQ0dPVWdDQVBZMXFNWGN2UjItejBRLW44c0ZBMWtMOTE5eWRrVmdDdml0ek5HcjNycDdXV2hEemwyR1Q0LURGc1JBUEx1dEloUm1seklubFlmVjVGNzYxdmVDU0Jvdzlpb0dFdkJybFJUNU5fclN3Ukd5OUVHRGFVMldZMk9JNS05dGNRZDI4bFlZcTBzeVF3emvSAYcCQVVfeXFMTUZsZUdrSTdTcWtIU2J2ZXY0QXE5clJwem5QM2tfSEpCcVlJTkR3U3dfcFk3eEdfbkUtUjA3QUpsRE9fNEdzbTJUemt6c1ZqRV8xeVJvajVEaHIyUmJhX01fVUxtRkRWZzB6dThWQWhwa0FwNEpObFY5ZlRGZjhydnFqSUNsaDJKODhscllLcFZDU0lrOVB2aUFMTEptRU5ncFFQWENocEY5VjlkNmJ0ZzJycVhSYzJhWS1teWNPOE5pdTZnaHhtbWxfMExZWEpGMm5zTlFyYWJxVF91Zi1ZcnFTRE1OR09pM1VEU0paZjF2dWFIUE9GdWZMVjJNVVA5aHg2SWVhQlU?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2354]:
+              - generic [ref=e2355]:
+                - generic [ref=e2358]: Houston Public Media
+                - generic [ref=e2362]:
+                  - generic:
+                    - button "More - Artist transforms 2026 FIFA World Cup soccer ball into Juneteenth tribute in Galveston" [ref=e2363] [cursor=pointer]:
+                      - img [ref=e2365]
+                    - tooltip [ref=e2367]: More
+              - link "Artist transforms 2026 FIFA World Cup soccer ball into Juneteenth tribute in Galveston - Houston Public Media - Mar 18 - By Julianna Washburn" [ref=e2368] [cursor=pointer]:
+                - /url: ./read/CBMi_wFBVV95cUxNamRlQnMyNXNzSHZxbWZoQzFwNEU2akNrWEJYa0YxTXBHOHZjNHlCcEowWnBiRXRaWEZHTU4tZjNMMGhBSzdxU0NXSGdhbWpfQzJSNWtPTUxmVUlMTUhqRkZ0ZENlNUZPc3VEWWllQ0dPVWdDQVBZMXFNWGN2UjItejBRLW44c0ZBMWtMOTE5eWRrVmdDdml0ek5HcjNycDdXV2hEemwyR1Q0LURGc1JBUEx1dEloUm1seklubFlmVjVGNzYxdmVDU0Jvdzlpb0dFdkJybFJUNU5fclN3Ukd5OUVHRGFVMldZMk9JNS05dGNRZDI4bFlZcTBzeVF3emvSAYcCQVVfeXFMTUZsZUdrSTdTcWtIU2J2ZXY0QXE5clJwem5QM2tfSEpCcVlJTkR3U3dfcFk3eEdfbkUtUjA3QUpsRE9fNEdzbTJUemt6c1ZqRV8xeVJvajVEaHIyUmJhX01fVUxtRkRWZzB6dThWQWhwa0FwNEpObFY5ZlRGZjhydnFqSUNsaDJKODhscllLcFZDU0lrOVB2aUFMTEptRU5ncFFQWENocEY5VjlkNmJ0ZzJycVhSYzJhWS1teWNPOE5pdTZnaHhtbWxfMExZWEpGMm5zTlFyYWJxVF91Zi1ZcnFTRE1OR09pM1VEU0paZjF2dWFIUE9GdWZMVjJNVVA5aHg2SWVhQlU?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Artist transforms 2026 FIFA World Cup soccer ball into Juneteenth tribute in Galveston
+            - figure [ref=e2369]
+          - generic [ref=e2370]:
+            - time [ref=e2371]: Mar 18
+            - separator [ref=e2372]
+            - generic [ref=e2373]: By Julianna Washburn
+      - generic [ref=e2374]:
+        - separator [ref=e2376]
+        - generic [ref=e2378]:
+          - generic [ref=e2379]:
+            - link [ref=e2381] [cursor=pointer]:
+              - /url: ./read/CBMi6gFBVV95cUxPOURKbzJfc1BFUkM4VThkel81UFhMWXVwVVczMEVsX2JoeUZLU0Zxbm5acEZQM2Z1ckEtSldKY3luT3I2em5LX0FDcGpSaW9OSVFSVHRIckl4SHl3LWNDa21VcW1EdVZPX3RJZXhmREJUb0lQaFp4QlNIV2NOcXZQazdVSnZyYTlEM1ZLQmlGaW5OZGo4QlhtSE1DcXk1dWs3blkySUZTZGh5RldlcFlqTW1qM1ItSEE1RHc1ZEotQk10dU1QdTQ0NFBJQnYtcEdHUkFZRnBYMzdwTzJFcmFUZWJKMDhZdGpUUHc?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2383]:
+              - generic [ref=e2384]:
+                - generic [ref=e2387]: Amgen
+                - generic [ref=e2391]:
+                  - generic:
+                    - button "More - Amgen Named Official Biotech Partner by Los Angeles Sports & Entertainment Commission (LASEC) Ahead of FIFA World Cup 2026" [ref=e2392] [cursor=pointer]:
+                      - img [ref=e2394]
+                    - tooltip [ref=e2396]: More
+              - link "Amgen Named Official Biotech Partner by Los Angeles Sports & Entertainment Commission (LASEC) Ahead of FIFA World Cup 2026 - Amgen - Dec 5" [ref=e2397] [cursor=pointer]:
+                - /url: ./read/CBMi6gFBVV95cUxPOURKbzJfc1BFUkM4VThkel81UFhMWXVwVVczMEVsX2JoeUZLU0Zxbm5acEZQM2Z1ckEtSldKY3luT3I2em5LX0FDcGpSaW9OSVFSVHRIckl4SHl3LWNDa21VcW1EdVZPX3RJZXhmREJUb0lQaFp4QlNIV2NOcXZQazdVSnZyYTlEM1ZLQmlGaW5OZGo4QlhtSE1DcXk1dWs3blkySUZTZGh5RldlcFlqTW1qM1ItSEE1RHc1ZEotQk10dU1QdTQ0NFBJQnYtcEdHUkFZRnBYMzdwTzJFcmFUZWJKMDhZdGpUUHc?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Amgen Named Official Biotech Partner by Los Angeles Sports & Entertainment Commission (LASEC) Ahead of FIFA World Cup 2026
+            - figure [ref=e2398]
+          - time [ref=e2400]: Dec 5
+      - generic [ref=e2401]:
+        - separator [ref=e2403]
+        - generic [ref=e2405]:
+          - generic [ref=e2406]:
+            - link [ref=e2408] [cursor=pointer]:
+              - /url: ./read/CBMiwgJBVV95cUxNNlFad2VwOVZoZU9XbWRzSXlQcFZMMjNyUU1zX2xTYlZVdWt4UzR2RmV1cEpRQjgwRlVNZU5lT1JLTTZmc1JTQmJaN0gtUUxVTWZ5YXpmSW9zY3JjTEtlejFSejQ3T0VIQjVQR2M0WkhPV3RyTXVKUG9VY3Z2VmFidXVsNUxOekxWWkp2alVENU9iMHMzZHRmWDNhRXhkY2dtM1dvcTZ5TmplaU01WjdyQlVGYXI1bUxMZHVFaEhQdVMtVkh0bkZ2S2lkTWtONktUdWRZTzJzNDVLYTVRVUtySkU2bDFRNFFXeWJtcE9KSjdzbXRQTWotRFVmNmZINnVPLXNiQkJwX1ZCQm5GMDRCT1p5S1hrLXRvaTBYOGNtZlhZN0pWa0lVSGF3M2pqVGtoZTN2d0Roc2VqejVLdVNHNFVR?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2410]:
+              - generic [ref=e2411]:
+                - generic [ref=e2414]: NBCUniversal News Group
+                - generic [ref=e2418]:
+                  - generic:
+                    - button "More - Telemundo Rolls Out New World Cup Campaign Spots and Telemundo’s Official World Cup Song “Somos Más” Behind-the-Scenes as 60-Day Countdown to FIFA World Cup 2026™ Begins" [ref=e2419] [cursor=pointer]:
+                      - img [ref=e2421]
+                    - tooltip [ref=e2423]: More
+              - link "Telemundo Rolls Out New World Cup Campaign Spots and Telemundo’s Official World Cup Song “Somos Más” Behind-the-Scenes as 60-Day Countdown to FIFA World Cup 2026™ Begins - NBCUniversal News Group - Apr 10" [ref=e2424] [cursor=pointer]:
+                - /url: ./read/CBMiwgJBVV95cUxNNlFad2VwOVZoZU9XbWRzSXlQcFZMMjNyUU1zX2xTYlZVdWt4UzR2RmV1cEpRQjgwRlVNZU5lT1JLTTZmc1JTQmJaN0gtUUxVTWZ5YXpmSW9zY3JjTEtlejFSejQ3T0VIQjVQR2M0WkhPV3RyTXVKUG9VY3Z2VmFidXVsNUxOekxWWkp2alVENU9iMHMzZHRmWDNhRXhkY2dtM1dvcTZ5TmplaU01WjdyQlVGYXI1bUxMZHVFaEhQdVMtVkh0bkZ2S2lkTWtONktUdWRZTzJzNDVLYTVRVUtySkU2bDFRNFFXeWJtcE9KSjdzbXRQTWotRFVmNmZINnVPLXNiQkJwX1ZCQm5GMDRCT1p5S1hrLXRvaTBYOGNtZlhZN0pWa0lVSGF3M2pqVGtoZTN2d0Roc2VqejVLdVNHNFVR?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Telemundo Rolls Out New World Cup Campaign Spots and Telemundo’s Official World Cup Song “Somos Más” Behind-the-Scenes as 60-Day Countdown to FIFA World Cup 2026™ Begins
+            - figure [ref=e2425]
+          - time [ref=e2427]: Apr 10
+      - generic [ref=e2428]:
+        - separator [ref=e2430]
+        - generic [ref=e2432]:
+          - generic [ref=e2433]:
+            - link [ref=e2435] [cursor=pointer]:
+              - /url: ./read/CBMirgFBVV95cUxPSWIydVZ5VGJiVXJfNU1YUm0tZGt1RllfT09mWEtGZmMwc3AybGZYbkozRUlZdkxaSHZhRzkzc2RiaW1jTk5JQ0NLNTlQTElJS2pLd3dlNV9kNnpON1BRWFVCMk1LVnFyZVNRRWZQY3VBNlJSY05SSU4teEpscHZzb2FyaGRGY2ZQVWxmVWVsUGdua2VsSV9NdHNjcldtelRjeU9maXdvdHdtU3JjaWc?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2437]:
+              - generic [ref=e2438]:
+                - generic [ref=e2441]: Lewis Silkin LLP
+                - generic [ref=e2445]:
+                  - generic:
+                    - 'button "More - Key takeaways: World Cup 2026 - keeping campaigns onside" [ref=e2446] [cursor=pointer]':
+                      - img [ref=e2448]
+                    - tooltip [ref=e2450]: More
+              - 'link "Key takeaways: World Cup 2026 - keeping campaigns onside - Lewis Silkin LLP - Apr 24" [ref=e2451] [cursor=pointer]':
+                - /url: ./read/CBMirgFBVV95cUxPSWIydVZ5VGJiVXJfNU1YUm0tZGt1RllfT09mWEtGZmMwc3AybGZYbkozRUlZdkxaSHZhRzkzc2RiaW1jTk5JQ0NLNTlQTElJS2pLd3dlNV9kNnpON1BRWFVCMk1LVnFyZVNRRWZQY3VBNlJSY05SSU4teEpscHZzb2FyaGRGY2ZQVWxmVWVsUGdua2VsSV9NdHNjcldtelRjeU9maXdvdHdtU3JjaWc?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "Key takeaways: World Cup 2026 - keeping campaigns onside"
+          - time [ref=e2453]: Apr 24
+      - generic [ref=e2454]:
+        - separator [ref=e2456]
+        - generic [ref=e2458]:
+          - generic [ref=e2459]:
+            - link [ref=e2461] [cursor=pointer]:
+              - /url: ./read/CBMipwFBVV95cUxOYXdWR0w3U2xpTElpOHRDVTVKSEZBdWQ2MHJJLVN0c1lReDAxN3VQYlFEb2trTE5Qc2M4MnIteF9GTzFoY0lBZ3hwbnF2ck5pc05HZGtLWkpNY1k0ajZKM2JnWFdfNGhLRVNFdThrQTlyUURDOENyd1BIcGVoT2R2cmYtWnlEd2lWZUpNdHIyY0xxQmdPVDVZcG5INjJOZHl4WDhndzZPYw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2463]:
+              - generic [ref=e2464]:
+                - generic [ref=e2467]: Diageo
+                - generic [ref=e2471]:
+                  - generic:
+                    - 'button "More - Scaling sports partnerships: Inside Diageo’s plan for the biggest FIFA World Cup™" [ref=e2472] [cursor=pointer]':
+                      - img [ref=e2474]
+                    - tooltip [ref=e2476]: More
+              - 'link "Scaling sports partnerships: Inside Diageo’s plan for the biggest FIFA World Cup™ - Diageo - Mar 3" [ref=e2477] [cursor=pointer]':
+                - /url: ./read/CBMipwFBVV95cUxOYXdWR0w3U2xpTElpOHRDVTVKSEZBdWQ2MHJJLVN0c1lReDAxN3VQYlFEb2trTE5Qc2M4MnIteF9GTzFoY0lBZ3hwbnF2ck5pc05HZGtLWkpNY1k0ajZKM2JnWFdfNGhLRVNFdThrQTlyUURDOENyd1BIcGVoT2R2cmYtWnlEd2lWZUpNdHIyY0xxQmdPVDVZcG5INjJOZHl4WDhndzZPYw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "Scaling sports partnerships: Inside Diageo’s plan for the biggest FIFA World Cup™"
+            - figure [ref=e2478]
+          - time [ref=e2480]: Mar 3
+      - generic [ref=e2481]:
+        - separator [ref=e2483]
+        - generic [ref=e2485]:
+          - generic [ref=e2486]:
+            - link [ref=e2488] [cursor=pointer]:
+              - /url: ./read/CBMijgFBVV95cUxNeEE5LXFueFBoYzdCX05fN2Q2TjlHZ3VkU3lLLU1wSko4ZmJud1E5MTJFNk05Ri12eVdDZlFldTRZYmVBWjZNM2c1Z1BqUHlaZXp4b2x5bm1uLVB6M2ZqaE1JS3lrWkQtdkxLVFFzeDV0NXJJdmMwWmhJd1ZCU3YzUjREVDFJYXFMeEpVSmpn?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2490]:
+              - generic [ref=e2491]:
+                - generic [ref=e2494]: Verizon
+                - generic [ref=e2498]:
+                  - generic:
+                    - button "More - Win FIFA World Cup 2026™ Final Tickets with Verizon | About Verizon" [ref=e2499] [cursor=pointer]:
+                      - img [ref=e2501]
+                    - tooltip [ref=e2503]: More
+              - link "Win FIFA World Cup 2026™ Final Tickets with Verizon | About Verizon - Verizon - Apr 28" [ref=e2504] [cursor=pointer]:
+                - /url: ./read/CBMijgFBVV95cUxNeEE5LXFueFBoYzdCX05fN2Q2TjlHZ3VkU3lLLU1wSko4ZmJud1E5MTJFNk05Ri12eVdDZlFldTRZYmVBWjZNM2c1Z1BqUHlaZXp4b2x5bm1uLVB6M2ZqaE1JS3lrWkQtdkxLVFFzeDV0NXJJdmMwWmhJd1ZCU3YzUjREVDFJYXFMeEpVSmpn?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Win FIFA World Cup 2026™ Final Tickets with Verizon | About Verizon
+            - figure [ref=e2505]
+          - time [ref=e2507]: Apr 28
+      - generic [ref=e2508]:
+        - separator [ref=e2510]
+        - generic [ref=e2512]:
+          - generic [ref=e2513]:
+            - link [ref=e2515] [cursor=pointer]:
+              - /url: ./read/CBMitAFBVV95cUxQZG5ROW15YnFvRTdZRFcwS0traFlrZzlHbjY3Ulp2cmkzdmdnNDUyMk1mZWM1TVFhcFM0RENoanNncG1LY0djNXN3V2xxQzl0Q2JMVGxGX0VpN1l6d3phamhQM0lrYXJxdTVWYUNleW10VUVLeF9wdExQRVlVLTNWRDRIcm1qRlNneXJHeHlZY0REb0dUSWc5RWRwaWw5ZWRRNUJMWGtWYURCakN5bnlNSzBSczI?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2517]:
+              - generic [ref=e2518]:
+                - generic [ref=e2521]: US Soccer
+                - generic [ref=e2525]:
+                  - generic:
+                    - button "More - U.S. Soccer Debuts Official 2026 World Cup Campaign Championing USMNT’s Grit And Resilience, Narrated By Marcello Hernandez" [ref=e2526] [cursor=pointer]:
+                      - img [ref=e2528]
+                    - tooltip [ref=e2530]: More
+              - link "U.S. Soccer Debuts Official 2026 World Cup Campaign Championing USMNT’s Grit And Resilience, Narrated By Marcello Hernandez - US Soccer - Dec 5" [ref=e2531] [cursor=pointer]:
+                - /url: ./read/CBMitAFBVV95cUxQZG5ROW15YnFvRTdZRFcwS0traFlrZzlHbjY3Ulp2cmkzdmdnNDUyMk1mZWM1TVFhcFM0RENoanNncG1LY0djNXN3V2xxQzl0Q2JMVGxGX0VpN1l6d3phamhQM0lrYXJxdTVWYUNleW10VUVLeF9wdExQRVlVLTNWRDRIcm1qRlNneXJHeHlZY0REb0dUSWc5RWRwaWw5ZWRRNUJMWGtWYURCakN5bnlNSzBSczI?hl=en-US&gl=US&ceid=US%3Aen
+                - text: U.S. Soccer Debuts Official 2026 World Cup Campaign Championing USMNT’s Grit And Resilience, Narrated By Marcello Hernandez
+            - figure [ref=e2532]
+          - time [ref=e2534]: Dec 5
+      - generic [ref=e2535]:
+        - separator [ref=e2537]
+        - generic [ref=e2539]:
+          - generic [ref=e2540]:
+            - link [ref=e2542] [cursor=pointer]:
+              - /url: ./read/CBMilAFBVV95cUxOa0NnTEFtLVR0TURSaThINkJiSjR3UkdqX2NiSEdZT0J0U2hqWGU5eEpINWdyamhPSE9MZ1I2OGctaUxiSERfNnU3TTduR3VfRjNkVzR5ZmxDa0J2bFBQS19zUkVIZV9YY19SR1F2Q3VFQThnZmpVdkF2cWEtOENROHlscWFDRlpxNnl1LVdDbUJPdTlp?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2544]:
+              - generic [ref=e2545]:
+                - generic [ref=e2548]: media-marketing.com
+                - generic [ref=e2552]:
+                  - generic:
+                    - button "More - World Cup 2026 drives ad spend but impact weakens" [ref=e2553] [cursor=pointer]:
+                      - img [ref=e2555]
+                    - tooltip [ref=e2557]: More
+              - link "World Cup 2026 drives ad spend but impact weakens - media-marketing.com - Mar 23" [ref=e2558] [cursor=pointer]:
+                - /url: ./read/CBMilAFBVV95cUxOa0NnTEFtLVR0TURSaThINkJiSjR3UkdqX2NiSEdZT0J0U2hqWGU5eEpINWdyamhPSE9MZ1I2OGctaUxiSERfNnU3TTduR3VfRjNkVzR5ZmxDa0J2bFBQS19zUkVIZV9YY19SR1F2Q3VFQThnZmpVdkF2cWEtOENROHlscWFDRlpxNnl1LVdDbUJPdTlp?hl=en-US&gl=US&ceid=US%3Aen
+                - text: World Cup 2026 drives ad spend but impact weakens
+            - figure [ref=e2559]
+          - time [ref=e2561]: Mar 23
+      - generic [ref=e2562]:
+        - separator [ref=e2564]
+        - generic [ref=e2566]:
+          - generic [ref=e2567]:
+            - link [ref=e2569] [cursor=pointer]:
+              - /url: ./read/CBMivwFBVV95cUxOQmhfTmlqRFdRSXNGZ2V0VzZBM1dpeWd4MWIwSUFDU1hDd0tpTlF5cG5SUkk2SmdOd1hYXzVsNU5TLUZnNlFxcTB5V0ZVUEdNdF9KZUtwSGllYkdHdE9oU0g0ellKNmV2MHBrckhEenlTeV9lTUZ2WGJxNmFLTjNoUEl3MHF2dnJ0dUhoSEhmX3NWV296MHZuVV9qVHpSQ04zdGcwdnI4aWxiVEtEM0wteVZEczZCMFpqNVlxWVdXRQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2571]:
+              - generic [ref=e2572]:
+                - generic [ref=e2575]: Sports Business Journal
+                - generic [ref=e2579]:
+                  - generic:
+                    - button "More - How teams, leagues are using the 2026 FIFA World Cup to draw in new fans" [ref=e2580] [cursor=pointer]:
+                      - img [ref=e2582]
+                    - tooltip [ref=e2584]: More
+              - link "How teams, leagues are using the 2026 FIFA World Cup to draw in new fans - Sports Business Journal - Mar 26" [ref=e2585] [cursor=pointer]:
+                - /url: ./read/CBMivwFBVV95cUxOQmhfTmlqRFdRSXNGZ2V0VzZBM1dpeWd4MWIwSUFDU1hDd0tpTlF5cG5SUkk2SmdOd1hYXzVsNU5TLUZnNlFxcTB5V0ZVUEdNdF9KZUtwSGllYkdHdE9oU0g0ellKNmV2MHBrckhEenlTeV9lTUZ2WGJxNmFLTjNoUEl3MHF2dnJ0dUhoSEhmX3NWV296MHZuVV9qVHpSQ04zdGcwdnI4aWxiVEtEM0wteVZEczZCMFpqNVlxWVdXRQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: How teams, leagues are using the 2026 FIFA World Cup to draw in new fans
+            - figure [ref=e2586]
+          - time [ref=e2588]: Mar 26
+      - generic [ref=e2589]:
+        - separator [ref=e2591]
+        - generic [ref=e2593]:
+          - generic [ref=e2594]:
+            - link [ref=e2596] [cursor=pointer]:
+              - /url: ./read/CBMiigFBVV95cUxNbmMzUmJIUjJ3MkNjNnB6X1VLeWNNc0FURDU1NkZFdXVDRlYxWlRXbmROVm1hOTRRNzV1ZVFzRjROQzhIYXlHTmNIVXBXUFE0OHJaTF8yRXdRRjZQU0duN1U3bmxqUVAtVExDbjZxRGVIYjFHYnpnNTM5RkZBU1dzWElGYTdaOU5Td1E?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2598]:
+              - generic [ref=e2599]:
+                - generic [ref=e2602]: DoorDash
+                - generic [ref=e2606]:
+                  - generic:
+                    - button "More - DoorDash Named Official Tournament Supporter of the FIFA World Cup 2026™ and FIFA Women’s World Cup 2027" [ref=e2607] [cursor=pointer]:
+                      - img [ref=e2609]
+                    - tooltip [ref=e2611]: More
+              - link "DoorDash Named Official Tournament Supporter of the FIFA World Cup 2026™ and FIFA Women’s World Cup 2027 - DoorDash - Nov 18, 2025" [ref=e2612] [cursor=pointer]:
+                - /url: ./read/CBMiigFBVV95cUxNbmMzUmJIUjJ3MkNjNnB6X1VLeWNNc0FURDU1NkZFdXVDRlYxWlRXbmROVm1hOTRRNzV1ZVFzRjROQzhIYXlHTmNIVXBXUFE0OHJaTF8yRXdRRjZQU0duN1U3bmxqUVAtVExDbjZxRGVIYjFHYnpnNTM5RkZBU1dzWElGYTdaOU5Td1E?hl=en-US&gl=US&ceid=US%3Aen
+                - text: DoorDash Named Official Tournament Supporter of the FIFA World Cup 2026™ and FIFA Women’s World Cup 2027
+            - figure [ref=e2613]
+          - time [ref=e2615]: Nov 18, 2025
+      - generic [ref=e2616]:
+        - separator [ref=e2618]
+        - generic [ref=e2620]:
+          - generic [ref=e2621]:
+            - link [ref=e2623] [cursor=pointer]:
+              - /url: ./read/CBMiqAFBVV95cUxNZmFXTktWNFBMS1BxQXVKbjJkaGhLMWMyYnplb2EwZUxmcF8wWGFVY3E5UFZfVkZ3WmZpV0lxd3ByOFhJZF80eVd2MmpPa2NtdUNzcDRleHQ4TzA1MGQ4aFJpVl9wRDJTRVp5TDJkZk9FRXJpSlN0ZTM0aFBUWGdPdDcwbHh0VU9HcE9hZjZHd3hJMi1aVktCN2NvTnBOR0dGcHB1Q2MtXy0?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2625]:
+              - generic [ref=e2626]:
+                - generic [ref=e2629]: City of Spokane
+                - generic [ref=e2633]:
+                  - generic:
+                    - button "More - Spokane Launches 'Summer of Soccer' Community Campaign" [ref=e2634] [cursor=pointer]:
+                      - img [ref=e2636]
+                    - tooltip [ref=e2638]: More
+              - link "Spokane Launches 'Summer of Soccer' Community Campaign - City of Spokane - Apr 23 - By Erin Hut" [ref=e2639] [cursor=pointer]:
+                - /url: ./read/CBMiqAFBVV95cUxNZmFXTktWNFBMS1BxQXVKbjJkaGhLMWMyYnplb2EwZUxmcF8wWGFVY3E5UFZfVkZ3WmZpV0lxd3ByOFhJZF80eVd2MmpPa2NtdUNzcDRleHQ4TzA1MGQ4aFJpVl9wRDJTRVp5TDJkZk9FRXJpSlN0ZTM0aFBUWGdPdDcwbHh0VU9HcE9hZjZHd3hJMi1aVktCN2NvTnBOR0dGcHB1Q2MtXy0?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Spokane Launches 'Summer of Soccer' Community Campaign
+            - figure [ref=e2640]
+          - generic [ref=e2641]:
+            - time [ref=e2642]: Apr 23
+            - separator [ref=e2643]
+            - generic [ref=e2644]: By Erin Hut
+      - generic [ref=e2645]:
+        - separator [ref=e2647]
+        - generic [ref=e2649]:
+          - generic [ref=e2650]:
+            - link [ref=e2652] [cursor=pointer]:
+              - /url: ./read/CBMiigJBVV95cUxQQnhBRWpfeDlwVXctNndzY0pwNXJQVnIyQnRwQzEwc0NGXzVfNklfQU9NUFI0LWw4dnpXM3BZWHI4Z2xvbVdod0pldnJTMHFFT2dQV09zUmlQYlV0Z2tiNXZPT2hUcGVkQ2dMb3JHN1NLQ25Xc1FjYmJTN1lBT1F1bm9KdVJRbVZ5RDdLWE9ra2xtQVhtNW9XaFNTNnFDSG53S20zaHhzWV9RX3hqYjl4V3hyTHpkaHRrYWVlZmhXN1VlYnlBd2kxd0xtR2ZwMkxiUHFaQm96OUltQTcwMVk1WTE5WHBEMVpZSjZ1NnRnV29DMlR0T2pnNXBtQUFDVlVrNDJ6UmJrVDFFQQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2654]:
+              - generic [ref=e2655]:
+                - generic [ref=e2658]: Hyundai
+                - generic [ref=e2662]:
+                  - generic:
+                    - button "More - Hyundai Motor Unveils \"Next Starts Now\" Campaign, Set to Showcase Robotics at FIFA World Cup 2026™" [ref=e2663] [cursor=pointer]:
+                      - img [ref=e2665]
+                    - tooltip [ref=e2667]: More
+              - link "Hyundai Motor Unveils \"Next Starts Now\" Campaign, Set to Showcase Robotics at FIFA World Cup 2026™ - Hyundai - Apr 2" [ref=e2668] [cursor=pointer]:
+                - /url: ./read/CBMiigJBVV95cUxQQnhBRWpfeDlwVXctNndzY0pwNXJQVnIyQnRwQzEwc0NGXzVfNklfQU9NUFI0LWw4dnpXM3BZWHI4Z2xvbVdod0pldnJTMHFFT2dQV09zUmlQYlV0Z2tiNXZPT2hUcGVkQ2dMb3JHN1NLQ25Xc1FjYmJTN1lBT1F1bm9KdVJRbVZ5RDdLWE9ra2xtQVhtNW9XaFNTNnFDSG53S20zaHhzWV9RX3hqYjl4V3hyTHpkaHRrYWVlZmhXN1VlYnlBd2kxd0xtR2ZwMkxiUHFaQm96OUltQTcwMVk1WTE5WHBEMVpZSjZ1NnRnV29DMlR0T2pnNXBtQUFDVlVrNDJ6UmJrVDFFQQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Hyundai Motor Unveils "Next Starts Now" Campaign, Set to Showcase Robotics at FIFA World Cup 2026™
+            - figure [ref=e2669]
+          - time [ref=e2671]: Apr 2
+      - generic [ref=e2672]:
+        - separator [ref=e2674]
+        - generic [ref=e2676]:
+          - generic [ref=e2677]:
+            - link [ref=e2679] [cursor=pointer]:
+              - /url: ./read/CBMibEFVX3lxTE9rbGEycHp5NlFEakNYOGhHelVlUnFDQTFsR1hNOHNxOGx4UlBoQmgySGtkTVdPTW9CaXA0NndLTmVBaHE0R005ck52WlNkRHBFN1F1cGlWQkMzaWhqUlkxQWlCM2l2R2ZxRVgxcA?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2681]:
+              - generic [ref=e2682]:
+                - generic [ref=e2685]: Little Black Book | LBBOnline
+                - generic [ref=e2689]:
+                  - generic:
+                    - button "More - Putting Fans in the Drivers Seat for the 2026 FIFA World Cup" [ref=e2690] [cursor=pointer]:
+                      - img [ref=e2692]
+                    - tooltip [ref=e2694]: More
+              - link "Putting Fans in the Drivers Seat for the 2026 FIFA World Cup - Little Black Book | LBBOnline - Apr 21" [ref=e2695] [cursor=pointer]:
+                - /url: ./read/CBMibEFVX3lxTE9rbGEycHp5NlFEakNYOGhHelVlUnFDQTFsR1hNOHNxOGx4UlBoQmgySGtkTVdPTW9CaXA0NndLTmVBaHE0R005ck52WlNkRHBFN1F1cGlWQkMzaWhqUlkxQWlCM2l2R2ZxRVgxcA?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Putting Fans in the Drivers Seat for the 2026 FIFA World Cup
+            - figure [ref=e2696]
+          - time [ref=e2698]: Apr 21
+      - generic [ref=e2699]:
+        - separator [ref=e2701]
+        - generic [ref=e2703]:
+          - generic [ref=e2704]:
+            - link [ref=e2706] [cursor=pointer]:
+              - /url: ./read/CBMilgFBVV95cUxObFFjNDRpbzZWNUQ2U001aWJ5dDNEQWxKRWE4bS1Vczl0VXdBa2kzRWlORUZJek5Ick5SQmhDdGFfTm5SUlltMUVQWFp4eFRoWmd3SzB3dk5jS0VIY1dNbW1JV0gyTGhxc1BRN0ZfYjZqczVJRlphdzU4OW9tNXFadzhjVjBRelF1WGhzSFFFZ0tNb1pjZmc?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2708]:
+              - generic [ref=e2709]:
+                - generic [ref=e2712]: The Mirror
+                - generic [ref=e2716]:
+                  - generic:
+                    - 'button "More - Premier League 2026-27 key dates: Fixture release, delayed season start, final day games" [ref=e2717] [cursor=pointer]':
+                      - img [ref=e2719]
+                    - tooltip [ref=e2721]: More
+              - 'link "Premier League 2026-27 key dates: Fixture release, delayed season start, final day games - The Mirror - 14 hours ago - By Tom Sunderland" [ref=e2722] [cursor=pointer]':
+                - /url: ./read/CBMilgFBVV95cUxObFFjNDRpbzZWNUQ2U001aWJ5dDNEQWxKRWE4bS1Vczl0VXdBa2kzRWlORUZJek5Ick5SQmhDdGFfTm5SUlltMUVQWFp4eFRoWmd3SzB3dk5jS0VIY1dNbW1JV0gyTGhxc1BRN0ZfYjZqczVJRlphdzU4OW9tNXFadzhjVjBRelF1WGhzSFFFZ0tNb1pjZmc?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "Premier League 2026-27 key dates: Fixture release, delayed season start, final day games"
+            - figure [ref=e2723]
+          - generic [ref=e2724]:
+            - time [ref=e2725]: 14 hours ago
+            - separator [ref=e2726]
+            - generic [ref=e2727]: By Tom Sunderland
+      - generic [ref=e2728]:
+        - separator [ref=e2730]
+        - generic [ref=e2732]:
+          - generic [ref=e2733]:
+            - link [ref=e2735] [cursor=pointer]:
+              - /url: ./read/CBMi0gFBVV95cUxNN1ZjbmJSblB1NnRES25WNjk4ODlueThaNnpwdGpJZDlLN1V5RXQ1V1JEYUk5YzNlY0QwOWs4MHU5R0tSZ1dWSGxQNUp3SFIxLVFRTjRzdlJwbl9zSnZTSU5idDN6aWRQQ25tSWxocllVeTRHVWdwREVPSmlwNS1kVmZCWmljVDRTUHI4RFVYTmM5S1c2OE41cmc4Z2twVTg5bUxFalFxaFNMWHJzVWNXaDU4MzVPaVN6YzFKOF9OLVhDVkRRU0lLbmJibms3ZVU4VWc?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2737]:
+              - generic [ref=e2738]:
+                - generic [ref=e2741]: Hyundai Motor Group
+                - generic [ref=e2745]:
+                  - generic:
+                    - button "More - Hyundai Motor Unveils 'Next Starts Now' Campaign, Set to Showcase Robotics at FIFA World Cup 2026™" [ref=e2746] [cursor=pointer]:
+                      - img [ref=e2748]
+                    - tooltip [ref=e2750]: More
+              - link "Hyundai Motor Unveils 'Next Starts Now' Campaign, Set to Showcase Robotics at FIFA World Cup 2026™ - Hyundai Motor Group - Apr 2" [ref=e2751] [cursor=pointer]:
+                - /url: ./read/CBMi0gFBVV95cUxNN1ZjbmJSblB1NnRES25WNjk4ODlueThaNnpwdGpJZDlLN1V5RXQ1V1JEYUk5YzNlY0QwOWs4MHU5R0tSZ1dWSGxQNUp3SFIxLVFRTjRzdlJwbl9zSnZTSU5idDN6aWRQQ25tSWxocllVeTRHVWdwREVPSmlwNS1kVmZCWmljVDRTUHI4RFVYTmM5S1c2OE41cmc4Z2twVTg5bUxFalFxaFNMWHJzVWNXaDU4MzVPaVN6YzFKOF9OLVhDVkRRU0lLbmJibms3ZVU4VWc?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Hyundai Motor Unveils 'Next Starts Now' Campaign, Set to Showcase Robotics at FIFA World Cup 2026™
+            - figure [ref=e2752]
+          - time [ref=e2754]: Apr 2
+      - generic [ref=e2755]:
+        - separator [ref=e2757]
+        - generic [ref=e2759]:
+          - generic [ref=e2760]:
+            - link [ref=e2762] [cursor=pointer]:
+              - /url: ./read/CBMivAFBVV95cUxPZE8yZGgtYWJrRjdjTWgwNkk2NnpBOU9IQlpvQXBsVkVpZE9MSlVadWUwRWIydlFjSzhIcFEtaUdWbWtPUDFzMlJpRzVJMGt5dG5BN05xZm1pNHRLRGY2UF9CMVdmcVFkWDJ2andHOUN2WUZ5MWFOUFR6SkJYcWFlajRpOXJLZk5abEQtai1YRWNqNGtCMWlNYnlEYXpYMURPQ1VLZUR0ZlFleXhHRVdMb1o2MVJ3TXZTNmFoSg?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2764]:
+              - generic [ref=e2765]:
+                - generic [ref=e2768]: Esquire Middle East
+                - generic [ref=e2772]:
+                  - generic:
+                    - button "More - Timothée Chalamet, Bad Bunny, Zidane and David Beckham for Adidas World Cup 2026 Campaign" [ref=e2773] [cursor=pointer]:
+                      - img [ref=e2775]
+                    - tooltip [ref=e2777]: More
+              - link "Timothée Chalamet, Bad Bunny, Zidane and David Beckham for Adidas World Cup 2026 Campaign - Esquire Middle East - 18 days ago" [ref=e2778] [cursor=pointer]:
+                - /url: ./read/CBMivAFBVV95cUxPZE8yZGgtYWJrRjdjTWgwNkk2NnpBOU9IQlpvQXBsVkVpZE9MSlVadWUwRWIydlFjSzhIcFEtaUdWbWtPUDFzMlJpRzVJMGt5dG5BN05xZm1pNHRLRGY2UF9CMVdmcVFkWDJ2andHOUN2WUZ5MWFOUFR6SkJYcWFlajRpOXJLZk5abEQtai1YRWNqNGtCMWlNYnlEYXpYMURPQ1VLZUR0ZlFleXhHRVdMb1o2MVJ3TXZTNmFoSg?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Timothée Chalamet, Bad Bunny, Zidane and David Beckham for Adidas World Cup 2026 Campaign
+            - figure [ref=e2779]
+          - time [ref=e2781]: 18 days ago
+      - generic [ref=e2782]:
+        - separator [ref=e2784]
+        - generic [ref=e2786]:
+          - generic [ref=e2787]:
+            - link [ref=e2789] [cursor=pointer]:
+              - /url: ./read/CBMikAJBVV95cUxQdlJSZWFQV282ejBNQmNfVGtBSk43RHEzUVdpdTFxeVBkVGE3QmRKWkxkM1pNS3RTMnV3SXpNdkc5UzlocTgybE9TR3RQXzNESWtqNDNLQnBxTzlxZ0tBb3A5TkNHclp5V2M2YmNjMmVDWUxfR2FubHhOOEREUHVZbGxRNmZLeGd4RjYwTWlmX040TE94M0hSOWdtU190YnRWSmU3TG14ZGJ0SXRZS09IM012OHFLUDQzN3NDc1VlSzUwRFExenQzRTNHVkJqeVE2SUg4a0NWRmM3R2xSVkR5QWt6N2FWaWx0TXhORjI1NUxYQWoyTzh0V0FyWGg1bjdkZ2VVaV9XcGd1c1l6T0E1Zw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2791]:
+              - generic [ref=e2792]:
+                - generic [ref=e2795]: PR Newswire
+                - generic [ref=e2799]:
+                  - generic:
+                    - button "More - Erling Haaland and Vinicius Júnior Front New Marriott Bonvoy and Visa 'For Fans, Everywhere' Campaign Ahead of FIFA World Cup 2026™" [ref=e2800] [cursor=pointer]:
+                      - img [ref=e2802]
+                    - tooltip [ref=e2804]: More
+              - link "Erling Haaland and Vinicius Júnior Front New Marriott Bonvoy and Visa 'For Fans, Everywhere' Campaign Ahead of FIFA World Cup 2026™ - PR Newswire - Apr 16" [ref=e2805] [cursor=pointer]:
+                - /url: ./read/CBMikAJBVV95cUxQdlJSZWFQV282ejBNQmNfVGtBSk43RHEzUVdpdTFxeVBkVGE3QmRKWkxkM1pNS3RTMnV3SXpNdkc5UzlocTgybE9TR3RQXzNESWtqNDNLQnBxTzlxZ0tBb3A5TkNHclp5V2M2YmNjMmVDWUxfR2FubHhOOEREUHVZbGxRNmZLeGd4RjYwTWlmX040TE94M0hSOWdtU190YnRWSmU3TG14ZGJ0SXRZS09IM012OHFLUDQzN3NDc1VlSzUwRFExenQzRTNHVkJqeVE2SUg4a0NWRmM3R2xSVkR5QWt6N2FWaWx0TXhORjI1NUxYQWoyTzh0V0FyWGg1bjdkZ2VVaV9XcGd1c1l6T0E1Zw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Erling Haaland and Vinicius Júnior Front New Marriott Bonvoy and Visa 'For Fans, Everywhere' Campaign Ahead of FIFA World Cup 2026™
+            - figure [ref=e2806]
+          - time [ref=e2808]: Apr 16
+      - generic [ref=e2809]:
+        - separator [ref=e2811]
+        - generic [ref=e2813]:
+          - generic [ref=e2814]:
+            - link [ref=e2816] [cursor=pointer]:
+              - /url: ./read/CBMid0FVX3lxTE85YjQteUhsSlctUlB1ZzFSUkNjTFUxWHR2bjliblp2bE9yVW9RNTN3YW8yck1RSUtDVkpVWmZ0R2dRNUU5QzNIaHdJNnhHRG5hOFZUeVRORzBiQng2bFFKd1dyOEYtTWtyUVNFOVFmVThjWkpYUFNr?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2818]:
+              - generic [ref=e2819]:
+                - generic [ref=e2822]: Little Black Book | LBBOnline
+                - generic [ref=e2826]:
+                  - generic:
+                    - button "More - Coca-Cola Uncans Raw Passion of Football Fans for FIFA World Cup 2026" [ref=e2827] [cursor=pointer]:
+                      - img [ref=e2829]
+                    - tooltip [ref=e2831]: More
+              - link "Coca-Cola Uncans Raw Passion of Football Fans for FIFA World Cup 2026 - Little Black Book | LBBOnline - Apr 8" [ref=e2832] [cursor=pointer]:
+                - /url: ./read/CBMid0FVX3lxTE85YjQteUhsSlctUlB1ZzFSUkNjTFUxWHR2bjliblp2bE9yVW9RNTN3YW8yck1RSUtDVkpVWmZ0R2dRNUU5QzNIaHdJNnhHRG5hOFZUeVRORzBiQng2bFFKd1dyOEYtTWtyUVNFOVFmVThjWkpYUFNr?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Coca-Cola Uncans Raw Passion of Football Fans for FIFA World Cup 2026
+            - figure [ref=e2833]
+          - time [ref=e2835]: Apr 8
+      - generic [ref=e2836]:
+        - separator [ref=e2838]
+        - generic [ref=e2840]:
+          - generic [ref=e2841]:
+            - link [ref=e2843] [cursor=pointer]:
+              - /url: ./read/CBMipwFBVV95cUxNdnI5LW03YVhWNDkyOE5OZ1FHRjViX0ppYnVWaVQ1S1ZfSXBSTUZzejFCTThBSTRfQVRzMTFSSDA0endHbTcwazFZdHROVDFVWlpudk5PQ3gyZVFVQTcxUk0xU1ZQam1oeGh2ZUt5V0s0Z0dXVDQ1VFRHN2Frc2RTWEJSb3p2akRjbXhFQk5STUlqaWZMMWZDQk1VUWRLRW5OYUxFbnBMTQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e2845]:
+              - generic [ref=e2846]:
+                - generic [ref=e2849]: SportsPro
+                - generic [ref=e2853]:
+                  - generic:
+                    - button "More - Fifa calls up DoorDash as latest 2026 World Cup sponsor" [ref=e2854] [cursor=pointer]:
+                      - img [ref=e2856]
+                    - tooltip [ref=e2858]: More
+              - link "Fifa calls up DoorDash as latest 2026 World Cup sponsor - SportsPro - Nov 19, 2025 - By Ed Dixon" [ref=e2859] [cursor=pointer]:
+                - /url: ./read/CBMipwFBVV95cUxNdnI5LW03YVhWNDkyOE5OZ1FHRjViX0ppYnVWaVQ1S1ZfSXBSTUZzejFCTThBSTRfQVRzMTFSSDA0endHbTcwazFZdHROVDFVWlpudk5PQ3gyZVFVQTcxUk0xU1ZQam1oeGh2ZUt5V0s0Z0dXVDQ1VFRHN2Frc2RTWEJSb3p2akRjbXhFQk5STUlqaWZMMWZDQk1VUWRLRW5OYUxFbnBMTQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Fifa calls up DoorDash as latest 2026 World Cup sponsor
+            - figure [ref=e2860]
+          - generic [ref=e2861]:
+            - time [ref=e2862]: Nov 19, 2025
+            - separator [ref=e2863]
+            - generic [ref=e2864]: By Ed Dixon
+    - complementary [ref=e2865]:
+      - generic [ref=e2867]:
+        - generic [ref=e2870]:
+          - heading "\"World Cup\" \"2026\" sponsor OR marketing OR campaign" [level=2] [ref=e2871]
+          - generic [ref=e2872]: Search results
+        - generic [ref=e2875]:
+          - button "Save this search - \"World Cup\" \"2026\" sponsor OR marketing OR campaign" [ref=e2877]:
+            - img [ref=e2881]
+            - generic [ref=e2883]: Save
+          - tooltip [ref=e2884]: Save this search

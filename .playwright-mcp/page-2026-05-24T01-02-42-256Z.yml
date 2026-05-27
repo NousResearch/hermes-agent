@@ -1,0 +1,504 @@
+- generic [ref=e2]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - generic:
+        - link "到百度首页" [ref=e6] [cursor=pointer]:
+          - /url: /
+          - img "到百度首页" [ref=e7]
+        - generic [ref=e10]:
+          - textbox [ref=e13]: 足球APP 竞品 直播吧 虎扑 最新动态
+          - generic [ref=e15]:
+            - generic [ref=e16]:
+              - img [ref=e18] [cursor=pointer]
+              - generic [ref=e21]:
+                - img [ref=e28] [cursor=pointer]
+                - img [ref=e34] [cursor=pointer]
+                - img [ref=e39] [cursor=pointer]
+            - button "百度一下" [ref=e43] [cursor=pointer]
+    - generic [ref=e44]:
+      - link "百度首页" [ref=e45] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e46] [cursor=pointer]: 设置
+      - link "登录" [ref=e47] [cursor=pointer]:
+        - /url: javascript:;
+  - generic [ref=e50]:
+    - link [ref=e51] [cursor=pointer]:
+      - /url: https://chat.baidu.com/search?word=%E8%B6%B3%E7%90%83APP+%E7%AB%9E%E5%93%81+%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&pd=csaitab&setype=csaitab&extParamsJson=%7B%22enter_type%22%3A%22search_a_tab%22%2C%22sa%22%3A%22vs_tab%22%2C%22apagelid%22%3A%2215393427333079633593%22%2C%22ori_lid%22%3A%2215393427333079633593%22%7D
+      - img [ref=e52]
+    - generic [ref=e53]: 网页
+    - link "图片" [ref=e54] [cursor=pointer]:
+      - /url: http://image.baidu.com/i?tn=baiduimage&ps=1&ct=201326592&lm=-1&cl=2&nc=1&ie=utf-8&lid=d5a0709a00000eb9&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E8%B6%B3%E7%90%83APP+%E7%AB%9E%E5%93%81+%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81
+    - link "资讯" [ref=e55] [cursor=pointer]:
+      - /url: https://www.baidu.com/s?rtt=1&bsst=1&cl=2&tn=news&ie=utf-8&word=%E8%B6%B3%E7%90%83APP+%E7%AB%9E%E5%93%81+%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81
+    - link "视频" [ref=e56] [cursor=pointer]:
+      - /url: /sf/vsearch?pd=video&wd=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&tn=vsearch&lid=d5a0709a00000eb9&ie=utf-8&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_pq=d5a0709a00000eb9&rsv_t=d5a0709a00000eb9&rsv_spt=7&rsv_bp=1&f=8
+    - link "笔记" [ref=e57] [cursor=pointer]:
+      - /url: https://www.baidu.com/s?pd=note&rpf=pc&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E8%B6%B3%E7%90%83APP+%E7%AB%9E%E5%93%81+%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81
+    - link "地图" [ref=e58] [cursor=pointer]:
+      - /url: https://map.baidu.com/?newmap=1&ie=utf-8&from=pstab&s=s%26wd%3D%E8%B6%B3%E7%90%83APP+%E7%AB%9E%E5%93%81+%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81
+    - link "贴吧" [ref=e59] [cursor=pointer]:
+      - /url: http://tieba.baidu.com/f?fr=wwwt&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&kw=%E8%B6%B3%E7%90%83APP+%E7%AB%9E%E5%93%81+%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81
+    - link "文库" [ref=e60] [cursor=pointer]:
+      - /url: http://wenku.baidu.com/search?lm=0&od=0&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E8%B6%B3%E7%90%83APP+%E7%AB%9E%E5%93%81+%E7%9B%B4%E6%92%AD%E5%90%A7+%E8%99%8E%E6%89%91+%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81
+    - link "更多" [ref=e61] [cursor=pointer]:
+      - /url: http://www.baidu.com/more/
+    - generic [ref=e62] [cursor=pointer]: 搜索工具
+  - generic [ref=e63]:
+    - generic [ref=e64]:
+      - table [ref=e66]:
+        - rowgroup [ref=e67]:
+          - row "相关搜索  竞彩足球app手机版下载  直播足球  肆客足球app官网版  肆客体育  竞彩足球推荐平台  足球竞猜吧    换一换 热搜榜 北京榜 民生榜 财经榜  习近平对山西煤矿事故作出重要指示 1 山西煤矿爆炸致82人遇难128人受伤 2 记者直击：凌晨3点救援机器人下井探测 新 3 首位来自香港的航天员为何是她 4 白宫附近传密集枪声 记者拍枪击现场 新 5 雪饼猴带400只小猴燃爆东北超 新 6 大学生“手搓”蝴蝶卖1500元1只 7 消息人士：美伊接近达成临时协议 8 老师讲台晕倒学生瞬间冲了上去 热 9 男子踩中蛇窝被毒蛇咬数口 休克昏迷 新 10 山西爆炸煤矿有重大违法行为 热 11 多人借汛情造谣博流量被处理 12 山西事故煤矿企业对作业人数统计不清 13 女子住院被朋友殴打昏迷数天后死亡 14 DeepSeek宣布：永久降价 热 15 俄称乌无人机袭击学校 已致21死" [ref=e68]:
+            - cell "相关搜索  竞彩足球app手机版下载  直播足球  肆客足球app官网版  肆客体育  竞彩足球推荐平台  足球竞猜吧    换一换 热搜榜 北京榜 民生榜 财经榜  习近平对山西煤矿事故作出重要指示 1 山西煤矿爆炸致82人遇难128人受伤 2 记者直击：凌晨3点救援机器人下井探测 新 3 首位来自香港的航天员为何是她 4 白宫附近传密集枪声 记者拍枪击现场 新 5 雪饼猴带400只小猴燃爆东北超 新 6 大学生“手搓”蝴蝶卖1500元1只 7 消息人士：美伊接近达成临时协议 8 老师讲台晕倒学生瞬间冲了上去 热 9 男子踩中蛇窝被毒蛇咬数口 休克昏迷 新 10 山西爆炸煤矿有重大违法行为 热 11 多人借汛情造谣博流量被处理 12 山西事故煤矿企业对作业人数统计不清 13 女子住院被朋友殴打昏迷数天后死亡 14 DeepSeek宣布：永久降价 热 15 俄称乌无人机袭击学校 已致21死" [ref=e69]:
+              - generic [ref=e70]:
+                - generic [ref=e76]:
+                  - generic [ref=e78]: 相关搜索
+                  - generic [ref=e79]:
+                    - link " 竞彩足球app手机版下载" [ref=e82] [cursor=pointer]:
+                      - /url: /s?wd=%E7%AB%9E%E5%BD%A9%E8%B6%B3%E7%90%83app%E6%89%8B%E6%9C%BA%E7%89%88%E4%B8%8B%E8%BD%BD&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=28cdkt9nrXeA2Bk1eTL8ffdWLV%2BUaR1LBX1Hnk5chAec7Aw62RM3UAq61pU&rfqid=d5a0709a00000eb9&rsv_dl=0_prs_28616_1&rq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsf=101636803
+                      - generic [ref=e83]:
+                        - generic [ref=e84]: 
+                        - generic [ref=e85]: 竞彩足球app手机版下载
+                    - link " 直播足球" [ref=e88] [cursor=pointer]:
+                      - /url: /s?wd=%E7%9B%B4%E6%92%AD%E8%B6%B3%E7%90%83&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=faa9nqGWnQR27iiRN5qSqJVfWUKA7j6JZuoOylyX4ZjHovtoiM15IMPGLfM&rfqid=d5a0709a00000eb9&rsv_dl=0_prs_28616_2&rq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsf=101633403
+                      - generic [ref=e89]:
+                        - generic [ref=e90]: 
+                        - generic [ref=e91]: 直播足球
+                    - link " 肆客足球app官网版" [ref=e94] [cursor=pointer]:
+                      - /url: /s?wd=%E8%82%86%E5%AE%A2%E8%B6%B3%E7%90%83app%E5%AE%98%E7%BD%91%E7%89%88&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=faa9nqGWnQR27iiRN5qSqJVfWUKA7j6JZuoOylyX4ZjHovtoiM15IMPGLfM&rfqid=d5a0709a00000eb9&rsv_dl=0_prs_28616_3&rq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsf=101636803
+                      - generic [ref=e95]:
+                        - generic [ref=e96]: 
+                        - generic [ref=e97]: 肆客足球app官网版
+                    - link " 肆客体育" [ref=e100] [cursor=pointer]:
+                      - /url: /s?wd=%E8%82%86%E5%AE%A2%E4%BD%93%E8%82%B2&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=faa9nqGWnQR27iiRN5qSqJVfWUKA7j6JZuoOylyX4ZjHovtoiM15IMPGLfM&rfqid=d5a0709a00000eb9&rsv_dl=0_prs_28616_4&rq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsf=101633403
+                      - generic [ref=e101]:
+                        - generic [ref=e102]: 
+                        - generic [ref=e103]: 肆客体育
+                    - link " 竞彩足球推荐平台" [ref=e106] [cursor=pointer]:
+                      - /url: /s?wd=%E7%AB%9E%E5%BD%A9%E8%B6%B3%E7%90%83%E6%8E%A8%E8%8D%90%E5%B9%B3%E5%8F%B0&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=faa9nqGWnQR27iiRN5qSqJVfWUKA7j6JZuoOylyX4ZjHovtoiM15IMPGLfM&rfqid=d5a0709a00000eb9&rsv_dl=0_prs_28616_5&rq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsf=101633403
+                      - generic [ref=e107]:
+                        - generic [ref=e108]: 
+                        - generic [ref=e109]: 竞彩足球推荐平台
+                    - link " 足球竞猜吧" [ref=e112] [cursor=pointer]:
+                      - /url: /s?wd=%E8%B6%B3%E7%90%83%E7%AB%9E%E7%8C%9C%E5%90%A7&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=faa9nqGWnQR27iiRN5qSqJVfWUKA7j6JZuoOylyX4ZjHovtoiM15IMPGLfM&rfqid=d5a0709a00000eb9&rsv_dl=0_prs_28616_6&rq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsf=101633403
+                      - generic [ref=e113]:
+                        - generic [ref=e114]: 
+                        - generic [ref=e115]: 足球竞猜吧
+                - generic [ref=e119]:
+                  - generic "百度热搜" [ref=e120]:
+                    - link " " [ref=e121] [cursor=pointer]:
+                      - /url: https://top.baidu.com/board?platform=pc&sa=pcindex_a_right
+                      - generic [ref=e122]: 
+                      - generic [ref=e123]: 
+                    - link " 换一换" [ref=e125] [cursor=pointer]:
+                      - /url: javascript:void(0);
+                      - generic [ref=e126]: 
+                      - text: 换一换
+                  - generic [ref=e127]:
+                    - generic [ref=e128] [cursor=pointer]: 热搜榜
+                    - generic [ref=e129] [cursor=pointer]: 北京榜
+                    - generic [ref=e130] [cursor=pointer]: 民生榜
+                    - generic [ref=e131] [cursor=pointer]: 财经榜
+                  - generic [ref=e133]:
+                    - generic [ref=e135]:
+                      - generic [ref=e137]: 
+                      - link "习近平对山西煤矿事故作出重要指示" [ref=e138] [cursor=pointer]:
+                        - /url: /s?wd=%E4%B9%A0%E8%BF%91%E5%B9%B3%E5%AF%B9%E5%B1%B1%E8%A5%BF%E7%85%A4%E7%9F%BF%E4%BA%8B%E6%95%85%E4%BD%9C%E5%87%BA%E9%87%8D%E8%A6%81%E6%8C%87%E7%A4%BA&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=3b31FtCp0ugYbnnMQCpcs5ZdrcMRIso6ns%2BQ%2F4ffpPri9f0%2FELNCryfiw2M&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_1&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e140]:
+                      - generic [ref=e141]: "1"
+                      - link "山西煤矿爆炸致82人遇难128人受伤" [ref=e142] [cursor=pointer]:
+                        - /url: /s?wd=%E5%B1%B1%E8%A5%BF%E7%85%A4%E7%9F%BF%E7%88%86%E7%82%B8%E8%87%B482%E4%BA%BA%E9%81%87%E9%9A%BE128%E4%BA%BA%E5%8F%97%E4%BC%A4&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=3b31FtCp0ugYbnnMQCpcs5ZdrcMRIso6ns%2BQ%2F4ffpPri9f0%2FELNCryfiw2M&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_2&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e144]:
+                      - generic [ref=e145]: "2"
+                      - link "记者直击：凌晨3点救援机器人下井探测" [ref=e146] [cursor=pointer]:
+                        - /url: /s?wd=%E8%AE%B0%E8%80%85%E7%9B%B4%E5%87%BB%EF%BC%9A%E5%87%8C%E6%99%A83%E7%82%B9%E6%95%91%E6%8F%B4%E6%9C%BA%E5%99%A8%E4%BA%BA%E4%B8%8B%E4%BA%95%E6%8E%A2%E6%B5%8B&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=3b31FtCp0ugYbnnMQCpcs5ZdrcMRIso6ns%2BQ%2F4ffpPri9f0%2FELNCryfiw2M&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_3&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e147]: 新
+                    - generic [ref=e149]:
+                      - generic [ref=e150]: "3"
+                      - link "首位来自香港的航天员为何是她" [ref=e151] [cursor=pointer]:
+                        - /url: /s?wd=%E9%A6%96%E4%BD%8D%E6%9D%A5%E8%87%AA%E9%A6%99%E6%B8%AF%E7%9A%84%E8%88%AA%E5%A4%A9%E5%91%98%E4%B8%BA%E4%BD%95%E6%98%AF%E5%A5%B9&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=3b31FtCp0ugYbnnMQCpcs5ZdrcMRIso6ns%2BQ%2F4ffpPri9f0%2FELNCryfiw2M&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_4&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e153]:
+                      - generic [ref=e154]: "4"
+                      - link "白宫附近传密集枪声 记者拍枪击现场" [ref=e155] [cursor=pointer]:
+                        - /url: /s?wd=%E7%99%BD%E5%AE%AB%E9%99%84%E8%BF%91%E4%BC%A0%E5%AF%86%E9%9B%86%E6%9E%AA%E5%A3%B0%20%E8%AE%B0%E8%80%85%E6%8B%8D%E6%9E%AA%E5%87%BB%E7%8E%B0%E5%9C%BA&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=3b31FtCp0ugYbnnMQCpcs5ZdrcMRIso6ns%2BQ%2F4ffpPri9f0%2FELNCryfiw2M&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_5&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e156]: 新
+                    - generic [ref=e158]:
+                      - generic [ref=e159]: "5"
+                      - link "雪饼猴带400只小猴燃爆东北超" [ref=e160] [cursor=pointer]:
+                        - /url: /s?wd=%E9%9B%AA%E9%A5%BC%E7%8C%B4%E5%B8%A6400%E5%8F%AA%E5%B0%8F%E7%8C%B4%E7%87%83%E7%88%86%E4%B8%9C%E5%8C%97%E8%B6%85&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=3b31FtCp0ugYbnnMQCpcs5ZdrcMRIso6ns%2BQ%2F4ffpPri9f0%2FELNCryfiw2M&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_6&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e161]: 新
+                    - generic [ref=e163]:
+                      - generic [ref=e164]: "6"
+                      - link "大学生“手搓”蝴蝶卖1500元1只" [ref=e165] [cursor=pointer]:
+                        - /url: /s?wd=%E5%A4%A7%E5%AD%A6%E7%94%9F%E2%80%9C%E6%89%8B%E6%90%93%E2%80%9D%E8%9D%B4%E8%9D%B6%E5%8D%961500%E5%85%831%E5%8F%AA&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=3b31FtCp0ugYbnnMQCpcs5ZdrcMRIso6ns%2BQ%2F4ffpPri9f0%2FELNCryfiw2M&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_7&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e167]:
+                      - generic [ref=e168]: "7"
+                      - link "消息人士：美伊接近达成临时协议" [ref=e169] [cursor=pointer]:
+                        - /url: /s?wd=%E6%B6%88%E6%81%AF%E4%BA%BA%E5%A3%AB%EF%BC%9A%E7%BE%8E%E4%BC%8A%E6%8E%A5%E8%BF%91%E8%BE%BE%E6%88%90%E4%B8%B4%E6%97%B6%E5%8D%8F%E8%AE%AE&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=3b31FtCp0ugYbnnMQCpcs5ZdrcMRIso6ns%2BQ%2F4ffpPri9f0%2FELNCryfiw2M&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_8&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e171]:
+                      - generic [ref=e172]: "8"
+                      - link "老师讲台晕倒学生瞬间冲了上去" [ref=e173] [cursor=pointer]:
+                        - /url: /s?wd=%E8%80%81%E5%B8%88%E8%AE%B2%E5%8F%B0%E6%99%95%E5%80%92%E5%AD%A6%E7%94%9F%E7%9E%AC%E9%97%B4%E5%86%B2%E4%BA%86%E4%B8%8A%E5%8E%BB&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=3b31FtCp0ugYbnnMQCpcs5ZdrcMRIso6ns%2BQ%2F4ffpPri9f0%2FELNCryfiw2M&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_9&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e174]: 热
+                    - generic [ref=e176]:
+                      - generic [ref=e177]: "9"
+                      - link "男子踩中蛇窝被毒蛇咬数口 休克昏迷" [ref=e178] [cursor=pointer]:
+                        - /url: /s?wd=%E7%94%B7%E5%AD%90%E8%B8%A9%E4%B8%AD%E8%9B%87%E7%AA%9D%E8%A2%AB%E6%AF%92%E8%9B%87%E5%92%AC%E6%95%B0%E5%8F%A3%20%E4%BC%91%E5%85%8B%E6%98%8F%E8%BF%B7&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=1359A4tpAu6bNZ4eDXmXz7jn9fXvtzkdvcpZYUYHo7IjhZ1U5oCjByvHh%2B8&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_10&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e179]: 新
+                    - generic [ref=e181]:
+                      - generic [ref=e182]: "10"
+                      - link "山西爆炸煤矿有重大违法行为" [ref=e183] [cursor=pointer]:
+                        - /url: /s?wd=%E5%B1%B1%E8%A5%BF%E7%88%86%E7%82%B8%E7%85%A4%E7%9F%BF%E6%9C%89%E9%87%8D%E5%A4%A7%E8%BF%9D%E6%B3%95%E8%A1%8C%E4%B8%BA&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=1359A4tpAu6bNZ4eDXmXz7jn9fXvtzkdvcpZYUYHo7IjhZ1U5oCjByvHh%2B8&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_11&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e184]: 热
+                    - generic [ref=e186]:
+                      - generic [ref=e187]: "11"
+                      - link "多人借汛情造谣博流量被处理" [ref=e188] [cursor=pointer]:
+                        - /url: /s?wd=%E5%A4%9A%E4%BA%BA%E5%80%9F%E6%B1%9B%E6%83%85%E9%80%A0%E8%B0%A3%E5%8D%9A%E6%B5%81%E9%87%8F%E8%A2%AB%E5%A4%84%E7%90%86&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=1359A4tpAu6bNZ4eDXmXz7jn9fXvtzkdvcpZYUYHo7IjhZ1U5oCjByvHh%2B8&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_12&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e190]:
+                      - generic [ref=e191]: "12"
+                      - link "山西事故煤矿企业对作业人数统计不清" [ref=e192] [cursor=pointer]:
+                        - /url: /s?wd=%E5%B1%B1%E8%A5%BF%E4%BA%8B%E6%95%85%E7%85%A4%E7%9F%BF%E4%BC%81%E4%B8%9A%E5%AF%B9%E4%BD%9C%E4%B8%9A%E4%BA%BA%E6%95%B0%E7%BB%9F%E8%AE%A1%E4%B8%8D%E6%B8%85&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=1359A4tpAu6bNZ4eDXmXz7jn9fXvtzkdvcpZYUYHo7IjhZ1U5oCjByvHh%2B8&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_13&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e194]:
+                      - generic [ref=e195]: "13"
+                      - link "女子住院被朋友殴打昏迷数天后死亡" [ref=e196] [cursor=pointer]:
+                        - /url: /s?wd=%E5%A5%B3%E5%AD%90%E4%BD%8F%E9%99%A2%E8%A2%AB%E6%9C%8B%E5%8F%8B%E6%AE%B4%E6%89%93%E6%98%8F%E8%BF%B7%E6%95%B0%E5%A4%A9%E5%90%8E%E6%AD%BB%E4%BA%A1&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=1359A4tpAu6bNZ4eDXmXz7jn9fXvtzkdvcpZYUYHo7IjhZ1U5oCjByvHh%2B8&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_14&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                    - generic [ref=e198]:
+                      - generic [ref=e199]: "14"
+                      - link "DeepSeek宣布：永久降价" [ref=e200] [cursor=pointer]:
+                        - /url: /s?wd=DeepSeek%E5%AE%A3%E5%B8%83%EF%BC%9A%E6%B0%B8%E4%B9%85%E9%99%8D%E4%BB%B7&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=1359A4tpAu6bNZ4eDXmXz7jn9fXvtzkdvcpZYUYHo7IjhZ1U5oCjByvHh%2B8&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_1_15_15&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e201]: 热
+                    - generic [ref=e203]:
+                      - generic [ref=e204]: "15"
+                      - link "俄称乌无人机袭击学校 已致21死" [ref=e205] [cursor=pointer]:
+                        - /url: /s?wd=%E4%BF%84%E7%A7%B0%E4%B9%8C%E6%97%A0%E4%BA%BA%E6%9C%BA%E8%A2%AD%E5%87%BB%E5%AD%A6%E6%A0%A1%20%E5%B7%B2%E8%87%B421%E6%AD%BB&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=1359A4tpAu6bNZ4eDXmXz7jn9fXvtzkdvcpZYUYHo7IjhZ1U5oCjByvHh%2B8&rqid=d5a0709a00000eb9&rsf=e252d961db23dba1d93a9fafab44654b_16_30_16&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+      - generic [ref=e206]:
+        - generic [ref=e210]:
+          - heading "虎扑体育-虎扑网" [level=3] [ref=e213]:
+            - link "虎扑体育-虎扑网" [ref=e214] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=kTi7BdnaoyqBWCY5ReHXOYKOUOU3eT-2_thEN0DtkhfWWAg2rxyHzmyY9wXNW18E
+              - paragraph [ref=e217]:
+                - generic [ref=e220]:
+                  - emphasis [ref=e221]: 虎扑
+                  - text: 体育-虎扑网
+          - generic [ref=e227]:
+            - emphasis [ref=e228]: 虎扑
+            - text: 是以体育赛事和男性兴趣生活为主的社区网站。专注于NBA赛程、NBA录像、NBA
+            - emphasis [ref=e229]: 直播
+            - text: 、NBA资讯、球员交易、
+            - emphasis [ref=e230]: 足球
+            - text: 、英超、电竞、LPL等全部篮球足球电竞赛事,并提供虎扑步行街社区服务。
+          - link "虎扑网" [ref=e235] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=kTi7BdnaoyqBWCY5ReHXOYKOUOU3eT-2_thEN0DtkhfWWAg2rxyHzmyY9wXNW18E
+            - generic [ref=e236]: 虎扑网
+            - generic [ref=e238]: 
+        - generic [ref=e242]:
+          - heading "直播吧" [level=3] [ref=e245]:
+            - link "直播吧" [ref=e246] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqGIWC7Q1ywX4bfwsI9qTTY0ilci4UfygmZzXDUXIo-R6syK_w2qgZYDjuelOgVxX0OaILnsr08rCUSymwwW4H_
+              - paragraph [ref=e249]:
+                - emphasis [ref=e253]: 直播吧
+          - generic [ref=e259]:
+            - text: 足球 篮球 电竞 综合 筛选 5月19日 星期二 12:00斯诺克女子世锦赛决赛潘查亚·查诺伊 - 瑞妮·埃文斯央视频 虎牙 咪咕文字手机看
+            - emphasis [ref=e260]: 直播
+            - text: 16:00EWC预选赛LCK赛区HLE - BRO互动直播手机看直播 16:00中冠唐山赛区展开 16:30法网资格赛等网球赛事展开 18:00EWC预选赛LCK赛区BFX ...
+          - generic [ref=e261]:
+            - link [ref=e263] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqGIWC7Q1ywX4bfwsI9qTTY0ilci4UfygmZzXDUXIo-R6syK_w2qgZYDjuelOgVxX0OaILnsr08rCUSymwwW4H_
+            - link [ref=e267] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqGIWC7Q1ywX4bfwsI9qTTY0ilci4UfygmZzXDUXIo-R6syK_w2qgZYDjuelOgVxX0OaILnsr08rCUSymwwW4H_
+            - link [ref=e271] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqGIWC7Q1ywX4bfwsI9qTTY0ilci4UfygmZzXDUXIo-R6syK_w2qgZYDjuelOgVxX0OaILnsr08rCUSymwwW4H_
+            - link "4" [ref=e275] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqGIWC7Q1ywX4bfwsI9qTTY0ilci4UfygmZzXDUXIo-R6syK_w2qgZYDjuelOgVxX0OaILnsr08rCUSymwwW4H_
+              - generic [ref=e278]:
+                - generic [ref=e279]: 
+                - text: "4"
+          - link "直播吧" [ref=e284] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqGIWC7Q1ywX4bfwsI9qTTY0ilci4UfygmZzXDUXIo-R6syK_w2qgZYDjuelOgVxX0OaILnsr08rCUSymwwW4H_
+            - generic [ref=e285]: 直播吧
+            - generic [ref=e287]: 
+        - generic [ref=e291]:
+          - heading "虎扑体育-手机虎扑网" [level=3] [ref=e294]:
+            - link "虎扑体育-手机虎扑网" [ref=e295] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=l1ZgPzC0F5xQfUp03mmAeWdorPx1EncUT0FyAm7rHpu
+              - paragraph [ref=e298]:
+                - generic [ref=e301]:
+                  - emphasis [ref=e302]: 虎扑
+                  - text: 体育-手机虎扑网
+          - generic [ref=e303]:
+            - link [ref=e305] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=l1ZgPzC0F5xQfUp03mmAeWdorPx1EncUT0FyAm7rHpu
+            - generic [ref=e310]:
+              - generic [ref=e316]:
+                - emphasis [ref=e317]: 虎扑
+                - text: 是以评分、体育赛事和男性兴趣生活为主的社区网站,专注于NBA赛程、NBA录像、NBA资讯、球员交易、
+                - emphasis [ref=e318]: 足球
+                - text: 、英超、电竞、LPL等全部篮球足球电竞赛事,并提供赛事评分、影视评分、人文评分等全领域评分服务。
+              - link "手机虎扑网" [ref=e323] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=l1ZgPzC0F5xQfUp03mmAeWdorPx1EncUT0FyAm7rHpu
+                - generic [ref=e324]: 手机虎扑网
+                - generic [ref=e326]: 
+        - generic [ref=e328]:
+          - generic [ref=e329]: 大家还在搜
+          - generic [ref=e330]:
+            - link "竞彩足球app手机版下载" [ref=e331] [cursor=pointer]:
+              - /url: /s?wd=%E7%AB%9E%E5%BD%A9%E8%B6%B3%E7%90%83app%E6%89%8B%E6%9C%BA%E7%89%88%E4%B8%8B%E8%BD%BD&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=043fOL210tH6aAk%2FPSo7lEPNLveQIJ1PPMIEqyMKL9hLuGihIWJKBc%2BbY4I&rsf=101636803&rsv_dl=0_prs_28608_1
+              - generic [ref=e333]: 竞彩足球app手机版下载
+            - link "直播足球" [ref=e334] [cursor=pointer]:
+              - /url: /s?wd=%E7%9B%B4%E6%92%AD%E8%B6%B3%E7%90%83&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=043fOL210tH6aAk%2FPSo7lEPNLveQIJ1PPMIEqyMKL9hLuGihIWJKBc%2BbY4I&rsf=101633403&rsv_dl=0_prs_28608_2
+              - generic [ref=e336]: 直播足球
+            - link "肆客足球app官网版" [ref=e337] [cursor=pointer]:
+              - /url: /s?wd=%E8%82%86%E5%AE%A2%E8%B6%B3%E7%90%83app%E5%AE%98%E7%BD%91%E7%89%88&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=043fOL210tH6aAk%2FPSo7lEPNLveQIJ1PPMIEqyMKL9hLuGihIWJKBc%2BbY4I&rsf=101636803&rsv_dl=0_prs_28608_3
+              - generic [ref=e339]: 肆客足球app官网版
+            - link "肆客体育" [ref=e340] [cursor=pointer]:
+              - /url: /s?wd=%E8%82%86%E5%AE%A2%E4%BD%93%E8%82%B2&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=043fOL210tH6aAk%2FPSo7lEPNLveQIJ1PPMIEqyMKL9hLuGihIWJKBc%2BbY4I&rsf=101633403&rsv_dl=0_prs_28608_4
+              - generic [ref=e342]: 肆客体育
+            - link "竞彩足球推荐平台" [ref=e343] [cursor=pointer]:
+              - /url: /s?wd=%E7%AB%9E%E5%BD%A9%E8%B6%B3%E7%90%83%E6%8E%A8%E8%8D%90%E5%B9%B3%E5%8F%B0&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=043fOL210tH6aAk%2FPSo7lEPNLveQIJ1PPMIEqyMKL9hLuGihIWJKBc%2BbY4I&rsf=101633403&rsv_dl=0_prs_28608_5
+              - generic [ref=e345]: 竞彩足球推荐平台
+            - link "足球竞猜吧" [ref=e346] [cursor=pointer]:
+              - /url: /s?wd=%E8%B6%B3%E7%90%83%E7%AB%9E%E7%8C%9C%E5%90%A7&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=043fOL210tH6aAk%2FPSo7lEPNLveQIJ1PPMIEqyMKL9hLuGihIWJKBc%2BbY4I&rsf=101633403&rsv_dl=0_prs_28608_6
+              - generic [ref=e348]: 足球竞猜吧
+            - link "app竞品分析怎么做" [ref=e349] [cursor=pointer]:
+              - /url: /s?wd=app%E7%AB%9E%E5%93%81%E5%88%86%E6%9E%90%E6%80%8E%E4%B9%88%E5%81%9A&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=043fOL210tH6aAk%2FPSo7lEPNLveQIJ1PPMIEqyMKL9hLuGihIWJKBc%2BbY4I&rsf=101631202&rsv_dl=0_prs_28608_7
+              - generic [ref=e351]: app竞品分析怎么做
+            - link "竞品app" [ref=e352] [cursor=pointer]:
+              - /url: /s?wd=%E7%AB%9E%E5%93%81app&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=043fOL210tH6aAk%2FPSo7lEPNLveQIJ1PPMIEqyMKL9hLuGihIWJKBc%2BbY4I&rsf=101631202&rsv_dl=0_prs_28608_8
+              - generic [ref=e354]: 竞品app
+            - link "如何去做一款app的竞品分析" [ref=e355] [cursor=pointer]:
+              - /url: /s?wd=%E5%A6%82%E4%BD%95%E5%8E%BB%E5%81%9A%E4%B8%80%E6%AC%BEapp%E7%9A%84%E7%AB%9E%E5%93%81%E5%88%86%E6%9E%90&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=043fOL210tH6aAk%2FPSo7lEPNLveQIJ1PPMIEqyMKL9hLuGihIWJKBc%2BbY4I&rsf=101631202&rsv_dl=0_prs_28608_9
+              - generic [ref=e357]: 如何去做一款app的竞品分析
+            - link "足球话题区虎扑" [ref=e358] [cursor=pointer]:
+              - /url: /s?wd=%E8%B6%B3%E7%90%83%E8%AF%9D%E9%A2%98%E5%8C%BA%E8%99%8E%E6%89%91&usm=1&ie=utf-8&rsv_pq=d5a0709a00000eb9&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&rsv_t=043fOL210tH6aAk%2FPSo7lEPNLveQIJ1PPMIEqyMKL9hLuGihIWJKBc%2BbY4I&rsf=101636803&rsv_dl=0_prs_28608_10
+              - generic [ref=e360]: 足球话题区虎扑
+        - generic [ref=e364]:
+          - heading "虎扑足球 - 最足球的世界" [level=3] [ref=e367]:
+            - link "虎扑足球 - 最足球的世界" [ref=e368] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqYwC2BcdxqBZev6lgwrgBuS3_WKVgyRGcM7_n5ghXWC
+              - paragraph [ref=e371]:
+                - generic [ref=e374]:
+                  - emphasis [ref=e375]: 虎扑足球
+                  - text: "- 最足球的世界"
+          - generic [ref=e381]:
+            - emphasis [ref=e382]: 虎扑
+            - text: 体育网搜我想看打开
+            - emphasis [ref=e383]: app
+            - text: 首页热榜评分篮球
+            - emphasis [ref=e384]: 足球
+            - text: 步行街电竞专区游戏上海申花 2 2 3010评分武汉三镇辽宁铁人 2 1 3353评分青岛海牛浙江队 4 1 7595评分山东泰山近期全部比赛 6场罗马诺独家:阿森纳方面确认今夏将与阿尔特塔续签新合同 112 42置顶欧联:维拉3-0弗赖堡夺冠,布恩迪亚世界波,罗杰斯传射 333 50置顶为了...
+          - generic [ref=e385]:
+            - link [ref=e387] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqYwC2BcdxqBZev6lgwrgBuS3_WKVgyRGcM7_n5ghXWC
+            - link [ref=e391] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqYwC2BcdxqBZev6lgwrgBuS3_WKVgyRGcM7_n5ghXWC
+            - link [ref=e395] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqYwC2BcdxqBZev6lgwrgBuS3_WKVgyRGcM7_n5ghXWC
+            - link "5" [ref=e399] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqYwC2BcdxqBZev6lgwrgBuS3_WKVgyRGcM7_n5ghXWC
+              - generic [ref=e402]:
+                - generic [ref=e403]: 
+                - text: "5"
+          - link "虎扑网" [ref=e408] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqYwC2BcdxqBZev6lgwrgBuS3_WKVgyRGcM7_n5ghXWC
+            - generic [ref=e409]: 虎扑网
+            - generic [ref=e411]: 
+        - generic [ref=e415]:
+          - heading "直播吧" [level=3] [ref=e418]:
+            - link "直播吧" [ref=e419] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=XMSFssDc3q9QQHjhl37CLBzKScrhtAyuem4LsOqu7q25PqLIPvRyePg-hGBu07W8
+              - paragraph [ref=e422]:
+                - emphasis [ref=e426]: 直播吧
+          - generic [ref=e427]:
+            - link [ref=e429] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=XMSFssDc3q9QQHjhl37CLBzKScrhtAyuem4LsOqu7q25PqLIPvRyePg-hGBu07W8
+            - generic [ref=e434]:
+              - generic [ref=e440]:
+                - emphasis [ref=e441]: 足球
+                - text: 篮球 电竞 综合 筛选 5月20日 星期三 13:00中冠宝鸡赛区展开 16:00LCK常规赛T1 - KRX互动
+                - emphasis [ref=e442]: 直播
+                - text: 手机看直播 18:00LCK常规赛NS - KT互动直播手机看直播 19:00中超第13轮辽宁铁人 - 青岛海牛青岛三频道 咪咕文字手机看直播比分动画 19:30法网资格赛等网球赛事展开 ...
+              - link "直播吧" [ref=e447] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=XMSFssDc3q9QQHjhl37CLBzKScrhtAyuem4LsOqu7q25PqLIPvRyePg-hGBu07W8
+                - generic [ref=e448]: 直播吧
+                - generic [ref=e450]: 
+        - generic [ref=e454]:
+          - heading "直播吧手机版" [level=3] [ref=e457]:
+            - link "直播吧手机版" [ref=e458] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWCCTCDsKIbNPmNf1bD2B-GgUW2tsyzzi2dELkkUe9AXdDqpYNPCHazwrjjCe9wZmRqq
+              - paragraph [ref=e461]:
+                - generic [ref=e464]:
+                  - emphasis [ref=e465]: 直播吧
+                  - text: 手机版
+          - generic [ref=e471]:
+            - emphasis [ref=e472]: 直播吧
+            - text: 是知名体育平台,为
+            - emphasis [ref=e473]: 足球
+            - text: 迷,篮球迷等体育用户提供直播,新闻资讯,数据,论坛社区,原创报道,视频集锦等服务
+          - link "直播吧" [ref=e478] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=c95ePCKsbXeAPHNylTxWCCTCDsKIbNPmNf1bD2B-GgUW2tsyzzi2dELkkUe9AXdDqpYNPCHazwrjjCe9wZmRqq
+            - generic [ref=e479]: 直播吧
+            - generic [ref=e481]: 
+        - generic [ref=e484]:
+          - heading "直播吧，由厦门傲播网络科技有限公司主办的体育平台，百度百科" [level=3] [ref=e485]:
+            - link "直播吧，由厦门傲播网络科技有限公司主办的体育平台，百度百科" [ref=e486] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=AubNttXSD5gZZDxHl5Mh65ENskZ2X7jZ54SxmmU-sK3IOzYOtYRogS_wD6QEhFX-glBzz4bAO_61vTEHVoSKqwD0fd1ljeK-vMZsZDJGxLlfPyQXcL8SRa7vv7_ETXvL
+              - emphasis [ref=e487]: 直播吧
+              - text: (由厦门傲播网络科技有限公司主办的体育平台) - 百度百科
+          - generic [ref=e488]:
+            - generic "查看更多内容" [ref=e489] [cursor=pointer]:
+              - link "查看更多内容" [ref=e490]:
+                - /url: http://www.baidu.com/link?url=AubNttXSD5gZZDxHl5Mh65ENskZ2X7jZ54SxmmU-sK3IOzYOtYRogS_wD6QEhFX-glBzz4bAO_61vTEHVoSKqwD0fd1ljeK-vMZsZDJGxLlfPyQXcL8SRa7vv7_ETXvL
+                - img [ref=e494]
+            - generic [ref=e495]:
+              - generic "\u0002直播\u0001吧\u0003（\u0001zhibo8\u0001）\u0001是\u0001体育\u0001平台\u0001，\u0001是\u0001体育\u0001垂直\u0001媒体\u0001，\u0001涵盖\u0001了\u0002足球\u0003、\u0001篮球\u0001、\u0001综合\u0001体育\u0001赛事\u0001等\u0001，\u0001为\u0001互联\u0001网\u0001人群\u0001提供\u0001赛事\u0001直播\u0001、\u0001资讯\u0001、\u0001数据\u0001、\u0001社区\u0001等\u0001服务\u0001。\u0001由\u0001林玉峰\u0001（\u0001追风\u0001）\u0001于\u00012007\u0001年\u0001创立\u0001。\u0001其\u0001运营\u0001主体\u0001为\u0001厦门\u0001傲\u0001播\u0001网络\u0001科技\u0001有限\u0001公司\u0001。\u0001平台\u0001日常\u0001设\u0001有\u0001“\u0001NBA\u0001最佳\u0001球员\u0001”\u0001、\u0001“\u0001中超\u0001最佳\u0001球员\u0001”\u0001等\u0001互动\u0001评选\u0001栏目\u0001，\u0001NBA\u0001最佳\u0001球员\u0001评选\u0001规则\u0001为\u0001候选\u0001球员\u0001由\u0001每场\u0001主播\u0001提名\u0001...\u0001" [ref=e497]:
+                - generic [ref=e498]:
+                  - emphasis [ref=e499]: 直播吧
+                  - text: （zhibo8）是体育平台，是体育垂直媒体，涵盖了
+                  - emphasis [ref=e500]: 足球
+                  - text: 、篮球、综合体育赛事等，为互联网人群提供赛事直播、资讯、数据、社区等服务。由林玉峰（追风）于2007年创立。其运营主体为厦门傲播网络科技有限公司。平台日常设有“NBA最佳球员”、“中超最佳球员...
+              - generic [ref=e502]:
+                - link "发展历史" [ref=e503] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=Vn0Y1u5kfihqpXe6SM68SDwDrLD3kVBoekNQYYsmI4q0jbqZO6rivI8kulk_wjFFHJqHyOXtrFXpIymQpMWUbWlCG8wG1wXPo6t5QKaCbER0mpZmZ9Q3YX2EPkL5zL03
+                - link "运营主体" [ref=e504] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=Vn0Y1u5kfihqpXe6SM68SDwDrLD3kVBoekNQYYsmI4q0jbqZO6rivI8kulk_wjFFHJqHyOXtrFXpIymQpMWUbWlCG8wG1wXPo6t5QKaCbEOa9YNb14Kr92eoQ3mYWi8P
+                - link "产品服务" [ref=e505] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=Vn0Y1u5kfihqpXe6SM68SDwDrLD3kVBoekNQYYsmI4q0jbqZO6rivI8kulk_wjFFHJqHyOXtrFXpIymQpMWUbWlCG8wG1wXPo6t5QKaCbEO738EC8AD42QSv5p4CjvcW
+                - link "平台活动与社区" [ref=e506] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=Vn0Y1u5kfihqpXe6SM68SDwDrLD3kVBoekNQYYsmI4q0jbqZO6rivI8kulk_wjFFHJqHyOXtrFXpIymQpMWUbWlCG8wG1wXPo6t5QKaCbERPB8JZDfM5lrVY3IaATYHR
+                - link "点击可查看更多内容" [ref=e507] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=AubNttXSD5gZZDxHl5Mh65ENskZ2X7jZ54SxmmU-sK3IOzYOtYRogS_wD6QEhFX-glBzz4bAO_61vTEHVoSKqwD0fd1ljeK-vMZsZDJGxLlfPyQXcL8SRa7vv7_ETXvL
+                  - text: 更多 >
+              - generic [ref=e508]:
+                - link "百度百科" [ref=e509] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=AubNttXSD5gZZDxHl5Mh65ENskZ2X7jZ54SxmmU-sK3IOzYOtYRogS_wD6QEhFX-glBzz4bAO_61vTEHVoSKqwD0fd1ljeK-vMZsZDJGxLlfPyQXcL8SRa7vv7_ETXvL
+                  - img [ref=e514]
+                  - text: 百度百科
+                - generic [ref=e516] [cursor=pointer]: 
+        - generic [ref=e520]:
+          - heading "直播吧" [level=3] [ref=e523]:
+            - link "直播吧" [ref=e524] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=u00N8XyT9sDkv4j2WsZ-L-ijP_U1Oa1kUVU1SWNYGZCoHEfSE0pO35ccpKFIS7ZtUZFNn48zOzlc0APfufQxLZEQFjMWO3iNqkwRWMaK02G
+              - paragraph [ref=e527]:
+                - emphasis [ref=e531]: 直播吧
+          - generic [ref=e532]:
+            - link [ref=e534] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=u00N8XyT9sDkv4j2WsZ-L-ijP_U1Oa1kUVU1SWNYGZCoHEfSE0pO35ccpKFIS7ZtUZFNn48zOzlc0APfufQxLZEQFjMWO3iNqkwRWMaK02G
+            - generic [ref=e539]:
+              - generic [ref=e545]:
+                - emphasis [ref=e546]: 足球
+                - text: 之夜 cctv5 文字 手机看
+                - emphasis [ref=e547]: 直播
+                - text: 比分 动画 19:00 lpl第二赛段登峰组 blg - nip 互动直播 手机看直播 20:00 斯诺克世锦赛-1/8决赛1 cctv5[20:00][22:00] 文字 手机看直播 20:00 斯诺克世锦赛16进8阶段1 肖国栋 - 墨菲 互动直播 手机看直播 4月24日星期五 01:00 西甲第33轮 莱万特 - 塞维利亚 ...
+              - link "直播吧" [ref=e552] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=u00N8XyT9sDkv4j2WsZ-L-ijP_U1Oa1kUVU1SWNYGZCoHEfSE0pO35ccpKFIS7ZtUZFNn48zOzlc0APfufQxLZEQFjMWO3iNqkwRWMaK02G
+                - generic [ref=e553]: 直播吧
+                - generic [ref=e555]: 
+        - generic [ref=e559]:
+          - heading "直播吧" [level=3] [ref=e562]:
+            - link "直播吧" [ref=e563] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqPbBPDOl92Q_v-8wvzT5PtUtztS8om7XzMyH0e-UzV-
+              - paragraph [ref=e566]:
+                - emphasis [ref=e570]: 直播吧
+          - generic [ref=e576]:
+            - text: 16:00LCK常规赛BFX-GEN互动
+            - emphasis [ref=e577]: 直播
+            - text: 手机看直播 17:00LPL第二赛段涅槃组LGD-LNG互动直播手机看直播 18:00LCK常规赛KRX-KT互动直播手机看直播 18:00梦幻联赛S29小组赛XG-Tundra互动直播手机看直播 18:30
+            - emphasis [ref=e578]: 足球
+            - text: 之夜CCTV5文字手机看直播比分动画 19:00挑战者杯败者组上海EDG.M-杭州LGD.NBW互动直播手机看直播 ...
+          - link "guess.zhibo8.com/" [ref=e583] [cursor=pointer]:
+            - /url: http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZqPbBPDOl92Q_v-8wvzT5PtUtztS8om7XzMyH0e-UzV-
+            - generic [ref=e584]: guess.zhibo8.com/
+            - generic [ref=e586]: 
+      - generic [ref=e588]:
+        - generic [ref=e589]: 相关搜索
+        - table [ref=e590]:
+          - rowgroup [ref=e591]:
+            - row "竞彩足球app手机版下载 直播足球" [ref=e592]:
+              - cell "竞彩足球app手机版下载" [ref=e593]:
+                - link "竞彩足球app手机版下载" [ref=e594] [cursor=pointer]:
+                  - /url: /s?wd=%E7%AB%9E%E5%BD%A9%E8%B6%B3%E7%90%83app%E6%89%8B%E6%9C%BA%E7%89%88%E4%B8%8B%E8%BD%BD&rsf=101636803&rsp=0&f=1&rs_src=0&rsv_pq=d5a0709a00000eb9&rsv_t=b26bTh9YWm6QdoyuQphqrkJl63RnRXw4iQMekQwslHH6nhKPQpycUzTF0fg&rsv_dl=brs_28338_1
+                  - generic [ref=e596]: 竞彩足球app手机版下载
+              - cell "直播足球" [ref=e597]:
+                - link "直播足球" [ref=e598] [cursor=pointer]:
+                  - /url: /s?wd=%E7%9B%B4%E6%92%AD%E8%B6%B3%E7%90%83&rsf=101633403&rsp=1&f=1&rs_src=0&rsv_pq=d5a0709a00000eb9&rsv_t=b26bTh9YWm6QdoyuQphqrkJl63RnRXw4iQMekQwslHH6nhKPQpycUzTF0fg&rsv_dl=brs_28338_2
+                  - generic [ref=e600]: 直播足球
+            - row "肆客足球app官网版 肆客体育" [ref=e601]:
+              - cell "肆客足球app官网版" [ref=e602]:
+                - link "肆客足球app官网版" [ref=e603] [cursor=pointer]:
+                  - /url: /s?wd=%E8%82%86%E5%AE%A2%E8%B6%B3%E7%90%83app%E5%AE%98%E7%BD%91%E7%89%88&rsf=101636803&rsp=2&f=1&rs_src=0&rsv_pq=d5a0709a00000eb9&rsv_t=b26bTh9YWm6QdoyuQphqrkJl63RnRXw4iQMekQwslHH6nhKPQpycUzTF0fg&rsv_dl=brs_28338_3
+                  - generic [ref=e605]: 肆客足球app官网版
+              - cell "肆客体育" [ref=e606]:
+                - link "肆客体育" [ref=e607] [cursor=pointer]:
+                  - /url: /s?wd=%E8%82%86%E5%AE%A2%E4%BD%93%E8%82%B2&rsf=101633403&rsp=3&f=1&rs_src=0&rsv_pq=d5a0709a00000eb9&rsv_t=b26bTh9YWm6QdoyuQphqrkJl63RnRXw4iQMekQwslHH6nhKPQpycUzTF0fg&rsv_dl=brs_28338_4
+                  - generic [ref=e609]: 肆客体育
+            - row "足球竞猜吧 app竞品分析怎么做" [ref=e610]:
+              - cell "足球竞猜吧" [ref=e611]:
+                - link "足球竞猜吧" [ref=e612] [cursor=pointer]:
+                  - /url: /s?wd=%E8%B6%B3%E7%90%83%E7%AB%9E%E7%8C%9C%E5%90%A7&rsf=101633403&rsp=4&f=1&rs_src=0&rsv_pq=d5a0709a00000eb9&rsv_t=b26bTh9YWm6QdoyuQphqrkJl63RnRXw4iQMekQwslHH6nhKPQpycUzTF0fg&rsv_dl=brs_28338_5
+                  - generic [ref=e614]: 足球竞猜吧
+              - cell "app竞品分析怎么做" [ref=e615]:
+                - link "app竞品分析怎么做" [ref=e616] [cursor=pointer]:
+                  - /url: /s?wd=app%E7%AB%9E%E5%93%81%E5%88%86%E6%9E%90%E6%80%8E%E4%B9%88%E5%81%9A&rsf=101631202&rsp=5&f=1&rs_src=0&rsv_pq=d5a0709a00000eb9&rsv_t=b26bTh9YWm6QdoyuQphqrkJl63RnRXw4iQMekQwslHH6nhKPQpycUzTF0fg&rsv_dl=brs_28338_6
+                  - generic [ref=e618]: app竞品分析怎么做
+            - row "竞品app 竞彩足球推荐平台" [ref=e619]:
+              - cell "竞品app" [ref=e620]:
+                - link "竞品app" [ref=e621] [cursor=pointer]:
+                  - /url: /s?wd=%E7%AB%9E%E5%93%81app&rsf=101631202&rsp=6&f=1&rs_src=0&rsv_pq=d5a0709a00000eb9&rsv_t=b26bTh9YWm6QdoyuQphqrkJl63RnRXw4iQMekQwslHH6nhKPQpycUzTF0fg&rsv_dl=brs_28338_7
+                  - generic [ref=e623]: 竞品app
+              - cell "竞彩足球推荐平台" [ref=e624]:
+                - link "竞彩足球推荐平台" [ref=e625] [cursor=pointer]:
+                  - /url: /s?wd=%E7%AB%9E%E5%BD%A9%E8%B6%B3%E7%90%83%E6%8E%A8%E8%8D%90%E5%B9%B3%E5%8F%B0&rsf=101633403&rsp=7&f=1&rs_src=0&rsv_pq=d5a0709a00000eb9&rsv_t=b26bTh9YWm6QdoyuQphqrkJl63RnRXw4iQMekQwslHH6nhKPQpycUzTF0fg&rsv_dl=brs_28338_8
+                  - generic [ref=e627]: 竞彩足球推荐平台
+            - row "足球话题区虎扑 购物app竞品分析" [ref=e628]:
+              - cell "足球话题区虎扑" [ref=e629]:
+                - link "足球话题区虎扑" [ref=e630] [cursor=pointer]:
+                  - /url: /s?wd=%E8%B6%B3%E7%90%83%E8%AF%9D%E9%A2%98%E5%8C%BA%E8%99%8E%E6%89%91&rsf=101636803&rsp=8&f=1&rs_src=0&rsv_pq=d5a0709a00000eb9&rsv_t=b26bTh9YWm6QdoyuQphqrkJl63RnRXw4iQMekQwslHH6nhKPQpycUzTF0fg&rsv_dl=brs_28338_9
+                  - generic [ref=e632]: 足球话题区虎扑
+              - cell "购物app竞品分析" [ref=e633]:
+                - link "购物app竞品分析" [ref=e634] [cursor=pointer]:
+                  - /url: /s?wd=%E8%B4%AD%E7%89%A9app%E7%AB%9E%E5%93%81%E5%88%86%E6%9E%90&rsf=101631202&rsp=9&f=1&rs_src=0&rsv_pq=d5a0709a00000eb9&rsv_t=b26bTh9YWm6QdoyuQphqrkJl63RnRXw4iQMekQwslHH6nhKPQpycUzTF0fg&rsv_dl=brs_28338_10
+                  - generic [ref=e636]: 购物app竞品分析
+    - generic [ref=e639]:
+      - link "上一页":
+        - /url: ""
+        - img "上一页"
+      - strong [ref=e640]:
+        - generic [ref=e641]: "1"
+      - link "2" [ref=e642] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=d5a0709a00000eb9&rsv_t=2528EFtxN1FxzXLt5iF2RY8PuwFuqkgeEULB0bjoQHOIwda15rOk&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&wd=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&pn=10
+        - generic [ref=e643]: "2"
+      - link "3" [ref=e644] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=d5a0709a00000eb9&rsv_t=2528EFtxN1FxzXLt5iF2RY8PuwFuqkgeEULB0bjoQHOIwda15rOk&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&wd=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&pn=20
+        - generic [ref=e645]: "3"
+      - link "4" [ref=e646] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=d5a0709a00000eb9&rsv_t=2528EFtxN1FxzXLt5iF2RY8PuwFuqkgeEULB0bjoQHOIwda15rOk&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&wd=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&pn=30
+        - generic [ref=e647]: "4"
+      - link "5" [ref=e648] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=d5a0709a00000eb9&rsv_t=2528EFtxN1FxzXLt5iF2RY8PuwFuqkgeEULB0bjoQHOIwda15rOk&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&wd=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&pn=40
+        - generic [ref=e649]: "5"
+      - link "6" [ref=e650] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=d5a0709a00000eb9&rsv_t=2528EFtxN1FxzXLt5iF2RY8PuwFuqkgeEULB0bjoQHOIwda15rOk&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&wd=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&pn=50
+        - generic [ref=e651]: "6"
+      - link "7" [ref=e652] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=d5a0709a00000eb9&rsv_t=2528EFtxN1FxzXLt5iF2RY8PuwFuqkgeEULB0bjoQHOIwda15rOk&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&wd=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&pn=60
+        - generic [ref=e653]: "7"
+      - link "8" [ref=e654] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=d5a0709a00000eb9&rsv_t=2528EFtxN1FxzXLt5iF2RY8PuwFuqkgeEULB0bjoQHOIwda15rOk&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&wd=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&pn=70
+        - generic [ref=e655]: "8"
+      - link "9" [ref=e656] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=d5a0709a00000eb9&rsv_t=2528EFtxN1FxzXLt5iF2RY8PuwFuqkgeEULB0bjoQHOIwda15rOk&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&wd=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&pn=80
+        - generic [ref=e657]: "9"
+      - link "10" [ref=e658] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=d5a0709a00000eb9&rsv_t=2528EFtxN1FxzXLt5iF2RY8PuwFuqkgeEULB0bjoQHOIwda15rOk&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&wd=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&pn=90
+        - generic [ref=e659]: "10"
+      - link "下一页" [ref=e660] [cursor=pointer]:
+        - /url: /s?usm=1&ie=utf-8&f=0&rsv_pq=d5a0709a00000eb9&rsv_t=2528EFtxN1FxzXLt5iF2RY8PuwFuqkgeEULB0bjoQHOIwda15rOk&oq=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&wd=%E8%B6%B3%E7%90%83APP%20%E7%AB%9E%E5%93%81%20%E7%9B%B4%E6%92%AD%E5%90%A7%20%E8%99%8E%E6%89%91%20%E6%9C%80%E6%96%B0%E5%8A%A8%E6%80%81&pn=10&rsv_page=1
+        - img "下一页" [ref=e661]
+    - generic [ref=e664]:
+      - link "帮助" [ref=e665] [cursor=pointer]:
+        - /url: " https://help.baidu.com/question?prod_id=1"
+      - link "举报" [ref=e666] [cursor=pointer]:
+        - /url: https://help.baidu.com/jubao?source=search
+      - link "用户反馈" [ref=e667] [cursor=pointer]:
+        - /url: javascript:;
+      - link "企业推广" [ref=e668] [cursor=pointer]:
+        - /url: https://e.baidu.com/lp/search/?refer=1298

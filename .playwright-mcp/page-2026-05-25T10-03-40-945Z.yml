@@ -1,0 +1,276 @@
+- generic [active] [ref=e1]:
+  - generic:
+    - generic:
+      - link "跳到主要内容" [ref=e2] [cursor=pointer]
+      - link "无障碍功能帮助" [ref=e3] [cursor=pointer]:
+        - /url: https://support.google.com/websearch/answer/181196?hl=zh-CN
+  - generic [ref=e8]:
+    - search [ref=e9]:
+      - generic [ref=e11]:
+        - link "Google 首页" [ref=e13] [cursor=pointer]:
+          - /url: https://www.google.com.hk/webhp?hl=zh-CN&sa=X&ved=0ahUKEwje76Txl9SUAxX7J0QIHRizOgYQPAgI
+          - img [ref=e14]
+        - generic [ref=e21]:
+          - generic [ref=e22]:
+            - combobox "搜索" [ref=e25]: 世界杯 营销 蒙牛 百威 海信 2026 世界杯 营销 蒙牛 百威 海信 2026
+            - generic [ref=e26]:
+              - button "清除" [ref=e28] [cursor=pointer]:
+                - img [ref=e30]
+              - generic [ref=e33]:
+                - button "按语音搜索" [ref=e34] [cursor=pointer]:
+                  - img [ref=e35]
+                - button "按图搜索" [ref=e37] [cursor=pointer]:
+                  - img [ref=e38]
+          - button "搜索" [ref=e40] [cursor=pointer]:
+            - img [ref=e43]
+    - generic [ref=e45]:
+      - button "设置" [ref=e47] [cursor=pointer]:
+        - img [ref=e50]
+      - generic [ref=e53]:
+        - button "Google 应用" [ref=e55] [cursor=pointer]:
+          - img [ref=e56]
+        - link "登录" [ref=e60] [cursor=pointer]:
+          - /url: https://accounts.google.com/ServiceLogin?hl=zh-CN&passive=true&continue=https://www.google.com.hk/search%3Fq%3D%25E4%25B8%2596%25E7%2595%258C%25E6%259D%25AF%2B%25E8%2590%25A5%25E9%2594%2580%2B%25E8%2592%2599%25E7%2589%259B%2B%25E7%2599%25BE%25E5%25A8%2581%2B%25E6%25B5%25B7%25E4%25BF%25A1%2B2026%26tbs%3Dqdr:d%26num%3D15%26hl%3Dzh-CN&ec=futura_srp_og_si_72236_p
+  - generic [ref=e62]:
+    - navigation [ref=e68]:
+      - generic [ref=e74]:
+        - list [ref=e75]:
+          - listitem [ref=e76]:
+            - link "全部" [disabled] [ref=e77]:
+              - generic [ref=e79]: 全部
+          - listitem [ref=e80]:
+            - link "图片" [ref=e81] [cursor=pointer]:
+              - /url: /search?newwindow=1&sca_esv=314ebde8ccf17184&hl=zh-CN&udm=2&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVNvV7jKtLqzLZ63dd2zPtrmgI7Q-S_UNmpLgK_HfmL3EeJM1Fys9ro-uCnm2eOKrUB1FiedL2T4T5s7C-fPxm2p0tdOKtghJSnBRWMhQrrCqOLNTKo85haWevKNxlafzPYlQGqhJW7Z9s-VoqPKxOjyLD2pw&q=%E4%B8%96%E7%95%8C%E6%9D%AF+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E7%99%BE%E5%A8%81+%E6%B5%B7%E4%BF%A1+2026&sa=X&ved=2ahUKEwje76Txl9SUAxX7J0QIHRizOgYQtKgLegQIFRAB
+              - generic [ref=e83]: 图片
+          - listitem [ref=e84]:
+            - link "新闻" [ref=e85] [cursor=pointer]:
+              - /url: /search?newwindow=1&sca_esv=314ebde8ccf17184&hl=zh-CN&tbs=qdr:d&q=%E4%B8%96%E7%95%8C%E6%9D%AF+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E7%99%BE%E5%A8%81+%E6%B5%B7%E4%BF%A1+2026&tbm=nws&source=lnms&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVNvV7jKtLqzLZ63dd2zPtrmgI7Q-S_UNmpLgK_HfmL3EeJM1Fys9ro-uCnm2eOKrUB1FiedL2T4T5s7C-fPxm2p0tdOKtghJSnBRWMhQrrCqOLNTKo85haWevKNxlafzPYlQGqhJW7Z9s-VoqPKxOjyLD2pw&sa=X&ved=2ahUKEwje76Txl9SUAxX7J0QIHRizOgYQ0pQJegQIExAB
+              - generic [ref=e87]: 新闻
+          - listitem [ref=e88]:
+            - link "视频" [ref=e89] [cursor=pointer]:
+              - /url: /search?newwindow=1&sca_esv=314ebde8ccf17184&hl=zh-CN&udm=7&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVNvV7jKtLqzLZ63dd2zPtrmgI7Q-S_UNmpLgK_HfmL3EeJM1Fys9ro-uCnm2eOKrUB1FiedL2T4T5s7C-fPxm2p0tdOKtghJSnBRWMhQrrCqOLNTKo85haWevKNxlafzPYlQGqhJW7Z9s-VoqPKxOjyLD2pw&q=%E4%B8%96%E7%95%8C%E6%9D%AF+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E7%99%BE%E5%A8%81+%E6%B5%B7%E4%BF%A1+2026&sa=X&ved=2ahUKEwje76Txl9SUAxX7J0QIHRizOgYQtKgLegQIFhAB
+              - generic [ref=e91]: 视频
+          - listitem [ref=e92]:
+            - link "短视频" [ref=e93] [cursor=pointer]:
+              - /url: /search?newwindow=1&sca_esv=314ebde8ccf17184&hl=zh-CN&udm=39&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVNvV7jKtLqzLZ63dd2zPtrmgI7Q-S_UNmpLgK_HfmL3EeJM1Fys9ro-uCnm2eOKrUB1FiedL2T4T5s7C-fPxm2p0tdOKtghJSnBRWMhQrrCqOLNTKo85haWevKNxlafzPYlQGqhJW7Z9s-VoqPKxOjyLD2pw&q=%E4%B8%96%E7%95%8C%E6%9D%AF+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E7%99%BE%E5%A8%81+%E6%B5%B7%E4%BF%A1+2026&sa=X&ved=2ahUKEwje76Txl9SUAxX7J0QIHRizOgYQs6gLegQIFxAB
+              - generic [ref=e95]: 短视频
+          - listitem [ref=e96]:
+            - link "网页" [ref=e97] [cursor=pointer]:
+              - /url: /search?newwindow=1&sca_esv=314ebde8ccf17184&hl=zh-CN&udm=web&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVNvV7jKtLqzLZ63dd2zPtrmgI7Q-S_UNmpLgK_HfmL3EeJM1Fys9ro-uCnm2eOKrUB1FiedL2T4T5s7C-fPxm2p0tdOKtghJSnBRWMhQrrCqOLNTKo85haWevKNxlafzPYlQGqhJW7Z9s-VoqPKxOjyLD2pw&q=%E4%B8%96%E7%95%8C%E6%9D%AF+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E7%99%BE%E5%A8%81+%E6%B5%B7%E4%BF%A1+2026&sa=X&ved=2ahUKEwje76Txl9SUAxX7J0QIHRizOgYQs6gLegQIGBAB
+              - generic [ref=e99]: 网页
+          - listitem [ref=e100]:
+            - link "图书" [ref=e101] [cursor=pointer]:
+              - /url: /search?newwindow=1&sca_esv=314ebde8ccf17184&hl=zh-CN&tbs=qdr:d&q=%E4%B8%96%E7%95%8C%E6%9D%AF+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E7%99%BE%E5%A8%81+%E6%B5%B7%E4%BF%A1+2026&udm=36&source=lnms&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVNvV7jKtLqzLZ63dd2zPtrmgI7Q-S_UNmpLgK_HfmL3EeJM1Fys9ro-uCnm2eOKrUB1FiedL2T4T5s7C-fPxm2p0tdOKtghJSnBRWMhQrrCqOLNTKo85haWevKNxlafzPYlQGqhJW7Z9s-VoqPKxOjyLD2pw&sa=X&ved=2ahUKEwje76Txl9SUAxX7J0QIHRizOgYQ0pQJegQIGRAB
+              - generic [ref=e103]: 图书
+          - listitem [ref=e104]:
+            - button "更多过滤条件" [ref=e105] [cursor=pointer]:
+              - generic "更多过滤条件" [ref=e106]:
+                - generic [ref=e107]:
+                  - generic [ref=e108]: 更多
+                  - img [ref=e110]
+        - button "工具" [ref=e113] [cursor=pointer]:
+          - generic [ref=e115]:
+            - generic [ref=e116]: 工具
+            - img [ref=e118]
+    - heading "搜索结果" [level=1] [ref=e120]
+    - main [ref=e126]:
+      - generic [ref=e130]:
+        - generic [ref=e133]:
+          - heading "网页搜索结果" [level=2] [ref=e134]
+          - generic [ref=e135]:
+            - generic [ref=e138]:
+              - link "世界杯要来了，品牌们更难了 手机网易网 https://www.163.com › article" [ref=e140] [cursor=pointer]:
+                - /url: https://www.163.com/dy/article/KTPI4JBE053102UY.html
+                - heading "世界杯要来了，品牌们更难了" [level=3] [ref=e141]
+                - generic [ref=e146]:
+                  - generic [ref=e148]: 手机网易网
+                  - generic [ref=e150]: https://www.163.com › article
+              - button "关于这条结果的详细信息" [ref=e151] [cursor=pointer]:
+                - img [ref=e154]
+            - generic [ref=e157]:
+              - generic [ref=e158]:
+                - generic [ref=e159]: 3小时前
+                - text: —
+              - generic [ref=e160]:
+                - text: 比如
+                - emphasis [ref=e161]: 海信
+                - text: 自2016年起连续赞助三届
+                - emphasis [ref=e162]: 世界杯
+                - text: 、三届欧洲杯，其中仅2018年俄罗斯
+                - emphasis [ref=e163]: 世界杯
+                - text: 的总
+                - emphasis [ref=e164]: 营销
+                - text: 投入就突破1亿美元。此外，
+                - emphasis [ref=e165]: 海信
+                - text: 的体育
+                - emphasis [ref=e166]: 营销
+                - text: 矩阵还覆盖F1、日本职棒、NBA等多个顶级体育 ...
+        - generic [ref=e170]:
+          - generic [ref=e173]:
+            - link "足球世界杯资本分析：谁在为盛宴买单，谁在收割利润？- zh-go-mgsports.com https://www.zh-go-mgsports.com › html" [ref=e175] [cursor=pointer]:
+              - /url: https://www.zh-go-mgsports.com/html/332d5299615.html
+              - heading "足球世界杯资本分析：谁在为盛宴买单，谁在收割利润？-" [level=3] [ref=e176]
+              - generic [ref=e178]:
+                - img [ref=e182]
+                - generic [ref=e184]:
+                  - generic [ref=e186]: zh-go-mgsports.com
+                  - generic [ref=e188]: https://www.zh-go-mgsports.com › html
+            - button "关于这条结果的详细信息" [ref=e189] [cursor=pointer]:
+              - img [ref=e192]
+          - generic [ref=e195]:
+            - generic [ref=e196]: 19小时前 —
+            - generic [ref=e197]:
+              - text: ...
+              - emphasis [ref=e198]: 世界杯
+              - text: 赞助商（
+              - emphasis [ref=e199]: 百威
+              - text: 、万达、
+              - emphasis [ref=e200]: 蒙牛
+              - text: 、
+              - emphasis [ref=e201]: 海信
+              - text: ）以及区域赞助商- 1 - 3 。这套体系的精妙之处在于互为背书：赞助商需要转播画面中的品牌露出，而转播权的价值又依赖于赞助商的 ...
+        - generic [ref=e205]:
+          - generic [ref=e208]:
+            - link "千亿美元的游戏：世界杯如何成为史上最赚钱的生意- kompacdigit.com https://www.kompacdigit.com › html" [ref=e210] [cursor=pointer]:
+              - /url: https://www.kompacdigit.com/html/034f3099935.html
+              - heading "千亿美元的游戏：世界杯如何成为史上最赚钱的生意-" [level=3] [ref=e211]
+              - generic [ref=e213]:
+                - img [ref=e217]
+                - generic [ref=e219]:
+                  - generic [ref=e221]: kompacdigit.com
+                  - generic [ref=e223]: https://www.kompacdigit.com › html
+            - button "关于这条结果的详细信息" [ref=e224] [cursor=pointer]:
+              - img [ref=e227]
+          - generic [ref=e230]:
+            - generic [ref=e231]: 24小时前 —
+            - generic [ref=e232]:
+              - text: FIFA将赞助商分为三个层级：全球合作伙伴（如阿迪达斯、可口可乐、VISA）、
+              - emphasis [ref=e233]: 世界杯
+              - text: 赞助商（如
+              - emphasis [ref=e234]: 百威
+              - text: 、
+              - emphasis [ref=e235]: 蒙牛
+              - text: 、
+              - emphasis [ref=e236]: 海信
+              - text: ）、区域赞助商。目前16个全球赞助席位已全部售罄，创下 ...
+        - generic [ref=e240]:
+          - generic [ref=e243]:
+            - link "2026世界杯广告大战：谁在烧钱，谁在讲故事？- kompacdigit.com https://www.kompacdigit.com › html" [ref=e245] [cursor=pointer]:
+              - /url: https://www.kompacdigit.com/html/938f3799024.html
+              - heading "2026世界杯广告大战：谁在烧钱，谁在讲故事？-" [level=3] [ref=e246]
+              - generic [ref=e248]:
+                - img [ref=e252]
+                - generic [ref=e254]:
+                  - generic [ref=e256]: kompacdigit.com
+                  - generic [ref=e258]: https://www.kompacdigit.com › html
+            - button "关于这条结果的详细信息" [ref=e259] [cursor=pointer]:
+              - img [ref=e262]
+          - generic [ref=e265]:
+            - generic [ref=e266]: 11小时前 —
+            - generic [ref=e267]:
+              - text: 本届
+              - emphasis [ref=e268]: 世界杯
+              - text: 官方赞助商名单上的中国面孔，只剩下三家：联想（全球合作伙伴）、
+              - emphasis [ref=e269]: 海信
+              - text: 和
+              - emphasis [ref=e270]: 蒙牛
+              - text: （官方赞助商）- 4 。 ... 可口可乐、
+              - emphasis [ref=e271]: 百威
+              - text: 、
+              - emphasis [ref=e272]: 海信
+              - text: ：各有各的打法老牌赞助商可口可乐延续了情感 ...
+        - generic [ref=e276]:
+          - generic [ref=e279]:
+            - link "《给阿嬷的情书》 票房破10亿，珀莱雅收购花知晓，溜溜梅递表 ... 手机网易网 https://www.163.com › article" [ref=e281] [cursor=pointer]:
+              - /url: https://www.163.com/dy/article/KTNQ3UC40539E9ND.html
+              - heading "《给阿嬷的情书》 票房破10亿，珀莱雅收购花知晓，溜溜梅递表 ..." [level=3] [ref=e282]
+              - generic [ref=e287]:
+                - generic [ref=e289]: 手机网易网
+                - generic [ref=e291]: https://www.163.com › article
+            - button "关于这条结果的详细信息" [ref=e292] [cursor=pointer]:
+              - img [ref=e295]
+          - generic [ref=e298]:
+            - generic [ref=e299]: 20小时前 —
+            - generic [ref=e300]:
+              - text: 此次传播是
+              - emphasis [ref=e301]: 海信
+              - text: 长期“陪球迷过
+              - emphasis [ref=e302]: 世界杯
+              - text: ”体验构建的一环。品牌通过此前引进大力神杯、推出观赛潮服、联动
+              - emphasis [ref=e303]: 蒙牛
+              - text: 唤起青春记忆等系列主题动作，早已铺垫了情感基础。
+        - generic [ref=e307]:
+          - heading "图片" [level=2] [ref=e311]
+          - generic [ref=e315]:
+            - generic [ref=e319] [cursor=pointer]:
+              - link "世界杯要来了，品牌们更难了-虎嗅网 虎嗅":
+                - /url: https://www.huxiu.com/article/4861204.html
+              - button "世界杯要来了，品牌们更难了-虎嗅网 4 小时前" [ref=e321]:
+                - img "世界杯要来了，品牌们更难了-虎嗅网" [ref=e324]
+                - generic [ref=e325]:
+                  - generic:
+                    - generic: 4 小时前
+              - generic [ref=e327]:
+                - generic [ref=e329]: 世界杯要来了，品牌们更难了-虎嗅网
+                - generic [ref=e330]:
+                  - generic [ref=e337]: 虎嗅
+                  - button "关于这条结果的详细信息" [ref=e340]:
+                    - img [ref=e343]
+            - generic [ref=e348] [cursor=pointer]:
+              - link "世界杯要来了，品牌们更难了-虎嗅网 虎嗅":
+                - /url: https://www.huxiu.com/article/4861204.html
+              - button "世界杯要来了，品牌们更难了-虎嗅网 4 小时前" [ref=e350]:
+                - img "世界杯要来了，品牌们更难了-虎嗅网" [ref=e353]
+                - generic [ref=e354]:
+                  - generic:
+                    - generic: 4 小时前
+              - generic [ref=e356]:
+                - generic [ref=e358]: 世界杯要来了，品牌们更难了-虎嗅网
+                - generic [ref=e359]:
+                  - generic [ref=e366]: 虎嗅
+                  - button "关于这条结果的详细信息" [ref=e369]:
+                    - img [ref=e372]
+            - generic [ref=e377] [cursor=pointer]:
+              - link "世界杯要来了，品牌们更难了-虎嗅网 虎嗅":
+                - /url: https://www.huxiu.com/article/4861204.html
+              - button "世界杯要来了，品牌们更难了-虎嗅网 4 小时前" [ref=e379]:
+                - img "世界杯要来了，品牌们更难了-虎嗅网" [ref=e382]
+                - generic [ref=e383]:
+                  - generic:
+                    - generic: 4 小时前
+              - generic [ref=e385]:
+                - generic [ref=e387]: 世界杯要来了，品牌们更难了-虎嗅网
+                - generic [ref=e388]:
+                  - generic [ref=e395]: 虎嗅
+                  - button "关于这条结果的详细信息" [ref=e398]:
+                    - img [ref=e401]
+          - link "所有图片" [ref=e404] [cursor=pointer]:
+            - /url: /search?newwindow=1&sca_esv=314ebde8ccf17184&hl=zh-CN&tbs=qdr:d&q=%E4%B8%96%E7%95%8C%E6%9D%AF+%E8%90%A5%E9%94%80+%E8%92%99%E7%89%9B+%E7%99%BE%E5%A8%81+%E6%B5%B7%E4%BF%A1+2026&udm=2&source=univ&fir=fKVEbu0pxHEQkM%252COtgy8ke-tUL71M%252C_%253BSWNzfjduVnVaBM%252COtgy8ke-tUL71M%252C_%253Bs3sHmZxIElI7-M%252COtgy8ke-tUL71M%252C_&usg=AI4_-kQIkUNnQrp9kxL-JzADq2e3vqnYKA&sa=X&ved=2ahUKEwje76Txl9SUAxX7J0QIHRizOgYQ7Al6BAgsEAU
+            - separator [ref=e405]
+            - generic [ref=e406]:
+              - generic [ref=e407]: 所有图片
+              - img [ref=e409]
+      - generic:
+        - generic:
+          - navigation
+      - navigation
+    - contentinfo [ref=e411]:
+      - heading "页脚链接" [level=1] [ref=e412]
+      - generic [ref=e416]:
+        - generic [ref=e420]:
+          - button "浦东新区 中国上海市 - 是根据您的 IP 地址推断出来的" [ref=e422] [cursor=pointer]:
+            - generic [ref=e423]: 浦东新区 中国上海市
+            - generic [ref=e425]:
+              - text: "-"
+              - generic [ref=e426]: 是根据您的 IP 地址推断出来的
+          - text: "-"
+          - button "更新位置信息" [ref=e428] [cursor=pointer]: 更新位置信息
+        - generic [ref=e431]:
+          - link "帮助" [ref=e432] [cursor=pointer]:
+            - /url: https://support.google.com/websearch/?p=ws_results_help&hl=zh-CN&fg=1
+          - link "发送反馈" [ref=e433] [cursor=pointer]:
+            - /url: "#"
+          - link "隐私权" [ref=e434] [cursor=pointer]:
+            - /url: https://policies.google.com/privacy?hl=zh-CN&fg=1
+          - link "条款" [ref=e435] [cursor=pointer]:
+            - /url: https://policies.google.com/terms?hl=zh-CN&fg=1

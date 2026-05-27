@@ -1,0 +1,356 @@
+- generic [ref=e4]:
+  - link "Skip to main content" [ref=e5] [cursor=pointer]:
+    - /url: "#content"
+    - generic [ref=e6]: Skip to main content
+  - generic [ref=e9]:
+    - generic [ref=e10]:
+      - link "SB Nation":
+        - /url: https://www.sbnation.com
+        - img "SB Nation" [ref=e11] [cursor=pointer]
+    - generic [ref=e13]:
+      - link "A Newcastle United Community May 25, 2026" [ref=e15] [cursor=pointer]:
+        - /url: /
+        - img [ref=e17]
+        - generic [ref=e18]:
+          - generic [ref=e19]: A Newcastle United Community
+          - generic [ref=e20]: May 25, 2026
+      - link "Coming Home Newcastle" [ref=e22] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e24]:
+        - button "Open Notifications" [ref=e26] [cursor=pointer]:
+          - img "Notifications" [ref=e28]
+        - button "Open Search" [ref=e30] [cursor=pointer]:
+          - img [ref=e31]
+        - button "Open Drawer" [ref=e33] [cursor=pointer]:
+          - img [ref=e34]
+    - navigation [ref=e35]:
+      - list [ref=e36]:
+        - listitem [ref=e37]:
+          - link "The Feed" [ref=e38] [cursor=pointer]:
+            - /url: /feed
+        - listitem [ref=e39]:
+          - link "Sections" [ref=e40] [cursor=pointer]:
+            - /url: "#"
+            - text: Sections
+            - img [ref=e42]
+          - list "submenu":
+            - listitem:
+              - link "NUFC Team News":
+                - /url: https://cominghomenewcastle.sbnation.com/newcastle-united-team-news
+            - listitem:
+              - link "NUFC Analysis & Longform":
+                - /url: https://cominghomenewcastle.sbnation.com/newcastle-united-analysis-longform
+            - listitem:
+              - link "NUFC Transfer News & Rumors":
+                - /url: https://cominghomenewcastle.sbnation.com/newcastle-united-transfer-news-rumors
+            - listitem:
+              - link "NUFC Video":
+                - /url: https://cominghomenewcastle.sbnation.com/newcastle-united-video
+            - listitem:
+              - link "NUFC Match Threads":
+                - /url: https://cominghomenewcastle.sbnation.com/newcastle-united-match-threads
+            - listitem:
+              - link "NUFC Quick Thoughts":
+                - /url: https://cominghomenewcastle.sbnation.com/newcastle-united-quick-thoughts
+            - listitem:
+              - link "NUFC Match Reports":
+                - /url: https://cominghomenewcastle.sbnation.com/newcastle-united-match-reports
+            - listitem:
+              - link "NUFC Ratings & Quotes":
+                - /url: https://cominghomenewcastle.sbnation.com/newcastle-united-ratings-quotes
+            - listitem:
+              - link "Newcastle United Q&A":
+                - /url: https://cominghomenewcastle.sbnation.com/newcastle-united-q-a
+            - listitem:
+              - link "Newcastle United Lore":
+                - /url: http://cominghomenewcastle.sbnation.com/newcastle-united-lore
+        - listitem [ref=e44]:
+          - link "Newcastle United" [ref=e45] [cursor=pointer]:
+            - /url: "#"
+            - text: Newcastle United
+            - img [ref=e47]
+          - list "submenu":
+            - listitem:
+              - link "Club News":
+                - /url: https://www.nufc.co.uk/news/
+            - listitem:
+              - link "Schedule":
+                - /url: https://www.nufc.co.uk/matches/first-team/
+            - listitem:
+              - link "Roster":
+                - /url: https://www.nufc.co.uk/teams/first-team/
+            - listitem:
+              - link "Social Media":
+                - /url: https://twitter.com/NUFC
+        - listitem [ref=e49]:
+          - link "About" [ref=e50] [cursor=pointer]:
+            - /url: /masthead
+        - listitem [ref=e51]:
+          - link "Community Guidelines" [ref=e52] [cursor=pointer]:
+            - /url: /community-guidelines
+  - navigation "Sticky Nav":
+    - generic:
+      - link "Click to visit the homepage":
+        - /url: /
+        - generic:
+          - img "Community Logo"
+          - generic: Coming Home Newcastle
+      - generic: Newcastle’s Owners PIF Confirmed as 2026 World Cup Sponsor
+      - generic:
+        - generic:
+          - generic:
+            - button "Open Notifications":
+              - generic:
+                - img "Notifications"
+        - button "Open Drawer":
+          - img
+  - main [ref=e54]:
+    - generic [ref=e55]:
+      - article [ref=e58]:
+        - generic [ref=e60]:
+          - generic [ref=e62]:
+            - list [ref=e65]:
+              - listitem [ref=e66]:
+                - link "Newcastle United Team News" [ref=e67] [cursor=pointer]:
+                  - /url: /newcastle-united-team-news
+            - heading "Newcastle’s Owners PIF Confirmed as 2026 World Cup Sponsor" [level=1] [ref=e69]
+          - generic [ref=e72]:
+            - generic [ref=e73]:
+              - generic [ref=e75]:
+                - text: by
+                - link "Antonio Losada" [ref=e77] [cursor=pointer]:
+                  - /url: /authors/chapulana
+              - time [ref=e79]: May 24, 2026, 10:00 PM GMT+8
+            - generic [ref=e81]:
+              - list [ref=e83]:
+                - listitem [ref=e84]:
+                  - button "Share on Facebook" [ref=e85] [cursor=pointer]:
+                    - img "Facebook" [ref=e86]
+                - listitem [ref=e88]:
+                  - button "Copy link" [ref=e90] [cursor=pointer]:
+                    - img "Link" [ref=e91]
+              - generic [ref=e93]: "|"
+        - generic [ref=e95]:
+          - generic [ref=e96]:
+            - generic [ref=e101]:
+              - img "E1 Series Jeddah GP" [ref=e104]
+              - generic [ref=e105]: "JEDDAH, SAUDI ARABIA - JANUARY 24: Public Investment Fund (PIF) logos are seen on RaceBirds ahead of the group stages during the E1 Series Jeddah GP on January 24, 2026 in Jeddah, Saudi Arabia. (Photo by Joe Portlock/Getty Images) Getty Images"
+            - generic [ref=e106]:
+              - paragraph [ref=e108]: Newcastle United’s owner, Saudi Arabia’s Public Investment Fund, has officially expanded its presence in global football after becoming an “official tournament supporter” of the FIFA World Cup.
+              - paragraph [ref=e110]:
+                - text: “Saudi Arabia’s sovereign wealth fund became an ‘official tournament supporter’ of the World Cup,”
+                - link "ESPN reported" [ref=e111] [cursor=pointer]:
+                  - /url: https://www.espn.com/soccer/story/_/id/48773769/saudi-arabia-investment-fund-joins-2026-world-cup-official-supporter
+                - text: .
+              - paragraph [ref=e113]: The agreement further strengthens ties between PIF and FIFA as Saudi Arabia continues its investment in sport, contrary to recent reports implying that PIF was slowly shifting away from it by quitting its backing of LIV Golf and potentially plotting a move away from Tyneside.
+              - paragraph [ref=e115]: In announcing the move, the fund emphasized football’s central role in its long-term strategy.
+              - paragraph [ref=e117]: “Sport was a ‘priority sector,’ and soccer was crucial to the ‘ongoing transformation of Saudi Arabia,’” PIF said in an official statement.
+              - paragraph [ref=e119]: “PIF continues to expand its global footprint in sport, with football at the heart of this growth,” Mohamed AlSayyad said.
+              - paragraph [ref=e121]: Saudi Arabia’s broader ambitions in football remain significant, to say the least, not only by putting a strong effort into turning Newcastle into a powerhouse but also having already secured hosting rights for the 2034 World Cup and invested heavily across the sport.
+              - generic [ref=e122]:
+                - generic [ref=e123]: "See More:"
+                - list [ref=e124]:
+                  - listitem [ref=e125]:
+                    - link "Newcastle United Team News" [ref=e126] [cursor=pointer]:
+                      - /url: /newcastle-united-team-news
+          - generic [ref=e132]:
+            - heading "Most Popular" [level=2] [ref=e136]
+            - list [ref=e139]:
+              - listitem [ref=e140]:
+                - link "Newcastle Reportedly Exploring £70 Million Transfer for Colombian Striker" [ref=e141] [cursor=pointer]:
+                  - /url: /newcastle-united-transfer-news-rumors/21782/newcastle-reportedly-exploring-70-million-transfer-for-colombian-striker
+              - listitem [ref=e143]:
+                - link "Arsenal Join Race for Newcastle’s Midfielder Summer Transfer" [ref=e144] [cursor=pointer]:
+                  - /url: /newcastle-united-transfer-news-rumors/21831/arsenal-join-race-for-newcastles-midfielder-summer-transfer
+              - listitem [ref=e146]:
+                - link "New Report Sheds Light on Newcastle’s Pursuit of Man City’s James Trafford" [ref=e147] [cursor=pointer]:
+                  - /url: /newcastle-united-transfer-news-rumors/21745/new-report-sheds-light-on-newcastles-pursuit-of-man-citys-james-trafford
+              - listitem [ref=e149]:
+                - link "Eddie Howe Confirms Newcastle’s 180-Degree Turn on Fabian Schar’s Future" [ref=e150] [cursor=pointer]:
+                  - /url: /newcastle-united-team-news/21869/eddie-howe-confirms-newcastles-180-degree-turn-on-fabian-schars-future
+              - listitem [ref=e152]:
+                - 'link "Newcastle Pursuing Osasuna Winger as Anthony Gordon Replacement: Report" [ref=e153] [cursor=pointer]':
+                  - /url: /newcastle-united-transfer-news-rumors/21897/newcastle-pursuing-osasuna-winger-as-anthony-gordon-replacement-report
+      - generic [ref=e161]:
+        - generic [ref=e162]:
+          - generic [ref=e164]:
+            - heading "More in Newcastle United Team News" [level=2] [ref=e168]:
+              - text: More in
+              - link "Newcastle United Team News" [ref=e169] [cursor=pointer]:
+                - /url: /newcastle-united-team-news
+            - generic [ref=e171]:
+              - generic [ref=e172]:
+                - generic [ref=e174]:
+                  - generic [ref=e175]:
+                    - 'link "PIF Set to Sell Newcastle Minority Stake: Breaking"':
+                      - /url: /newcastle-united-team-news/21830/pif-set-to-sell-newcastle-minority-stake-breaking
+                      - 'img "PIF Set to Sell Newcastle Minority Stake: Breaking" [ref=e176] [cursor=pointer]'
+                  - generic [ref=e180]:
+                    - time [ref=e184]: May 20
+                    - 'link "PIF Set to Sell Newcastle Minority Stake: Breaking" [ref=e187] [cursor=pointer]':
+                      - /url: /newcastle-united-team-news/21830/pif-set-to-sell-newcastle-minority-stake-breaking
+                - generic [ref=e189]:
+                  - generic [ref=e190]:
+                    - link "PIF’s Interest in Newcastle Clarified Amid Exit Speculation":
+                      - /url: /newcastle-united-team-news/21723/pifs-interest-in-newcastle-clarified-amid-exit-speculation
+                      - img "PIF’s Interest in Newcastle Clarified Amid Exit Speculation" [ref=e191] [cursor=pointer]
+                  - generic [ref=e195]:
+                    - time [ref=e199]: May 20
+                    - link "PIF’s Interest in Newcastle Clarified Amid Exit Speculation" [ref=e202] [cursor=pointer]:
+                      - /url: /newcastle-united-team-news/21723/pifs-interest-in-newcastle-clarified-amid-exit-speculation
+                - generic [ref=e204]:
+                  - generic [ref=e205]:
+                    - link "Newcastle vs. West Ham — Team News & Match Preview":
+                      - /url: /newcastle-united-team-news/21761/newcastle-vs-west-ham-team-news-match-preview
+                      - img "Newcastle vs. West Ham — Team News & Match Preview" [ref=e206] [cursor=pointer]
+                  - generic [ref=e210]:
+                    - time [ref=e214]: May 17
+                    - link "Newcastle vs. West Ham — Team News & Match Preview" [ref=e217] [cursor=pointer]:
+                      - /url: /newcastle-united-team-news/21761/newcastle-vs-west-ham-team-news-match-preview
+                - generic [ref=e219]:
+                  - generic [ref=e220]:
+                    - link "Eddie Howe Confirms Fabian Schar Might Not Play for Newcastle Again":
+                      - /url: /newcastle-united-team-news/21763/eddie-howe-confirms-fabian-schar-might-not-play-for-newcastle-again
+                      - img "Eddie Howe Confirms Fabian Schar Might Not Play for Newcastle Again" [ref=e221] [cursor=pointer]
+                  - generic [ref=e225]:
+                    - time [ref=e229]: May 17
+                    - link "Eddie Howe Confirms Fabian Schar Might Not Play for Newcastle Again" [ref=e232] [cursor=pointer]:
+                      - /url: /newcastle-united-team-news/21763/eddie-howe-confirms-fabian-schar-might-not-play-for-newcastle-again
+                - generic [ref=e234]:
+                  - generic [ref=e235]:
+                    - link "Newcastle Announce Player Exit Before West Ham Game":
+                      - /url: /newcastle-united-team-news/21781/newcastle-announce-player-exit-before-west-ham-game
+                      - img "Newcastle Announce Player Exit Before West Ham Game" [ref=e236] [cursor=pointer]
+                  - generic [ref=e240]:
+                    - time [ref=e244]: May 16
+                    - link "Newcastle Announce Player Exit Before West Ham Game" [ref=e247] [cursor=pointer]:
+                      - /url: /newcastle-united-team-news/21781/newcastle-announce-player-exit-before-west-ham-game
+                - generic [ref=e249]:
+                  - generic [ref=e250]:
+                    - link "Newcastle’s Eddie Howe Hints at Anthony Gordon’s Exit Amid Bayern Links":
+                      - /url: /newcastle-united-team-news/21762/newcastles-eddie-howe-hints-at-anthony-gordons-exit-amid-bayern-links
+                      - img "Newcastle’s Eddie Howe Hints at Anthony Gordon’s Exit Amid Bayern Links" [ref=e251] [cursor=pointer]
+                  - generic [ref=e255]:
+                    - time [ref=e259]: May 16
+                    - link "Newcastle’s Eddie Howe Hints at Anthony Gordon’s Exit Amid Bayern Links" [ref=e262] [cursor=pointer]:
+                      - /url: /newcastle-united-team-news/21762/newcastles-eddie-howe-hints-at-anthony-gordons-exit-amid-bayern-links
+              - text: "| | | | | | | | | | | |"
+          - link "Advertisement" [ref=e266] [cursor=pointer]:
+            - /url: /
+            - generic [ref=e267]:
+              - generic [ref=e268]:
+                - generic [ref=e269]: Advertiser Content From
+                - img "Sponsor Logo" [ref=e271]
+              - paragraph [ref=e272]: This is the title for the native ad
+        - generic [ref=e274]:
+          - heading "The Latest" [level=2] [ref=e278]
+          - generic [ref=e279]:
+            - generic [ref=e283]:
+              - time [ref=e287]: 12:00 AM GMT+8
+              - link "Newcastle Reportedly Exploring £70 Million Transfer for Colombian Striker" [ref=e290] [cursor=pointer]:
+                - /url: /newcastle-united-transfer-news-rumors/21782/newcastle-reportedly-exploring-70-million-transfer-for-colombian-striker
+            - generic [ref=e294]:
+              - time [ref=e298]: May 24
+              - link "Fulham vs. Newcastle — Team News & Match Preview" [ref=e301] [cursor=pointer]:
+                - /url: /newcastle-united-team-news/21848/fulham-vs-newcastle-team-news-match-preview
+            - generic [ref=e305]:
+              - time [ref=e309]: May 24
+              - 'link "Newcastle Pursuing Osasuna Winger as Anthony Gordon Replacement: Report" [ref=e312] [cursor=pointer]':
+                - /url: /newcastle-united-transfer-news-rumors/21897/newcastle-pursuing-osasuna-winger-as-anthony-gordon-replacement-report
+            - generic [ref=e316]:
+              - time [ref=e320]: May 24
+              - link "Arsenal Join Race for Newcastle’s Midfielder Summer Transfer" [ref=e323] [cursor=pointer]:
+                - /url: /newcastle-united-transfer-news-rumors/21831/arsenal-join-race-for-newcastles-midfielder-summer-transfer
+            - generic [ref=e327]:
+              - time [ref=e331]: May 23
+              - link "New Report Sheds Light on Newcastle’s Pursuit of Man City’s James Trafford" [ref=e334] [cursor=pointer]:
+                - /url: /newcastle-united-transfer-news-rumors/21745/new-report-sheds-light-on-newcastles-pursuit-of-man-citys-james-trafford
+            - generic [ref=e338]:
+              - time [ref=e342]: May 23
+              - link "Eddie Howe Confirms Newcastle’s 180-Degree Turn on Fabian Schar’s Future" [ref=e345] [cursor=pointer]:
+                - /url: /newcastle-united-team-news/21869/eddie-howe-confirms-newcastles-180-degree-turn-on-fabian-schars-future
+    - generic [ref=e350]:
+      - generic [ref=e355]: Loading comments
+      - generic [ref=e356]: Getting the conversation ready...
+  - contentinfo [ref=e361]:
+    - generic [ref=e363]:
+      - generic [ref=e364]:
+        - link "Coming Home Newcastle Logo" [ref=e365] [cursor=pointer]:
+          - /url: /
+          - img "Coming Home Newcastle Logo" [ref=e366]
+        - list [ref=e368]:
+          - listitem [ref=e369]:
+            - link "Facebook" [ref=e370] [cursor=pointer]:
+              - /url: http://www.facebook.com/pages/Coming-Home-Newcastle/148164505204379
+              - img "Facebook" [ref=e371]
+          - listitem [ref=e373]:
+            - link "Twitter" [ref=e374] [cursor=pointer]:
+              - /url: https://www.twitter.com/ComingHomeNUFC
+              - img "Twitter" [ref=e375]
+          - listitem [ref=e377]:
+            - link "RSS" [ref=e378] [cursor=pointer]:
+              - /url: /rss/index.xml
+              - img "RSS" [ref=e379]
+      - generic [ref=e381]:
+        - list [ref=e382]:
+          - listitem [ref=e383]:
+            - link "Masthead" [ref=e384] [cursor=pointer]:
+              - /url: /masthead
+          - listitem [ref=e385]:
+            - link "Community Guidelines" [ref=e386] [cursor=pointer]:
+              - /url: /community-guidelines
+          - listitem [ref=e387]:
+            - link "Facebook" [ref=e388] [cursor=pointer]:
+              - /url: http://www.facebook.com/pages/Coming-Home-Newcastle/148164505204379
+          - listitem [ref=e389]:
+            - link "Twitter" [ref=e390] [cursor=pointer]:
+              - /url: https://www.twitter.com/ComingHomeNUFC
+        - list [ref=e391]:
+          - listitem [ref=e392]:
+            - link "Contact" [ref=e393] [cursor=pointer]:
+              - /url: /contact
+          - listitem [ref=e394]:
+            - link "Have a news tip?" [ref=e395] [cursor=pointer]:
+              - /url: /contact
+          - listitem [ref=e396]:
+            - link "Browse Communities" [ref=e397] [cursor=pointer]:
+              - /url: https://www.sbnation.com/communities
+          - listitem [ref=e398]:
+            - link "SB Nation Staff" [ref=e399] [cursor=pointer]:
+              - /url: https://www.sbnation.com/masthead
+          - listitem [ref=e400]:
+            - link "Job Opportunities" [ref=e401] [cursor=pointer]:
+              - /url: https://www.sbnation.com/pages/openings
+          - listitem [ref=e402]:
+            - link "Editorial Ethics & Guidelines" [ref=e403] [cursor=pointer]:
+              - /url: https://www.sbnation.com/guide/disclosure
+          - listitem [ref=e404]:
+            - link "DMCA Policy" [ref=e405] [cursor=pointer]:
+              - /url: https://www.sbnation.com/community-guidelines#a-quick-note-about-copyright
+        - list [ref=e406]:
+          - listitem [ref=e407]:
+            - link "Privacy Policy" [ref=e408] [cursor=pointer]:
+              - /url: https://www.voxmedia.com/legal/privacy-notice
+          - listitem [ref=e409]:
+            - link "Terms of Use" [ref=e410] [cursor=pointer]:
+              - /url: https://www.voxmedia.com/legal/terms-of-use
+          - listitem [ref=e411]:
+            - link "Cookie Policy" [ref=e412] [cursor=pointer]:
+              - /url: https://www.voxmedia.com/legal/cookie-policy
+          - listitem [ref=e413]:
+            - button "Cookie Settings" [ref=e414] [cursor=pointer]
+          - listitem [ref=e415]:
+            - link "Licensing" [ref=e416] [cursor=pointer]:
+              - /url: https://www.voxmedia.com/pages/licensing
+          - listitem [ref=e417]:
+            - link "Accessibility" [ref=e418] [cursor=pointer]:
+              - /url: https://www.voxmedia.com/legal/accessibility
+          - listitem [ref=e419]:
+            - link "Platform Status" [ref=e420] [cursor=pointer]:
+              - /url: https://status.voxmedia.com
+      - paragraph [ref=e421]:
+        - text: © 2026
+        - link "Vox Media" [ref=e422] [cursor=pointer]:
+          - /url: https://www.voxmedia.com
+        - text: ", LLC. All Rights Reserved"
+      - paragraph [ref=e423]: Gambling Problem? Call 1-800-GAMBLER (1-800-426-2537). Hope is here. GamblingHelpLineMA.org or call (800) 327-5050 for 24/7 support (MA). Visit www.mdgamblinghelp.org (MD). Call 877-8HOPE-NY or text HOPENY (467369) (NY). 21+ (18+ D.C.) and present in select states (for KS, in affiliation with Kansas Star Casino). Call 1-888-789-7777 or visit ccpg.org/chat (CT) or visit FanDuel.com/RG.

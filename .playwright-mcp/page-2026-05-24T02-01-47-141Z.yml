@@ -1,0 +1,534 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - button "Skip to content" [ref=e3] [cursor=pointer]:
+      - generic [ref=e5]: Skip to content
+    - button "Accessibility Feedback" [ref=e6] [cursor=pointer]:
+      - generic [ref=e8]: Accessibility Feedback
+    - generic [ref=e9]:
+      - link "Back to Bing search" [ref=e10] [cursor=pointer]:
+        - /url: /?FORM=Z9FD1
+        - heading "Back to Bing search" [level=1] [ref=e11]
+      - search [ref=e12]:
+        - button "Search" [ref=e15] [cursor=pointer]
+        - searchbox "Enter your search here - Search suggestions will show as you type" [ref=e16]: World Cup 2026 marketing sponsorship May 2026
+        - button "Search using an image" [ref=e24] [cursor=pointer]
+    - complementary "Account Rewards and Preferences" [ref=e26]:
+      - button "Microsoft Rewards" [ref=e27] [cursor=pointer]
+      - link "Sign in" [ref=e28] [cursor=pointer]:
+        - /url: javascript:void(0)
+        - generic "Sign in" [ref=e29]
+    - navigation "Search Filter" [ref=e30]:
+      - list [ref=e31]:
+        - listitem [ref=e32]:
+          - link "All" [ref=e33] [cursor=pointer]:
+            - /url: /?scope=web&FORM=HDRSC1
+        - listitem [ref=e34]:
+          - link "Search" [ref=e35] [cursor=pointer]:
+            - /url: /copilotsearch?q=World+Cup+2026+marketing+sponsorship+May+2026&FORM=CSSCOP
+            - img [ref=e36]
+            - text: Search
+        - listitem [ref=e38]:
+          - link "Images" [ref=e39] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=bf612c0bcad987b8bc994de0cbdf9d389712616b72bf9febd4690e4d876661f9JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L2ltYWdlcy9zZWFyY2g_cT1Xb3JsZCtDdXArMjAyNittYXJrZXRpbmcrc3BvbnNvcnNoaXArTWF5KzIwMjYmRk9STT1IRFJTQzM&ntb=1
+        - listitem [ref=e40]:
+          - link "Videos" [ref=e41] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=4b65c3e9ceea2387aed70e7029f1827c5efc3f66c2fcc6f2e95113bd58f7601eJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Xb3JsZCtDdXArMjAyNittYXJrZXRpbmcrc3BvbnNvcnNoaXArTWF5KzIwMjYmRk9STT1IRFJTQzQ&ntb=1
+        - listitem [ref=e42]:
+          - link "Maps" [ref=e43] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=77acb017e2b5053072188a2f0a40d449300b7a38384ae4332d1687d3ad7b64c6JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L21hcHM_cT1Xb3JsZCtDdXArMjAyNittYXJrZXRpbmcrc3BvbnNvcnNoaXArTWF5KzIwMjYmRk9STT1IRFJTQzY&ntb=1
+        - listitem [ref=e44]:
+          - link "News" [ref=e45] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=8bc6731e751fe5cb605e6f74ed5d1caa83f80facb4ddca6aa0fb1230c4a39123JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L25ld3Mvc2VhcmNoP3E9V29ybGQrQ3VwKzIwMjYrbWFya2V0aW5nK3Nwb25zb3JzaGlwK01heSsyMDI2JkZPUk09SERSU0M3&ntb=1
+        - listitem [ref=e46]:
+          - link "Copilot" [ref=e47] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=9a31d3dccda9e9c14cede44d6742631f2dc370c287c8c63342e74c96c3e8b073JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L2NoYXQ_cHJvbXB0PVdvcmxkK0N1cCsyMDI2K21hcmtldGluZytzcG9uc29yc2hpcCtNYXkrMjAyNiZzZW5kcXVlcnk9MSZGT1JNPVNDQ09EWA&ntb=1
+        - listitem [ref=e48]:
+          - button "More" [ref=e49] [cursor=pointer]:
+            - img [ref=e51]
+            - text: More
+  - main "Search Results" [ref=e54]:
+    - generic [ref=e55]:
+      - generic [ref=e57]:
+        - img "Change location" [ref=e58]
+        - text: Los Angeles, California ·
+        - link "Use precise location" [ref=e61] [cursor=pointer]:
+          - /url: javascript:;
+      - generic [ref=e62]:
+        - button "Filtered by Any time, Past 24 hours" [ref=e64] [cursor=pointer]: Past 24 hours
+        - button "Open links in new tab" [pressed] [ref=e67] [cursor=pointer]:
+          - generic [ref=e68]: Open links in new tab
+          - img [ref=e70]
+    - generic [ref=e73]:
+      - list [ref=e74]:
+        - listitem [ref=e75]:
+          - list [ref=e76]:
+            - listitem [ref=e77]:
+              - generic [ref=e78]:
+                - generic [ref=e79] [cursor=pointer]:
+                  - generic [ref=e84]: Gartner
+                  - generic [ref=e85]:
+                    - generic [ref=e86]: https://www.gartner.com › marketing › conference
+                    - button "About our ads" [ref=e87]:
+                      - img "About our ads" [ref=e89]
+                - heading "Hear New Marketing Trends | Last Chance to Register" [level=2] [ref=e90]:
+                  - link "Hear New Marketing Trends | Last Chance to Register" [ref=e91] [cursor=pointer]:
+                    - /url: https://www.bing.com/aclk?ld=e8TDar8W3Wtfuvh0LvdjHXEDVUCUzutWNnC56UeeIGoMJse9jsl0qBqwmDHul-3E8V3a8HpHaO44F-FMTwJOYbAHrHWdXC9bTgbSX-N3Gv6B2-ioO8SiCv2i0xaDlBWC0UmoCt5ouBCjQeCueZ5bdYksT5vjjd3u0uOrWHBCDN6fmgJG2S12YvEgJ8kapV_qv2hkpkFofMAOqBC1FwYZlXu0_wuZ4&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmbmElMmZtYXJrZXRpbmctc3ltcG9zaXVtLXVzJTNmdXRtX3NvdXJjZSUzZGJpbmclMjZ1dG1fbWVkaXVtJTNkY3BjJTI2dXRtX2NhbXBhaWduJTNkRVZUX05BXzIwMjZfR01MMTJfQ1BDX1NFTTFfTk9OQlJBTkRCSU5HJTI2dXRtX2FkZ3JvdXAlM2QxMTQwMTk1MzgwMTg0Mzg3JTI2dXRtX3Rlcm0lM2RtYXJrZXRpbmclMjUyMGNvbmZlcmVuY2UlMjUyMDIwMjYlMjZhZCUzZDcxMjYyMzgyNzIwNDgyJTI2bWF0Y2h0eXBlJTNkcCUyNm1zY2xraWQlM2Q2ZTk0M2I0ZWI5M2QxYjJmZTkwNDUxNWNlNTM3ZmY4Nw&rlid=6e943b4eb93d1b2fe904515ce537ff87&ntb=1
+                - generic [ref=e93]:
+                  - generic [ref=e96]: Sponsored
+                  - text: Experience actionable insights at the must-attend marketing event of 2026. Stay ahead with Gartner’s marketing symposium—cutting-edge trends and tactics.
+                - generic [ref=e97]:
+                  - list [ref=e98]:
+                    - listitem [ref=e99]:
+                      - generic [ref=e100] [cursor=pointer]:
+                        - generic [ref=e101]:
+                          - heading "Marketing Symposium" [level=3] [ref=e102]:
+                            - link "Marketing Symposium" [ref=e103]:
+                              - /url: https://www.bing.com/aclk?ld=e89vEic0fny4R7kZN_H5CgGTVUCUy9UCelKznHFALY4H1O25dcAjFED70HoLK8tLq4ffdbqlEn8ACtSw6v72bJz_O5oqSAQk5JzVAEP4RILIjdm1yLxejMGzPm24Op2pA3JAvTa5YtDdDmeJUGQ3eiDBxmbouB7lJ7qubptCIi8TiMGwegIn7EeSpIh5SjDkDPN_i3f7O0P3x6GVpTmcWqAW4vxoE&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmbmElMmZtYXJrZXRpbmctc3ltcG9zaXVtLXVzJTJmZXhwZXJpZW5jZSUyM2xlYXJuaW5nLW5ldHdvcmtpbmclM2Z1dG1fc291cmNlJTNkYmluZyUyNnV0bV9tZWRpdW0lM2RjcGMlMjZ1dG1fY2FtcGFpZ24lM2RFVlRfTkFfMjAyNl9HTUwxMl9DUENfU0VNMV9OT05CUkFOREJJTkclMjZ1dG1fYWRncm91cCUzZDExNDAxOTUzODAxODQzODclMjZ1dG1fdGVybSUzZG1hcmtldGluZyUyNTIwY29uZmVyZW5jZSUyNTIwMjAyNiUyNmFkJTNkNzEyNjIzODI3MjA0ODIlMjZtYXRjaHR5cGUlM2RwJTI2bXNjbGtpZCUzZDQzYmE1ZWM5NTU4NzFmN2FkY2Y2MzRkYjA5OGQyYWUx&rlid=43ba5ec955871f7adcf634db098d2ae1&ntb=1
+                          - generic [ref=e104]:
+                            - generic:
+                              - img
+                        - generic [ref=e105]: Get the best insights from the
+                        - generic [ref=e106]: industry. Get insights from...
+                    - listitem [ref=e107]:
+                      - generic [ref=e108] [cursor=pointer]:
+                        - generic [ref=e109]:
+                          - heading "Conference Topics" [level=3] [ref=e110]:
+                            - link "Conference Topics" [ref=e111]:
+                              - /url: https://www.bing.com/aclk?ld=e8VryuY8RwUCt7kPLmr3r2qTVUCUz_qAmxHqkrkM82ivE4FbsavCFLmBIIFEyph6fr_rXBtT0PThlYT4or_w5tGw734JVXjOGFCFK2sXqoznva37jGJHD-VYsspT71lRccfs04wfOAv7FTU3jVdr78N7t3v9_lSeRPzaQOPS-spLoM8-n9MGweLJK147WVYbOrJoCE2h_MxZ8820CFeTeHskeMWT0&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmbmElMmZtYXJrZXRpbmctc3ltcG9zaXVtLXVzJTJmY29uZmVyZW5jZS10b3BpY3MlM2Z1dG1fc291cmNlJTNkYmluZyUyNnV0bV9tZWRpdW0lM2RjcGMlMjZ1dG1fY2FtcGFpZ24lM2RFVlRfTkFfMjAyNl9HTUwxMl9DUENfU0VNMV9OT05CUkFOREJJTkclMjZ1dG1fYWRncm91cCUzZDExNDAxOTUzODAxODQzODclMjZ1dG1fdGVybSUzZG1hcmtldGluZyUyNTIwY29uZmVyZW5jZSUyNTIwMjAyNiUyNmFkJTNkNzEyNjIzODI3MjA0ODIlMjZtYXRjaHR5cGUlM2RwJTI2bXNjbGtpZCUzZGUwMmJkMDZjOTk0ZTE0ZjM1YmVlYmE3ZWM1NDRjZDgz&rlid=e02bd06c994e14f35beeba7ec544cd83&ntb=1
+                          - generic [ref=e112]:
+                            - generic:
+                              - img
+                        - generic [ref=e113]: Discover hot topics
+                        - generic [ref=e114]: Designed for marketing leaders
+                  - list [ref=e115]:
+                    - listitem [ref=e116]:
+                      - generic [ref=e117] [cursor=pointer]:
+                        - generic [ref=e118]:
+                          - heading "Conferences" [level=3] [ref=e119]:
+                            - link "Conferences" [ref=e120]:
+                              - /url: https://www.bing.com/aclk?ld=e8lMBL9DKK93Fw5yeFO4wcBjVUCUy23T0loSXb4OUMwoC73zHpZ18K9l9ff7TwG8q3jGKoJYCIVp_zgGwaoVrlmCAc4pEZ-oCwy8xL6dncVZ2Oko4XY5vtqAyeiYO_7NZ-tdhSDy_3Z9kV0sfXfY1Jp8JYJkqkAF9FLRWwil8SHPOETk5mqKD5vkCpte57FDUuMHQE3jdMHXOM3_CglKewMdfpTa4&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmY2FsZW5kYXIlM2Z1dG1fc291cmNlJTNkYmluZyUyNnV0bV9tZWRpdW0lM2RjcGMlMjZ1dG1fY2FtcGFpZ24lM2RFVlRfTkFfMjAyNl9HTUwxMl9DUENfU0VNMV9OT05CUkFOREJJTkclMjZ1dG1fYWRncm91cCUzZDExNDAxOTUzODAxODQzODclMjZ1dG1fdGVybSUzZG1hcmtldGluZyUyNTIwY29uZmVyZW5jZSUyNTIwMjAyNiUyNmFkJTNkNzEyNjIzODI3MjA0ODIlMjZtYXRjaHR5cGUlM2RwJTI2bXNjbGtpZCUzZDhjM2RjNjVlMjZkNzFhMGEwNDdkYWM0YzdhZGRkMjhh&rlid=8c3dc65e26d71a0a047dac4c7addd28a&ntb=1
+                          - generic [ref=e121]:
+                            - generic:
+                              - img
+                        - generic [ref=e122]: See How Gartner Can Help You
+                        - generic [ref=e123]: Achieve Your Business Goals.
+                    - listitem [ref=e124]:
+                      - generic [ref=e125] [cursor=pointer]:
+                        - generic [ref=e126]:
+                          - heading "Agenda Tracks" [level=3] [ref=e127]:
+                            - link "Agenda Tracks" [ref=e128]:
+                              - /url: https://www.bing.com/aclk?ld=e8mAC5ZUs3KnyNi9QReZMjhjVUCUzX3DAm7FMVHuYKz307sxj_RiAML21uxao8huQ8Vwp2ImmB8ek3o45MEoRVlHknbh7OypK7LH9zVUBtOsujlAEp990_YAyw45aTSMPwHkDOEuzQjkvu3zyVw-jYxDvJTTu_1pv-G7yP9dCH_lq-RVTZRuHAsKbOGtj7HmnuqQhkmmCOtMdl269N1ajk662TGxk&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmbmElMmZtYXJrZXRpbmctc3ltcG9zaXVtLXVzJTJmY29uZmVyZW5jZS10cmFja3MlM2Z1dG1fc291cmNlJTNkYmluZyUyNnV0bV9tZWRpdW0lM2RjcGMlMjZ1dG1fY2FtcGFpZ24lM2RFVlRfTkFfMjAyNl9HTUwxMl9DUENfU0VNMV9OT05CUkFOREJJTkclMjZ1dG1fYWRncm91cCUzZDExNDAxOTUzODAxODQzODclMjZ1dG1fdGVybSUzZG1hcmtldGluZyUyNTIwY29uZmVyZW5jZSUyNTIwMjAyNiUyNmFkJTNkNzEyNjIzODI3MjA0ODIlMjZtYXRjaHR5cGUlM2RwJTI2bXNjbGtpZCUzZDNmZDIzMjRhZDc4ZDFkY2U4OTE0NTg1ODhiODdiOTEw&rlid=3fd2324ad78d1dce891458588b87b910&ntb=1
+                          - generic [ref=e129]:
+                            - generic:
+                              - img
+                        - generic [ref=e130]: Explore New 2026 Conference Tracks
+                        - generic [ref=e131]: Designed to solve your challenges
+                - link "More results from this site" [ref=e133] [cursor=pointer]:
+                  - /url: https://www.bing.com/aclk?ld=e8TDar8W3Wtfuvh0LvdjHXEDVUCUzutWNnC56UeeIGoMJse9jsl0qBqwmDHul-3E8V3a8HpHaO44F-FMTwJOYbAHrHWdXC9bTgbSX-N3Gv6B2-ioO8SiCv2i0xaDlBWC0UmoCt5ouBCjQeCueZ5bdYksT5vjjd3u0uOrWHBCDN6fmgJG2S12YvEgJ8kapV_qv2hkpkFofMAOqBC1FwYZlXu0_wuZ4&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmbmElMmZtYXJrZXRpbmctc3ltcG9zaXVtLXVzJTNmdXRtX3NvdXJjZSUzZGJpbmclMjZ1dG1fbWVkaXVtJTNkY3BjJTI2dXRtX2NhbXBhaWduJTNkRVZUX05BXzIwMjZfR01MMTJfQ1BDX1NFTTFfTk9OQlJBTkRCSU5HJTI2dXRtX2FkZ3JvdXAlM2QxMTQwMTk1MzgwMTg0Mzg3JTI2dXRtX3Rlcm0lM2RtYXJrZXRpbmclMjUyMGNvbmZlcmVuY2UlMjUyMDIwMjYlMjZhZCUzZDcxMjYyMzgyNzIwNDgyJTI2bWF0Y2h0eXBlJTNkcCUyNm1zY2xraWQlM2Q2ZTk0M2I0ZWI5M2QxYjJmZTkwNDUxNWNlNTM3ZmY4Nw&rlid=6e943b4eb93d1b2fe904515ce537ff87&ntb=1&ntb=1
+            - listitem [ref=e134]:
+              - generic [ref=e135]:
+                - generic [ref=e136] [cursor=pointer]:
+                  - generic [ref=e141]: StubHub
+                  - generic [ref=e142]:
+                    - generic [ref=e143]: https://www.stubhub.com
+                    - button "About our ads" [ref=e144]:
+                      - img "About our ads" [ref=e146]
+                  - link "Buy Now" [ref=e152]:
+                    - /url: https://www.bing.com/aclk?ld=e87eEU38cr1Ab5kKdHFQ11pjVUCUyBxO7ioBnA_MbWMXbqVCUNOM_MR7JgIUEF0Sk0vAVXLcCHXlAAzxXIIg_o7SbxvRdyJQR86dvRyhQPeM2jlsJU9GjbnIbaU2zsst65N2IWZgqyvknY_AO-ud3OBWPk1tPtHBwSAHZSut5AHbtAHPDh-K8vZ-DXB17T3YfZzzylCNgoVwwmf6tPVg_9lRp1BfA&u=aHR0cHMlM2ElMmYlMmZ3d3cuc3R1Ymh1Yi5jb20lMmZ3b3JsZC1jdXAtdGlja2V0cyUyZmdyb3VwaW5nJTJmNDU0MTAlM2ZwcyUzZCUyNnBzX3AlM2QxJTI2cHNfYyUzZDQ3MTUwMjQ4NSUyNnBzX2FnJTNkMTI5NzQyNTAyMTI1NDgwMiUyNnBzX3RnJTNka3dkLTIzMzI4ODg3OTY3NTE0NzElM2Fsb2MtMTkwJTI2cHNfYWQlM2Q4MTA4OTEyOTA2MzYwMiUyNnBzX24lM2RvJTI2cHNfZCUzZGMlMjZnY2xpZCUzZGRhNTcwNzgxZTZkMDE2N2Y0ZWY0NmQ5M2JhZGEwZTRhJTI2Z2NpZCUzZEMxMjI4OVgwMjElMjZrZXl3b3JkJTNkMTI5NzQyNTAyMTI1NDgwMmt3ZC0yMzMyODg4Nzk2NzUxNDcxJTNhbG9jLTE5MF9jJTI2Y3JlYXRpdmUlM2QlMjZ1dG1fa3hjb25maWQlM2RzMnJzaHNibXYlMjZ1dG1fY2FtcGFpZ24lM2Q0NzE1MDI0ODUlMjZrd3QlM2RuYiUyNm10JTNkYiUyNmt3JTNkd3d3LnN0dWJodWIuY29tJTI2YXAlM2QlMjZwbG9jJTNkNzk3MDklMjZpbG9jJTNkJTI2dXRtX3NvdXJjZSUzZGJpbmclMjZ1dG1fbWVkaXVtJTNkcGFpZC1zZWFyY2glMjZ1dG1fc3ViX21lZGl1bSUzZHByb3NwZWN0aW5nJTI2dXRtX3Rlcm0lM2RuYiUyNnV0bV9jb250ZW50JTNkZGVmYXVsdCUyNmdjbHNyYyUzZDNwLmRzJTI2bXNjbGtpZCUzZGRhNTcwNzgxZTZkMDE2N2Y0ZWY0NmQ5M2JhZGEwZTRhJTI2&rlid=da570781e6d0167f4ef46d93bada0e4a&ntb=1
+                    - generic [ref=e153]: Buy Now
+                - heading "StubHub 2026 World Cup Tickets | StubHub Tickets | World Cup" [level=2] [ref=e154]:
+                  - link "StubHub 2026 World Cup Tickets | StubHub Tickets | World Cup" [ref=e155] [cursor=pointer]:
+                    - /url: https://www.bing.com/aclk?ld=e8fjlIqA6wlyorCbtPd2WkuzVUCUyfE0-_UJXqJC8drnGHlbNw0Cb9oOP6Ta2r3_u19gArRF498C6kOFCuxtMHAwOIviNneI_6RdTsvHSj06iDRsV-zVxaxFvZaXWK7EuC00GQd5rCxrkGmEala9Odym9DeK3yAAi2AsoREwZehTBW8R1DuJgWH4YL2geqVJIcgCVyb6gDEhVAKKCAgEEhA8VIv6c&u=aHR0cHMlM2ElMmYlMmZ3d3cuc3R1Ymh1Yi5jb20lMmZ3b3JsZC1jdXAtdGlja2V0cyUyZmdyb3VwaW5nJTJmNDU0MTAlM2ZwcyUzZCUyNnBzX3AlM2QxJTI2cHNfYyUzZDQ3MTUwMjQ4NSUyNnBzX2FnJTNkMTI5NzQyNTAyMTI1NDgwMiUyNnBzX3RnJTNka3dkLTIzMzI4ODg3OTY3NTE0NzElM2Fsb2MtMTkwJTI2cHNfYWQlM2Q4MTA4OTEyOTA2MzYwMiUyNnBzX24lM2RvJTI2cHNfZCUzZGMlMjZnY2xpZCUzZDNkY2QxZGI4ZjBlYzEwOTdhMzQ3NzdhYWFjZTZkM2I4JTI2Z2NpZCUzZEMxMjI4OVgwMjElMjZrZXl3b3JkJTNkMTI5NzQyNTAyMTI1NDgwMmt3ZC0yMzMyODg4Nzk2NzUxNDcxJTNhbG9jLTE5MF9jJTI2Y3JlYXRpdmUlM2QlMjZ1dG1fa3hjb25maWQlM2RzMnJzaHNibXYlMjZ1dG1fY2FtcGFpZ24lM2Q0NzE1MDI0ODUlMjZrd3QlM2RuYiUyNm10JTNkYiUyNmt3JTNkd3d3LnN0dWJodWIuY29tJTI2YXAlM2QlMjZwbG9jJTNkNzk3MDklMjZpbG9jJTNkJTI2dXRtX3NvdXJjZSUzZGJpbmclMjZ1dG1fbWVkaXVtJTNkcGFpZC1zZWFyY2glMjZ1dG1fc3ViX21lZGl1bSUzZHByb3NwZWN0aW5nJTI2dXRtX3Rlcm0lM2RuYiUyNnV0bV9jb250ZW50JTNkZGVmYXVsdCUyNmdjbHNyYyUzZDNwLmRzJTI2bXNjbGtpZCUzZDNkY2QxZGI4ZjBlYzEwOTdhMzQ3NzdhYWFjZTZkM2I4JTI2&rlid=3dcd1db8f0ec1097a34777aaace6d3b8&ntb=1
+                - generic [ref=e156]:
+                  - generic [ref=e157]:
+                    - generic [ref=e160]: Sponsored
+                    - text: Your chance to witness the excitement is here! Get your World Cup tickets today! Secure your spot at the World Cup! Buy your tickets now and cheer on your team!
+                  - paragraph [ref=e161]:
+                    - link "Ratings" [ref=e162] [cursor=pointer]:
+                      - /url: https://www.bing.com/ck/a?!&&p=9a4d9912e544514c6f929e81a012fd627a12411b77a7322906950976b81fde1fJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cDovL3Jldmlld2NlbnRyZS5jb20vcmV2aWV3czIzMDI3NC5odG1sP3JhdGluZ2ZpbHRlcj0w&ntb=1
+                    - text: ": Ease of Ordering 4.5/5 - Customer Service 4.5/5"
+                - list "Please use arrow keys to navigate" [ref=e169]:
+                  - listitem [ref=e170] [cursor=pointer]:
+                    - link "All Events" [ref=e172]:
+                      - /url: https://www.bing.com/aclk?ld=e8_C-a3D6KqSw24H8RXcsv5TVUCUxkJWhg8Ve1XPXDpnBIXauxsBlrH13TaNX_nNlENIvp0QB0ocif3L0f2rrpQiT8rQc4mqCLRealbe62x-G5NkzcZxcnGZrcbzC8G6MI6-igLZ8Yhp2crcGvyjI7MM2psQ13tT0tKkz4xp4ScPfs7xNqGvsZpZ75E4_o_OG3Xi_0Y2EOWKsNi6jTeVYMHuooic8&u=aHR0cHMlM2ElMmYlMmZ3d3cuc3R1Ymh1Yi5jb20lMmZtbGItdGlja2V0cyUyZmdyb3VwaW5nJTJmODElM2YlM2QlMjZQQ0lEJTNkUFMtMTIzJTI2cHMlM2QlMjZwc19wJTNkMSUyNnBzX2MlM2Q0NzE1MDI0ODUlMjZwc19hZyUzZDEyOTc0MjUwMjEyNTQ4MDIlMjZwc190ZyUzZGt3ZC0yMzMyODg4Nzk2NzUxNDcxJTNhbG9jLTE5MCUyNnBzX2FkJTNkODEwODkxMjkwNjM2MDIlMjZwc19uJTNkbyUyNnBzX2QlM2RjJTI2Z2NsaWQlM2QzMWExNDc5ZDQ5YjMxZDI5ODdhYzJkOGYxNWI5NmIzYSUyNmdjaWQlM2RDMTIyODlYMDIxJTI2a2V5d29yZCUzZDEyOTc0MjUwMjEyNTQ4MDJrd2QtMjMzMjg4ODc5Njc1MTQ3MSUzYWxvYy0xOTBfYyUyNmNyZWF0aXZlJTNkJTI2dXRtX2t4Y29uZmlkJTNkczJyc2hzYm12JTI2dXRtX2NhbXBhaWduJTNkNDcxNTAyNDg1JTI2a3d0JTNkbmIlMjZtdCUzZGIlMjZrdyUzZHd3dy5zdHViaHViLmNvbSUyNmFwJTNkJTI2cGxvYyUzZDc5NzA5JTI2aWxvYyUzZCUyNnV0bV9zb3VyY2UlM2RiaW5nJTI2dXRtX21lZGl1bSUzZHBhaWQtc2VhcmNoJTI2dXRtX3N1Yl9tZWRpdW0lM2Rwcm9zcGVjdGluZyUyNnV0bV90ZXJtJTNkbmIlMjZ1dG1fY29udGVudCUzZGRlZmF1bHQlMjZnY2xzcmMlM2QzcC5kcyUyNm1zY2xraWQlM2QzMWExNDc5ZDQ5YjMxZDI5ODdhYzJkOGYxNWI5NmIzYSUyNg&rlid=31a1479d49b31d2987ac2d8f15b96b3a&ntb=1
+                      - generic [ref=e173]: All Events
+                  - listitem [ref=e174] [cursor=pointer]:
+                    - link "Sports Tickets" [ref=e176]:
+                      - /url: https://www.bing.com/aclk?ld=e8shJHf24BdZ27iWyus-4VdTVUCUyP_px9RPEz4CLpATD8u88oA3emOkpQunWV4qOEBktwh1E6xr7GCDAKxMPfp2rIG2fncc7PJdpm4shNXNEJFJtf8m3ld01Xc1r2pb4mZDOrhtaJ0ddFag3PyLUcf5SPSq0Uuyxw4HV8iZ_twUqP9Rw_hr_DUsZkZ8Nhx9909WVuFa0JVGwrwjnY0k3FBn-es6k&u=aHR0cHMlM2ElMmYlMmZ3d3cuc3R1Ymh1Yi5jb20lM2YlM2QlMjZQQ0lEJTNkUFMtMTIzJTI2cHMlM2QlMjZwc19wJTNkMSUyNnBzX2MlM2Q0NzE1MDI0ODUlMjZwc19hZyUzZDEyOTc0MjUwMjEyNTQ4MDIlMjZwc190ZyUzZGt3ZC0yMzMyODg4Nzk2NzUxNDcxJTNhbG9jLTE5MCUyNnBzX2FkJTNkODEwODkxMjkwNjM2MDIlMjZwc19uJTNkbyUyNnBzX2QlM2RjJTI2Z2NsaWQlM2Q1N2JhN2UxYjY0Y2MxMGNhZjNiMjE0MDkzOGM2NWY1YiUyNmdjaWQlM2RDMTIyODlYMDIxJTI2a2V5d29yZCUzZDEyOTc0MjUwMjEyNTQ4MDJrd2QtMjMzMjg4ODc5Njc1MTQ3MSUzYWxvYy0xOTBfYyUyNmNyZWF0aXZlJTNkJTI2dXRtX2t4Y29uZmlkJTNkczJyc2hzYm12JTI2dXRtX2NhbXBhaWduJTNkNDcxNTAyNDg1JTI2a3d0JTNkbmIlMjZtdCUzZGIlMjZrdyUzZHd3dy5zdHViaHViLmNvbSUyNmFwJTNkJTI2cGxvYyUzZDc5NzA5JTI2aWxvYyUzZCUyNnV0bV9zb3VyY2UlM2RiaW5nJTI2dXRtX21lZGl1bSUzZHBhaWQtc2VhcmNoJTI2dXRtX3N1Yl9tZWRpdW0lM2Rwcm9zcGVjdGluZyUyNnV0bV90ZXJtJTNkbmIlMjZ1dG1fY29udGVudCUzZGRlZmF1bHQlMjZnY2xzcmMlM2QzcC5kcyUyNm1zY2xraWQlM2Q1N2JhN2UxYjY0Y2MxMGNhZjNiMjE0MDkzOGM2NWY1YiUyNg&rlid=57ba7e1b64cc10caf3b2140938c65f5b&ntb=1
+                      - generic [ref=e177]: Sports Tickets
+                  - listitem [ref=e178] [cursor=pointer]:
+                    - link "See MLB" [ref=e180]:
+                      - /url: https://www.bing.com/aclk?ld=e8yGDEoE7B6P_ZFzMlWMWybTVUCUyjAUwfQ3dgZ4rox643oUwogos5T4Ws_km1asha6-52Ut01h89zvLZ2rNYdX4PH1KZj4EnpwC39CuU7fpgG3b2N0k5GmVdssi_QMYKNgYhxUUe1YOo00Z-qnCk2C8_WO35JUKLzmzmEOWXg5lt_Fwc5myLXK2PH4Jw3ZTu2UOUCuRwS3AD_z6e6MCd6yKPJSGI&u=aHR0cHMlM2ElMmYlMmZ3d3cuc3R1Ymh1Yi5jb20lMmZtbGItdGlja2V0cyUyZmdyb3VwaW5nJTJmODElM2YlM2QlMjZQQ0lEJTNkUFMtMTIzJTI2cHMlM2QlMjZwc19wJTNkMSUyNnBzX2MlM2Q0NzE1MDI0ODUlMjZwc19hZyUzZDEyOTc0MjUwMjEyNTQ4MDIlMjZwc190ZyUzZGt3ZC0yMzMyODg4Nzk2NzUxNDcxJTNhbG9jLTE5MCUyNnBzX2FkJTNkODEwODkxMjkwNjM2MDIlMjZwc19uJTNkbyUyNnBzX2QlM2RjJTI2Z2NsaWQlM2QwMWE4MzU3OGVkYmYxNGRmYjc4NTVmNmFiMWI1YjJiZiUyNmdjaWQlM2RDMTIyODlYMDIxJTI2a2V5d29yZCUzZDEyOTc0MjUwMjEyNTQ4MDJrd2QtMjMzMjg4ODc5Njc1MTQ3MSUzYWxvYy0xOTBfYyUyNmNyZWF0aXZlJTNkJTI2dXRtX2t4Y29uZmlkJTNkczJyc2hzYm12JTI2dXRtX2NhbXBhaWduJTNkNDcxNTAyNDg1JTI2a3d0JTNkbmIlMjZtdCUzZGIlMjZrdyUzZHd3dy5zdHViaHViLmNvbSUyNmFwJTNkJTI2cGxvYyUzZDc5NzA5JTI2aWxvYyUzZCUyNnV0bV9zb3VyY2UlM2RiaW5nJTI2dXRtX21lZGl1bSUzZHBhaWQtc2VhcmNoJTI2dXRtX3N1Yl9tZWRpdW0lM2Rwcm9zcGVjdGluZyUyNnV0bV90ZXJtJTNkbmIlMjZ1dG1fY29udGVudCUzZGRlZmF1bHQlMjZnY2xzcmMlM2QzcC5kcyUyNm1zY2xraWQlM2QwMWE4MzU3OGVkYmYxNGRmYjc4NTVmNmFiMWI1YjJiZiUyNg&rlid=01a83578edbf14dfb7855f6ab1b5b2bf&ntb=1
+                      - generic [ref=e181]: See MLB
+      - list [ref=e182]:
+        - listitem [ref=e183]:
+          - link "Carnaval San Francisco" [ref=e185] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=15441a63a4a145272307344546121134b8a6010a6bc839c295a22b45348139f5JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9jYXJuYXZhbHNhbmZyYW5jaXNjby5vcmcv&ntb=1
+            - generic [ref=e190]:
+              - generic [ref=e191]: Carnaval San Francisco
+              - generic [ref=e194]: https://carnavalsanfrancisco.org
+          - heading "Carnaval San Francisco" [level=2] [ref=e195]:
+            - link "Carnaval San Francisco" [ref=e196] [cursor=pointer]:
+              - /url: https://www.bing.com/ck/a?!&&p=15441a63a4a145272307344546121134b8a6010a6bc839c295a22b45348139f5JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9jYXJuYXZhbHNhbmZyYW5jaXNjby5vcmcv&ntb=1
+          - paragraph [ref=e198]: 2 hours ago · San Francisco’s “La Copa del Pueblo – The People’s Cup” Over Half a Million Attendees from Around the World Transform the Mission District into a Vibrant Hub of Music, Dance, and …
+          - generic [ref=e199]:
+            - list [ref=e200]:
+              - listitem [ref=e201]:
+                - link "Festival" [ref=e202] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=8b30f44bbb256f5987f4802f79795ba479faebb698fa6f46ec218d4df6cf4f18JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9jYXJuYXZhbHNhbmZyYW5jaXNjby5vcmcvZmVzdGl2YWwv&ntb=1
+                - paragraph [ref=e203]: 2-day Festival Our free, two–day Festival starts at 11 AM and runs to 6 PM and …
+              - listitem [ref=e204]:
+                - link "Participate" [ref=e205] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=06b0169378af7ddc4f62422f9210c488d489fb568b84d2470d6b19d02e80f091JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9jYXJuYXZhbHNhbmZyYW5jaXNjby5vcmcvcGFydGljaXBhdGUv&ntb=1
+                - paragraph [ref=e206]: The festivities include a Grand Parade and festival, each drawing upon broad …
+            - list [ref=e207]:
+              - listitem [ref=e208]:
+                - link "Parade" [ref=e209] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=8670425a0a5e7ab3bb673db6294dfc04f2a87423b71da89a84e574a7042cc74dJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9jYXJuYXZhbHNhbmZyYW5jaXNjby5vcmcvcGFyYWRlLw&ntb=1
+                - paragraph [ref=e210]: Grand Parade Sunday, May 24, 2026 Our Grand Parade boasts a 60–contingent …
+              - listitem [ref=e211]:
+                - link "Sponsor" [ref=e212] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=3f5b8ae8430d031ef3c6de827c64c8a9b07512f60c88a95c8eec4c94eaa0b232JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9jYXJuYXZhbHNhbmZyYW5jaXNjby5vcmcvc3BvbnNvci8&ntb=1
+                - paragraph [ref=e213]: Sponsor Your sponsorship and support is the backbone of our existence. Help us …
+          - link "See results only from carnavalsanfrancisco.org" [ref=e214] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=d31518e194e6a0d947f3b37a4f6f69baed9cd954a945dff216ef3dea14f05879JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPXNpdGU6Y2FybmF2YWxzYW5mcmFuY2lzY28ub3JnK1dvcmxkK0N1cCsyMDI2K21hcmtldGluZytzcG9uc29yc2hpcCtNYXkrMjAyNiZmb3JtPURMSU5LUg&ntb=1
+        - listitem [ref=e215]:
+          - generic [ref=e216]:
+            - link "Explore this image" [ref=e219] [cursor=pointer]:
+              - /url: /images/search?view=detailV2&ccid=Y1ZlEi8E&id=B1A543DA650146E60583738A40917DCC3084D56D&thid=OIP.Y1ZlEi8EsMzxLNne9TABagHaLb&mediaurl=https://upload.wikimedia.org/wikipedia/en/thumb/1/17/2026_FIFA_World_Cup_emblem.svg/960px-2026_FIFA_World_Cup_emblem.svg.png&q=World+Cup+2026+marketing+sponsorship+May+2026&ck=1339899A06C1CCA7434D331C7D7EC6AA&idpp=rc&expw=960&exph=1482&form=rc2idp
+            - generic [ref=e221]:
+              - link "Wikipedia" [ref=e223] [cursor=pointer]:
+                - /url: https://www.bing.com/ck/a?!&&p=89d66712b538650f7d303211f031051d78fbc921ed7f1c89b3ffcdfe18c9fe34JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9lbi53aWtpcGVkaWEub3JnL3dpa2kvMjAyNl9GSUZBX1dvcmxkX0N1cA&ntb=1
+                - generic [ref=e228]:
+                  - generic [ref=e229]: Wikipedia
+                  - generic [ref=e232]: https://en.wikipedia.org › wiki
+              - heading "2026 FIFA World Cup - Wikipedia" [level=2] [ref=e233]:
+                - link "2026 FIFA World Cup - Wikipedia" [ref=e234] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=89d66712b538650f7d303211f031051d78fbc921ed7f1c89b3ffcdfe18c9fe34JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly9lbi53aWtpcGVkaWEub3JnL3dpa2kvMjAyNl9GSUZBX1dvcmxkX0N1cA&ntb=1
+              - paragraph [ref=e235]: 1 day ago · The 2026 FIFA World Cup[A] will be the 23rd FIFA World Cup, the quadrennial international men's soccer championship contested by the national …
+        - listitem [ref=e237]:
+          - generic [ref=e238]:
+            - link "Explore this image" [ref=e241] [cursor=pointer]:
+              - /url: /images/search?view=detailV2&ccid=e8SzTkvH&id=7343D1A4C9A3FA565A63D279F7B0D2A9C0D29558&thid=OIP.e8SzTkvHV3vW1PwxD2J2AgHaEK&mediaurl=https://images.mlssoccer.com/image/private/t_editorial_landscape_8_desktop_mobile/f_auto/mls-lag-prd/royf3jlkxceoydizqwpf.jpg&q=World+Cup+2026+marketing+sponsorship+May+2026&ck=F8470113304ED0B9E39BD5758E2F1091&idpp=rc&expw=824&exph=464&form=rc2idp
+            - generic [ref=e243]:
+              - link "LA Galaxy" [ref=e245] [cursor=pointer]:
+                - /url: https://www.bing.com/ck/a?!&&p=aacd4e1261af89f8dd9d95445fa26c4c65794b6daa6329442848e7fdc2107918JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cubGFnYWxheHkuY29tLw&ntb=1
+                - generic [ref=e250]:
+                  - generic [ref=e251]: LA Galaxy
+                  - generic [ref=e254]: https://www.lagalaxy.com
+              - heading "LA Galaxy" [level=2] [ref=e255]:
+                - link "LA Galaxy" [ref=e256] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=aacd4e1261af89f8dd9d95445fa26c4c65794b6daa6329442848e7fdc2107918JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cubGFnYWxheHkuY29tLw&ntb=1
+              - paragraph [ref=e257]: 1 day ago · LA Galaxy Defender Maya Yoshida Joins Japan National Team for 2026 Kirin Challenge Cup in Tokyo
+        - listitem [ref=e259]:
+          - list [ref=e260]:
+            - listitem [ref=e261]:
+              - generic [ref=e262]:
+                - generic [ref=e263] [cursor=pointer]:
+                  - generic [ref=e268]: Gartner
+                  - generic [ref=e269]:
+                    - generic [ref=e270]: https://www.gartner.com › marketing › conference
+                    - button "About our ads" [ref=e271]:
+                      - img "About our ads" [ref=e273]
+                - heading "Hear New Marketing Trends | Last Chance to Register" [level=2] [ref=e274]:
+                  - link "Hear New Marketing Trends | Last Chance to Register" [ref=e275] [cursor=pointer]:
+                    - /url: https://www.bing.com/aclk?ld=e8rEXXfT5x98m_h20jkNEsXzVUCUzXwZD14xCM00SZV56LFPJcuGLXxG2Ew5l2DI5kx3sfB1i95bwEgizQzeDAQ0Dl_eR19xLGBE5SwDHWpT0zalAmGAk-PJ21rTWJqDz4WuMjpVcUsFDI0uXNfKNl69d0AjRHngVtiN_QPo3oyB_mJzXEoYEjCd7fyhA3Ws22tFffp9wCzt5BbivL00MZbTd65sk&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmbmElMmZtYXJrZXRpbmctc3ltcG9zaXVtLXVzJTNmdXRtX3NvdXJjZSUzZGJpbmclMjZ1dG1fbWVkaXVtJTNkY3BjJTI2dXRtX2NhbXBhaWduJTNkRVZUX05BXzIwMjZfR01MMTJfQ1BDX1NFTTFfTk9OQlJBTkRCSU5HJTI2dXRtX2FkZ3JvdXAlM2QxMTQwMTk1MzgwMTg0Mzg3JTI2dXRtX3Rlcm0lM2RtYXJrZXRpbmclMjUyMGNvbmZlcmVuY2UlMjUyMDIwMjYlMjZhZCUzZDcxMjYyMzgyNzIwNDgyJTI2bWF0Y2h0eXBlJTNkcCUyNm1zY2xraWQlM2QxMmQzOTk4N2I0YWMxMTQwODRmOWYzOTVlOGE2YzU2Yw&rlid=12d39987b4ac114084f9f395e8a6c56c&ntb=1
+                - generic [ref=e276]:
+                  - generic [ref=e277]:
+                    - generic [ref=e280]: Sponsored
+                    - text: Experience actionable insights at the must-attend marketing event of 2026. Transform your marketing at the 2026 Gartner Symposium/Xpo—book your seat!
+                  - generic [ref=e281]:
+                    - strong [ref=e282]: "Site visitors:"
+                    - text: Over 10K in the past month
+                  - generic [ref=e283]: "Courses: Demand Generation, Sales Enablement, Marketing Strategy, CX Strategy"
+                - generic [ref=e284]:
+                  - list [ref=e285]:
+                    - listitem [ref=e286]:
+                      - link "Marketing Symposium" [ref=e288] [cursor=pointer]:
+                        - /url: https://www.bing.com/aclk?ld=e8aDkhfzsJ3JBac-ih9w7BYjVUCUxjfA1jsk-FOraJyQ0uRBsbIOvEUpZlrhLgp4Xb34JbB3FOv9lbHIVouENOfT-i7fsNNPmfDt6Oa8OJA_OVEfbbA3HyKQ3smnwZ8Qznq85i7Pm5BvZeLP3CtEnyD6GIGViUZxGjNXPD-w9c-KvCR31EcqylHbXgH0m8ltYKFaOTPxFM7Qg4yHr3xDYHOyi6_p4&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmbmElMmZtYXJrZXRpbmctc3ltcG9zaXVtLXVzJTJmZXhwZXJpZW5jZSUyM2xlYXJuaW5nLW5ldHdvcmtpbmclM2Z1dG1fc291cmNlJTNkYmluZyUyNnV0bV9tZWRpdW0lM2RjcGMlMjZ1dG1fY2FtcGFpZ24lM2RFVlRfTkFfMjAyNl9HTUwxMl9DUENfU0VNMV9OT05CUkFOREJJTkclMjZ1dG1fYWRncm91cCUzZDExNDAxOTUzODAxODQzODclMjZ1dG1fdGVybSUzZG1hcmtldGluZyUyNTIwY29uZmVyZW5jZSUyNTIwMjAyNiUyNmFkJTNkNzEyNjIzODI3MjA0ODIlMjZtYXRjaHR5cGUlM2RwJTI2bXNjbGtpZCUzZGM3MWM1MDE3OWI5MjExNzg1YWM0M2EwNWM3OTg5Zjlk&rlid=c71c50179b9211785ac43a05c7989f9d&ntb=1
+                    - listitem [ref=e289]:
+                      - link "Conference Topics" [ref=e291] [cursor=pointer]:
+                        - /url: https://www.bing.com/aclk?ld=e87T1vdOpPOuMMXyWtTjq3CzVUCUyc2PrUWUHulGEj_08_rgXstvNgj3M2Q8i1rpFhLnyK3yM64NSX-rqp_wyHY0LyLoaSAHgGELBCPEkfjSDjXuteveyDLh633LiTtbZ68KaUBfM1nndSo_knKemeLEpprKLFZokOIbdm4WuSUs-fBRVD21nVWpA-DA7xJwbpv3rj5QVNOqHQjRzkrc3bPQTKUO4&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmbmElMmZtYXJrZXRpbmctc3ltcG9zaXVtLXVzJTJmY29uZmVyZW5jZS10b3BpY3MlM2Z1dG1fc291cmNlJTNkYmluZyUyNnV0bV9tZWRpdW0lM2RjcGMlMjZ1dG1fY2FtcGFpZ24lM2RFVlRfTkFfMjAyNl9HTUwxMl9DUENfU0VNMV9OT05CUkFOREJJTkclMjZ1dG1fYWRncm91cCUzZDExNDAxOTUzODAxODQzODclMjZ1dG1fdGVybSUzZG1hcmtldGluZyUyNTIwY29uZmVyZW5jZSUyNTIwMjAyNiUyNmFkJTNkNzEyNjIzODI3MjA0ODIlMjZtYXRjaHR5cGUlM2RwJTI2bXNjbGtpZCUzZDVmNTg1YmRhZGUzYTExZWNjNGNlMzFjODgyMzA0OTgw&rlid=5f585bdade3a11ecc4ce31c882304980&ntb=1
+                    - listitem [ref=e292]:
+                      - link "Buy 4, Get 1 Free" [ref=e294] [cursor=pointer]:
+                        - /url: https://www.bing.com/aclk?ld=e8sGxG-8---Cum5G6wzTFTzTVUCUz_2wJuaxhZG5lyzO0DFfPpdaC2RuM_RmmcPivDI5mSsuhc8WpasnhVsbAkSFHhoJvHCkYy_Wfe9Vacwy0rMlsdstsYE8UBUl0Mcb9nuP8OcZzmQQ5gq1iWrwLqg8PCUfWdUwiYBP2ZfJhmth0rg6YWNERw2AhuLsb405U3D_b-760iB3T8VDlyUU3OXo-r_io&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmbmElMmZtYXJrZXRpbmctc3ltcG9zaXVtLXVzJTJmY29uZmVyZW5jZS1yZXNvdXJjZXMlMmZ0ZWFtLXNlbmQlM2Z1dG1fc291cmNlJTNkYmluZyUyNnV0bV9tZWRpdW0lM2RjcGMlMjZ1dG1fY2FtcGFpZ24lM2RFVlRfTkFfMjAyNl9HTUwxMl9DUENfU0VNMV9OT05CUkFOREJJTkclMjZ1dG1fYWRncm91cCUzZDExNDAxOTUzODAxODQzODclMjZ1dG1fdGVybSUzZG1hcmtldGluZyUyNTIwY29uZmVyZW5jZSUyNTIwMjAyNiUyNmFkJTNkNzEyNjIzODI3MjA0ODIlMjZtYXRjaHR5cGUlM2RwJTI2bXNjbGtpZCUzZDBjZjNmOGM3ZGU3MDE3MWI4YmEyOTJkNTgyN2FmY2Y4&rlid=0cf3f8c7de70171b8ba292d5827afcf8&ntb=1
+                  - list [ref=e295]:
+                    - listitem [ref=e296]:
+                      - link "Conferences" [ref=e298] [cursor=pointer]:
+                        - /url: https://www.bing.com/aclk?ld=e878TIlkyNMG2ZGaAFaMcP8DVUCUygYH4eMIVF5xPpFwD7DkbIugK205D6MqFv0K4fAN5hWylLd1K7_rwwdYo2HQeO0mPGkmRqaFa4uNqOCUUNjEzW5r1-SDV-JycjJ-VsjtYyPsaPrcbvYqPh-c6UEI59677RpN2wXppcbYrSmGAefMWHiIWqVk5nmkWnQDzfSa1yQ1ZRIB1katfQnIXi8suPBgw&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmY2FsZW5kYXIlM2Z1dG1fc291cmNlJTNkYmluZyUyNnV0bV9tZWRpdW0lM2RjcGMlMjZ1dG1fY2FtcGFpZ24lM2RFVlRfTkFfMjAyNl9HTUwxMl9DUENfU0VNMV9OT05CUkFOREJJTkclMjZ1dG1fYWRncm91cCUzZDExNDAxOTUzODAxODQzODclMjZ1dG1fdGVybSUzZG1hcmtldGluZyUyNTIwY29uZmVyZW5jZSUyNTIwMjAyNiUyNmFkJTNkNzEyNjIzODI3MjA0ODIlMjZtYXRjaHR5cGUlM2RwJTI2bXNjbGtpZCUzZDExZGFhYzQ5MGQwMDE3Y2NiMjQ4YzY1YjUxMGEwYmNm&rlid=11daac490d0017ccb248c65b510a0bcf&ntb=1
+                    - listitem [ref=e299]:
+                      - link "Agenda Tracks" [ref=e301] [cursor=pointer]:
+                        - /url: https://www.bing.com/aclk?ld=e88zyNPi2FhmAA5VFSRbLDPjVUCUzIvRrslITkJKHEpB6aVMNyKjYAJPaAX99e7-UtXWMiCh6n2Q6u3GDdxrA_3TX847jQTXjLa4t3LVxi_ESLdUbXI01ItCtVLr-1QeVy2FYJAHyJ5x-OHdWEYkdwVzb3Dk-vUFqpFwVwcZP-Q2z9Zbm1EDwFBu08kJH8PDeGPHwxmAqBwxyuPJMUsOVg5cPfMpg&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmbmElMmZtYXJrZXRpbmctc3ltcG9zaXVtLXVzJTJmY29uZmVyZW5jZS10cmFja3MlM2Z1dG1fc291cmNlJTNkYmluZyUyNnV0bV9tZWRpdW0lM2RjcGMlMjZ1dG1fY2FtcGFpZ24lM2RFVlRfTkFfMjAyNl9HTUwxMl9DUENfU0VNMV9OT05CUkFOREJJTkclMjZ1dG1fYWRncm91cCUzZDExNDAxOTUzODAxODQzODclMjZ1dG1fdGVybSUzZG1hcmtldGluZyUyNTIwY29uZmVyZW5jZSUyNTIwMjAyNiUyNmFkJTNkNzEyNjIzODI3MjA0ODIlMjZtYXRjaHR5cGUlM2RwJTI2bXNjbGtpZCUzZDRhNjI4YTMzM2FiNzE2YzhlZGQyZTAyMTY2YmQ2NzJh&rlid=4a628a333ab716c8edd2e02166bd672a&ntb=1
+                    - listitem [ref=e302]:
+                      - link "Gartner AI Summit" [ref=e304] [cursor=pointer]:
+                        - /url: https://www.bing.com/aclk?ld=e8Tu2m1hSQs20CTls4H5zoyDVUCUy_GoOn31eMUSZPezxY-vQYG8OCi4L1XvIj_Rq8sytZP53iAECNUMQeAbaUfifEoGzt9SmEIVzmGqp5q0sazQDc5RaB9ZwPkVw88k7brAqWOWdWfl6iNm8yM261CIUVXyHaR9QsN_YgQU2BCk7aKiDr6AGrkal64N02U1iNvXGSxH2Rfy8Xw-ueQu-W_HCea34&u=aHR0cHMlM2ElMmYlMmZ3d3cuZ2FydG5lci5jb20lMmZlbiUyZmNvbmZlcmVuY2VzJTJmbmElMmZhcHBsaWNhdGlvbnMtdXMlMmZjb25mZXJlbmNlLXJlc291cmNlcyUyZmFpLWVudGFwcHMlM2Z1dG1fc291cmNlJTNkYmluZyUyNnV0bV9tZWRpdW0lM2RjcGMlMjZ1dG1fY2FtcGFpZ24lM2RFVlRfTkFfMjAyNl9HTUwxMl9DUENfU0VNMV9OT05CUkFOREJJTkclMjZ1dG1fYWRncm91cCUzZDExNDAxOTUzODAxODQzODclMjZ1dG1fdGVybSUzZG1hcmtldGluZyUyNTIwY29uZmVyZW5jZSUyNTIwMjAyNiUyNmFkJTNkNzEyNjIzODI3MjA0ODIlMjZtYXRjaHR5cGUlM2RwJTI2bXNjbGtpZCUzZGM5ZmQ5OWFhMjBiYTEzOGI3OWQyZjNiODdjYjBlOGI2&rlid=c9fd99aa20ba138b79d2f3b87cb0e8b6&ntb=1
+            - listitem [ref=e305]:
+              - generic [ref=e306]:
+                - generic [ref=e307] [cursor=pointer]:
+                  - generic [ref=e312]: StubHub
+                  - generic [ref=e313]:
+                    - generic [ref=e314]: https://www.stubhub.com
+                    - button "About our ads" [ref=e315]:
+                      - img "About our ads" [ref=e317]
+                  - link "Buy Now" [ref=e323]:
+                    - /url: https://www.bing.com/aclk?ld=e8OXZlneNSv3CRPIShEAMVFDVUCUxJiWQykgwzGaScj1iha-C-pP3f6zKyK5SBX61LtmYyxWiyHXH2V9SOjgYe9apm9QzrCC4CkBkmQhw5oaH2IZV8HxlZE4vQiXUzfcxfUN_2SMvJEMl_pQxmbkvnwEfiQ2aST09VCcJNInTjp1Ig21DxhrfzuCBZ4b8bVQvPHpW_UWl5D0kEX_qmM1DFEA2y_F4&u=aHR0cHMlM2ElMmYlMmZ3d3cuc3R1Ymh1Yi5jb20lMmZ3b3JsZC1jdXAtdGlja2V0cyUyZmdyb3VwaW5nJTJmNDU0MTAlM2ZwcyUzZCUyNnBzX3AlM2QxJTI2cHNfYyUzZDQ3MTUwMjQ4NSUyNnBzX2FnJTNkMTI5NzQyNTAyMTI1NDgwMiUyNnBzX3RnJTNka3dkLTIzMzI4ODg3OTY3NTE0NzElM2Fsb2MtMTkwJTI2cHNfYWQlM2Q4MTA4OTEyOTA2MzYwMiUyNnBzX24lM2RvJTI2cHNfZCUzZGMlMjZnY2xpZCUzZGI1MWYzODA3MTgxZDE5NzEzNmNkNTIxNTQ0MTc3NDA3JTI2Z2NpZCUzZEMxMjI4OVgwMjElMjZrZXl3b3JkJTNkMTI5NzQyNTAyMTI1NDgwMmt3ZC0yMzMyODg4Nzk2NzUxNDcxJTNhbG9jLTE5MF9jJTI2Y3JlYXRpdmUlM2QlMjZ1dG1fa3hjb25maWQlM2RzMnJzaHNibXYlMjZ1dG1fY2FtcGFpZ24lM2Q0NzE1MDI0ODUlMjZrd3QlM2RuYiUyNm10JTNkYiUyNmt3JTNkd3d3LnN0dWJodWIuY29tJTI2YXAlM2QlMjZwbG9jJTNkNzk3MDklMjZpbG9jJTNkJTI2dXRtX3NvdXJjZSUzZGJpbmclMjZ1dG1fbWVkaXVtJTNkcGFpZC1zZWFyY2glMjZ1dG1fc3ViX21lZGl1bSUzZHByb3NwZWN0aW5nJTI2dXRtX3Rlcm0lM2RuYiUyNnV0bV9jb250ZW50JTNkZGVmYXVsdCUyNmdjbHNyYyUzZDNwLmRzJTI2bXNjbGtpZCUzZGI1MWYzODA3MTgxZDE5NzEzNmNkNTIxNTQ0MTc3NDA3JTI2&rlid=b51f3807181d197136cd521544177407&ntb=1
+                    - generic [ref=e324]: Buy Now
+                - heading "StubHub 2026 World Cup Tickets | StubHub Tickets | World Cup" [level=2] [ref=e325]:
+                  - link "StubHub 2026 World Cup Tickets | StubHub Tickets | World Cup" [ref=e326] [cursor=pointer]:
+                    - /url: https://www.bing.com/aclk?ld=e8WrbbSeBzyiPr2KpthT6RsDVUCUw4N_FfDhhlic6AXGoMuZM3CWXKLZmOvc5PUcOUNcvJnKFe7XplMtlgWneFkRfhAhKewtTrnB-l9rboINKPmPo2aPfV9geH9_CFWy-PBKI5xOUtLHmlHI1tIdueXhQdNXIMXkrKjIOnYwCO25UXebbSk62Aur-yBZNLlTG6KOVcQ7M_t96Cjdqf9fDdADXOr8M&u=aHR0cHMlM2ElMmYlMmZ3d3cuc3R1Ymh1Yi5jb20lMmZ3b3JsZC1jdXAtdGlja2V0cyUyZmdyb3VwaW5nJTJmNDU0MTAlM2ZwcyUzZCUyNnBzX3AlM2QxJTI2cHNfYyUzZDQ3MTUwMjQ4NSUyNnBzX2FnJTNkMTI5NzQyNTAyMTI1NDgwMiUyNnBzX3RnJTNka3dkLTIzMzI4ODg3OTY3NTE0NzElM2Fsb2MtMTkwJTI2cHNfYWQlM2Q4MTA4OTEyOTA2MzYwMiUyNnBzX24lM2RvJTI2cHNfZCUzZGMlMjZnY2xpZCUzZGQ5ODhhYjYzZmU0YzEzNGY1YTQ1YzE3MWEyNDYyZWM1JTI2Z2NpZCUzZEMxMjI4OVgwMjElMjZrZXl3b3JkJTNkMTI5NzQyNTAyMTI1NDgwMmt3ZC0yMzMyODg4Nzk2NzUxNDcxJTNhbG9jLTE5MF9jJTI2Y3JlYXRpdmUlM2QlMjZ1dG1fa3hjb25maWQlM2RzMnJzaHNibXYlMjZ1dG1fY2FtcGFpZ24lM2Q0NzE1MDI0ODUlMjZrd3QlM2RuYiUyNm10JTNkYiUyNmt3JTNkd3d3LnN0dWJodWIuY29tJTI2YXAlM2QlMjZwbG9jJTNkNzk3MDklMjZpbG9jJTNkJTI2dXRtX3NvdXJjZSUzZGJpbmclMjZ1dG1fbWVkaXVtJTNkcGFpZC1zZWFyY2glMjZ1dG1fc3ViX21lZGl1bSUzZHByb3NwZWN0aW5nJTI2dXRtX3Rlcm0lM2RuYiUyNnV0bV9jb250ZW50JTNkZGVmYXVsdCUyNmdjbHNyYyUzZDNwLmRzJTI2bXNjbGtpZCUzZGQ5ODhhYjYzZmU0YzEzNGY1YTQ1YzE3MWEyNDYyZWM1JTI2&rlid=d988ab63fe4c134f5a45c171a2462ec5&ntb=1
+                - generic [ref=e327]:
+                  - generic [ref=e328]:
+                    - generic [ref=e331]: Sponsored
+                    - text: Your chance to witness the excitement is here! Get your World Cup tickets today! Secure your spot at the World Cup! Buy your tickets now and cheer on your team!
+                  - generic [ref=e332]:
+                    - generic [ref=e333]:
+                      - strong [ref=e334]: "Ratings:"
+                      - link "Ease of Ordering 4.5/5" [ref=e335] [cursor=pointer]:
+                        - /url: https://www.bing.com/ck/a?!&&p=9a4d9912e544514c6f929e81a012fd627a12411b77a7322906950976b81fde1fJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cDovL3Jldmlld2NlbnRyZS5jb20vcmV2aWV3czIzMDI3NC5odG1sP3JhdGluZ2ZpbHRlcj0w&ntb=1
+                    - generic [ref=e336]:
+                      - strong [ref=e337]: "Site visitors:"
+                      - text: Over 1M in the past month
+                - generic [ref=e338]:
+                  - list [ref=e339]:
+                    - listitem [ref=e340]:
+                      - link "All Events" [ref=e342] [cursor=pointer]:
+                        - /url: https://www.bing.com/aclk?ld=e8FkxwwCK24zXo1chgfFp2ajVUCUy1SXjzD-hLZfBPJtV62bmB9iBTnEGR-gn0OCUwKreCXOOVn5fjP-RFqaitwnaS8utUL3lbLoD2umEHSI3c5RN_6qwFda1vLKYglve6FOlj3Nx8L58HzqL8lz3Ma5OohaYibLGFvGoj_PmkJDBa76Z1Wm3p2AoKDKSVHaoiw7Y54RwiiIpD_Lib0wa5oAMc7kU&u=aHR0cHMlM2ElMmYlMmZ3d3cuc3R1Ymh1Yi5jb20lMmZtbGItdGlja2V0cyUyZmdyb3VwaW5nJTJmODElM2YlM2QlMjZQQ0lEJTNkUFMtMTIzJTI2cHMlM2QlMjZwc19wJTNkMSUyNnBzX2MlM2Q0NzE1MDI0ODUlMjZwc19hZyUzZDEyOTc0MjUwMjEyNTQ4MDIlMjZwc190ZyUzZGt3ZC0yMzMyODg4Nzk2NzUxNDcxJTNhbG9jLTE5MCUyNnBzX2FkJTNkODEwODkxMjkwNjM2MDIlMjZwc19uJTNkbyUyNnBzX2QlM2RjJTI2Z2NsaWQlM2Q4YjEwYTNiNWU0ZDUxYWFjMWNlMGM5YTdiOGRmN2RlZSUyNmdjaWQlM2RDMTIyODlYMDIxJTI2a2V5d29yZCUzZDEyOTc0MjUwMjEyNTQ4MDJrd2QtMjMzMjg4ODc5Njc1MTQ3MSUzYWxvYy0xOTBfYyUyNmNyZWF0aXZlJTNkJTI2dXRtX2t4Y29uZmlkJTNkczJyc2hzYm12JTI2dXRtX2NhbXBhaWduJTNkNDcxNTAyNDg1JTI2a3d0JTNkbmIlMjZtdCUzZGIlMjZrdyUzZHd3dy5zdHViaHViLmNvbSUyNmFwJTNkJTI2cGxvYyUzZDc5NzA5JTI2aWxvYyUzZCUyNnV0bV9zb3VyY2UlM2RiaW5nJTI2dXRtX21lZGl1bSUzZHBhaWQtc2VhcmNoJTI2dXRtX3N1Yl9tZWRpdW0lM2Rwcm9zcGVjdGluZyUyNnV0bV90ZXJtJTNkbmIlMjZ1dG1fY29udGVudCUzZGRlZmF1bHQlMjZnY2xzcmMlM2QzcC5kcyUyNm1zY2xraWQlM2Q4YjEwYTNiNWU0ZDUxYWFjMWNlMGM5YTdiOGRmN2RlZSUyNg&rlid=8b10a3b5e4d51aac1ce0c9a7b8df7dee&ntb=1
+                    - listitem [ref=e343]:
+                      - link "See MLB" [ref=e345] [cursor=pointer]:
+                        - /url: https://www.bing.com/aclk?ld=e8XNxMtXnxrhv-IKjqbkDPiTVUCUyNrWC5vh9DH52gad8Q_8fHnEm4syGFLQSvxomOBDsMW1a0LZu0DaZarNrxPR9ZVNWpmoBPvKzbqYO4NvS29efTEIvB9VXBHzh-KlFeAMezYeUl9GiaayGKT6_KZwdyVX8yrldlFlXD-vAtIYHRVbS76TCP2ExiXfIXYEoQ2jm9Zkdd4rUc1I7-zyAI6HF_1kU&u=aHR0cHMlM2ElMmYlMmZ3d3cuc3R1Ymh1Yi5jb20lMmZtbGItdGlja2V0cyUyZmdyb3VwaW5nJTJmODElM2YlM2QlMjZQQ0lEJTNkUFMtMTIzJTI2cHMlM2QlMjZwc19wJTNkMSUyNnBzX2MlM2Q0NzE1MDI0ODUlMjZwc19hZyUzZDEyOTc0MjUwMjEyNTQ4MDIlMjZwc190ZyUzZGt3ZC0yMzMyODg4Nzk2NzUxNDcxJTNhbG9jLTE5MCUyNnBzX2FkJTNkODEwODkxMjkwNjM2MDIlMjZwc19uJTNkbyUyNnBzX2QlM2RjJTI2Z2NsaWQlM2RlNTIxYzQ1MGVjNjQxNTZhNjFlNGFlNDJiMDZlNzcxYyUyNmdjaWQlM2RDMTIyODlYMDIxJTI2a2V5d29yZCUzZDEyOTc0MjUwMjEyNTQ4MDJrd2QtMjMzMjg4ODc5Njc1MTQ3MSUzYWxvYy0xOTBfYyUyNmNyZWF0aXZlJTNkJTI2dXRtX2t4Y29uZmlkJTNkczJyc2hzYm12JTI2dXRtX2NhbXBhaWduJTNkNDcxNTAyNDg1JTI2a3d0JTNkbmIlMjZtdCUzZGIlMjZrdyUzZHd3dy5zdHViaHViLmNvbSUyNmFwJTNkJTI2cGxvYyUzZDc5NzA5JTI2aWxvYyUzZCUyNnV0bV9zb3VyY2UlM2RiaW5nJTI2dXRtX21lZGl1bSUzZHBhaWQtc2VhcmNoJTI2dXRtX3N1Yl9tZWRpdW0lM2Rwcm9zcGVjdGluZyUyNnV0bV90ZXJtJTNkbmIlMjZ1dG1fY29udGVudCUzZGRlZmF1bHQlMjZnY2xzcmMlM2QzcC5kcyUyNm1zY2xraWQlM2RlNTIxYzQ1MGVjNjQxNTZhNjFlNGFlNDJiMDZlNzcxYyUyNg&rlid=e521c450ec64156a61e4ae42b06e771c&ntb=1
+                  - list [ref=e346]:
+                    - listitem [ref=e347]:
+                      - link "Sports Tickets" [ref=e349] [cursor=pointer]:
+                        - /url: https://www.bing.com/aclk?ld=e8TdvxMU_AooQdUrM0mmp3HjVUCUxI3InZH7lrdcJh4JeIJPjYHIQWn4WFgwp0tYFpydNIqbZ_1fDD8BPF3_w_5ay36Vj2-uvf9sW1SIvwWEMpB6xxEV6jUuAAuv8dU3hajtFbzo8HgHwXYO8XaByHltIA0xrYjDxoIovm1n1ny3yvWZ_PsumMbKtl9pAqrRVaGzjYRsd8ZzA93BhspxnslKBnaqg&u=aHR0cHMlM2ElMmYlMmZ3d3cuc3R1Ymh1Yi5jb20lM2YlM2QlMjZQQ0lEJTNkUFMtMTIzJTI2cHMlM2QlMjZwc19wJTNkMSUyNnBzX2MlM2Q0NzE1MDI0ODUlMjZwc19hZyUzZDEyOTc0MjUwMjEyNTQ4MDIlMjZwc190ZyUzZGt3ZC0yMzMyODg4Nzk2NzUxNDcxJTNhbG9jLTE5MCUyNnBzX2FkJTNkODEwODkxMjkwNjM2MDIlMjZwc19uJTNkbyUyNnBzX2QlM2RjJTI2Z2NsaWQlM2Q0N2EwZWViMmQyZDIxMWM4Y2RkMDg0YTA4ZWQ4ZTYxZiUyNmdjaWQlM2RDMTIyODlYMDIxJTI2a2V5d29yZCUzZDEyOTc0MjUwMjEyNTQ4MDJrd2QtMjMzMjg4ODc5Njc1MTQ3MSUzYWxvYy0xOTBfYyUyNmNyZWF0aXZlJTNkJTI2dXRtX2t4Y29uZmlkJTNkczJyc2hzYm12JTI2dXRtX2NhbXBhaWduJTNkNDcxNTAyNDg1JTI2a3d0JTNkbmIlMjZtdCUzZGIlMjZrdyUzZHd3dy5zdHViaHViLmNvbSUyNmFwJTNkJTI2cGxvYyUzZDc5NzA5JTI2aWxvYyUzZCUyNnV0bV9zb3VyY2UlM2RiaW5nJTI2dXRtX21lZGl1bSUzZHBhaWQtc2VhcmNoJTI2dXRtX3N1Yl9tZWRpdW0lM2Rwcm9zcGVjdGluZyUyNnV0bV90ZXJtJTNkbmIlMjZ1dG1fY29udGVudCUzZGRlZmF1bHQlMjZnY2xzcmMlM2QzcC5kcyUyNm1zY2xraWQlM2Q0N2EwZWViMmQyZDIxMWM4Y2RkMDg0YTA4ZWQ4ZTYxZiUyNg&rlid=47a0eeb2d2d211c8cdd084a08ed8e61f&ntb=1
+            - listitem [ref=e350]:
+              - generic [ref=e351]:
+                - generic [ref=e352] [cursor=pointer]:
+                  - generic [ref=e357]: Amazon
+                  - generic [ref=e358]:
+                    - generic [ref=e359]: https://www.amazon.com › shop › world cup merchandise
+                    - button "About our ads" [ref=e360]:
+                      - img "About our ads" [ref=e362]
+                - heading "World Cup Merchandise | Huge In-Stock Inventory" [level=2] [ref=e363]:
+                  - link "World Cup Merchandise | Huge In-Stock Inventory" [ref=e364] [cursor=pointer]:
+                    - /url: https://www.bing.com/aclk?ld=e8fYjOkIU4nGAUYhguTEk50jVUCUw-xa62gLWdMcoBN3ljwofeoYK9ES7HpzLkDdp6L7MYnY28kgTmDQBSE27GneZ8fMWa7bOFoNJhN4ErW1LuaT5AUCtpC5lZn3Yd-FV2eshqQ2X-Qv7c1tieE_7ALQ0Se5P2xmOItacHqGnH8SKYxaJnE0eJ2vrO4adfzbp60IAY213-eHrahtGrQAn9F2zg3jo&u=aHR0cHMlM2ElMmYlMmZ3d3cuYW1hem9uLmNvbSUyZnMlMmYlM2ZpZSUzZFVURjglMjZrZXl3b3JkcyUzZHdvcmxkJTJiY3VwJTJibWVyY2hhbmRpc2UlMjZpbmRleCUzZGFwcyUyNnRhZyUzZG1oMGItMjAlMjZyZWYlM2RwZF9zbF84MzRkajd4cnlqX2IlMjZhZGdycGlkJTNkMTMzMTUxMDIyNTc3Nzg1NyUyNmh2YWRpZCUzZDgzMjE5NzA4Njc5NzQ4JTI2aHZuZXR3JTNkbyUyNmh2cW10JTNkYiUyNmh2Ym10JTNkYmIlMjZodmRldiUzZGMlMjZodmxvY2ludCUzZCUyNmh2bG9jcGh5JTNkNzk3MDklMjZodnRhcmdpZCUzZGt3ZC04MzIyMDM5NDE5NzMyOSUzYWxvYy0xOTAlMjZoeWRhZGNyJTNkNzY2N18xMzcyMzA3NSUyNm1jaWQlM2QwMGE0OTJmZTNmMzUzYTllYWFjODk0ZDBkODIwMmNiZSUyNm1zY2xraWQlM2RlMjBiYjQ1YjZmNWUxOWY4NjcxY2RlNDkzMzU0MGY5Ng&rlid=e20bb45b6f5e19f8671cde4933540f96&ntb=1
+                - generic [ref=e366]:
+                  - generic [ref=e369]: Sponsored
+                  - text: Get Deals and Low Prices On World Cup Merchandise At Amazon. Enhance Your Look With a Selection Of Trendy Jackets, Coats, Bottoms, Hoodies and More.
+        - listitem [ref=e370]:
+          - generic [ref=e372]:
+            - generic [ref=e374]:
+              - heading "Videos of World Cup 2026 Marketing Sponsorship May 2026" [level=2] [ref=e376]:
+                - link "Videos of World Cup 2026 Marketing Sponsorship May 2026" [ref=e377] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=e37f01dc69ab46d46a7c3e1d316283ee2de401dd7f2d8af07829dfd02dda78d9JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Xb3JsZCtDdXArMjAyNittYXJrZXRpbmcrc3BvbnNvcnNoaXArTWF5KzIwMjYmcXB2dD1Xb3JsZCtDdXArMjAyNittYXJrZXRpbmcrc3BvbnNvcnNoaXArTWF5KzIwMjYmRk9STT1WRFJF&ntb=1
+              - list "Please use arrow keys to navigate" [ref=e384]:
+                - listitem [ref=e385]:
+                  - link "World Cup 2026 Preparations" [ref=e386] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=a52c1bb492e5d3a27392dd6aa81fd2feb0ef66471cfb92ddf3aed0b3827c11feJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Xb3JsZCtDdXArMjAyNitQcmVwYXJhdGlvbnMmJkZPUk09VkFSU1FQ&ntb=1
+                    - generic "World Cup 2026 Preparations" [ref=e389]
+                - listitem [ref=e390]:
+                  - link "World Cup Matches 2026" [ref=e391] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=f4e6169215f5ffe3103b7e33357bfc024a48f6d71198982b1d56b6988c7f667dJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Xb3JsZCtDdXArTWF0Y2hlcysyMDI2JiZGT1JNPVZBUlNRUA&ntb=1
+                    - generic "World Cup Matches 2026" [ref=e394]
+                - listitem [ref=e395]:
+                  - link "Fifa Club World Cup 2026" [ref=e396] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=0efcde968c21c72537dffc34cd1cbdc5963f1cbd7bb7f33ef70f128735fdf749JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1GaWZhK0NsdWIrV29ybGQrQ3VwKzIwMjYmJkZPUk09VkFSU1FQ&ntb=1
+                    - generic "Fifa Club World Cup 2026" [ref=e399]
+                - listitem [ref=e400]:
+                  - link "Soccer World Cup 2026 Dates" [ref=e401] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=b49ba057e0408605488584fad201148fb9e43ff8f762d95c6d3e0efca8166349JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Tb2NjZXIrV29ybGQrQ3VwKzIwMjYrRGF0ZXMmJkZPUk09VkFSU1FQ&ntb=1
+                    - generic "Soccer World Cup 2026 Dates" [ref=e404]
+                - listitem [ref=e405]:
+                  - link "Cup World Cup 2026" [ref=e406] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=773dedc821bc87728c7a54dff22b514762fa31cdd667790fd94e9c570724ef23JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1DdXArV29ybGQrQ3VwKzIwMjYmJkZPUk09VkFSU1FQ&ntb=1
+                    - generic "Cup World Cup 2026" [ref=e409]
+                - listitem [ref=e410]:
+                  - link "Football World Cup 2026 Dates" [ref=e411] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=9087cd02ad72b89628226d0fa8509309b4b94e273abf87cee66318b1dfa35d9aJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Gb290YmFsbCtXb3JsZCtDdXArMjAyNitEYXRlcyYmRk9STT1WQVJTUVA&ntb=1
+                    - generic "Football World Cup 2026 Dates" [ref=e414]
+                - listitem [ref=e415]:
+                  - link "Soccer World Cup 2026" [ref=e416] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=c4eba3a340e8a6c025c430a8a7ca47bcf0ed776a80960af5b993e0993c704418JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Tb2NjZXIrV29ybGQrQ3VwKzIwMjYmJkZPUk09VkFSU1FQ&ntb=1
+                    - generic "Soccer World Cup 2026" [ref=e419]
+                - listitem [ref=e420]:
+                  - link "Club World Cup 2026" [ref=e421] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=ee3ca28ef4437675964172e8d51f9636795b4f764d326a74bb714d7ab21a74f8JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1DbHViK1dvcmxkK0N1cCsyMDI2JiZGT1JNPVZBUlNRUA&ntb=1
+                    - generic "Club World Cup 2026" [ref=e424]
+                - listitem [ref=e425]:
+                  - link "Fifa World Cup 2026 Matches" [ref=e426] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=baf7ef86d3fad71bd71f3cec599cdaa0b7bd01e49f35c201546e7bde6a9015b5JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1GaWZhK1dvcmxkK0N1cCsyMDI2K01hdGNoZXMmJkZPUk09VkFSU1FQ&ntb=1
+                    - generic "Fifa World Cup 2026 Matches" [ref=e429]
+                - listitem [ref=e430]:
+                  - link "World Cup 2026 Dates" [ref=e431] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=db718998aa9c0b35b05edf9a9e645662ccceae0426bcc2ea4dc6faa2882aa32cJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Xb3JsZCtDdXArMjAyNitEYXRlcyYmRk9STT1WQVJTUVA&ntb=1
+                    - generic "World Cup 2026 Dates" [ref=e434]
+                - listitem [ref=e435]:
+                  - link "Football World Cup 2026" [ref=e436] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=9be299c2ffff03813989d480db957eb7cf2a72ff98e0167ad4c8f6bf07cb59b8JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Gb290YmFsbCtXb3JsZCtDdXArMjAyNiYmRk9STT1WQVJTUVA&ntb=1
+                    - generic "Football World Cup 2026" [ref=e439]
+                - listitem [ref=e440]:
+                  - link "2026 World Cup Qualifying Games" [ref=e441] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=9d759d765987f822903af1236b60a64c566e25373d45ebd26157911d18d33df7JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2K1dvcmxkK0N1cCtRdWFsaWZ5aW5nK0dhbWVzJiZGT1JNPVZBUlNRUA&ntb=1
+                    - generic "2026 World Cup Qualifying Games" [ref=e444]
+                - listitem [ref=e445]:
+                  - link "World Cup 2026" [ref=e446] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=3928b645ba0bfca71077b93e1f2788e5510a233b8650c9fa3b8c314c84be7d55JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Xb3JsZCtDdXArMjAyNiYmRk9STT1WQVJTUVA&ntb=1
+                    - generic "World Cup 2026" [ref=e449]
+                - listitem [ref=e450]:
+                  - link "2026 World Cup Qualifying Matchday" [ref=e451] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=eaaf490d1189154a6403895747e0a91c67e48ccc39c051cd0ec719d77b55d9f2JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2K1dvcmxkK0N1cCtRdWFsaWZ5aW5nK01hdGNoZGF5JiZGT1JNPVZBUlNRUA&ntb=1
+                    - generic "2026 World Cup Qualifying Matchday" [ref=e454]
+                - listitem [ref=e455]:
+                  - link "Football World Cup 2026 Schedule" [ref=e456] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=74a619e3cfd49aebacd9f49a479e46e27976bcd00757703208c69529597b0e91JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Gb290YmFsbCtXb3JsZCtDdXArMjAyNitTY2hlZHVsZSYmRk9STT1WQVJTUVA&ntb=1
+                    - generic "Football World Cup 2026 Schedule" [ref=e459]
+                - listitem [ref=e460]:
+                  - link "World Cup Games 2026" [ref=e461] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=fa552fea95030d61365a38b0225defb447de1480af7417a8cc9ccfec9940a3c7JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Xb3JsZCtDdXArR2FtZXMrMjAyNiYmRk9STT1WQVJTUVA&ntb=1
+                    - generic "World Cup Games 2026" [ref=e464]
+                - listitem [ref=e465]:
+                  - link "World Qualifiers 2026" [ref=e466] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=cdce88012f591ce7b433357e6490f330eb31f47907161e519a709fd0333c6979JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Xb3JsZCtRdWFsaWZpZXJzKzIwMjYmJkZPUk09VkFSU1FQ&ntb=1
+                    - generic "World Qualifiers 2026" [ref=e469]
+                - listitem [ref=e470]:
+                  - link "World Cup Qualifying 2026" [ref=e471] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=4163d94ca2bd69fd7dd30f6fcb0a7e767aae5f1f4374182dd2437a6e723bb6d8JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Xb3JsZCtDdXArUXVhbGlmeWluZysyMDI2JiZGT1JNPVZBUlNRUA&ntb=1
+                    - generic "World Cup Qualifying 2026" [ref=e474]
+                - listitem [ref=e475]:
+                  - link "World Cup 2026 Match Dates" [ref=e476] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=8cd48dbab0f8ac89b4da449991548b8fa208c912f4008b82f954c4239921cd6bJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT1Xb3JsZCtDdXArMjAyNitNYXRjaCtEYXRlcyYmRk9STT1WQVJTUVA&ntb=1
+                    - generic "World Cup 2026 Match Dates" [ref=e479]
+                - listitem [ref=e480]:
+                  - link "2026 World Cup Qualifying Dates" [ref=e481] [cursor=pointer]:
+                    - /url: https://www.bing.com/ck/a?!&&p=720b9d7fb84ef26045becc09f058561c56de8e8c82093e14259df4f3e8168dc5JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9zZWFyY2g_cT0yMDI2K1dvcmxkK0N1cCtRdWFsaWZ5aW5nK0RhdGVzJiZGT1JNPVZBUlNRUA&ntb=1
+                    - generic "2026 World Cup Qualifying Dates" [ref=e484]
+              - generic [ref=e486]:
+                - 'link "It''s Coming! The Real Magic of FIFA World Cup 2026™! Are you ready? from YouTube · Duration: 1 minutes 5 seconds · 4M views · uploaded on 3 weeks ago · uploaded by Coca-Cola · Click to play. · FIFA World Cup 2026™ is back, and it''s BIGGER than ever! 48 teams. 3 countries. 1 champion. The countdown is on! #CocaCola #CocaColaNepal #RealMagic #FIFAWorldCup2026 #WorldCup2026 #Audaicha #CokeKholLetsGoal #FootballFever Credits: Agency: Prisma Advertising Casts: Abhishek Khadka, Rikesh Dhungel, Anshu Gurung, Nikita Acharya, Jita Lama ..." [ref=e489] [cursor=pointer]':
+                  - /url: https://www.bing.com/ck/a?!&&p=db81ddf4e6f175a64202d8e77aaa657923f53a479a51ebc2fd3c56bd37496006JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9yaXZlcnZpZXcvcmVsYXRlZHZpZGVvP3E9V29ybGQrQ3VwKzIwMjYrbWFya2V0aW5nK3Nwb25zb3JzaGlwK01heSsyMDI2Jm1pZD04ODJCMUU2NzRDMDU0RjYxQzEzNjg4MkIxRTY3NEMwNTRGNjFDMTM2JmNodXJsPWh0dHBzJTNhJTJmJTJmd3d3LnlvdXR1YmUuY29tJTJmY2hhbm5lbCUyZlVDb3NYY3RhVFl4TjRZUEl2STVGcGNydyZGT1JNPVZJUkU&ntb=1
+                  - generic [ref=e490]:
+                    - generic [ref=e499]: 1:05
+                    - generic [ref=e500]:
+                      - generic "It's Coming! The Real Magic of FIFA World Cup 2026™! Are you ready?" [ref=e501]:
+                        - text: It's Coming! The Real Magic of FIFA
+                        - strong [ref=e502]: World
+                        - strong [ref=e503]: Cup
+                        - strong [ref=e504]: "2026"
+                        - text: ™! Are you ready?
+                      - generic [ref=e505]:
+                        - generic [ref=e506]:
+                          - img "Video source site" [ref=e507]
+                          - text: YouTube · Coca-Cola
+                        - generic [ref=e508]: 4M views · 3 weeks ago
+                - 'link "⚽️💸 Major Brand Sponsorships at the 2026 World Cup #football #fifa from YouTube · Duration: 37 seconds · 14.5K views · uploaded on 3 months ago · uploaded by JorzugMX · Click to play. · #mundial #fifaworldcup #mundial2026 #gol" [ref=e511] [cursor=pointer]':
+                  - /url: https://www.bing.com/ck/a?!&&p=710e427aac185439fdb45ae98220807982683e75a161090187008344ed391b0fJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3ZpZGVvcy9yaXZlcnZpZXcvcmVsYXRlZHZpZGVvP3E9V29ybGQrQ3VwKzIwMjYrbWFya2V0aW5nK3Nwb25zb3JzaGlwK01heSsyMDI2Jm1pZD1GMEM1NUUxNTFFNTIxOThEMTI0QkYwQzU1RTE1MUU1MjE5OEQxMjRCJmNodXJsPWh0dHBzJTNhJTJmJTJmd3d3LnlvdXR1YmUuY29tJTJmY2hhbm5lbCUyZlVDR0h4QU44c1o1b3J6T003QWxVSTktQSZtbXNjbj1zdHZvJkZPUk09VklSRQ&ntb=1
+                  - generic [ref=e512]:
+                    - generic [ref=e521]: 0:37
+                    - generic [ref=e522]:
+                      - 'generic "⚽️💸 Major Brand Sponsorships at the 2026 World Cup #football #fifa" [ref=e523]':
+                        - text: ⚽️💸 Major Brand Sponsorships at the
+                        - strong [ref=e524]: "2026"
+                        - strong [ref=e525]: World
+                        - strong [ref=e526]: Cup
+                        - text: "#football #fifa"
+                      - generic [ref=e527]:
+                        - generic [ref=e528]:
+                          - img "Video source site" [ref=e529]
+                          - text: YouTube · JorzugMX
+                        - generic [ref=e530]: 14.5K views · 3 months ago
+                - 'link "World Cup 2026 ads: Watch all the big brand spots released so far from thedrum.com · Duration: 8 seconds · uploaded on 3 weeks ago · Click to play. · World Cup 2026 ads: Watch all the big brand spots released so far" [ref=e533] [cursor=pointer]':
+                  - /url: https://www.bing.com/ck/a?!&&p=63a258297c5ede22300a9826b063b79f29a0d799963713a6d309ab096dfc2957JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cHM6Ly93d3cudGhlZHJ1bS5jb20vbmV3cy93b3JsZC1jdXAtMjAyNi13YXRjaC1hbGwtdGhlLWxhdGVzdC1hZHM&ntb=1
+                  - generic [ref=e534]:
+                    - generic [ref=e543]: 0:08
+                    - generic [ref=e544]:
+                      - 'generic "World Cup 2026 ads: Watch all the big brand spots released so far" [ref=e545]':
+                        - strong [ref=e546]: World
+                        - strong [ref=e547]: Cup
+                        - strong [ref=e548]: "2026"
+                        - text: "ads: Watch all the big brand spots released so far"
+                      - generic [ref=e549]:
+                        - generic [ref=e550]: thedrum.com
+                        - generic [ref=e551]: 3 weeks ago
+            - button "See more" [ref=e554]:
+              - generic [ref=e555]: See more
+              - img [ref=e557]
+        - listitem [ref=e560]:
+          - generic [ref=e561]:
+            - heading "Deep dive into World Cup 2026 marketing sponsorship May 2026" [level=2] [ref=e562]:
+              - text: Deep dive into
+              - strong [ref=e563]: World Cup 2026 marketing sponsorship May 2026
+            - list [ref=e564]:
+              - listitem [ref=e565]:
+                - link "2026 World Cup sponsors list" [ref=e566] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=841cd66bf04b856e8b9357635c7356507343ff14fdc72f27c344403145832c82JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPTIwMjYrV29ybGQrQ3VwK3Nwb25zb3JzK2xpc3QmRk9STT1RU1JFMQ&ntb=1
+                  - generic [ref=e568]:
+                    - text: 2026 World Cup
+                    - strong [ref=e569]: sponsors list
+              - listitem [ref=e570]:
+                - link "World Cup 2026 official sponsors" [ref=e571] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=bd5e0d292324619fc7d86e16526e432483cda1221b86fb9de29f1acc16e3e21aJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPVdvcmxkK0N1cCsyMDI2K29mZmljaWFsK3Nwb25zb3JzJkZPUk09UVNSRTI&ntb=1
+                  - generic [ref=e573]:
+                    - text: World Cup 2026
+                    - strong [ref=e574]: official sponsors
+              - listitem [ref=e575]:
+                - link "World Cup 2026 sponsor" [ref=e576] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=b15bef3f4b60897c4cf7db8b6046125ad90e9b94999677d3e87b8c5bfbb434cbJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPVdvcmxkK0N1cCsyMDI2K3Nwb25zb3ImRk9STT1RU1JFMw&ntb=1
+                  - generic [ref=e578]:
+                    - text: World Cup 2026
+                    - strong [ref=e579]: sponsor
+              - listitem [ref=e580]:
+                - link "fifa 2026 World Cup sponsors" [ref=e581] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=971f7d9c52fc2c3db6bc423470c977d7f71365968e750e22efd59b2b614ae083JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPUZJRkErMjAyNitXb3JsZCtDdXArc3BvbnNvcnMmRk9STT1RU1JFNA&ntb=1
+                  - generic [ref=e583]:
+                    - strong [ref=e584]: fifa
+                    - text: 2026 World Cup
+                    - strong [ref=e585]: sponsors
+              - listitem [ref=e586]:
+                - link "World Cup official sponsor" [ref=e587] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=abfd55c0dedee9491db4c78ab55277604de9c6cdf888fcb5b3a81cf83e469888JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPVdvcmxkK0N1cCtvZmZpY2lhbCtzcG9uc29yJkZPUk09UVNSRTU&ntb=1
+                  - generic [ref=e589]:
+                    - text: World Cup
+                    - strong [ref=e590]: official sponsor
+              - listitem [ref=e591]:
+                - link "fifa World Cup official partners" [ref=e592] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=1575e908ef172e1c9a361b511d563716adaacca625d5b884495530ec8ede7601JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPUZJRkErV29ybGQrQ3VwK29mZmljaWFsK3BhcnRuZXJzJkZPUk09UVNSRTY&ntb=1
+                  - generic [ref=e594]:
+                    - strong [ref=e595]: fifa
+                    - text: World Cup
+                    - strong [ref=e596]: official partners
+              - listitem [ref=e597]:
+                - link "sponsors of fifa World Cup" [ref=e598] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=ba99bba88c2221981bddac305a736e297a6349fdee5d4a53ed5c0416d07df3b8JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPXNwb25zb3JzK29mK0ZJRkErV29ybGQrQ3VwJkZPUk09UVNSRTc&ntb=1
+                  - generic [ref=e600]:
+                    - strong [ref=e601]: sponsors of fifa
+                    - text: World Cup
+              - listitem [ref=e602]:
+                - link "fifa World Cup sponsorship" [ref=e603] [cursor=pointer]:
+                  - /url: https://www.bing.com/ck/a?!&&p=90108c83399c30b0ca3bf1db35d8f14b59a188dc164c6e3fab6ed7207bb353feJmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1L3NlYXJjaD9xPUZJRkErV29ybGQrQ3VwK3Nwb25zb3JzaGlwJkZPUk09UVNSRTg&ntb=1
+                  - generic [ref=e605]:
+                    - strong [ref=e606]: fifa
+                    - text: World Cup sponsorship
+        - listitem [ref=e607]:
+          - navigation "More results for World Cup 2026 marketing sponsorship May 2026":
+            - list:
+              - listitem [ref=e608]:
+                - generic "Page 1" [ref=e609]: "1"
+              - listitem [ref=e610]:
+                - link "Page 2" [ref=e611] [cursor=pointer]:
+                  - /url: /search?q=World+Cup+2026+marketing+sponsorship+May+2026&filters=ex1%3a%22ez1%22&setlang=en&FPIG=283B6BCF4DE5455B8DA33532E0EFD6FD&first=4&FORM=PERE
+                  - text: "2"
+              - listitem [ref=e612]:
+                - link "Page 3" [ref=e613] [cursor=pointer]:
+                  - /url: /search?q=World+Cup+2026+marketing+sponsorship+May+2026&filters=ex1%3a%22ez1%22&setlang=en&FPIG=283B6BCF4DE5455B8DA33532E0EFD6FD&first=14&FORM=PERE1
+                  - text: "3"
+              - listitem [ref=e614]:
+                - link "Next page" [ref=e615] [cursor=pointer]:
+                  - /url: /search?q=World+Cup+2026+marketing+sponsorship+May+2026&filters=ex1%3a%22ez1%22&setlang=en&FPIG=283B6BCF4DE5455B8DA33532E0EFD6FD&first=4&FORM=PORE
+      - complementary "Additional Results"
+  - contentinfo [ref=e616]:
+    - generic [ref=e617]:
+      - list:
+        - listitem [ref=e618]:
+          - link "Privacy" [ref=e619] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=f6fa8da3f34e7fc4e0384d005077d7d94df66212862675e690df27c8ce604de4JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cDovL2dvLm1pY3Jvc29mdC5jb20vZndsaW5rLz9MaW5rSWQ9NTIxODM5&ntb=1
+        - listitem [ref=e620]:
+          - link "Terms" [ref=e621] [cursor=pointer]:
+            - /url: https://www.bing.com/ck/a?!&&p=429eacc79341ca4c88f33d74ce9810b1540adb059be0c6c7098a0a83aa9e8da8JmltdHM9MTc3OTQ5NDQwMA&ptn=3&ver=2&hsh=4&fclid=0d2ebf39-2ccd-6dc0-2fc0-a8612d936cf8&u=a1aHR0cDovL2dvLm1pY3Jvc29mdC5jb20vZndsaW5rLz9MaW5rSUQ9MjQ2MzM4&ntb=1

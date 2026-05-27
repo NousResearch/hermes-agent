@@ -8,7 +8,8 @@ Design:
 - Override conditions allow the main agent to deviate from defaults
 - Fallback ensures degraded but complete delivery when sub-agents fail
 - Router does NOT call agents; it provides a plan that the main agent executes
-- Primary source of truth: ~/.hermes/config/agent-registry.json
+- Runtime mirror: ~/.hermes/config/agent-registry.json
+  (generated from configs/managed_agents/agents.yaml)
 """
 
 import json
@@ -299,7 +300,9 @@ class RoutingDecision:
 class AgentRouter:
     """Routes tasks to agents based on task_category, capabilities, and risk.
 
-    Reads agent capabilities from ~/.hermes/config/agent-registry.json.
+    Reads agent capabilities from the runtime mirror at
+    ~/.hermes/config/agent-registry.json. The engineering source of truth is
+    configs/managed_agents/agents.yaml.
     """
 
     def __init__(self):

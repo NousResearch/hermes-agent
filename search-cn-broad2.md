@@ -1,0 +1,464 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link "Google 新闻" [ref=e7] [cursor=pointer]:
+        - /url: ./?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+        - generic [ref=e9]: 新闻
+      - generic [ref=e10]:
+        - search [ref=e12]:
+          - combobox "搜索主题、地点和媒体" [ref=e19]: 世界杯 2026 营销 品牌 赞助
+          - button "高级搜索" [ref=e20] [cursor=pointer]:
+            - generic [ref=e21]:
+              - generic "高级搜索" [ref=e22]:
+                - img [ref=e23]
+              - tooltip [ref=e25]: 高级搜索
+          - button "清除搜索内容" [ref=e26] [cursor=pointer]:
+            - img [ref=e27]
+          - button "搜索" [ref=e30] [cursor=pointer]:
+            - img [ref=e31]
+        - generic [ref=e34]:
+          - generic [ref=e39]:
+            - button "帮助" [ref=e40] [cursor=pointer]:
+              - img [ref=e42]
+            - tooltip [ref=e44]: 帮助
+          - generic [ref=e49]:
+            - button "设置" [ref=e50] [cursor=pointer]:
+              - img [ref=e52]
+            - tooltip [ref=e55]: 设置
+      - generic [ref=e57]:
+        - button "Google 应用" [ref=e61] [cursor=pointer]:
+          - img [ref=e62]
+        - link "登录" [ref=e65] [cursor=pointer]:
+          - /url: https://accounts.google.com/ServiceLogin?passive=1209600&continue=https://news.google.com/search?q%3D%25E4%25B8%2596%25E7%2595%258C%25E6%259D%25AF%2B2026%2B%25E8%2590%25A5%25E9%2594%2580%2B%25E5%2593%2581%25E7%2589%258C%2B%25E8%25B5%259E%25E5%258A%25A9%26hl%3Dzh-CN%26gl%3DCN%26ceid%3DCN:zh-Hans%26when%3D1d&followup=https://news.google.com/search?q%3D%25E4%25B8%2596%25E7%2595%258C%25E6%259D%25AF%2B2026%2B%25E8%2590%25A5%25E9%2594%2580%2B%25E5%2593%2581%25E7%2589%258C%2B%25E8%25B5%259E%25E5%258A%25A9%26hl%3Dzh-CN%26gl%3DCN%26ceid%3DCN:zh-Hans%26when%3D1d&hl=zh-CN&ec=GAZAqgM
+    - navigation [ref=e68]:
+      - tablist [ref=e69]:
+        - tab "首页" [ref=e70] [cursor=pointer]:
+          - tab "首页" [ref=e71]
+        - tab "为您推荐" [ref=e72] [cursor=pointer]:
+          - tab "为您推荐" [ref=e73]
+        - tab "已关注" [ref=e74] [cursor=pointer]:
+          - tab "已关注" [ref=e75]
+        - tab "中国" [ref=e78] [cursor=pointer]:
+          - tab "中国" [ref=e79]
+        - tab "全球" [ref=e80] [cursor=pointer]:
+          - tab "全球" [ref=e81]
+        - tab "当地" [ref=e82] [cursor=pointer]:
+          - tab "当地" [ref=e83]
+        - tab "商业" [ref=e84] [cursor=pointer]:
+          - tab "商业" [ref=e85]
+        - tab "娱乐" [ref=e86] [cursor=pointer]:
+          - tab "娱乐" [ref=e87]
+        - tab "体育" [ref=e88] [cursor=pointer]:
+          - tab "体育" [ref=e89]
+  - main [ref=e93]:
+    - generic [ref=e95]:
+      - generic [ref=e98]:
+        - generic [ref=e99]:
+          - link [ref=e101] [cursor=pointer]:
+            - /url: ./read/CBMipwFBVV95cUxNaXgyZzVnaW0zYkxIdVJjNHhyQ2hTb3pLUG5zbmREaG9xNXBQUDctSW9VWk56YlhsQWMwWEFfWmVGOFowbmRKSGN0N2FXU1c0WjVTdEVhS3BSeWduOVBjVnFZTldwVVZVcXlxOU9GOHU2X0NXcTlXcWgyTXV5Y0FncHFJT2dZZEVKRlVrSFlkaE1EdkNtU0hUSGZxVkVTcU9PX2IxSUlOMA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+          - generic [ref=e103]:
+            - generic [ref=e104]:
+              - generic [ref=e107]: 新浪财经
+              - generic [ref=e111]:
+                - generic:
+                  - button "展开 - 世界杯营销再出奇招，华帝用西班牙队撬动全球流量" [ref=e112] [cursor=pointer]:
+                    - img [ref=e114]
+                  - tooltip [ref=e116]: 展开
+            - link "世界杯营销再出奇招，华帝用西班牙队撬动全球流量 - 新浪财经 - 5 天前" [ref=e117] [cursor=pointer]:
+              - /url: ./read/CBMipwFBVV95cUxNaXgyZzVnaW0zYkxIdVJjNHhyQ2hTb3pLUG5zbmREaG9xNXBQUDctSW9VWk56YlhsQWMwWEFfWmVGOFowbmRKSGN0N2FXU1c0WjVTdEVhS3BSeWduOVBjVnFZTldwVVZVcXlxOU9GOHU2X0NXcTlXcWgyTXV5Y0FncHFJT2dZZEVKRlVrSFlkaE1EdkNtU0hUSGZxVkVTcU9PX2IxSUlOMA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+              - text: 世界杯营销再出奇招，华帝用西班牙队撬动全球流量
+          - figure [ref=e118]
+        - time [ref=e120]: 5 天前
+      - generic [ref=e121]:
+        - separator [ref=e123]
+        - generic [ref=e125]:
+          - generic [ref=e126]:
+            - link [ref=e128] [cursor=pointer]:
+              - /url: ./read/CBMiXkFVX3lxTE1BMEZnMkRhTkRfVWFucDdZSE1xNk5DUmtpUG1Ya2d1VU9weVhBM1NIemZNWEZOZHg5UWppRFFWNlgxUXlVaEpkVkxmS0lNd3NTZ0p3SE5tdUpnTl9Zc3c?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e130]:
+              - generic [ref=e131]:
+                - generic [ref=e134]: thepaper.cn
+                - generic [ref=e138]:
+                  - generic:
+                    - button "展开 - 2026世界杯，中国企业真的值得赞助吗？" [ref=e139] [cursor=pointer]:
+                      - img [ref=e141]
+                    - tooltip [ref=e143]: 展开
+              - link "2026世界杯，中国企业真的值得赞助吗？ - thepaper.cn - 10 天前" [ref=e144] [cursor=pointer]:
+                - /url: ./read/CBMiXkFVX3lxTE1BMEZnMkRhTkRfVWFucDdZSE1xNk5DUmtpUG1Ya2d1VU9weVhBM1NIemZNWEZOZHg5UWppRFFWNlgxUXlVaEpkVkxmS0lNd3NTZ0p3SE5tdUpnTl9Zc3c?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2026世界杯，中国企业真的值得赞助吗？
+            - figure [ref=e145]
+          - time [ref=e147]: 10 天前
+      - generic [ref=e148]:
+        - separator [ref=e150]
+        - generic [ref=e152]:
+          - generic [ref=e153]:
+            - link [ref=e155] [cursor=pointer]:
+              - /url: ./read/CBMiYkFVX3lxTE11bU5ZT2Zwbk1Ldm1aWGJvWC1wV0hkbkZtWEZMNXh5bG1qM1FjM3R2d2NKMnZxTjZ3dy1yMmwyMnBiRmxaSnR1cDRnQWlJRDFULXEzQ0ZoT1ZVQnBIU1d2OUx3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e157]:
+              - generic [ref=e158]:
+                - generic [ref=e161]: 中国家电网
+                - generic [ref=e165]:
+                  - generic:
+                    - button "展开 - 赞助西班牙，华帝2018世界杯“夺冠退全款”神迹或将重演？-新闻中心" [ref=e166] [cursor=pointer]:
+                      - img [ref=e168]
+                    - tooltip [ref=e170]: 展开
+              - link "赞助西班牙，华帝2018世界杯“夺冠退全款”神迹或将重演？-新闻中心 - 中国家电网 - 7 天前" [ref=e171] [cursor=pointer]:
+                - /url: ./read/CBMiYkFVX3lxTE11bU5ZT2Zwbk1Ldm1aWGJvWC1wV0hkbkZtWEZMNXh5bG1qM1FjM3R2d2NKMnZxTjZ3dy1yMmwyMnBiRmxaSnR1cDRnQWlJRDFULXEzQ0ZoT1ZVQnBIU1d2OUx3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 赞助西班牙，华帝2018世界杯“夺冠退全款”神迹或将重演？-新闻中心
+            - figure [ref=e172]
+          - time [ref=e174]: 7 天前
+      - generic [ref=e175]:
+        - separator [ref=e177]
+        - generic [ref=e179]:
+          - generic [ref=e180]:
+            - link [ref=e182] [cursor=pointer]:
+              - /url: ./read/CBMiTkFVX3lxTE9ibVhPVGdYVC1DTEVVUk5MZWpxR1RMaUZlLUxHRGZFd1BmdXkzY0ZNZGF1VlNWQjF6UjVENzVSc3JUNnM5enhUN3JwS1h5UQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e184]:
+              - generic [ref=e185]:
+                - generic [ref=e188]: 36kr.com
+                - generic [ref=e192]:
+                  - generic:
+                    - button "展开 - 2026体育营销特辑：世界杯营销七十年，谁在定义世界杯？" [ref=e193] [cursor=pointer]:
+                      - img [ref=e195]
+                    - tooltip [ref=e197]: 展开
+              - link "2026体育营销特辑：世界杯营销七十年，谁在定义世界杯？ - 36kr.com - 4月27日" [ref=e198] [cursor=pointer]:
+                - /url: ./read/CBMiTkFVX3lxTE9ibVhPVGdYVC1DTEVVUk5MZWpxR1RMaUZlLUxHRGZFd1BmdXkzY0ZNZGF1VlNWQjF6UjVENzVSc3JUNnM5enhUN3JwS1h5UQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2026体育营销特辑：世界杯营销七十年，谁在定义世界杯？
+            - figure [ref=e199]
+          - time [ref=e201]: 4月27日
+      - generic [ref=e202]:
+        - separator [ref=e204]
+        - generic [ref=e206]:
+          - generic [ref=e207]:
+            - link [ref=e209] [cursor=pointer]:
+              - /url: ./read/CBMinAJBVV95cUxOTERIZEdhdWlOelh2MkJEWkpNQ09nbGFvcUg2V0Q5ZTJMYTJxYzZ0T2tHbTQ5bHdyb0lsb0dlcnFjSi0zak5vVEdmT1hyRi1ZXzRZX3hLQUdTcTdZSkdONUtoY0M4Z3ZEQmZxYml1S0ZyRzl6VXNILWkwckNkR0JBa0M1bU95MGhXOVZ6d0g1RHZlNlhRUkVrNHo2UjJFdGo4bDluYi1WYkcwUFF2ZUR3US0wdXB5ZlhMdV9ockxidzNHTWwzU1ZobzZhTkdhc2t1M2h0TU10d1NjcXRuZEpQRE51bnoxYUgwZVFSZ2NXZGpxdmtXOS03bkFOTkE3cVQyUkE1WUMwVnNuOTZ1bEJqMmNZS3NpTnJlZ0lxSA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e211]:
+              - generic [ref=e212]:
+                - generic [ref=e215]: 新浪财经
+                - generic [ref=e219]:
+                  - generic:
+                    - button "展开 - 世界杯玄学王又来了！华帝赞助西班牙，当年名场面能否再现？" [ref=e220] [cursor=pointer]:
+                      - img [ref=e222]
+                    - tooltip [ref=e224]: 展开
+              - link "世界杯玄学王又来了！华帝赞助西班牙，当年名场面能否再现？ - 新浪财经 - 5 天前" [ref=e225] [cursor=pointer]:
+                - /url: ./read/CBMinAJBVV95cUxOTERIZEdhdWlOelh2MkJEWkpNQ09nbGFvcUg2V0Q5ZTJMYTJxYzZ0T2tHbTQ5bHdyb0lsb0dlcnFjSi0zak5vVEdmT1hyRi1ZXzRZX3hLQUdTcTdZSkdONUtoY0M4Z3ZEQmZxYml1S0ZyRzl6VXNILWkwckNkR0JBa0M1bU95MGhXOVZ6d0g1RHZlNlhRUkVrNHo2UjJFdGo4bDluYi1WYkcwUFF2ZUR3US0wdXB5ZlhMdV9ockxidzNHTWwzU1ZobzZhTkdhc2t1M2h0TU10d1NjcXRuZEpQRE51bnoxYUgwZVFSZ2NXZGpxdmtXOS03bkFOTkE3cVQyUkE1WUMwVnNuOTZ1bEJqMmNZS3NpTnJlZ0lxSA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯玄学王又来了！华帝赞助西班牙，当年名场面能否再现？
+            - figure [ref=e226]
+          - time [ref=e228]: 5 天前
+      - generic [ref=e229]:
+        - separator [ref=e231]
+        - generic [ref=e233]:
+          - generic [ref=e234]:
+            - link [ref=e236] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTE0xb0VpS1dSRzE4cFkxeHBJZDlCUEN4LVMzUUkwS0t5NTRuN1BxVzRXakFKeklZcE9hRklhcG4zMVpYQmVYVFJHT1FZR2ZzTmVlMWJDY25Yd2hyQzA5NUliWHpEdkNKVkJUU3R3MHhIaWF5dw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e238]:
+              - generic [ref=e239]:
+                - generic [ref=e242]: 中青在线
+                - generic [ref=e246]:
+                  - generic:
+                    - button "展开 - 海信成为2026世界杯全球官方赞助商" [ref=e247] [cursor=pointer]:
+                      - img [ref=e249]
+                    - tooltip [ref=e251]: 展开
+              - link "海信成为2026世界杯全球官方赞助商 - 中青在线 - 2025年9月5日" [ref=e252] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTE0xb0VpS1dSRzE4cFkxeHBJZDlCUEN4LVMzUUkwS0t5NTRuN1BxVzRXakFKeklZcE9hRklhcG4zMVpYQmVYVFJHT1FZR2ZzTmVlMWJDY25Yd2hyQzA5NUliWHpEdkNKVkJUU3R3MHhIaWF5dw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信成为2026世界杯全球官方赞助商
+            - figure [ref=e253]
+          - time [ref=e255]: 2025年9月5日
+      - generic [ref=e256]:
+        - separator [ref=e258]
+        - generic [ref=e260]:
+          - generic [ref=e261]:
+            - link [ref=e263] [cursor=pointer]:
+              - /url: ./read/CBMiVkFVX3lxTE11MkdSUjRFcW1MWXhONHhCVVFxQ1daSDBGNHo3RTlJaGRJS19CaEszV1hCMVFlbVBWejJOREc3SS1NUXhnNUFZMG9tMENpbXl1STN4YVhB?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e265]:
+              - generic [ref=e266]:
+                - generic [ref=e269]: QQ News
+                - generic [ref=e273]:
+                  - generic:
+                    - button "展开 - 阿迪耐克抢跑，运动品牌世界杯营销战端开启" [ref=e274] [cursor=pointer]:
+                      - img [ref=e276]
+                    - tooltip [ref=e278]: 展开
+              - link "阿迪耐克抢跑，运动品牌世界杯营销战端开启 - QQ News - 2025年11月11日" [ref=e279] [cursor=pointer]:
+                - /url: ./read/CBMiVkFVX3lxTE11MkdSUjRFcW1MWXhONHhCVVFxQ1daSDBGNHo3RTlJaGRJS19CaEszV1hCMVFlbVBWejJOREc3SS1NUXhnNUFZMG9tMENpbXl1STN4YVhB?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 阿迪耐克抢跑，运动品牌世界杯营销战端开启
+            - figure [ref=e280]
+          - time [ref=e282]: 2025年11月11日
+      - generic [ref=e283]:
+        - separator [ref=e285]
+        - generic [ref=e287]:
+          - generic [ref=e288]:
+            - link [ref=e290] [cursor=pointer]:
+              - /url: ./read/CBMiW0FVX3lxTE5zc1pUeWxEd3hHRXNQWGRxZkQ4SXNFcW43SjZyOHVkUk53TXJ0UWFQQlByNHRZZ3U4WExhakxkUExiT19Yd2kzSFBaRTdvRVdCUWtvRVp1dWtnczA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e292]:
+              - generic [ref=e293]:
+                - generic [ref=e296]: jfdaily.com
+                - generic [ref=e300]:
+                  - generic:
+                    - button "展开 - 中国制造仍然一起努力！民族品牌能否在美加墨世界杯再掀“东方旋风”？" [ref=e301] [cursor=pointer]:
+                      - img [ref=e303]
+                    - tooltip [ref=e305]: 展开
+              - link "中国制造仍然一起努力！民族品牌能否在美加墨世界杯再掀“东方旋风”？ - jfdaily.com - 4月17日" [ref=e306] [cursor=pointer]:
+                - /url: ./read/CBMiW0FVX3lxTE5zc1pUeWxEd3hHRXNQWGRxZkQ4SXNFcW43SjZyOHVkUk53TXJ0UWFQQlByNHRZZ3U4WExhakxkUExiT19Yd2kzSFBaRTdvRVdCUWtvRVp1dWtnczA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 中国制造仍然一起努力！民族品牌能否在美加墨世界杯再掀“东方旋风”？
+            - figure [ref=e307]
+          - time [ref=e309]: 4月17日
+      - generic [ref=e310]:
+        - separator [ref=e312]
+        - generic [ref=e314]:
+          - generic [ref=e315]:
+            - link [ref=e317] [cursor=pointer]:
+              - /url: ./read/CBMijwFBVV95cUxONlJYQmNoSkg0UjVtcTFNaS00TFhUV0NIZjdSc0M2QW9mZUxTNkx1cUtnTWJOeVhpZ3dmbXVOcUM1MGhlRklJQUJmbU11MlNfMWNNbnhiTlRfcDRpeXNsQnJ0dk9QelNJazhkcFVWd3VGVWluWWVZUXNTMmN3OWNpaGhZVl82cDBMRzVRNkJlWQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e319]:
+              - generic [ref=e320]:
+                - generic [ref=e323]: 21财经
+                - generic [ref=e327]:
+                  - generic:
+                    - button "展开 - 中国家电，再战世界杯" [ref=e328] [cursor=pointer]:
+                      - img [ref=e330]
+                    - tooltip [ref=e332]: 展开
+              - link "中国家电，再战世界杯 - 21财经 - 1月6日" [ref=e333] [cursor=pointer]:
+                - /url: ./read/CBMijwFBVV95cUxONlJYQmNoSkg0UjVtcTFNaS00TFhUV0NIZjdSc0M2QW9mZUxTNkx1cUtnTWJOeVhpZ3dmbXVOcUM1MGhlRklJQUJmbU11MlNfMWNNbnhiTlRfcDRpeXNsQnJ0dk9QelNJazhkcFVWd3VGVWluWWVZUXNTMmN3OWNpaGhZVl82cDBMRzVRNkJlWQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 中国家电，再战世界杯
+            - figure [ref=e334]
+          - time [ref=e336]: 1月6日
+      - generic [ref=e337]:
+        - separator [ref=e339]
+        - generic [ref=e341]:
+          - generic [ref=e342]:
+            - link [ref=e344] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE9RbGw1NFA2T2dBX3l3RkJJbmNuWThoYWJYSHFobDJKQ1lGLUhTNmM2ZjltcUJKUWZVbjFRemxNUnZIY3dNdU13UnpvaHp5SlQ2QXlWbVpFVHRUMG1jNmotT2Ficw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e346]:
+              - generic [ref=e347]:
+                - generic [ref=e350]: 中华网生活
+                - generic [ref=e354]:
+                  - generic:
+                    - button "展开 - 梅西+哈兰德联袂登场！百威助阵2026年国际足联世界杯™：每一杯，你我都在" [ref=e355] [cursor=pointer]:
+                      - img [ref=e357]
+                    - tooltip [ref=e359]: 展开
+              - link "梅西+哈兰德联袂登场！百威助阵2026年国际足联世界杯™：每一杯，你我都在 - 中华网生活 - 12 天前" [ref=e360] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE9RbGw1NFA2T2dBX3l3RkJJbmNuWThoYWJYSHFobDJKQ1lGLUhTNmM2ZjltcUJKUWZVbjFRemxNUnZIY3dNdU13UnpvaHp5SlQ2QXlWbVpFVHRUMG1jNmotT2Ficw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 梅西+哈兰德联袂登场！百威助阵2026年国际足联世界杯™：每一杯，你我都在
+            - figure [ref=e361]
+          - time [ref=e363]: 12 天前
+      - generic [ref=e364]:
+        - separator [ref=e366]
+        - generic [ref=e368]:
+          - generic [ref=e369]:
+            - link [ref=e371] [cursor=pointer]:
+              - /url: ./read/CBMid0FVX3lxTE00SkhJd0VzNmRTNHZmeTJuT2R1VTByallrMWJVdGt2Zlh2eUNBMDJEd3pIWjlaS2I4Nk9OZjJQenZDNkFPQlJpQmEzcUdoWFF5YkthM2FxNjcycVA1MF9yR01NVC1HVzZOVUVoRFM5UnRmWldXbXQw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e373]:
+              - generic [ref=e374]:
+                - generic [ref=e377]: 手机新浪网
+                - generic [ref=e381]:
+                  - generic:
+                    - button "展开 - 禹唐1月15日举办2026世界杯资源推介专场，专业解读世界杯营销机会点" [ref=e382] [cursor=pointer]:
+                      - img [ref=e384]
+                    - tooltip [ref=e386]: 展开
+              - link "禹唐1月15日举办2026世界杯资源推介专场，专业解读世界杯营销机会点 - 手机新浪网 - 1月1日" [ref=e387] [cursor=pointer]:
+                - /url: ./read/CBMid0FVX3lxTE00SkhJd0VzNmRTNHZmeTJuT2R1VTByallrMWJVdGt2Zlh2eUNBMDJEd3pIWjlaS2I4Nk9OZjJQenZDNkFPQlJpQmEzcUdoWFF5YkthM2FxNjcycVA1MF9yR01NVC1HVzZOVUVoRFM5UnRmWldXbXQw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 禹唐1月15日举办2026世界杯资源推介专场，专业解读世界杯营销机会点
+            - figure [ref=e388]
+          - time [ref=e390]: 1月1日
+      - generic [ref=e391]:
+        - separator [ref=e393]
+        - generic [ref=e395]:
+          - generic [ref=e396]:
+            - link [ref=e398] [cursor=pointer]:
+              - /url: ./read/CBMid0FVX3lxTE1pQ1ZWREg5Rkx4aXdqMlhRNUl4ZlJJOUk2MUNETDJlNFpZcXJnWF9aczNSTUxnb1ZaaUNCSnpORUZhZWYyY25Nc1d6TGxNekJsRlZZY0RQSzJpZU4tQmRiX2RHSWprMDRRTFkwT1BCcGxnRnR0WGo0?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e400]:
+              - generic [ref=e401]:
+                - generic [ref=e404]: 手机新浪网
+                - generic [ref=e408]:
+                  - generic:
+                    - button "展开 - 品牌营销战升温，“中国制造”如何玩转世界杯|世界杯|懂球帝" [ref=e409] [cursor=pointer]:
+                      - img [ref=e411]
+                    - tooltip [ref=e413]: 展开
+              - link "品牌营销战升温，“中国制造”如何玩转世界杯|世界杯|懂球帝 - 手机新浪网 - 18 天前" [ref=e414] [cursor=pointer]:
+                - /url: ./read/CBMid0FVX3lxTE1pQ1ZWREg5Rkx4aXdqMlhRNUl4ZlJJOUk2MUNETDJlNFpZcXJnWF9aczNSTUxnb1ZaaUNCSnpORUZhZWYyY25Nc1d6TGxNekJsRlZZY0RQSzJpZU4tQmRiX2RHSWprMDRRTFkwT1BCcGxnRnR0WGo0?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 品牌营销战升温，“中国制造”如何玩转世界杯|世界杯|懂球帝
+            - figure [ref=e415]
+          - time [ref=e417]: 18 天前
+      - generic [ref=e418]:
+        - separator [ref=e420]
+        - generic [ref=e422]:
+          - generic [ref=e423]:
+            - link [ref=e425] [cursor=pointer]:
+              - /url: ./read/CBMid0FVX3lxTFByNmxmR2VMMjBrZktoR1ZEWHJ3QzZmczQ4SjhqYkVtZjZMVzZYWmxjZWRzYzFzRnNEMF9aRXVOb2NJV0xNcU1KTWVwLXdDM1E3UWRBVWRYaEgwclJxTzlDLS1SSVc1QUJDUnBEU21SM2tiSVdNZHg4?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e427]:
+              - generic [ref=e428]:
+                - generic [ref=e431]: 手机新浪网
+                - generic [ref=e435]:
+                  - generic:
+                    - button "展开 - 世界杯资源推介｜摩洛哥国家足球队：高性价比的世界杯营销资源选择" [ref=e436] [cursor=pointer]:
+                      - img [ref=e438]
+                    - tooltip [ref=e440]: 展开
+              - link "世界杯资源推介｜摩洛哥国家足球队：高性价比的世界杯营销资源选择 - 手机新浪网 - 1月27日" [ref=e441] [cursor=pointer]:
+                - /url: ./read/CBMid0FVX3lxTFByNmxmR2VMMjBrZktoR1ZEWHJ3QzZmczQ4SjhqYkVtZjZMVzZYWmxjZWRzYzFzRnNEMF9aRXVOb2NJV0xNcU1KTWVwLXdDM1E3UWRBVWRYaEgwclJxTzlDLS1SSVc1QUJDUnBEU21SM2tiSVdNZHg4?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯资源推介｜摩洛哥国家足球队：高性价比的世界杯营销资源选择
+            - figure [ref=e442]
+          - time [ref=e444]: 1月27日
+      - generic [ref=e445]:
+        - separator [ref=e447]
+        - generic [ref=e449]:
+          - generic [ref=e450]:
+            - link [ref=e452] [cursor=pointer]:
+              - /url: ./read/CBMic0FVX3lxTE1DdEhkTnA3b25zczFlb200VjNKM2NBbkFlbEVGMWFPQVBOX0RRUnBUMGx5dUowNWIyYkJaSlVGWjVMaFBaSThaY0x6R002VndFSWZlNGdVdWVTTVE0MjltN0E5T0hCcFMzVlBnX2dpOUZWRE0?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e454]:
+              - generic [ref=e455]:
+                - generic [ref=e458]: 中华网财经
+                - generic [ref=e462]:
+                  - generic:
+                    - button "展开 - 2026年临近，可口可乐、阿迪达斯、耐克等品牌为世界杯预热" [ref=e463] [cursor=pointer]:
+                      - img [ref=e465]
+                    - tooltip [ref=e467]: 展开
+              - link "2026年临近，可口可乐、阿迪达斯、耐克等品牌为世界杯预热 - 中华网财经 - 12月18日" [ref=e468] [cursor=pointer]:
+                - /url: ./read/CBMic0FVX3lxTE1DdEhkTnA3b25zczFlb200VjNKM2NBbkFlbEVGMWFPQVBOX0RRUnBUMGx5dUowNWIyYkJaSlVGWjVMaFBaSThaY0x6R002VndFSWZlNGdVdWVTTVE0MjltN0E5T0hCcFMzVlBnX2dpOUZWRE0?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2026年临近，可口可乐、阿迪达斯、耐克等品牌为世界杯预热
+            - figure [ref=e469]
+          - time [ref=e471]: 12月18日
+      - generic [ref=e472]:
+        - separator [ref=e474]
+        - generic [ref=e476]:
+          - generic [ref=e477]:
+            - link [ref=e479] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTE9lOGc3eUlLZ0tiTU5BVUdVdXV3UVFKTk91cUlOSDNUaElmWm1QNW5OZXlsdGVNdE9nWjd4YWVKTmtnd202MVdPVjlXVU1oMS1kRnQwWUN1aGhaT3N0c0sySjU3T19ULXZTQkQzWEo0YXVrUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e481]:
+              - generic [ref=e482]:
+                - generic [ref=e485]: 京报网
+                - generic [ref=e489]:
+                  - generic:
+                    - button "展开 - 中国企业海信成为2026世界杯赞助商" [ref=e490] [cursor=pointer]:
+                      - img [ref=e492]
+                    - tooltip [ref=e494]: 展开
+              - link "中国企业海信成为2026世界杯赞助商 - 京报网 - 2025年9月5日 - 作者：王阳" [ref=e495] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTE9lOGc3eUlLZ0tiTU5BVUdVdXV3UVFKTk91cUlOSDNUaElmWm1QNW5OZXlsdGVNdE9nWjd4YWVKTmtnd202MVdPVjlXVU1oMS1kRnQwWUN1aGhaT3N0c0sySjU3T19ULXZTQkQzWEo0YXVrUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 中国企业海信成为2026世界杯赞助商
+            - figure [ref=e496]
+          - generic [ref=e497]:
+            - time [ref=e498]: 2025年9月5日
+            - separator [ref=e499]
+            - generic [ref=e500]: 作者：王阳
+      - generic [ref=e501]:
+        - separator [ref=e503]
+        - generic [ref=e505]:
+          - generic [ref=e506]:
+            - link [ref=e508] [cursor=pointer]:
+              - /url: ./read/CBMiSEFVX3lxTFBvaUtIaUFqOW5xOFQxN3BWUEQtaGViaFNQbTUzOVNwUTNPRDJGampreDJwa1ZNUUdMeHZCX1lFcjFEc1ZTUmYzLQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e510]:
+              - generic [ref=e511]:
+                - generic [ref=e514]: 手机鳳凰網
+                - generic [ref=e518]:
+                  - generic:
+                    - button "展开 - 2026世界杯商战烽烟乍起：海信发布营销策略 欲重构全球家电版图" [ref=e519] [cursor=pointer]:
+                      - img [ref=e521]
+                    - tooltip [ref=e523]: 展开
+              - link "2026世界杯商战烽烟乍起：海信发布营销策略 欲重构全球家电版图 - 手机鳳凰網 - 3月6日" [ref=e524] [cursor=pointer]:
+                - /url: ./read/CBMiSEFVX3lxTFBvaUtIaUFqOW5xOFQxN3BWUEQtaGViaFNQbTUzOVNwUTNPRDJGampreDJwa1ZNUUdMeHZCX1lFcjFEc1ZTUmYzLQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2026世界杯商战烽烟乍起：海信发布营销策略 欲重构全球家电版图
+            - figure [ref=e525]
+          - time [ref=e527]: 3月6日
+      - generic [ref=e528]:
+        - separator [ref=e530]
+        - generic [ref=e532]:
+          - generic [ref=e533]:
+            - link [ref=e535] [cursor=pointer]:
+              - /url: ./read/CBMiTEFVX3lxTE05aElsQ3RaWGxzTVF5R2hTV2w5bGo3ZzZEd1hlSkctdDJXVUVoYWwtNmRDZWdCT3RVYnZ4V25WVDFsbE4tSWhuVXhqcGM?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e537]:
+              - generic [ref=e538]:
+                - generic [ref=e541]: 雨果跨境
+                - generic [ref=e545]:
+                  - generic:
+                    - button "展开 - 海外红人营销|史上最大规模“世界杯”泼天流量！出海品牌怎么接？" [ref=e546] [cursor=pointer]:
+                      - img [ref=e548]
+                    - tooltip [ref=e550]: 展开
+              - link "海外红人营销|史上最大规模“世界杯”泼天流量！出海品牌怎么接？ - 雨果跨境 - 12 天前" [ref=e551] [cursor=pointer]:
+                - /url: ./read/CBMiTEFVX3lxTE05aElsQ3RaWGxzTVF5R2hTV2w5bGo3ZzZEd1hlSkctdDJXVUVoYWwtNmRDZWdCT3RVYnZ4V25WVDFsbE4tSWhuVXhqcGM?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海外红人营销|史上最大规模“世界杯”泼天流量！出海品牌怎么接？
+            - figure [ref=e552]
+          - time [ref=e554]: 12 天前
+      - generic [ref=e555]:
+        - separator [ref=e557]
+        - generic [ref=e559]:
+          - generic [ref=e560]:
+            - link [ref=e562] [cursor=pointer]:
+              - /url: ./read/CBMiUkFVX3lxTE1hcTQ1OFlpbGJ0QndXNkRjZ05yaXdETlV3ajBtcVExeG5Bb2ZXY0g4SmVhaGg3WVhnSmJGcDZZR1FBcmFGNmtZWTNUWE83b1ZvTXc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e564]:
+              - generic [ref=e565]:
+                - generic [ref=e568]: 搜狐网
+                - generic [ref=e572]:
+                  - generic:
+                    - button "展开 - 黄金一代，身价9.5亿！华帝这波世界杯赞助，押了最稳的“潜力股”" [ref=e573] [cursor=pointer]:
+                      - img [ref=e575]
+                    - tooltip [ref=e577]: 展开
+              - link "黄金一代，身价9.5亿！华帝这波世界杯赞助，押了最稳的“潜力股” - 搜狐网 - 6 天前" [ref=e578] [cursor=pointer]:
+                - /url: ./read/CBMiUkFVX3lxTE1hcTQ1OFlpbGJ0QndXNkRjZ05yaXdETlV3ajBtcVExeG5Bb2ZXY0g4SmVhaGg3WVhnSmJGcDZZR1FBcmFGNmtZWTNUWE83b1ZvTXc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 黄金一代，身价9.5亿！华帝这波世界杯赞助，押了最稳的“潜力股”
+            - figure [ref=e579]
+          - time [ref=e581]: 6 天前
+      - generic [ref=e582]:
+        - separator [ref=e584]
+        - generic [ref=e586]:
+          - generic [ref=e587]:
+            - link [ref=e589] [cursor=pointer]:
+              - /url: ./read/CBMiRkFVX3lxTE9LNUNFaGR0b1huLUxpcDZOak1XNUZMa2szNmNaeHhobzBKZ1ZveHEzMGhDVEpPVGk5VUh4czh6QzdkT191NFE?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e591]:
+              - generic [ref=e592]:
+                - generic [ref=e595]: 财联社
+                - generic [ref=e599]:
+                  - generic:
+                    - button "展开 - FIFA官宣首家银行业合作伙伴！美银成为2026年世界杯赞助商" [ref=e600] [cursor=pointer]:
+                      - img [ref=e602]
+                    - tooltip [ref=e604]: 展开
+              - link "FIFA官宣首家银行业合作伙伴！美银成为2026年世界杯赞助商 - 财联社 - 2024年8月16日" [ref=e605] [cursor=pointer]:
+                - /url: ./read/CBMiRkFVX3lxTE9LNUNFaGR0b1huLUxpcDZOak1XNUZMa2szNmNaeHhobzBKZ1ZveHEzMGhDVEpPVGk5VUh4czh6QzdkT191NFE?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: FIFA官宣首家银行业合作伙伴！美银成为2026年世界杯赞助商
+            - figure [ref=e606]
+          - time [ref=e608]: 2024年8月16日
+      - generic [ref=e609]:
+        - separator [ref=e611]
+        - generic [ref=e613]:
+          - generic [ref=e614]:
+            - link [ref=e616] [cursor=pointer]:
+              - /url: ./read/CBMirwFBVV95cUxNV2dHV3JQcFRXUnUyUEZuTXhDN2Qxemc3aWVVdGJTbDNjbDhfUDczNmVsV3JBT1RKMjQ2dks1MXIxVlFKaWszWmp3NEp5NUhTdHZHekdCSVh4aDgxTDc4SmNuaXd6Z0hnZnhTQjdJOHo4aVN5dzBDU1FPcTlHTjliY0c4U294Z2JONWxSejdxTEhVZDhoRXREem52N2R4NFRGMWRPNkZjcmUzMUpCQ19v?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e618]:
+              - generic [ref=e619]:
+                - generic [ref=e622]: Nielsen
+                - generic [ref=e626]:
+                  - generic:
+                    - button "展开 - 足球在北美日益流行对2026 年世界杯赞助商意味着什么| 尼尔森" [ref=e627] [cursor=pointer]:
+                      - img [ref=e629]
+                    - tooltip [ref=e631]: 展开
+              - link "足球在北美日益流行对2026 年世界杯赞助商意味着什么| 尼尔森 - Nielsen - 2022年11月19日" [ref=e632] [cursor=pointer]:
+                - /url: ./read/CBMirwFBVV95cUxNV2dHV3JQcFRXUnUyUEZuTXhDN2Qxemc3aWVVdGJTbDNjbDhfUDczNmVsV3JBT1RKMjQ2dks1MXIxVlFKaWszWmp3NEp5NUhTdHZHekdCSVh4aDgxTDc4SmNuaXd6Z0hnZnhTQjdJOHo4aVN5dzBDU1FPcTlHTjliY0c4U294Z2JONWxSejdxTEhVZDhoRXREem52N2R4NFRGMWRPNkZjcmUzMUpCQ19v?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 足球在北美日益流行对2026 年世界杯赞助商意味着什么| 尼尔森
+            - figure [ref=e633]
+          - time [ref=e635]: 2022年11月19日
+      - generic [ref=e636]:
+        - separator [ref=e638]
+        - generic [ref=e640]:
+          - generic [ref=e641]:
+            - link [ref=e643] [cursor=pointer]:
+              - /url: ./read/CBMiUEFVX3lxTE5BWnZOWUExaUNhUUFRQ2tWdjZ5aWdPUUdCOFZ3TEFZSE95c2ZIYVdsM0I3YXU3OVo3cGtDbDNvV3Q4aXVlVDYwNG1wVGpxcUlv?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e645]:
+              - generic [ref=e646]:
+                - generic [ref=e649]: 搜狐网
+                - generic [ref=e653]:
+                  - generic:
+                    - button "展开 - 美加墨举办2026世界杯 当代明诚获2021-28亚足联赛事权益｜体育营销TOP10" [ref=e654] [cursor=pointer]:
+                      - img [ref=e656]
+                    - tooltip [ref=e658]: 展开
+              - link "美加墨举办2026世界杯 当代明诚获2021-28亚足联赛事权益｜体育营销TOP10 - 搜狐网 - 2018年6月17日" [ref=e659] [cursor=pointer]:
+                - /url: ./read/CBMiUEFVX3lxTE5BWnZOWUExaUNhUUFRQ2tWdjZ5aWdPUUdCOFZ3TEFZSE95c2ZIYVdsM0I3YXU3OVo3cGtDbDNvV3Q4aXVlVDYwNG1wVGpxcUlv?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 美加墨举办2026世界杯 当代明诚获2021-28亚足联赛事权益｜体育营销TOP10
+            - figure [ref=e660]
+          - time [ref=e662]: 2018年6月17日
+    - complementary [ref=e663]:
+      - generic [ref=e665]:
+        - generic [ref=e668]:
+          - heading "世界杯 2026 营销 品牌 赞助" [level=2] [ref=e669]
+          - generic [ref=e670]: 搜索结果
+        - generic [ref=e673]:
+          - button "保存此搜索条目 - 世界杯 2026 营销 品牌 赞助" [ref=e675]:
+            - img [ref=e679]
+            - generic [ref=e681]: 保存
+          - tooltip [ref=e682]: 保存此搜索条目

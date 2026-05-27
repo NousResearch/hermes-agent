@@ -2988,11 +2988,13 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     - GPT-5 / Codex models on Zen use ``/v1/responses``
     - Claude models on Zen use ``/v1/messages``
     - MiniMax models on Go use ``/v1/messages``
-    - GLM / Kimi on Go use ``/v1/chat/completions``
+    - GLM / Kimi / Qwen models on Go use ``/v1/chat/completions``
     - Other Zen models (Gemini, GLM, Kimi, MiniMax, Qwen, etc.) use
       ``/v1/chat/completions``
 
-    This follows the published OpenCode docs for Zen and Go endpoints.
+    Qwen Go is intentionally routed by live compatibility testing: the
+    published docs list ``/v1/messages``, but the endpoint currently returns
+    server errors while ``/v1/chat/completions`` succeeds.
     """
     provider = normalize_provider(provider_id)
     normalized = normalize_opencode_model_id(provider_id, model_id).lower()

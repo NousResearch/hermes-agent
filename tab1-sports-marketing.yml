@@ -1,0 +1,837 @@
+- generic [active] [ref=e1]:
+  - link "欢迎进入 百度一下，你就知道，盲人用户进入读屏幕模式请按快捷键Ctrl加Alt加R；阅读详细操作说明请按快捷键Ctrl加Alt加问号键。":
+    - /url: javascript:void(0)
+  - generic [ref=e2]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - generic:
+          - link "到百度首页" [ref=e6] [cursor=pointer]:
+            - /url: /
+            - img "到百度首页" [ref=e7]
+          - generic [ref=e10]:
+            - textbox [ref=e12]: 体育营销 2026 最新动向
+            - generic [ref=e14]:
+              - generic [ref=e15]:
+                - img [ref=e17] [cursor=pointer]
+                - img [ref=e27] [cursor=pointer]
+                - generic [ref=e30]:
+                  - img [ref=e34] [cursor=pointer]
+                  - img [ref=e39] [cursor=pointer]
+              - button "百度一下" [ref=e43] [cursor=pointer]
+      - generic [ref=e45]:
+        - link "百度首页" [ref=e46] [cursor=pointer]:
+          - /url: /
+        - link "设置" [ref=e47] [cursor=pointer]:
+          - /url: javascript:;
+        - link "登录" [ref=e48] [cursor=pointer]:
+          - /url: https://passport.baidu.com/v2/?login&tpl=mn&u=http%3A%2F%2Fwww.baidu.com%2F
+    - generic [ref=e51]:
+      - link [ref=e52] [cursor=pointer]:
+        - /url: https://chat.baidu.com/search?word=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&pd=csaitab&setype=csaitab&extParamsJson=%7B%22enter_type%22%3A%22search_a_tab%22%2C%22sa%22%3A%22vs_tab%22%2C%22apagelid%22%3A%2216500978817511307318%22%2C%22ori_lid%22%3A%2216500978817511307318%22%7D
+        - img [ref=e53]
+      - generic [ref=e54]: 网页
+      - link "图片" [ref=e55] [cursor=pointer]:
+        - /url: http://image.baidu.com/i?tn=baiduimage&ps=1&ct=201326592&lm=-1&cl=2&nc=1&ie=utf-8&lid=e4ff40cf0001b836&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91
+      - link "资讯" [ref=e56] [cursor=pointer]:
+        - /url: https://www.baidu.com/s?rtt=1&bsst=1&cl=2&tn=news&ie=utf-8&word=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91
+      - link "视频" [ref=e57] [cursor=pointer]:
+        - /url: /sf/vsearch?pd=video&tn=vsearch&lid=e4ff40cf0001b836&ie=utf-8&wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_spt=7&rsv_bp=1&f=8&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis
+      - link "笔记" [ref=e58] [cursor=pointer]:
+        - /url: https://www.baidu.com/s?pd=note&rpf=pc&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91
+      - link "地图" [ref=e59] [cursor=pointer]:
+        - /url: https://map.baidu.com/?newmap=1&ie=utf-8&from=pstab&s=s%26wd%3D%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91
+      - link "贴吧" [ref=e60] [cursor=pointer]:
+        - /url: http://tieba.baidu.com/f?fr=wwwt&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&kw=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91
+      - link "文库" [ref=e61] [cursor=pointer]:
+        - /url: http://wenku.baidu.com/search?lm=0&od=0&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80+2026+%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91
+      - link "更多" [ref=e62] [cursor=pointer]:
+        - /url: http://www.baidu.com/more/
+      - generic [ref=e63] [cursor=pointer]: 搜索工具
+    - generic [ref=e64]:
+      - generic [ref=e65]:
+        - table [ref=e67]:
+          - rowgroup [ref=e68]:
+            - row "相关搜索  2021体育产业最新扶持政策  体育改革2022  2022年全年营销  体育产业最新消息  2021年体育产业发展前景分析  体育产业十四五    换一换 热搜榜 北京榜 民生榜 财经榜  老友再会！中俄元首北京会晤 1 “幸好没扎脸上 不然婚都结不了了” 新 2 雷军强烈建议大家现在就换手机 热 3 2026文化强国建设高峰论坛在深圳开幕 4 为何AI总会一本正经地胡说八道 新 5 谢谢您们让我们“医食无忧” 新 6 净网：拍到“野生华南虎”系谣言 7 C罗夺得沙特联赛冠军 新 8 “省的油钱 全贴进修车费了” 热 9 跳伞遇难女子留给家人的最后一句话 10 小米YU7 GT正式发布 售价38.99万元 11 睡觉时出现这4种表现可能是疾病信号 12 美新墨西哥州三人接触不明物质死亡 13 昆虫学家辟谣一只鹿角天牛58万 14 U17男足世界杯：中国与西班牙同组 15 今天缅怀袁隆平、吴孟超两位院士 新" [ref=e69]:
+              - cell "相关搜索  2021体育产业最新扶持政策  体育改革2022  2022年全年营销  体育产业最新消息  2021年体育产业发展前景分析  体育产业十四五    换一换 热搜榜 北京榜 民生榜 财经榜  老友再会！中俄元首北京会晤 1 “幸好没扎脸上 不然婚都结不了了” 新 2 雷军强烈建议大家现在就换手机 热 3 2026文化强国建设高峰论坛在深圳开幕 4 为何AI总会一本正经地胡说八道 新 5 谢谢您们让我们“医食无忧” 新 6 净网：拍到“野生华南虎”系谣言 7 C罗夺得沙特联赛冠军 新 8 “省的油钱 全贴进修车费了” 热 9 跳伞遇难女子留给家人的最后一句话 10 小米YU7 GT正式发布 售价38.99万元 11 睡觉时出现这4种表现可能是疾病信号 12 美新墨西哥州三人接触不明物质死亡 13 昆虫学家辟谣一只鹿角天牛58万 14 U17男足世界杯：中国与西班牙同组 15 今天缅怀袁隆平、吴孟超两位院士 新" [ref=e70]:
+                - generic [ref=e71]:
+                  - generic [ref=e77]:
+                    - generic [ref=e79]: 相关搜索
+                    - generic [ref=e80]:
+                      - link " 2021体育产业最新扶持政策" [ref=e83] [cursor=pointer]:
+                        - /url: /s?wd=2021%E4%BD%93%E8%82%B2%E4%BA%A7%E4%B8%9A%E6%9C%80%E6%96%B0%E6%89%B6%E6%8C%81%E6%94%BF%E7%AD%96&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=4f73259xN7xkAVl6Vu3HahXfmsl6yZAyMs24hxcDfopmWE%2BzRfUI%2BdwJKbI&rfqid=e4ff40cf0001b836&rsv_dl=0_prs_28616_1&rq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsf=101633403
+                        - generic [ref=e84]:
+                          - generic [ref=e85]: 
+                          - generic [ref=e86]: 2021体育产业最新扶持政策
+                      - link " 体育改革2022" [ref=e89] [cursor=pointer]:
+                        - /url: /s?wd=%E4%BD%93%E8%82%B2%E6%94%B9%E9%9D%A92022&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=4f73259xN7xkAVl6Vu3HahXfmsl6yZAyMs24hxcDfopmWE%2BzRfUI%2BdwJKbI&rfqid=e4ff40cf0001b836&rsv_dl=0_prs_28616_2&rq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsf=101633403
+                        - generic [ref=e90]:
+                          - generic [ref=e91]: 
+                          - generic [ref=e92]: 体育改革2022
+                      - link " 2022年全年营销" [ref=e95] [cursor=pointer]:
+                        - /url: /s?wd=2022%E5%B9%B4%E5%85%A8%E5%B9%B4%E8%90%A5%E9%94%80&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=4f73259xN7xkAVl6Vu3HahXfmsl6yZAyMs24hxcDfopmWE%2BzRfUI%2BdwJKbI&rfqid=e4ff40cf0001b836&rsv_dl=0_prs_28616_3&rq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsf=101633403
+                        - generic [ref=e96]:
+                          - generic [ref=e97]: 
+                          - generic [ref=e98]: 2022年全年营销
+                      - link " 体育产业最新消息" [ref=e101] [cursor=pointer]:
+                        - /url: /s?wd=%E4%BD%93%E8%82%B2%E4%BA%A7%E4%B8%9A%E6%9C%80%E6%96%B0%E6%B6%88%E6%81%AF&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=4f73259xN7xkAVl6Vu3HahXfmsl6yZAyMs24hxcDfopmWE%2BzRfUI%2BdwJKbI&rfqid=e4ff40cf0001b836&rsv_dl=0_prs_28616_4&rq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsf=101633403
+                        - generic [ref=e102]:
+                          - generic [ref=e103]: 
+                          - generic [ref=e104]: 体育产业最新消息
+                      - link " 2021年体育产业发展前景分析" [ref=e107] [cursor=pointer]:
+                        - /url: /s?wd=2021%E5%B9%B4%E4%BD%93%E8%82%B2%E4%BA%A7%E4%B8%9A%E5%8F%91%E5%B1%95%E5%89%8D%E6%99%AF%E5%88%86%E6%9E%90&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=4f73259xN7xkAVl6Vu3HahXfmsl6yZAyMs24hxcDfopmWE%2BzRfUI%2BdwJKbI&rfqid=e4ff40cf0001b836&rsv_dl=0_prs_28616_5&rq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsf=101633403
+                        - generic [ref=e108]:
+                          - generic [ref=e109]: 
+                          - generic [ref=e110]: 2021年体育产业发展前景分析
+                      - link " 体育产业十四五" [ref=e113] [cursor=pointer]:
+                        - /url: /s?wd=%E4%BD%93%E8%82%B2%E4%BA%A7%E4%B8%9A%E5%8D%81%E5%9B%9B%E4%BA%94&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=122eTlGKpazMWYh0icHUi8nNK3xNy31BUaNdMJHFqlahZIxDT4V0r1CJ5rQ&rfqid=e4ff40cf0001b836&rsv_dl=0_prs_28616_6&rq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsf=101633403
+                        - generic [ref=e114]:
+                          - generic [ref=e115]: 
+                          - generic [ref=e116]: 体育产业十四五
+                  - generic [ref=e120]:
+                    - generic "百度热搜" [ref=e121]:
+                      - link " " [ref=e122] [cursor=pointer]:
+                        - /url: https://top.baidu.com/board?platform=pc&sa=pcindex_a_right
+                        - generic [ref=e123]: 
+                        - generic [ref=e124]: 
+                      - link " 换一换" [ref=e126] [cursor=pointer]:
+                        - /url: javascript:void(0);
+                        - generic [ref=e127]: 
+                        - text: 换一换
+                    - generic [ref=e128]:
+                      - generic [ref=e129] [cursor=pointer]: 热搜榜
+                      - generic [ref=e130] [cursor=pointer]: 北京榜
+                      - generic [ref=e131] [cursor=pointer]: 民生榜
+                      - generic [ref=e132] [cursor=pointer]: 财经榜
+                    - generic [ref=e134]:
+                      - generic [ref=e136]:
+                        - generic [ref=e138]: 
+                        - link "老友再会！中俄元首北京会晤" [ref=e139] [cursor=pointer]:
+                          - /url: /s?wd=%E8%80%81%E5%8F%8B%E5%86%8D%E4%BC%9A%EF%BC%81%E4%B8%AD%E4%BF%84%E5%85%83%E9%A6%96%E5%8C%97%E4%BA%AC%E4%BC%9A%E6%99%A4&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=122eTlGKpazMWYh0icHUi8nNK3xNy31BUaNdMJHFqlahZIxDT4V0r1CJ5rQ&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_1&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e141]:
+                        - generic [ref=e142]: "1"
+                        - link "“幸好没扎脸上 不然婚都结不了了”" [ref=e143] [cursor=pointer]:
+                          - /url: /s?wd=%E2%80%9C%E5%B9%B8%E5%A5%BD%E6%B2%A1%E6%89%8E%E8%84%B8%E4%B8%8A%20%E4%B8%8D%E7%84%B6%E5%A9%9A%E9%83%BD%E7%BB%93%E4%B8%8D%E4%BA%86%E4%BA%86%E2%80%9D&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=122eTlGKpazMWYh0icHUi8nNK3xNy31BUaNdMJHFqlahZIxDT4V0r1CJ5rQ&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_2&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                        - generic [ref=e144]: 新
+                      - generic [ref=e146]:
+                        - generic [ref=e147]: "2"
+                        - link "雷军强烈建议大家现在就换手机" [ref=e148] [cursor=pointer]:
+                          - /url: /s?wd=%E9%9B%B7%E5%86%9B%E5%BC%BA%E7%83%88%E5%BB%BA%E8%AE%AE%E5%A4%A7%E5%AE%B6%E7%8E%B0%E5%9C%A8%E5%B0%B1%E6%8D%A2%E6%89%8B%E6%9C%BA&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=122eTlGKpazMWYh0icHUi8nNK3xNy31BUaNdMJHFqlahZIxDT4V0r1CJ5rQ&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_3&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                        - generic [ref=e149]: 热
+                      - generic [ref=e151]:
+                        - generic [ref=e152]: "3"
+                        - link "2026文化强国建设高峰论坛在深圳开幕" [ref=e153] [cursor=pointer]:
+                          - /url: /s?wd=2026%E6%96%87%E5%8C%96%E5%BC%BA%E5%9B%BD%E5%BB%BA%E8%AE%BE%E9%AB%98%E5%B3%B0%E8%AE%BA%E5%9D%9B%E5%9C%A8%E6%B7%B1%E5%9C%B3%E5%BC%80%E5%B9%95&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=122eTlGKpazMWYh0icHUi8nNK3xNy31BUaNdMJHFqlahZIxDT4V0r1CJ5rQ&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_4&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e155]:
+                        - generic [ref=e156]: "4"
+                        - link "为何AI总会一本正经地胡说八道" [ref=e157] [cursor=pointer]:
+                          - /url: /s?wd=%E4%B8%BA%E4%BD%95AI%E6%80%BB%E4%BC%9A%E4%B8%80%E6%9C%AC%E6%AD%A3%E7%BB%8F%E5%9C%B0%E8%83%A1%E8%AF%B4%E5%85%AB%E9%81%93&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=122eTlGKpazMWYh0icHUi8nNK3xNy31BUaNdMJHFqlahZIxDT4V0r1CJ5rQ&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_5&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                        - generic [ref=e158]: 新
+                      - generic [ref=e160]:
+                        - generic [ref=e161]: "5"
+                        - link "谢谢您们让我们“医食无忧”" [ref=e162] [cursor=pointer]:
+                          - /url: /s?wd=%E8%B0%A2%E8%B0%A2%E6%82%A8%E4%BB%AC%E8%AE%A9%E6%88%91%E4%BB%AC%E2%80%9C%E5%8C%BB%E9%A3%9F%E6%97%A0%E5%BF%A7%E2%80%9D&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=207dtWQx9nnu6yDZ01nQ0i1mH94Q54jnCeJ9tMRCNlsusah6L9a7xXzjXHs&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_6&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                        - generic [ref=e163]: 新
+                      - generic [ref=e165]:
+                        - generic [ref=e166]: "6"
+                        - link "净网：拍到“野生华南虎”系谣言" [ref=e167] [cursor=pointer]:
+                          - /url: /s?wd=%E5%87%80%E7%BD%91%EF%BC%9A%E6%8B%8D%E5%88%B0%E2%80%9C%E9%87%8E%E7%94%9F%E5%8D%8E%E5%8D%97%E8%99%8E%E2%80%9D%E7%B3%BB%E8%B0%A3%E8%A8%80&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=207dtWQx9nnu6yDZ01nQ0i1mH94Q54jnCeJ9tMRCNlsusah6L9a7xXzjXHs&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_7&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e169]:
+                        - generic [ref=e170]: "7"
+                        - link "C罗夺得沙特联赛冠军" [ref=e171] [cursor=pointer]:
+                          - /url: /s?wd=C%E7%BD%97%E5%A4%BA%E5%BE%97%E6%B2%99%E7%89%B9%E8%81%94%E8%B5%9B%E5%86%A0%E5%86%9B&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=207dtWQx9nnu6yDZ01nQ0i1mH94Q54jnCeJ9tMRCNlsusah6L9a7xXzjXHs&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_8&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                        - generic [ref=e172]: 新
+                      - generic [ref=e174]:
+                        - generic [ref=e175]: "8"
+                        - link "“省的油钱 全贴进修车费了”" [ref=e176] [cursor=pointer]:
+                          - /url: /s?wd=%E2%80%9C%E7%9C%81%E7%9A%84%E6%B2%B9%E9%92%B1%20%E5%85%A8%E8%B4%B4%E8%BF%9B%E4%BF%AE%E8%BD%A6%E8%B4%B9%E4%BA%86%E2%80%9D&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=207dtWQx9nnu6yDZ01nQ0i1mH94Q54jnCeJ9tMRCNlsusah6L9a7xXzjXHs&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_9&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                        - generic [ref=e177]: 热
+                      - generic [ref=e179]:
+                        - generic [ref=e180]: "9"
+                        - link "跳伞遇难女子留给家人的最后一句话" [ref=e181] [cursor=pointer]:
+                          - /url: /s?wd=%E8%B7%B3%E4%BC%9E%E9%81%87%E9%9A%BE%E5%A5%B3%E5%AD%90%E7%95%99%E7%BB%99%E5%AE%B6%E4%BA%BA%E7%9A%84%E6%9C%80%E5%90%8E%E4%B8%80%E5%8F%A5%E8%AF%9D&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=207dtWQx9nnu6yDZ01nQ0i1mH94Q54jnCeJ9tMRCNlsusah6L9a7xXzjXHs&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_10&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e183]:
+                        - generic [ref=e184]: "10"
+                        - link "小米YU7 GT正式发布 售价38.99万元" [ref=e185] [cursor=pointer]:
+                          - /url: /s?wd=%E5%B0%8F%E7%B1%B3YU7%20GT%E6%AD%A3%E5%BC%8F%E5%8F%91%E5%B8%83%20%E5%94%AE%E4%BB%B738.99%E4%B8%87%E5%85%83&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=207dtWQx9nnu6yDZ01nQ0i1mH94Q54jnCeJ9tMRCNlsusah6L9a7xXzjXHs&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_11&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e187]:
+                        - generic [ref=e188]: "11"
+                        - link "睡觉时出现这4种表现可能是疾病信号" [ref=e189] [cursor=pointer]:
+                          - /url: /s?wd=%E7%9D%A1%E8%A7%89%E6%97%B6%E5%87%BA%E7%8E%B0%E8%BF%994%E7%A7%8D%E8%A1%A8%E7%8E%B0%E5%8F%AF%E8%83%BD%E6%98%AF%E7%96%BE%E7%97%85%E4%BF%A1%E5%8F%B7&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=207dtWQx9nnu6yDZ01nQ0i1mH94Q54jnCeJ9tMRCNlsusah6L9a7xXzjXHs&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_12&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e191]:
+                        - generic [ref=e192]: "12"
+                        - link "美新墨西哥州三人接触不明物质死亡" [ref=e193] [cursor=pointer]:
+                          - /url: /s?wd=%E7%BE%8E%E6%96%B0%E5%A2%A8%E8%A5%BF%E5%93%A5%E5%B7%9E%E4%B8%89%E4%BA%BA%E6%8E%A5%E8%A7%A6%E4%B8%8D%E6%98%8E%E7%89%A9%E8%B4%A8%E6%AD%BB%E4%BA%A1&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=207dtWQx9nnu6yDZ01nQ0i1mH94Q54jnCeJ9tMRCNlsusah6L9a7xXzjXHs&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_13&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e195]:
+                        - generic [ref=e196]: "13"
+                        - link "昆虫学家辟谣一只鹿角天牛58万" [ref=e197] [cursor=pointer]:
+                          - /url: /s?wd=%E6%98%86%E8%99%AB%E5%AD%A6%E5%AE%B6%E8%BE%9F%E8%B0%A3%E4%B8%80%E5%8F%AA%E9%B9%BF%E8%A7%92%E5%A4%A9%E7%89%9B58%E4%B8%87&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=207dtWQx9nnu6yDZ01nQ0i1mH94Q54jnCeJ9tMRCNlsusah6L9a7xXzjXHs&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_14&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e199]:
+                        - generic [ref=e200]: "14"
+                        - link "U17男足世界杯：中国与西班牙同组" [ref=e201] [cursor=pointer]:
+                          - /url: /s?wd=U17%E7%94%B7%E8%B6%B3%E4%B8%96%E7%95%8C%E6%9D%AF%EF%BC%9A%E4%B8%AD%E5%9B%BD%E4%B8%8E%E8%A5%BF%E7%8F%AD%E7%89%99%E5%90%8C%E7%BB%84&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=207dtWQx9nnu6yDZ01nQ0i1mH94Q54jnCeJ9tMRCNlsusah6L9a7xXzjXHs&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_1_15_15&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                      - generic [ref=e203]:
+                        - generic [ref=e204]: "15"
+                        - link "今天缅怀袁隆平、吴孟超两位院士" [ref=e205] [cursor=pointer]:
+                          - /url: /s?wd=%E4%BB%8A%E5%A4%A9%E7%BC%85%E6%80%80%E8%A2%81%E9%9A%86%E5%B9%B3%E3%80%81%E5%90%B4%E5%AD%9F%E8%B6%85%E4%B8%A4%E4%BD%8D%E9%99%A2%E5%A3%AB&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=207dtWQx9nnu6yDZ01nQ0i1mH94Q54jnCeJ9tMRCNlsusah6L9a7xXzjXHs&rqid=e4ff40cf0001b836&rsf=1e62931707ec3d222753c60ce69ab371_16_30_16&rsv_dl=0_right_fyb_pchot_20811&sa=0_right_fyb_pchot_20811
+                        - generic [ref=e206]: 新
+        - generic [ref=e207]:
+          - generic [ref=e212]:
+            - heading "体育营销 2026 最新动向的最新相关信息" [level=3] [ref=e213]:
+              - link "体育营销 2026 最新动向的最新相关信息" [ref=e214] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=2AnI_FzfIr21gXRe-231A23mPQym8OxX_Q9Tv3Cozxdw1dxi4UxqQNP972jGrmYQ6AGkWth8U5VG_QwrVP6gYIuTnw0GS_aIag5WUtBdg_cY161pvoUgGryjx8LNJPSXrKffF2dt6OFDiRMM1wvXT7iwdAwiFIuTq0Y7ui4VmJPdMlWIH57SfYfgw-tln0RU
+                - generic [ref=e215]:
+                  - emphasis [ref=e216]: 体育营销 2026 最新动向
+                  - text: 的最新相关信息
+            - generic [ref=e217]:
+              - generic [ref=e218]:
+                - link [ref=e220] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvNvA2S4LB1aowiiH7vTz83g7Z_pVwfcj0MHsaTKZM63bDgLIYQ4qromujx5YfwjdF_
+                - generic [ref=e224]:
+                  - heading "从澳网、WTT到苏超、疆超 酒企开启“省内联赛年”" [level=3] [ref=e225]:
+                    - link "从澳网、WTT到苏超、疆超 酒企开启“省内联赛年”" [ref=e228] [cursor=pointer]:
+                      - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvNvA2S4LB1aowiiH7vTz83g7Z_pVwfcj0MHsaTKZM63bDgLIYQ4qromujx5YfwjdF_
+                  - paragraph [ref=e229]:
+                    - text: 如今，这样的观念正在转变，
+                    - emphasis [ref=e230]: "2026"
+                    - text: 年绝对是酒类
+                    - emphasis [ref=e231]: 体育营销
+                    - text: 的“省内联赛年”。这样转变的背后，是下沉市场的巨大消费潜力。如今，短短不到两年间，酒类品牌的体育营销格局已悄然重塑，从“冠名热闹”走向“酒局深耕”，未来酒企还需要哪些助推？酒企的“体育局”2026年可谓是酒类体育营销的“省内联赛年”，酒企开始疯狂涌入地方“城超
+                  - link "头像  北京商报 前天21:50" [ref=e234] [cursor=pointer]:
+                    - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvNvA2S4LB1aowiiH7vTz83g7Z_pVwfcj0MHsaTKZM63bDgLIYQ4qromujx5YfwjdF_
+                    - generic [ref=e237]:
+                      - generic [ref=e238]:
+                        - generic [ref=e239]:
+                          - img "头像" [ref=e241]
+                          - generic [ref=e243]: 
+                        - generic [ref=e244]: 北京商报
+                      - generic [ref=e245]: 前天21:50
+              - generic [ref=e246]:
+                - link [ref=e248] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvL35R_AAfuNzgFcu1MrXL1d7hVov4F5qf9TOivx0tg3f5I5jn9dM8_V9NL6N9TbVp7
+                - generic [ref=e252]:
+                  - heading "当世界杯成为品牌情绪入口,体育营销正在进入“长期主义”阶段" [level=3] [ref=e253]:
+                    - link "当世界杯成为品牌情绪入口,体育营销正在进入“长期主义”阶段" [ref=e256] [cursor=pointer]:
+                      - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvL35R_AAfuNzgFcu1MrXL1d7hVov4F5qf9TOivx0tg3f5I5jn9dM8_V9NL6N9TbVp7
+                      - text: 当世界杯成为品牌情绪入口,
+                      - emphasis [ref=e257]: 体育营销
+                      - text: 正在进入“长期主义”阶段
+                  - paragraph [ref=e258]:
+                    - text: 近日，央视“压哨”官宣拿下
+                    - emphasis [ref=e259]: "2026"
+                    - text: 美加墨世界杯全媒体版权的消息，引爆了整个体育与营销圈层。对于整个营销行业而言，这不仅意味着又一轮顶级体育IP资源的开启，更释放出一个清晰信号：体育营销已经彻底告别了“盲目堆砌天价、押注单一曝光”的粗放时代，行业正加速驶入拼场景咬合、拼精细化运营、拼确定性回报的下半场。从...
+                  - link "头像  新浪财经 2天前" [ref=e262] [cursor=pointer]:
+                    - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvL35R_AAfuNzgFcu1MrXL1d7hVov4F5qf9TOivx0tg3f5I5jn9dM8_V9NL6N9TbVp7
+                    - generic [ref=e265]:
+                      - generic [ref=e266]:
+                        - generic [ref=e267]:
+                          - img "头像" [ref=e269]
+                          - generic [ref=e271]: 
+                        - generic [ref=e272]: 新浪财经
+                      - generic [ref=e273]: 2天前
+              - generic [ref=e274]:
+                - link [ref=e276] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvM8Cyyyuhk6CaLB_v5n5LVz-fKB61tpQ5UfxXFaPDeqOYDZ5U6Gzqyg6kWehuODSJO
+                - generic [ref=e280]:
+                  - heading "从“单鸟”到“三驾马车”,亚玛芬体育如何通关高端户外下半场?" [level=3] [ref=e281]:
+                    - link "从“单鸟”到“三驾马车”,亚玛芬体育如何通关高端户外下半场?" [ref=e284] [cursor=pointer]:
+                      - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvM8Cyyyuhk6CaLB_v5n5LVz-fKB61tpQ5UfxXFaPDeqOYDZ5U6Gzqyg6kWehuODSJO
+                      - text: 从“单鸟”到“三驾马车”,亚玛芬
+                      - emphasis [ref=e285]: 体育
+                      - text: 如何通关高端户外下半场?
+                  - paragraph [ref=e286]:
+                    - text: 渠道布局方面，门店仍是始祖鸟增长的核心载体，
+                    - emphasis [ref=e287]: "2026"
+                    - text: 年始祖鸟计划全球净新增30-35家门店，新店开设总数与2025年大致相当，同时将持续关闭部分奥莱及位置不佳的门店。其中，2026年大中华区计划净新增10-12家门店，主要集中在下半年及第四季度。品牌
+                    - emphasis [ref=e288]: 营销
+                    - text: 与运动员布局方面，始祖鸟持续深化体育向布局，推出女性高山户外纪录片《...
+                  - link "头像  体育大生意 48分钟前" [ref=e291] [cursor=pointer]:
+                    - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvM8Cyyyuhk6CaLB_v5n5LVz-fKB61tpQ5UfxXFaPDeqOYDZ5U6Gzqyg6kWehuODSJO
+                    - generic [ref=e294]:
+                      - generic [ref=e295]:
+                        - generic [ref=e296]:
+                          - img "头像" [ref=e298]
+                          - generic [ref=e300]: 
+                        - generic [ref=e301]: 体育大生意
+                      - generic [ref=e302]: 48分钟前
+            - link "查看更多 " [ref=e304] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=2AnI_FzfIr21gXRe-231A23mPQym8OxX_Q9Tv3Cozxdw1dxi4UxqQNP972jGrmYQ6AGkWth8U5VG_QwrVP6gYIuTnw0GS_aIag5WUtBdg_cY161pvoUgGryjx8LNJPSXrKffF2dt6OFDiRMM1wvXT7iwdAwiFIuTq0Y7ui4VmJPdMlWIH57SfYfgw-tln0RU
+              - generic [ref=e305]:
+                - generic [ref=e306]: 查看更多
+                - generic [ref=e307]: 
+          - generic [ref=e311]:
+            - heading "当体育IP从“流量节点”变为“注意力载体”,出海品牌如何借势?" [level=3] [ref=e314]:
+              - link "当体育IP从“流量节点”变为“注意力载体”,出海品牌如何借势?" [ref=e315] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvL35R_AAfuNzgFcu1MrXL1dZj8h2NIUJ0nT9cABsZuMH29yYK4cWPZ7MOCbHcCgtvO
+                - paragraph [ref=e318]:
+                  - generic [ref=e321]:
+                    - text: 当
+                    - emphasis [ref=e322]: 体育
+                    - text: IP从“流量节点”变为“注意力载体”,出海品牌如何借势?
+            - generic [ref=e323]:
+              - link [ref=e325] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvL35R_AAfuNzgFcu1MrXL1dZj8h2NIUJ0nT9cABsZuMH29yYK4cWPZ7MOCbHcCgtvO
+              - generic [ref=e330]:
+                - generic [ref=e335]:
+                  - text: 3天前
+                  - generic [ref=e336]:
+                    - emphasis [ref=e337]: "2026"
+                    - text: 年美加墨世界杯将于六月开赛。广告科技公司The Trade Desk（纳斯达克：TTD）日前发布2026年夏日足球盛典
+                    - emphasis [ref=e338]: 营销
+                    - text: 洞察调研。调研显示，世界杯的全球影响力进一步提升，在欧洲各年龄层持续升温，并在北美借助举办地效应突破传统
+                    - emphasis [ref=e339]: 体育
+                    - text: 迷圈层。观赛行为向多屏互动与多场景参与演进，为中国品牌高质量出海创造新的增长空间。TTD中国...
+                - link "头像  东方网" [ref=e344] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvL35R_AAfuNzgFcu1MrXL1dZj8h2NIUJ0nT9cABsZuMH29yYK4cWPZ7MOCbHcCgtvO
+                  - generic [ref=e345]:
+                    - img "头像" [ref=e347]
+                    - generic [ref=e349]: 
+                  - generic [ref=e350]: 东方网
+                  - generic [ref=e352]: 
+          - generic [ref=e356]:
+            - heading "体育消费向“卖服务”转变" [level=3] [ref=e359]:
+              - link "体育消费向“卖服务”转变" [ref=e360] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=N3DvpriqNHMxDwy6YbjPI_6S6VlOWZ3sueBFPfznXIPoR2mM0blSaHBcj8OowAO5vdslnqpCb74u0dBXgXDq-VhymsXv86kd_Fag_9Uqnc-t0OatQaglyenxTTJ5IIsK
+                - paragraph [ref=e363]:
+                  - generic [ref=e366]:
+                    - emphasis [ref=e367]: 体育
+                    - text: 消费向“卖服务”转变
+            - generic [ref=e372]:
+              - text: 4天前
+              - generic [ref=e373]:
+                - text: 强化数字赋能,壮大智能
+                - emphasis [ref=e374]: 体育新
+                - text: 业态。鼓励企业开发无感监测穿戴设备、AI运动教练、虚拟赛事平台等产品,推动体育用品制造业向“服务+智造”转型。依托消博会、进博会等平台设立体育用品及赛事专区,引进优质数字体育资源,支持国际首发首展。引导电商平台开设体育服务专区,拓展线上健身课程、远程赛事观赛等数字消费场景。 优化...
+            - link "头像 中国服务贸易指南网" [ref=e379] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=N3DvpriqNHMxDwy6YbjPI_6S6VlOWZ3sueBFPfznXIPoR2mM0blSaHBcj8OowAO5vdslnqpCb74u0dBXgXDq-VhymsXv86kd_Fag_9Uqnc-t0OatQaglyenxTTJ5IIsK
+              - img "头像" [ref=e382]
+              - generic [ref=e383]: 中国服务贸易指南网
+              - generic [ref=e385]: 
+          - generic [ref=e389]:
+            - heading "产业动态 -国家体育总局" [level=3] [ref=e392]:
+              - link "产业动态 -国家体育总局" [ref=e393] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=BtyyUctZO1cYhjltLvMyprN8cDle6qJiFNjq17CpFVppkl6KZ0M5m0Yh4G_eEVUm2Pvd7zMVslB95VA96lhQ9nFoAhPCvJQgjyuYkBB_pxq
+                - paragraph [ref=e396]:
+                  - generic [ref=e399]:
+                    - text: 产业动态 -国家
+                    - emphasis [ref=e400]: 体育
+                    - text: 总局
+            - generic [ref=e406]:
+              - text: 自贸港筑梦
+              - emphasis [ref=e407]: 体育
+              - text: 文旅亚沙会"跟着赛事去旅行"活动扬帆起航 04-14 江苏"跟着赛事去旅行"赋能文旅消费 03-31
+              - emphasis [ref=e408]: "2026"
+              - text: 年河北体育产业锚定4200亿元目标 03-27 新政落地!9部门联合促进入境消费 03-23 广东奥体中心举办产业推介会 03-20 182项赛事拉动效应达358亿元上海体育赛事"含金量"十足 03-18 1 2 3 4 5 6 7 8 ...
+            - generic [ref=e410]:
+              - link "头像 国家体育总局" [ref=e413] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=BtyyUctZO1cYhjltLvMyprN8cDle6qJiFNjq17CpFVppkl6KZ0M5m0Yh4G_eEVUm2Pvd7zMVslB95VA96lhQ9nFoAhPCvJQgjyuYkBB_pxq
+                - img "头像" [ref=e416]
+                - generic [ref=e417]: 国家体育总局
+                - generic [ref=e419]: 
+              - generic [ref=e421]: 党政机关
+          - generic [ref=e425]:
+            - heading "体育营销行业现状与发展趋势分析2026_中研普华_中研网" [level=3] [ref=e428]:
+              - link "体育营销行业现状与发展趋势分析2026_中研普华_中研网" [ref=e429] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfxqE9nErgpdQp2Sue8-FbqHPMATXjN3yD1Pm2UOnEV5EmS0uwQbkh6jUZwNVngV2_K
+                - paragraph [ref=e432]:
+                  - generic [ref=e435]:
+                    - emphasis [ref=e436]: 体育营销
+                    - text: 行业现状与发展趋势分析
+                    - emphasis [ref=e437]: "2026"
+                    - text: _中研普华_中研网
+            - generic [ref=e442]:
+              - text: 2026年4月1日
+              - generic [ref=e443]:
+                - text: 据中研产业研究院《
+                - emphasis [ref=e444]: "2026"
+                - text: "-2030年中国"
+                - emphasis [ref=e445]: 体育营销
+                - text: "行业全景调研及发展趋势分析报告》分析: 体育营销的价值链也在不断延伸和重构。上游的赛事IP、体育明星资源成为稀缺资产,中游的营销服务提供商在创意策划、媒介投放、效果评估等方面更加专业化,下游的消费者参与度和互动性显著提升。这种全链条的协同发展为体育营销创造了更大..."
+            - link "中研网" [ref=e450] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfxqE9nErgpdQp2Sue8-FbqHPMATXjN3yD1Pm2UOnEV5EmS0uwQbkh6jUZwNVngV2_K
+              - generic [ref=e451]: 中研网
+              - generic [ref=e453]: 
+          - generic [ref=e455]:
+            - generic [ref=e456]: 大家还在搜
+            - generic [ref=e457]:
+              - link "2021体育产业最新扶持政策" [ref=e458] [cursor=pointer]:
+                - /url: /s?wd=2021%E4%BD%93%E8%82%B2%E4%BA%A7%E4%B8%9A%E6%9C%80%E6%96%B0%E6%89%B6%E6%8C%81%E6%94%BF%E7%AD%96&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=1a13Ogsyqxq0gYAR0CgLltIGaPBwn1W1mQCcV7V70r0S%2FUj%2FyoBJXWeNGlI&rsf=101633403&rsv_dl=0_prs_28608_1
+                - generic [ref=e460]: 2021体育产业最新扶持政策
+              - link "体育改革2022" [ref=e461] [cursor=pointer]:
+                - /url: /s?wd=%E4%BD%93%E8%82%B2%E6%94%B9%E9%9D%A92022&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=0e952q%2BKj3wnXSk1al2K%2BKepCsuwVy1lyRn7psz0BX0GYfxEEnTNU1BxiW8&rsf=101633403&rsv_dl=0_prs_28608_2
+                - generic [ref=e463]: 体育改革2022
+              - link "2022年全年营销" [ref=e464] [cursor=pointer]:
+                - /url: /s?wd=2022%E5%B9%B4%E5%85%A8%E5%B9%B4%E8%90%A5%E9%94%80&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=0e952q%2BKj3wnXSk1al2K%2BKepCsuwVy1lyRn7psz0BX0GYfxEEnTNU1BxiW8&rsf=101633403&rsv_dl=0_prs_28608_3
+                - generic [ref=e466]: 2022年全年营销
+              - link "体育产业最新消息" [ref=e467] [cursor=pointer]:
+                - /url: /s?wd=%E4%BD%93%E8%82%B2%E4%BA%A7%E4%B8%9A%E6%9C%80%E6%96%B0%E6%B6%88%E6%81%AF&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=0e952q%2BKj3wnXSk1al2K%2BKepCsuwVy1lyRn7psz0BX0GYfxEEnTNU1BxiW8&rsf=101633403&rsv_dl=0_prs_28608_4
+                - generic [ref=e469]: 体育产业最新消息
+              - link "2021年体育产业发展前景分析" [ref=e470] [cursor=pointer]:
+                - /url: /s?wd=2021%E5%B9%B4%E4%BD%93%E8%82%B2%E4%BA%A7%E4%B8%9A%E5%8F%91%E5%B1%95%E5%89%8D%E6%99%AF%E5%88%86%E6%9E%90&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=0e952q%2BKj3wnXSk1al2K%2BKepCsuwVy1lyRn7psz0BX0GYfxEEnTNU1BxiW8&rsf=101633403&rsv_dl=0_prs_28608_5
+                - generic [ref=e472]: 2021年体育产业发展前景分析
+              - link "体育产业十四五" [ref=e473] [cursor=pointer]:
+                - /url: /s?wd=%E4%BD%93%E8%82%B2%E4%BA%A7%E4%B8%9A%E5%8D%81%E5%9B%9B%E4%BA%94&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=0e952q%2BKj3wnXSk1al2K%2BKepCsuwVy1lyRn7psz0BX0GYfxEEnTNU1BxiW8&rsf=101633403&rsv_dl=0_prs_28608_6
+                - generic [ref=e475]: 体育产业十四五
+              - link "体育市场营销" [ref=e476] [cursor=pointer]:
+                - /url: /s?wd=%E4%BD%93%E8%82%B2%E5%B8%82%E5%9C%BA%E8%90%A5%E9%94%80&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=0e952q%2BKj3wnXSk1al2K%2BKepCsuwVy1lyRn7psz0BX0GYfxEEnTNU1BxiW8&rsf=101633403&rsv_dl=0_prs_28608_7
+                - generic [ref=e478]: 体育市场营销
+              - link "国家体育总局十三五体育规划" [ref=e479] [cursor=pointer]:
+                - /url: /s?wd=%E5%9B%BD%E5%AE%B6%E4%BD%93%E8%82%B2%E6%80%BB%E5%B1%80%E5%8D%81%E4%B8%89%E4%BA%94%E4%BD%93%E8%82%B2%E8%A7%84%E5%88%92&rn=20&usm=1&ie=utf-8&rsv_pq=e4ff40cf0001b836&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rsv_t=0e952q%2BKj3wnXSk1al2K%2BKepCsuwVy1lyRn7psz0BX0GYfxEEnTNU1BxiW8&rsf=101633403&rsv_dl=0_prs_28608_8
+                - generic [ref=e481]: 国家体育总局十三五体育规划
+          - generic [ref=e485]:
+            - heading "快手磁力引擎发布《2026体育营销招商手册》,打造“体育+”超燃主场" [level=3] [ref=e488]:
+              - link "快手磁力引擎发布《2026体育营销招商手册》,打造“体育+”超燃主场" [ref=e489] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvMujUUKPSWthvM1rabgXUMppxbU6A6g9VqQGfdPI2dQJnW7zUv-dviO82iSN9WChmq
+                - paragraph [ref=e492]:
+                  - generic [ref=e495]:
+                    - text: 快手磁力引擎发布《
+                    - emphasis [ref=e496]: 2026体育营销
+                    - text: 招商手册》,打造“体育+”超燃主场
+            - generic [ref=e497]:
+              - link [ref=e499] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvMujUUKPSWthvM1rabgXUMppxbU6A6g9VqQGfdPI2dQJnW7zUv-dviO82iSN9WChmq
+              - generic [ref=e504]:
+                - generic [ref=e509]:
+                  - text: 2026年3月9日
+                  - generic [ref=e510]:
+                    - text: 近日，快手磁力引擎《
+                    - emphasis [ref=e511]: 2026体育营销
+                    - text: 招商手册》发布，结合体育营销趋势洞察，以“每一种热爱都是主场”为核心，构建体育大事件、版权合作、特色运动超级内容矩阵，以及品效销一体化体育营销闭环生态，同时集结明星达人、创新产品、AI玩法等丰富资源，打造高燃沉浸的体育营销主场，助力品牌驶入体育营销“快车道”，“赛”出好...
+                - link "头像  和讯网" [ref=e516] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvMujUUKPSWthvM1rabgXUMppxbU6A6g9VqQGfdPI2dQJnW7zUv-dviO82iSN9WChmq
+                  - generic [ref=e517]:
+                    - img "头像" [ref=e519]
+                    - generic [ref=e521]: 
+                  - generic [ref=e522]: 和讯网
+                  - generic [ref=e524]: 
+          - generic [ref=e528]:
+            - heading "世界杯版权落地引爆体育营销新周期,行业加速向“长期主义”转型" [level=3] [ref=e531]:
+              - link "世界杯版权落地引爆体育营销新周期,行业加速向“长期主义”转型" [ref=e532] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=eGZB3gs2vm6-ARvW85xCaJoeqp0iCDLthuCveNd30Vd7lwRu75J_qBzf08Qgvae4lrPUW3xLnfOGn44GGa1N7_
+                - paragraph [ref=e535]:
+                  - generic [ref=e538]:
+                    - text: 世界杯版权落地引爆
+                    - emphasis [ref=e539]: 体育营销
+                    - text: 新周期,行业加速向“长期主义”转型
+            - generic [ref=e544]:
+              - text: 3天前
+              - generic [ref=e545]:
+                - text: 据引力传媒(603598)消息,央视近日官宣获得
+                - emphasis [ref=e546]: "2026"
+                - text: 年美加墨世界杯全媒体版权,此举不仅开启了顶级
+                - emphasis [ref=e547]: 体育
+                - text: (884258)IP资源,更标志着体育(884258)
+                - emphasis [ref=e548]: 营销
+                - text: 行业已告别粗放式的天价曝光模式,正加速进入比拼场景融合、精细化运营与确定性回报的新阶段。行业重心正从短周期(883436)流量打法,转向强调用户参与、生活方式认同与长期品牌关系建设...
+            - link "同花顺" [ref=e553] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=eGZB3gs2vm6-ARvW85xCaJoeqp0iCDLthuCveNd30Vd7lwRu75J_qBzf08Qgvae4lrPUW3xLnfOGn44GGa1N7_
+              - generic [ref=e554]: 同花顺
+              - generic [ref=e556]: 
+          - generic [ref=e560]:
+            - heading "世界杯遇冷、本土联赛升温,2026白酒体育营销逻辑“变”了?" [level=3] [ref=e563]:
+              - link "世界杯遇冷、本土联赛升温,2026白酒体育营销逻辑“变”了?" [ref=e564] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvLQtH1DjrNJ0Zd8kY5F0amlUmwGV9d2eGQ2-iJcEWzpcaXr3UfsENr0qhgN2fS3tYW
+                - paragraph [ref=e567]:
+                  - generic [ref=e570]:
+                    - text: 世界杯遇冷、本土联赛升温,
+                    - emphasis [ref=e571]: "2026"
+                    - text: 白酒
+                    - emphasis [ref=e572]: 体育营销
+                    - text: 逻辑“变”了?
+            - generic [ref=e573]:
+              - link [ref=e575] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvLQtH1DjrNJ0Zd8kY5F0amlUmwGV9d2eGQ2-iJcEWzpcaXr3UfsENr0qhgN2fS3tYW
+              - generic [ref=e580]:
+                - generic [ref=e585]:
+                  - text: 8天前
+                  - generic [ref=e586]:
+                    - text: 如果把时间拉回到五年前，白酒的
+                    - emphasis [ref=e587]: 体育营销
+                    - text: 逻辑还很简单粗暴，谁出的钱多，谁的logo就能挂在球场最显眼的位置。但
+                    - emphasis [ref=e588]: "2026"
+                    - text: 年的故事，显然已经不一样了。世界杯的天价转播费让大多数品牌望而却步，省级联赛的低门槛高热度，共同指向一个结论：“流量逻辑”转向“情感逻辑”的范式转移白酒体育营销的底层逻辑，正在经历一场从...
+                - link "头像 马斐九频道" [ref=e593] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvLQtH1DjrNJ0Zd8kY5F0amlUmwGV9d2eGQ2-iJcEWzpcaXr3UfsENr0qhgN2fS3tYW
+                  - img "头像" [ref=e596]
+                  - generic [ref=e597]: 马斐九频道
+                  - generic [ref=e599]: 
+          - generic [ref=e603]:
+            - heading "2026禹唐营销项目推介会成功举办,多类别透视体育营销市场机会点..." [level=3] [ref=e606]:
+              - link "2026禹唐营销项目推介会成功举办,多类别透视体育营销市场机会点..." [ref=e607] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=BtyyUctZO1cYhjltLvMypxqZ2C361MtPe4KJs5VDxBSKVg5R-0cCkYMk1z2DewRaWFh3BfLDHROukSfhjgeaN0PwKEC-FmA-4Ym-ALUIrEVIhH9jnsDO6750kZbSIxdP
+                - paragraph [ref=e610]:
+                  - generic [ref=e613]:
+                    - emphasis [ref=e614]: "2026"
+                    - text: 禹唐营销项目推介会成功举办,多类别透视
+                    - emphasis [ref=e615]: 体育营销
+                    - text: 市场机会点...
+            - generic [ref=e620]:
+              - text: 2025年10月31日
+              - generic [ref=e621]:
+                - text: 推介会中,禹唐通过聚焦大赛营销类、大众参与类、竞技类、品牌出海类和运动代言类五大方向,重点推介了具有代表性、引领性、市场性、可执行性和持续性的优质I 2025年10月29日,禹唐体育营销大会——
+                - emphasis [ref=e622]: 2026体育营销
+                - text: 项目推介会以线上直播的形式成功举办。本场推介会全程吸引百余家国内知名企业市场品牌相关负责人参与,在线观看...
+            - link "百度百科" [ref=e627] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=BtyyUctZO1cYhjltLvMypxqZ2C361MtPe4KJs5VDxBSKVg5R-0cCkYMk1z2DewRaWFh3BfLDHROukSfhjgeaN0PwKEC-FmA-4Ym-ALUIrEVIhH9jnsDO6750kZbSIxdP
+              - generic [ref=e628]: 百度百科
+              - generic [ref=e630]: 
+          - generic [ref=e634]:
+            - heading "从F1到世界杯,体育大年里的美妆营销新逻辑 2026年,体育大年正在把品..." [level=3] [ref=e637]:
+              - link "从F1到世界杯,体育大年里的美妆营销新逻辑 2026年,体育大年正在把品..." [ref=e638] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=BtyyUctZO1cYhjltLvMyprN8cDle6qJiFNjq17CpFVpzzK7NWN_YD4KJlOz-g4vh5yJR61gjAoQlHBsyd8-M__
+                - paragraph [ref=e641]:
+                  - generic [ref=e644]:
+                    - text: 从F1到世界杯,
+                    - emphasis [ref=e645]: 体育
+                    - text: 大年里的美妆
+                    - emphasis [ref=e646]: 营销新
+                    - text: 逻辑
+                    - emphasis [ref=e647]: "2026"
+                    - text: 年,体育大年正在把品...
+            - generic [ref=e652]:
+              - text: 2026年4月7日
+              - generic [ref=e653]:
+                - emphasis [ref=e654]: "2026"
+                - text: 年,体育大年正在把品牌的注意力重新拉回赛场。 冬奥会、持续升温的F1,以及进入倒计时的世界杯,共同构成了今年最重要的几大
+                - emphasis [ref=e655]: 体育营销
+                - text: 场景。对美妆品牌而言,这些顶级赛事也是同时聚集流量、情绪与价值观表达的超级内容场。 一个值得注意的变化是,美妆品牌的运动营销开始走向深水区。过去,美妆与体育的结合更多停留在...
+            - generic [ref=e656]:
+              - link [ref=e658] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=BtyyUctZO1cYhjltLvMyprN8cDle6qJiFNjq17CpFVpzzK7NWN_YD4KJlOz-g4vh5yJR61gjAoQlHBsyd8-M__
+              - link [ref=e662] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=BtyyUctZO1cYhjltLvMyprN8cDle6qJiFNjq17CpFVpzzK7NWN_YD4KJlOz-g4vh5yJR61gjAoQlHBsyd8-M__
+              - link [ref=e666] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=BtyyUctZO1cYhjltLvMyprN8cDle6qJiFNjq17CpFVpzzK7NWN_YD4KJlOz-g4vh5yJR61gjAoQlHBsyd8-M__
+              - link "4" [ref=e670] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=BtyyUctZO1cYhjltLvMyprN8cDle6qJiFNjq17CpFVpzzK7NWN_YD4KJlOz-g4vh5yJR61gjAoQlHBsyd8-M__
+                - generic [ref=e673]:
+                  - generic [ref=e674]: 
+                  - text: "4"
+            - link "雪球" [ref=e679] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=BtyyUctZO1cYhjltLvMyprN8cDle6qJiFNjq17CpFVpzzK7NWN_YD4KJlOz-g4vh5yJR61gjAoQlHBsyd8-M__
+              - generic [ref=e680]: 雪球
+              - generic [ref=e682]: 
+          - generic [ref=e686]:
+            - heading "2026,营销的“基建时代”:广告主正在悄悄修哪些路?" [level=3] [ref=e689]:
+              - link "2026,营销的“基建时代”:广告主正在悄悄修哪些路?" [ref=e690] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvL35R_AAfuNzgFcu1MrXL1dD7X8fVipON6JC4vB_veFKm9ABaepJctWMkSW6ffWblC
+                - paragraph [ref=e693]:
+                  - generic [ref=e696]:
+                    - emphasis [ref=e697]: "2026"
+                    - text: ","
+                    - emphasis [ref=e698]: 营销
+                    - text: 的“基建时代”:广告主正在悄悄修哪些路?
+            - generic [ref=e699]:
+              - link [ref=e701] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvL35R_AAfuNzgFcu1MrXL1dD7X8fVipON6JC4vB_veFKm9ABaepJctWMkSW6ffWblC
+              - generic [ref=e706]:
+                - generic [ref=e711]:
+                  - text: 2天前
+                  - generic [ref=e712]:
+                    - emphasis [ref=e713]: "2026"
+                    - text: 年4月，中国营销圈出现了两种截然不同的热度。一种来自江苏的绿茵场。4月11日，2026赛季“苏超”开赛，全省13座城市、91场比赛贯穿6个月。赞助商既有万亿级规模的江苏银行，也有南京街头的卤菜小店、宿迁巷尾的奶茶铺，大型国企与三五小摊同场竞技，构成中国体育营销史上罕见的大合唱。另一种热度来自AI应用商店。4月2
+                - link "头像 销售与市场传媒" [ref=e718] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvL35R_AAfuNzgFcu1MrXL1dD7X8fVipON6JC4vB_veFKm9ABaepJctWMkSW6ffWblC
+                  - img "头像" [ref=e721]
+                  - generic [ref=e722]: 销售与市场传媒
+                  - generic [ref=e724]: 
+          - generic [ref=e728]:
+            - heading "体育营销长期主义 - 活力百科" [level=3] [ref=e731]:
+              - link "体育营销长期主义 - 活力百科" [ref=e732] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=BtyyUctZO1cYhjltLvMypwqVdzbRgowlL05KnR0-9gRIrPVnbkBHT7867TY4yG066ylDj66pjKUB2-evpJ33yMitBwACHDlTY_CrGtVB1sK
+                - paragraph [ref=e735]:
+                  - generic [ref=e738]:
+                    - emphasis [ref=e739]: 体育营销
+                    - text: 长期主义 - 活力百科
+            - generic [ref=e745]:
+              - emphasis [ref=e746]: "2026"
+              - text: 年5月19日,央视"压哨"官宣拿下2026美加墨世界杯全媒体版权的消息,引爆体育与营销圈层,标志着
+              - emphasis [ref=e747]: 体育营销
+              - text: 进入"长期主义"阶段.这一新阶段告别依赖天价曝光和单一赛事押注的粗放模式,转向强调用户参与,生活方式认同与长期品牌关系建设.体育营销重心从"赛场中心化"转向"用户生活中心化",通过运动挑战,内容互动等方式将品牌...
+            - link "活力百科" [ref=e752] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=BtyyUctZO1cYhjltLvMypwqVdzbRgowlL05KnR0-9gRIrPVnbkBHT7867TY4yG066ylDj66pjKUB2-evpJ33yMitBwACHDlTY_CrGtVB1sK
+              - generic [ref=e753]: 活力百科
+              - generic [ref=e755]: 
+          - generic [ref=e759]:
+            - heading "赛事经济爆发:品牌体育营销的实战指南2026体育大年的营销红利捕获..." [level=3] [ref=e762]:
+              - link "赛事经济爆发:品牌体育营销的实战指南2026体育大年的营销红利捕获..." [ref=e763] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvL_0cUjPzBjo9EH52Q_yMpOQDa6HIQnAmoARvNGKHDRazlvkXtD7C_dPSOqcElbVBu
+                - paragraph [ref=e766]:
+                  - generic [ref=e769]:
+                    - text: 赛事经济爆发:品牌
+                    - emphasis [ref=e770]: 体育营销
+                    - text: 的实战指南
+                    - emphasis [ref=e771]: "2026"
+                    - text: 体育大年的营销红利捕获...
+            - generic [ref=e772]:
+              - link [ref=e774] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvL_0cUjPzBjo9EH52Q_yMpOQDa6HIQnAmoARvNGKHDRazlvkXtD7C_dPSOqcElbVBu
+              - generic [ref=e779]:
+                - generic [ref=e784]:
+                  - text: 2026年5月6日
+                  - generic [ref=e785]:
+                    - emphasis [ref=e786]: "2026"
+                    - text: 体育大年的营销红利捕获策略 一、
+                    - emphasis [ref=e787]: 体育营销
+                    - text: 的黄金时代 2026体育大年，45.1%的广告主规划了体育营销专项预算。更值得关注的是，体育营销的边界正在泛化——从「场内聚光灯」到「场外烟火气」，多元主体正以多种方式参与其中。【数据】44.9%的受访者计划增加赛事相关消费，58.3%的异地观赛者将同步安排当地旅游，60...
+                - link "头像  大展科技400号码" [ref=e792] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvL_0cUjPzBjo9EH52Q_yMpOQDa6HIQnAmoARvNGKHDRazlvkXtD7C_dPSOqcElbVBu
+                  - generic [ref=e793]:
+                    - img "头像" [ref=e795]
+                    - generic [ref=e797]: 
+                  - generic [ref=e798]: 大展科技400号码
+                  - generic [ref=e800]: 
+          - generic [ref=e804]:
+            - heading "2026年体育营销十年趋势报告.docx-原创力文档" [level=3] [ref=e807]:
+              - link "2026年体育营销十年趋势报告.docx-原创力文档" [ref=e808] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=N3DvpriqNHMxDwy6YbjPIGPj53_6DVXTtw4cAPmRzJl_PcOYE0JaECZXRivhEK85IE63rFQMXjOWHAHq5m5oep-BpXAbTGfUjR1Zp6ZbiBm
+                - paragraph [ref=e811]:
+                  - generic [ref=e814]:
+                    - emphasis [ref=e815]: "2026"
+                    - text: 年
+                    - emphasis [ref=e816]: 体育营销
+                    - text: 十年趋势报告.docx-原创力文档
+            - generic [ref=e821]:
+              - text: 2026年2月21日
+              - generic [ref=e822]:
+                - text: 网络营销/经济
+                - emphasis [ref=e823]: "2026"
+                - text: 年
+                - emphasis [ref=e824]: 体育营销
+                - text: 十年趋势报告.docx 30页内容提供方:藏灵阁 大小:37.95 KB 字数:约1.63万字 发布时间:2026-02-21发布于北京 浏览人气:0 下载次数:仅上传者可见 收藏次数:0 需要金币:*** 金币 (10金币=人民币1元)2026年体育营销十年趋势报告.docx 关闭预览 想预览更多内容,点击免费在线...
+            - link "头像 原创力文档" [ref=e829] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=N3DvpriqNHMxDwy6YbjPIGPj53_6DVXTtw4cAPmRzJl_PcOYE0JaECZXRivhEK85IE63rFQMXjOWHAHq5m5oep-BpXAbTGfUjR1Zp6ZbiBm
+              - img "头像" [ref=e832]
+              - generic [ref=e833]: 原创力文档
+              - generic [ref=e835]: 
+          - generic [ref=e839]:
+            - heading "2026年体育赛事市场开发与营销.docx - 人人文库" [level=3] [ref=e842]:
+              - link "2026年体育赛事市场开发与营销.docx - 人人文库" [ref=e843] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=5xd4OyKCq8e1DE-TWFeS2UZPdsAeay50FI2U4MfnMHCGYdRol1HdlGh5Qt8v0JaNr8FlvL6VGGq8CfUlpmnMdq
+                - paragraph [ref=e846]:
+                  - generic [ref=e849]:
+                    - emphasis [ref=e850]: "2026"
+                    - text: 年
+                    - emphasis [ref=e851]: 体育
+                    - text: 赛事市场开发与
+                    - emphasis [ref=e852]: 营销
+                    - text: .docx - 人人文库
+            - generic [ref=e853]:
+              - link [ref=e855] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=5xd4OyKCq8e1DE-TWFeS2UZPdsAeay50FI2U4MfnMHCGYdRol1HdlGh5Qt8v0JaNr8FlvL6VGGq8CfUlpmnMdq
+              - generic [ref=e860]:
+                - generic [ref=e865]:
+                  - text: 8天前
+                  - generic [ref=e866]:
+                    - emphasis [ref=e867]: "2026"
+                    - text: 年
+                    - emphasis [ref=e868]: 体育
+                    - text: 赛事市场开发与
+                    - emphasis [ref=e869]: 营销
+                    - text: 第页2026年体育赛事市场开发与营销随着全球经济的不断发展和人们生活水平的提升,体育赛事已经成为一种重要的文化娱乐消费活动。特别是在数字化时代,体育赛事市场呈现出前所未有的发展机遇。本文将探讨即将到来的2026年体育赛事市场的开发与营销,旨在为广大从业者提供有益的参考和建议。一、...
+                - link "头像 人人文库" [ref=e874] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=5xd4OyKCq8e1DE-TWFeS2UZPdsAeay50FI2U4MfnMHCGYdRol1HdlGh5Qt8v0JaNr8FlvL6VGGq8CfUlpmnMdq
+                  - img "头像" [ref=e877]
+                  - generic [ref=e878]: 人人文库
+                  - generic [ref=e880]: 
+          - generic [ref=e884]:
+            - heading "2026快手体育营销趋势洞察报告" [level=3] [ref=e887]:
+              - link "2026快手体育营销趋势洞察报告" [ref=e888] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvNUKs0jFlJeC8HVFKV_ILoV67Ims6mIwRF1shAOtSkBABxCwydk6xMf3pdyN70UpKe
+                - paragraph [ref=e891]:
+                  - generic [ref=e894]:
+                    - emphasis [ref=e895]: "2026"
+                    - text: 快手
+                    - emphasis [ref=e896]: 体育营销
+                    - text: 趋势洞察报告
+            - generic [ref=e897]:
+              - link [ref=e899] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvNUKs0jFlJeC8HVFKV_ILoV67Ims6mIwRF1shAOtSkBABxCwydk6xMf3pdyN70UpKe
+              - generic [ref=e904]:
+                - generic [ref=e909]:
+                  - text: 2026年5月9日
+                  - generic [ref=e910]:
+                    - text: 情绪共鸣在
+                    - emphasis [ref=e911]: 体育营销
+                    - text: 中的权重正在持续提升。当下用户日均接触的网络广告数量激增，71.2% 的用户表示相比一年前接触的各类广告明显增加。但单广告的平均停留时间只有 6.6 秒，41.1% 的用户停留时间不足 5 秒，传统的轰炸式曝光正在加速贬值。72.1% 的用户观看广告主要是被故事，审美，话题，人设等附加看点吸引，单纯...
+                - link "头像 行业报告智库" [ref=e916] [cursor=pointer]:
+                  - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvNUKs0jFlJeC8HVFKV_ILoV67Ims6mIwRF1shAOtSkBABxCwydk6xMf3pdyN70UpKe
+                  - img "头像" [ref=e919]
+                  - generic [ref=e920]: 行业报告智库
+                  - generic [ref=e922]: 
+          - generic [ref=e926]:
+            - heading "2025年上半年重点体育营销赞助项目分析与推荐" [level=3] [ref=e929]:
+              - link "2025年上半年重点体育营销赞助项目分析与推荐" [ref=e930] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=exybfDy795fv_z8fGcDKXV8abuMesHUFkCVCwnW118vATX34eMmhqWtqvt2GB4MX4auy33jLceQ7DO7TQAPaFL3IYNJr6-HQS1l_AqABRGiCWbxfStM3LdGP8f1A_L_x
+                - paragraph [ref=e933]:
+                  - generic [ref=e936]:
+                    - text: 2025年上半年重点
+                    - emphasis [ref=e937]: 体育营销
+                    - text: 赞助项目分析与推荐
+            - generic [ref=e942]:
+              - text: 4天前
+              - generic [ref=e943]:
+                - text: "2025"
+                - emphasis [ref=e944]: 体育营销
+                - text: 大揭秘 品牌方必看攻略 2025年是中国体育产业 十四五 规划收官年 将形成 三位一体 新格局 赛事资源多元化 冰雪产业更是要突破万亿大关啦 国际赛事方面 哈尔滨亚冬会不容错过 新增滑雪登山等项目 与冬奥接轨 品牌方可通过赞助权益连接冰雪消费群体...
+            - generic [ref=e945]:
+              - link [ref=e946] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=exybfDy795fv_z8fGcDKXV8abuMesHUFkCVCwnW118vATX34eMmhqWtqvt2GB4MX4auy33jLceQ7DO7TQAPaFL3IYNJr6-HQS1l_AqABRGiCWbxfStM3LdGP8f1A_L_x
+              - link [ref=e950] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=exybfDy795fv_z8fGcDKXV8abuMesHUFkCVCwnW118vATX34eMmhqWtqvt2GB4MX4auy33jLceQ7DO7TQAPaFL3IYNJr6-HQS1l_AqABRGiCWbxfStM3LdGP8f1A_L_x
+              - link [ref=e954] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=exybfDy795fv_z8fGcDKXV8abuMesHUFkCVCwnW118vATX34eMmhqWtqvt2GB4MX4auy33jLceQ7DO7TQAPaFL3IYNJr6-HQS1l_AqABRGiCWbxfStM3LdGP8f1A_L_x
+              - link [ref=e958] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=exybfDy795fv_z8fGcDKXV8abuMesHUFkCVCwnW118vATX34eMmhqWtqvt2GB4MX4auy33jLceQ7DO7TQAPaFL3IYNJr6-HQS1l_AqABRGiCWbxfStM3LdGP8f1A_L_x
+              - link "5" [ref=e962] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=exybfDy795fv_z8fGcDKXV8abuMesHUFkCVCwnW118vATX34eMmhqWtqvt2GB4MX4auy33jLceQ7DO7TQAPaFL3IYNJr6-HQS1l_AqABRGiCWbxfStM3LdGP8f1A_L_x
+                - generic [ref=e967]:
+                  - generic [ref=e968]: 
+                  - text: "5"
+            - link "word.baidu.com/noteview/f93f6146b7..." [ref=e973] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=exybfDy795fv_z8fGcDKXV8abuMesHUFkCVCwnW118vATX34eMmhqWtqvt2GB4MX4auy33jLceQ7DO7TQAPaFL3IYNJr6-HQS1l_AqABRGiCWbxfStM3LdGP8f1A_L_x
+              - generic [ref=e974]: word.baidu.com/noteview/f93f6146b7...
+              - generic [ref=e976]: 
+          - generic [ref=e980]:
+            - heading "力盛体育:2026年中巡赛将在品牌合作、赛事专业化、明星球员孵化..." [level=3] [ref=e983]:
+              - link "力盛体育:2026年中巡赛将在品牌合作、赛事专业化、明星球员孵化..." [ref=e984] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvNvA2S4LB1aowiiH7vTz83gl9HPMm1YYSJw-ReXorkEuMKxoA4GE1HekguORUxLLse
+                - paragraph [ref=e987]:
+                  - generic [ref=e990]:
+                    - text: 力盛
+                    - emphasis [ref=e991]: 体育
+                    - text: ":"
+                    - emphasis [ref=e992]: "2026"
+                    - text: 年中巡赛将在品牌合作、赛事专业化、明星球员孵化...
+            - generic [ref=e997]:
+              - text: 2天前
+              - generic [ref=e998]:
+                - text: 力盛
+                - emphasis [ref=e999]: 体育
+                - text: ：
+                - emphasis [ref=e1000]: "2026"
+                - text: 年中巡赛将在品牌合作、赛事专业化、明星球员孵化、赛事
+                - emphasis [ref=e1001]: 营销
+                - text: 等方面持续提升 来源：证券日报网 证券日报网5月20日讯，力盛体育在接受调研者提问时表示，公司在2025年初与中高协达成长期合作，成为中国男子职业高尔夫球巡回赛(简称“中巡赛”)的独家官方运营推广机构。经过2025年的前期投入与运营实践，中...
+            - link "头像  新浪财经" [ref=e1006] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=s1CNgqzqhvO0Z0LtyDLnfzorqxtjPkdbb3XC-rpstvNvA2S4LB1aowiiH7vTz83gl9HPMm1YYSJw-ReXorkEuMKxoA4GE1HekguORUxLLse
+              - generic [ref=e1007]:
+                - img "头像" [ref=e1009]
+                - generic [ref=e1011]: 
+              - generic [ref=e1012]: 新浪财经
+              - generic [ref=e1014]: 
+          - generic [ref=e1018]:
+            - heading "2026年体育赛事体育营销创新报告.docx-原创力文档" [level=3] [ref=e1021]:
+              - link "2026年体育赛事体育营销创新报告.docx-原创力文档" [ref=e1022] [cursor=pointer]:
+                - /url: http://www.baidu.com/link?url=N3DvpriqNHMxDwy6YbjPIGPj53_6DVXTtw4cAPmRzJl_PcOYE0JaECZXRivhEK85WmIZFRzc3eu3liVEF51-cQpTGB84bTgwYWnSzQgWUBa
+                - paragraph [ref=e1025]:
+                  - generic [ref=e1028]:
+                    - emphasis [ref=e1029]: "2026"
+                    - text: 年体育赛事
+                    - emphasis [ref=e1030]: 体育营销
+                    - text: 创新报告.docx-原创力文档
+            - generic [ref=e1035]:
+              - text: 2026年3月9日
+              - generic [ref=e1036]:
+                - emphasis [ref=e1037]: "2026"
+                - text: 年体育赛事
+                - emphasis [ref=e1038]: 体育营销
+                - text: 创新报告.docx,2026年体育赛事体育营销创新报告范文参考 一、2026年体育赛事体育营销创新报告 1.1 行业宏观环境与市场驱动力 1.2 赛事IP价值重构与多元化布局 1.3 消费者行为变迁与触点重塑 1.4 技术赋能下的营销模式迭代 二、体育赛事营销模式的创新
+            - link "头像 原创力文档" [ref=e1043] [cursor=pointer]:
+              - /url: http://www.baidu.com/link?url=N3DvpriqNHMxDwy6YbjPIGPj53_6DVXTtw4cAPmRzJl_PcOYE0JaECZXRivhEK85WmIZFRzc3eu3liVEF51-cQpTGB84bTgwYWnSzQgWUBa
+              - img "头像" [ref=e1046]
+              - generic [ref=e1047]: 原创力文档
+              - generic [ref=e1049]: 
+        - generic [ref=e1052]:
+          - generic [ref=e1053]: 相关搜索
+          - table [ref=e1054]:
+            - rowgroup [ref=e1055]:
+              - row "体育市场营销 体育产业最新消息" [ref=e1056]:
+                - cell "体育市场营销" [ref=e1057]:
+                  - link "体育市场营销" [ref=e1058] [cursor=pointer]:
+                    - /url: /s?wd=%E4%BD%93%E8%82%B2%E5%B8%82%E5%9C%BA%E8%90%A5%E9%94%80&rsf=101633403&rsp=0&f=1&rs_src=0&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&rsv_dl=brs_28338_1
+                    - generic [ref=e1060]: 体育市场营销
+                - cell "体育产业最新消息" [ref=e1061]:
+                  - link "体育产业最新消息" [ref=e1062] [cursor=pointer]:
+                    - /url: /s?wd=%E4%BD%93%E8%82%B2%E4%BA%A7%E4%B8%9A%E6%9C%80%E6%96%B0%E6%B6%88%E6%81%AF&rsf=101633403&rsp=1&f=1&rs_src=0&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&rsv_dl=brs_28338_2
+                    - generic [ref=e1064]: 体育产业最新消息
+              - row "2022年全年营销 奥运会与体育营销" [ref=e1065]:
+                - cell "2022年全年营销" [ref=e1066]:
+                  - link "2022年全年营销" [ref=e1067] [cursor=pointer]:
+                    - /url: /s?wd=2022%E5%B9%B4%E5%85%A8%E5%B9%B4%E8%90%A5%E9%94%80&rsf=101633403&rsp=2&f=1&rs_src=0&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&rsv_dl=brs_28338_3
+                    - generic [ref=e1069]: 2022年全年营销
+                - cell "奥运会与体育营销" [ref=e1070]:
+                  - link "奥运会与体育营销" [ref=e1071] [cursor=pointer]:
+                    - /url: /s?wd=%E5%A5%A5%E8%BF%90%E4%BC%9A%E4%B8%8E%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80&rsf=101633403&rsp=3&f=1&rs_src=0&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&rsv_dl=brs_28338_4
+                    - generic [ref=e1073]: 奥运会与体育营销
+              - row "体育改革2022 十四五体育产业发展规划" [ref=e1074]:
+                - cell "体育改革2022" [ref=e1075]:
+                  - link "体育改革2022" [ref=e1076] [cursor=pointer]:
+                    - /url: /s?wd=%E4%BD%93%E8%82%B2%E6%94%B9%E9%9D%A92022&rsf=101633403&rsp=4&f=1&rs_src=0&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&rsv_dl=brs_28338_5
+                    - generic [ref=e1078]: 体育改革2022
+                - cell "十四五体育产业发展规划" [ref=e1079]:
+                  - link "十四五体育产业发展规划" [ref=e1080] [cursor=pointer]:
+                    - /url: /s?wd=%E5%8D%81%E5%9B%9B%E4%BA%94%E4%BD%93%E8%82%B2%E4%BA%A7%E4%B8%9A%E5%8F%91%E5%B1%95%E8%A7%84%E5%88%92&rsf=101633403&rsp=5&f=1&rs_src=0&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&rsv_dl=brs_28338_6
+                    - generic [ref=e1082]: 十四五体育产业发展规划
+              - row "国家体育总局十三五体育规划 2021体育产业最新扶持政策" [ref=e1083]:
+                - cell "国家体育总局十三五体育规划" [ref=e1084]:
+                  - link "国家体育总局十三五体育规划" [ref=e1085] [cursor=pointer]:
+                    - /url: /s?wd=%E5%9B%BD%E5%AE%B6%E4%BD%93%E8%82%B2%E6%80%BB%E5%B1%80%E5%8D%81%E4%B8%89%E4%BA%94%E4%BD%93%E8%82%B2%E8%A7%84%E5%88%92&rsf=101633403&rsp=6&f=1&rs_src=0&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&rsv_dl=brs_28338_7
+                    - generic [ref=e1087]: 国家体育总局十三五体育规划
+                - cell "2021体育产业最新扶持政策" [ref=e1088]:
+                  - link "2021体育产业最新扶持政策" [ref=e1089] [cursor=pointer]:
+                    - /url: /s?wd=2021%E4%BD%93%E8%82%B2%E4%BA%A7%E4%B8%9A%E6%9C%80%E6%96%B0%E6%89%B6%E6%8C%81%E6%94%BF%E7%AD%96&rsf=101633403&rsp=7&f=1&rs_src=0&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&rsv_dl=brs_28338_8
+                    - generic [ref=e1091]: 2021体育产业最新扶持政策
+              - row "中国体育产业未来发展趋势 中国运载火箭技术研究院市场营销" [ref=e1092]:
+                - cell "中国体育产业未来发展趋势" [ref=e1093]:
+                  - link "中国体育产业未来发展趋势" [ref=e1094] [cursor=pointer]:
+                    - /url: /s?wd=%E4%B8%AD%E5%9B%BD%E4%BD%93%E8%82%B2%E4%BA%A7%E4%B8%9A%E6%9C%AA%E6%9D%A5%E5%8F%91%E5%B1%95%E8%B6%8B%E5%8A%BF&rsf=101633403&rsp=8&f=1&rs_src=0&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&rsv_dl=brs_28338_9
+                    - generic [ref=e1096]: 中国体育产业未来发展趋势
+                - cell "中国运载火箭技术研究院市场营销" [ref=e1097]:
+                  - link "中国运载火箭技术研究院市场营销" [ref=e1098] [cursor=pointer]:
+                    - /url: /s?wd=%E4%B8%AD%E5%9B%BD%E8%BF%90%E8%BD%BD%E7%81%AB%E7%AE%AD%E6%8A%80%E6%9C%AF%E7%A0%94%E7%A9%B6%E9%99%A2%E5%B8%82%E5%9C%BA%E8%90%A5%E9%94%80&rsf=101636803&rsp=9&f=1&rs_src=0&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&rsv_dl=brs_28338_10
+                    - generic [ref=e1100]: 中国运载火箭技术研究院市场营销
+      - generic [ref=e1103]:
+        - link "上一页":
+          - /url: ""
+          - img "上一页"
+        - strong [ref=e1104]:
+          - generic [ref=e1105]: "1"
+        - link "2" [ref=e1106] [cursor=pointer]:
+          - /url: /s?wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&pn=20&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rn=20&ie=utf-8&usm=1&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&topic_pn=
+          - generic [ref=e1107]: "2"
+        - link "3" [ref=e1108] [cursor=pointer]:
+          - /url: /s?wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&pn=40&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rn=20&ie=utf-8&usm=1&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&topic_pn=
+          - generic [ref=e1109]: "3"
+        - link "4" [ref=e1110] [cursor=pointer]:
+          - /url: /s?wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&pn=60&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rn=20&ie=utf-8&usm=1&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&topic_pn=
+          - generic [ref=e1111]: "4"
+        - link "5" [ref=e1112] [cursor=pointer]:
+          - /url: /s?wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&pn=80&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rn=20&ie=utf-8&usm=1&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&topic_pn=
+          - generic [ref=e1113]: "5"
+        - link "6" [ref=e1114] [cursor=pointer]:
+          - /url: /s?wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&pn=100&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rn=20&ie=utf-8&usm=1&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&topic_pn=
+          - generic [ref=e1115]: "6"
+        - link "7" [ref=e1116] [cursor=pointer]:
+          - /url: /s?wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&pn=120&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rn=20&ie=utf-8&usm=1&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&topic_pn=
+          - generic [ref=e1117]: "7"
+        - link "8" [ref=e1118] [cursor=pointer]:
+          - /url: /s?wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&pn=140&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rn=20&ie=utf-8&usm=1&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&topic_pn=
+          - generic [ref=e1119]: "8"
+        - link "9" [ref=e1120] [cursor=pointer]:
+          - /url: /s?wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&pn=160&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rn=20&ie=utf-8&usm=1&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&topic_pn=
+          - generic [ref=e1121]: "9"
+        - link "10" [ref=e1122] [cursor=pointer]:
+          - /url: /s?wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&pn=180&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rn=20&ie=utf-8&usm=1&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&topic_pn=
+          - generic [ref=e1123]: "10"
+        - link "下一页" [ref=e1124] [cursor=pointer]:
+          - /url: /s?wd=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&pn=20&oq=%E4%BD%93%E8%82%B2%E8%90%A5%E9%94%80%202026%20%E6%9C%80%E6%96%B0%E5%8A%A8%E5%90%91&rn=20&ie=utf-8&usm=1&rsv_pq=e4ff40cf0001b836&rsv_t=193cuZ9BqaYLtKSfknGAtmDUIA0DnRus6gbn4IGdIBFkz4cbNOsp%2By%2FjPis&topic_pn=&rsv_page=1
+          - img "下一页" [ref=e1125]
+      - generic [ref=e1128]:
+        - link "帮助" [ref=e1129] [cursor=pointer]:
+          - /url: https://help.baidu.com/question?prod_id=1
+        - link "举报" [ref=e1130] [cursor=pointer]:
+          - /url: https://help.baidu.com/jubao?source=search
+        - link "用户反馈" [ref=e1131] [cursor=pointer]:
+          - /url: javascript:;
+        - link "企业推广" [ref=e1132] [cursor=pointer]:
+          - /url: https://e.baidu.com/lp/search/?refer=1298

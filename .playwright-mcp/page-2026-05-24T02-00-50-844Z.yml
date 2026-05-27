@@ -1,0 +1,254 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link "Google 新闻" [ref=e7] [cursor=pointer]:
+        - /url: ./?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+        - generic [ref=e9]: 新闻
+      - generic [ref=e10]:
+        - search [ref=e12]:
+          - combobox "搜索主题、地点和媒体" [ref=e19]: 世界杯 营销 赞助
+          - button "高级搜索" [ref=e20] [cursor=pointer]:
+            - generic [ref=e21]:
+              - generic "高级搜索" [ref=e22]:
+                - img [ref=e23]
+              - tooltip [ref=e25]: 高级搜索
+          - button "清除搜索内容" [ref=e26] [cursor=pointer]:
+            - img [ref=e27]
+          - button "搜索" [ref=e30] [cursor=pointer]:
+            - img [ref=e31]
+        - generic [ref=e34]:
+          - generic [ref=e39]:
+            - button "帮助" [ref=e40] [cursor=pointer]:
+              - img [ref=e42]
+            - tooltip [ref=e44]: 帮助
+          - generic [ref=e49]:
+            - button "设置" [ref=e50] [cursor=pointer]:
+              - img [ref=e52]
+            - tooltip [ref=e55]: 设置
+      - generic [ref=e57]:
+        - button "Google 应用" [ref=e61] [cursor=pointer]:
+          - img [ref=e62]
+        - button "Google 账号： 谷如洋 (guruyang77@gmail.com)" [ref=e67] [cursor=pointer]:
+          - img [ref=e69]
+    - navigation [ref=e72]:
+      - tablist [ref=e73]:
+        - tab "首页" [ref=e74] [cursor=pointer]:
+          - tab "首页" [ref=e75]
+        - tab "为您推荐" [ref=e76] [cursor=pointer]:
+          - tab "为您推荐" [ref=e77]
+        - tab "已关注" [ref=e78] [cursor=pointer]:
+          - tab "已关注" [ref=e79]
+        - tab "中国" [ref=e82] [cursor=pointer]:
+          - tab "中国" [ref=e83]
+        - tab "全球" [ref=e84] [cursor=pointer]:
+          - tab "全球" [ref=e85]
+        - tab "当地" [ref=e86] [cursor=pointer]:
+          - tab "当地" [ref=e87]
+        - tab "商业" [ref=e88] [cursor=pointer]:
+          - tab "商业" [ref=e89]
+        - tab "娱乐" [ref=e90] [cursor=pointer]:
+          - tab "娱乐" [ref=e91]
+        - tab "体育" [ref=e92] [cursor=pointer]:
+          - tab "体育" [ref=e93]
+  - main [ref=e97]:
+    - generic [ref=e99]:
+      - generic [ref=e102]:
+        - generic [ref=e103]:
+          - link [ref=e105] [cursor=pointer]:
+            - /url: ./read/CBMihARBVV95cUxPSDdtMDJtNjdMVE9meWVFVEdlcFY4eWRTRE1BYmZidHJLRHZBb0xBcWJnSG1rUTNhRmotcGx6Sy0wMXZMMTNpbGVvMFFkSGxDS3c1d2JSMFpBYlFUYl8xdHZOeFBXdldwZ212SjFZUzFFQmZPNldoSFBsVjNRdmV4dDBwa080Q2F4TmVPSXRydGktSTNkQzhycTFkcktVbnRvSEg4TVdwZldNQUZsa2ttTDlnWHo3ek9VeERqZWVBZUhCcl9wc2IzeDQ3cTd1X0MwYWxyUzAzdWVjV29qTkk0R1Q5c3JhT2N0b3NfbTlIcVI4NEZfREVoNWJ2LUJpbWdpeVZ2WEd2MFF3a203Q3ZJeVBZLTltVjk3RWFWbk45OXA1MlBreXFINThaWm5fWTJicTNQTXBvQkg2MkhjMHBmS0xianhhU0dtYzVXVXllUXRCQzEwU05wWV9HS1BITUlhaXBJc0xacE9wWDIzWDZUd0FYVFRoMU5zZlpaR2hlVHI3MG1iVnZrWXdzU3d1cFlPRElwTkdMSUxYbF9ma1VFWWlWcGtNWEROSHk4cEJmSUJXakU5dmUxX2xfWXhzS2tEZWhULWpKTTk0cHAtNHdxTlNDYkZXU0ZKY1IxTXYySUZVdm14MldfTThadHpVNkdPRV90aTBIbFhEZVR4bXg1N1JVVnQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+          - generic [ref=e107]:
+            - generic [ref=e108]:
+              - generic [ref=e111]: 新浪财经
+              - generic [ref=e115]:
+                - generic:
+                  - button "展开 - 世界杯营销再出奇招，华帝用西班牙队撬动全球流量" [ref=e116] [cursor=pointer]:
+                    - img [ref=e118]
+                  - tooltip [ref=e120]: 展开
+            - link "世界杯营销再出奇招，华帝用西班牙队撬动全球流量 - 新浪财经 - 4 天前" [ref=e121] [cursor=pointer]:
+              - /url: ./read/CBMihARBVV95cUxPSDdtMDJtNjdMVE9meWVFVEdlcFY4eWRTRE1BYmZidHJLRHZBb0xBcWJnSG1rUTNhRmotcGx6Sy0wMXZMMTNpbGVvMFFkSGxDS3c1d2JSMFpBYlFUYl8xdHZOeFBXdldwZ212SjFZUzFFQmZPNldoSFBsVjNRdmV4dDBwa080Q2F4TmVPSXRydGktSTNkQzhycTFkcktVbnRvSEg4TVdwZldNQUZsa2ttTDlnWHo3ek9VeERqZWVBZUhCcl9wc2IzeDQ3cTd1X0MwYWxyUzAzdWVjV29qTkk0R1Q5c3JhT2N0b3NfbTlIcVI4NEZfREVoNWJ2LUJpbWdpeVZ2WEd2MFF3a203Q3ZJeVBZLTltVjk3RWFWbk45OXA1MlBreXFINThaWm5fWTJicTNQTXBvQkg2MkhjMHBmS0xianhhU0dtYzVXVXllUXRCQzEwU05wWV9HS1BITUlhaXBJc0xacE9wWDIzWDZUd0FYVFRoMU5zZlpaR2hlVHI3MG1iVnZrWXdzU3d1cFlPRElwTkdMSUxYbF9ma1VFWWlWcGtNWEROSHk4cEJmSUJXakU5dmUxX2xfWXhzS2tEZWhULWpKTTk0cHAtNHdxTlNDYkZXU0ZKY1IxTXYySUZVdm14MldfTThadHpVNkdPRV90aTBIbFhEZVR4bXg1N1JVVnQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+              - text: 世界杯营销再出奇招，华帝用西班牙队撬动全球流量
+          - figure [ref=e122]
+        - time [ref=e124]: 4 天前
+      - generic [ref=e125]:
+        - separator [ref=e127]
+        - generic [ref=e129]:
+          - generic [ref=e130]:
+            - link [ref=e132] [cursor=pointer]:
+              - /url: ./read/CBMiXkFVX3lxTE1BMEZnMkRhTkRfVWFucDdZSE1xNk5DUmtpUG1Ya2d1VU9weVhBM1NIemZNWEZOZHg5UWppRFFWNlgxUXlVaEpkVkxmS0lNd3NTZ0p3SE5tdUpnTl9Zc3c?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e134]:
+              - generic [ref=e135]:
+                - generic [ref=e138]: thepaper.cn
+                - generic [ref=e142]:
+                  - generic:
+                    - button "展开 - 2026世界杯，中国企业真的值得赞助吗？" [ref=e143] [cursor=pointer]:
+                      - img [ref=e145]
+                    - tooltip [ref=e147]: 展开
+              - link "2026世界杯，中国企业真的值得赞助吗？ - thepaper.cn - 9 天前" [ref=e148] [cursor=pointer]:
+                - /url: ./read/CBMiXkFVX3lxTE1BMEZnMkRhTkRfVWFucDdZSE1xNk5DUmtpUG1Ya2d1VU9weVhBM1NIemZNWEZOZHg5UWppRFFWNlgxUXlVaEpkVkxmS0lNd3NTZ0p3SE5tdUpnTl9Zc3c?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2026世界杯，中国企业真的值得赞助吗？
+            - figure [ref=e149]
+          - time [ref=e151]: 9 天前
+      - generic [ref=e152]:
+        - separator [ref=e154]
+        - generic [ref=e156]:
+          - generic [ref=e157]:
+            - link [ref=e159] [cursor=pointer]:
+              - /url: ./read/CBMijwFBVV95cUxOZ0dFaUluRjg2NmwxaVA2ZjlsakNzSnZPaC12THZNWWd6SnF4MjJwV1BSZzRJdk9HSU1VQXFEQzd3ckxja08tUXc0a3Z1Qy13M1ppanJ6UEl5U3RqWlFnLXhUZ3BxWkthZWRNaU03cGhqWXhYTE9iYzJEOWJidktYVzluNzNGSnhJcllKdlNIbw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e161]:
+              - generic [ref=e162]:
+                - generic [ref=e165]: 21财经
+                - generic [ref=e169]:
+                  - generic:
+                    - button "展开 - 世界杯陷直播僵局，赞助方蒙牛“很受伤”丨消费一线" [ref=e170] [cursor=pointer]:
+                      - img [ref=e172]
+                    - tooltip [ref=e174]: 展开
+              - link "世界杯陷直播僵局，赞助方蒙牛“很受伤”丨消费一线 - 21财经 - 15 天前" [ref=e175] [cursor=pointer]:
+                - /url: ./read/CBMijwFBVV95cUxOZ0dFaUluRjg2NmwxaVA2ZjlsakNzSnZPaC12THZNWWd6SnF4MjJwV1BSZzRJdk9HSU1VQXFEQzd3ckxja08tUXc0a3Z1Qy13M1ppanJ6UEl5U3RqWlFnLXhUZ3BxWkthZWRNaU03cGhqWXhYTE9iYzJEOWJidktYVzluNzNGSnhJcllKdlNIbw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯陷直播僵局，赞助方蒙牛“很受伤”丨消费一线
+            - figure [ref=e176]
+          - time [ref=e178]: 15 天前
+      - generic [ref=e179]:
+        - separator [ref=e181]
+        - generic [ref=e183]:
+          - generic [ref=e184]:
+            - link [ref=e186] [cursor=pointer]:
+              - /url: ./read/CBMiTkFVX3lxTE9ibVhPVGdYVC1DTEVVUk5MZWpxR1RMaUZlLUxHRGZFd1BmdXkzY0ZNZGF1VlNWQjF6UjVENzVSc3JUNnM5enhUN3JwS1h5UQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e188]:
+              - generic [ref=e189]:
+                - generic [ref=e192]: 36Kr
+                - generic [ref=e196]:
+                  - generic:
+                    - button "展开 - 2026体育营销特辑：世界杯营销七十年，谁在定义世界杯？" [ref=e197] [cursor=pointer]:
+                      - img [ref=e199]
+                    - tooltip [ref=e201]: 展开
+              - link "2026体育营销特辑：世界杯营销七十年，谁在定义世界杯？ - 36Kr - 4月27日" [ref=e202] [cursor=pointer]:
+                - /url: ./read/CBMiTkFVX3lxTE9ibVhPVGdYVC1DTEVVUk5MZWpxR1RMaUZlLUxHRGZFd1BmdXkzY0ZNZGF1VlNWQjF6UjVENzVSc3JUNnM5enhUN3JwS1h5UQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2026体育营销特辑：世界杯营销七十年，谁在定义世界杯？
+            - figure [ref=e203]
+          - time [ref=e205]: 4月27日
+      - generic [ref=e206]:
+        - separator [ref=e208]
+        - generic [ref=e210]:
+          - generic [ref=e211]:
+            - link [ref=e213] [cursor=pointer]:
+              - /url: ./read/CBMiYkFVX3lxTE11bU5ZT2Zwbk1Ldm1aWGJvWC1wV0hkbkZtWEZMNXh5bG1qM1FjM3R2d2NKMnZxTjZ3dy1yMmwyMnBiRmxaSnR1cDRnQWlJRDFULXEzQ0ZoT1ZVQnBIU1d2OUx3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e215]:
+              - generic [ref=e216]:
+                - generic [ref=e219]: 中国家电网
+                - generic [ref=e223]:
+                  - generic:
+                    - button "展开 - 赞助西班牙，华帝2018世界杯“夺冠退全款”神迹或将重演？-新闻中心" [ref=e224] [cursor=pointer]:
+                      - img [ref=e226]
+                    - tooltip [ref=e228]: 展开
+              - link "赞助西班牙，华帝2018世界杯“夺冠退全款”神迹或将重演？-新闻中心 - 中国家电网 - 6 天前" [ref=e229] [cursor=pointer]:
+                - /url: ./read/CBMiYkFVX3lxTE11bU5ZT2Zwbk1Ldm1aWGJvWC1wV0hkbkZtWEZMNXh5bG1qM1FjM3R2d2NKMnZxTjZ3dy1yMmwyMnBiRmxaSnR1cDRnQWlJRDFULXEzQ0ZoT1ZVQnBIU1d2OUx3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 赞助西班牙，华帝2018世界杯“夺冠退全款”神迹或将重演？-新闻中心
+            - figure [ref=e230]
+          - time [ref=e232]: 6 天前
+      - generic [ref=e233]:
+        - separator [ref=e235]
+        - generic [ref=e237]:
+          - generic [ref=e238]:
+            - link [ref=e240] [cursor=pointer]:
+              - /url: ./read/CBMiUkFVX3lxTE1hcTQ1OFlpbGJ0QndXNkRjZ05yaXdETlV3ajBtcVExeG5Bb2ZXY0g4SmVhaGg3WVhnSmJGcDZZR1FBcmFGNmtZWTNUWE83b1ZvTXc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e242]:
+              - generic [ref=e243]:
+                - generic [ref=e246]: 搜狐网
+                - generic [ref=e250]:
+                  - generic:
+                    - button "展开 - 黄金一代，身价9.5亿！华帝这波世界杯赞助，押了最稳的“潜力股”" [ref=e251] [cursor=pointer]:
+                      - img [ref=e253]
+                    - tooltip [ref=e255]: 展开
+              - link "黄金一代，身价9.5亿！华帝这波世界杯赞助，押了最稳的“潜力股” - 搜狐网 - 5 天前" [ref=e256] [cursor=pointer]:
+                - /url: ./read/CBMiUkFVX3lxTE1hcTQ1OFlpbGJ0QndXNkRjZ05yaXdETlV3ajBtcVExeG5Bb2ZXY0g4SmVhaGg3WVhnSmJGcDZZR1FBcmFGNmtZWTNUWE83b1ZvTXc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 黄金一代，身价9.5亿！华帝这波世界杯赞助，押了最稳的“潜力股”
+            - figure [ref=e257]
+          - time [ref=e259]: 5 天前
+      - generic [ref=e260]:
+        - separator [ref=e262]
+        - generic [ref=e264]:
+          - generic [ref=e265]:
+            - link [ref=e267] [cursor=pointer]:
+              - /url: ./read/CBMinAJBVV95cUxOTERIZEdhdWlOelh2MkJEWkpNQ09nbGFvcUg2V0Q5ZTJMYTJxYzZ0T2tHbTQ5bHdyb0lsb0dlcnFjSi0zak5vVEdmT1hyRi1ZXzRZX3hLQUdTcTdZSkdONUtoY0M4Z3ZEQmZxYml1S0ZyRzl6VXNILWkwckNkR0JBa0M1bU95MGhXOVZ6d0g1RHZlNlhRUkVrNHo2UjJFdGo4bDluYi1WYkcwUFF2ZUR3US0wdXB5ZlhMdV9ockxidzNHTWwzU1ZobzZhTkdhc2t1M2h0TU10d1NjcXRuZEpQRE51bnoxYUgwZVFSZ2NXZGpxdmtXOS03bkFOTkE3cVQyUkE1WUMwVnNuOTZ1bEJqMmNZS3NpTnJlZ0lxSA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e269]:
+              - generic [ref=e270]:
+                - generic [ref=e273]: 新浪财经
+                - generic [ref=e277]:
+                  - generic:
+                    - button "展开 - 世界杯玄学王又来了！华帝赞助西班牙，当年名场面能否再现？" [ref=e278] [cursor=pointer]:
+                      - img [ref=e280]
+                    - tooltip [ref=e282]: 展开
+              - link "世界杯玄学王又来了！华帝赞助西班牙，当年名场面能否再现？ - 新浪财经 - 4 天前" [ref=e283] [cursor=pointer]:
+                - /url: ./read/CBMinAJBVV95cUxOTERIZEdhdWlOelh2MkJEWkpNQ09nbGFvcUg2V0Q5ZTJMYTJxYzZ0T2tHbTQ5bHdyb0lsb0dlcnFjSi0zak5vVEdmT1hyRi1ZXzRZX3hLQUdTcTdZSkdONUtoY0M4Z3ZEQmZxYml1S0ZyRzl6VXNILWkwckNkR0JBa0M1bU95MGhXOVZ6d0g1RHZlNlhRUkVrNHo2UjJFdGo4bDluYi1WYkcwUFF2ZUR3US0wdXB5ZlhMdV9ockxidzNHTWwzU1ZobzZhTkdhc2t1M2h0TU10d1NjcXRuZEpQRE51bnoxYUgwZVFSZ2NXZGpxdmtXOS03bkFOTkE3cVQyUkE1WUMwVnNuOTZ1bEJqMmNZS3NpTnJlZ0lxSA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯玄学王又来了！华帝赞助西班牙，当年名场面能否再现？
+            - figure [ref=e284]
+          - time [ref=e286]: 4 天前
+      - generic [ref=e287]:
+        - separator [ref=e289]
+        - generic [ref=e291]:
+          - generic [ref=e292]:
+            - link [ref=e294] [cursor=pointer]:
+              - /url: ./read/CBMiU0FVX3lxTE1WdUE2TzRfaTdtUXNIM3NUa2QxeVc5amZ4MmZodWF2M0FUeHI0N0poOHp6YVQ3SXhTV0haaHJQbU00cHRMT042SUwwV3F3NFVNZUhZ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e296]:
+              - generic [ref=e297]:
+                - generic [ref=e300]: 传媒头条
+                - generic [ref=e304]:
+                  - generic:
+                    - button "展开 - 坚守「长期主义」，世界杯品牌的生意经" [ref=e305] [cursor=pointer]:
+                      - img [ref=e307]
+                    - tooltip [ref=e309]: 展开
+              - link "坚守「长期主义」，世界杯品牌的生意经 - 传媒头条 - 2025年11月19日" [ref=e310] [cursor=pointer]:
+                - /url: ./read/CBMiU0FVX3lxTE1WdUE2TzRfaTdtUXNIM3NUa2QxeVc5amZ4MmZodWF2M0FUeHI0N0poOHp6YVQ3SXhTV0haaHJQbU00cHRMT042SUwwV3F3NFVNZUhZ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 坚守「长期主义」，世界杯品牌的生意经
+            - figure [ref=e311]
+          - time [ref=e313]: 2025年11月19日
+      - generic [ref=e314]:
+        - separator [ref=e316]
+        - generic [ref=e318]:
+          - generic [ref=e319]:
+            - link [ref=e321] [cursor=pointer]:
+              - /url: ./read/CBMiSEFVX3lxTFBvaUtIaUFqOW5xOFQxN3BWUEQtaGViaFNQbTUzOVNwUTNPRDJGampreDJwa1ZNUUdMeHZCX1lFcjFEc1ZTUmYzLQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e323]:
+              - generic [ref=e324]:
+                - generic [ref=e327]: 手机鳳凰網
+                - generic [ref=e331]:
+                  - generic:
+                    - button "展开 - 2026世界杯商战烽烟乍起：海信发布营销策略 欲重构全球家电版图" [ref=e332] [cursor=pointer]:
+                      - img [ref=e334]
+                    - tooltip [ref=e336]: 展开
+              - link "2026世界杯商战烽烟乍起：海信发布营销策略 欲重构全球家电版图 - 手机鳳凰網 - 3月6日" [ref=e337] [cursor=pointer]:
+                - /url: ./read/CBMiSEFVX3lxTFBvaUtIaUFqOW5xOFQxN3BWUEQtaGViaFNQbTUzOVNwUTNPRDJGampreDJwa1ZNUUdMeHZCX1lFcjFEc1ZTUmYzLQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2026世界杯商战烽烟乍起：海信发布营销策略 欲重构全球家电版图
+            - figure [ref=e338]
+          - time [ref=e340]: 3月6日
+      - generic [ref=e341]:
+        - separator [ref=e343]
+        - generic [ref=e345]:
+          - generic [ref=e346]:
+            - link [ref=e348] [cursor=pointer]:
+              - /url: ./read/CBMid0FVX3lxTE1pQ1ZWREg5Rkx4aXdqMlhRNUl4ZlJJOUk2MUNETDJlNFpZcXJnWF9aczNSTUxnb1ZaaUNCSnpORUZhZWYyY25Nc1d6TGxNekJsRlZZY0RQSzJpZU4tQmRiX2RHSWprMDRRTFkwT1BCcGxnRnR0WGo0?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e350]:
+              - generic [ref=e351]:
+                - generic [ref=e354]: 新浪网
+                - generic [ref=e358]:
+                  - generic:
+                    - button "展开 - 品牌营销战升温，“中国制造”如何玩转世界杯|世界杯|懂球帝" [ref=e359] [cursor=pointer]:
+                      - img [ref=e361]
+                    - tooltip [ref=e363]: 展开
+              - link "品牌营销战升温，“中国制造”如何玩转世界杯|世界杯|懂球帝 - 新浪网 - 17 天前" [ref=e364] [cursor=pointer]:
+                - /url: ./read/CBMid0FVX3lxTE1pQ1ZWREg5Rkx4aXdqMlhRNUl4ZlJJOUk2MUNETDJlNFpZcXJnWF9aczNSTUxnb1ZaaUNCSnpORUZhZWYyY25Nc1d6TGxNekJsRlZZY0RQSzJpZU4tQmRiX2RHSWprMDRRTFkwT1BCcGxnRnR0WGo0?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 品牌营销战升温，“中国制造”如何玩转世界杯|世界杯|懂球帝
+            - figure [ref=e365]
+          - time [ref=e367]: 17 天前
+      - progressbar [ref=e371]:
+        - img [ref=e373]
+    - complementary [ref=e376]:
+      - generic [ref=e378]:
+        - generic [ref=e381]:
+          - heading "世界杯 营销 赞助" [level=2] [ref=e382]
+          - generic [ref=e383]: 搜索结果
+        - generic [ref=e386]:
+          - button "保存此搜索条目 - 世界杯 营销 赞助" [ref=e388]:
+            - img [ref=e392]
+            - generic [ref=e394]: 保存
+          - tooltip [ref=e395]: 保存此搜索条目

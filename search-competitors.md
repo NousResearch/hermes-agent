@@ -1,0 +1,938 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link "Google 新闻" [ref=e7] [cursor=pointer]:
+        - /url: ./?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+        - generic [ref=e9]: 新闻
+      - generic [ref=e10]:
+        - search [ref=e12]:
+          - combobox "搜索主题、地点和媒体" [ref=e19]: 直播吧 OR 虎扑 OR 腾讯体育 世界杯
+          - button "高级搜索" [ref=e20] [cursor=pointer]:
+            - generic [ref=e21]:
+              - generic "高级搜索" [ref=e22]:
+                - img [ref=e23]
+              - tooltip [ref=e25]: 高级搜索
+          - button "清除搜索内容" [ref=e26] [cursor=pointer]:
+            - img [ref=e27]
+          - button "搜索" [ref=e30] [cursor=pointer]:
+            - img [ref=e31]
+        - generic [ref=e34]:
+          - generic [ref=e39]:
+            - button "帮助" [ref=e40] [cursor=pointer]:
+              - img [ref=e42]
+            - tooltip [ref=e44]: 帮助
+          - generic [ref=e49]:
+            - button "设置" [ref=e50] [cursor=pointer]:
+              - img [ref=e52]
+            - tooltip [ref=e55]: 设置
+      - generic [ref=e57]:
+        - button "Google 应用" [ref=e61] [cursor=pointer]:
+          - img [ref=e62]
+        - link "登录" [ref=e65] [cursor=pointer]:
+          - /url: https://accounts.google.com/ServiceLogin?passive=1209600&continue=https://news.google.com/search?q%3D%25E7%259B%25B4%25E6%2592%25AD%25E5%2590%25A7%2BOR%2B%25E8%2599%258E%25E6%2589%2591%2BOR%2B%25E8%2585%25BE%25E8%25AE%25AF%25E4%25BD%2593%25E8%2582%25B2%2B%25E4%25B8%2596%25E7%2595%258C%25E6%259D%25AF%26hl%3Dzh-CN%26gl%3DCN%26ceid%3DCN:zh-Hans%26when%3D1d&followup=https://news.google.com/search?q%3D%25E7%259B%25B4%25E6%2592%25AD%25E5%2590%25A7%2BOR%2B%25E8%2599%258E%25E6%2589%2591%2BOR%2B%25E8%2585%25BE%25E8%25AE%25AF%25E4%25BD%2593%25E8%2582%25B2%2B%25E4%25B8%2596%25E7%2595%258C%25E6%259D%25AF%26hl%3Dzh-CN%26gl%3DCN%26ceid%3DCN:zh-Hans%26when%3D1d&hl=zh-CN&ec=GAZAqgM
+    - navigation [ref=e68]:
+      - tablist [ref=e69]:
+        - tab "首页" [ref=e70] [cursor=pointer]:
+          - tab "首页" [ref=e71]
+        - tab "为您推荐" [ref=e72] [cursor=pointer]:
+          - tab "为您推荐" [ref=e73]
+        - tab "已关注" [ref=e74] [cursor=pointer]:
+          - tab "已关注" [ref=e75]
+        - tab "中国" [ref=e78] [cursor=pointer]:
+          - tab "中国" [ref=e79]
+        - tab "全球" [ref=e80] [cursor=pointer]:
+          - tab "全球" [ref=e81]
+        - tab "当地" [ref=e82] [cursor=pointer]:
+          - tab "当地" [ref=e83]
+        - tab "商业" [ref=e84] [cursor=pointer]:
+          - tab "商业" [ref=e85]
+        - tab "娱乐" [ref=e86] [cursor=pointer]:
+          - tab "娱乐" [ref=e87]
+        - tab "体育" [ref=e88] [cursor=pointer]:
+          - tab "体育" [ref=e89]
+  - main [ref=e93]:
+    - generic [ref=e95]:
+      - generic [ref=e98]:
+        - generic [ref=e99]:
+          - link [ref=e101] [cursor=pointer]:
+            - /url: ./read/CBMiY0FVX3lxTE1OY25WeU12OUQzbnlyRkJ1SU9aTENRZ0F2SWZOV01jSWY3dGRwekpiR0pzaVZETm5uNjM4dzBSTHhZUVFoRlNLSmh5UkMzU19tdDNFV0JEaS1jZzFkOTFBS1dETQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+          - generic [ref=e103]:
+            - generic [ref=e104]:
+              - generic [ref=e107]: 新浪网
+              - generic [ref=e111]:
+                - generic:
+                  - button "展开 - 梅西确认参加2026世界杯_新浪新闻" [ref=e112] [cursor=pointer]:
+                    - img [ref=e114]
+                  - tooltip [ref=e116]: 展开
+            - link "梅西确认参加2026世界杯_新浪新闻 - 新浪网 - 2 天前" [ref=e117] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE1OY25WeU12OUQzbnlyRkJ1SU9aTENRZ0F2SWZOV01jSWY3dGRwekpiR0pzaVZETm5uNjM4dzBSTHhZUVFoRlNLSmh5UkMzU19tdDNFV0JEaS1jZzFkOTFBS1dETQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+              - text: 梅西确认参加2026世界杯_新浪新闻
+          - figure [ref=e118]
+        - time [ref=e120]: 2 天前
+      - generic [ref=e121]:
+        - separator [ref=e123]
+        - generic [ref=e125]:
+          - generic [ref=e126]:
+            - link [ref=e128] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTE5Xa1RWbFJVdV9CMDVSeFFKQk5YTjN6UWF2Tm5tRF9uWnducGNJNkZ2MjBVdDkxaFAtS3N0aEY2cFZxcU51SWhONlhoX28xYllXRlg1YkYwWW5fa0E5YTQzQzBudVdsV0pRUEc0V2VaNDlOQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e130]:
+              - generic [ref=e131]:
+                - generic [ref=e134]: ZhiBo8
+                - generic [ref=e138]:
+                  - generic:
+                    - button "展开 - 直播吧：马宁、傅明、周飞下周末赴美国，为执法世界杯作准备" [ref=e139] [cursor=pointer]:
+                      - img [ref=e141]
+                    - tooltip [ref=e143]: 展开
+              - link "直播吧：马宁、傅明、周飞下周末赴美国，为执法世界杯作准备 - ZhiBo8 - 2 天前" [ref=e144] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTE5Xa1RWbFJVdV9CMDVSeFFKQk5YTjN6UWF2Tm5tRF9uWnducGNJNkZ2MjBVdDkxaFAtS3N0aEY2cFZxcU51SWhONlhoX28xYllXRlg1YkYwWW5fa0E5YTQzQzBudVdsV0pRUEc0V2VaNDlOQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 直播吧：马宁、傅明、周飞下周末赴美国，为执法世界杯作准备
+            - figure [ref=e145]
+          - time [ref=e147]: 2 天前
+      - generic [ref=e148]:
+        - separator [ref=e150]
+        - generic [ref=e152]:
+          - generic [ref=e153]:
+            - link [ref=e155] [cursor=pointer]:
+              - /url: ./read/CBMidEFVX3lxTE1rQzNvZGZ5bzNscERMd1dqMDJVdVAzWFA5bXF2RWJxc1FvRDhnSW92LTZuUHdRaGJoM2RPdEdGNkpkRW5rY3hETXR6RkVhZHlDbkp1TkdiMHVEaGhvYnRjMWhZM1B0NHBrMF9kS1lxM3h4SFlJ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e157]:
+              - generic [ref=e158]:
+                - generic [ref=e161]: 风闻
+                - generic [ref=e165]:
+                  - generic:
+                    - button "展开 - 直播吧的快讯说世界杯转播权央视拿到了，没有数字，网传是1.1亿美元" [ref=e166] [cursor=pointer]:
+                      - img [ref=e168]
+                    - tooltip [ref=e170]: 展开
+              - link "直播吧的快讯说世界杯转播权央视拿到了，没有数字，网传是1.1亿美元 - 风闻 - 10 天前" [ref=e171] [cursor=pointer]:
+                - /url: ./read/CBMidEFVX3lxTE1rQzNvZGZ5bzNscERMd1dqMDJVdVAzWFA5bXF2RWJxc1FvRDhnSW92LTZuUHdRaGJoM2RPdEdGNkpkRW5rY3hETXR6RkVhZHlDbkp1TkdiMHVEaGhvYnRjMWhZM1B0NHBrMF9kS1lxM3h4SFlJ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 直播吧的快讯说世界杯转播权央视拿到了，没有数字，网传是1.1亿美元
+            - figure [ref=e172]
+          - time [ref=e174]: 10 天前
+      - generic [ref=e175]:
+        - separator [ref=e177]
+        - generic [ref=e179]:
+          - generic [ref=e180]:
+            - link [ref=e182] [cursor=pointer]:
+              - /url: ./read/CBMifkFVX3lxTE5ZaTBNa2x4ZVBnalpYS2otbGFtZGx2YzBld0dfN2dCSU9BRDU0RjNkYzlzUHdDMVozcUwwcmFUb1JaSVlzUk1iLXVzNEwybmlXaGpzaHpvQzY4djI3QWFoWXRLZGpYOUtSeDV5a0hoZTRxOXRWNEpWR3dZYW9EQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e184]:
+              - generic [ref=e185]:
+                - generic [ref=e188]: 新浪财经
+                - generic [ref=e192]:
+                  - generic:
+                    - button "展开 - 创造历史!41岁C罗成为首位6次参加世界杯的球员 此前最好成绩4强-直播吧手机版" [ref=e193] [cursor=pointer]:
+                      - img [ref=e195]
+                    - tooltip [ref=e197]: 展开
+              - link "创造历史!41岁C罗成为首位6次参加世界杯的球员 此前最好成绩4强-直播吧手机版 - 新浪财经 - 5 天前" [ref=e198] [cursor=pointer]:
+                - /url: ./read/CBMifkFVX3lxTE5ZaTBNa2x4ZVBnalpYS2otbGFtZGx2YzBld0dfN2dCSU9BRDU0RjNkYzlzUHdDMVozcUwwcmFUb1JaSVlzUk1iLXVzNEwybmlXaGpzaHpvQzY4djI3QWFoWXRLZGpYOUtSeDV5a0hoZTRxOXRWNEpWR3dZYW9EQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 创造历史!41岁C罗成为首位6次参加世界杯的球员 此前最好成绩4强-直播吧手机版
+            - figure [ref=e199]
+          - time [ref=e201]: 5 天前
+      - generic [ref=e202]:
+        - separator [ref=e204]
+        - generic [ref=e206]:
+          - generic [ref=e207]:
+            - link [ref=e209] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTE5ObkwyNWxtSVY2RWFHUHRqdnFINGZwVy1ROWg0eHk4NHVPWlhxX05zYWFtOXM0NGtsTkxvVjNsVEFwSmYwakZZU3ZQSnoxVXZ3ZEFad3RXXzNNM2UtdlVZMkxDaEJBZGJldi1aSWFyeDlSQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e211]:
+              - generic [ref=e212]:
+                - generic [ref=e215]: ZhiBo8
+                - generic [ref=e219]:
+                  - generic:
+                    - button "展开 - U17国足门将江承恩社媒：计划没变，世界杯见" [ref=e220] [cursor=pointer]:
+                      - img [ref=e222]
+                    - tooltip [ref=e224]: 展开
+              - link "U17国足门将江承恩社媒：计划没变，世界杯见 - ZhiBo8 - 2 天前" [ref=e225] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTE5ObkwyNWxtSVY2RWFHUHRqdnFINGZwVy1ROWg0eHk4NHVPWlhxX05zYWFtOXM0NGtsTkxvVjNsVEFwSmYwakZZU3ZQSnoxVXZ3ZEFad3RXXzNNM2UtdlVZMkxDaEJBZGJldi1aSWFyeDlSQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: U17国足门将江承恩社媒：计划没变，世界杯见
+            - figure [ref=e226]
+          - time [ref=e228]: 2 天前
+      - generic [ref=e229]:
+        - separator [ref=e231]
+        - generic [ref=e233]:
+          - generic [ref=e234]:
+            - link [ref=e236] [cursor=pointer]:
+              - /url: ./read/CBMiV0FVX3lxTE5lanBiYWU1T1BlYUZFWnVXRHdoeXpKZXJOVzZfX19BeVF4YzNRV3RfQUZSZUpNMFRyM2pwYWJ4eUZyM2tPelN0UC02TWFMaFMycFdEclFCUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e238]:
+              - generic [ref=e239]:
+                - generic [ref=e242]: 腾讯新闻
+                - generic [ref=e246]:
+                  - generic:
+                    - button "展开 - 世界杯决赛门票炒至23万美元，因凡蒂诺称球迷抢到就当黄牛-腾讯新闻" [ref=e247] [cursor=pointer]:
+                      - img [ref=e249]
+                    - tooltip [ref=e251]: 展开
+              - link "世界杯决赛门票炒至23万美元，因凡蒂诺称球迷抢到就当黄牛-腾讯新闻 - 腾讯新闻 - 1月24日" [ref=e252] [cursor=pointer]:
+                - /url: ./read/CBMiV0FVX3lxTE5lanBiYWU1T1BlYUZFWnVXRHdoeXpKZXJOVzZfX19BeVF4YzNRV3RfQUZSZUpNMFRyM2pwYWJ4eUZyM2tPelN0UC02TWFMaFMycFdEclFCUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯决赛门票炒至23万美元，因凡蒂诺称球迷抢到就当黄牛-腾讯新闻
+            - figure [ref=e253]
+          - time [ref=e255]: 1月24日
+      - generic [ref=e256]:
+        - separator [ref=e258]
+        - generic [ref=e260]:
+          - generic [ref=e261]:
+            - link [ref=e263] [cursor=pointer]:
+              - /url: ./read/CBMiakFVX3lxTE5CVjd2NUtEV1ZNM1A1SXlYV0VIWm81TFdXTFhLMUFTUkRpOVVfOV9ma2dnYVZ3MExHUnNtaFlCMnlsUi1pY21reUtGRGVuRU85TURobDFrNmdoa1M5akhZS3Q4VGtWTHQzRkE?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e265]:
+              - generic [ref=e266]:
+                - generic [ref=e269]: 齐鲁网
+                - generic [ref=e273]:
+                  - generic:
+                    - button "展开 - 2026世界杯已定21席：加纳晋级！非洲区名额还剩4席" [ref=e274] [cursor=pointer]:
+                      - img [ref=e276]
+                    - tooltip [ref=e278]: 展开
+              - link "2026世界杯已定21席：加纳晋级！非洲区名额还剩4席 - 齐鲁网 - 2025年10月13日" [ref=e279] [cursor=pointer]:
+                - /url: ./read/CBMiakFVX3lxTE5CVjd2NUtEV1ZNM1A1SXlYV0VIWm81TFdXTFhLMUFTUkRpOVVfOV9ma2dnYVZ3MExHUnNtaFlCMnlsUi1pY21reUtGRGVuRU85TURobDFrNmdoa1M5akhZS3Q4VGtWTHQzRkE?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2026世界杯已定21席：加纳晋级！非洲区名额还剩4席
+            - figure [ref=e280]
+          - time [ref=e282]: 2025年10月13日
+      - generic [ref=e283]:
+        - separator [ref=e285]
+        - generic [ref=e287]:
+          - generic [ref=e288]:
+            - link [ref=e290] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTE4zU2VuZmsyMGNNWlN2ZVR4MzFXQWhvaTlpd21MY0JKM0F2Q0VNcVBBaGlwenItUW5vQmJRei0xTXlBY2VoNXFBaENQeWpVSjQ0a1lHNm5pV0tzWklscWJFN280b1gyMlZlUmpiMk5mMVFBQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e292]:
+              - generic [ref=e293]:
+                - generic [ref=e296]: ZhiBo8
+                - generic [ref=e300]:
+                  - generic:
+                    - button "展开 - 德媒：伊朗队世界杯驻地从美国迁至墨西哥" [ref=e301] [cursor=pointer]:
+                      - img [ref=e303]
+                    - tooltip [ref=e305]: 展开
+              - link "德媒：伊朗队世界杯驻地从美国迁至墨西哥 - ZhiBo8 - 昨天" [ref=e306] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTE4zU2VuZmsyMGNNWlN2ZVR4MzFXQWhvaTlpd21MY0JKM0F2Q0VNcVBBaGlwenItUW5vQmJRei0xTXlBY2VoNXFBaENQeWpVSjQ0a1lHNm5pV0tzWklscWJFN280b1gyMlZlUmpiMk5mMVFBQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 德媒：伊朗队世界杯驻地从美国迁至墨西哥
+            - figure [ref=e307]
+          - time [ref=e309]: 昨天
+      - generic [ref=e310]:
+        - separator [ref=e312]
+        - generic [ref=e314]:
+          - generic [ref=e315]:
+            - link [ref=e317] [cursor=pointer]:
+              - /url: ./read/CBMihAFBVV95cUxPQ2JLNHlwWk8xZHljNl93R0VCelp6dzlzWTNsZFZPdWF1UTFxMVR0em9mb2xwYXZ1Q3p5UHI0cEV1ZG41Q3RRRU9pbzJfUmhSUkEzalpseU5ka2JsRGQyQjdNSlNVZ0VOdmJyeFdLLWtFZ2poQVJ5TFhpdk9TcU4zYTMtd2E?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e319]:
+              - generic [ref=e320]:
+                - generic [ref=e323]: 手机新浪网
+                - generic [ref=e327]:
+                  - generic:
+                    - button "展开 - 直播吧：广厦深圳G1裁判确定——名哨孙健以及塞尔维亚与韩国裁判" [ref=e328] [cursor=pointer]:
+                      - img [ref=e330]
+                    - tooltip [ref=e332]: 展开
+              - link "直播吧：广厦深圳G1裁判确定——名哨孙健以及塞尔维亚与韩国裁判 - 手机新浪网 - 9 天前" [ref=e333] [cursor=pointer]:
+                - /url: ./read/CBMihAFBVV95cUxPQ2JLNHlwWk8xZHljNl93R0VCelp6dzlzWTNsZFZPdWF1UTFxMVR0em9mb2xwYXZ1Q3p5UHI0cEV1ZG41Q3RRRU9pbzJfUmhSUkEzalpseU5ka2JsRGQyQjdNSlNVZ0VOdmJyeFdLLWtFZ2poQVJ5TFhpdk9TcU4zYTMtd2E?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 直播吧：广厦深圳G1裁判确定——名哨孙健以及塞尔维亚与韩国裁判
+            - figure [ref=e334]
+          - time [ref=e336]: 9 天前
+      - generic [ref=e337]:
+        - separator [ref=e339]
+        - generic [ref=e341]:
+          - generic [ref=e342]:
+            - link [ref=e344] [cursor=pointer]:
+              - /url: ./read/CBMigAFBVV95cUxPT3FEaE1WanZJb2FUTDZYR1pnOTdoWDRaYm1fRkYwVjlFdGF5VFNEaDlZRUVnanU5cGZJdU5yQVFQYTJjWlExZHN1T1RmQmRTeFduQ1RMZTU2d292SnpaQzlFLWlqV3VRblp1dV9wMFlrLTQzUEpaMHBWR0QxNy14SA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e346]:
+              - generic [ref=e347]:
+                - generic [ref=e350]: 新华网
+                - generic [ref=e354]:
+                  - generic:
+                    - button "展开 - 国际足联秘书长：希望中国青少年能出现在各级世界杯赛场上" [ref=e355] [cursor=pointer]:
+                      - img [ref=e357]
+                    - tooltip [ref=e359]: 展开
+              - link "国际足联秘书长：希望中国青少年能出现在各级世界杯赛场上 - 新华网 - 12 天前" [ref=e360] [cursor=pointer]:
+                - /url: ./read/CBMigAFBVV95cUxPT3FEaE1WanZJb2FUTDZYR1pnOTdoWDRaYm1fRkYwVjlFdGF5VFNEaDlZRUVnanU5cGZJdU5yQVFQYTJjWlExZHN1T1RmQmRTeFduQ1RMZTU2d292SnpaQzlFLWlqV3VRblp1dV9wMFlrLTQzUEpaMHBWR0QxNy14SA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 国际足联秘书长：希望中国青少年能出现在各级世界杯赛场上
+            - figure [ref=e361]
+          - time [ref=e363]: 12 天前
+      - generic [ref=e364]:
+        - separator [ref=e366]
+        - generic [ref=e368]:
+          - generic [ref=e369]:
+            - link [ref=e371] [cursor=pointer]:
+              - /url: ./read/CBMiVkFVX3lxTE5OSXdwZnlMeGtYUDE0WTFWd0V3YTA0M0Raa1F2UkdobE9GcUhyTWNxOU53b040UkFjdTJVYXZTN0lKS3hjVC1ZdzdwOUZ3aG5mMzFCWktB?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e373]:
+              - generic [ref=e374]:
+                - generic [ref=e377]: QQ News
+                - generic [ref=e381]:
+                  - generic:
+                    - button "展开 - 德容：从小看梅西每场比赛；若世界杯荷兰能再踢阿根廷很棒" [ref=e382] [cursor=pointer]:
+                      - img [ref=e384]
+                    - tooltip [ref=e386]: 展开
+              - link "德容：从小看梅西每场比赛；若世界杯荷兰能再踢阿根廷很棒 - QQ News - 4月23日" [ref=e387] [cursor=pointer]:
+                - /url: ./read/CBMiVkFVX3lxTE5OSXdwZnlMeGtYUDE0WTFWd0V3YTA0M0Raa1F2UkdobE9GcUhyTWNxOU53b040UkFjdTJVYXZTN0lKS3hjVC1ZdzdwOUZ3aG5mMzFCWktB?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 德容：从小看梅西每场比赛；若世界杯荷兰能再踢阿根廷很棒
+            - figure [ref=e388]
+          - time [ref=e390]: 4月23日
+      - generic [ref=e391]:
+        - separator [ref=e393]
+        - generic [ref=e395]:
+          - generic [ref=e396]:
+            - link [ref=e398] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTFAwdEVGUEZIbHFQdG00TWZhSjVjWHhYTU52ak9EbVMwRHBFNTFuYXZuc01iQkFsRmhtRnlHMTBlVW5OekxPZjVwb3dsOXdJeWsxRFVlUTJnNnRqYW9iOUc3MFRoU1BaTzZTaC1KX1AxaUpwZw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e400]:
+              - generic [ref=e401]:
+                - generic [ref=e404]: ZhiBo8
+                - generic [ref=e408]:
+                  - generic:
+                    - button "展开 - 世界杯官方歌曲《Goals》上线！LISA领衔3人演唱" [ref=e409] [cursor=pointer]:
+                      - img [ref=e411]
+                    - tooltip [ref=e413]: 展开
+              - link "世界杯官方歌曲《Goals》上线！LISA领衔3人演唱 - ZhiBo8 - 3 天前" [ref=e414] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTFAwdEVGUEZIbHFQdG00TWZhSjVjWHhYTU52ak9EbVMwRHBFNTFuYXZuc01iQkFsRmhtRnlHMTBlVW5OekxPZjVwb3dsOXdJeWsxRFVlUTJnNnRqYW9iOUc3MFRoU1BaTzZTaC1KX1AxaUpwZw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯官方歌曲《Goals》上线！LISA领衔3人演唱
+            - figure [ref=e415]
+          - time [ref=e417]: 3 天前
+      - generic [ref=e418]:
+        - separator [ref=e420]
+        - generic [ref=e422]:
+          - generic [ref=e423]:
+            - link [ref=e425] [cursor=pointer]:
+              - /url: ./read/CBMid0FVX3lxTE1rVzVwZDB2UExmc1lrcW9oM1AwVXJuOWloSnpCR2pESTVITzlLYU9McTljV0luSnpCVjRaRXlLV0dKT2ViYTJOb0M5bVlwTWIzdjNFNGl6dzVDcHhFZERmRURFREpwaFZPUkdjcllrbXI3NkJvc0pJ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e427]:
+              - generic [ref=e428]:
+                - generic [ref=e431]: 手机新浪网
+                - generic [ref=e435]:
+                  - generic:
+                    - button "展开 - 接连出局!U17& U20无缘世界大赛20年，国足无缘世界杯长达24年-直播吧手机版" [ref=e436] [cursor=pointer]:
+                      - img [ref=e438]
+                    - tooltip [ref=e440]: 展开
+              - link "接连出局!U17& U20无缘世界大赛20年，国足无缘世界杯长达24年-直播吧手机版 - 手机新浪网 - 11 天前" [ref=e441] [cursor=pointer]:
+                - /url: ./read/CBMid0FVX3lxTE1rVzVwZDB2UExmc1lrcW9oM1AwVXJuOWloSnpCR2pESTVITzlLYU9McTljV0luSnpCVjRaRXlLV0dKT2ViYTJOb0M5bVlwTWIzdjNFNGl6dzVDcHhFZERmRURFREpwaFZPUkdjcllrbXI3NkJvc0pJ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 接连出局!U17& U20无缘世界大赛20年，国足无缘世界杯长达24年-直播吧手机版
+            - figure [ref=e442]
+          - time [ref=e444]: 11 天前
+      - generic [ref=e445]:
+        - separator [ref=e447]
+        - generic [ref=e449]:
+          - generic [ref=e450]:
+            - link [ref=e452] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTE9zLWRqMVI5X0gxODlncHpLNlR4c1NfajlnX2x1alVFcktmbG9BbFpXTVBFUGgxLTNBQ3JDdlBhMGY5eGJWZk1mWmhDcDl2N28xUk5wRnlIbFhweHVxdHVhN2ZpMVVpdTdLbkdSTHlxaVpXdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e454]:
+              - generic [ref=e455]:
+                - generic [ref=e458]: ZhiBo8
+                - generic [ref=e462]:
+                  - generic:
+                    - button "展开 - 世界杯揭幕战球场介绍：更名为“墨西哥城体育场”，容纳超8万人" [ref=e463] [cursor=pointer]:
+                      - img [ref=e465]
+                    - tooltip [ref=e467]: 展开
+              - link "世界杯揭幕战球场介绍：更名为“墨西哥城体育场”，容纳超8万人 - ZhiBo8 - 3 天前" [ref=e468] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTE9zLWRqMVI5X0gxODlncHpLNlR4c1NfajlnX2x1alVFcktmbG9BbFpXTVBFUGgxLTNBQ3JDdlBhMGY5eGJWZk1mWmhDcDl2N28xUk5wRnlIbFhweHVxdHVhN2ZpMVVpdTdLbkdSTHlxaVpXdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯揭幕战球场介绍：更名为“墨西哥城体育场”，容纳超8万人
+            - figure [ref=e469]
+          - time [ref=e471]: 3 天前
+      - generic [ref=e472]:
+        - separator [ref=e474]
+        - generic [ref=e476]:
+          - generic [ref=e477]:
+            - link [ref=e479] [cursor=pointer]:
+              - /url: ./read/CBMid0FVX3lxTE5FMUVqYnJLQUNRVXJ1OFh1MkR6bHVzMkZmRmpHOThjWVVNaTRnWDRiTGVQVEZKRjR6cDM4b3RmLU02TzJYNDQ5RURsbHVBNWFacmVESXFtbGVlVTdtSTFFMEdfTF9odDA1TXZiZWtXUlh3SENoMGNn?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e481]:
+              - generic [ref=e482]:
+                - generic [ref=e485]: 手机新浪网
+                - generic [ref=e489]:
+                  - generic:
+                    - button "展开 - 2026世界杯版权还没有谈下来，央视谈判价低于2018/2022五大核心原因！-国际足球-足球话题区-虎扑社区" [ref=e490] [cursor=pointer]:
+                      - img [ref=e492]
+                    - tooltip [ref=e494]: 展开
+              - link "2026世界杯版权还没有谈下来，央视谈判价低于2018/2022五大核心原因！-国际足球-足球话题区-虎扑社区 - 手机新浪网 - 22 天前" [ref=e495] [cursor=pointer]:
+                - /url: ./read/CBMid0FVX3lxTE5FMUVqYnJLQUNRVXJ1OFh1MkR6bHVzMkZmRmpHOThjWVVNaTRnWDRiTGVQVEZKRjR6cDM4b3RmLU02TzJYNDQ5RURsbHVBNWFacmVESXFtbGVlVTdtSTFFMEdfTF9odDA1TXZiZWtXUlh3SENoMGNn?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2026世界杯版权还没有谈下来，央视谈判价低于2018/2022五大核心原因！-国际足球-足球话题区-虎扑社区
+            - figure [ref=e496]
+          - time [ref=e498]: 22 天前
+      - generic [ref=e499]:
+        - separator [ref=e501]
+        - generic [ref=e503]:
+          - generic [ref=e504]:
+            - link [ref=e506] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE90aGVkb1IyNm50anRLdGlYNzFWOGJscEx6dlVILUtIWF9kUVNkQ1VrZHkxNTgtOXVlLWw5Zlo0M1JpTXRmQmNMWDVKNm00MDRmenNROGZWcDR1WTBBelRfMHUtTQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e508]:
+              - generic [ref=e509]:
+                - generic [ref=e512]: 新浪网
+                - generic [ref=e516]:
+                  - generic:
+                    - button "展开 - 虎扑电竞" [ref=e517] [cursor=pointer]:
+                      - img [ref=e519]
+                    - tooltip [ref=e521]: 展开
+              - link "虎扑电竞 - 新浪网 - 12 天前" [ref=e522] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE90aGVkb1IyNm50anRLdGlYNzFWOGJscEx6dlVILUtIWF9kUVNkQ1VrZHkxNTgtOXVlLWw5Zlo0M1JpTXRmQmNMWDVKNm00MDRmenNROGZWcDR1WTBBelRfMHUtTQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 虎扑电竞
+            - figure [ref=e523]
+          - time [ref=e525]: 12 天前
+      - generic [ref=e526]:
+        - separator [ref=e528]
+        - generic [ref=e530]:
+          - generic [ref=e531]:
+            - link [ref=e533] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTE9GdWNGUWM4ZU4xd1hpLVY4TjhXWkJ1ZXhLM21xNlJKZ1lLR3pWdVR6VGlSUDJHZVhZc2p2U21MV1pMelpsTDZJaGRFNUNaVHFDY01PMFdCdlZUS19yLVFObU1JQWpmUVl2NHQ3VUliX2Eydw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e535]:
+              - generic [ref=e536]:
+                - generic [ref=e539]: ZhiBo8
+                - generic [ref=e543]:
+                  - generic:
+                    - button "展开 - 官方：日本队24小时后公布世界杯球员名单" [ref=e544] [cursor=pointer]:
+                      - img [ref=e546]
+                    - tooltip [ref=e548]: 展开
+              - link "官方：日本队24小时后公布世界杯球员名单 - ZhiBo8 - 11 天前" [ref=e549] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTE9GdWNGUWM4ZU4xd1hpLVY4TjhXWkJ1ZXhLM21xNlJKZ1lLR3pWdVR6VGlSUDJHZVhZc2p2U21MV1pMelpsTDZJaGRFNUNaVHFDY01PMFdCdlZUS19yLVFObU1JQWpmUVl2NHQ3VUliX2Eydw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 官方：日本队24小时后公布世界杯球员名单
+            - figure [ref=e550]
+          - time [ref=e552]: 11 天前
+      - generic [ref=e553]:
+        - separator [ref=e555]
+        - generic [ref=e557]:
+          - generic [ref=e558]:
+            - link [ref=e560] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTFBMekZ5SjZ0dVR4S3FnMXEtZ3dDM3FocVhOMENvMkxoanZUeS1qQ19aRy05UWNpQVhkYVlWWVB3WkNwc210NlVIOFVfVGJ0SWt1VjZpZmtYbVozNFlWSEZsYWUtS3AtSW5aQ1pJTWVWNFNrUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e562]:
+              - generic [ref=e563]:
+                - generic [ref=e566]: ZhiBo8
+                - generic [ref=e570]:
+                  - generic:
+                    - button "展开 - 万众瞩目！世界杯官方发布倒计时100天海报" [ref=e571] [cursor=pointer]:
+                      - img [ref=e573]
+                    - tooltip [ref=e575]: 展开
+              - link "万众瞩目！世界杯官方发布倒计时100天海报 - ZhiBo8 - 3月3日" [ref=e576] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTFBMekZ5SjZ0dVR4S3FnMXEtZ3dDM3FocVhOMENvMkxoanZUeS1qQ19aRy05UWNpQVhkYVlWWVB3WkNwc210NlVIOFVfVGJ0SWt1VjZpZmtYbVozNFlWSEZsYWUtS3AtSW5aQ1pJTWVWNFNrUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 万众瞩目！世界杯官方发布倒计时100天海报
+            - figure [ref=e577]
+          - time [ref=e579]: 3月3日
+      - generic [ref=e580]:
+        - separator [ref=e582]
+        - generic [ref=e584]:
+          - generic [ref=e585]:
+            - link [ref=e587] [cursor=pointer]:
+              - /url: ./read/CBMihAFBVV95cUxNSEhxVDlHUjdFcjY3M3RUcEI2ejhVNE95WUd2a3oyM2JzRGxCcGFGX0hUVHZqVV90b2FjWXdUcGtycDFNbW1vTG1Xa0o3OW5kT3k0ci1ucE8yaWxmYXNfbVRsLWYwTFJCMnh2eWEya0d4a0FsTUVoX1Q3eElENVkzQk5wUFQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e589]:
+              - generic [ref=e590]:
+                - generic [ref=e593]: 手机新浪网
+                - generic [ref=e597]:
+                  - generic:
+                    - button "展开 - 直播吧：韩旭李月汝两大主力近期回归中国女篮 备战世界杯预选赛" [ref=e598] [cursor=pointer]:
+                      - img [ref=e600]
+                    - tooltip [ref=e602]: 展开
+              - link "直播吧：韩旭李月汝两大主力近期回归中国女篮 备战世界杯预选赛 - 手机新浪网 - 3月4日" [ref=e603] [cursor=pointer]:
+                - /url: ./read/CBMihAFBVV95cUxNSEhxVDlHUjdFcjY3M3RUcEI2ejhVNE95WUd2a3oyM2JzRGxCcGFGX0hUVHZqVV90b2FjWXdUcGtycDFNbW1vTG1Xa0o3OW5kT3k0ci1ucE8yaWxmYXNfbVRsLWYwTFJCMnh2eWEya0d4a0FsTUVoX1Q3eElENVkzQk5wUFQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 直播吧：韩旭李月汝两大主力近期回归中国女篮 备战世界杯预选赛
+            - figure [ref=e604]
+          - time [ref=e606]: 3月4日
+      - generic [ref=e607]:
+        - separator [ref=e609]
+        - generic [ref=e611]:
+          - generic [ref=e612]:
+            - link [ref=e614] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTFBzOThzb3JfdjQ5VGtVVnFYSWhJVzEwbTF6aGl4U2F1UnBWd25peFRld0Z3OC1TMU9ETms5cG1idlNHcnJmZVNKZF9HX0RkNzFOQUN5cVgzbHRxVkhDYmVTbVFYRXJLY25YYnBSTnpuRmJ1dw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e616]:
+              - generic [ref=e617]:
+                - generic [ref=e620]: ZhiBo8
+                - generic [ref=e624]:
+                  - generic:
+                    - button "展开 - 世界杯48队大洲分布：欧洲16队参赛，亚洲9队晋级创历史新高！" [ref=e625] [cursor=pointer]:
+                      - img [ref=e627]
+                    - tooltip [ref=e629]: 展开
+              - link "世界杯48队大洲分布：欧洲16队参赛，亚洲9队晋级创历史新高！ - ZhiBo8 - 4月1日" [ref=e630] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTFBzOThzb3JfdjQ5VGtVVnFYSWhJVzEwbTF6aGl4U2F1UnBWd25peFRld0Z3OC1TMU9ETms5cG1idlNHcnJmZVNKZF9HX0RkNzFOQUN5cVgzbHRxVkhDYmVTbVFYRXJLY25YYnBSTnpuRmJ1dw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯48队大洲分布：欧洲16队参赛，亚洲9队晋级创历史新高！
+          - time [ref=e632]: 4月1日
+      - generic [ref=e633]:
+        - separator [ref=e635]
+        - generic [ref=e637]:
+          - generic [ref=e638]:
+            - link [ref=e640] [cursor=pointer]:
+              - /url: ./read/CBMid0FVX3lxTFBWRTlLV3hyYmc1Q1ozX19URnpoZnpwZ25ZX0lzY2JsUmRabjZsa3NPV2g4U2hFakV4YVZNQ1Zoczh3STV6Ymt2a2FOMVlta2puODNDZ0dxN0J4Ymw5RjB0cFZ2TC01ZnJMYk8xWlZVM19GRmtRMmlv?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e642]:
+              - generic [ref=e643]:
+                - generic [ref=e646]: 手机新浪网
+                - generic [ref=e650]:
+                  - generic:
+                    - button "展开 - 怎么看央视拒绝世界杯天价转播费？-国际足球-足球话题区-虎扑社区" [ref=e651] [cursor=pointer]:
+                      - img [ref=e653]
+                    - tooltip [ref=e655]: 展开
+              - link "怎么看央视拒绝世界杯天价转播费？-国际足球-足球话题区-虎扑社区 - 手机新浪网 - 18 天前" [ref=e656] [cursor=pointer]:
+                - /url: ./read/CBMid0FVX3lxTFBWRTlLV3hyYmc1Q1ozX19URnpoZnpwZ25ZX0lzY2JsUmRabjZsa3NPV2g4U2hFakV4YVZNQ1Zoczh3STV6Ymt2a2FOMVlta2puODNDZ0dxN0J4Ymw5RjB0cFZ2TC01ZnJMYk8xWlZVM19GRmtRMmlv?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 怎么看央视拒绝世界杯天价转播费？-国际足球-足球话题区-虎扑社区
+            - figure [ref=e657]
+          - time [ref=e659]: 18 天前
+      - generic [ref=e660]:
+        - separator [ref=e662]
+        - generic [ref=e664]:
+          - generic [ref=e665]:
+            - link [ref=e667] [cursor=pointer]:
+              - /url: ./read/CBMid0FVX3lxTE83WXB0TWhtdUZtZ1JlU3E0UzFhMVJlb1BYbWtPUW9IZ1BSZ0I2S2E3cjhMeEN2V3psd3RxUnJQZ1ZjWWVTTlhKQTBTaXNaSU5EeGxjNGFCUEFqNTRJMUdwX2Y1YVhQNkI3d2dkc1hwMWVPR3dKMWU0?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e669]:
+              - generic [ref=e670]:
+                - generic [ref=e673]: 手机新浪网
+                - generic [ref=e677]:
+                  - generic:
+                    - button "展开 - 26人+7名候补！克罗地亚世界杯初选名单：莫德里奇、佩里西奇领衔-直播吧手机版" [ref=e678] [cursor=pointer]:
+                      - img [ref=e680]
+                    - tooltip [ref=e682]: 展开
+              - link "26人+7名候补！克罗地亚世界杯初选名单：莫德里奇、佩里西奇领衔-直播吧手机版 - 手机新浪网 - 6 天前" [ref=e683] [cursor=pointer]:
+                - /url: ./read/CBMid0FVX3lxTE83WXB0TWhtdUZtZ1JlU3E0UzFhMVJlb1BYbWtPUW9IZ1BSZ0I2S2E3cjhMeEN2V3psd3RxUnJQZ1ZjWWVTTlhKQTBTaXNaSU5EeGxjNGFCUEFqNTRJMUdwX2Y1YVhQNkI3d2dkc1hwMWVPR3dKMWU0?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 26人+7名候补！克罗地亚世界杯初选名单：莫德里奇、佩里西奇领衔-直播吧手机版
+            - figure [ref=e684]
+          - time [ref=e686]: 6 天前
+      - generic [ref=e687]:
+        - separator [ref=e689]
+        - generic [ref=e691]:
+          - generic [ref=e692]:
+            - link [ref=e694] [cursor=pointer]:
+              - /url: ./read/CBMilwFBVV95cUxOQWpkQVF4TXc5NXF4bHE3R1hNaUI5UFpFeDhsWmpSekZaNmtmeF9laW5yazlPZUx4TDlnay1aN0g5SDZBVTNSU2hnQmVWdk9zMjlKQkxnZ0tFVzdwd0xBdUh2N1BBd2h1anJ5akxkVFRTM2E4TDVDMEdMWjB1QnNoQUNtT1VzS1otN0E1MVBhNi1IVEI5MklB?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e696]:
+              - generic [ref=e697]:
+                - generic [ref=e700]: 手机新浪网
+                - generic [ref=e704]:
+                  - generic:
+                    - button "展开 - 备战世界杯&亚运会！中国女篮7月7日&9日在墨尔本过招澳大利亚" [ref=e705] [cursor=pointer]:
+                      - img [ref=e707]
+                    - tooltip [ref=e709]: 展开
+              - link "备战世界杯&亚运会！中国女篮7月7日&9日在墨尔本过招澳大利亚 - 手机新浪网 - 3 天前" [ref=e710] [cursor=pointer]:
+                - /url: ./read/CBMilwFBVV95cUxOQWpkQVF4TXc5NXF4bHE3R1hNaUI5UFpFeDhsWmpSekZaNmtmeF9laW5yazlPZUx4TDlnay1aN0g5SDZBVTNSU2hnQmVWdk9zMjlKQkxnZ0tFVzdwd0xBdUh2N1BBd2h1anJ5akxkVFRTM2E4TDVDMEdMWjB1QnNoQUNtT1VzS1otN0E1MVBhNi1IVEI5MklB?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 备战世界杯&亚运会！中国女篮7月7日&9日在墨尔本过招澳大利亚
+            - figure [ref=e711]
+          - time [ref=e713]: 3 天前
+      - generic [ref=e714]:
+        - separator [ref=e716]
+        - generic [ref=e718]:
+          - generic [ref=e719]:
+            - link [ref=e721] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE8xQ2U1ckJ2ZTJiQ1RHQm42c082TXFydWpDNktNWG5CZDVTbkNPQm01MVJXMHZrUW42QlZ5OE9QVDB0aERWTHpsb0lLQ3VSTENUa19rTTJsbExzeWZQUGt0bmtOWQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e723]:
+              - generic [ref=e724]:
+                - generic [ref=e727]: 新浪网
+                - generic [ref=e731]:
+                  - generic:
+                    - button "展开 - 直播吧宣布独家消息：中央广播电视总台已经获得2026世界杯版权。" [ref=e732] [cursor=pointer]:
+                      - img [ref=e734]
+                    - tooltip [ref=e736]: 展开
+              - link "直播吧宣布独家消息：中央广播电视总台已经获得2026世界杯版权。 - 新浪网 - 10 天前" [ref=e737] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE8xQ2U1ckJ2ZTJiQ1RHQm42c082TXFydWpDNktNWG5CZDVTbkNPQm01MVJXMHZrUW42QlZ5OE9QVDB0aERWTHpsb0lLQ3VSTENUa19rTTJsbExzeWZQUGt0bmtOWQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 直播吧宣布独家消息：中央广播电视总台已经获得2026世界杯版权。
+            - figure [ref=e738]
+          - time [ref=e740]: 10 天前
+      - generic [ref=e741]:
+        - separator [ref=e743]
+        - generic [ref=e745]:
+          - generic [ref=e746]:
+            - link [ref=e748] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE0zOENtNzdPUDRtZ3U5RG1RSXRDVFJLS0R6OVc2bXdIWWlkcTV1LUVxMGVtN1pYSmt4d0JuMjdTaElxS1RiQWxWeVp2TVFTRXAtN0V6enRJZ1c0YW5NUzJjMXhJQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e750]:
+              - generic [ref=e751]:
+                - generic [ref=e754]: 新浪网
+                - generic [ref=e758]:
+                  - generic:
+                    - button "展开 - 央视获世界杯转播权_新浪新闻" [ref=e759] [cursor=pointer]:
+                      - img [ref=e761]
+                    - tooltip [ref=e763]: 展开
+              - link "央视获世界杯转播权_新浪新闻 - 新浪网 - 10 天前" [ref=e764] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE0zOENtNzdPUDRtZ3U5RG1RSXRDVFJLS0R6OVc2bXdIWWlkcTV1LUVxMGVtN1pYSmt4d0JuMjdTaElxS1RiQWxWeVp2TVFTRXAtN0V6enRJZ1c0YW5NUzJjMXhJQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 央视获世界杯转播权_新浪新闻
+            - figure [ref=e765]
+          - time [ref=e767]: 10 天前
+      - generic [ref=e768]:
+        - separator [ref=e770]
+        - generic [ref=e772]:
+          - generic [ref=e773]:
+            - link [ref=e775] [cursor=pointer]:
+              - /url: ./read/CBMiV0FVX3lxTE1rd0tLejlNZXNvcXoyR29yNEVaTjdkUUNzb3RoNlM0MHlqcF9zbHF6MHJMNDh1Rk9uZ0RsN0ltR243YmFDdXM5d1hBZWVMeHpxb3BJV1RuQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e777]:
+              - generic [ref=e778]:
+                - generic [ref=e781]: 腾讯新闻
+                - generic [ref=e785]:
+                  - generic:
+                    - button "展开 - 创造历史！申裕斌是韩国首位获得女子单打世界杯奖牌的球员" [ref=e786] [cursor=pointer]:
+                      - img [ref=e788]
+                    - tooltip [ref=e790]: 展开
+              - link "创造历史！申裕斌是韩国首位获得女子单打世界杯奖牌的球员 - 腾讯新闻 - 4月4日" [ref=e791] [cursor=pointer]:
+                - /url: ./read/CBMiV0FVX3lxTE1rd0tLejlNZXNvcXoyR29yNEVaTjdkUUNzb3RoNlM0MHlqcF9zbHF6MHJMNDh1Rk9uZ0RsN0ltR243YmFDdXM5d1hBZWVMeHpxb3BJV1RuQQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 创造历史！申裕斌是韩国首位获得女子单打世界杯奖牌的球员
+            - figure [ref=e792]
+          - time [ref=e794]: 4月4日
+      - generic [ref=e795]:
+        - separator [ref=e797]
+        - generic [ref=e799]:
+          - generic [ref=e800]:
+            - link [ref=e802] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTFB6SkVSUTBPbzhQOTRPZEV3UUVjNXBMNDVUZlh1YjlFRGFFNS1rbks0ZldHNWhVWkxna2loZzNFWl9iM0JuTUNvMTByN1BNRlM0aWJRQ3ZQb2xyTzB3RlBuYmFYMA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e804]:
+              - generic [ref=e805]:
+                - generic [ref=e808]: 新浪网
+                - generic [ref=e812]:
+                  - generic:
+                    - button "展开 - 央视获世界杯版权来源质疑_新浪新闻" [ref=e813] [cursor=pointer]:
+                      - img [ref=e815]
+                    - tooltip [ref=e817]: 展开
+              - link "央视获世界杯版权来源质疑_新浪新闻 - 新浪网 - 10 天前 - 作者：梁宏达" [ref=e818] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTFB6SkVSUTBPbzhQOTRPZEV3UUVjNXBMNDVUZlh1YjlFRGFFNS1rbks0ZldHNWhVWkxna2loZzNFWl9iM0JuTUNvMTByN1BNRlM0aWJRQ3ZQb2xyTzB3RlBuYmFYMA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 央视获世界杯版权来源质疑_新浪新闻
+            - figure [ref=e819]
+          - generic [ref=e820]:
+            - time [ref=e821]: 10 天前
+            - separator [ref=e822]
+            - generic [ref=e823]: 作者：梁宏达
+      - generic [ref=e824]:
+        - separator [ref=e826]
+        - generic [ref=e828]:
+          - generic [ref=e829]:
+            - link [ref=e831] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE41LWxWUVFHWUNJVkdEc21rbXA3WldydjRVbW5LTi1iQ2RkVzBJaHpaNkVXcTJ4cEo4dGtVRHRrb19XZmJTbFRJNVM3Z1Vpc1RUVU5DVENKMHpZNWMxSDJ4X0lqWQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e833]:
+              - generic [ref=e834]:
+                - generic [ref=e837]: 新浪网
+                - generic [ref=e841]:
+                  - generic:
+                    - 'button "展开 - #梅西第6次参加世界杯#【梅西个人第6届！阿根廷助教阿亚拉：#梅西确认参加2026世界杯#！】据直播吧，阿根廷助教阿亚拉接受Radio La Red电台音频采访时表示，梅西确认参加2026世界杯。阿亚拉说道：“梅西已经确认（参加世界杯）了吗？是的。他是第一个。我们已" [ref=e842] [cursor=pointer]':
+                      - img [ref=e844]
+                    - tooltip [ref=e846]: 展开
+              - link "#梅西第6次参加世界杯#【梅西个人第6届！阿根廷助教阿亚拉：#梅西确认参加2026世界杯#！】据直播吧，阿根廷助教阿亚拉接受Radio La Red电台音频采访时表示，梅西确认参加2026世界杯。阿亚拉说道：“梅西已经确认（参加世界杯）了吗？是的。他是第一个。我们已 - 新浪网 - 2 天前" [ref=e847] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE41LWxWUVFHWUNJVkdEc21rbXA3WldydjRVbW5LTi1iQ2RkVzBJaHpaNkVXcTJ4cEo4dGtVRHRrb19XZmJTbFRJNVM3Z1Vpc1RUVU5DVENKMHpZNWMxSDJ4X0lqWQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: "#梅西第6次参加世界杯#【梅西个人第6届！阿根廷助教阿亚拉：#梅西确认参加2026世界杯#！】据直播吧，阿根廷助教阿亚拉接受Radio La Red电台音频采访时表示，梅西确认参加2026世界杯。阿亚拉说道：“梅西已经确认（参加世界杯）了吗？是的。他是第一个。我们已"
+            - figure [ref=e848]
+          - time [ref=e850]: 2 天前
+      - generic [ref=e851]:
+        - separator [ref=e853]
+        - generic [ref=e855]:
+          - generic [ref=e856]:
+            - link [ref=e858] [cursor=pointer]:
+              - /url: ./read/CBMiVkFVX3lxTE9wVEY4YlRocHd2NlVaekt0SlR6ZTljSzNlbGRUajZ3bF9qaGVqZUhhcWpmOVdVVE1ZeWUwaEU1OWZhTHhVMzZ4ZzdhQmdoTGhMNnpfdi1n?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e860]:
+              - generic [ref=e861]:
+                - generic [ref=e864]: QQ News
+                - generic [ref=e868]:
+                  - generic:
+                    - button "展开 - 官方：世界杯决赛将有中场秀，麦当娜&BTS&夏奇拉登台表演-腾讯新闻" [ref=e869] [cursor=pointer]:
+                      - img [ref=e871]
+                    - tooltip [ref=e873]: 展开
+              - link "官方：世界杯决赛将有中场秀，麦当娜&BTS&夏奇拉登台表演-腾讯新闻 - QQ News - 11 天前" [ref=e874] [cursor=pointer]:
+                - /url: ./read/CBMiVkFVX3lxTE9wVEY4YlRocHd2NlVaekt0SlR6ZTljSzNlbGRUajZ3bF9qaGVqZUhhcWpmOVdVVE1ZeWUwaEU1OWZhTHhVMzZ4ZzdhQmdoTGhMNnpfdi1n?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 官方：世界杯决赛将有中场秀，麦当娜&BTS&夏奇拉登台表演-腾讯新闻
+            - figure [ref=e875]
+          - time [ref=e877]: 11 天前
+      - generic [ref=e878]:
+        - separator [ref=e880]
+        - generic [ref=e882]:
+          - generic [ref=e883]:
+            - link [ref=e885] [cursor=pointer]:
+              - /url: ./read/CBMiVkFVX3lxTE1ycllqQ3NKVXlpWlRVSEFpVjZlOXpBSS1aN3BoRm5HQjliZEp1MWYxQUFGanducnJnbU1Gb3g0TER4Ry1JVlJ2Zk84TFcwRjR2LWJGdGJ3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e887]:
+              - generic [ref=e888]:
+                - generic [ref=e891]: QQ News
+                - generic [ref=e895]:
+                  - generic:
+                    - button "展开 - 世界杯各小组球队平均身价：I组5.89亿居首；A组1.31亿垫底" [ref=e896] [cursor=pointer]:
+                      - img [ref=e898]
+                    - tooltip [ref=e900]: 展开
+              - link "世界杯各小组球队平均身价：I组5.89亿居首；A组1.31亿垫底 - QQ News - 4月2日" [ref=e901] [cursor=pointer]:
+                - /url: ./read/CBMiVkFVX3lxTE1ycllqQ3NKVXlpWlRVSEFpVjZlOXpBSS1aN3BoRm5HQjliZEp1MWYxQUFGanducnJnbU1Gb3g0TER4Ry1JVlJ2Zk84TFcwRjR2LWJGdGJ3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯各小组球队平均身价：I组5.89亿居首；A组1.31亿垫底
+            - figure [ref=e902]
+          - time [ref=e904]: 4月2日
+      - generic [ref=e905]:
+        - separator [ref=e907]
+        - generic [ref=e909]:
+          - generic [ref=e910]:
+            - link [ref=e912] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE5aS3pzQ0NEVXVMeVZ4WVB4LTNyUjdjNUIxR1RfTWRYdE9kV2tBY25kdnZnUE4yNGJHejRvRXp5OGRMS3lqdWVCUi14a3NxRHN6M2J5cTBCSEcwNUxKZFd1WWFkaw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e914]:
+              - generic [ref=e915]:
+                - generic [ref=e918]: 新浪网
+                - generic [ref=e922]:
+                  - generic:
+                    - 'button "展开 - #EsportsWorldCup电竞世界杯[超话]# 电竞世界杯激战正酣📣很高兴在这里与大家分享一个振奋人心的好消息！@虎扑电竞以其专业犀利的赛事讨论，客观有趣的评分锐评，正式成为2024EWC电竞世界杯战略社区内容合作平台！上虎扑，锐评电竞世界杯！这个夏天，" [ref=e923] [cursor=pointer]':
+                      - img [ref=e925]
+                    - tooltip [ref=e927]: 展开
+              - link "#EsportsWorldCup电竞世界杯[超话]# 电竞世界杯激战正酣📣很高兴在这里与大家分享一个振奋人心的好消息！@虎扑电竞以其专业犀利的赛事讨论，客观有趣的评分锐评，正式成为2024EWC电竞世界杯战略社区内容合作平台！上虎扑，锐评电竞世界杯！这个夏天， - 新浪网 - 2024年7月4日" [ref=e928] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE5aS3pzQ0NEVXVMeVZ4WVB4LTNyUjdjNUIxR1RfTWRYdE9kV2tBY25kdnZnUE4yNGJHejRvRXp5OGRMS3lqdWVCUi14a3NxRHN6M2J5cTBCSEcwNUxKZFd1WWFkaw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: "#EsportsWorldCup电竞世界杯[超话]# 电竞世界杯激战正酣📣很高兴在这里与大家分享一个振奋人心的好消息！@虎扑电竞以其专业犀利的赛事讨论，客观有趣的评分锐评，正式成为2024EWC电竞世界杯战略社区内容合作平台！上虎扑，锐评电竞世界杯！这个夏天，"
+            - figure [ref=e929]
+          - time [ref=e931]: 2024年7月4日
+      - generic [ref=e932]:
+        - separator [ref=e934]
+        - generic [ref=e936]:
+          - generic [ref=e937]:
+            - link [ref=e939] [cursor=pointer]:
+              - /url: ./read/CBMiV0FVX3lxTE84X3AtNkpXcHJiYXhLVGxYOExuMXBzNWtfelVDNll6N2tFeG9sbHA0ZU9wd3dKRzRMMTdhMk5kdzRPbVlGdjBHb3Z0Qk8taVFjazVqNm9Pdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e941]:
+              - generic [ref=e942]:
+                - generic [ref=e945]: 腾讯新闻
+                - generic [ref=e949]:
+                  - generic:
+                    - button "展开 - 世界杯最佳射手赔率：姆巴佩1赔6居首，凯恩和梅西排名二三-腾讯新闻" [ref=e950] [cursor=pointer]:
+                      - img [ref=e952]
+                    - tooltip [ref=e954]: 展开
+              - link "世界杯最佳射手赔率：姆巴佩1赔6居首，凯恩和梅西排名二三-腾讯新闻 - 腾讯新闻 - 4月1日" [ref=e955] [cursor=pointer]:
+                - /url: ./read/CBMiV0FVX3lxTE84X3AtNkpXcHJiYXhLVGxYOExuMXBzNWtfelVDNll6N2tFeG9sbHA0ZU9wd3dKRzRMMTdhMk5kdzRPbVlGdjBHb3Z0Qk8taVFjazVqNm9Pdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯最佳射手赔率：姆巴佩1赔6居首，凯恩和梅西排名二三-腾讯新闻
+            - figure [ref=e956]
+          - time [ref=e958]: 4月1日
+      - generic [ref=e959]:
+        - separator [ref=e961]
+        - generic [ref=e963]:
+          - generic [ref=e964]:
+            - link [ref=e966] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTE1xMV82U216MnNteFlxT1hYc09Jc3RFeU12dEVvdUF2V2VQMWlTOXEyUW0ta0VuUHFDOTZxd3BLSndfdGE4LVlNZkx6ZmdyV1dDdU9fNWRNNzVWdFdRZFZJRm9QSDNYendobGV5OEtwQjAzUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e968]:
+              - generic [ref=e969]:
+                - generic [ref=e972]: ZhiBo8
+                - generic [ref=e976]:
+                  - generic:
+                    - button "展开 - 梅西个人第6届！阿根廷助教阿亚拉：梅西确认参加2026世界杯！" [ref=e977] [cursor=pointer]:
+                      - img [ref=e979]
+                    - tooltip [ref=e981]: 展开
+              - link "梅西个人第6届！阿根廷助教阿亚拉：梅西确认参加2026世界杯！ - ZhiBo8 - 2 天前" [ref=e982] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTE1xMV82U216MnNteFlxT1hYc09Jc3RFeU12dEVvdUF2V2VQMWlTOXEyUW0ta0VuUHFDOTZxd3BLSndfdGE4LVlNZkx6ZmdyV1dDdU9fNWRNNzVWdFdRZFZJRm9QSDNYendobGV5OEtwQjAzUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 梅西个人第6届！阿根廷助教阿亚拉：梅西确认参加2026世界杯！
+            - figure [ref=e983]
+          - time [ref=e985]: 2 天前
+      - generic [ref=e986]:
+        - separator [ref=e988]
+        - generic [ref=e990]:
+          - generic [ref=e991]:
+            - link [ref=e993] [cursor=pointer]:
+              - /url: ./read/CBMickFVX3lxTE42Sm1xSHFFRU81b1F2WHRFYUpKUWsyQzYtMUpxd1lROU4xNnlZNWxLRmRxYVpvSkkzZk9UUzNjQkdzYVB3T1ltaDg5Z1Y2ZnNnVmh3d29wZzFRUXptSkR0bGl4TERySUhPY3ZhMkFaRmw1UQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e995]:
+              - generic [ref=e996]:
+                - generic [ref=e999]: ZhiBo8
+                - generic [ref=e1003]:
+                  - generic:
+                    - button "展开 - 堂安律社媒：非常骄傲能再次参加世界杯，大家一起创造历史吧" [ref=e1004] [cursor=pointer]:
+                      - img [ref=e1006]
+                    - tooltip [ref=e1008]: 展开
+              - link "堂安律社媒：非常骄傲能再次参加世界杯，大家一起创造历史吧 - ZhiBo8 - 10 天前" [ref=e1009] [cursor=pointer]:
+                - /url: ./read/CBMickFVX3lxTE42Sm1xSHFFRU81b1F2WHRFYUpKUWsyQzYtMUpxd1lROU4xNnlZNWxLRmRxYVpvSkkzZk9UUzNjQkdzYVB3T1ltaDg5Z1Y2ZnNnVmh3d29wZzFRUXptSkR0bGl4TERySUhPY3ZhMkFaRmw1UQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 堂安律社媒：非常骄傲能再次参加世界杯，大家一起创造历史吧
+            - figure [ref=e1010]
+          - time [ref=e1012]: 10 天前
+      - generic [ref=e1013]:
+        - separator [ref=e1015]
+        - generic [ref=e1017]:
+          - generic [ref=e1018]:
+            - link [ref=e1020] [cursor=pointer]:
+              - /url: ./read/CBMiVkFVX3lxTE5jV0tTSG5oTkI4T00xdkFhRi1XVkJ4NU1Ucm9DRzdELTVhdnBZUWVYOU1jdnhwRHJwX3FWZXFBOWlDY3ZFUmVEaEFCR1JrNHlUUkZVV2lB?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1022]:
+              - generic [ref=e1023]:
+                - generic [ref=e1026]: QQ News
+                - generic [ref=e1030]:
+                  - generic:
+                    - button "展开 - 倒计时一周年！2026世界杯夺冠赔率：西巴法英阿前5，德葡荷6-8位" [ref=e1031] [cursor=pointer]:
+                      - img [ref=e1033]
+                    - tooltip [ref=e1035]: 展开
+              - link "倒计时一周年！2026世界杯夺冠赔率：西巴法英阿前5，德葡荷6-8位 - QQ News - 2025年6月11日" [ref=e1036] [cursor=pointer]:
+                - /url: ./read/CBMiVkFVX3lxTE5jV0tTSG5oTkI4T00xdkFhRi1XVkJ4NU1Ucm9DRzdELTVhdnBZUWVYOU1jdnhwRHJwX3FWZXFBOWlDY3ZFUmVEaEFCR1JrNHlUUkZVV2lB?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 倒计时一周年！2026世界杯夺冠赔率：西巴法英阿前5，德葡荷6-8位
+            - figure [ref=e1037]
+          - time [ref=e1039]: 2025年6月11日
+      - generic [ref=e1040]:
+        - separator [ref=e1042]
+        - generic [ref=e1044]:
+          - generic [ref=e1045]:
+            - link [ref=e1047] [cursor=pointer]:
+              - /url: ./read/CBMiVkFVX3lxTE80Y2xBNkxVSjdGMFp0VC1tdVNDLUhrOFZwekNfV0ZuWjg3OW0wSGpFbG5pUVp3eFR4dk5DS2U2b1JHZzlHcUt6Z2JVS29QVTVNcWtjZ0t3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1049]:
+              - generic [ref=e1050]:
+                - generic [ref=e1053]: QQ News
+                - generic [ref=e1057]:
+                  - generic:
+                    - button "展开 - 时隔16年再进世界杯！巴拉圭总统签署法令，全国9月5日放假1天-腾讯新闻" [ref=e1058] [cursor=pointer]:
+                      - img [ref=e1060]
+                    - tooltip [ref=e1062]: 展开
+              - link "时隔16年再进世界杯！巴拉圭总统签署法令，全国9月5日放假1天-腾讯新闻 - QQ News - 2025年9月5日" [ref=e1063] [cursor=pointer]:
+                - /url: ./read/CBMiVkFVX3lxTE80Y2xBNkxVSjdGMFp0VC1tdVNDLUhrOFZwekNfV0ZuWjg3OW0wSGpFbG5pUVp3eFR4dk5DS2U2b1JHZzlHcUt6Z2JVS29QVTVNcWtjZ0t3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 时隔16年再进世界杯！巴拉圭总统签署法令，全国9月5日放假1天-腾讯新闻
+            - figure [ref=e1064]
+          - time [ref=e1066]: 2025年9月5日
+      - generic [ref=e1067]:
+        - separator [ref=e1069]
+        - generic [ref=e1071]:
+          - generic [ref=e1072]:
+            - link [ref=e1074] [cursor=pointer]:
+              - /url: ./read/CBMic0FVX3lxTFAtcmhDNXhTTU81ZmFUOWpNQ0VOLWgzc2FVcUhNWnhZYnR3VUZSSklLcHVfMTM1Z1NPYTVCTFhSN0xqd1dtTlc2eFJqd3MtRjMzdkZJbFVDYlJMN0dTZm5FVmhSMmRFMWlKemZCTERnZk1YMnc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1076]:
+              - generic [ref=e1077]:
+                - generic [ref=e1080]: 手机新浪网
+                - generic [ref=e1084]:
+                  - generic:
+                    - button "展开 - 夏奇拉谈第四次参与世界杯：与足球有着“无可置疑的联系”-直播吧" [ref=e1085] [cursor=pointer]:
+                      - img [ref=e1087]
+                    - tooltip [ref=e1089]: 展开
+              - link "夏奇拉谈第四次参与世界杯：与足球有着“无可置疑的联系”-直播吧 - 手机新浪网 - 10 天前" [ref=e1090] [cursor=pointer]:
+                - /url: ./read/CBMic0FVX3lxTFAtcmhDNXhTTU81ZmFUOWpNQ0VOLWgzc2FVcUhNWnhZYnR3VUZSSklLcHVfMTM1Z1NPYTVCTFhSN0xqd1dtTlc2eFJqd3MtRjMzdkZJbFVDYlJMN0dTZm5FVmhSMmRFMWlKemZCTERnZk1YMnc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 夏奇拉谈第四次参与世界杯：与足球有着“无可置疑的联系”-直播吧
+            - figure [ref=e1091]
+          - time [ref=e1093]: 10 天前
+      - generic [ref=e1094]:
+        - separator [ref=e1096]
+        - generic [ref=e1098]:
+          - generic [ref=e1099]:
+            - link [ref=e1101] [cursor=pointer]:
+              - /url: ./read/CBMidEFVX3lxTFBxSDNTUldaOXRINnozSkhFd3phb0RTak9fUjQtMFNQWXN5MTNhZHhQUTNDbWFuMGZLcTVybU14bkwyZ1ZQckh4UFJLVVMtLU12UG9ZcXZuNXN4dmRnbUlBc05hQ3pCZDZEc0RGNGgwV3BZTTZa?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1103]:
+              - generic [ref=e1104]:
+                - generic [ref=e1107]: 腾讯体育社区
+                - generic [ref=e1111]:
+                  - generic:
+                    - button "展开 - 腾讯体育社区·汇聚心跳" [ref=e1112] [cursor=pointer]:
+                      - img [ref=e1114]
+                    - tooltip [ref=e1116]: 展开
+              - link "腾讯体育社区·汇聚心跳 - 腾讯体育社区 - 2023年10月30日" [ref=e1117] [cursor=pointer]:
+                - /url: ./read/CBMidEFVX3lxTFBxSDNTUldaOXRINnozSkhFd3phb0RTak9fUjQtMFNQWXN5MTNhZHhQUTNDbWFuMGZLcTVybU14bkwyZ1ZQckh4UFJLVVMtLU12UG9ZcXZuNXN4dmRnbUlBc05hQ3pCZDZEc0RGNGgwV3BZTTZa?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 腾讯体育社区·汇聚心跳
+            - figure [ref=e1118]
+          - time [ref=e1120]: 2023年10月30日
+      - generic [ref=e1121]:
+        - separator [ref=e1123]
+        - generic [ref=e1125]:
+          - generic [ref=e1126]:
+            - link [ref=e1128] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE9JQ1ZYLTVfbGs2a0NWVkZqUjdrV3BfSzFpY0NvNlpFZ01SSElVREdyRkp5c1M3TENKblZNM1NqRzllb1VsakVWY3lDdkRQSlE1bnFTMUUxYzRSdFM3SmpfYXlGdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1130]:
+              - generic [ref=e1131]:
+                - generic [ref=e1134]: 新浪网
+                - generic [ref=e1138]:
+                  - generic:
+                    - button "展开 - 官方：#沙特正式申办2034年世界杯# 已获得超70个足协支持沙特阿拉伯足协今天宣布" [ref=e1139] [cursor=pointer]:
+                      - img [ref=e1141]
+                    - tooltip [ref=e1143]: 展开
+              - link "官方：#沙特正式申办2034年世界杯# 已获得超70个足协支持沙特阿拉伯足协今天宣布 - 新浪网 - 2023年10月9日" [ref=e1144] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE9JQ1ZYLTVfbGs2a0NWVkZqUjdrV3BfSzFpY0NvNlpFZ01SSElVREdyRkp5c1M3TENKblZNM1NqRzllb1VsakVWY3lDdkRQSlE1bnFTMUUxYzRSdFM3SmpfYXlGdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 官方：#沙特正式申办2034年世界杯# 已获得超70个足协支持沙特阿拉伯足协今天宣布
+            - figure [ref=e1145]
+          - time [ref=e1147]: 2023年10月9日
+      - generic [ref=e1148]:
+        - separator [ref=e1150]
+        - generic [ref=e1152]:
+          - generic [ref=e1153]:
+            - link [ref=e1155] [cursor=pointer]:
+              - /url: ./read/CBMiUEFVX3lxTE1OajZkTWpDQUNDelRmc0p6ZHJoUjJ1bk9idTRYcko5VTZDMnAwaTF1Qks1TWlTUzEzNFg4M3duNGNxaTdBT2pabmx2WDlGNFpF?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1157]:
+              - generic [ref=e1158]:
+                - generic [ref=e1161]: 搜狐网
+                - generic [ref=e1165]:
+                  - generic:
+                    - button "展开 - 阿根廷vs法国！赛前的直播吧世界杯预测活动都有谁对了？来分享下" [ref=e1166] [cursor=pointer]:
+                      - img [ref=e1168]
+                    - tooltip [ref=e1170]: 展开
+              - link "阿根廷vs法国！赛前的直播吧世界杯预测活动都有谁对了？来分享下 - 搜狐网 - 2022年12月18日" [ref=e1171] [cursor=pointer]:
+                - /url: ./read/CBMiUEFVX3lxTE1OajZkTWpDQUNDelRmc0p6ZHJoUjJ1bk9idTRYcko5VTZDMnAwaTF1Qks1TWlTUzEzNFg4M3duNGNxaTdBT2pabmx2WDlGNFpF?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 阿根廷vs法国！赛前的直播吧世界杯预测活动都有谁对了？来分享下
+            - figure [ref=e1172]
+          - time [ref=e1174]: 2022年12月18日
+      - generic [ref=e1175]:
+        - separator [ref=e1177]
+        - generic [ref=e1179]:
+          - generic [ref=e1180]:
+            - link [ref=e1182] [cursor=pointer]:
+              - /url: ./read/CBMiY0FVX3lxTE1vc2lERzFjaXJCV2NYYzRnMXB0a0t4RnJLc1FScjNSNTBhSldIdkd1M3dnSHpOQkdiZ2ZfLU9CWVRGQ0hvaFZ4by0wc0xJSkpZdDR2WG9obS1yMjNjb1FfZ3BKYw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1184]:
+              - generic [ref=e1185]:
+                - generic [ref=e1188]: 新浪网
+                - generic [ref=e1192]:
+                  - generic:
+                    - button "展开 - 阿根廷中国行官方在直播吧上发表，转载凤凰卫视——跟队记者：不会断然认为梅西不踢下届世界杯" [ref=e1193] [cursor=pointer]:
+                      - img [ref=e1195]
+                    - tooltip [ref=e1197]: 展开
+              - link "阿根廷中国行官方在直播吧上发表，转载凤凰卫视——跟队记者：不会断然认为梅西不踢下届世界杯 - 新浪网 - 2023年6月15日" [ref=e1198] [cursor=pointer]:
+                - /url: ./read/CBMiY0FVX3lxTE1vc2lERzFjaXJCV2NYYzRnMXB0a0t4RnJLc1FScjNSNTBhSldIdkd1M3dnSHpOQkdiZ2ZfLU9CWVRGQ0hvaFZ4by0wc0xJSkpZdDR2WG9obS1yMjNjb1FfZ3BKYw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 阿根廷中国行官方在直播吧上发表，转载凤凰卫视——跟队记者：不会断然认为梅西不踢下届世界杯
+            - figure [ref=e1199]
+          - time [ref=e1201]: 2023年6月15日
+      - generic [ref=e1202]:
+        - separator [ref=e1204]
+        - generic [ref=e1206]:
+          - generic [ref=e1207]:
+            - link [ref=e1209] [cursor=pointer]:
+              - /url: ./read/CBMiVkFVX3lxTE5NSFNUVWVjY1hTdUFDcWtxeG1jZzhqemJOMnVUWE1PcHpaSXUyRTlSWFh6aHFtTEpjNGNaM3h2ZnJaVF96eUZjWkhmWnZISHdFaS1hSnV3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1211]:
+              - generic [ref=e1212]:
+                - generic [ref=e1215]: QQ News
+                - generic [ref=e1219]:
+                  - generic:
+                    - button "展开 - 逐梦美加墨！2026世界杯赛程：6月11日开赛，揭幕战在墨西哥进行" [ref=e1220] [cursor=pointer]:
+                      - img [ref=e1222]
+                    - tooltip [ref=e1224]: 展开
+              - link "逐梦美加墨！2026世界杯赛程：6月11日开赛，揭幕战在墨西哥进行 - QQ News - 2024年2月5日" [ref=e1225] [cursor=pointer]:
+                - /url: ./read/CBMiVkFVX3lxTE5NSFNUVWVjY1hTdUFDcWtxeG1jZzhqemJOMnVUWE1PcHpaSXUyRTlSWFh6aHFtTEpjNGNaM3h2ZnJaVF96eUZjWkhmWnZISHdFaS1hSnV3?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 逐梦美加墨！2026世界杯赛程：6月11日开赛，揭幕战在墨西哥进行
+            - figure [ref=e1226]
+          - time [ref=e1228]: 2024年2月5日
+      - generic [ref=e1229]:
+        - separator [ref=e1231]
+        - generic [ref=e1233]:
+          - generic [ref=e1234]:
+            - link [ref=e1236] [cursor=pointer]:
+              - /url: ./read/CBMidEFVX3lxTE0zM2lSRHRIeC1oc2l4V3FLTE44Q20yVlg1Vm5zNTFnNGdYbnRrSVh1ckdVYTVleFhfbmdybHBlamU1Ykt6ekgybl9vb2FSOWpkczVKZXRhQV9HWEFET3ltbFZpQUJOdDFsYkc1Wmd1VjBWYUZf?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1238]:
+              - generic [ref=e1239]:
+                - generic [ref=e1242]: 腾讯体育社区
+                - generic [ref=e1246]:
+                  - generic:
+                    - button "展开 - 腾讯体育社区·汇聚心跳" [ref=e1247] [cursor=pointer]:
+                      - img [ref=e1249]
+                    - tooltip [ref=e1251]: 展开
+              - link "腾讯体育社区·汇聚心跳 - 腾讯体育社区 - 2023年11月15日" [ref=e1252] [cursor=pointer]:
+                - /url: ./read/CBMidEFVX3lxTE0zM2lSRHRIeC1oc2l4V3FLTE44Q20yVlg1Vm5zNTFnNGdYbnRrSVh1ckdVYTVleFhfbmdybHBlamU1Ykt6ekgybl9vb2FSOWpkczVKZXRhQV9HWEFET3ltbFZpQUJOdDFsYkc1Wmd1VjBWYUZf?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 腾讯体育社区·汇聚心跳
+            - figure [ref=e1253]
+          - time [ref=e1255]: 2023年11月15日
+      - generic [ref=e1256]:
+        - separator [ref=e1258]
+        - generic [ref=e1260]:
+          - generic [ref=e1261]:
+            - link [ref=e1263] [cursor=pointer]:
+              - /url: ./read/CBMiUEFVX3lxTFByeTl5VXV3bU1NdUFfbVh4RUZfZm5Ba1pZRHM3Y2l3YzhkSkJwNzA5WEZHWXZBRHQwSXhoSXhBMFNCVkhEYlZMMlRrWnNqZ0R1?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1265]:
+              - generic [ref=e1266]:
+                - generic [ref=e1269]: 凤凰网
+                - generic [ref=e1273]:
+                  - generic:
+                    - button "展开 - 72家广告主联手腾讯体育 世界杯营销完美收官" [ref=e1274] [cursor=pointer]:
+                      - img [ref=e1276]
+                    - tooltip [ref=e1278]: 展开
+              - link "72家广告主联手腾讯体育 世界杯营销完美收官 - 凤凰网 - 2018年7月18日" [ref=e1279] [cursor=pointer]:
+                - /url: ./read/CBMiUEFVX3lxTFByeTl5VXV3bU1NdUFfbVh4RUZfZm5Ba1pZRHM3Y2l3YzhkSkJwNzA5WEZHWXZBRHQwSXhoSXhBMFNCVkhEYlZMMlRrWnNqZ0R1?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 72家广告主联手腾讯体育 世界杯营销完美收官
+            - figure [ref=e1280]
+          - time [ref=e1282]: 2018年7月18日
+      - generic [ref=e1283]:
+        - separator [ref=e1285]
+        - generic [ref=e1287]:
+          - generic [ref=e1288]:
+            - link [ref=e1290] [cursor=pointer]:
+              - /url: ./read/CBMie0FVX3lxTE9TM0UwaVhQTWVVMUM3MGNpUzNOWGk3VDZaNzZ3U285bVlZMVMyMklhTnhsY0k2cHhxa2M5NWJQVUJScDVqaXpic0NNc3lSMUtBejJVR3RqSVppUkFNclJtcnNtdENjZGF3TFlkanNHaVBRRVRHc1pHbkxiOA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1292]:
+              - generic [ref=e1293]:
+                - generic [ref=e1296]: 新浪网
+                - generic [ref=e1300]:
+                  - generic:
+                    - button "展开 - 优酷16亿买版权亏了？无版权该如何玩转世界杯" [ref=e1301] [cursor=pointer]:
+                      - img [ref=e1303]
+                    - tooltip [ref=e1305]: 展开
+              - link "优酷16亿买版权亏了？无版权该如何玩转世界杯 - 新浪网 - 2018年7月16日" [ref=e1306] [cursor=pointer]:
+                - /url: ./read/CBMie0FVX3lxTE9TM0UwaVhQTWVVMUM3MGNpUzNOWGk3VDZaNzZ3U285bVlZMVMyMklhTnhsY0k2cHhxa2M5NWJQVUJScDVqaXpic0NNc3lSMUtBejJVR3RqSVppUkFNclJtcnNtdENjZGF3TFlkanNHaVBRRVRHc1pHbkxiOA?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 优酷16亿买版权亏了？无版权该如何玩转世界杯
+            - figure [ref=e1307]
+          - time [ref=e1309]: 2018年7月16日
+      - generic [ref=e1310]:
+        - separator [ref=e1312]
+        - generic [ref=e1314]:
+          - generic [ref=e1315]:
+            - link [ref=e1317] [cursor=pointer]:
+              - /url: ./read/CBMiW0FVX3lxTE03T0c1UzhJcFdWQzhTZEEwbTZkbmFHVVdSRW5pOV9nVGg0Zy1LTHFrTmNvSW03NzVLSGFoYmkzdS1BWFM1VlB1Mlc2a19rUnRWemV4ZDl6alMwMFU?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e1319]:
+              - generic [ref=e1320]:
+                - generic [ref=e1323]: 腾讯新闻
+                - generic [ref=e1327]:
+                  - generic:
+                    - button "展开 - 2006年世界杯-意大利点球击败法国，齐祖头顶马特拉齐" [ref=e1328] [cursor=pointer]:
+                      - img [ref=e1330]
+                    - tooltip [ref=e1332]: 展开
+              - link "2006年世界杯-意大利点球击败法国，齐祖头顶马特拉齐 - 腾讯新闻 - 2018年5月31日" [ref=e1333] [cursor=pointer]:
+                - /url: ./read/CBMiW0FVX3lxTE03T0c1UzhJcFdWQzhTZEEwbTZkbmFHVVdSRW5pOV9nVGg0Zy1LTHFrTmNvSW03NzVLSGFoYmkzdS1BWFM1VlB1Mlc2a19rUnRWemV4ZDl6alMwMFU?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2006年世界杯-意大利点球击败法国，齐祖头顶马特拉齐
+            - figure [ref=e1334]
+          - time [ref=e1336]: 2018年5月31日
+    - complementary [ref=e1337]:
+      - generic [ref=e1339]:
+        - generic [ref=e1342]:
+          - heading "直播吧 OR 虎扑 OR 腾讯体育 世界杯" [level=2] [ref=e1343]
+          - generic [ref=e1344]: 搜索结果
+        - generic [ref=e1347]:
+          - button "保存此搜索条目 - 直播吧 OR 虎扑 OR 腾讯体育 世界杯" [ref=e1349]:
+            - img [ref=e1353]
+            - generic [ref=e1355]: 保存
+          - tooltip [ref=e1356]: 保存此搜索条目

@@ -1,0 +1,407 @@
+- generic [active] [ref=e1]:
+  - generic:
+    - generic:
+      - link "跳到主要内容" [ref=e2] [cursor=pointer]
+      - link "无障碍功能帮助" [ref=e3] [cursor=pointer]:
+        - /url: https://support.google.com/websearch/answer/181196?hl=zh-CN
+  - generic [ref=e8]:
+    - search [ref=e9]:
+      - generic [ref=e11]:
+        - link "Google 首页" [ref=e13] [cursor=pointer]:
+          - /url: https://www.google.com.hk/webhp?hl=zh-CN&sa=X&ved=0ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQPAgI
+          - img [ref=e14]
+        - generic [ref=e21]:
+          - generic [ref=e22]:
+            - combobox "搜索" [ref=e25]: World Cup 2026 marketing sponsorship news May 2026 World Cup 2026 marketing sponsorship news May 2026
+            - generic [ref=e26]:
+              - button "清除" [ref=e28] [cursor=pointer]:
+                - img [ref=e30]
+              - generic [ref=e33]:
+                - button "按语音搜索" [ref=e34] [cursor=pointer]:
+                  - img [ref=e35]
+                - button "按图搜索" [ref=e37] [cursor=pointer]:
+                  - img [ref=e38]
+          - button "搜索" [ref=e40] [cursor=pointer]:
+            - img [ref=e43]
+    - generic [ref=e45]:
+      - button "设置" [ref=e47] [cursor=pointer]:
+        - img [ref=e50]
+      - generic [ref=e53]:
+        - button "Google 应用" [ref=e55] [cursor=pointer]:
+          - img [ref=e56]
+        - link "登录" [ref=e60] [cursor=pointer]:
+          - /url: https://accounts.google.com/ServiceLogin?hl=zh-CN&passive=true&continue=https://www.google.com.hk/search%3Fq%3DWorld%2BCup%2B2026%2Bmarketing%2Bsponsorship%2Bnews%2BMay%2B2026%26tbs%3Dqdr:d%26num%3D20%26sei%3DTB4UaqfOMo3OkPIP_ZyBuQk&ec=futura_srp_og_si_72236_p
+  - generic [ref=e62]:
+    - navigation [ref=e68]:
+      - generic [ref=e74]:
+        - list [ref=e75]:
+          - listitem [ref=e76]:
+            - link "全部" [disabled] [ref=e77]:
+              - generic [ref=e79]: 全部
+          - listitem [ref=e80]:
+            - link "图片" [ref=e81] [cursor=pointer]:
+              - /url: /search?newwindow=1&sca_esv=c0a979c20fc01ddf&udm=2&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVNvV7jKtLqzLZ63dd2zPtrmgI7Q-S_UNmpLgK_HfmL3EeJM1Fys9ro-uCnm2eOKrUB1FiedL2T4T5s7C-fPxm2p0tdOKtghJSnBRWMhQrrCqOLNTKo85haWevKNxlafzPYlQGqhJW7Z9s-VoqPKxOjyLD2pw&q=World+Cup+2026+marketing+sponsorship+news+May+2026&sa=X&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQtKgLegQIFhAB
+              - generic [ref=e83]: 图片
+          - listitem [ref=e84]:
+            - link "新闻" [ref=e85] [cursor=pointer]:
+              - /url: /search?newwindow=1&sca_esv=c0a979c20fc01ddf&tbs=qdr:d&q=World+Cup+2026+marketing+sponsorship+news+May+2026&tbm=nws&source=lnms&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVNvV7jKtLqzLZ63dd2zPtrmgI7Q-S_UNmpLgK_HfmL3EeJM1Fys9ro-uCnm2eOKrUB1FiedL2T4T5s7C-fPxm2p0tdOKtghJSnBRWMhQrrCqOLNTKo85haWevKNxlafzPYlQGqhJW7Z9s-VoqPKxOjyLD2pw&sa=X&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ0pQJegQIFRAB
+              - generic [ref=e87]: 新闻
+          - listitem [ref=e88]:
+            - link "视频" [ref=e89] [cursor=pointer]:
+              - /url: /search?newwindow=1&sca_esv=c0a979c20fc01ddf&udm=7&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVNvV7jKtLqzLZ63dd2zPtrmgI7Q-S_UNmpLgK_HfmL3EeJM1Fys9ro-uCnm2eOKrUB1FiedL2T4T5s7C-fPxm2p0tdOKtghJSnBRWMhQrrCqOLNTKo85haWevKNxlafzPYlQGqhJW7Z9s-VoqPKxOjyLD2pw&q=World+Cup+2026+marketing+sponsorship+news+May+2026&sa=X&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQtKgLegQIFBAB
+              - generic [ref=e91]: 视频
+          - listitem [ref=e92]:
+            - link "短视频" [ref=e93] [cursor=pointer]:
+              - /url: /search?newwindow=1&sca_esv=c0a979c20fc01ddf&udm=39&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVNvV7jKtLqzLZ63dd2zPtrmgI7Q-S_UNmpLgK_HfmL3EeJM1Fys9ro-uCnm2eOKrUB1FiedL2T4T5s7C-fPxm2p0tdOKtghJSnBRWMhQrrCqOLNTKo85haWevKNxlafzPYlQGqhJW7Z9s-VoqPKxOjyLD2pw&q=World+Cup+2026+marketing+sponsorship+news+May+2026&sa=X&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQs6gLegQIExAB
+              - generic [ref=e95]: 短视频
+          - listitem [ref=e96]:
+            - link "网页" [ref=e97] [cursor=pointer]:
+              - /url: /search?newwindow=1&sca_esv=c0a979c20fc01ddf&udm=web&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVNvV7jKtLqzLZ63dd2zPtrmgI7Q-S_UNmpLgK_HfmL3EeJM1Fys9ro-uCnm2eOKrUB1FiedL2T4T5s7C-fPxm2p0tdOKtghJSnBRWMhQrrCqOLNTKo85haWevKNxlafzPYlQGqhJW7Z9s-VoqPKxOjyLD2pw&q=World+Cup+2026+marketing+sponsorship+news+May+2026&sa=X&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQs6gLegQIEhAB
+              - generic [ref=e99]: 网页
+          - listitem [ref=e100]:
+            - link "图书" [ref=e101] [cursor=pointer]:
+              - /url: /search?newwindow=1&sca_esv=c0a979c20fc01ddf&tbs=qdr:d&q=World+Cup+2026+marketing+sponsorship+news+May+2026&udm=36&source=lnms&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVNvV7jKtLqzLZ63dd2zPtrmgI7Q-S_UNmpLgK_HfmL3EeJM1Fys9ro-uCnm2eOKrUB1FiedL2T4T5s7C-fPxm2p0tdOKtghJSnBRWMhQrrCqOLNTKo85haWevKNxlafzPYlQGqhJW7Z9s-VoqPKxOjyLD2pw&sa=X&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ0pQJegQIERAB
+              - generic [ref=e103]: 图书
+          - listitem [ref=e104]:
+            - button "更多过滤条件" [ref=e105] [cursor=pointer]:
+              - generic "更多过滤条件" [ref=e106]:
+                - generic [ref=e107]:
+                  - generic [ref=e108]: 更多
+                  - img [ref=e110]
+        - button "工具" [ref=e113] [cursor=pointer]:
+          - generic [ref=e115]:
+            - generic [ref=e116]: 工具
+            - img [ref=e118]
+    - heading "搜索结果" [level=1] [ref=e120]
+    - main [ref=e126]:
+      - generic [ref=e130]:
+        - generic [ref=e134]:
+          - generic [ref=e136]:
+            - heading "视频" [level=2] [ref=e137]
+            - button "关于这条结果的详细信息" [ref=e138] [cursor=pointer]:
+              - img [ref=e141]
+          - generic [ref=e144]:
+            - generic [ref=e149]:
+              - generic [ref=e150]:
+                - link "Which country do you support in the world cup⁉️ @portugal ... Instagram Shahzad 20小时前" [ref=e152] [cursor=pointer]:
+                  - /url: https://www.instagram.com/reel/DYuU_9VTWoB/
+                  - heading "Which country do you support in the world cup⁉️ @portugal ... Instagram Shahzad 20小时前" [level=3] [ref=e153]:
+                    - generic [ref=e156]: Which country do you support in the world cup⁉️ @portugal ...
+                    - generic [ref=e158]:
+                      - generic [ref=e159]:
+                        - text: Instagram
+                        - generic [ref=e160]: · Shahzad
+                      - generic [ref=e161]: 20小时前
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - text: Instagram
+                          - generic: · Shahzad
+                    - button "关于这条结果的详细信息" [ref=e162] [cursor=pointer]:
+                      - img [ref=e165]
+              - link "Which country do you support in the world cup⁉️ @portugal ...，由Shahzad上传到Instagram上. 在Instagram上播放. 0:37" [ref=e167] [cursor=pointer]:
+                - /url: https://www.instagram.com/reel/DYuU_9VTWoB/
+                - generic [ref=e168]:
+                  - img [ref=e171]
+                  - generic [ref=e175]: 0:37
+            - generic [ref=e180]:
+              - generic [ref=e181]:
+                - link "The World Cup is bigger than football 🌍🏆 It creates ... TikTok kickoffonline 23小时前" [ref=e183] [cursor=pointer]:
+                  - /url: https://www.tiktok.com/@kickoffonline/video/7642995008395644181
+                  - heading "The World Cup is bigger than football 🌍🏆 It creates ... TikTok kickoffonline 23小时前" [level=3] [ref=e184]:
+                    - generic [ref=e187]: The World Cup is bigger than football 🌍🏆 It creates ...
+                    - generic [ref=e189]:
+                      - generic [ref=e190]:
+                        - text: TikTok
+                        - generic [ref=e191]: · kickoffonline
+                      - generic [ref=e192]: 23小时前
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - text: TikTok
+                          - generic: · kickoffonline
+                    - button "关于这条结果的详细信息" [ref=e193] [cursor=pointer]:
+                      - img [ref=e196]
+              - link "The World Cup is bigger than football 🌍🏆 It creates ...，由kickoffonline上传到TikTok上. 在TikTok上播放. 0:35" [ref=e198] [cursor=pointer]:
+                - /url: https://www.tiktok.com/@kickoffonline/video/7642995008395644181
+                - generic [ref=e199]:
+                  - img [ref=e202]
+                  - generic [ref=e206]: 0:35
+            - generic [ref=e211]:
+              - generic [ref=e212]:
+                - 'link "EU in Malaysia on Instagram: \"Different flags. Different ... Instagram EU in Malaysia 2小时前" [ref=e214] [cursor=pointer]':
+                  - /url: https://www.instagram.com/reel/DYwROlRxQxN/
+                  - 'heading "EU in Malaysia on Instagram: \"Different flags. Different ... Instagram EU in Malaysia 2小时前" [level=3] [ref=e215]':
+                    - generic [ref=e218]: "EU in Malaysia on Instagram: \"Different flags. Different ..."
+                    - generic [ref=e220]:
+                      - generic [ref=e221]:
+                        - text: Instagram
+                        - generic [ref=e222]: · EU in Malaysia
+                      - generic [ref=e223]: 2小时前
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - text: Instagram
+                          - generic: · EU in Malaysia
+                    - button "关于这条结果的详细信息" [ref=e224] [cursor=pointer]:
+                      - img [ref=e227]
+              - 'link "EU in Malaysia on Instagram: \"Different flags. Different ...，由EU in Malaysia上传到Instagram上. 在Instagram上播放. 0:58" [ref=e229] [cursor=pointer]':
+                - /url: https://www.instagram.com/reel/DYwROlRxQxN/
+                - generic [ref=e230]:
+                  - img [ref=e233]
+                  - generic [ref=e237]: 0:58
+            - generic [ref=e242]:
+              - generic [ref=e243]:
+                - link "World Cup Business Kick-Off Event is June 5th Sign up at ... Instagram Quentin Gause 11小时前" [ref=e245] [cursor=pointer]:
+                  - /url: https://www.instagram.com/reel/DYvRdGRMUKL/
+                  - heading "World Cup Business Kick-Off Event is June 5th Sign up at ... Instagram Quentin Gause 11小时前" [level=3] [ref=e246]:
+                    - generic [ref=e249]: World Cup Business Kick-Off Event is June 5th Sign up at ...
+                    - generic [ref=e251]:
+                      - generic [ref=e252]:
+                        - text: Instagram
+                        - generic [ref=e253]: · Quentin Gause
+                      - generic [ref=e254]: 11小时前
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - text: Instagram
+                          - generic: · Quentin Gause
+                    - button "关于这条结果的详细信息" [ref=e255] [cursor=pointer]:
+                      - img [ref=e258]
+              - link "World Cup Business Kick-Off Event is June 5th Sign up at ...，由Quentin Gause上传到Instagram上. 在Instagram上播放. 1:22" [ref=e260] [cursor=pointer]:
+                - /url: https://www.instagram.com/reel/DYvRdGRMUKL/
+                - generic [ref=e261]:
+                  - img [ref=e264]
+                  - generic [ref=e268]: 1:22
+          - link "查看所有视频" [ref=e271] [cursor=pointer]:
+            - /url: /search?newwindow=1&sca_esv=c0a979c20fc01ddf&udm=7&q=World+Cup+2026+marketing+sponsorship+news+May+2026&sa=X&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ8ccDKAJ6BAgbEAQ
+            - separator [ref=e272]
+            - generic [ref=e273]:
+              - generic [ref=e274]: 查看全部
+              - img [ref=e276]
+        - generic [ref=e280]:
+          - heading "Web results" [level=2] [ref=e281]
+          - generic [ref=e282]:
+            - generic [ref=e285]:
+              - 'link "2026 FIFA World Cup: How Verizon, TikTok and Home ... Campaign Asia https://www.campaignasia.com › article › 20..." [ref=e287] [cursor=pointer]':
+                - /url: https://www.campaignasia.com/article/2026-fifa-world-cup-how-verizon-tiktok-and-home-depot-are-bringing-fans-pitchside/40r3kqrx8za371rsv5erztmc5q
+                - 'heading "2026 FIFA World Cup: How Verizon, TikTok and Home ..." [level=3] [ref=e288]'
+                - generic [ref=e293]:
+                  - generic [ref=e295]: Campaign Asia
+                  - generic [ref=e297]: https://www.campaignasia.com › article › 20...
+              - generic [ref=e298]:
+                - generic [ref=e299]: ·
+                - link "翻译此页" [ref=e300] [cursor=pointer]:
+                  - /url: https://www.campaignasia.com/article/2026-fifa-world-cup-how-verizon-tiktok-and-home-depot-are-bringing-fans-pitchside/40r3kqrx8za371rsv5erztmc5q
+              - button "关于这条结果的详细信息" [ref=e301] [cursor=pointer]:
+                - img [ref=e304]
+            - generic [ref=e307]:
+              - generic [ref=e308]:
+                - generic [ref=e309]: 8小时前
+                - text: —
+              - generic [ref=e310]:
+                - text: As the World Cup's telecommunication services sponsor,
+                - emphasis [ref=e311]: Verizon
+                - text: was “the only brand that could pull off that level” of pitchside access, Aspiazu says. Brands ...
+        - generic [ref=e315]:
+          - generic [ref=e318]:
+            - link "As we inch closer to the FIFA World Cup kickoff, the brand ... Facebook https://www.facebook.com › Adweek › posts › as-we-in..." [ref=e320] [cursor=pointer]:
+              - /url: https://www.facebook.com/Adweek/posts/as-we-inch-closer-to-the-fifa-world-cup-kickoff-the-brand-partnerships-are-rampi/1299781899008049/
+              - heading "As we inch closer to the FIFA World Cup kickoff, the brand ..." [level=3] [ref=e321]
+              - generic [ref=e326]:
+                - generic [ref=e328]: Facebook
+                - generic [ref=e330]: https://www.facebook.com › Adweek › posts › as-we-in...
+            - button "关于这条结果的详细信息" [ref=e331] [cursor=pointer]:
+              - img [ref=e334]
+          - generic [ref=e338]:
+            - emphasis [ref=e339]: Adidas might be the official sponsor of the World Cup
+            - text: ", but Nike is Sunday's clear winner, analysts said. It sponsors both teams in the final as well as some of ..."
+        - generic [ref=e343]:
+          - generic [ref=e346]:
+            - link "Jermaine Peart | Remember my post last Sunday about ... Instagram https://www.instagram.com › ..." [ref=e348] [cursor=pointer]:
+              - /url: https://www.instagram.com/p/DYuc0vylgv7/
+              - heading "Jermaine Peart | Remember my post last Sunday about ..." [level=3] [ref=e349]
+              - generic [ref=e354]:
+                - generic [ref=e356]: Instagram
+                - generic [ref=e358]: https://www.instagram.com › ...
+            - button "关于这条结果的详细信息" [ref=e359] [cursor=pointer]:
+              - img [ref=e362]
+          - generic [ref=e366]:
+            - text: The
+            - emphasis [ref=e367]: World Cup
+            - text: Will Be Won on TikTok. HERE'S THE GAME PLAN FIFA has named TikTok its first-ever 'Preferred Platform' AXE 26 OFFICIAL
+            - emphasis [ref=e368]: SPONSOR
+            - text: Elemental. In
+            - emphasis [ref=e369]: "2026"
+            - text: ", ..."
+        - generic [ref=e373]:
+          - generic [ref=e376]:
+            - link "Visa and Jason Sudeikis turn FIFA World Cup 2026 ... Australian FinTech https://australianfintech.com.au › Blog" [ref=e378] [cursor=pointer]:
+              - /url: https://australianfintech.com.au/visa-and-jason-sudeikis-turn-fifa-world-cup-2026-sponsorship-into-a-cultural-playbook/
+              - heading "Visa and Jason Sudeikis turn FIFA World Cup 2026 ..." [level=3] [ref=e379]
+              - generic [ref=e384]:
+                - generic [ref=e386]: Australian FinTech
+                - generic [ref=e388]: https://australianfintech.com.au › Blog
+            - generic [ref=e389]:
+              - generic [ref=e390]: ·
+              - link "翻译此页" [ref=e391] [cursor=pointer]:
+                - /url: https://australianfintech.com.au/visa-and-jason-sudeikis-turn-fifa-world-cup-2026-sponsorship-into-a-cultural-playbook/
+            - button "关于这条结果的详细信息" [ref=e392] [cursor=pointer]:
+              - img [ref=e395]
+          - generic [ref=e398]:
+            - generic [ref=e399]: 16小时前 —
+            - generic [ref=e400]:
+              - emphasis [ref=e401]: Jason Sudeikis partners with Visa
+              - text: to help turn one of football's simplest moments into a global cultural invitation ahead of the FIFA World Cup 2026.
+        - generic [ref=e405]:
+          - generic [ref=e408]:
+            - link "Beer Giants Are Making A Massive Zero-Proof Play For ... Yahoo Finance UK https://uk.finance.yahoo.com › news › beer..." [ref=e410] [cursor=pointer]:
+              - /url: https://uk.finance.yahoo.com/news/beer-giants-making-massive-zero-033646157.html
+              - heading "Beer Giants Are Making A Massive Zero-Proof Play For ..." [level=3] [ref=e411]
+              - generic [ref=e416]:
+                - generic [ref=e418]: Yahoo Finance UK
+                - generic [ref=e420]: https://uk.finance.yahoo.com › news › beer...
+            - generic [ref=e421]:
+              - generic [ref=e422]: ·
+              - link "翻译此页" [ref=e423] [cursor=pointer]:
+                - /url: https://uk.finance.yahoo.com/news/beer-giants-making-massive-zero-033646157.html
+            - button "关于这条结果的详细信息" [ref=e424] [cursor=pointer]:
+              - img [ref=e427]
+          - generic [ref=e430]:
+            - generic [ref=e431]:
+              - generic [ref=e432]: 6小时前
+              - text: —
+            - generic [ref=e433]:
+              - emphasis [ref=e434]: Zero-proof beer brands are increasingly directing advertising dollars
+              - text: toward major sports events. Here is American surfer Griffin Colapinto competing in the ...
+        - generic [ref=e438]:
+          - generic [ref=e441]:
+            - link "Home — Complete live coverage of the FIFA World Cup 2026 wcup2026.org https://wcup2026.org › ..." [ref=e443] [cursor=pointer]:
+              - /url: https://wcup2026.org/index.php?lang=en
+              - heading "Home — Complete live coverage of the FIFA World Cup 2026" [level=3] [ref=e444]
+              - generic [ref=e449]:
+                - generic [ref=e451]: wcup2026.org
+                - generic [ref=e453]: https://wcup2026.org › ...
+            - generic [ref=e454]:
+              - generic [ref=e455]: ·
+              - link "翻译此页" [ref=e456] [cursor=pointer]:
+                - /url: https://wcup2026.org/index.php?lang=en
+            - button "关于这条结果的详细信息" [ref=e457] [cursor=pointer]:
+              - img [ref=e460]
+          - generic [ref=e463]:
+            - generic [ref=e464]: 12小时前 —
+            - generic [ref=e465]:
+              - text: Sun,
+              - emphasis [ref=e466]: May
+              - text: 24, 7:35 PM Yahoo Sports Complete guide to
+              - emphasis [ref=e467]: "2026"
+              - text: FIFA
+              - emphasis [ref=e468]: World Cup
+              - text: ": Latest"
+              - emphasis [ref=e469]: news
+              - text: ", soccer schedule, rules, how to watch Yahoo Sports Fri,"
+              - emphasis [ref=e470]: May
+              - text: 22, 1:08 AM ...
+        - generic [ref=e474]:
+          - generic [ref=e477]:
+            - link "New Club+ Sections Advance Goal of Supporting Clubs ... The Sport Information Resource Centre https://sirc.ca › News" [ref=e479] [cursor=pointer]:
+              - /url: https://sirc.ca/news/new-club-sections-advance-goal-of-supporting-clubs-coaches-and-families-across-canada/
+              - heading "New Club+ Sections Advance Goal of Supporting Clubs ..." [level=3] [ref=e480]
+              - generic [ref=e485]:
+                - generic [ref=e487]: The Sport Information Resource Centre
+                - generic [ref=e489]: https://sirc.ca › News
+            - generic [ref=e490]:
+              - generic [ref=e491]: ·
+              - link "翻译此页" [ref=e492] [cursor=pointer]:
+                - /url: https://sirc.ca/news/new-club-sections-advance-goal-of-supporting-clubs-coaches-and-families-across-canada/
+            - button "关于这条结果的详细信息" [ref=e493] [cursor=pointer]:
+              - img [ref=e496]
+          - generic [ref=e499]:
+            - generic [ref=e500]: 14小时前 —
+            - generic [ref=e501]:
+              - text: The
+              - emphasis [ref=e502]: Marketing
+              - text: Toolkit section has also been expanded with new “Our Game Now” resources designed to help clubs build excitement around Canada Soccer's Men's ...
+        - generic [ref=e506]:
+          - generic [ref=e509]:
+            - link "Newcastle's Owners PIF Confirmed as 2026 World Cup Sponsor SB Nation https://cominghomenewcastle.sbnation.com › ..." [ref=e511] [cursor=pointer]:
+              - /url: https://cominghomenewcastle.sbnation.com/newcastle-united-team-news/21768/newcastles-owners-pif-confirmed-as-2026-world-cup-sponsor
+              - heading "Newcastle's Owners PIF Confirmed as 2026 World Cup Sponsor" [level=3] [ref=e512]
+              - generic [ref=e517]:
+                - generic [ref=e519]: SB Nation
+                - generic [ref=e521]: https://cominghomenewcastle.sbnation.com › ...
+            - generic [ref=e522]:
+              - generic [ref=e523]: ·
+              - link "翻译此页" [ref=e524] [cursor=pointer]:
+                - /url: https://cominghomenewcastle.sbnation.com/newcastle-united-team-news/21768/newcastles-owners-pif-confirmed-as-2026-world-cup-sponsor
+            - button "关于这条结果的详细信息" [ref=e525] [cursor=pointer]:
+              - img [ref=e528]
+          - generic [ref=e531]:
+            - generic [ref=e532]: 20小时前 —
+            - generic [ref=e533]:
+              - text: Newcastle United's owner, Saudi Arabia's Public Investment Fund, has officially expanded its presence in
+              - emphasis [ref=e534]: global
+              - text: football after becoming an “official ...
+      - navigation [ref=e537]:
+        - heading "网页导航" [level=1] [ref=e538]
+        - text: "1"
+        - link "Page 2" [ref=e541] [cursor=pointer]:
+          - /url: /search?q=World+Cup+2026+marketing+sponsorship+news+May+2026&newwindow=1&sca_esv=c0a979c20fc01ddf&tbs=qdr:d&ei=TR4UavzKFYTNkPIPxP2jqAE&start=10&sa=N&sstk=AU9db-CgEqxUk3tqBeV7aes_Hoqxn7-foR7h-vgPTUcOlLQC_EQO4mPLR_3E5Z5PLyT9QS8Ka33bsXjqlSDET5gg8UmCVkdTV_fgAw&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ8tMDegQIJRAE
+          - text: "2"
+        - link "Page 3" [ref=e543] [cursor=pointer]:
+          - /url: /search?q=World+Cup+2026+marketing+sponsorship+news+May+2026&newwindow=1&sca_esv=c0a979c20fc01ddf&tbs=qdr:d&ei=TR4UavzKFYTNkPIPxP2jqAE&start=20&sa=N&sstk=AU9db-CgEqxUk3tqBeV7aes_Hoqxn7-foR7h-vgPTUcOlLQC_EQO4mPLR_3E5Z5PLyT9QS8Ka33bsXjqlSDET5gg8UmCVkdTV_fgAw&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ8tMDegQIJRAG
+          - text: "3"
+        - link "Page 4" [ref=e545] [cursor=pointer]:
+          - /url: /search?q=World+Cup+2026+marketing+sponsorship+news+May+2026&newwindow=1&sca_esv=c0a979c20fc01ddf&tbs=qdr:d&ei=TR4UavzKFYTNkPIPxP2jqAE&start=30&sa=N&sstk=AU9db-CgEqxUk3tqBeV7aes_Hoqxn7-foR7h-vgPTUcOlLQC_EQO4mPLR_3E5Z5PLyT9QS8Ka33bsXjqlSDET5gg8UmCVkdTV_fgAw&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ8tMDegQIJRAI
+          - text: "4"
+        - link "Page 5" [ref=e547] [cursor=pointer]:
+          - /url: /search?q=World+Cup+2026+marketing+sponsorship+news+May+2026&newwindow=1&sca_esv=c0a979c20fc01ddf&tbs=qdr:d&ei=TR4UavzKFYTNkPIPxP2jqAE&start=40&sa=N&sstk=AU9db-CgEqxUk3tqBeV7aes_Hoqxn7-foR7h-vgPTUcOlLQC_EQO4mPLR_3E5Z5PLyT9QS8Ka33bsXjqlSDET5gg8UmCVkdTV_fgAw&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ8tMDegQIJRAK
+          - text: "5"
+        - link "Page 6" [ref=e549] [cursor=pointer]:
+          - /url: /search?q=World+Cup+2026+marketing+sponsorship+news+May+2026&newwindow=1&sca_esv=c0a979c20fc01ddf&tbs=qdr:d&ei=TR4UavzKFYTNkPIPxP2jqAE&start=50&sa=N&sstk=AU9db-CgEqxUk3tqBeV7aes_Hoqxn7-foR7h-vgPTUcOlLQC_EQO4mPLR_3E5Z5PLyT9QS8Ka33bsXjqlSDET5gg8UmCVkdTV_fgAw&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ8tMDegQIJRAM
+          - text: "6"
+        - link "Page 7" [ref=e551] [cursor=pointer]:
+          - /url: /search?q=World+Cup+2026+marketing+sponsorship+news+May+2026&newwindow=1&sca_esv=c0a979c20fc01ddf&tbs=qdr:d&ei=TR4UavzKFYTNkPIPxP2jqAE&start=60&sa=N&sstk=AU9db-CgEqxUk3tqBeV7aes_Hoqxn7-foR7h-vgPTUcOlLQC_EQO4mPLR_3E5Z5PLyT9QS8Ka33bsXjqlSDET5gg8UmCVkdTV_fgAw&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ8tMDegQIJRAO
+          - text: "7"
+        - link "Page 8" [ref=e553] [cursor=pointer]:
+          - /url: /search?q=World+Cup+2026+marketing+sponsorship+news+May+2026&newwindow=1&sca_esv=c0a979c20fc01ddf&tbs=qdr:d&ei=TR4UavzKFYTNkPIPxP2jqAE&start=70&sa=N&sstk=AU9db-CgEqxUk3tqBeV7aes_Hoqxn7-foR7h-vgPTUcOlLQC_EQO4mPLR_3E5Z5PLyT9QS8Ka33bsXjqlSDET5gg8UmCVkdTV_fgAw&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ8tMDegQIJRAQ
+          - text: "8"
+        - link "Page 9" [ref=e555] [cursor=pointer]:
+          - /url: /search?q=World+Cup+2026+marketing+sponsorship+news+May+2026&newwindow=1&sca_esv=c0a979c20fc01ddf&tbs=qdr:d&ei=TR4UavzKFYTNkPIPxP2jqAE&start=80&sa=N&sstk=AU9db-CgEqxUk3tqBeV7aes_Hoqxn7-foR7h-vgPTUcOlLQC_EQO4mPLR_3E5Z5PLyT9QS8Ka33bsXjqlSDET5gg8UmCVkdTV_fgAw&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ8tMDegQIJRAS
+          - text: "9"
+        - link "Page 10" [ref=e557] [cursor=pointer]:
+          - /url: /search?q=World+Cup+2026+marketing+sponsorship+news+May+2026&newwindow=1&sca_esv=c0a979c20fc01ddf&tbs=qdr:d&ei=TR4UavzKFYTNkPIPxP2jqAE&start=90&sa=N&sstk=AU9db-CgEqxUk3tqBeV7aes_Hoqxn7-foR7h-vgPTUcOlLQC_EQO4mPLR_3E5Z5PLyT9QS8Ka33bsXjqlSDET5gg8UmCVkdTV_fgAw&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ8tMDegQIJRAU
+          - text: "10"
+        - heading "下一页" [level=2] [ref=e559]:
+          - link "下一页" [ref=e560] [cursor=pointer]:
+            - /url: /search?q=World+Cup+2026+marketing+sponsorship+news+May+2026&newwindow=1&sca_esv=c0a979c20fc01ddf&tbs=qdr:d&ei=TR4UavzKFYTNkPIPxP2jqAE&start=10&sa=N&sstk=AU9db-CgEqxUk3tqBeV7aes_Hoqxn7-foR7h-vgPTUcOlLQC_EQO4mPLR_3E5Z5PLyT9QS8Ka33bsXjqlSDET5gg8UmCVkdTV_fgAw&ved=2ahUKEwi8pf_al9SUAxWEJkQIHcT-CBUQ8NMDegQIJRAW
+            - generic [ref=e562]: 下一页
+      - navigation
+    - contentinfo [ref=e563]:
+      - heading "页脚链接" [level=1] [ref=e564]
+      - generic [ref=e568]:
+        - generic [ref=e572]:
+          - button "浦东新区 中国上海市 - 是根据您的 IP 地址推断出来的" [ref=e574] [cursor=pointer]:
+            - generic [ref=e575]: 浦东新区 中国上海市
+            - generic [ref=e577]:
+              - text: "-"
+              - generic [ref=e578]: 是根据您的 IP 地址推断出来的
+          - text: "-"
+          - button "更新位置信息" [ref=e580] [cursor=pointer]: 更新位置信息
+        - generic [ref=e583]:
+          - link "帮助" [ref=e584] [cursor=pointer]:
+            - /url: https://support.google.com/websearch/?p=ws_results_help&hl=zh-CN&fg=1
+          - link "发送反馈" [ref=e585] [cursor=pointer]:
+            - /url: "#"
+          - link "隐私权" [ref=e586] [cursor=pointer]:
+            - /url: https://policies.google.com/privacy?hl=zh-CN&fg=1
+          - link "条款" [ref=e587] [cursor=pointer]:
+            - /url: https://policies.google.com/terms?hl=zh-CN&fg=1

@@ -1,0 +1,253 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link "Google 新闻" [ref=e7] [cursor=pointer]:
+        - /url: ./?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+        - generic [ref=e9]: 新闻
+      - generic [ref=e10]:
+        - search [ref=e12]:
+          - combobox "搜索主题、地点和媒体" [ref=e19]: 世界杯 营销 赞助 品牌 创意
+          - button "高级搜索" [ref=e20] [cursor=pointer]:
+            - generic [ref=e21]:
+              - generic "高级搜索" [ref=e22]:
+                - img [ref=e23]
+              - tooltip [ref=e25]: 高级搜索
+          - button "清除搜索内容" [ref=e26] [cursor=pointer]:
+            - img [ref=e27]
+          - button "搜索" [ref=e30] [cursor=pointer]:
+            - img [ref=e31]
+        - generic [ref=e34]:
+          - generic [ref=e39]:
+            - button "帮助" [ref=e40] [cursor=pointer]:
+              - img [ref=e42]
+            - tooltip [ref=e44]: 帮助
+          - generic [ref=e49]:
+            - button "设置" [ref=e50] [cursor=pointer]:
+              - img [ref=e52]
+            - tooltip [ref=e55]: 设置
+      - generic [ref=e57]:
+        - button "Google 应用" [ref=e61] [cursor=pointer]:
+          - img [ref=e62]
+        - button "Google 账号： 谷如洋 (guruyang77@gmail.com)" [ref=e67] [cursor=pointer]:
+          - img [ref=e69]
+    - navigation [ref=e72]:
+      - tablist [ref=e73]:
+        - tab "首页" [ref=e74] [cursor=pointer]:
+          - tab "首页" [ref=e75]
+        - tab "为您推荐" [ref=e76] [cursor=pointer]:
+          - tab "为您推荐" [ref=e77]
+        - tab "已关注" [ref=e78] [cursor=pointer]:
+          - tab "已关注" [ref=e79]
+        - tab "中国" [ref=e82] [cursor=pointer]:
+          - tab "中国" [ref=e83]
+        - tab "全球" [ref=e84] [cursor=pointer]:
+          - tab "全球" [ref=e85]
+        - tab "当地" [ref=e86] [cursor=pointer]:
+          - tab "当地" [ref=e87]
+        - tab "商业" [ref=e88] [cursor=pointer]:
+          - tab "商业" [ref=e89]
+        - tab "娱乐" [ref=e90] [cursor=pointer]:
+          - tab "娱乐" [ref=e91]
+        - tab "体育" [ref=e92] [cursor=pointer]:
+          - tab "体育" [ref=e93]
+  - main [ref=e97]:
+    - generic [ref=e99]:
+      - generic [ref=e102]:
+        - generic [ref=e103]:
+          - link [ref=e105] [cursor=pointer]:
+            - /url: ./read/CBMiUEFVX3lxTFBjSW9nNkdfNXlKcnVDbHZxSTFfLXFpcExBdm9HdTVrLVg4NVFIeng3YWx1cU1peVQxd0FFSjZzTFNUSVc0NXZIZVNHaHROVlBV?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+          - generic [ref=e107]:
+            - generic [ref=e108]:
+              - generic [ref=e111]: 凤凰网财经
+              - generic [ref=e115]:
+                - generic:
+                  - button "展开 - 梅西+哈兰德联袂登场！百威助阵2026年国际足联世界杯™： 每一杯，你我都在" [ref=e116] [cursor=pointer]:
+                    - img [ref=e118]
+                  - tooltip [ref=e120]: 展开
+            - link "梅西+哈兰德联袂登场！百威助阵2026年国际足联世界杯™： 每一杯，你我都在 - 凤凰网财经 - 2 天前" [ref=e121] [cursor=pointer]:
+              - /url: ./read/CBMiUEFVX3lxTFBjSW9nNkdfNXlKcnVDbHZxSTFfLXFpcExBdm9HdTVrLVg4NVFIeng3YWx1cU1peVQxd0FFSjZzTFNUSVc0NXZIZVNHaHROVlBV?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+              - text: 梅西+哈兰德联袂登场！百威助阵2026年国际足联世界杯™： 每一杯，你我都在
+          - figure [ref=e122]
+        - time [ref=e124]: 2 天前
+      - generic [ref=e125]:
+        - separator [ref=e127]
+        - generic [ref=e129]:
+          - generic [ref=e130]:
+            - link [ref=e132] [cursor=pointer]:
+              - /url: ./read/CBMiTkFVX3lxTE9ibVhPVGdYVC1DTEVVUk5MZWpxR1RMaUZlLUxHRGZFd1BmdXkzY0ZNZGF1VlNWQjF6UjVENzVSc3JUNnM5enhUN3JwS1h5UQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e134]:
+              - generic [ref=e135]:
+                - generic [ref=e138]: 36Kr
+                - generic [ref=e142]:
+                  - generic:
+                    - button "展开 - 2026体育营销特辑：世界杯营销七十年，谁在定义世界杯？" [ref=e143] [cursor=pointer]:
+                      - img [ref=e145]
+                    - tooltip [ref=e147]: 展开
+              - link "2026体育营销特辑：世界杯营销七十年，谁在定义世界杯？ - 36Kr - 4月27日" [ref=e148] [cursor=pointer]:
+                - /url: ./read/CBMiTkFVX3lxTE9ibVhPVGdYVC1DTEVVUk5MZWpxR1RMaUZlLUxHRGZFd1BmdXkzY0ZNZGF1VlNWQjF6UjVENzVSc3JUNnM5enhUN3JwS1h5UQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2026体育营销特辑：世界杯营销七十年，谁在定义世界杯？
+            - figure [ref=e149]
+          - time [ref=e151]: 4月27日
+      - generic [ref=e152]:
+        - separator [ref=e154]
+        - generic [ref=e156]:
+          - generic [ref=e157]:
+            - link [ref=e159] [cursor=pointer]:
+              - /url: ./read/CBMifkFVX3lxTE1nMFVJTldFUXpJV2pnZkV1Y2ZNcVlOU3p5eUg4U3hHaEZSMXJ0VU1PeWFrajlzVm5CQlE4OTd2NEhoM3M0Q3RBc3JmcWdIVnhfQTgxNVdIMFhoUEdQOWNYMDE0dHNkU3J4YkhTVjFRdDFibGNkaUxJbGRxdTlEUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e161]:
+              - generic [ref=e162]:
+                - generic [ref=e165]: 新浪财经
+                - generic [ref=e169]:
+                  - generic:
+                    - button "展开 - 深度解析：世界杯中国赞助商的巨额投入会打水漂吗？" [ref=e170] [cursor=pointer]:
+                      - img [ref=e172]
+                    - tooltip [ref=e174]: 展开
+              - link "深度解析：世界杯中国赞助商的巨额投入会打水漂吗？ - 新浪财经 - 11 天前" [ref=e175] [cursor=pointer]:
+                - /url: ./read/CBMifkFVX3lxTE1nMFVJTldFUXpJV2pnZkV1Y2ZNcVlOU3p5eUg4U3hHaEZSMXJ0VU1PeWFrajlzVm5CQlE4OTd2NEhoM3M0Q3RBc3JmcWdIVnhfQTgxNVdIMFhoUEdQOWNYMDE0dHNkU3J4YkhTVjFRdDFibGNkaUxJbGRxdTlEUQ?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 深度解析：世界杯中国赞助商的巨额投入会打水漂吗？
+          - time [ref=e177]: 11 天前
+      - generic [ref=e178]:
+        - separator [ref=e180]
+        - generic [ref=e182]:
+          - generic [ref=e183]:
+            - link [ref=e185] [cursor=pointer]:
+              - /url: ./read/CBMiTkFVX3lxTFB3VTBOaWlqWDlweTdrVjBWcWllRXgtcGlqUDJhYnFKY19JczZ4MGI5Z0NWNXBERk9YeExSTWRuTGl3eFotT09aa2VFNlZNdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e187]:
+              - generic [ref=e188]:
+                - generic [ref=e191]: 富途牛牛
+                - generic [ref=e195]:
+                  - generic:
+                    - button "展开 - 央视“放弃”世界杯，那些天价赞助的品牌怎么办？" [ref=e196] [cursor=pointer]:
+                      - img [ref=e198]
+                    - tooltip [ref=e200]: 展开
+              - link "央视“放弃”世界杯，那些天价赞助的品牌怎么办？ - 富途牛牛 - 9 天前" [ref=e201] [cursor=pointer]:
+                - /url: ./read/CBMiTkFVX3lxTFB3VTBOaWlqWDlweTdrVjBWcWllRXgtcGlqUDJhYnFKY19JczZ4MGI5Z0NWNXBERk9YeExSTWRuTGl3eFotT09aa2VFNlZNdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 央视“放弃”世界杯，那些天价赞助的品牌怎么办？
+            - figure [ref=e202]
+          - time [ref=e204]: 9 天前
+      - generic [ref=e205]:
+        - separator [ref=e207]
+        - generic [ref=e209]:
+          - generic [ref=e210]:
+            - link [ref=e212] [cursor=pointer]:
+              - /url: ./read/CBMiVkFVX3lxTE9sWlZtc0FIcHBhZGE3N0FUelJVYXhqTHgyMTFMSTdBZzhPWFRwNmdpV2p0cUxtbWtiQm5JcFlRT3JvX2ZYUW40ZUI3bUxtZFdad0pFNU93?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e214]:
+              - generic [ref=e215]:
+                - generic [ref=e218]: 腾讯新闻
+                - generic [ref=e222]:
+                  - generic:
+                    - button "展开 - 央视转播权博弈背后：世界杯仍是超级IP 稀缺属性注定只会越来越贵-腾讯新闻" [ref=e223] [cursor=pointer]:
+                      - img [ref=e225]
+                    - tooltip [ref=e227]: 展开
+              - link "央视转播权博弈背后：世界杯仍是超级IP 稀缺属性注定只会越来越贵-腾讯新闻 - 腾讯新闻 - 12 天前" [ref=e228] [cursor=pointer]:
+                - /url: ./read/CBMiVkFVX3lxTE9sWlZtc0FIcHBhZGE3N0FUelJVYXhqTHgyMTFMSTdBZzhPWFRwNmdpV2p0cUxtbWtiQm5JcFlRT3JvX2ZYUW40ZUI3bUxtZFdad0pFNU93?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 央视转播权博弈背后：世界杯仍是超级IP 稀缺属性注定只会越来越贵-腾讯新闻
+            - figure [ref=e229]
+          - time [ref=e231]: 12 天前
+      - generic [ref=e232]:
+        - separator [ref=e234]
+        - generic [ref=e236]:
+          - generic [ref=e237]:
+            - link [ref=e239] [cursor=pointer]:
+              - /url: ./read/CBMirgFBVV95cUxPQ0tRYk5udjcycTNFNWR3aWVHNDhZQ0NWYTNPU3JnNkJqSmRNWE85cmFaSDQ4bWZkUVdpdVRpaU1LS3o2TWhSdXlWM3dxUGlZMmdtWHdMbThtS05fQ0dGcFBzMEVtM1Q3cTN6b0VJMlI1anZoMDRWZERoS2VQQ3pzUU1HNE1BZHlIR3VCV2dUR0kxSG5VUjdMSUpiTkVLcWIxTHcyVmEyeVBkTDZjQmc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e241]:
+              - generic [ref=e242]:
+                - generic [ref=e245]: Kantar
+                - generic [ref=e249]:
+                  - generic:
+                    - button "展开 - 卡塔尔世界杯大盘点：所谓营销开了挂，不过是品牌真的懂人心" [ref=e250] [cursor=pointer]:
+                      - img [ref=e252]
+                    - tooltip [ref=e254]: 展开
+              - link "卡塔尔世界杯大盘点：所谓营销开了挂，不过是品牌真的懂人心 - Kantar - 2023年1月4日" [ref=e255] [cursor=pointer]:
+                - /url: ./read/CBMirgFBVV95cUxPQ0tRYk5udjcycTNFNWR3aWVHNDhZQ0NWYTNPU3JnNkJqSmRNWE85cmFaSDQ4bWZkUVdpdVRpaU1LS3o2TWhSdXlWM3dxUGlZMmdtWHdMbThtS05fQ0dGcFBzMEVtM1Q3cTN6b0VJMlI1anZoMDRWZERoS2VQQ3pzUU1HNE1BZHlIR3VCV2dUR0kxSG5VUjdMSUpiTkVLcWIxTHcyVmEyeVBkTDZjQmc?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 卡塔尔世界杯大盘点：所谓营销开了挂，不过是品牌真的懂人心
+            - figure [ref=e256]
+          - time [ref=e258]: 2023年1月4日
+      - generic [ref=e259]:
+        - separator [ref=e261]
+        - generic [ref=e263]:
+          - generic [ref=e264]:
+            - link [ref=e266] [cursor=pointer]:
+              - /url: ./read/CBMifEFVX3lxTE90SGhiaWNuV21weGFLQ1liVGZIOUlfbFFuYjd3eEMzQ3djcEFZeDc0OHQ0UWpEM0RJcUlkamFhckdDM1lobVNMNnI1TnItM0RxZ3hhTmJEZzgxYVd5UXdfN1NFalpLNW1tby1QQ3h6VElEeXNySUMxZlNQUjI?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e268]:
+              - generic [ref=e269]:
+                - generic [ref=e272]: 中国日报网
+                - generic [ref=e276]:
+                  - generic:
+                    - button "展开 - 海信电视世界杯出圈姿势盘点：多维营销策略击穿用户心智" [ref=e277] [cursor=pointer]:
+                      - img [ref=e279]
+                    - tooltip [ref=e281]: 展开
+              - link "海信电视世界杯出圈姿势盘点：多维营销策略击穿用户心智 - 中国日报网 - 2022年12月21日" [ref=e282] [cursor=pointer]:
+                - /url: ./read/CBMifEFVX3lxTE90SGhiaWNuV21weGFLQ1liVGZIOUlfbFFuYjd3eEMzQ3djcEFZeDc0OHQ0UWpEM0RJcUlkamFhckdDM1lobVNMNnI1TnItM0RxZ3hhTmJEZzgxYVd5UXdfN1NFalpLNW1tby1QQ3h6VElEeXNySUMxZlNQUjI?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 海信电视世界杯出圈姿势盘点：多维营销策略击穿用户心智
+            - figure [ref=e283]
+          - time [ref=e285]: 2022年12月21日
+      - generic [ref=e286]:
+        - separator [ref=e288]
+        - generic [ref=e290]:
+          - generic [ref=e291]:
+            - link [ref=e293] [cursor=pointer]:
+              - /url: ./read/CBMiVEFVX3lxTE1UdWw1RlVaRnVxUzhMYTVDTUs5d0pfVEN4YUpKZFZUOXJjekp3V2ZrSjhJVjNfdnd0SUxyODNULUladkZ6eDlSRFdGUUcyXzNMcGljQg?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e295]:
+              - generic [ref=e296]:
+                - generic [ref=e299]: CBNData-第一财经商业数据中心
+                - generic [ref=e303]:
+                  - generic:
+                    - button "展开 - 这届世界杯，有哪些消费趋势和氪金品牌玩家？" [ref=e304] [cursor=pointer]:
+                      - img [ref=e306]
+                    - tooltip [ref=e308]: 展开
+              - link "这届世界杯，有哪些消费趋势和氪金品牌玩家？ - CBNData-第一财经商业数据中心 - 2022年11月24日" [ref=e309] [cursor=pointer]:
+                - /url: ./read/CBMiVEFVX3lxTE1UdWw1RlVaRnVxUzhMYTVDTUs5d0pfVEN4YUpKZFZUOXJjekp3V2ZrSjhJVjNfdnd0SUxyODNULUladkZ6eDlSRFdGUUcyXzNMcGljQg?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 这届世界杯，有哪些消费趋势和氪金品牌玩家？
+            - figure [ref=e310]
+          - time [ref=e312]: 2022年11月24日
+      - generic [ref=e313]:
+        - separator [ref=e315]
+        - generic [ref=e317]:
+          - generic [ref=e318]:
+            - link [ref=e320] [cursor=pointer]:
+              - /url: ./read/CBMiYEFVX3lxTE5vY25EZUZ5cGV4aEVrLVozV3FjVnJTYWlWTXdvTG5yYzRlRTM2TzNqemktQmNuelZjMWw0ZGhmUTh2S3RSZUxfdGotNkdma3Znb1FuVU9FZGwwcmM5MkpSaw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e322]:
+              - generic [ref=e323]:
+                - generic [ref=e326]: thepaper.cn
+                - generic [ref=e330]:
+                  - generic:
+                    - button "展开 - 2022世界杯，品牌如何做营销？" [ref=e331] [cursor=pointer]:
+                      - img [ref=e333]
+                    - tooltip [ref=e335]: 展开
+              - link "2022世界杯，品牌如何做营销？ - thepaper.cn - 2022年11月29日" [ref=e336] [cursor=pointer]:
+                - /url: ./read/CBMiYEFVX3lxTE5vY25EZUZ5cGV4aEVrLVozV3FjVnJTYWlWTXdvTG5yYzRlRTM2TzNqemktQmNuelZjMWw0ZGhmUTh2S3RSZUxfdGotNkdma3Znb1FuVU9FZGwwcmM5MkpSaw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 2022世界杯，品牌如何做营销？
+            - figure [ref=e337]
+          - time [ref=e339]: 2022年11月29日
+      - generic [ref=e340]:
+        - separator [ref=e342]
+        - generic [ref=e344]:
+          - generic [ref=e345]:
+            - link [ref=e347] [cursor=pointer]:
+              - /url: ./read/CBMiTkFVX3lxTFBBdU9wOEhia1JudkdhOHY2VEhuUHVvVWNLMUk3azZOTjlyZjhVYjBxb0RlZmVWMTZGN0FCeFNQaVhEaDBOYzl4bDFVYmZvdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+            - generic [ref=e349]:
+              - generic [ref=e350]:
+                - generic [ref=e353]: 36Kr
+                - generic [ref=e357]:
+                  - generic:
+                    - button "展开 - 世界杯食品品牌营销：绿茵场上不只有翻滚的足球，还有品牌破圈的生意经" [ref=e358] [cursor=pointer]:
+                      - img [ref=e360]
+                    - tooltip [ref=e362]: 展开
+              - link "世界杯食品品牌营销：绿茵场上不只有翻滚的足球，还有品牌破圈的生意经 - 36Kr - 2022年11月27日" [ref=e363] [cursor=pointer]:
+                - /url: ./read/CBMiTkFVX3lxTFBBdU9wOEhia1JudkdhOHY2VEhuUHVvVWNLMUk3azZOTjlyZjhVYjBxb0RlZmVWMTZGN0FCeFNQaVhEaDBOYzl4bDFVYmZvdw?hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans
+                - text: 世界杯食品品牌营销：绿茵场上不只有翻滚的足球，还有品牌破圈的生意经
+            - figure [ref=e364]
+          - time [ref=e366]: 2022年11月27日
+      - progressbar [ref=e370]:
+        - img [ref=e372]
+    - complementary [ref=e375]:
+      - generic [ref=e377]:
+        - generic [ref=e380]:
+          - heading "世界杯 营销 赞助 品牌 创意" [level=2] [ref=e381]
+          - generic [ref=e382]: 搜索结果
+        - generic [ref=e385]:
+          - button "保存此搜索条目 - 世界杯 营销 赞助 品牌 创意" [ref=e387]:
+            - img [ref=e391]
+            - generic [ref=e393]: 保存
+          - tooltip [ref=e394]: 保存此搜索条目

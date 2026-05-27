@@ -1,0 +1,159 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e4]:
+    - list [ref=e6]:
+      - listitem [ref=e7]:
+        - link "央视网首页" [ref=e8] [cursor=pointer]:
+          - /url: https://www.cctv.com/
+      - listitem [ref=e9]:
+        - link "新闻" [ref=e10] [cursor=pointer]:
+          - /url: https://news.cctv.com/
+      - listitem [ref=e11]:
+        - link "视频" [ref=e12] [cursor=pointer]:
+          - /url: https://v.cctv.com
+      - listitem [ref=e13]:
+        - link "经济" [ref=e14] [cursor=pointer]:
+          - /url: https://jingji.cctv.com/
+      - listitem [ref=e15]:
+        - link "体育" [ref=e16] [cursor=pointer]:
+          - /url: https://sports.cctv.com/
+      - listitem [ref=e17]:
+        - link "军事" [ref=e18] [cursor=pointer]:
+          - /url: https://military.cctv.com/index.shtml
+      - listitem [ref=e19]: 更多
+      - listitem [ref=e21]:
+        - link "节目官网" [ref=e22] [cursor=pointer]:
+          - /url: https://tv.cctv.com/
+          - text: 节目官网
+      - listitem [ref=e23]:
+        - link "直播" [ref=e24] [cursor=pointer]:
+          - /url: https://tv.cctv.com/live/
+      - listitem [ref=e25]:
+        - link "栏目" [ref=e26] [cursor=pointer]:
+          - /url: https://tv.cctv.com/lm/
+      - listitem [ref=e27]: 频道大全
+    - generic [ref=e29]:
+      - list [ref=e30]:
+        - listitem [ref=e31]
+        - listitem [ref=e32]:
+          - link "帮助" [ref=e33] [cursor=pointer]:
+            - /url: https://help.cctv.com/
+        - listitem [ref=e34]
+        - listitem [ref=e35]:
+          - link "应用" [ref=e36] [cursor=pointer]:
+            - /url: javascript:;
+      - generic [ref=e39] [cursor=pointer]: 登录
+  - generic [ref=e40]:
+    - link:
+      - /url: http://www.cctv.com/
+      - img [ref=e41] [cursor=pointer]
+  - paragraph [ref=e44]:
+    - link "央视网" [ref=e45] [cursor=pointer]:
+      - /url: http://www.cntv.cn
+    - text: ">"
+    - link "广告频道" [ref=e46] [cursor=pointer]:
+      - /url: https://1118.cctv.com/
+    - text: ">"
+    - link "特别关注" [ref=e47] [cursor=pointer]:
+      - /url: https://1118.cctv.com/tbgz/
+  - generic [ref=e48]:
+    - generic [ref=e49]:
+      - heading "决胜绿茵之巅！中央广播电视总台发布2026世界杯融媒体传播服务方案" [level=1] [ref=e50]
+      - heading [level=1] [ref=e51]
+      - paragraph [ref=e52]:
+        - text: "发布时间: 2026年05月19日 10:29 | 来源： 中央广电总台总经理室 |"
+        - link "手机看新闻" [ref=e53] [cursor=pointer]:
+          - /url: //news.cntv.cn/mobile/index.shtml
+    - generic [ref=e54]:
+      - generic [ref=e55]:
+        - paragraph [ref=e56]
+        - paragraph [ref=e57]: 5月17日，中央广播电视总台2026世界杯融媒体传播服务方案发布会在京举行。中央广播电视总台副台长余俊生出席活动，并与总台总经理室党委书记任学安，总台体育青少节目中心党委书记吕逸涛，总台视听新媒体中心主任钱蔚，总台技术局局长刘朝晖，总台新闻新媒体中心副召集人唐怡，蒙牛集团首席增长官赵兴继，海信集团副总裁朱书琴，球迷代表杨涵静共同启动总台2026 世界杯转播报道计划。
+        - paragraph [ref=e58]
+        - paragraph [ref=e59]: 国际足联秘书长马蒂亚斯·格拉夫斯特伦通过视频为活动致辞，他表示，中国市场在世界足坛占据着举足轻重的地位，十分荣幸能与中央广播电视总台携手，将世界杯赛事带给中国民众。中央广播电视总台的赛事转播技术处于行业前沿，能够完美传递足球赛事带来的热血与情怀。我们期盼深度协作，将首届48支球队参赛的世界杯推向全新高度。
+        - paragraph [ref=e60]: 吕逸涛现场致辞表示，几十年来，一代又一代中国球迷通过总台转播见证足球荣光，构筑起世界杯在中国扎根生长的情感根基。上两届世界杯期间，总台全媒体传播触达超过608亿人次。即将到来的美加墨世界杯，总台CCTV5将全程直播92场精彩对决，CCTV5+同步并机播出小组赛末轮12场关键赛事，奥林匹克频道、央视频、央视体育、央视新闻客户端全天候联动跟进，构建起大屏小屏全覆盖、全场景的立体传播矩阵。总台将倾力打造全时段、多形态的融媒体内容矩阵，满足受众沉浸式、全方位的观赛体验。同时将深度运用人工智能技术，打破观赛边界、重塑体验格局。以“主场”的底气、“共生”的聚气、“破界”的锐气开拓价值蓝海。
+        - paragraph [ref=e61]
+        - paragraph [ref=e62]: 发布会现场，总台体育青少节目中心、视听新媒体中心、新闻新媒体中心等团队推介了精彩纷呈的融媒体节目。
+        - paragraph [ref=e63]: 体育青少节目中心将重磅推出世界杯赛事综合报道和赛事转播的直播类节目《我爱世界杯》，以多维度实景报道带来沉浸式观赛体验；王牌节目《豪门盛宴》以专业深度为根基，为球迷量身打造世界杯“第二现场”；《欢乐世界杯》联动全国多座特色城市，把世界杯直播间搬进城市地标。央视体育客户端将推出两档全新节目，以女性视角传递观赛态度的《闺蜜的世界杯》，以及联合央视频共同推出的《超级世界杯》，深度绑定赛事节点与品牌场景。
+        - paragraph [ref=e64]
+        - paragraph [ref=e65]: △总台主持人邵圣懿、宋雪莹发布2026年世界杯赛事报道规划，并推介《我爱世界杯》《豪门盛宴》《欢乐世界杯》《超级世界杯》《闺蜜的世界杯》和新媒体产品
+        - paragraph [ref=e66]: 总台解说天团现场亮相，贺炜、孙思辰、刘嘉远、牛银昊、朱晓雨、李晨明围绕“我爱世界杯”进行主题分享，将以各自的经历与热爱，在2026世界杯赛场为观众带来精彩的看球聊球体验，共赴这场承载热爱与情怀的足球盛会。
+        - paragraph [ref=e67]
+        - paragraph [ref=e68]: 央视频将推出“1+N+N”视听服务，“1”是为官方赞助商精心打造的“中心岛”，第一个“N”是为其他企业打造的专属品牌群岛，第二个“N”是针对各地文旅品牌打造的“定制专属第二现场”。现场推介了《“范”点到了》《聊球局》《冰冰的扫盲日记》《超级竞猜王》《绿茵荣耀夜》《48强12味》《世界品，中国牌》等多元节目。
+        - paragraph [ref=e69]
+        - paragraph [ref=e70]: △总台视听新媒体中心副召集人陈旻、总台主持人白岩松、总台记者王冰冰、前中国国家足球队队长范志毅共同发布央视频2026美加墨世界杯融媒体产品
+        - paragraph [ref=e71]: 央视新闻将推出多档世界杯节目。《燃动绿茵》聚焦赛事经济与中国制造，联动合作城市点燃“观赛消费季”；《行走美加墨》解码多元文化，讲述镜头之外的足球故事；《AI看世界杯》引入多种AI数据分析模型，提供专业预测与观赛指南；《主播说球》以轻松鲜活的方式解读赛事热点、球星故事，用脱口秀花式打开世界杯。
+        - paragraph
+        - paragraph [ref=e72]: △总台主持人朱广权，前中国男足主力球员徐云龙、杨晨，北京大学体教融合研究院执行副院长何文义、义乌聚动乐体文化科技有限公司总经理骆添乐共同推介《燃动绿茵》《行走美加墨》《AI 看世界杯》《主播说球》节目
+        - paragraph [ref=e73]: 任学安介绍了总台2026年美加墨世界杯营销服务方案。方案有8大创新亮点：一是激活场地资源价值，让官方赞助商身份更加耀眼；二是聚焦赛事关键位置，打造传播价值制高点；三是融入赛事内容，让硬广更硬；四是阶梯化设计，充分释放本届世界杯赛制价值；五是网罗赛事全域热点，用全新视角聚合独家影像；六是为AI智能体创造世界杯机会，赋能科技品牌突围；七是资源模块化，产品个性化；八是奖励方案，送出价值倍增大礼包。在8大亮点基础上形成了涵盖权益激活、沉浸赛场、数智赛事、全域热点、玩转世界杯五大系列产品，精准匹配企业传播需求，为企业提供专业化、定制化、精细化的一站式赛事营销服务。
+        - paragraph [ref=e74]
+        - paragraph [ref=e75]: 活动现场，蒙牛与海信两大2026年世界杯官方赞助商代表进行互动分享。蒙牛以2018 世界杯少年队球员成长故事讲解品牌初心，阐释蒙牛和世界杯的品牌故事。海信回顾深耕国际顶级赛事十周年历程，依托总台专业赛事转播，用一块屏幕拉近亿万球迷与赛场距离。
+        - paragraph [ref=e76]
+        - paragraph [ref=e77]: △蒙牛集团首席增长官赵兴继、海信集团副总裁朱书琴现场分享
+        - paragraph [ref=e78]
+        - paragraph [ref=e79]: △总台主持人白岩松、鲁健，与贵州“村超”少年球员代表围绕“足球的热爱、自信和梦想”，与江苏“苏超”球迷代表围绕“全民足球文化，中国足球产业的世界影响力”进行主题分享
+        - paragraph [ref=e80]: 总台相关部门负责同志，咪咕、拼多多、赛力斯、五粮液、华润怡宝、哔哩哔哩、联想集团、吉利控股集团、安利（中国）、快手、赛轮、抖音集团、美团、东鹏饮料、小红书、百威啤酒、追觅、BOSS 直聘、青岛啤酒、阿里巴巴、华为、完美世界、汾酒、小米、优酷、携程、泡泡玛特、微博等百余家企业代表以及总台4A、3A 广告代理公司负责人共300余人出席活动。
+        - paragraph [ref=e81]: 央视新闻、央视频、央视网、央视财经、央视体育新媒体对活动进行现场直播。
+        - paragraph [ref=e82]
+      - generic [ref=e84]:
+        - generic [ref=e85]: 编辑：韩春惠
+        - text: 【
+        - link "打印" [ref=e86] [cursor=pointer]:
+          - /url: "#"
+        - text: 】【
+        - link "我要纠错" [ref=e87] [cursor=pointer]:
+          - /url: https://help.cctv.com/2020/03/11/ARTIXJZlvxICHDajCmmS37qD200311.shtml
+        - text: 】【
+        - link "复制链接" [ref=e88] [cursor=pointer]:
+          - /url: Javascript:copyTextToClipboard('决胜绿茵之巅！中央广播电视总台发布2026世界杯融媒体传播服务方案https://1118.cctv.com/2026/05/19/ARTIcCLAOaOwHU6zgnnnhZZm260519.shtml');
+        - text: 】
+      - generic [ref=e89]:
+        - generic:
+          - generic:
+            - link "新浪微博" [ref=e90] [cursor=pointer]:
+              - /url: javascript:;
+            - link "qq" [ref=e91] [cursor=pointer]:
+              - /url: javascript:;
+            - link "微信" [ref=e92] [cursor=pointer]:
+              - /url: javascript:;
+            - link "QQ空间" [ref=e93] [cursor=pointer]:
+              - /url: javascript:;
+  - generic [ref=e98]:
+    - generic [ref=e99]:
+      - link "中央电视台网站" [ref=e100] [cursor=pointer]:
+        - /url: http://www.cctv.cn/
+      - text: "|"
+      - link "关于CCTV.com" [ref=e101] [cursor=pointer]:
+        - /url: https://www.cctv.com/special/guanyunew/PAGE1381886879510187/index.shtml
+      - text: "|"
+      - link "人才招聘" [ref=e102] [cursor=pointer]:
+        - /url: http://career.cntv.cn/
+      - text: "|"
+      - link "网站声明" [ref=e103] [cursor=pointer]:
+        - /url: https://www.cctv.com/special/guanyunew/PAGE13818868795101878/index.shtml
+      - text: "|"
+      - link "法律顾问" [ref=e104] [cursor=pointer]:
+        - /url: https://www.cctv.com/special/guanyunew/PAGE13818868795101879/index.shtml
+      - text: "|"
+      - link "总台总经理室" [ref=e105] [cursor=pointer]:
+        - /url: https://1118.cctv.com/chinese/index.shtml
+      - text: "|"
+      - link "帮助中心" [ref=e106] [cursor=pointer]:
+        - /url: https://help.cctv.com
+    - generic [ref=e107]:
+      - paragraph [ref=e108]:
+        - text: 中央广播电视总台 央视网 版权所有
+        - link "违法和不良信息举报" [ref=e109] [cursor=pointer]:
+          - /url: https://www.12377.cn/
+        - link "京ICP证060535号" [ref=e110] [cursor=pointer]:
+          - /url: https://beian.miit.gov.cn/
+        - link "京公网安备 11000002000018号" [ref=e111] [cursor=pointer]:
+          - /url: http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=11000002000018
+          - img [ref=e112]
+          - text: 京公网安备 11000002000018号
+        - text: 京网文[2014]0383-083号
+        - text: 网上传播视听节目许可证号 0102002 新出网证（京）字098号
+      - link [ref=e114]:
+        - /url: javascript:;
+        - img [ref=e115]
+      - link [ref=e117]:
+        - /url: javascript:;
+        - img [ref=e118]

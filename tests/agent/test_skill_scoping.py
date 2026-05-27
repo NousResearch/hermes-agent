@@ -11,12 +11,14 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from agent.skill_utils import extract_skill_agents, get_agent_profile_skills
 from agent.prompt_builder import _skill_matches_agent, build_skills_system_prompt
+from agent.system_prompt import build_system_prompt_parts
 
 
 # =============================================================================
@@ -393,3 +395,43 @@ class TestHermesWhitelist:
         prompt = self._build_with_mocks(skills_tree, agent_id=agent_id, profile_skills=profile_skills)
         count = self._count_skills(prompt)
         assert count >= min_count, f"agent_id={agent_id}: expected >= {min_count} skills, got {count}"
+
+
+class TestRuntimeSkillScope:
+    """Runtime prompt assembly passes managed subagent scope into skills prompt."""
+
+    def test_system_prompt_passes_subagent_skill_scope(self):
+        captured = {}
+
+        def fake_build_skills_system_prompt(**kwargs):
+            captured.update(kwargs)
+            return "SCOPED SKILLS PROMPT"
+
+        agent = SimpleNamespace(
+            load_soul_identity=False,
+            skip_context_files=True,
+            valid_tool_names={"skills_list"},
+            _tool_use_enforcement=False,
+            model="deepseek-v4-pro",
+            provider="deepseek",
+            platform=None,
+            _memory_store=None,
+            _memory_manager=None,
+            pass_session_id=False,
+            session_id="sess-test",
+            _skill_scope_agent_id="deepseek-tui",
+        )
+
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.get_toolset_for_tool", return_value="skills"),
+            patch("run_agent.build_skills_system_prompt", side_effect=fake_build_skills_system_prompt),
+            patch("run_agent.build_environment_hints", return_value=""),
+        ):
+            parts = build_system_prompt_parts(agent)
+
+        assert captured["agent_id"] == "deepseek-tui"
+        assert captured["available_tools"] == {"skills_list"}
+        assert captured["available_toolsets"] == {"skills"}
+        assert "SCOPED SKILLS PROMPT" in parts["stable"]

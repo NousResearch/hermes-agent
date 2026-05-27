@@ -1,0 +1,437 @@
+- generic [active] [ref=e1]:
+  - link "欢迎进入 百度资讯搜索_世界杯 2026 品牌营销,盲人用户使用操作智能引导，请按快捷键Ctrl+Alt+R；阅读详细操作说明请按快捷键Ctrl+Alt+问号键。":
+    - /url: javascript:void(0)
+    - img [ref=e2] [cursor=pointer]
+  - generic [ref=e3]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - link "到百度首页" [ref=e7] [cursor=pointer]:
+          - /url: /
+          - img "到百度首页" [ref=e8]
+        - generic [ref=e12]:
+          - textbox [ref=e15]: 世界杯 2026 品牌营销
+          - generic [ref=e17]:
+            - generic [ref=e18]:
+              - img [ref=e20] [cursor=pointer]
+              - generic [ref=e23]:
+                - img [ref=e30] [cursor=pointer]
+                - img [ref=e36] [cursor=pointer]
+                - img [ref=e41] [cursor=pointer]
+            - button "百度一下" [ref=e45] [cursor=pointer]
+      - generic [ref=e46]:
+        - link "百度首页" [ref=e47] [cursor=pointer]:
+          - /url: /
+        - link "登录" [ref=e48] [cursor=pointer]:
+          - /url: https://passport.baidu.com/v2/?login&tpl=mn&u=http%3A%2F%2Fwww.baidu.com%2F
+    - generic [ref=e51]:
+      - link [ref=e52] [cursor=pointer]:
+        - /url: https://chat.baidu.com/search?word=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&pd=csaitab&setype=csaitab&extParamsJson=%7B%22enter_type%22%3A%22search_a_tab%22%2C%22sa%22%3A%22vs_tab%22%2C%22apagelid%22%3A%2212390003784435364530%22%2C%22ori_lid%22%3A%2212390003784435364530%22%7D
+        - img [ref=e53]
+      - link "网页" [ref=e54] [cursor=pointer]:
+        - /url: https://www.baidu.com/s?&wd=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80
+      - link "图片" [ref=e55] [cursor=pointer]:
+        - /url: http://image.baidu.com/i?tn=baiduimage&ps=1&ct=201326592&lm=-1&cl=2&nc=1&ie=utf-8&lid=abf222cc0103f2b2&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80
+      - generic [ref=e56]: 资讯
+      - link "视频" [ref=e57] [cursor=pointer]:
+        - /url: /sf/vsearch?pd=video&tn=vsearch&lid=abf222cc0103f2b2&ie=utf-8&wd=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_spt=7&rsv_bp=1&f=8&oq=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_pq=abf222cc0103f2b2
+      - link "笔记" [ref=e58] [cursor=pointer]:
+        - /url: https://www.baidu.com/s?pd=note&rpf=pc&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80
+      - link "地图" [ref=e59] [cursor=pointer]:
+        - /url: https://map.baidu.com/?newmap=1&ie=utf-8&from=pstab&s=s%26wd%3D%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80
+      - link "贴吧" [ref=e60] [cursor=pointer]:
+        - /url: http://tieba.baidu.com/f?fr=wwwt&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&kw=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80
+      - link "文库" [ref=e61] [cursor=pointer]:
+        - /url: http://wenku.baidu.com/search?lm=0&od=0&ie=utf-8&dyTabStr=MTIsMCwzLDEsMiwxMyw3LDYsNSw5&word=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80
+      - link "更多" [ref=e62] [cursor=pointer]:
+        - /url: http://www.baidu.com/more/
+    - generic [ref=e63]:
+      - generic [ref=e64]:
+        - generic [ref=e65]:
+          - generic [ref=e66]: 百度为您找到相关资讯25个
+          - generic [ref=e69] [cursor=pointer]:
+            - text: 全部资讯
+            - generic [ref=e70]: 
+          - generic [ref=e71] [cursor=pointer]:
+            - text: 按时间排序
+            - generic [ref=e72]: 
+          - text: .
+        - generic [ref=e77]:
+          - generic "百度热搜" [ref=e78]:
+            - link " " [ref=e79] [cursor=pointer]:
+              - /url: https://top.baidu.com/board?platform=pc&sa=pcindex_a_right
+              - generic [ref=e80]: 
+              - generic [ref=e81]: 
+            - link " 换一换" [ref=e83] [cursor=pointer]:
+              - /url: javascript:void(0);
+              - generic [ref=e84]: 
+              - text: 换一换
+          - generic [ref=e85]:
+            - generic [ref=e86] [cursor=pointer]: 热搜榜
+            - generic [ref=e87] [cursor=pointer]: 北京榜
+            - generic [ref=e88] [cursor=pointer]: 民生榜
+            - generic [ref=e89] [cursor=pointer]: 财经榜
+          - generic [ref=e91]:
+            - generic [ref=e93]:
+              - generic [ref=e95]: 
+              - link "中塞铁杆友谊独树一帜" [ref=e96] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E4%B8%AD%E5%A1%9E%E9%93%81%E6%9D%86%E5%8F%8B%E8%B0%8A%E7%8B%AC%E6%A0%91%E4%B8%80%E5%B8%9C&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=4c8cti2%2BqKtnrgNe05oECggbwmQga03MWvFKXURKXOSG8M6oVNe31A0BlA&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_1&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e98]:
+              - generic [ref=e99]: "1"
+              - link "想不想买小米汽车？武契奇：买不起" [ref=e100] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E6%83%B3%E4%B8%8D%E6%83%B3%E4%B9%B0%E5%B0%8F%E7%B1%B3%E6%B1%BD%E8%BD%A6%EF%BC%9F%E6%AD%A6%E5%A5%91%E5%A5%87%EF%BC%9A%E4%B9%B0%E4%B8%8D%E8%B5%B7&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_2&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e101]: 热
+            - generic [ref=e103]:
+              - generic [ref=e104]: "2"
+              - link "美国专家：美军几乎全面落后解放军" [ref=e105] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E7%BE%8E%E5%9B%BD%E4%B8%93%E5%AE%B6%EF%BC%9A%E7%BE%8E%E5%86%9B%E5%87%A0%E4%B9%8E%E5%85%A8%E9%9D%A2%E8%90%BD%E5%90%8E%E8%A7%A3%E6%94%BE%E5%86%9B&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_3&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e107]:
+              - generic [ref=e108]: "3"
+              - link "从三“新”看长三角出口成绩单" [ref=e109] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E4%BB%8E%E4%B8%89%E2%80%9C%E6%96%B0%E2%80%9D%E7%9C%8B%E9%95%BF%E4%B8%89%E8%A7%92%E5%87%BA%E5%8F%A3%E6%88%90%E7%BB%A9%E5%8D%95&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_4&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e111]:
+              - generic [ref=e112]: "4"
+              - link "人民日报评“救灾女干部耳环事件”" [ref=e113] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E4%BA%BA%E6%B0%91%E6%97%A5%E6%8A%A5%E8%AF%84%E2%80%9C%E6%95%91%E7%81%BE%E5%A5%B3%E5%B9%B2%E9%83%A8%E8%80%B3%E7%8E%AF%E4%BA%8B%E4%BB%B6%E2%80%9D&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_5&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e114]: 新
+            - generic [ref=e116]:
+              - generic [ref=e117]: "5"
+              - link "二手迈巴赫3年跌80万 车行老板发愁" [ref=e118] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E4%BA%8C%E6%89%8B%E8%BF%88%E5%B7%B4%E8%B5%AB3%E5%B9%B4%E8%B7%8C80%E4%B8%87%20%E8%BD%A6%E8%A1%8C%E8%80%81%E6%9D%BF%E5%8F%91%E6%84%81&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_6&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e119]: 新
+            - generic [ref=e121]:
+              - generic [ref=e122]: "6"
+              - link "5起打击整治网络谣言典型案例公布" [ref=e123] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=5%E8%B5%B7%E6%89%93%E5%87%BB%E6%95%B4%E6%B2%BB%E7%BD%91%E7%BB%9C%E8%B0%A3%E8%A8%80%E5%85%B8%E5%9E%8B%E6%A1%88%E4%BE%8B%E5%85%AC%E5%B8%83&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_7&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e125]:
+              - generic [ref=e126]: "7"
+              - link "温岚在ICU抢救了10天" [ref=e127] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E6%B8%A9%E5%B2%9A%E5%9C%A8ICU%E6%8A%A2%E6%95%91%E4%BA%8610%E5%A4%A9&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_8&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e128]: 新
+            - generic [ref=e130]:
+              - generic [ref=e131]: "8"
+              - link "驾驶新规6月1日起执行" [ref=e132] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E9%A9%BE%E9%A9%B6%E6%96%B0%E8%A7%846%E6%9C%881%E6%97%A5%E8%B5%B7%E6%89%A7%E8%A1%8C&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_9&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e133]: 热
+            - generic [ref=e135]:
+              - generic [ref=e136]: "9"
+              - link "大润发创始人尹衍梁去世" [ref=e137] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E5%A4%A7%E6%B6%A6%E5%8F%91%E5%88%9B%E5%A7%8B%E4%BA%BA%E5%B0%B9%E8%A1%8D%E6%A2%81%E5%8E%BB%E4%B8%96&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_10&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e139]:
+              - generic [ref=e140]: "10"
+              - link "工地大哥赊1碗面后连吃100天表谢意" [ref=e141] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E5%B7%A5%E5%9C%B0%E5%A4%A7%E5%93%A5%E8%B5%8A1%E7%A2%97%E9%9D%A2%E5%90%8E%E8%BF%9E%E5%90%83100%E5%A4%A9%E8%A1%A8%E8%B0%A2%E6%84%8F&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_11&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e143]:
+              - generic [ref=e144]: "11"
+              - link "2名外籍女子在中国频繁骗婚赚钱" [ref=e145] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=2%E5%90%8D%E5%A4%96%E7%B1%8D%E5%A5%B3%E5%AD%90%E5%9C%A8%E4%B8%AD%E5%9B%BD%E9%A2%91%E7%B9%81%E9%AA%97%E5%A9%9A%E8%B5%9A%E9%92%B1&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_12&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e147]:
+              - generic [ref=e148]: "12"
+              - link "三体回应“原CEO许垚被执行死刑”" [ref=e149] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E4%B8%89%E4%BD%93%E5%9B%9E%E5%BA%94%E2%80%9C%E5%8E%9FCEO%E8%AE%B8%E5%9E%9A%E8%A2%AB%E6%89%A7%E8%A1%8C%E6%AD%BB%E5%88%91%E2%80%9D&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_13&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e150]: 热
+            - generic [ref=e152]:
+              - generic [ref=e153]: "13"
+              - link "新能源车增肥突出 马路都快撑不住了" [ref=e154] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E6%96%B0%E8%83%BD%E6%BA%90%E8%BD%A6%E5%A2%9E%E8%82%A5%E7%AA%81%E5%87%BA%20%E9%A9%AC%E8%B7%AF%E9%83%BD%E5%BF%AB%E6%92%91%E4%B8%8D%E4%BD%8F%E4%BA%86&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_14&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e156]:
+              - generic [ref=e157]: "14"
+              - link "2亿国人的甲状腺在闹脾气" [ref=e158] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=2%E4%BA%BF%E5%9B%BD%E4%BA%BA%E7%9A%84%E7%94%B2%E7%8A%B6%E8%85%BA%E5%9C%A8%E9%97%B9%E8%84%BE%E6%B0%94&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_1_15_15&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+            - generic [ref=e160]:
+              - generic [ref=e161]: "15"
+              - link "中方回应是否会从基辅撤离外交官" [ref=e162] [cursor=pointer]:
+                - /url: //www.baidu.com/s?wd=%E4%B8%AD%E6%96%B9%E5%9B%9E%E5%BA%94%E6%98%AF%E5%90%A6%E4%BC%9A%E4%BB%8E%E5%9F%BA%E8%BE%85%E6%92%A4%E7%A6%BB%E5%A4%96%E4%BA%A4%E5%AE%98&tn=SE_hldp03880_xzs5iv7i&ie=utf-8&rsv_pq=abf222cc0103f2b2&oq=%E4%B8%96%E7%95%8C%E6%9D%AF%202026%20%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rsv_t=ba315kj4UXo%2FL%2F9udo830iM35rP1dS0DBnNUpsD6rsmGBqeSM5X1esiaWg&rqid=abf222cc0103f2b2&rsf=36fa3f173a09472abc01332c1fca07a9_16_30_16&rsv_dl=fyb_right_zixun_20811&sa=0_right_fyb_pchot_20811
+              - generic [ref=e163]: 新
+        - generic [ref=e167]:
+          - generic [ref=e169]:
+            - heading "标题：签约葡萄牙国家队,为何长安启源的体育营销棋局越下越大?" [level=3] [ref=e170]:
+              - link "标题：签约葡萄牙国家队,为何长安启源的体育营销棋局越下越大?" [ref=e171] [cursor=pointer]:
+                - /url: https://news.m.yiche.com/hao/wenzhang/110149575/
+                - text: 签约葡萄牙国家队,为何长安启源的体育
+                - emphasis [ref=e172]: 营销
+                - text: 棋局越下越大?
+            - generic [ref=e174]:
+              - text: 4天前
+              - generic "摘要 2026年5月22日,长安启源正式官宣成为葡萄牙国家队官方合作伙伴,合作赛事涵盖多届世界杯。从支持家乡球队到联手世界级足球IP,长安启源的体育营销完成了从“地域化”到“全球化”的战略升维。 值得一提的是,除了体育营销,长安启源还独家冠名了曹格「打开耳朵听我说」巡 摘要结束，点击查看详情" [ref=e175]:
+                - emphasis [ref=e176]: "2026"
+                - text: 年5月22日,长安启源正式官宣成为葡萄牙国家队官方合作伙伴,合作赛事涵盖多届世界杯。从支持家乡球队到联手世界级足球IP,长安启源的体育营销完成了从“地域化”到“全球化”的战略升维。 值得一提的是,除了体育营销,长安启源还独家冠名了曹格「打开耳朵听我说」巡...
+              - link "新闻来源：易车网" [ref=e178] [cursor=pointer]:
+                - /url: https://news.m.yiche.com/hao/wenzhang/110149575/
+                - img [ref=e181]
+                - text: 易车网
+          - generic [ref=e183]:
+            - heading "标题：2026世界杯与亚马逊Prime Day双流量叠加 品牌营销迎黄金窗口" [level=3] [ref=e184]:
+              - link "标题：2026世界杯与亚马逊Prime Day双流量叠加 品牌营销迎黄金窗口" [ref=e185] [cursor=pointer]:
+                - /url: http://news.10jqka.com.cn/20260522/c676890800.shtml
+                - emphasis [ref=e186]: 2026世界杯
+                - text: 与亚马逊Prime Day双流量叠加
+                - emphasis [ref=e187]: 品牌营销
+                - text: 迎黄金窗口
+            - generic [ref=e189]:
+              - text: 4天前
+              - 'generic "摘要 时间窗口: Prime Day完全嵌套于世界杯流量峰值期。世界杯于6月12日至7月20日举行,其中小组赛至淘汰赛前期集中于6月,与Prime Day黄金促销期高度重叠。 流量与消费(883434)双爆发: 本届世界杯预计产生超800亿美元经济总产出,决赛观众或达15亿人次;Prime Day可在48小时内 摘要结束，点击查看详情" [ref=e190]':
+                - text: "时间窗口: Prime Day完全嵌套于"
+                - emphasis [ref=e191]: 世界杯
+                - text: "流量峰值期。世界杯于6月12日至7月20日举行,其中小组赛至淘汰赛前期集中于6月,与Prime Day黄金促销期高度重叠。 流量与消费(883434)双爆发: 本届世界杯预计产生超800亿美元经济总产出,决赛观众或达15亿人次;Prime Day可在48小时内..."
+              - link "新闻来源：同花顺财经" [ref=e193] [cursor=pointer]:
+                - /url: http://news.10jqka.com.cn/20260522/c676890800.shtml
+                - text: 同花顺财经
+          - generic [ref=e195]:
+            - heading "标题：2026世界杯营销新入口:Uber Ads抢占出行场景流量" [level=3] [ref=e196]:
+              - link "标题：2026世界杯营销新入口:Uber Ads抢占出行场景流量" [ref=e197] [cursor=pointer]:
+                - /url: https://news.10jqka.com.cn/20260521/c676877892.shtml
+                - emphasis [ref=e198]: 2026世界杯营销
+                - text: 新入口:Uber Ads抢占出行场景流量
+            - generic [ref=e200]:
+              - text: 5天前
+              - generic "摘要 所有投放集中于2026年6月至7月的世界杯核心赛程。 品牌需整合多场景流量以提升营销效果。Yeahmobi通过连接Uber Ads、Amazon DSP、Roku(ROKU)等媒体,构建跨平台投放链路,使广告跟随用户从观赛场景延伸至出行、消费(883434)节点,推动转化自然发生。 目前Uber Ads世界杯 摘要结束，点击查看详情" [ref=e201]:
+                - text: 所有投放集中于
+                - emphasis [ref=e202]: "2026"
+                - text: 年6月至7月的
+                - emphasis [ref=e203]: 世界杯
+                - text: 核心赛程。
+                - emphasis [ref=e204]: 品牌
+                - text: 需整合多场景流量以提升
+                - emphasis [ref=e205]: 营销
+                - text: 效果。Yeahmobi通过连接Uber Ads、Amazon DSP、Roku(ROKU)等媒体,构建跨平台投放链路,使广告跟随用户从观赛场景延伸至出行、消费(883434)节点,推动转化自然发生。 目前Uber Ads世界杯...
+              - link "新闻来源：同花顺财经" [ref=e207] [cursor=pointer]:
+                - /url: https://news.10jqka.com.cn/20260521/c676877892.shtml
+                - text: 同花顺财经
+          - generic [ref=e209]:
+            - heading "标题：当“华帝玄学”遇上西班牙“黄金一代”,这届世界杯大结局已写好?" [level=3] [ref=e210]:
+              - link "标题：当“华帝玄学”遇上西班牙“黄金一代”,这届世界杯大结局已写好?" [ref=e211] [cursor=pointer]:
+                - /url: https://baijiahao.baidu.com/s?id=1865610658097775268&wfr=spider&for=pc
+                - text: 当“华帝玄学”遇上西班牙“黄金一代”,这届
+                - emphasis [ref=e212]: 世界杯
+                - text: 大结局已写好?
+            - generic [ref=e213]:
+              - link [ref=e215] [cursor=pointer]:
+                - /url: https://baijiahao.baidu.com/s?id=1865610658097775268&wfr=spider&for=pc
+                - img [ref=e218]
+              - generic [ref=e219]:
+                - text: 7天前
+                - generic "摘要 时隔四年，华帝的营销热度依旧不减，进一步强化了“世界杯常客”的品牌标签，让华帝和“华帝玄学”的影响力不断沉淀、深入人心。如今，2026美加墨世界杯战幕将启，华帝锁定了FIFA世界排 摘要结束，点击查看详情" [ref=e220]:
+                  - text: 时隔四年，华帝的
+                  - emphasis [ref=e221]: 营销
+                  - text: 热度依旧不减，进一步强化了“
+                  - emphasis [ref=e222]: 世界杯
+                  - text: 常客”的
+                  - emphasis [ref=e223]: 品牌
+                  - text: 标签，让华帝和“华帝玄学”的影响力不断沉淀、深入人心。如今，
+                  - emphasis [ref=e224]: "2026"
+                  - text: 美加墨世界杯战幕将启，华帝锁定了FIFA世界排...
+                - link "新闻来源：和讯网" [ref=e226] [cursor=pointer]:
+                  - /url: https://baijiahao.baidu.com/s?id=1865610658097775268&wfr=spider&for=pc
+                  - img [ref=e229]
+                  - text: 和讯网
+          - generic [ref=e232]:
+            - heading "标题：法国队之后,华帝又出手了!这次押注的是世界杯头号热门" [level=3] [ref=e233]:
+              - link "标题：法国队之后,华帝又出手了!这次押注的是世界杯头号热门" [ref=e234] [cursor=pointer]:
+                - /url: https://baijiahao.baidu.com/s?id=1865608474777002966&wfr=spider&for=pc
+                - text: 法国队之后,华帝又出手了!这次押注的是
+                - emphasis [ref=e235]: 世界杯
+                - text: 头号热门
+            - generic [ref=e236]:
+              - link [ref=e238] [cursor=pointer]:
+                - /url: https://baijiahao.baidu.com/s?id=1865608474777002966&wfr=spider&for=pc
+                - img [ref=e241]
+              - generic [ref=e242]:
+                - text: 7天前
+                - generic "摘要 华帝与体育营销渊源颇深。2018年俄罗斯世界杯，凭借“法国队夺冠，华帝退全款”的创意玩法，成功引爆全民关注，精准抓住大众情绪与传播热点。2022年，华帝再度携手葡萄牙国家队，营销思 摘要结束，点击查看详情" [ref=e243]:
+                  - text: 华帝与体育
+                  - emphasis [ref=e244]: 营销
+                  - text: 渊源颇深。2018年俄罗斯
+                  - emphasis [ref=e245]: 世界杯
+                  - text: ，凭借“法国队夺冠，华帝退全款”的创意玩法，成功引爆全民关注，精准抓住大众情绪与传播热点。2022年，华帝再度携手葡萄牙国家队，营销思...
+                - link "新闻来源：新浪财经" [ref=e247] [cursor=pointer]:
+                  - /url: https://baijiahao.baidu.com/s?id=1865608474777002966&wfr=spider&for=pc
+                  - img [ref=e250]
+                  - text: 新浪财经
+          - generic [ref=e253]:
+            - heading "标题：世界杯营销再出奇招,华帝用西班牙队撬动全球流量" [level=3] [ref=e254]:
+              - link "标题：世界杯营销再出奇招,华帝用西班牙队撬动全球流量" [ref=e255] [cursor=pointer]:
+                - /url: https://baijiahao.baidu.com/s?id=1865602354085565815&wfr=spider&for=pc
+                - emphasis [ref=e256]: 世界杯营销
+                - text: 再出奇招,华帝用西班牙队撬动全球流量
+            - generic [ref=e257]:
+              - link [ref=e259] [cursor=pointer]:
+                - /url: https://baijiahao.baidu.com/s?id=1865602354085565815&wfr=spider&for=pc
+                - img [ref=e262]
+              - generic [ref=e263]:
+                - text: 7天前
+                - generic "摘要 世界杯历来是品牌营销的兵家必争之地。本届美加墨世界杯由三国联合承办，赛事周期长、覆盖市场广泛，FIFA官方赞助门槛随之水涨船高。据业内估算，2026年世界杯FIFA官方合作伙伴的赞助费 摘要结束，点击查看详情" [ref=e264]:
+                  - emphasis [ref=e265]: 世界杯
+                  - text: 历来是
+                  - emphasis [ref=e266]: 品牌营销
+                  - text: 的兵家必争之地。本届美加墨世界杯由三国联合承办，赛事周期长、覆盖市场广泛，FIFA官方赞助门槛随之水涨船高。据业内估算，
+                  - emphasis [ref=e267]: "2026"
+                  - text: 年世界杯FIFA官方合作伙伴的赞助费...
+                - link "新闻来源：今日永州" [ref=e269] [cursor=pointer]:
+                  - /url: https://baijiahao.baidu.com/s?id=1865602354085565815&wfr=spider&for=pc
+                  - img [ref=e272]
+                  - text: 今日永州
+          - generic [ref=e275]:
+            - heading "标题：世界杯版权落地引爆体育营销新周期,行业加速向“长期主义”转型" [level=3] [ref=e276]:
+              - link "标题：世界杯版权落地引爆体育营销新周期,行业加速向“长期主义”转型" [ref=e277] [cursor=pointer]:
+                - /url: http://news.10jqka.com.cn/20260519/c676796136.shtml
+                - emphasis [ref=e278]: 世界杯
+                - text: 版权落地引爆体育
+                - emphasis [ref=e279]: 营销
+                - text: 新周期,行业加速向“长期主义”转型
+            - generic [ref=e281]:
+              - text: 7天前
+              - generic "摘要 据引力传媒(603598)消息,央视近日官宣获得2026年美加墨世界杯全媒体版权,此举不仅开启了顶级体育(884258)IP资源,更标志着体育(884258)营销行业已告别粗放式的天价曝光模式,正加速进入比拼场景融合、精细化运营与确定性回报的新阶段。行业重心正从短周期(883436)流量打 摘要结束，点击查看详情" [ref=e282]:
+                - text: 据引力传媒(603598)消息,央视近日官宣获得
+                - emphasis [ref=e283]: "2026"
+                - text: 年美加墨
+                - emphasis [ref=e284]: 世界杯
+                - text: 全媒体版权,此举不仅开启了顶级体育(884258)IP资源,更标志着体育(884258)
+                - emphasis [ref=e285]: 营销
+                - text: 行业已告别粗放式的天价曝光模式,正加速进入比拼场景融合、精细化运营与确定性回报的新阶段。行业重心正从短周期(883436)流量打...
+              - link "新闻来源：同花顺财经" [ref=e287] [cursor=pointer]:
+                - /url: http://news.10jqka.com.cn/20260519/c676796136.shtml
+                - text: 同花顺财经
+          - generic [ref=e289]:
+            - heading "标题：开赛在即,中国品牌要为世界杯广告押注" [level=3] [ref=e290]:
+              - link "标题：开赛在即,中国品牌要为世界杯广告押注" [ref=e291] [cursor=pointer]:
+                - /url: https://www.jiemian.com/article/14442214.html
+                - text: 开赛在即,中国
+                - emphasis [ref=e292]: 品牌
+                - text: 要为
+                - emphasis [ref=e293]: 世界杯
+                - text: 广告押注
+            - generic [ref=e294]:
+              - link [ref=e296] [cursor=pointer]:
+                - /url: https://www.jiemian.com/article/14442214.html
+                - img [ref=e299]
+              - generic [ref=e300]:
+                - text: 8天前
+                - generic "摘要 5月17日下午,中央广播电视总台正式发布2026年美加墨世界杯融媒体传播服务方案,赛事广告招商全面启动。就在两天前,5月15日,央视与FIFA共同宣布就新周期版权合作达成共识,央视获得2026年 摘要结束，点击查看详情" [ref=e301]:
+                  - text: 5月17日下午,中央广播电视总台正式发布
+                  - emphasis [ref=e302]: "2026"
+                  - text: 年美加墨
+                  - emphasis [ref=e303]: 世界杯
+                  - text: 融媒体传播服务方案,赛事广告招商全面启动。就在两天前,5月15日,央视与FIFA共同宣布就新周期版权合作达成共识,央视获得2026年...
+                - link "新闻来源：界面新闻" [ref=e305] [cursor=pointer]:
+                  - /url: https://www.jiemian.com/article/14442214.html
+                  - text: 界面新闻
+          - generic [ref=e307]:
+            - heading "标题：2026世界杯在即,美妆跨越“性别”的营销赛点" [level=3] [ref=e308]:
+              - link "标题：2026世界杯在即,美妆跨越“性别”的营销赛点" [ref=e309] [cursor=pointer]:
+                - /url: https://www.thepaper.cn/newsDetail_forward_33101744
+                - emphasis [ref=e310]: 2026世界杯
+                - text: 在即,美妆跨越“性别”的
+                - emphasis [ref=e311]: 营销
+                - text: 赛点
+            - generic [ref=e312]:
+              - link [ref=e314] [cursor=pointer]:
+                - /url: https://www.thepaper.cn/newsDetail_forward_33101744
+                - img [ref=e317]
+              - generic [ref=e318]:
+                - text: 5月6日
+                - generic "摘要 2026年6月11日至7月19日,第23届国际足联世界杯(又称2026年美加墨世界杯)将在美国、加拿大和墨西哥三国联合举行。这不仅将是全球球迷的节日,更将成为品牌2026营销的顶级竞技场之一。 硝 摘要结束，点击查看详情" [ref=e319]:
+                  - text: 2026年6月11日至7月19日,第23届国际足联
+                  - emphasis [ref=e320]: 世界杯
+                  - text: (又称2026年美加墨世界杯)将在美国、加拿大和墨西哥三国联合举行。这不仅将是全球球迷的节日,更将成为
+                  - emphasis [ref=e321]: 品牌2026营销
+                  - text: 的顶级竞技场之一。 硝...
+                - link "新闻来源：澎湃新闻" [ref=e323] [cursor=pointer]:
+                  - /url: https://www.thepaper.cn/newsDetail_forward_33101744
+                  - text: 澎湃新闻
+          - generic [ref=e325]:
+            - heading "标题：乐高让梅西、C罗罕见同框,2026世界杯营销,品牌都在玩新套路" [level=3] [ref=e326]:
+              - link "标题：乐高让梅西、C罗罕见同框,2026世界杯营销,品牌都在玩新套路" [ref=e327] [cursor=pointer]:
+                - /url: http://goodsfu.10jqka.com.cn/20260412/c675921983.shtml
+                - text: 乐高让梅西、C罗罕见同框,
+                - emphasis [ref=e328]: 2026世界杯营销
+                - text: ","
+                - emphasis [ref=e329]: 品牌
+                - text: 都在玩新套路
+            - generic [ref=e330]:
+              - link [ref=e332] [cursor=pointer]:
+                - /url: http://goodsfu.10jqka.com.cn/20260412/c675921983.shtml
+                - img [ref=e335]
+              - generic [ref=e336]:
+                - text: 4月12日
+                - generic "摘要 随着赛期临近,在创意表达、传播逻辑与商业转化之间,2026年的品牌们正在走出一条怎样的新路? 一、当乐高积木遇见足球 顶流同框的商业逻辑 2026年4月初,乐高推出的世界杯主题广告成为全球 摘要结束，点击查看详情" [ref=e337]:
+                  - text: 随着赛期临近,在创意表达、传播逻辑与商业转化之间,
+                  - emphasis [ref=e338]: "2026"
+                  - text: 年的
+                  - emphasis [ref=e339]: 品牌
+                  - text: 们正在走出一条怎样的新路? 一、当乐高积木遇见足球 顶流同框的商业逻辑 2026年4月初,乐高推出的
+                  - emphasis [ref=e340]: 世界杯
+                  - text: 主题广告成为全球...
+                - link "新闻来源：同花顺财经" [ref=e342] [cursor=pointer]:
+                  - /url: http://goodsfu.10jqka.com.cn/20260412/c675921983.shtml
+                  - text: 同花顺财经
+        - link "去网页搜：世界杯 2026 品牌营销" [ref=e344] [cursor=pointer]:
+          - /url: http://www.baidu.com/s?rsv_xinwen=1&wd=%CA%C0%BD%E7%B1%AD+2026+%C6%B7%C5%C6%D3%AA%CF%FA
+          - img [ref=e345]
+          - text: 去网页搜：世界杯 2026 品牌营销
+        - generic [ref=e348]:
+          - generic [ref=e349]: 相关搜索
+          - table [ref=e350]:
+            - rowgroup [ref=e351]:
+              - row "世界杯概念龙头股推荐 世界杯广告语" [ref=e352]:
+                - cell "世界杯概念龙头股推荐" [ref=e353]:
+                  - link "世界杯概念龙头股推荐" [ref=e354] [cursor=pointer]:
+                    - /url: /s?wd=%E4%B8%96%E7%95%8C%E6%9D%AF%E6%A6%82%E5%BF%B5%E9%BE%99%E5%A4%B4%E8%82%A1%E6%8E%A8%E8%8D%90&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e356]: 世界杯概念龙头股推荐
+                - cell "世界杯广告语" [ref=e357]:
+                  - link "世界杯广告语" [ref=e358] [cursor=pointer]:
+                    - /url: /s?wd=%E4%B8%96%E7%95%8C%E6%9D%AF%E5%B9%BF%E5%91%8A%E8%AF%AD&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e360]: 世界杯广告语
+              - row "梅西2024代言了国外品牌 足球产业链" [ref=e361]:
+                - cell "梅西2024代言了国外品牌" [ref=e362]:
+                  - link "梅西2024代言了国外品牌" [ref=e363] [cursor=pointer]:
+                    - /url: /s?wd=%E6%A2%85%E8%A5%BF2024%E4%BB%A3%E8%A8%80%E4%BA%86%E5%9B%BD%E5%A4%96%E5%93%81%E7%89%8C&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e365]: 梅西2024代言了国外品牌
+                - cell "足球产业链" [ref=e366]:
+                  - link "足球产业链" [ref=e367] [cursor=pointer]:
+                    - /url: /s?wd=%E8%B6%B3%E7%90%83%E4%BA%A7%E4%B8%9A%E9%93%BE&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e369]: 足球产业链
+              - row "全球化营销策略 2024品牌策划竞赛" [ref=e370]:
+                - cell "全球化营销策略" [ref=e371]:
+                  - link "全球化营销策略" [ref=e372] [cursor=pointer]:
+                    - /url: /s?wd=%E5%85%A8%E7%90%83%E5%8C%96%E8%90%A5%E9%94%80%E7%AD%96%E7%95%A5&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e374]: 全球化营销策略
+                - cell "2024品牌策划竞赛" [ref=e375]:
+                  - link "2024品牌策划竞赛" [ref=e376] [cursor=pointer]:
+                    - /url: /s?wd=2024%E5%93%81%E7%89%8C%E7%AD%96%E5%88%92%E7%AB%9E%E8%B5%9B&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e378]: 2024品牌策划竞赛
+              - row "世界杯赞助商有哪些 李宁赞助的足球队" [ref=e379]:
+                - cell "世界杯赞助商有哪些" [ref=e380]:
+                  - link "世界杯赞助商有哪些" [ref=e381] [cursor=pointer]:
+                    - /url: /s?wd=%E4%B8%96%E7%95%8C%E6%9D%AF%E8%B5%9E%E5%8A%A9%E5%95%86%E6%9C%89%E5%93%AA%E4%BA%9B&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e383]: 世界杯赞助商有哪些
+                - cell "李宁赞助的足球队" [ref=e384]:
+                  - link "李宁赞助的足球队" [ref=e385] [cursor=pointer]:
+                    - /url: /s?wd=%E6%9D%8E%E5%AE%81%E8%B5%9E%E5%8A%A9%E7%9A%84%E8%B6%B3%E7%90%83%E9%98%9F&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e387]: 李宁赞助的足球队
+              - row "奥运会商业化 2026年世界杯举办国" [ref=e388]:
+                - cell "奥运会商业化" [ref=e389]:
+                  - link "奥运会商业化" [ref=e390] [cursor=pointer]:
+                    - /url: /s?wd=%E5%A5%A5%E8%BF%90%E4%BC%9A%E5%95%86%E4%B8%9A%E5%8C%96&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e392]: 奥运会商业化
+                - cell "2026年世界杯举办国" [ref=e393]:
+                  - link "2026年世界杯举办国" [ref=e394] [cursor=pointer]:
+                    - /url: /s?wd=2026%E5%B9%B4%E4%B8%96%E7%95%8C%E6%9D%AF%E4%B8%BE%E5%8A%9E%E5%9B%BD&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&bsst=1&cl=2&rsv_dl=news_b_rs
+                    - generic [ref=e396]: 2026年世界杯举办国
+      - generic [ref=e398]:
+        - strong [ref=e399]:
+          - generic [ref=e400]: "1"
+        - link "2" [ref=e401] [cursor=pointer]:
+          - /url: /s?wd=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&rsv_dl=news_b_pn&pn=10
+          - generic [ref=e402]: "2"
+        - link "3" [ref=e403] [cursor=pointer]:
+          - /url: /s?wd=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&rsv_dl=news_b_pn&pn=20
+          - generic [ref=e404]: "3"
+        - link "下一页 >" [ref=e405] [cursor=pointer]:
+          - /url: /s?wd=%E4%B8%96%E7%95%8C%E6%9D%AF+2026+%E5%93%81%E7%89%8C%E8%90%A5%E9%94%80&rtt=4&tn=news&x_bfe_rqs=03E8000000000000000008&x_bfe_tjscore=0.100000&tngroupname=organic_news&newVideo=12&goods_entry_switch=1&rsv_dl=news_b_pn&pn=10
+      - generic [ref=e408]:
+        - link "帮助" [ref=e409] [cursor=pointer]:
+          - /url: http://www.baidu.com/search/news_help.html
+        - link "举报" [ref=e410] [cursor=pointer]:
+          - /url: //www.baidu.com/search/jubao.html
+        - link "企业推广" [ref=e411] [cursor=pointer]:
+          - /url: https://e.baidu.com/lp/search/?refer=1302

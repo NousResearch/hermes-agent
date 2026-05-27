@@ -939,6 +939,7 @@ def _build_child_system_prompt(
     max_spawn_depth: int = 2,
     child_depth: int = 1,
     skills: Optional[List[str]] = None,
+    agent_instruction: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -953,6 +954,8 @@ def _build_child_system_prompt(
         "",
         f"YOUR TASK:\n{goal}",
     ]
+    if agent_instruction and agent_instruction.strip():
+        parts.append(f"\nAGENT PROFILE:\n{agent_instruction.strip()}")
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -2169,6 +2172,9 @@ def _build_child_agent(
         )
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+    agent_instruction = None
+    if agent_config:
+        agent_instruction = agent_config.get("soul") or agent_config.get("role_summary")
     child_prompt = _build_child_system_prompt(
         goal,
         context,
@@ -2177,6 +2183,7 @@ def _build_child_agent(
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
         skills=child_skills,
+        agent_instruction=agent_instruction,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -2366,6 +2373,7 @@ def _build_child_agent(
     child._subagent_goal = goal
     # Phase A: stash agent_id profile metadata for event logging
     child._subagent_agent_id = agent_id
+    child._skill_scope_agent_id = agent_id
     child._subagent_effective_toolsets = child_toolsets
     child._subagent_effective_blocked = effective_blocked
     child._subagent_warnings = warnings

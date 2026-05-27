@@ -1,0 +1,281 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link "Google News" [ref=e7] [cursor=pointer]:
+        - /url: ./?hl=en-US&gl=US&ceid=US%3Aen
+        - generic [ref=e9]: News
+      - generic [ref=e10]:
+        - search [ref=e12]:
+          - combobox "Search for topics, locations & sources" [ref=e19]: Visa "World Cup" 2026 campaign
+          - button "Advanced search" [ref=e20] [cursor=pointer]:
+            - generic [ref=e21]:
+              - generic "Advanced search" [ref=e22]:
+                - img [ref=e23]
+              - tooltip [ref=e25]: Advanced search
+          - button "Clear search" [ref=e26] [cursor=pointer]:
+            - img [ref=e27]
+          - button "Search" [ref=e30] [cursor=pointer]:
+            - img [ref=e31]
+        - generic [ref=e34]:
+          - generic [ref=e39]:
+            - button "Help" [ref=e40] [cursor=pointer]:
+              - img [ref=e42]
+            - tooltip [ref=e44]: Help
+          - generic [ref=e49]:
+            - button "Settings" [ref=e50] [cursor=pointer]:
+              - img [ref=e52]
+            - tooltip [ref=e55]: Settings
+      - generic [ref=e57]:
+        - button "Google apps" [ref=e61] [cursor=pointer]:
+          - img [ref=e62]
+        - 'button "Google Account: 谷如洋 (guruyang77@gmail.com)" [ref=e67] [cursor=pointer]':
+          - img [ref=e69]
+    - navigation [ref=e72]:
+      - tablist [ref=e73]:
+        - tab "Home" [ref=e74] [cursor=pointer]:
+          - tab "Home" [ref=e75]
+        - tab "For you" [ref=e76] [cursor=pointer]:
+          - tab "For you" [ref=e77]
+        - tab "Following" [ref=e78] [cursor=pointer]:
+          - tab "Following" [ref=e79]
+        - tab "U.S." [ref=e82] [cursor=pointer]:
+          - tab "U.S." [ref=e83]
+        - tab "World" [ref=e84] [cursor=pointer]:
+          - tab "World" [ref=e85]
+        - tab "Local" [ref=e86] [cursor=pointer]:
+          - tab "Local" [ref=e87]
+        - tab "Business" [ref=e88] [cursor=pointer]:
+          - tab "Business" [ref=e89]
+        - tab "Technology" [ref=e90] [cursor=pointer]:
+          - tab "Technology" [ref=e91]
+        - tab "Entertainment" [ref=e92] [cursor=pointer]:
+          - tab "Entertainment" [ref=e93]
+        - tab "Sports" [ref=e94] [cursor=pointer]:
+          - tab "Sports" [ref=e95]
+        - tab "Science" [ref=e96] [cursor=pointer]:
+          - tab "Science" [ref=e97]
+        - tab "Health" [ref=e98] [cursor=pointer]:
+          - tab "Health" [ref=e99]
+  - main [ref=e103]:
+    - generic [ref=e105]:
+      - generic [ref=e108]:
+        - generic [ref=e109]:
+          - link [ref=e111] [cursor=pointer]:
+            - /url: ./read/CBMitwFBVV95cUxQSV9ESlFFSE9IOG5rb2habXBCYVE4ak9rREt4dWNKWWZ5bm5LVDhhc1VvRnZwMk1WLU9HLUpVYnZXN3lhNWFtUFktc2VyOGV4ZDk3cFQ1SkZZRjB4aUJ0MG4xazZpYlhFakEyeW1KNXlPN3M2MkI0VF92dlUyM0plQmRnYU5xd3JTVnlHZ3E1UUZkOTQ1WjhpajNaM1lNTWhoVG9JMG0taWhXcnZ1enloMVdUMWFaQXM?hl=en-US&gl=US&ceid=US%3Aen
+          - generic [ref=e113]:
+            - generic [ref=e114]:
+              - generic [ref=e117]: Forbes
+              - generic [ref=e121]:
+                - generic:
+                  - button "More - Visa’s ‘Tap In’ Campaign Turns The World Cup Into A Checkout Line" [ref=e122] [cursor=pointer]:
+                    - img [ref=e124]
+                  - tooltip [ref=e126]: More
+            - link "Visa’s ‘Tap In’ Campaign Turns The World Cup Into A Checkout Line - Forbes - 5 days ago - By Clemente A. Lisi" [ref=e127] [cursor=pointer]:
+              - /url: ./read/CBMitwFBVV95cUxQSV9ESlFFSE9IOG5rb2habXBCYVE4ak9rREt4dWNKWWZ5bm5LVDhhc1VvRnZwMk1WLU9HLUpVYnZXN3lhNWFtUFktc2VyOGV4ZDk3cFQ1SkZZRjB4aUJ0MG4xazZpYlhFakEyeW1KNXlPN3M2MkI0VF92dlUyM0plQmRnYU5xd3JTVnlHZ3E1UUZkOTQ1WjhpajNaM1lNTWhoVG9JMG0taWhXcnZ1enloMVdUMWFaQXM?hl=en-US&gl=US&ceid=US%3Aen
+              - text: Visa’s ‘Tap In’ Campaign Turns The World Cup Into A Checkout Line
+          - figure [ref=e128]
+        - generic [ref=e129]:
+          - time [ref=e130]: 5 days ago
+          - separator [ref=e131]
+          - generic [ref=e132]: By Clemente A. Lisi
+      - generic [ref=e133]:
+        - separator [ref=e135]
+        - generic [ref=e137]:
+          - generic [ref=e138]:
+            - link [ref=e140] [cursor=pointer]:
+              - /url: ./read/CBMiggFBVV95cUxPQzJUQ1k2SlcwRVRyeExTUzNMS2I2Ni1XbmJmSXBnWXczSVd4QUVyY2JoREY4T1NKMFZoTWpxQm4xWTVJMDhxZ2UxU0VXUE9FZm1tV0JqVkF5WnZmZDBKTUpMQnFMSmdwS2RIYTZwbFVNVzBGZ2xNU1lQMTItOTFKZjlB?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e142]:
+              - generic [ref=e143]:
+                - generic [ref=e146]: Marketing Brew
+                - generic [ref=e150]:
+                  - generic:
+                    - button "More - Visa taps Jason Sudeikis, soccer stars for ‘Tap In’ World Cup campaign" [ref=e151] [cursor=pointer]:
+                      - img [ref=e153]
+                    - tooltip [ref=e155]: More
+              - link "Visa taps Jason Sudeikis, soccer stars for ‘Tap In’ World Cup campaign - Marketing Brew - 4 days ago - By Alyssa Meyers" [ref=e156] [cursor=pointer]:
+                - /url: ./read/CBMiggFBVV95cUxPQzJUQ1k2SlcwRVRyeExTUzNMS2I2Ni1XbmJmSXBnWXczSVd4QUVyY2JoREY4T1NKMFZoTWpxQm4xWTVJMDhxZ2UxU0VXUE9FZm1tV0JqVkF5WnZmZDBKTUpMQnFMSmdwS2RIYTZwbFVNVzBGZ2xNU1lQMTItOTFKZjlB?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Visa taps Jason Sudeikis, soccer stars for ‘Tap In’ World Cup campaign
+            - figure [ref=e157]
+          - generic [ref=e158]:
+            - time [ref=e159]: 4 days ago
+            - separator [ref=e160]
+            - generic [ref=e161]: By Alyssa Meyers
+      - generic [ref=e162]:
+        - separator [ref=e164]
+        - generic [ref=e166]:
+          - generic [ref=e167]:
+            - link [ref=e169] [cursor=pointer]:
+              - /url: ./read/CBMitAFBVV95cUxOdkxZSm42dkZIV2EwelZFcnRpYWxaNEtyNVFlSWNQZmg5NnBoYlhMZEttaVdGcUZmX1hmLThsOTdOaXRxbVV4WERUc2E5SER2R1pIRW9wYVlQTlN6cVVHc3FTX3FJSm1tak93OFRjT1otMTdMZElHbDZSem1KRmI2ZzFVY2FTVDFxM0NWZG0zUDJmU2xrOS15MTROZmhfYjk2c2l4ajA1X2hHLWc5aGNsb3Q5X1M?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e171]:
+              - generic [ref=e172]:
+                - generic [ref=e175]: USA Today
+                - generic [ref=e179]:
+                  - generic:
+                    - button "More - Jason Sudeikis stars in Visa's 'Tap In' World Cup campaign" [ref=e180] [cursor=pointer]:
+                      - img [ref=e182]
+                    - tooltip [ref=e184]: More
+              - link "Jason Sudeikis stars in Visa's 'Tap In' World Cup campaign - USA Today - 3 days ago - By Victoria Hernandez" [ref=e185] [cursor=pointer]:
+                - /url: ./read/CBMitAFBVV95cUxOdkxZSm42dkZIV2EwelZFcnRpYWxaNEtyNVFlSWNQZmg5NnBoYlhMZEttaVdGcUZmX1hmLThsOTdOaXRxbVV4WERUc2E5SER2R1pIRW9wYVlQTlN6cVVHc3FTX3FJSm1tak93OFRjT1otMTdMZElHbDZSem1KRmI2ZzFVY2FTVDFxM0NWZG0zUDJmU2xrOS15MTROZmhfYjk2c2l4ajA1X2hHLWc5aGNsb3Q5X1M?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Jason Sudeikis stars in Visa's 'Tap In' World Cup campaign
+            - figure [ref=e186]
+          - generic [ref=e187]:
+            - time [ref=e188]: 3 days ago
+            - separator [ref=e189]
+            - generic [ref=e190]: By Victoria Hernandez
+      - generic [ref=e191]:
+        - separator [ref=e193]
+        - generic [ref=e195]:
+          - generic [ref=e196]:
+            - link [ref=e198] [cursor=pointer]:
+              - /url: ./read/CBMiU0FVX3lxTE1oSktlMUxObzBCblk0aVBiZFI5dE5oSWNMd3l0aVl3LWlNLVRHRjJoRDRMZENiUWVxYnFyVDlONmQ1RTVZakkzaEYyemM0emNFS0lR0gFYQVVfeXFMTkxEQk1CellLRC1teXdFN210NS15UlkzU0ttOGloTGEwa2w0RmZCZkFxTzlNbXozWmhobGVhSzdOWUlJOE4xSzlfT2cxVXp1WkRmUWxXMUc1LQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e200]:
+              - generic [ref=e201]:
+                - generic [ref=e204]: Trend Hunter
+                - generic [ref=e208]:
+                  - generic:
+                    - button "More - World Cup Payment Campaigns" [ref=e209] [cursor=pointer]:
+                      - img [ref=e211]
+                    - tooltip [ref=e213]: More
+              - link "World Cup Payment Campaigns - Trend Hunter - 4 days ago" [ref=e214] [cursor=pointer]:
+                - /url: ./read/CBMiU0FVX3lxTE1oSktlMUxObzBCblk0aVBiZFI5dE5oSWNMd3l0aVl3LWlNLVRHRjJoRDRMZENiUWVxYnFyVDlONmQ1RTVZakkzaEYyemM0emNFS0lR0gFYQVVfeXFMTkxEQk1CellLRC1teXdFN210NS15UlkzU0ttOGloTGEwa2w0RmZCZkFxTzlNbXozWmhobGVhSzdOWUlJOE4xSzlfT2cxVXp1WkRmUWxXMUc1LQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: World Cup Payment Campaigns
+            - figure [ref=e215]
+          - time [ref=e217]: 4 days ago
+      - generic [ref=e218]:
+        - separator [ref=e220]
+        - generic [ref=e222]:
+          - generic [ref=e223]:
+            - link [ref=e225] [cursor=pointer]:
+              - /url: ./read/CBMi7wFBVV95cUxObmljWTJVN3l5ZFl3WXVWaWFSbWZUVUlXckREMFlSQ0hncVZ0MWdKQklxWDVNR2R4ZEJRTlUtM2NKbm12UjB2MDc2azk4RXU5Wk9PQmtRZkZRX1ZNS1RCZG5qMWFLNmQxeFZwT0FWWEFmclBuOVdBazhmM21hbU5NT1FPaG91ZmRpQkhOeGpMNWtGS2lBbzBOQkVxQ0VzTFdNSlhWSTFJTWs4QzJXNlZfaUpIdHpjNFc3VW0zZ0pHQ0NkNWdxVnlzZGJqRXU4MWNQWVdQam5XSkcwNXRhTnZyOXJlN2NkZ1hVNFNvbUxXYw?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e227]:
+              - generic [ref=e228]:
+                - generic [ref=e231]: media-marketing.com
+                - generic [ref=e235]:
+                  - generic:
+                    - button "More - Visa uses “Tap In” campaign to turn the 2026 World Cup into an experience of access, connection and everyday fan rituals" [ref=e236] [cursor=pointer]:
+                      - img [ref=e238]
+                    - tooltip [ref=e240]: More
+              - link "Visa uses “Tap In” campaign to turn the 2026 World Cup into an experience of access, connection and everyday fan rituals - media-marketing.com - 2 days ago" [ref=e241] [cursor=pointer]:
+                - /url: ./read/CBMi7wFBVV95cUxObmljWTJVN3l5ZFl3WXVWaWFSbWZUVUlXckREMFlSQ0hncVZ0MWdKQklxWDVNR2R4ZEJRTlUtM2NKbm12UjB2MDc2azk4RXU5Wk9PQmtRZkZRX1ZNS1RCZG5qMWFLNmQxeFZwT0FWWEFmclBuOVdBazhmM21hbU5NT1FPaG91ZmRpQkhOeGpMNWtGS2lBbzBOQkVxQ0VzTFdNSlhWSTFJTWs4QzJXNlZfaUpIdHpjNFc3VW0zZ0pHQ0NkNWdxVnlzZGJqRXU4MWNQWVdQam5XSkcwNXRhTnZyOXJlN2NkZ1hVNFNvbUxXYw?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Visa uses “Tap In” campaign to turn the 2026 World Cup into an experience of access, connection and everyday fan rituals
+            - figure [ref=e242]
+          - time [ref=e244]: 2 days ago
+      - generic [ref=e245]:
+        - separator [ref=e247]
+        - generic [ref=e249]:
+          - generic [ref=e250]:
+            - link [ref=e252] [cursor=pointer]:
+              - /url: ./read/CBMiekFVX3lxTE9ld2RuLURGUnVFcmREUU5DTnBVM1lyckJlUHhvYklQSndZMUlrejZlYkFYY3lJVVp2TXBNbE1zVWRWd2JnWXNkUVd2WGk1MjlyUmhHZzFGc0tBdmk1ZWdCMEd4Z2lubW9jUWREeDNfUWdLNzJlS0JwZ0tn0gF6QVVfeXFMTlFzbHdDc01nLUZINWd2TldaRGY2SU9GWWJmNm94bXpybG1vaW0zSVZ5OWVuZXp2WkFycGlZeFNhSTA2R3hXUUhFbWtyWTF0YkxTVWlKNFlQeTBvYmxsRF84U29OQTFQY3VFSzBsbXhaT2h0bzI1bFFNalE?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e254]:
+              - generic [ref=e255]:
+                - generic [ref=e258]: Kansas City Star
+                - generic [ref=e262]:
+                  - generic:
+                    - button "More - Jason Sudeikis taps in for a role during World Cup fever ... in a Visa ad campaign" [ref=e263] [cursor=pointer]:
+                      - img [ref=e265]
+                    - tooltip [ref=e267]: More
+              - link "Jason Sudeikis taps in for a role during World Cup fever ... in a Visa ad campaign - Kansas City Star - 3 days ago - By Lisa Gutierrez" [ref=e268] [cursor=pointer]:
+                - /url: ./read/CBMiekFVX3lxTE9ld2RuLURGUnVFcmREUU5DTnBVM1lyckJlUHhvYklQSndZMUlrejZlYkFYY3lJVVp2TXBNbE1zVWRWd2JnWXNkUVd2WGk1MjlyUmhHZzFGc0tBdmk1ZWdCMEd4Z2lubW9jUWREeDNfUWdLNzJlS0JwZ0tn0gF6QVVfeXFMTlFzbHdDc01nLUZINWd2TldaRGY2SU9GWWJmNm94bXpybG1vaW0zSVZ5OWVuZXp2WkFycGlZeFNhSTA2R3hXUUhFbWtyWTF0YkxTVWlKNFlQeTBvYmxsRF84U29OQTFQY3VFSzBsbXhaT2h0bzI1bFFNalE?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Jason Sudeikis taps in for a role during World Cup fever ... in a Visa ad campaign
+            - figure [ref=e269]
+          - generic [ref=e270]:
+            - time [ref=e271]: 3 days ago
+            - separator [ref=e272]
+            - generic [ref=e273]: By Lisa Gutierrez
+      - generic [ref=e274]:
+        - separator [ref=e276]
+        - generic [ref=e278]:
+          - generic [ref=e279]:
+            - link [ref=e281] [cursor=pointer]:
+              - /url: ./read/CBMikgFBVV95cUxNYndlUHQwc2tCdlN4M2ptYnY4c2N4TUVTaUFOZUhfY1RodEE2M0I0ekwyTDFEM2wzcDAzWGp2VzZLTjhCVDdBaUhpaTJKM185a09lbjE3ZG5xZW11T1lWSG53UjdJNEUwdHBQTUZ5SlNLQmZwclU5bk5zS3FPdV9pZ1N0d2dsVmh0MlhLdTFDcmpiQQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e283]:
+              - generic [ref=e284]:
+                - generic [ref=e287]: marketingreport.one
+                - generic [ref=e291]:
+                  - generic:
+                    - button "More - Visa links FIFA World Cup goals to fan rewards" [ref=e292] [cursor=pointer]:
+                      - img [ref=e294]
+                    - tooltip [ref=e296]: More
+              - link "Visa links FIFA World Cup goals to fan rewards - marketingreport.one - 3 days ago - By Bob Koigi" [ref=e297] [cursor=pointer]:
+                - /url: ./read/CBMikgFBVV95cUxNYndlUHQwc2tCdlN4M2ptYnY4c2N4TUVTaUFOZUhfY1RodEE2M0I0ekwyTDFEM2wzcDAzWGp2VzZLTjhCVDdBaUhpaTJKM185a09lbjE3ZG5xZW11T1lWSG53UjdJNEUwdHBQTUZ5SlNLQmZwclU5bk5zS3FPdV9pZ1N0d2dsVmh0MlhLdTFDcmpiQQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Visa links FIFA World Cup goals to fan rewards
+            - figure [ref=e298]
+          - generic [ref=e299]:
+            - time [ref=e300]: 3 days ago
+            - separator [ref=e301]
+            - generic [ref=e302]: By Bob Koigi
+      - generic [ref=e303]:
+        - separator [ref=e305]
+        - generic [ref=e307]:
+          - generic [ref=e308]:
+            - link [ref=e310] [cursor=pointer]:
+              - /url: ./read/CBMiwAFBVV95cUxPbHBwUUxPM0JzRE85WXoyejBKM0V5ZlktcmdwVUlHaXpmR3F2ZjNydmo4TTlhQTlqTElBdFpCeGFfRkFGcG94cHNhNDNmZWRMel9QWktWOTlRTFpSQm80aUJWVFlMTU9sQ25tWXhGUTZZbUtOaHQzdjRRRmEwcUJRaVozQUx3Y1RKZWN2bVJmN3FjdTVpTXJvdlA1NjFXNDRhNXB4SkVBaFFDMnl0UC1DNDFXMmpKWlVBeWJrSHRhbEg?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e312]:
+              - generic [ref=e313]:
+                - generic [ref=e316]: Sports Business Journal
+                - generic [ref=e320]:
+                  - generic:
+                    - button "More - Visa launches ‘Tap In’ campaign centered on World Cup fan payments" [ref=e321] [cursor=pointer]:
+                      - img [ref=e323]
+                    - tooltip [ref=e325]: More
+              - link "Visa launches ‘Tap In’ campaign centered on World Cup fan payments - Sports Business Journal - 5 days ago" [ref=e326] [cursor=pointer]:
+                - /url: ./read/CBMiwAFBVV95cUxPbHBwUUxPM0JzRE85WXoyejBKM0V5ZlktcmdwVUlHaXpmR3F2ZjNydmo4TTlhQTlqTElBdFpCeGFfRkFGcG94cHNhNDNmZWRMel9QWktWOTlRTFpSQm80aUJWVFlMTU9sQ25tWXhGUTZZbUtOaHQzdjRRRmEwcUJRaVozQUx3Y1RKZWN2bVJmN3FjdTVpTXJvdlA1NjFXNDRhNXB4SkVBaFFDMnl0UC1DNDFXMmpKWlVBeWJrSHRhbEg?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Visa launches ‘Tap In’ campaign centered on World Cup fan payments
+            - figure [ref=e327]
+          - time [ref=e329]: 5 days ago
+      - generic [ref=e330]:
+        - separator [ref=e332]
+        - generic [ref=e334]:
+          - generic [ref=e335]:
+            - link [ref=e337] [cursor=pointer]:
+              - /url: ./read/CBMigwFBVV95cUxQdnpFLTQzMWVTVDBLZEt4UDBreFdpaVVWTGV3S21POHJaYjdlcld4VXV4Nmtqa1prZzBKQVFITFlnQ3hLakVzR29CQjdHbHpxLV9HaE9GbFZqNGFibGhHR2ZxLTNYMUJuUGh3NjktNkkzSC1UdFNXc3g3eWliMmNzdDk4TQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e339]:
+              - generic [ref=e340]:
+                - generic [ref=e343]: Brand Innovators
+                - generic [ref=e347]:
+                  - generic:
+                    - button "More - Brand Innovators FIFA World Cup Ad Tracker 2026" [ref=e348] [cursor=pointer]:
+                      - img [ref=e350]
+                    - tooltip [ref=e352]: More
+              - link "Brand Innovators FIFA World Cup Ad Tracker 2026 - Brand Innovators - 4 days ago - By Dianna Dilworth" [ref=e353] [cursor=pointer]:
+                - /url: ./read/CBMigwFBVV95cUxQdnpFLTQzMWVTVDBLZEt4UDBreFdpaVVWTGV3S21POHJaYjdlcld4VXV4Nmtqa1prZzBKQVFITFlnQ3hLakVzR29CQjdHbHpxLV9HaE9GbFZqNGFibGhHR2ZxLTNYMUJuUGh3NjktNkkzSC1UdFNXc3g3eWliMmNzdDk4TQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Brand Innovators FIFA World Cup Ad Tracker 2026
+            - figure [ref=e354]
+          - generic [ref=e355]:
+            - time [ref=e356]: 4 days ago
+            - separator [ref=e357]
+            - generic [ref=e358]: By Dianna Dilworth
+      - generic [ref=e359]:
+        - separator [ref=e361]
+        - generic [ref=e363]:
+          - generic [ref=e364]:
+            - link [ref=e366] [cursor=pointer]:
+              - /url: ./read/CBMimwFBVV95cUxQcUgzU291UUxqdFZTeHdSX2E3M1owaVZaX2RacjdUU2xkblZrSzMxMWo4ajJuWmhwQUV3NDh5OUo0Ny15MlNwa3JQbURXN1FqcDY2UVVlLVRrS3VwbGVrZWFOWjZwMEVBVUxDZlg1Z1VLZVFPQjBqYXJTbWw0MmdseXlDT010VkVnYi16OFcycXlXNFNLeDlWU1FMTQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e368]:
+              - generic [ref=e369]:
+                - generic [ref=e372]: The New York Times
+                - generic [ref=e376]:
+                  - generic:
+                    - 'button "More - First look: Sudeikis, Haaland and Yamal front blockbuster Visa World Cup ad - The Athletic" [ref=e377] [cursor=pointer]':
+                      - img [ref=e379]
+                    - tooltip [ref=e381]: More
+              - 'link "First look: Sudeikis, Haaland and Yamal front blockbuster Visa World Cup ad - The Athletic - The New York Times - 6 days ago - By Melanie Anzidei" [ref=e382] [cursor=pointer]':
+                - /url: ./read/CBMimwFBVV95cUxQcUgzU291UUxqdFZTeHdSX2E3M1owaVZaX2RacjdUU2xkblZrSzMxMWo4ajJuWmhwQUV3NDh5OUo0Ny15MlNwa3JQbURXN1FqcDY2UVVlLVRrS3VwbGVrZWFOWjZwMEVBVUxDZlg1Z1VLZVFPQjBqYXJTbWw0MmdseXlDT010VkVnYi16OFcycXlXNFNLeDlWU1FMTQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "First look: Sudeikis, Haaland and Yamal front blockbuster Visa World Cup ad - The Athletic"
+            - figure [ref=e383]
+          - generic [ref=e384]:
+            - time [ref=e385]: 6 days ago
+            - separator [ref=e386]
+            - generic [ref=e387]: By Melanie Anzidei
+      - progressbar [ref=e391]:
+        - img [ref=e393]
+    - complementary [ref=e396]:
+      - generic [ref=e398]:
+        - generic [ref=e401]:
+          - heading "Visa \"World Cup\" 2026 campaign" [level=2] [ref=e402]
+          - generic [ref=e403]: Search results
+        - generic [ref=e406]:
+          - button "Save this search - Visa \"World Cup\" 2026 campaign" [ref=e408]:
+            - img [ref=e412]
+            - generic [ref=e414]: Save
+          - tooltip [ref=e415]: Save this search

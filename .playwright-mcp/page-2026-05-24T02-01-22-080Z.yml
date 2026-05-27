@@ -1,0 +1,272 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link "Google News" [ref=e7] [cursor=pointer]:
+        - /url: ./?hl=en-US&gl=US&ceid=US%3Aen
+        - generic [ref=e9]: News
+      - generic [ref=e10]:
+        - search [ref=e12]:
+          - combobox "Search for topics, locations & sources" [ref=e19]: World Cup 2026 brand sponsor campaign creative
+          - button "Advanced search" [ref=e20] [cursor=pointer]:
+            - generic [ref=e21]:
+              - generic "Advanced search" [ref=e22]:
+                - img [ref=e23]
+              - tooltip [ref=e25]: Advanced search
+          - button "Clear search" [ref=e26] [cursor=pointer]:
+            - img [ref=e27]
+          - button "Search" [ref=e30] [cursor=pointer]:
+            - img [ref=e31]
+        - generic [ref=e34]:
+          - generic [ref=e39]:
+            - button "Help" [ref=e40] [cursor=pointer]:
+              - img [ref=e42]
+            - tooltip [ref=e44]: Help
+          - generic [ref=e49]:
+            - button "Settings" [ref=e50] [cursor=pointer]:
+              - img [ref=e52]
+            - tooltip [ref=e55]: Settings
+      - generic [ref=e57]:
+        - button "Google apps" [ref=e61] [cursor=pointer]:
+          - img [ref=e62]
+        - 'button "Google Account: 谷如洋 (guruyang77@gmail.com)" [ref=e67] [cursor=pointer]':
+          - img [ref=e69]
+    - navigation [ref=e72]:
+      - tablist [ref=e73]:
+        - tab "Home" [ref=e74] [cursor=pointer]:
+          - tab "Home" [ref=e75]
+        - tab "For you" [ref=e76] [cursor=pointer]:
+          - tab "For you" [ref=e77]
+        - tab "Following" [ref=e78] [cursor=pointer]:
+          - tab "Following" [ref=e79]
+        - tab "U.S." [ref=e82] [cursor=pointer]:
+          - tab "U.S." [ref=e83]
+        - tab "World" [ref=e84] [cursor=pointer]:
+          - tab "World" [ref=e85]
+        - tab "Local" [ref=e86] [cursor=pointer]:
+          - tab "Local" [ref=e87]
+        - tab "Business" [ref=e88] [cursor=pointer]:
+          - tab "Business" [ref=e89]
+        - tab "Technology" [ref=e90] [cursor=pointer]:
+          - tab "Technology" [ref=e91]
+        - tab "Entertainment" [ref=e92] [cursor=pointer]:
+          - tab "Entertainment" [ref=e93]
+        - tab "Sports" [ref=e94] [cursor=pointer]:
+          - tab "Sports" [ref=e95]
+        - tab "Science" [ref=e96] [cursor=pointer]:
+          - tab "Science" [ref=e97]
+        - tab "Health" [ref=e98] [cursor=pointer]:
+          - tab "Health" [ref=e99]
+  - main [ref=e103]:
+    - generic [ref=e105]:
+      - generic [ref=e108]:
+        - generic [ref=e109]:
+          - link [ref=e111] [cursor=pointer]:
+            - /url: ./read/CBMigwFBVV95cUxQdnpFLTQzMWVTVDBLZEt4UDBreFdpaVVWTGV3S21POHJaYjdlcld4VXV4Nmtqa1prZzBKQVFITFlnQ3hLakVzR29CQjdHbHpxLV9HaE9GbFZqNGFibGhHR2ZxLTNYMUJuUGh3NjktNkkzSC1UdFNXc3g3eWliMmNzdDk4TQ?hl=en-US&gl=US&ceid=US%3Aen
+          - generic [ref=e113]:
+            - generic [ref=e114]:
+              - generic [ref=e117]: Brand Innovators
+              - generic [ref=e121]:
+                - generic:
+                  - button "More - Brand Innovators FIFA World Cup Ad Tracker 2026" [ref=e122] [cursor=pointer]:
+                    - img [ref=e124]
+                  - tooltip [ref=e126]: More
+            - link "Brand Innovators FIFA World Cup Ad Tracker 2026 - Brand Innovators - 4 days ago - By Dianna Dilworth" [ref=e127] [cursor=pointer]:
+              - /url: ./read/CBMigwFBVV95cUxQdnpFLTQzMWVTVDBLZEt4UDBreFdpaVVWTGV3S21POHJaYjdlcld4VXV4Nmtqa1prZzBKQVFITFlnQ3hLakVzR29CQjdHbHpxLV9HaE9GbFZqNGFibGhHR2ZxLTNYMUJuUGh3NjktNkkzSC1UdFNXc3g3eWliMmNzdDk4TQ?hl=en-US&gl=US&ceid=US%3Aen
+              - text: Brand Innovators FIFA World Cup Ad Tracker 2026
+          - figure [ref=e128]
+        - generic [ref=e129]:
+          - time [ref=e130]: 4 days ago
+          - separator [ref=e131]
+          - generic [ref=e132]: By Dianna Dilworth
+      - generic [ref=e133]:
+        - separator [ref=e135]
+        - generic [ref=e137]:
+          - generic [ref=e138]:
+            - link [ref=e140] [cursor=pointer]:
+              - /url: ./read/CBMiowFBVV95cUxNVzdOVWdETm1TV2xPMjRsR1QwZjRDWjBGai1ZWUFkdXdobXVkWmh1cXRLYlcwcVdtUWZHRjB4Rlh3a202YTVSNGlsc3B3VWtkbk5kbjNhNzNJOWswY250UXVZbmJUOVM2dHJJaDN1RkpfeW9nQVVfN25sc0xCMG1xRWJEWkNkWXVpaG9jNFMxamprN2ozWFVZN0FBRDNEZkItcUFJ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e142]:
+              - generic [ref=e143]:
+                - generic [ref=e146]: ADWEEK
+                - generic [ref=e150]:
+                  - generic:
+                    - 'button "More - FIFA World Cup 26 Ad Tracker: Brands Kick Off Summer of Soccer" [ref=e151] [cursor=pointer]':
+                      - img [ref=e153]
+                    - tooltip [ref=e155]: More
+              - 'link "FIFA World Cup 26 Ad Tracker: Brands Kick Off Summer of Soccer - ADWEEK - 13 days ago - By Bill Bradley, Brittaney Kiefer & Rebecca Stewart" [ref=e156] [cursor=pointer]':
+                - /url: ./read/CBMiowFBVV95cUxNVzdOVWdETm1TV2xPMjRsR1QwZjRDWjBGai1ZWUFkdXdobXVkWmh1cXRLYlcwcVdtUWZHRjB4Rlh3a202YTVSNGlsc3B3VWtkbk5kbjNhNzNJOWswY250UXVZbmJUOVM2dHJJaDN1RkpfeW9nQVVfN25sc0xCMG1xRWJEWkNkWXVpaG9jNFMxamprN2ozWFVZN0FBRDNEZkItcUFJ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "FIFA World Cup 26 Ad Tracker: Brands Kick Off Summer of Soccer"
+            - figure [ref=e157]
+          - generic [ref=e158]:
+            - time [ref=e159]: 13 days ago
+            - separator [ref=e160]
+            - generic [ref=e161]: By Bill Bradley, Brittaney Kiefer & Rebecca Stewart
+      - generic [ref=e162]:
+        - separator [ref=e164]
+        - generic [ref=e166]:
+          - generic [ref=e167]:
+            - link [ref=e169] [cursor=pointer]:
+              - /url: ./read/CBMid0FVX3lxTE9uR0V0alpNTy03a2ZJbE9GdGdEV3ZNNlY1X1QzZEw4V0pBdEFiYktOYXdBUEh0WXpvQmFiMi1YQ0ZreFZ0alRhSXkxNkFpRkJnVTk0TUpHZWZodGJ5TUR5enJpbmtIYXM2VWdhY0hfOGFKTllLVEZN?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e171]:
+              - generic [ref=e172]:
+                - generic [ref=e175]: The Drum
+                - generic [ref=e179]:
+                  - generic:
+                    - 'button "More - World Cup 2026 ads: Watch all the big brand spots released so far" [ref=e180] [cursor=pointer]':
+                      - img [ref=e182]
+                    - tooltip [ref=e184]: More
+              - 'link "World Cup 2026 ads: Watch all the big brand spots released so far - The Drum - 23 days ago" [ref=e185] [cursor=pointer]':
+                - /url: ./read/CBMid0FVX3lxTE9uR0V0alpNTy03a2ZJbE9GdGdEV3ZNNlY1X1QzZEw4V0pBdEFiYktOYXdBUEh0WXpvQmFiMi1YQ0ZreFZ0alRhSXkxNkFpRkJnVTk0TUpHZWZodGJ5TUR5enJpbmtIYXM2VWdhY0hfOGFKTllLVEZN?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "World Cup 2026 ads: Watch all the big brand spots released so far"
+            - figure [ref=e186]
+          - time [ref=e188]: 23 days ago
+      - generic [ref=e189]:
+        - separator [ref=e191]
+        - generic [ref=e193]:
+          - generic [ref=e194]:
+            - link [ref=e196] [cursor=pointer]:
+              - /url: ./read/CBMipgFBVV95cUxQQTNncGJhZTdaSWJtaDFNMWNLMHdvYUtRWkRzSXh2X3M5NnVnOVBUVkxQYlNGREpEd3lWdFZScXpqSU51WDU1aW9ZcFdKSXRaWGRoN3Y1Q1ZEMkRUTzFUOWVlSFMtbHc2U0JwMVU3SHhuT2tuVk1oZ3ZMalZXb0Q4OHFwSG56bk80T1ZqajdsU2xuSnI2cXpBYXdMM0hOQV92emFpTnFB?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e198]:
+              - generic [ref=e199]:
+                - generic [ref=e202]: Creative Salon
+                - generic [ref=e206]:
+                  - generic:
+                    - 'button "More - World Cup 2026: Redefining Brand Partnerships" [ref=e207] [cursor=pointer]':
+                      - img [ref=e209]
+                    - tooltip [ref=e211]: More
+              - 'link "World Cup 2026: Redefining Brand Partnerships - Creative Salon - 6 days ago" [ref=e212] [cursor=pointer]':
+                - /url: ./read/CBMipgFBVV95cUxQQTNncGJhZTdaSWJtaDFNMWNLMHdvYUtRWkRzSXh2X3M5NnVnOVBUVkxQYlNGREpEd3lWdFZScXpqSU51WDU1aW9ZcFdKSXRaWGRoN3Y1Q1ZEMkRUTzFUOWVlSFMtbHc2U0JwMVU3SHhuT2tuVk1oZ3ZMalZXb0Q4OHFwSG56bk80T1ZqajdsU2xuSnI2cXpBYXdMM0hOQV92emFpTnFB?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "World Cup 2026: Redefining Brand Partnerships"
+            - figure [ref=e213]
+          - time [ref=e215]: 6 days ago
+      - generic [ref=e216]:
+        - separator [ref=e218]
+        - generic [ref=e220]:
+          - generic [ref=e221]:
+            - link [ref=e223] [cursor=pointer]:
+              - /url: ./read/CBMirAFBVV95cUxQRUZMSTVEczYyQk5MZHJTc1ZSMVRmeUpJbTl2ajBQWlZyWkRZeW1FcEhNR250RnItSjVVajY1c05BTmc5QmxWalhoRDBsQS1QaG1udDB4cXUxcDd2dEFpeS1sM3dES1RNcGdndTZ1ano1b1hxdzVfOWVzXzRRa1h0N05KWmFUR04wWkxZaUs4Zkw3MlFqd1RzTUo0WnVtT09MdXlNRTBVS3ROT1NT?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e225]:
+              - generic [ref=e226]:
+                - generic [ref=e229]: Fast Company
+                - generic [ref=e233]:
+                  - generic:
+                    - button "More - The unique marketing strategy behind Lay’s FIFA World Cup 2026 campaigns" [ref=e234] [cursor=pointer]:
+                      - img [ref=e236]
+                    - tooltip [ref=e238]: More
+              - link "The unique marketing strategy behind Lay’s FIFA World Cup 2026 campaigns - Fast Company - 20 days ago" [ref=e239] [cursor=pointer]:
+                - /url: ./read/CBMirAFBVV95cUxQRUZMSTVEczYyQk5MZHJTc1ZSMVRmeUpJbTl2ajBQWlZyWkRZeW1FcEhNR250RnItSjVVajY1c05BTmc5QmxWalhoRDBsQS1QaG1udDB4cXUxcDd2dEFpeS1sM3dES1RNcGdndTZ1ano1b1hxdzVfOWVzXzRRa1h0N05KWmFUR04wWkxZaUs4Zkw3MlFqd1RzTUo0WnVtT09MdXlNRTBVS3ROT1NT?hl=en-US&gl=US&ceid=US%3Aen
+                - text: The unique marketing strategy behind Lay’s FIFA World Cup 2026 campaigns
+            - figure [ref=e240]
+          - time [ref=e242]: 20 days ago
+      - generic [ref=e243]:
+        - separator [ref=e245]
+        - generic [ref=e247]:
+          - generic [ref=e248]:
+            - link [ref=e250] [cursor=pointer]:
+              - /url: ./read/CBMiiAFBVV95cUxQWkhEcklpOEl0X2RiemVXXzk5VFlLallWejliN0Z6bVZ1eVlMWVVHdnZVUkpPTkRaT184NnM5aElQaXUxZVA2TmQ0SkNqcG55aVRUYkNmd1FUa2Y1Tmg3UTJiRmtRSWpkdW5TV2pRZFl1S1VIeFM2b21famM2V01ENFVVUFhLbnBj?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e252]:
+              - generic [ref=e253]:
+                - generic [ref=e256]: Little Black Book | LBBOnline
+                - generic [ref=e260]:
+                  - generic:
+                    - button "More - The Good, The Bad and The Conundrums of World Cup Comms" [ref=e261] [cursor=pointer]:
+                      - img [ref=e263]
+                    - tooltip [ref=e265]: More
+              - link "The Good, The Bad and The Conundrums of World Cup Comms - Little Black Book | LBBOnline - 6 days ago" [ref=e266] [cursor=pointer]:
+                - /url: ./read/CBMiiAFBVV95cUxQWkhEcklpOEl0X2RiemVXXzk5VFlLallWejliN0Z6bVZ1eVlMWVVHdnZVUkpPTkRaT184NnM5aElQaXUxZVA2TmQ0SkNqcG55aVRUYkNmd1FUa2Y1Tmg3UTJiRmtRSWpkdW5TV2pRZFl1S1VIeFM2b21famM2V01ENFVVUFhLbnBj?hl=en-US&gl=US&ceid=US%3Aen
+                - text: The Good, The Bad and The Conundrums of World Cup Comms
+            - figure [ref=e267]
+          - time [ref=e269]: 6 days ago
+      - generic [ref=e270]:
+        - separator [ref=e272]
+        - generic [ref=e274]:
+          - generic [ref=e275]:
+            - link [ref=e277] [cursor=pointer]:
+              - /url: ./read/CBMiwAFBVV95cUxNTVZwVWNZcnpPS2JKNGNpV2h6c01Qb0sxMHl0VGlwX3EzQ21SblI0X2F2RUdGVzdvUndZXy1Rcno3dWNFMUx2cTFCZUVOdFo0N2pVTTZrcUxnX1RWb2ZwRVQ3NDg4Q0x3ajJ2VFkzWUhrSVNKMUpPakMwd0o1SUtxZHRFbGl5R0Q1MjlTODJ6WG15Nk01cXJDUkpySVVNdEtUeHBjLVFwWlBETDRDQXhUazV4T1hmT2h3VnNpVFo3VUk?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e279]:
+              - generic [ref=e280]:
+                - generic [ref=e283]: PR Newswire
+                - generic [ref=e287]:
+                  - generic:
+                    - button "More - Lay's Launches Two Unique Creative Campaigns for FIFA World Cup 2026™" [ref=e288] [cursor=pointer]:
+                      - img [ref=e290]
+                    - tooltip [ref=e292]: More
+              - link "Lay's Launches Two Unique Creative Campaigns for FIFA World Cup 2026™ - PR Newswire - 19 days ago" [ref=e293] [cursor=pointer]:
+                - /url: ./read/CBMiwAFBVV95cUxNTVZwVWNZcnpPS2JKNGNpV2h6c01Qb0sxMHl0VGlwX3EzQ21SblI0X2F2RUdGVzdvUndZXy1Rcno3dWNFMUx2cTFCZUVOdFo0N2pVTTZrcUxnX1RWb2ZwRVQ3NDg4Q0x3ajJ2VFkzWUhrSVNKMUpPakMwd0o1SUtxZHRFbGl5R0Q1MjlTODJ6WG15Nk01cXJDUkpySVVNdEtUeHBjLVFwWlBETDRDQXhUazV4T1hmT2h3VnNpVFo3VUk?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Lay's Launches Two Unique Creative Campaigns for FIFA World Cup 2026™
+            - figure [ref=e294]
+          - time [ref=e296]: 19 days ago
+      - generic [ref=e297]:
+        - separator [ref=e299]
+        - generic [ref=e301]:
+          - generic [ref=e302]:
+            - link [ref=e304] [cursor=pointer]:
+              - /url: ./read/CBMihAJBVV95cUxQUUJnR1Q1UjhFdXB6VHIyLWI4dTl2cWp4UktTenRJanQwQ0NKQkRGLXJTTi1kUzRyYmQ4OUVHNzNxSmdfUnBjV21zT1hLTnY5TDNqS0tpZkpGdjZ6NWdBWHlxVEcxdlFoTktpMkJsUjlZbHBOSXpZNHNSQWZKMk5zTFVBcFBDRm43NHBVc3o3RGlMUFl5SFRaU3pzUzFYdFNLMllDUWlCWVBqb2dFUzBnTkR3bVdJMTJra1FYUHdMUC1BNlVQMEFGVEJzQnNJMGJGR3BQU1Vpa0xUd2pDRXNuSG5LdkxBSVNONkNwMnRhWEZqbjlQSUNJNjk3d0ZhTTlBRi1xUQ?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e306]:
+              - generic [ref=e307]:
+                - generic [ref=e310]: USA Today
+                - generic [ref=e314]:
+                  - generic:
+                    - button "More - Love Creative Marketing USA Announces Street Advertising and Fly Posting Services Across US Host Cities for World Cup 2026" [ref=e315] [cursor=pointer]:
+                      - img [ref=e317]
+                    - tooltip [ref=e319]: More
+              - link "Love Creative Marketing USA Announces Street Advertising and Fly Posting Services Across US Host Cities for World Cup 2026 - USA Today - 18 days ago" [ref=e320] [cursor=pointer]:
+                - /url: ./read/CBMihAJBVV95cUxQUUJnR1Q1UjhFdXB6VHIyLWI4dTl2cWp4UktTenRJanQwQ0NKQkRGLXJTTi1kUzRyYmQ4OUVHNzNxSmdfUnBjV21zT1hLTnY5TDNqS0tpZkpGdjZ6NWdBWHlxVEcxdlFoTktpMkJsUjlZbHBOSXpZNHNSQWZKMk5zTFVBcFBDRm43NHBVc3o3RGlMUFl5SFRaU3pzUzFYdFNLMllDUWlCWVBqb2dFUzBnTkR3bVdJMTJra1FYUHdMUC1BNlVQMEFGVEJzQnNJMGJGR3BQU1Vpa0xUd2pDRXNuSG5LdkxBSVNONkNwMnRhWEZqbjlQSUNJNjk3d0ZhTTlBRi1xUQ?hl=en-US&gl=US&ceid=US%3Aen
+                - text: Love Creative Marketing USA Announces Street Advertising and Fly Posting Services Across US Host Cities for World Cup 2026
+            - figure [ref=e321]
+          - time [ref=e323]: 18 days ago
+      - generic [ref=e324]:
+        - separator [ref=e326]
+        - generic [ref=e328]:
+          - generic [ref=e329]:
+            - link [ref=e331] [cursor=pointer]:
+              - /url: ./read/CBMiiAFBVV95cUxNeXZHZW5XSDR4eUxOZUtOQkdfUzg1TVRGQWhGMTc5NDZYbHdRUThvYklmVF9Wd0xzTEdZS2M0cXo3a21tdEZRcktBWnhlaVQxN05fRzVVbXFkT3FPa05GYmE2bDFfeWpGbWlOVFNuc1FYWHMtWDdpZmZmS0tCVzBaQ2FFUFlJMWZj?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e333]:
+              - generic [ref=e334]:
+                - generic [ref=e337]: Marketing Brew
+                - generic [ref=e341]:
+                  - generic:
+                    - button "More - How soccer orgs and sponsors are putting local spins on World Cup campaigns" [ref=e342] [cursor=pointer]:
+                      - img [ref=e344]
+                    - tooltip [ref=e346]: More
+              - link "How soccer orgs and sponsors are putting local spins on World Cup campaigns - Marketing Brew - Apr 9 - By Alyssa Meyers" [ref=e347] [cursor=pointer]:
+                - /url: ./read/CBMiiAFBVV95cUxNeXZHZW5XSDR4eUxOZUtOQkdfUzg1TVRGQWhGMTc5NDZYbHdRUThvYklmVF9Wd0xzTEdZS2M0cXo3a21tdEZRcktBWnhlaVQxN05fRzVVbXFkT3FPa05GYmE2bDFfeWpGbWlOVFNuc1FYWHMtWDdpZmZmS0tCVzBaQ2FFUFlJMWZj?hl=en-US&gl=US&ceid=US%3Aen
+                - text: How soccer orgs and sponsors are putting local spins on World Cup campaigns
+            - figure [ref=e348]
+          - generic [ref=e349]:
+            - time [ref=e350]: Apr 9
+            - separator [ref=e351]
+            - generic [ref=e352]: By Alyssa Meyers
+      - generic [ref=e353]:
+        - separator [ref=e355]
+        - generic [ref=e357]:
+          - generic [ref=e358]:
+            - link [ref=e360] [cursor=pointer]:
+              - /url: ./read/CBMi6wFBVV95cUxPSXQ5ZHo3cjN4bzd5LWlDdEIyUDF6WXRNUUhsSHR2TVl2RjZSVy1oZEx6VXI5TmdnS3ItcFF5OFBaMWVDdXZ6bFIxaTB2Y3JDQmlQdzNWUVFwY3BjU1NrekUybVFtc1UyLWZJRVZ5YXNTcmdKRnpCT3Q3M1RMSE56aVNoQzZXdWlDaUlIQlM2SHFvazBBYS1xaU9ydWV1ZC1RaDhQOGtGR1F6QUpZczJnekVlVWRLYlpkWTU3ajg4UzhKc2lreGpWLVRCbXNjZjdxYWtiMEsxbjAxV3dMUjgxWjBOSVRTRS1SMHFn?hl=en-US&gl=US&ceid=US%3Aen
+            - generic [ref=e362]:
+              - generic [ref=e363]:
+                - generic [ref=e366]: Performance Marketing World
+                - generic [ref=e370]:
+                  - generic:
+                    - 'button "More - Account win roundup: Google sponsors ITV World Cup coverage and Heineken consolidates creative account" [ref=e371] [cursor=pointer]':
+                      - img [ref=e373]
+                    - tooltip [ref=e375]: More
+              - 'link "Account win roundup: Google sponsors ITV World Cup coverage and Heineken consolidates creative account - Performance Marketing World - 4 days ago - By Bethany McLean" [ref=e376] [cursor=pointer]':
+                - /url: ./read/CBMi6wFBVV95cUxPSXQ5ZHo3cjN4bzd5LWlDdEIyUDF6WXRNUUhsSHR2TVl2RjZSVy1oZEx6VXI5TmdnS3ItcFF5OFBaMWVDdXZ6bFIxaTB2Y3JDQmlQdzNWUVFwY3BjU1NrekUybVFtc1UyLWZJRVZ5YXNTcmdKRnpCT3Q3M1RMSE56aVNoQzZXdWlDaUlIQlM2SHFvazBBYS1xaU9ydWV1ZC1RaDhQOGtGR1F6QUpZczJnekVlVWRLYlpkWTU3ajg4UzhKc2lreGpWLVRCbXNjZjdxYWtiMEsxbjAxV3dMUjgxWjBOSVRTRS1SMHFn?hl=en-US&gl=US&ceid=US%3Aen
+                - text: "Account win roundup: Google sponsors ITV World Cup coverage and Heineken consolidates creative account"
+            - figure [ref=e377]
+          - generic [ref=e378]:
+            - time [ref=e379]: 4 days ago
+            - separator [ref=e380]
+            - generic [ref=e381]: By Bethany McLean
+      - progressbar [ref=e385]:
+        - img [ref=e387]
+    - complementary [ref=e390]:
+      - generic [ref=e392]:
+        - generic [ref=e395]:
+          - heading "World Cup 2026 brand sponsor campaign creative" [level=2] [ref=e396]
+          - generic [ref=e397]: Search results
+        - generic [ref=e400]:
+          - button "Save this search - World Cup 2026 brand sponsor campaign creative" [ref=e402]:
+            - img [ref=e406]
+            - generic [ref=e408]: Save
+          - tooltip [ref=e409]: Save this search

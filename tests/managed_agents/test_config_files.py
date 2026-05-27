@@ -6,6 +6,7 @@ import yaml
 
 from agent.managed_agents.policy import load_policy_engine
 from agent.managed_agents.registry import PermissionMode, RiskLevel, load_agent_registry
+from agent.managed_agents.runtime_mirror import build_runtime_registry
 from agent.managed_agents.router import load_managed_agent_router
 
 
@@ -80,7 +81,9 @@ def test_codegraph_is_scoped_to_code_understanding_agents():
     assert "mcp-codegraph" in registry.get("hermes-internal").tools
     assert "mcp-codegraph" in registry.get("codex").tools
     assert "mcp-codegraph" in registry.get("claude").tools
+    assert "mcp-codegraph" in registry.get("ambrosini").tools
     assert "mcp-codegraph" not in registry.get("deepseek-tui").tools
+    assert "terminal" not in registry.get("ambrosini").tools
 
 
 def test_managed_agents_skill_whitelists_are_declared():
@@ -88,13 +91,62 @@ def test_managed_agents_skill_whitelists_are_declared():
 
     assert "hermes-subagent-delegation" in registry.get("hermes-internal").skills
     assert "github-pr-workflow" in registry.get("claude").skills
+    assert "design-md" in registry.get("claude").skills
+    assert "comfyui" in registry.get("claude").skills
     assert "debugging-hermes-tui-commands" in registry.get("deepseek-tui").skills
     assert "codex-superpowers" in registry.get("codex").skills
+    assert "playwright-mcp" not in registry.get("codex").skills
     assert registry.get("intelligence").skills == ("competitive-intelligence",)
     assert "claude-design" in registry.get("pirlo").skills
+    assert "comfyui" not in registry.get("pirlo").skills
     assert "browser-automation-for-blocked-sites" in registry.get("agent-tars").skills
+    assert "playwright-mcp" in registry.get("agent-tars").skills
     assert "github-code-review" in registry.get("ambrosini").skills
+    assert "playwright-mcp" not in registry.get("ambrosini").skills
     assert "kanban" not in registry.agents
+
+
+def test_runtime_agent_registry_profiles_match_managed_agents_config():
+    registry = load_agent_registry(CONFIG_DIR / "agents.yaml")
+    runtime_path = Path("/Users/gu/.hermes/config/agent-registry.json")
+    runtime = yaml.safe_load(runtime_path.read_text(encoding="utf-8"))
+
+    for agent_id, agent in registry.agents.items():
+        profile = runtime["agents"][agent_id]["subagent_profile"]
+        assert profile["toolsets"] == list(agent.tools), agent_id
+        assert profile["skills"] == list(agent.skills), agent_id
+
+
+def test_runtime_agent_registry_is_generated_from_managed_agents_config():
+    runtime_path = Path("/Users/gu/.hermes/config/agent-registry.json")
+    runtime = yaml.safe_load(runtime_path.read_text(encoding="utf-8"))
+    expected = build_runtime_registry(CONFIG_DIR / "agents.yaml")
+
+    assert runtime == expected
+
+
+def test_capability_routes_are_declared_on_target_agents():
+    registry = load_agent_registry(CONFIG_DIR / "agents.yaml")
+    data = yaml.safe_load((CONFIG_DIR / "agents.yaml").read_text(encoding="utf-8"))
+
+    capability_routes = data["routing"]["capability_routes"]
+    for capability, agent_id in capability_routes.items():
+        assert agent_id in registry.agents, capability
+        assert capability in registry.get(agent_id).capabilities, (capability, agent_id)
+
+
+def test_known_tool_bound_skills_are_assigned_to_executable_agents():
+    registry = load_agent_registry(CONFIG_DIR / "agents.yaml")
+
+    assert "comfyui" in registry.get("claude").skills
+    assert "terminal" in registry.get("claude").tools
+    assert "comfyui" not in registry.get("pirlo").skills
+    assert "terminal" not in registry.get("pirlo").tools
+
+    assert "playwright-mcp" in registry.get("agent-tars").skills
+    assert "browser" in registry.get("agent-tars").tools
+    assert "playwright-mcp" not in registry.get("codex").skills
+    assert "playwright-mcp" not in registry.get("ambrosini").skills
 
 
 def test_active_skill_frontmatter_uses_canonical_agent_ids():

@@ -34,9 +34,9 @@ agents:
     name: DeepSeek 低成本快工
     role: fast_worker
     aliases: [低成本快工, deepseek]
-    role_summary: 小改、小测试、低风险机械执行。
+    role_summary: 小改、小测试、低风险机械执行。外部搜索遵循 DeepSeek Worker Search Policy：本地优先，必要时用 anysearch-lite。
     model_ref: deepseek_pro
-    skills: [spike, github-issues]
+    skills: [spike, github-issues, anysearch-lite]
     tools: [file, terminal]
     permission: ask
     can_delegate: false
@@ -173,6 +173,9 @@ def test_managed_gateway_accepts_agent_alias_before_legacy_child_execution(tmp_p
     assert result["results"][0]["status"] == "completed"
     child = mock_run.call_args.args[2]
     assert child._subagent_agent_id == "deepseek-tui"
+    assert child._skill_scope_agent_id == "deepseek-tui"
+    assert "DeepSeek Worker Search Policy" in child.ephemeral_system_prompt
+    assert "anysearch-lite" in child.ephemeral_system_prompt
 
 
 def test_managed_agent_model_ref_overrides_provider_model_for_internal_agent(tmp_path, monkeypatch):

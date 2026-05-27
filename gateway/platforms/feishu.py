@@ -1318,11 +1318,16 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
+    exit_error: Optional[BaseException] = None
     try:
         ws_client.start()
-    except Exception:
-        pass
+    except Exception as exc:
+        exit_error = exc
+        logger.warning("[Feishu] Websocket client thread exited with error: %s", exc)
     finally:
+        record_exit = getattr(adapter, "_record_websocket_thread_exit", None)
+        if callable(record_exit):
+            record_exit(exit_error)
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
@@ -1425,7 +1430,11 @@ class FeishuAdapter(BasePlatformAdapter):
         self._client: Optional[Any] = None
         self._ws_client: Optional[Any] = None
         self._ws_future: Optional[asyncio.Future] = None
+        self._ws_monitor_task: Optional[asyncio.Task] = None
         self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ws_expected_shutdown = False
+        self._ws_thread_exit_error: Optional[str] = None
+        self._ws_thread_exit_at: Optional[float] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._webhook_runner: Optional[Any] = None
         self._webhook_site: Optional[Any] = None
@@ -1680,6 +1689,7 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
         self._disable_websocket_auto_reconnect()
+        await self._cancel_websocket_monitor()
         await self._stop_webhook_server()
 
         ws_thread_loop = self._ws_thread_loop
@@ -1718,6 +1728,36 @@ class FeishuAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[Feishu] Disconnected")
 
+    def _record_websocket_thread_exit(self, error: Optional[BaseException]) -> None:
+        self._ws_thread_exit_error = repr(error) if error is not None else None
+        self._ws_thread_exit_at = time.monotonic()
+
+    async def _cancel_websocket_monitor(self) -> None:
+        task = self._ws_monitor_task
+        self._ws_monitor_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _watch_websocket_future(self, future: asyncio.Future) -> None:
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            self._record_websocket_thread_exit(exc)
+
+        if not self._running or self._ws_expected_shutdown or self._ws_future is not future:
+            return
+
+        error = self._ws_thread_exit_error
+        detail = f": {error}" if error else ""
+        message = f"Feishu websocket client stopped unexpectedly{detail}"
+        logger.warning("[Feishu] %s; handing off to gateway reconnect watcher", message)
+        self._set_fatal_error("feishu_ws_stopped", message, retryable=True)
+        await self._notify_fatal_error()
+
     async def _cancel_pending_tasks(self, tasks: Dict[str, asyncio.Task]) -> None:
         pending = [task for task in tasks.values() if task and not task.done()]
         for task in pending:
@@ -1732,6 +1772,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_media_batches.clear()
 
     def _disable_websocket_auto_reconnect(self) -> None:
+        self._ws_expected_shutdown = True
         if self._ws_client is None:
             return
         try:
@@ -4434,6 +4475,8 @@ class FeishuAdapter(BasePlatformAdapter):
             self._ws_client,
             self,
         )
+        self._ws_expected_shutdown = False
+        self._ws_monitor_task = asyncio.create_task(self._watch_websocket_future(self._ws_future))
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:

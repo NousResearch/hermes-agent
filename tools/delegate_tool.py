@@ -2398,6 +2398,10 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         elif base_url_hostname(configured_base_url) == "api.anthropic.com":
             provider = "anthropic"
             api_mode = "anthropic_messages"
+        elif base_url_hostname(configured_base_url) == "api.deepseek.com":
+            provider = "deepseek"
+            # api_mode already correctly detected by _detect_api_mode_for_url
+            # for /anthropic-suffix endpoints (anthropic_messages)
         elif "api.kimi.com/coding" in base_lower:
             provider = "custom"
             api_mode = "anthropic_messages"

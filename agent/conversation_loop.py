@@ -860,6 +860,25 @@ def run_conversation(
             api_messages, tools=agent.tools or None
         )
 
+        # Keep the live TUI context meter meaningful even when a provider does
+        # not return usage.  The exact provider usage below will overwrite this
+        # after successful responses.  This is intentionally NOT applied to
+        # session token/cost counters; it is only a request-size estimate for
+        # context occupancy.  The Codex Responses SDK recovery path can return
+        # a synthesized response with usage=None after response.completed has
+        # output=null, which otherwise leaves the status bar stuck at 0/N.
+        _compressor = getattr(agent, "context_compressor", None)
+        if _compressor is not None:
+            try:
+                _estimated_prompt_tokens = max(0, int(approx_request_tokens or 0))
+                _current_prompt_tokens = max(
+                    0, int(getattr(_compressor, "last_prompt_tokens", 0) or 0)
+                )
+                if _estimated_prompt_tokens > _current_prompt_tokens:
+                    _compressor.last_prompt_tokens = _estimated_prompt_tokens
+            except Exception:
+                pass
+
         _runtime_context_error = _ollama_context_limit_error(
             agent, approx_request_tokens
         )

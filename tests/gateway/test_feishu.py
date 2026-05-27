@@ -4885,3 +4885,105 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_convert_markdown_tables_converts_simple_table(self):
+        from gateway.platforms.feishu import _convert_markdown_tables
+
+        content = """Here is the data:
+| Name | Score | Status |
+| --- | --- | --- |
+| Alice | 95 | Pass |
+| Bob | 72 | Pass |
+| Carol | 45 | Fail |
+End of data."""
+
+        result = _convert_markdown_tables(content)
+        self.assertIn("Here is the data:", result)
+        self.assertIn("End of data.", result)
+        # Table should be converted to key-value format
+        self.assertIn("- Name: Alice | Score: 95 | Status: Pass", result)
+        self.assertIn("- Name: Bob | Score: 72 | Status: Pass", result)
+        self.assertIn("- Name: Carol | Score: 45 | Status: Fail", result)
+        # Original table syntax should be gone
+        self.assertNotIn("| --- |", result)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_convert_markdown_tables_preserves_code_blocks(self):
+        from gateway.platforms.feishu import _convert_markdown_tables
+
+        content = """Code:
+```
+| not a table |
+```
+Table:
+| A | B |
+| --- | --- |
+| 1 | 2 |
+"""
+        result = _convert_markdown_tables(content)
+        # Code block content should be preserved
+        self.assertIn("| not a table |", result)
+        # Table should be converted
+        self.assertNotIn("| --- |", result.split("```")[2] if "```" in result else "")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_converts_tables(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = """Results:
+| Stock | Return |
+| --- | --- |
+| AAPL | +2.5% |
+| TSLA | -1.3% |
+"""
+        payload = json.loads(adapter._build_post_payload(content))
+        rows = payload["zh_cn"]["content"]
+
+        # Should be in md tag with converted table
+        all_text = " ".join(
+            elem.get("text", "") for row in rows for elem in row
+        )
+        self.assertIn("Stock: AAPL | Return: +2.5%", all_text)
+        self.assertNotIn("| --- |", all_text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_table_triggers_post_message_type(self):
+        from gateway.platforms.feishu import _MARKDOWN_HINT_RE
+
+        # A content string that ONLY contains a table should trigger post mode
+        content = """| A | B |
+| --- | --- |
+| 1 | 2 |
+"""
+        self.assertIsNotNone(_MARKDOWN_HINT_RE.search(content))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_convert_markdown_tables_no_table_passthrough(self):
+        from gateway.platforms.feishu import _convert_markdown_tables
+
+        content = "Just normal text with **bold** and *italic*."
+        result = _convert_markdown_tables(content)
+        self.assertEqual(result, content)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_convert_markdown_tables_multiple_tables(self):
+        from gateway.platforms.feishu import _convert_markdown_tables
+
+        content = """First table:
+| X | Y |
+| --- | --- |
+| a | b |
+
+Second table:
+| P | Q |
+| --- | --- |
+| 1 | 2 |
+"""
+        result = _convert_markdown_tables(content)
+        self.assertIn("X: a | Y: b", result)
+        self.assertIn("P: 1 | Q: 2", result)
+        self.assertEqual(result.count("| --- |"), 0)
+

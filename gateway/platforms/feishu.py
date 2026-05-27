@@ -150,7 +150,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)|(\|[^\n|]*\|[^\n|]*\|)",
     re.MULTILINE,
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
@@ -159,6 +159,10 @@ _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
+# Matches a line that looks like a markdown table separator: |---|---|---|
+_MARKDOWN_TABLE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
+# Matches a line that looks like a markdown table row (starts and ends with |)
+_MARKDOWN_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
@@ -546,7 +550,91 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 
+
+
+def _split_table_row(line: str) -> List[str]:
+    """Split a markdown table row into cell values."""
+    row = line.strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|"):
+        row = row[:-1]
+    return [cell.strip() for cell in row.split("|")]
+
+
+def _rewrite_table_block_for_feishu(lines: List[str]) -> str:
+    """Convert a markdown table block into Feishu-compatible plain text.
+
+    Feishu's `md` tag in post messages does not support markdown table
+    syntax. This converts tables into a readable key-value list format.
+    """
+    if len(lines) < 3:
+        return "\n".join(lines)
+    headers = _split_table_row(lines[0])
+    # Skip the separator line (lines[1])
+    body_rows = [_split_table_row(line) for line in lines[2:] if line.strip()]
+    if not headers or not body_rows:
+        return "\n".join(lines)
+
+    formatted_rows: List[str] = []
+    for row in body_rows:
+        pairs = []
+        for idx, header in enumerate(headers):
+            if idx >= len(row):
+                break
+            label = header or f"Column {idx + 1}"
+            value = row[idx].strip()
+            if value:
+                pairs.append((label, value))
+        if not pairs:
+            continue
+        summary = " | ".join(f"{label}: {value}" for label, value in pairs)
+        formatted_rows.append(f"- {summary}")
+    return "\n".join(formatted_rows) if formatted_rows else "\n".join(lines)
+
+
+def _convert_markdown_tables(content: str) -> str:
+    """Find and convert all markdown table blocks in content to plain text.
+
+    Scans for consecutive lines that form a markdown table (header row,
+    separator row, body rows) and replaces them with Feishu-compatible text.
+    """
+    all_lines = content.split("\n")
+    result: List[str] = []
+    i = 0
+    while i < len(all_lines):
+        # Check if we're inside a code block - skip tables inside code blocks
+        # We need to track this globally
+        # For simplicity, just check if current line starts a table
+        line = all_lines[i]
+        if _MARKDOWN_TABLE_ROW_RE.match(line):
+            # Potential table start - check if next line is a separator
+            if i + 1 < len(all_lines) and _MARKDOWN_TABLE_SEP_RE.match(all_lines[i + 1]):
+                # Confirmed table start - collect all table lines
+                table_lines = [line, all_lines[i + 1]]
+                j = i + 2
+                # Collect body rows
+                while j < len(all_lines) and _MARKDOWN_TABLE_ROW_RE.match(all_lines[j]):
+                    table_lines.append(all_lines[j])
+                    j += 1
+                # We have a complete table
+                result.append(_rewrite_table_block_for_feishu(table_lines))
+                i = j
+                continue
+            else:
+                # Row-like line but no separator following - not a table
+                # (e.g., the separator line itself appeared first)
+                result.append(line)
+                i += 1
+                continue
+        result.append(line)
+        i += 1
+    return "\n".join(result)
+
+
 def _build_markdown_post_payload(content: str) -> str:
+    # Convert markdown tables to Feishu-compatible plain text before building rows
+    content = _convert_markdown_tables(content)
     rows = _build_markdown_post_rows(content)
     return json.dumps(
         {

@@ -503,3 +503,159 @@ def test_foreground_command_does_not_emit_hint(monkeypatch, tmp_path):
     assert "hint" not in result, (
         f"Foreground commands must not emit the background-silence hint, got: {result.get('hint')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Homebrewed-CI-watcher hint
+#
+# Background processes whose command looks like a hand-rolled CI poller
+# (`gh pr view` / `gh pr checks` combined with jq/awk on stdout) get an
+# additional hint pointing at the canonical green-ci-policy snippet. The
+# homebrew shape has burned us repeatedly (May 2026 PRs #31329, #31448,
+# #31695, #31709, #31745, #32264, #33131) with stdout buffering, jq null
+# keys, conclusion-vs-status confusion, and TTY-only banner grepping —
+# none of which the canonical snippets suffer from. Fire on every detection;
+# false positives are cheap (~one read).
+# ---------------------------------------------------------------------------
+
+
+def test_homebrew_ci_poller_via_statusCheckRollup_emits_hint(monkeypatch, tmp_path):
+    """The canonical anti-pattern: jq pipeline parsing statusCheckRollup
+    JSON. Tool must point the agent at the green-ci-policy skill snippet."""
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    try:
+        result = json.loads(
+            tt.terminal_tool(
+                command=(
+                    "PR=12345; while true; do "
+                    "status=$(gh pr view $PR --json statusCheckRollup "
+                    "--jq '[.statusCheckRollup[] | .conclusion] "
+                    "| group_by(.) | map({k:.[0],v:length}) | from_entries'); "
+                    "echo \"$status\"; sleep 30; done"
+                ),
+                background=True,
+                notify_on_complete=True,
+            )
+        )
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    hint = result.get("hint", "")
+    assert hint, "Homebrew CI poller must emit a hint pointing at green-ci-policy"
+    assert "green-ci-policy" in hint, (
+        "Hint must name the canonical skill file so the agent can find the verbatim snippets"
+    )
+    # Naming exit-code-driven OR column-2 in the hint is what makes it actionable.
+    assert "exit" in hint.lower() or "column-2" in hint.lower() or "tab" in hint.lower(), (
+        "Hint must point at the canonical alternatives (exit-code or column-2)"
+    )
+
+
+def test_homebrew_ci_poller_via_gh_pr_checks_piped_to_jq_emits_hint(monkeypatch, tmp_path):
+    """`gh pr checks` doesn't emit JSON, so piping it to jq is a confused-
+    intent anti-pattern that produces silent failures (jq fails, loop
+    keeps spinning with empty data)."""
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    try:
+        result = json.loads(
+            tt.terminal_tool(
+                command=(
+                    "PR=99; while true; do "
+                    "gh pr checks $PR | jq -R 'split(\"\\t\")[1]'; "
+                    "sleep 30; done"
+                ),
+                background=True,
+                notify_on_complete=True,
+            )
+        )
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    hint = result.get("hint", "")
+    assert hint, "Homebrew `gh pr checks | jq` poller must emit a hint"
+    assert "green-ci-policy" in hint
+
+
+def test_canonical_column2_awk_poller_does_not_emit_homebrew_hint(monkeypatch, tmp_path):
+    """The blessed column-2 awk-on-tabs poller from green-ci-policy is the
+    PREFERRED pattern for sharded matrices. Must not be flagged as
+    homebrew — the gating signal is statusCheckRollup or `gh pr checks
+    | jq`, NOT awk on tabs."""
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    try:
+        result = json.loads(
+            tt.terminal_tool(
+                command=(
+                    "PR=1; while :; do "
+                    "out=$(gh pr checks $PR 2>&1); "
+                    "pending=$(echo \"$out\" | awk -F\"\\t\" \"\\$2==\\\"pending\\\"\" | wc -l); "
+                    "failed=$(echo \"$out\" | awk -F\"\\t\" \"\\$2==\\\"fail\\\"\" | wc -l); "
+                    "if [ \"$pending\" -eq 0 ]; then "
+                    "[ \"$failed\" -gt 0 ] && exit 1 || exit 0; "
+                    "fi; sleep 30; "
+                    "done"
+                ),
+                background=True,
+                notify_on_complete=True,
+            )
+        )
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    assert "hint" not in result, (
+        f"Canonical column-2 awk poller must not be flagged as homebrew, got: {result.get('hint')!r}"
+    )
+
+
+def test_canonical_gh_pr_checks_exit_code_loop_does_not_emit_hint(monkeypatch, tmp_path):
+    """The blessed exit-code-driven snippet from green-ci-policy is exactly
+    what we want — no jq, no awk-on-stdout, gates the loop on exit code.
+    Must not be flagged as a homebrew anti-pattern."""
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    try:
+        result = json.loads(
+            tt.terminal_tool(
+                command=(
+                    "PR=1; while :; do "
+                    "gh pr checks $PR >/dev/null 2>&1; rc=$?; "
+                    "case $rc in 0) exit 0;; 8) sleep 30;; *) exit 1;; esac; "
+                    "done"
+                ),
+                background=True,
+                notify_on_complete=True,
+            )
+        )
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    # No silent-process hint (we have notify_on_complete) AND no
+    # homebrew-poller hint (no jq / awk pipeline parsing stdout).
+    assert "hint" not in result, (
+        f"Canonical exit-code-driven poller must not be flagged as homebrew, got: {result.get('hint')!r}"
+    )
+
+
+def test_non_ci_background_command_does_not_emit_homebrew_hint(monkeypatch, tmp_path):
+    """A long-running task that happens to use awk for unrelated reasons
+    must not be mistaken for a CI poller — the gating signal is the
+    combination of `gh pr ...` AND a stdout parser."""
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    try:
+        result = json.loads(
+            tt.terminal_tool(
+                command="cat /var/log/syslog | awk '/error/ {print}' > /tmp/errs.log",
+                background=True,
+                notify_on_complete=True,
+            )
+        )
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    assert "hint" not in result, (
+        f"Non-CI command using awk must not be flagged as homebrew CI poller, got: {result.get('hint')!r}"
+    )

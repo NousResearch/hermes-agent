@@ -1,0 +1,6 @@
+# Aider architect mode uses `model` as the architect model.
+model: openrouter/deepseek/deepseek-v4-flash
+editor-model: openrouter/deepseek/deepseek-v4-flash
+weak-model: openrouter/deepseek/deepseek-v4-flash
+cache-prompts: true
+auto-commits: false

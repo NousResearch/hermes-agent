@@ -830,16 +830,27 @@ MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
 MEDIA_DELIVERY_TRUST_RECENT_ENV = "HERMES_MEDIA_TRUST_RECENT_FILES"
 MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
 MEDIA_DELIVERY_SAFE_ROOTS = (
+    # get_hermes_dir() entries — resolve to legacy when it exists, canonical otherwise.
     IMAGE_CACHE_DIR,
     AUDIO_CACHE_DIR,
     VIDEO_CACHE_DIR,
     DOCUMENT_CACHE_DIR,
     SCREENSHOT_CACHE_DIR,
+    # Explicit legacy paths (e.g. image_cache/, audio_cache/).
     _HERMES_HOME / "image_cache",
     _HERMES_HOME / "audio_cache",
     _HERMES_HOME / "video_cache",
     _HERMES_HOME / "document_cache",
     _HERMES_HOME / "browser_screenshots",
+    # Explicit canonical paths (e.g. cache/images/, cache/audio/).
+    # Required because image_gen_provider writes to cache/images directly, and
+    # get_hermes_dir() resolves to the legacy path when it already exists on disk,
+    # leaving the canonical path uncovered.  See issue #31733.
+    _HERMES_HOME / "cache" / "images",
+    _HERMES_HOME / "cache" / "audio",
+    _HERMES_HOME / "cache" / "videos",
+    _HERMES_HOME / "cache" / "documents",
+    _HERMES_HOME / "cache" / "screenshots",
 )
 
 # Default recency window for trusting freshly-produced files (seconds).

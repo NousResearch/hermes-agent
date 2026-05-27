@@ -2,6 +2,7 @@
 
 import os
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -534,6 +535,124 @@ class TestMediaDeliveryPathValidation:
 
         out = BasePlatformAdapter.filter_local_delivery_paths([str(fresh)])
         assert out == [str(fresh.resolve())]
+
+
+# ---------------------------------------------------------------------------
+# Regression: canonical cache paths in MEDIA_DELIVERY_SAFE_ROOTS
+# ---------------------------------------------------------------------------
+# Issue #31733 — image_gen_provider writes to cache/images/ but the gateway's
+# MEDIA_DELIVERY_SAFE_ROOTS only covered the legacy image_cache/ path when
+# get_hermes_dir() resolved to it.  The fix adds explicit canonical entries.
+#
+# Unlike the tests above, these do NOT monkeypatch MEDIA_DELIVERY_SAFE_ROOTS.
+# They verify the actual default production list covers canonical cache paths
+# even when legacy directories also exist on disk.
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalCachePathRegression:
+    """Verify cache/<subdir> paths are accepted alongside legacy directories.
+
+    These tests exercise the DEFAULT ``MEDIA_DELIVERY_SAFE_ROOTS`` — no
+    monkeypatching of the tuple.  Recency trust is disabled so every test
+    exercises the strict allowlist path.
+    """
+
+    # Canonical subpath → legacy name pairs.  Must match MEDIA_DELIVERY_SAFE_ROOTS.
+    _CACHE_PAIRS = (
+        ("cache/images", "image_cache", "test.png", b"\x89PNG\r\n\x1a\n"),
+        ("cache/audio", "audio_cache", "test.ogg", b"OggS"),
+        ("cache/videos", "video_cache", "test.mp4", b"\x00\x00\x00\x18ftyp"),
+        ("cache/documents", "document_cache", "test.pdf", b"%PDF-1.4"),
+        ("cache/screenshots", "browser_screenshots", "test.png", b"\x89PNG\r\n\x1a\n"),
+    )
+
+    @pytest.fixture(autouse=True)
+    def _disable_recency_trust(self, monkeypatch):
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+    def test_default_safe_roots_include_all_canonical_paths(self):
+        """Structural: every canonical cache/<subdir> must appear in the default
+        ``MEDIA_DELIVERY_SAFE_ROOTS`` tuple."""
+        from gateway.platforms.base import (
+            MEDIA_DELIVERY_SAFE_ROOTS,
+            _HERMES_HOME,
+        )
+
+        roots_set = {Path(r) for r in MEDIA_DELIVERY_SAFE_ROOTS}
+        for canonical_subpath, _legacy, _fname, _data in self._CACHE_PAIRS:
+            expected = _HERMES_HOME / canonical_subpath
+            assert expected in roots_set, (
+                f"Canonical path {expected} missing from MEDIA_DELIVERY_SAFE_ROOTS. "
+                f"Current roots: {sorted(str(r) for r in roots_set)}"
+            )
+
+    @pytest.mark.parametrize(
+        "canonical_subpath,legacy_name,fname,data",
+        _CACHE_PAIRS,
+        ids=[p[0] for p in _CACHE_PAIRS],
+    )
+    def test_canonical_cache_file_accepted_with_legacy_present(
+        self, tmp_path, monkeypatch, canonical_subpath, legacy_name, fname, data,
+    ):
+        """End-to-end: a file under cache/<subdir> is accepted even when the
+        legacy directory also exists on disk.
+
+        This reproduces the exact scenario from #31733: ``image_gen_provider``
+        writes to ``cache/images/`` but ``get_hermes_dir("cache/images",
+        "image_cache")`` resolves to the legacy ``image_cache/`` when it
+        exists.  Without the explicit canonical entries, the file would be
+        rejected.
+        """
+        from gateway.platforms.base import (
+            MEDIA_DELIVERY_SAFE_ROOTS,
+            _HERMES_HOME,
+        )
+
+        # Build the real canonical and legacy paths under the actual HERMES_HOME.
+        canonical_dir = _HERMES_HOME / canonical_subpath
+        legacy_dir = _HERMES_HOME / legacy_name
+
+        # Ensure both directories exist (simulating a migrated install).
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write a test file to the canonical path.
+        test_file = canonical_dir / f"_pr_regression_{fname}"
+        try:
+            test_file.write_bytes(data)
+
+            # The canonical path must be in the default safe roots.
+            canonical_root = _HERMES_HOME / canonical_subpath
+            assert canonical_root in MEDIA_DELIVERY_SAFE_ROOTS, (
+                f"{canonical_root} not in MEDIA_DELIVERY_SAFE_ROOTS"
+            )
+
+            # End-to-end validation must accept the file.
+            result = BasePlatformAdapter.validate_media_delivery_path(str(test_file))
+            assert result == str(test_file.resolve()), (
+                f"validate_media_delivery_path rejected {test_file} "
+                f"(canonical_subpath={canonical_subpath}, legacy={legacy_name})"
+            )
+        finally:
+            # Clean up test artefacts (leave dirs — they may pre-exist).
+            test_file.unlink(missing_ok=True)
+
+    def test_legacy_cache_file_still_accepted(self):
+        """Backward-compat: files under the legacy directory must still work."""
+        from gateway.platforms.base import _HERMES_HOME
+
+        legacy_dir = _HERMES_HOME / "image_cache"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+
+        test_file = legacy_dir / "_pr_regression_legacy.png"
+        try:
+            test_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+            result = BasePlatformAdapter.validate_media_delivery_path(str(test_file))
+            assert result == str(test_file.resolve())
+        finally:
+            test_file.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

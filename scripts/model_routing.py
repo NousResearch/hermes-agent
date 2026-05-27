@@ -24,7 +24,6 @@ except ImportError:
 # ─── MODEL REGISTRY ────────────────────────────────────────────
 
 MODELS = {
-    "mac-ollama:qwen3:8b": {
         "provider": "mac-ollama",
         "model": "qwen3:8b",
         "context_length": 32768,
@@ -44,7 +43,6 @@ MODELS = {
         "strengths": ["code_generation", "reasoning", "review", "long_context", "best_local"],
         "max_tokens": 8192,
     },
-    "linux-ollama:qwen3:8b": {
         "provider": "linux-ollama",
         "model": "qwen3:8b",
         "context_length": 32768,
@@ -283,8 +281,6 @@ def get_task_size(user_message: str) -> str:
 # Preference order: local first, then cloud by capability match
 PREFERENCE_ORDER = [
     "mac-ollama:qwen3-coder:30b-a3b-q4_k_M",
-    "mac-ollama:qwen3:8b",
-    "linux-ollama:qwen3:8b",
     "ollama-provider:qwen3-coder:30b-a3b-q4_k_M",  # cloud backup for local 30B
     "ollama-provider:llama3.1-70b",
     "deepseek:deepseek-v4-flash",
@@ -308,8 +304,6 @@ INTERNAL_PREFERENCE_ORDER = [
     "mac-ollama:qwen3-coder:30b-a3b-q4_k_M",  # local 30B coder (free, fastest turnaround)
     "ollama-provider:qwen3-coder:30b-a3b-q4_k_M",  # cloud 30B backup
     "ollama-provider:llama3.1-70b",     # cloud 70B generalist
-    "linux-ollama:qwen3:8b",            # linux local fallback
-    "mac-ollama:qwen3:8b",              # mac local fallback
     "ollama-provider:llama3.1-8b",      # cloud 8B fallback
 ]
 
@@ -319,7 +313,7 @@ CATEGORY_BEST = {
         "mac-ollama:qwen3-coder:30b-a3b-q4_k_M",
         "ollama-provider:qwen3-coder:30b-a3b-q4_k_M",  # cloud backup
         "deepseek:deepseek-v4-flash",
-        "mac-ollama:qwen3:8b",
+        # 8B: trimmer only — excluded from generation routing
     ],
     "reasoning": [
         "mac-ollama:qwen3-coder:30b-a3b-q4_k_M",
@@ -330,7 +324,6 @@ CATEGORY_BEST = {
     ],
     "research": [
         "ollama-provider:llama3.1-70b",
-        "linux-ollama:qwen3:8b",
         "deepseek:deepseek-v4-flash",
     ],
     "creative": [
@@ -338,7 +331,7 @@ CATEGORY_BEST = {
         "x-ai:grok-4.20-reasoning",
         "openrouter:grok-4.3",
         "ollama-provider:llama3.1-8b",
-        "mac-ollama:qwen3:8b",
+        # 8B: trimmer only — excluded from generation routing
     ],
     "review": [
         # Best coder (free local) — first choice
@@ -355,12 +348,12 @@ CATEGORY_BEST = {
         "openrouter:ring-2.6-1t",         # quality gate — ALWAYS LAST, mandatory
     ],
     "tool_use": [
-        "mac-ollama:qwen3:8b",
         "mac-ollama:qwen3-coder:30b-a3b-q4_k_M",
     ],
     "general": [
-        "mac-ollama:qwen3:8b",
         "mac-ollama:qwen3-coder:30b-a3b-q4_k_M",
+        "deepseek:deepseek-v4-flash",
+        # 8B: trimmer only — excluded from generation routing
     ],
 }
 
@@ -441,7 +434,6 @@ def select_model(task_category: str, prompt_text: str,
                 if check_health(cfg["provider"], cfg["model"]):
                     return cfg
         # Last resort: use whatever has the longest context
-        return MODELS["mac-ollama:qwen3:8b"]
 
     suitable.sort(key=lambda c: (
         0 if c in [m for m in CATEGORY_BEST.get(task_category, [])

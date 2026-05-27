@@ -188,6 +188,12 @@ COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-r
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
+# s6-overlay v3 strips the container environment by default before
+# execing the main program. The main-wrapper.sh CMD needs all K8s env
+# vars (MATTERMOST_TOKEN, API keys, etc.) to survive into the hermes
+# process. S6_KEEP_ENV=1 preserves them. See:
+# https://github.com/just-containers/s6-overlay#customizing-s6-overlay-behaviour
+ENV S6_KEEP_ENV=1
 # Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported
 # the venv bin onto PATH; Architecture B's main-wrapper.sh does the
 # same for the container's main process, but `docker exec` and our

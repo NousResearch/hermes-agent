@@ -1141,6 +1141,90 @@ def _resolve_profile_model_ref(model_ref: str) -> dict:
     }
 
 
+def _normalize_model_strategy_for_profile(profile: Optional[dict], agent_config: Optional[dict]) -> dict:
+    """Return normalized model strategy metadata for a managed subagent."""
+    raw = {}
+    if isinstance(profile, dict) and isinstance(profile.get("model_strategy"), dict):
+        raw = profile.get("model_strategy") or {}
+    elif isinstance(agent_config, dict) and isinstance(agent_config.get("model_strategy"), dict):
+        raw = agent_config.get("model_strategy") or {}
+    if not isinstance(raw, dict):
+        return {}
+    mode = str(raw.get("mode") or "").strip().lower()
+    if mode not in {"fixed", "fallback", "external"}:
+        mode = "fixed"
+    model_ref = ""
+    if isinstance(profile, dict):
+        model_ref = str(profile.get("model_ref") or "").strip()
+    if not model_ref and isinstance(agent_config, dict):
+        model_ref = str(agent_config.get("model_ref") or "").strip()
+    primary = str(raw.get("primary") or model_ref).strip()
+    chain: list[str] = []
+    for ref in raw.get("chain") or []:
+        text = str(ref or "").strip()
+        if text and text not in chain:
+            chain.append(text)
+    if mode == "fallback":
+        if primary and primary not in chain:
+            chain.insert(0, primary)
+        elif not primary and chain:
+            primary = chain[0]
+        if len(chain) < 2:
+            mode = "fixed"
+    elif mode == "fixed" and primary and not chain:
+        chain = [primary]
+    return {
+        "mode": mode,
+        "primary": primary,
+        "chain": chain,
+        "fallback_on": [
+            str(item).strip()
+            for item in (raw.get("fallback_on") or [])
+            if str(item).strip()
+        ],
+    }
+
+
+def _resolve_model_strategy_credentials(
+    profile: Optional[dict],
+    agent_config: Optional[dict],
+) -> tuple[Optional[str], list[dict], dict]:
+    """Resolve primary model_ref and fallback_model entries for AIAgent.
+
+    Returns ``(primary_ref, fallback_chain, strategy)``. The fallback chain is
+    intentionally made of concrete provider/model/base_url/api_key/api_mode
+    entries accepted by ``AIAgent(fallback_model=...)``.
+    """
+    strategy = _normalize_model_strategy_for_profile(profile, agent_config)
+    model_ref = ""
+    if isinstance(profile, dict):
+        model_ref = str(profile.get("model_ref") or "").strip()
+    if not model_ref and isinstance(agent_config, dict):
+        model_ref = str(agent_config.get("model_ref") or "").strip()
+
+    primary_ref = model_ref
+    fallback_entries: list[dict] = []
+    if strategy.get("mode") == "fallback":
+        chain = list(strategy.get("chain") or [])
+        if chain:
+            primary_ref = str(strategy.get("primary") or chain[0] or model_ref).strip()
+            for ref in chain:
+                ref = str(ref or "").strip()
+                if not ref or ref == primary_ref:
+                    continue
+                creds = _resolve_profile_model_ref(ref)
+                if creds.get("provider") and creds.get("model"):
+                    fallback_entries.append({
+                        "model_ref": ref,
+                        "provider": creds.get("provider"),
+                        "model": creds.get("model"),
+                        "base_url": creds.get("base_url"),
+                        "api_key": creds.get("api_key"),
+                        "api_mode": creds.get("api_mode"),
+                    })
+    return primary_ref, fallback_entries, strategy
+
+
 def _normalize_agent_alias(value: Any) -> str:
     return str(value or "").strip().casefold()
 
@@ -2020,6 +2104,8 @@ def _build_child_agent(
     agent_config: Optional[dict] = None,
     profile: Optional[dict] = None,
     requested_blocked_tools: Optional[List[str]] = None,
+    model_fallback_chain: Optional[List[dict]] = None,
+    model_strategy: Optional[dict] = None,
     # Phase B: isolation
     requested_isolation: Optional[str] = None,
     profile_isolation: Optional[str] = None,
@@ -2306,6 +2392,7 @@ def _build_child_agent(
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
     parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    child_fallback = model_fallback_chain if model_fallback_chain is not None else parent_fallback
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -2340,7 +2427,7 @@ def _build_child_agent(
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
+        fallback_model=child_fallback,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
@@ -2379,6 +2466,8 @@ def _build_child_agent(
     child._subagent_warnings = warnings
     child._subagent_isolation = _effective_isolation
     child._subagent_isolation_error = _isolation_error
+    child._subagent_model_strategy = model_strategy or {}
+    child._subagent_model_fallback_chain = list(model_fallback_chain or [])
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -3639,6 +3728,7 @@ def _load_managed_subagent_profile(agent_id: str) -> tuple[Optional[dict], Optio
                     "aliases": list(agent.aliases),
                     "role_summary": agent.role_summary,
                     "model_ref": agent.model_ref,
+                    "model_strategy": dict(agent.model_strategy),
                     "runtime": agent.runtime,
                     "skills": list(agent.skills),
                     "type": agent.role,
@@ -3652,6 +3742,7 @@ def _load_managed_subagent_profile(agent_id: str) -> tuple[Optional[dict], Optio
                 profile = {
                     "model": "default",
                     "model_ref": agent.model_ref,
+                    "model_strategy": dict(agent.model_strategy),
                     "runtime": agent.runtime,
                     "skills": list(agent.skills),
                     "toolsets": list(agent.tools),
@@ -3973,6 +4064,8 @@ def delegate_task(
             task_agent_config = None
             task_profile = None
             task_creds = dict(creds)
+            task_model_strategy: dict = {}
+            task_model_fallback_chain: list[dict] = []
             if effective_agent_id:
                 try:
                     task_agent_config, task_profile = _load_managed_subagent_profile(effective_agent_id)
@@ -3997,7 +4090,9 @@ def delegate_task(
                         child._delegate_saved_tool_names = _parent_tool_names
                         children.append((i, t, child))
                         continue
-                    model_ref = ((task_profile or {}).get("model_ref") or (task_agent_config or {}).get("model_ref") or "")
+                    model_ref, task_model_fallback_chain, task_model_strategy = (
+                        _resolve_model_strategy_credentials(task_profile, task_agent_config)
+                    )
                     if model_ref:
                         model_creds = _resolve_profile_model_ref(model_ref)
                         task_creds.update({
@@ -4044,6 +4139,8 @@ def delegate_task(
                 agent_config=task_agent_config or _resolved_agent_config,
                 profile=task_profile or _resolved_profile,
                 requested_blocked_tools=effective_blocked,
+                model_fallback_chain=task_model_fallback_chain,
+                model_strategy=task_model_strategy,
                 requested_isolation=t.get("isolation") if "isolation" in t else _requested_isolation,
                 profile_isolation=((task_profile or _resolved_profile) or {}).get("isolation") if (task_profile or _resolved_profile) else None,
                 profile_permission_mode=((task_profile or _resolved_profile) or {}).get("permission_mode") if (task_profile or _resolved_profile) else None,

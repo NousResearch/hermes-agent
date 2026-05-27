@@ -1,120 +1,396 @@
-version: "2026-05-21"
-
+version: '2026-05-21'
 agents:
-  - agent_id: hermes-internal
-    name: Hermes 技术翻译官
-    role: internal_reasoner
-    aliases: [Hermes 技术翻译官, 技术翻译官, 技术中间层, 技术参谋, nesta]
-    role_summary: 技术中间层、需求拆解、策略判断，承接原 nesta 职责。
-    model_ref: deepseek_pro
-    skills: [hermes-subagent-delegation, hermes-multi-agent-research, hermes-gateway-debug, codebase-inspection, github-repo-risk-assessment, humanizer-zh]
-    tools: [file, mcp-codegraph]
-    permission: read_only
-    can_delegate: false
-    capabilities: [analysis, decision_making, coordination, technical_decomposition, file_reading_analysis, strategy_decision, creative_direction, codegraph_search, codegraph_context]
-    risk_allowed: [R0, R1, R2, R3]
-
-  - agent_id: claude
-    name: Claude 主程执行官
-    role: lead_implementer
-    aliases: [Claude 主程执行官, 主程, 主执行人, 代码执行官, claude]
-    role_summary: 外部 Claude Code CLI 执行器；后端由 CC Switch 控制。
-    model_ref: claude_opus
-    runtime: claude_code_cli
-    skills: [github-pr-workflow, github-repo-management, github-issues, codebase-inspection, python-debugpy, node-inspect-debugger, nextjs-standalone-deployment, spike, open-design-ops, design-md, comfyui, html-anything]
-    tools: [file, terminal, git, mcp-codegraph]
-    permission: ask
-    can_delegate: false
-    capabilities: [code_edit, test_run, refactor, git_diff, file_modification, script_execution, git_operations, codegraph_impact]
-    risk_allowed: [R1, R2, R3]
-
-  - agent_id: deepseek-tui
-    name: DeepSeek 低成本快工
-    role: fast_worker
-    aliases: [DeepSeek 低成本快工, 低成本快工, 快工, 小改工, deepseek]
-    role_summary: 小改、小测试、低风险机械执行；不负责复杂重构和高风险操作。外部搜索遵循 DeepSeek Worker Search Policy：本地优先，必要时用 anysearch-lite，已知 URL 用 scrapling-fetch。
-    model_ref: deepseek_pro
-    skills: [codebase-inspection, spike, python-debugpy, node-inspect-debugger, debugging-hermes-tui-commands, github-issues, anysearch-lite]
-    tools: [file, terminal]
-    permission: ask
-    can_delegate: false
-    capabilities: [small_fix, test_generation, bug_reproduction, spike, log_analysis, external_quick_check, url_extraction]
-    risk_allowed: [R0, R1, R2]
-
-  - agent_id: codex
-    name: Codex 代码审查官
-    role: principal_engineer
-    aliases: [Codex 代码审查官, 代码审查官, 审查官, 架构审查, codex]
-    role_summary: 外部 Codex CLI 审查器；用于只读审查、架构/实现方案评估。
-    model_ref: codex_cli
-    runtime: codex_cli
-    skills: [codex-superpowers, github-code-review, github-repo-risk-assessment, codebase-inspection]
-    tools: [file, terminal, mcp-codegraph]
-    permission: read_only
-    can_delegate: false
-    capabilities: [architecture_review, code_review, implementation_planning, technical_arbitration, codegraph_search, codegraph_impact]
-    risk_allowed: [R0, R1, R2, R3, R4]
-
-  - agent_id: intelligence
-    name: Intelligence 情报研究员
-    role: research_analyst
-    aliases: [Intelligence 情报研究员, 情报研究员, 调研员, 竞品研究, intelligence]
-    role_summary: 调研、竞品、资料收集、信息核验。
-    model_ref: deepseek_flash
-    skills: [competitive-intelligence]
-    tools: [file, web]
-    permission: ask
-    can_delegate: false
-    capabilities: [research, information_synthesis, competitive_analysis, web_research, source_verification, market_intelligence, competitor_monitoring, news_gathering]
-    risk_allowed: [R0, R1, R2]
-
-  - agent_id: pirlo
-    name: Pirlo 商业策划师
-    role: planning_strategist
-    aliases: [Pirlo 商业策划师, 商业策划师, 方案策划, 提案策划, pirlo]
-    role_summary: 商业方案、PPT 提案、内容结构。
-    model_ref: deepseek_pro
-    skills: [humanizer, humanizer-zh, claude-design, sketch, baoyu-infographic, baoyu-comic, architecture-diagram, html-anything]
-    tools: [file]
-    permission: read_only
-    can_delegate: false
-    capabilities: [strategy_planning, product_planning, proposal_design, content_writing, planning, document_creation]
-    risk_allowed: [R0, R1, R2]
-
-  - agent_id: agent-tars
-    name: TARS 桌面操作员
-    role: desktop_operator
-    aliases: [TARS 桌面操作员, 桌面操作员, GUI 操作员, 截图员, tars]
-    role_summary: 桌面、浏览器 GUI、截图、视觉验证。
-    model_ref: tars_gpt54
-    skills: [browser-automation-for-blocked-sites, macos-computer-use, playwright-mcp]
-    tools: [desktop, browser]
-    permission: ask
-    can_delegate: false
-    capabilities: [desktop_control, app_operation, screenshot, macos_automation, visual_gui_automation, browser_gui_operation, browser_operation, gui_workflow]
-    risk_allowed: [R0, R1, R2]
-
-  - agent_id: ambrosini
-    name: Ambrosini 质量门卫
-    role: quality_gate
-    aliases: [Ambrosini 质量门卫, 质量门卫, 验收官, 风险审核, ambrosini]
-    role_summary: 高风险验收、最终质量门；可只读查询 CodeGraph 验证影响面。
-    model_ref: deepseek_pro
-    skills: [codex-superpowers, github-code-review]
-    tools: [file, mcp-codegraph]
-    permission: read_only
-    can_delegate: false
-    capabilities: [review, validation, risk_assessment, release_gate, codegraph_search, codegraph_impact]
-    risk_allowed: [R0, R1, R2, R3, R4]
-
+- agent_id: hermes-internal
+  name: Hermes 技术翻译官
+  role: internal_reasoner
+  aliases:
+  - Hermes 技术翻译官
+  - 技术翻译官
+  - 技术中间层
+  - 技术参谋
+  - nesta
+  role_summary: 技术中间层、需求拆解、策略判断，承接原 nesta 职责。
+  model_ref: deepseek_pro
+  model_strategy:
+    mode: fallback
+    primary: deepseek_pro
+    chain:
+    - deepseek_pro
+    - opencode_go_deepseek_pro
+    - opencode_go_glm51
+    - opencode_go_qwen37_max
+    fallback_on:
+    - quota_exceeded
+    - rate_limited
+    - timeout
+    - server_error
+    - empty_final_content
+  skills:
+  - hermes-subagent-delegation
+  - hermes-multi-agent-research
+  - hermes-gateway-debug
+  - codebase-inspection
+  - github-repo-risk-assessment
+  - humanizer-zh
+  tools:
+  - file
+  - mcp-codegraph
+  permission: read_only
+  can_delegate: false
+  capabilities:
+  - analysis
+  - decision_making
+  - coordination
+  - technical_decomposition
+  - file_reading_analysis
+  - strategy_decision
+  - creative_direction
+  - codegraph_search
+  - codegraph_context
+  risk_allowed:
+  - R0
+  - R1
+  - R2
+  - R3
+- agent_id: claude
+  name: Claude 主程执行官
+  role: lead_implementer
+  aliases:
+  - Claude 主程执行官
+  - 主程
+  - 主执行人
+  - 代码执行官
+  - claude
+  role_summary: 外部 Claude Code CLI 执行器；后端由 CC Switch 控制。
+  model_ref: claude_opus
+  model_strategy:
+    mode: external
+    primary: claude_opus
+    chain:
+    - claude_opus
+  runtime: claude_code_cli
+  skills:
+  - github-pr-workflow
+  - github-repo-management
+  - github-issues
+  - codebase-inspection
+  - python-debugpy
+  - node-inspect-debugger
+  - nextjs-standalone-deployment
+  - spike
+  - open-design-ops
+  - design-md
+  - comfyui
+  - html-anything
+  tools:
+  - file
+  - terminal
+  - git
+  - mcp-codegraph
+  permission: ask
+  can_delegate: false
+  capabilities:
+  - code_edit
+  - test_run
+  - refactor
+  - git_diff
+  - file_modification
+  - script_execution
+  - git_operations
+  - codegraph_impact
+  risk_allowed:
+  - R1
+  - R2
+  - R3
+- agent_id: deepseek-tui
+  name: DeepSeek 低成本快工
+  role: fast_worker
+  aliases:
+  - DeepSeek 低成本快工
+  - 低成本快工
+  - 快工
+  - 小改工
+  - deepseek
+  role_summary: 小改、小测试、低风险机械执行；不负责复杂重构和高风险操作。外部搜索遵循 DeepSeek Worker Search Policy：本地优先，必要时用
+    anysearch-lite，已知 URL 用 scrapling-fetch。
+  model_ref: deepseek_pro
+  model_strategy:
+    mode: fallback
+    primary: deepseek_pro
+    chain:
+    - deepseek_pro
+    - opencode_go_deepseek_pro
+    - opencode_go_deepseek_flash
+    - deepseek_flash
+    fallback_on:
+    - quota_exceeded
+    - rate_limited
+    - timeout
+    - server_error
+    - empty_final_content
+  skills:
+  - codebase-inspection
+  - spike
+  - python-debugpy
+  - node-inspect-debugger
+  - debugging-hermes-tui-commands
+  - github-issues
+  - anysearch-lite
+  tools:
+  - file
+  - terminal
+  permission: ask
+  can_delegate: false
+  capabilities:
+  - small_fix
+  - test_generation
+  - bug_reproduction
+  - spike
+  - log_analysis
+  - external_quick_check
+  - url_extraction
+  risk_allowed:
+  - R0
+  - R1
+  - R2
+- agent_id: codex
+  name: Codex 代码审查官
+  role: principal_engineer
+  aliases:
+  - Codex 代码审查官
+  - 代码审查官
+  - 审查官
+  - 架构审查
+  - codex
+  role_summary: 外部 Codex CLI 审查器；用于只读审查、架构/实现方案评估。
+  model_ref: codex_cli
+  model_strategy:
+    mode: external
+    primary: codex_cli
+    chain:
+    - codex_cli
+  runtime: codex_cli
+  skills:
+  - codex-superpowers
+  - github-code-review
+  - github-repo-risk-assessment
+  - codebase-inspection
+  tools:
+  - file
+  - terminal
+  - mcp-codegraph
+  permission: read_only
+  can_delegate: false
+  capabilities:
+  - architecture_review
+  - code_review
+  - implementation_planning
+  - technical_arbitration
+  - codegraph_search
+  - codegraph_impact
+  risk_allowed:
+  - R0
+  - R1
+  - R2
+  - R3
+  - R4
+- agent_id: intelligence
+  name: Intelligence 情报研究员
+  role: research_analyst
+  aliases:
+  - Intelligence 情报研究员
+  - 情报研究员
+  - 调研员
+  - 竞品研究
+  - intelligence
+  role_summary: 调研、竞品、资料收集、信息核验。
+  model_ref: opencode_go_qwen36
+  model_strategy:
+    mode: fallback
+    primary: opencode_go_qwen36
+    chain:
+    - opencode_go_qwen36
+    - opencode_go_qwen37_max
+    - opencode_go_kimi26
+    - deepseek_flash
+    fallback_on:
+    - quota_exceeded
+    - rate_limited
+    - timeout
+    - server_error
+    - empty_final_content
+  skills:
+  - competitive-intelligence
+  tools:
+  - file
+  - web
+  permission: ask
+  can_delegate: false
+  capabilities:
+  - research
+  - information_synthesis
+  - competitive_analysis
+  - web_research
+  - source_verification
+  - market_intelligence
+  - competitor_monitoring
+  - news_gathering
+  risk_allowed:
+  - R0
+  - R1
+  - R2
+- agent_id: pirlo
+  name: Pirlo 商业策划师
+  role: planning_strategist
+  aliases:
+  - Pirlo 商业策划师
+  - 商业策划师
+  - 方案策划
+  - 提案策划
+  - pirlo
+  role_summary: 商业方案、PPT 提案、内容结构。
+  model_ref: opencode_go_kimi25
+  model_strategy:
+    mode: fallback
+    primary: opencode_go_kimi25
+    chain:
+    - opencode_go_kimi25
+    - opencode_go_kimi26
+    - opencode_go_minimax27
+    - deepseek_pro
+    fallback_on:
+    - quota_exceeded
+    - rate_limited
+    - timeout
+    - server_error
+    - empty_final_content
+  skills:
+  - humanizer
+  - humanizer-zh
+  - claude-design
+  - sketch
+  - baoyu-infographic
+  - baoyu-comic
+  - architecture-diagram
+  - html-anything
+  tools:
+  - file
+  permission: read_only
+  can_delegate: false
+  capabilities:
+  - strategy_planning
+  - product_planning
+  - proposal_design
+  - content_writing
+  - planning
+  - document_creation
+  risk_allowed:
+  - R0
+  - R1
+  - R2
+- agent_id: agent-tars
+  name: TARS 桌面操作员
+  role: desktop_operator
+  aliases:
+  - TARS 桌面操作员
+  - 桌面操作员
+  - GUI 操作员
+  - 截图员
+  - tars
+  role_summary: 桌面、浏览器 GUI、截图、视觉验证。
+  model_ref: tars_gpt54
+  model_strategy:
+    mode: fallback
+    primary: tars_gpt54
+    chain:
+    - tars_gpt54
+    - opencode_go_mimo25_pro
+    - opencode_go_mimo2_omni
+    - opencode_go_qwen37_max
+    fallback_on:
+    - quota_exceeded
+    - rate_limited
+    - timeout
+    - server_error
+    - empty_final_content
+  skills:
+  - browser-automation-for-blocked-sites
+  - macos-computer-use
+  - playwright-mcp
+  tools:
+  - desktop
+  - browser
+  permission: ask
+  can_delegate: false
+  capabilities:
+  - desktop_control
+  - app_operation
+  - screenshot
+  - macos_automation
+  - visual_gui_automation
+  - browser_gui_operation
+  - browser_operation
+  - gui_workflow
+  risk_allowed:
+  - R0
+  - R1
+  - R2
+- agent_id: ambrosini
+  name: Ambrosini 质量门卫
+  role: quality_gate
+  aliases:
+  - Ambrosini 质量门卫
+  - 质量门卫
+  - 验收官
+  - 风险审核
+  - ambrosini
+  role_summary: 高风险验收、最终质量门；可只读查询 CodeGraph 验证影响面。
+  model_ref: deepseek_pro
+  model_strategy:
+    mode: fallback
+    primary: deepseek_pro
+    chain:
+    - deepseek_pro
+    - opencode_go_deepseek_pro
+    - opencode_go_glm51
+    - opencode_go_qwen37_max
+    fallback_on:
+    - quota_exceeded
+    - rate_limited
+    - timeout
+    - server_error
+    - empty_final_content
+  skills:
+  - codex-superpowers
+  - github-code-review
+  tools:
+  - file
+  - mcp-codegraph
+  permission: read_only
+  can_delegate: false
+  capabilities:
+  - review
+  - validation
+  - risk_assessment
+  - release_gate
+  - codegraph_search
+  - codegraph_impact
+  risk_allowed:
+  - R0
+  - R1
+  - R2
+  - R3
+  - R4
 routing:
   default_route:
     mode: review_only
-    agents: [codex]
+    agents:
+    - codex
     reason: unresolved_route_requires_review
   fallback_route:
     mode: review_only
-    agents: [codex]
+    agents:
+    - codex
     reason: unresolved_route_requires_review
   capability_routes:
     file_modification: claude
@@ -145,64 +421,74 @@ routing:
     validation: ambrosini
     risk_assessment: ambrosini
   rules:
-    - id: readonly_lookup
-      when:
-        task_category: explain_code
-      mode: single_agent
-      agents: [hermes-internal]
-      reason: read_only_analysis
-
-    - id: technical_decomposition
-      when:
-        task_category: technical_decomposition
-      mode: single_agent
-      agents: [hermes-internal]
-      reason: technical_translation_and_decomposition
-
-    - id: small_test_generation
-      when:
-        task_category: tests
-        risk_max: R1
-      mode: single_agent
-      agents: [deepseek-tui]
-      reason: targeted_test_generation
-
-    - id: standard_feature
-      when:
-        task_category: feature
-        risk_level: R2
-      mode: single_agent
-      agents: [claude]
-      reason: default_feature_implementation
-
-    - id: code_maintenance
-      when:
-        task_category: code_maintenance
-      mode: single_agent
-      agents: [claude]
-      reason: default_code_implementation
-
-    - id: architecture_change
-      when:
-        task_category: architecture_change
-      mode: pipeline
-      agents: [hermes-internal, codex, claude, deepseek-tui]
-      require_gate: review
-      reason: architecture_runtime_change
-
-    - id: high_risk_pipeline
-      when:
-        risk_level: R3
-      mode: pipeline
-      agents: [hermes-internal, codex, claude, deepseek-tui]
-      require_gate: review
-      reason: risk_escalation
-
-    - id: production_or_destructive
-      when:
-        risk_level: R4
-      mode: pipeline
-      agents: [hermes-internal, codex, claude, ambrosini]
-      require_gate: review
-      requires_human_approval: true
-      reason: production_or_destructive_requires_approval
+  - id: readonly_lookup
+    when:
+      task_category: explain_code
+    mode: single_agent
+    agents:
+    - hermes-internal
+    reason: read_only_analysis
+  - id: technical_decomposition
+    when:
+      task_category: technical_decomposition
+    mode: single_agent
+    agents:
+    - hermes-internal
+    reason: technical_translation_and_decomposition
+  - id: small_test_generation
+    when:
+      task_category: tests
+      risk_max: R1
+    mode: single_agent
+    agents:
+    - deepseek-tui
+    reason: targeted_test_generation
+  - id: standard_feature
+    when:
+      task_category: feature
+      risk_level: R2
+    mode: single_agent
+    agents:
+    - claude
+    reason: default_feature_implementation
+  - id: code_maintenance
+    when:
+      task_category: code_maintenance
+    mode: single_agent
+    agents:
+    - claude
+    reason: default_code_implementation
+  - id: architecture_change
+    when:
+      task_category: architecture_change
+    mode: pipeline
+    agents:
+    - hermes-internal
+    - codex
+    - claude
+    - deepseek-tui
+    require_gate: review
+    reason: architecture_runtime_change
+  - id: high_risk_pipeline
+    when:
+      risk_level: R3
+    mode: pipeline
+    agents:
+    - hermes-internal
+    - codex
+    - claude
+    - deepseek-tui
+    require_gate: review
+    reason: risk_escalation
+  - id: production_or_destructive
+    when:
+      risk_level: R4
+    mode: pipeline
+    agents:
+    - hermes-internal
+    - codex
+    - claude
+    - ambrosini
+    require_gate: review
+    requires_human_approval: true
+    reason: production_or_destructive_requires_approval

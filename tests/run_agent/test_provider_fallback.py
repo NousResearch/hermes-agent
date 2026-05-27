@@ -182,6 +182,33 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_respects_explicit_api_mode_from_fallback_entry(self):
+        fbs = [
+            {
+                "provider": "opencode-go",
+                "model": "qwen3.7-max",
+                "base_url": "https://opencode.ai/zen/go/v1",
+                "api_key": "go-key",
+                "api_mode": "anthropic_messages",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(
+                _mock_client(
+                    base_url="https://opencode.ai/zen/go/v1",
+                    api_key="go-key",
+                ),
+                "qwen3.7-max",
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "opencode-go"
+        assert agent.model == "qwen3.7-max"
+        assert agent.api_mode == "anthropic_messages"
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

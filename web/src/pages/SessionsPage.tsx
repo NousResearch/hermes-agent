@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
+  DelegationEvent,
   SessionInfo,
   SessionMessage,
   SessionSearchResult,
@@ -254,6 +255,30 @@ function MessageList({
   );
 }
 
+function DelegationEventsBlock({ events }: { events: DelegationEvent[] }) {
+  if (!events.length) return null;
+  return (
+    <div className="mb-4 border border-border bg-muted/20 p-3">
+      <div className="mb-2 text-xs font-medium text-muted-foreground">
+        Agent delegation events
+      </div>
+      <div className="space-y-1.5">
+        {events.map((event) => (
+          <div key={event.event_id} className="flex flex-wrap items-center gap-2 text-xs">
+            <Badge tone="secondary">{event.type}</Badge>
+            <span className="font-mono text-muted-foreground">{event.agent_id || "unknown"}</span>
+            {event.status ? <Badge tone="outline">{event.status}</Badge> : null}
+            <span className="min-w-0 flex-1 truncate text-muted-foreground">
+              {event.goal_preview || event.reason || event.error || event.subagent_id || event.task_id}
+            </span>
+            <span className="text-muted-foreground/70">{timeAgo(event.timestamp)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SessionRow({
   session,
   snippet,
@@ -272,6 +297,7 @@ function SessionRow({
   resumeInChatEnabled: boolean;
 }) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
+  const [delegationEvents, setDelegationEvents] = useState<DelegationEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { t } = useI18n();
@@ -282,7 +308,10 @@ function SessionRow({
       setLoading(true);
       api
         .getSessionMessages(session.id)
-        .then((resp) => setMessages(resp.messages))
+        .then((resp) => {
+          setMessages(resp.messages);
+          setDelegationEvents(resp.delegation_events ?? []);
+        })
         .catch((err) => setError(String(err)))
         .finally(() => setLoading(false));
     }
@@ -401,7 +430,10 @@ function SessionRow({
             </p>
           )}
           {messages && messages.length > 0 && (
-            <MessageList messages={messages} highlight={searchQuery} />
+            <>
+              <DelegationEventsBlock events={delegationEvents} />
+              <MessageList messages={messages} highlight={searchQuery} />
+            </>
           )}
         </div>
       )}

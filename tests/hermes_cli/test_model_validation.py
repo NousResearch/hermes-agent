@@ -412,10 +412,15 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "kimi-k2.5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "opencode-go/kimi-k2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "deepseek-v4-flash") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "mimo-v2.5-pro") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "qwen3.6-plus") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "opencode-go/qwen3.6-plus") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "minimax-m2.5") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-go", "minimax-m2.7") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.7") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-go", "minimax-m2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "qwen3.7-max") == "anthropic_messages"
 
 
 class TestAzureFoundryModelApiMode:

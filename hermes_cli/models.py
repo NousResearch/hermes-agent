@@ -2987,8 +2987,9 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
 
     - GPT-5 / Codex models on Zen use ``/v1/responses``
     - Claude models on Zen use ``/v1/messages``
-    - MiniMax models on Go use ``/v1/messages``
-    - GLM / Kimi / Qwen models on Go use ``/v1/chat/completions``
+    - MiniMax M2.7 and Qwen 3.7 Max on Go use ``/v1/messages``
+    - MiniMax M2.5, GLM / Kimi / Qwen Plus / DeepSeek / MiMo / HY3 on Go
+      use ``/v1/chat/completions``
     - Other Zen models (Gemini, GLM, Kimi, MiniMax, Qwen, etc.) use
       ``/v1/chat/completions``
 
@@ -3002,7 +3003,7 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
         return "chat_completions"
 
     if provider == "opencode-go":
-        if normalized.startswith("minimax-"):
+        if normalized.startswith("minimax-m2.7") or normalized.startswith("qwen3.7-"):
             return "anthropic_messages"
         return "chat_completions"
 

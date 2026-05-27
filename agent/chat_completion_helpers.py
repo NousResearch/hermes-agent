@@ -742,11 +742,23 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         except Exception:
             pass
 
-        # Determine api_mode from provider / base URL / model
-        fb_api_mode = "chat_completions"
+        # Determine api_mode from explicit fallback entry first, then provider /
+        # base URL / model. Managed Agent fallback chains resolve model_ref to a
+        # concrete api_mode; respecting it avoids re-routing OpenCode Go models
+        # such as qwen3.7-max/minimax-m2.7 onto the wrong endpoint.
+        fb_api_mode = str(fb.get("api_mode") or "").strip() or "chat_completions"
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        if fb.get("api_mode"):
+            pass
+        elif fb_provider == "opencode-go":
+            try:
+                from hermes_cli.models import opencode_model_api_mode
+
+                fb_api_mode = opencode_model_api_mode(fb_provider, fb_model)
+            except Exception:
+                fb_api_mode = "chat_completions"
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
             fb_api_mode = "anthropic_messages"

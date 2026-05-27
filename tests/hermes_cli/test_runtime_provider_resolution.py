@@ -1340,7 +1340,7 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
     leak across /model switches (a stale ``anthropic_messages`` on a
     chat_completions target would strip /v1 from base_url and 404).
 
-    minimax-m2.5 is an Anthropic-routed model on opencode-go, so even when
+    minimax-m2.7 is an Anthropic-routed model on opencode-go, so even when
     the config claims ``api_mode: chat_completions`` the runtime must pick
     ``anthropic_messages`` — the model dictates the mode, not the stale
     persisted setting.
@@ -1351,7 +1351,7 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
         "_get_model_config",
         lambda: {
             "provider": "opencode-go",
-            "default": "minimax-m2.5",
+            "default": "minimax-m2.7",
             "api_mode": "chat_completions",
         },
     )
@@ -1362,6 +1362,31 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
 
     assert resolved["provider"] == "opencode-go"
     assert resolved["api_mode"] == "anthropic_messages"
+
+
+def test_opencode_go_explicit_runtime_uses_target_model_api_mode(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "glm-5",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="opencode-go",
+        explicit_api_key="test-opencode-go-key",
+        target_model="qwen3.7-max",
+    )
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go"
 
 
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):

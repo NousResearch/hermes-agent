@@ -818,6 +818,7 @@ def _resolve_explicit_runtime(
     model_cfg: Dict[str, Any],
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
@@ -935,6 +936,10 @@ def _resolve_explicit_runtime(
             api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
         elif provider == "xai":
             api_mode = "codex_responses"
+        elif provider in {"opencode-zen", "opencode-go"}:
+            from hermes_cli.models import opencode_model_api_mode
+
+            api_mode = opencode_model_api_mode(provider, target_model or model_cfg.get("default", ""))
         else:
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
@@ -945,6 +950,8 @@ def _resolve_explicit_runtime(
                 detected = _detect_api_mode_for_url(base_url)
                 if detected:
                     api_mode = detected
+        if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
+            base_url = re.sub(r"/v1/?$", "", base_url)
 
         return {
             "provider": provider,
@@ -1033,6 +1040,7 @@ def resolve_runtime_provider(
         model_cfg=model_cfg,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if explicit_runtime:
         return explicit_runtime

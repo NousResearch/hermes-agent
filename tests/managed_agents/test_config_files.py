@@ -63,7 +63,10 @@ def test_managed_agents_model_refs_are_declared_in_models_config():
     expected = {
         "claude": "claude_opus",
         "deepseek-tui": "deepseek_pro",
-        "intelligence": "deepseek_flash",
+        "intelligence": "opencode_go_qwen36",
+        "pirlo": "opencode_go_kimi25",
+        "ambrosini": "deepseek_pro",
+        "hermes-internal": "deepseek_pro",
         "agent-tars": "tars_gpt54",
         "codex": "codex_cli",
     }
@@ -71,6 +74,9 @@ def test_managed_agents_model_refs_are_declared_in_models_config():
         assert registry.get(agent_id).model_ref == model_ref
     for agent in registry.agents.values():
         assert agent.model_ref in models
+        strategy = agent.model_strategy or {}
+        for chain_ref in strategy.get("chain") or []:
+            assert chain_ref in models, (agent.id, chain_ref)
     assert registry.get("agent-tars").model_ref != "tars_glm"
     assert models["tars_gpt54"]["model"] == "gpt-5.4"
 
@@ -115,6 +121,7 @@ def test_runtime_agent_registry_profiles_match_managed_agents_config():
         profile = runtime["agents"][agent_id]["subagent_profile"]
         assert profile["toolsets"] == list(agent.tools), agent_id
         assert profile["skills"] == list(agent.skills), agent_id
+        assert profile.get("model_strategy") == agent.model_strategy, agent_id
 
 
 def test_runtime_agent_registry_is_generated_from_managed_agents_config():

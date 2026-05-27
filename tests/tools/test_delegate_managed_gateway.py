@@ -36,6 +36,11 @@ agents:
     aliases: [低成本快工, deepseek]
     role_summary: 小改、小测试、低风险机械执行。外部搜索遵循 DeepSeek Worker Search Policy：本地优先，必要时用 anysearch-lite。
     model_ref: deepseek_pro
+    model_strategy:
+      mode: fallback
+      primary: deepseek_pro
+      chain: [deepseek_pro, opencode_go_deepseek_flash]
+      fallback_on: [quota_exceeded, rate_limited, timeout, server_error, empty_final_content]
     skills: [spike, github-issues, anysearch-lite]
     tools: [file, terminal]
     permission: ask
@@ -79,6 +84,12 @@ models:
     base_url: https://deepseek.test
     api_key_env: DEEPSEEK_API_KEY
     model: deepseek-v4-pro
+  opencode_go_deepseek_flash:
+    provider: opencode-go
+    base_url: https://opencode.ai/zen/go/v1
+    api_key_env: OPENCODE_GO_API_KEY
+    api_mode: chat_completions
+    model: deepseek-v4-flash
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -218,6 +229,53 @@ def test_managed_agent_model_ref_overrides_provider_model_for_internal_agent(tmp
     assert call["override_base_url"] == "https://deepseek.test"
     assert call["override_api_key"] == "sk-deepseek"
     assert call["override_api_mode"] == "chat_completions"
+
+
+def test_managed_agent_fallback_chain_passes_to_child_agent(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek")
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-opencode")
+    _write_managed_agents_yaml(tmp_path)
+    _write_models_yaml(tmp_path)
+    parent = _make_parent()
+
+    with (
+        patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_runtime,
+        patch("tools.delegate_tool._build_child_agent") as mock_build,
+        patch("tools.delegate_tool._run_single_child") as mock_run,
+    ):
+        mock_runtime.side_effect = lambda requested, explicit_api_key=None, explicit_base_url=None, target_model=None: {
+            "provider": requested,
+            "base_url": explicit_base_url,
+            "api_key": explicit_api_key,
+            "api_mode": "chat_completions",
+        }
+        mock_build.return_value = MagicMock()
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+
+        delegate_task(goal="write tests", agent_id="deepseek-tui", parent_agent=parent)
+
+    call = mock_build.call_args.kwargs
+    assert call["model"] == "deepseek-v4-pro"
+    assert call["model_strategy"]["mode"] == "fallback"
+    assert call["model_strategy"]["chain"] == ["deepseek_pro", "opencode_go_deepseek_flash"]
+    assert call["model_fallback_chain"] == [
+        {
+            "model_ref": "opencode_go_deepseek_flash",
+            "provider": "opencode-go",
+            "model": "deepseek-v4-flash",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "api_key": "sk-opencode",
+            "api_mode": "chat_completions",
+        }
+    ]
 
 
 def test_claude_agent_uses_external_claude_code_cli_runtime(tmp_path, monkeypatch):

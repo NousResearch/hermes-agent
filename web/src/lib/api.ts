@@ -75,12 +75,13 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
-  getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
+  getLogs: (params: { file?: string; lines?: number; level?: string; component?: string; search?: string }) => {
     const qs = new URLSearchParams();
     if (params.file) qs.set("file", params.file);
     if (params.lines) qs.set("lines", String(params.lines));
     if (params.level && params.level !== "ALL") qs.set("level", params.level);
     if (params.component && params.component !== "all") qs.set("component", params.component);
+    if (params.search) qs.set("search", params.search);
     return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
   },
   getAnalytics: (days: number) =>
@@ -101,6 +102,52 @@ export const api = {
     }),
   getManagedAgents: (days: number) =>
     fetchJSON<ManagedAgentsResponse>(`/api/agents/managed?days=${days}`),
+  getAgentRuns: (params: { agent_id?: string; status?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.agent_id) qs.set("agent_id", params.agent_id);
+    if (params.status) qs.set("status", params.status);
+    if (params.limit) qs.set("limit", String(params.limit));
+    return fetchJSON<AgentRunsResponse>(`/api/agents/runs?${qs.toString()}`);
+  },
+  createAgentRun: (agentId: string, body: AgentRunCreateRequest) =>
+    fetchJSON<AgentRunEntry>(`/api/agents/${encodeURIComponent(agentId)}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  getAgentConsoleSessions: (params: { agent_id?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.agent_id) qs.set("agent_id", params.agent_id);
+    if (params.limit) qs.set("limit", String(params.limit));
+    return fetchJSON<AgentConsoleSessionsResponse>(`/api/agents/console/sessions?${qs.toString()}`);
+  },
+  createAgentConsoleSession: (agentId: string, body: AgentConsoleSessionCreateRequest) =>
+    fetchJSON<AgentConsoleSession>(`/api/agents/${encodeURIComponent(agentId)}/console/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  sendAgentConsoleMessage: (sessionId: string, body: AgentConsoleMessageCreateRequest) =>
+    fetchJSON<AgentConsoleSession>(`/api/agents/console/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deleteAgentConsoleSession: (sessionId: string) =>
+    fetchJSON<{ ok: boolean; session_id: string }>(
+      `/api/agents/console/sessions/${encodeURIComponent(sessionId)}`,
+      { method: "DELETE" },
+    ),
+  getDelegations: (params: { days?: number; agent_id?: string; status?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.days) qs.set("days", String(params.days));
+    if (params.agent_id) qs.set("agent_id", params.agent_id);
+    if (params.status) qs.set("status", params.status);
+    if (params.limit) qs.set("limit", String(params.limit));
+    return fetchJSON<DelegationsResponse>(`/api/delegations?${qs.toString()}`);
+  },
+  getDelegationTrace: (traceId: string) =>
+    fetchJSON<DelegationTraceResponse>(`/api/delegations/${encodeURIComponent(traceId)}`),
   setManagedAgentModel: (agentId: string, body: UpdateAgentModelRequest) =>
     fetchJSON<UpdateAgentModelResponse>(
       `/api/agents/${encodeURIComponent(agentId)}/model`,
@@ -449,6 +496,7 @@ export interface SessionMessage {
 export interface SessionMessagesResponse {
   session_id: string;
   messages: SessionMessage[];
+  delegation_events?: DelegationEvent[];
 }
 
 export interface LogsResponse {
@@ -687,11 +735,21 @@ export interface AgentUsageSummary {
 
 export interface SubscriptionStatus {
   provider: string;
+  plan?: string | null;
   workspace_id_redacted: string;
   expires_at: string | null;
+  five_hour_limit_usd?: number | null;
+  weekly_limit_usd?: number | null;
   monthly_limit_usd: number | null;
   usage_percent: number | null;
   reset_at: string | null;
+  request_limits?: {
+    requests_per_5h?: number;
+    requests_per_week?: number;
+    requests_per_month?: number;
+    notes?: string;
+  } | null;
+  notes?: string | null;
   source: "live" | "cache" | "manual" | "unavailable";
   error?: string | null;
 }
@@ -703,6 +761,12 @@ export interface ManagedAgentEntry {
   runtime: string;
   editable: boolean;
   model_ref: string;
+  model_strategy?: {
+    mode?: "fixed" | "fallback" | "external" | string;
+    primary?: string;
+    chain?: string[];
+    fallback_on?: string[];
+  };
   model: string;
   provider: string;
   status: string;
@@ -743,6 +807,122 @@ export interface ManagedAgentsResponse {
     agent_attributed_events: number;
     agent_unknown_events: number;
   };
+}
+
+export interface AgentRunEntry {
+  run_id: string;
+  agent_id: string;
+  display_name?: string;
+  prompt?: string;
+  workspace?: string;
+  risk_level?: string;
+  model_ref?: string;
+  status: string;
+  started_at?: number;
+  ended_at?: number | null;
+  duration_seconds?: number;
+  created_at?: string;
+  updated_at?: string;
+  task_id?: string | null;
+  session_id?: string | null;
+  result_summary?: string;
+  error?: string | null;
+}
+
+export interface AgentRunsResponse {
+  runs: AgentRunEntry[];
+  total: number;
+}
+
+export interface AgentRunCreateRequest {
+  prompt: string;
+  workspace?: string;
+  risk_level?: string;
+  task_id?: string | null;
+  session_id?: string | null;
+}
+
+export interface AgentConsoleMessage {
+  message_id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+  status?: string | null;
+  error?: string | null;
+  duration_seconds?: number | null;
+  api_calls?: number | null;
+  usage?: Record<string, number>;
+  model?: string | null;
+}
+
+export interface AgentConsoleSession {
+  session_id: string;
+  agent_id: string;
+  display_name: string;
+  title: string;
+  workspace: string;
+  risk_level: string;
+  model_ref: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  messages: AgentConsoleMessage[];
+}
+
+export interface AgentConsoleSessionsResponse {
+  sessions: AgentConsoleSession[];
+  total: number;
+}
+
+export interface AgentConsoleSessionCreateRequest {
+  workspace?: string;
+  risk_level?: string;
+}
+
+export interface AgentConsoleMessageCreateRequest {
+  prompt: string;
+  workspace?: string;
+  risk_level?: string;
+}
+
+export interface DelegationEvent {
+  event_id: string;
+  session_id: string;
+  task_id: string;
+  type: string;
+  timestamp: number;
+  source: string;
+  agent_id?: string;
+  subagent_id?: string | null;
+  status?: string | null;
+  error?: string | null;
+  reason?: string | null;
+  goal_preview?: string | null;
+  duration_seconds?: number | null;
+  tokens?: Record<string, number>;
+  payload?: Record<string, unknown>;
+}
+
+export interface DelegationTraceSummary {
+  task_id: string;
+  event_count: number;
+  first_at: number | null;
+  last_at: number | null;
+  status: string;
+  first_event_id?: string | null;
+  last_event_id?: string | null;
+  event_types: string[];
+}
+
+export interface DelegationsResponse {
+  delegations: DelegationTraceSummary[];
+  total: number;
+}
+
+export interface DelegationTraceResponse {
+  task_id: string;
+  events: DelegationEvent[];
+  event_count: number;
 }
 
 export interface UpdateAgentModelRequest {

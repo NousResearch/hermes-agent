@@ -22,8 +22,10 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
@@ -1204,11 +1206,16 @@ def _redact_workspace_id(value: str) -> str:
 def _subscription_default() -> Dict[str, Any]:
     return {
         "provider": "",
+        "plan": None,
         "workspace_id_redacted": "",
         "expires_at": None,
+        "five_hour_limit_usd": None,
+        "weekly_limit_usd": None,
         "monthly_limit_usd": None,
         "usage_percent": None,
         "reset_at": None,
+        "request_limits": None,
+        "notes": None,
         "source": "unavailable",
         "error": None,
     }
@@ -1272,8 +1279,13 @@ def _fetch_opencode_go_subscription(
     result = _subscription_default()
     result.update({
         "provider": "opencode-go",
+        "plan": provider_cfg.get("plan"),
         "expires_at": provider_cfg.get("expires_at"),
+        "five_hour_limit_usd": provider_cfg.get("five_hour_limit_usd"),
+        "weekly_limit_usd": provider_cfg.get("weekly_limit_usd"),
         "monthly_limit_usd": provider_cfg.get("monthly_limit_usd"),
+        "request_limits": provider_cfg.get("request_limits"),
+        "notes": provider_cfg.get("notes"),
     })
 
     env = load_env()
@@ -1341,6 +1353,10 @@ def _subscription_for_model(model_ref: str, model_cfg: Dict[str, Any], sub_cfg: 
     provider_cfg = providers.get(provider, {}) if isinstance(providers.get(provider), dict) else {}
     model_cfg_sub = provider_cfg.get("models", {}).get(model_ref, {}) if isinstance(provider_cfg.get("models"), dict) else {}
     merged_cfg = {**provider_cfg, **model_cfg_sub}
+    model_limits = provider_cfg.get("model_limits") if isinstance(provider_cfg.get("model_limits"), dict) else {}
+    model_limit = model_limits.get(str(model_cfg.get("model") or ""))
+    if isinstance(model_limit, dict):
+        merged_cfg["request_limits"] = dict(model_limit)
     cache = merged_cfg.get("cache") if isinstance(merged_cfg.get("cache"), dict) else {}
 
     if provider == "opencode-go" and merged_cfg.get("auto_fetch", True):
@@ -1352,6 +1368,8 @@ def _subscription_for_model(model_ref: str, model_cfg: Dict[str, Any], sub_cfg: 
                 "usage_percent": status.get("usage_percent"),
                 "reset_at": status.get("reset_at"),
                 "expires_at": status.get("expires_at"),
+                "five_hour_limit_usd": status.get("five_hour_limit_usd"),
+                "weekly_limit_usd": status.get("weekly_limit_usd"),
                 "monthly_limit_usd": status.get("monthly_limit_usd"),
                 "workspace_id_redacted": status.get("workspace_id_redacted"),
             }
@@ -1364,10 +1382,15 @@ def _subscription_for_model(model_ref: str, model_cfg: Dict[str, Any], sub_cfg: 
     status = _subscription_default()
     status.update({
         "provider": provider,
+        "plan": merged_cfg.get("plan"),
         "expires_at": merged_cfg.get("expires_at"),
+        "five_hour_limit_usd": merged_cfg.get("five_hour_limit_usd"),
+        "weekly_limit_usd": merged_cfg.get("weekly_limit_usd"),
         "monthly_limit_usd": merged_cfg.get("monthly_limit_usd"),
         "usage_percent": merged_cfg.get("usage_percent"),
         "reset_at": merged_cfg.get("reset_at"),
+        "request_limits": merged_cfg.get("request_limits"),
+        "notes": merged_cfg.get("notes"),
         "source": "manual" if merged_cfg else "unavailable",
     })
     return status
@@ -1536,6 +1559,7 @@ async def get_managed_agents(days: int = 30):
                 "runtime": runtime,
                 "editable": editable,
                 "model_ref": agent.model_ref,
+                "model_strategy": dict(agent.model_strategy),
                 "model": str(model_cfg.get("model") or ""),
                 "provider": str(model_cfg.get("provider") or ""),
                 "status": str(model_cfg.get("status") or ""),
@@ -1596,6 +1620,31 @@ async def update_managed_agent_model(agent_id: str, body: AgentModelUpdate):
         for raw in raw_agents:
             if isinstance(raw, dict) and raw.get("agent_id") == resolved_agent_id:
                 raw["model_ref"] = requested_ref
+                current_strategy = raw.get("model_strategy") if isinstance(raw.get("model_strategy"), dict) else {}
+                current_mode = str(current_strategy.get("mode") or "fixed").strip().lower()
+                if current_mode == "fallback":
+                    chain: list[str] = [requested_ref]
+                    for item in current_strategy.get("chain") or []:
+                        ref = str(item or "").strip()
+                        if ref and ref != requested_ref and ref in models_cfg:
+                            chain.append(ref)
+                    raw["model_strategy"] = {
+                        "mode": "fallback",
+                        "primary": requested_ref,
+                        "chain": chain,
+                        "fallback_on": [
+                            str(item).strip()
+                            for item in (current_strategy.get("fallback_on") or [])
+                            if str(item).strip()
+                        ],
+                    }
+                else:
+                    raw["model_strategy"] = {
+                        "mode": "fixed",
+                        "primary": requested_ref,
+                        "chain": [requested_ref],
+                        "fallback_on": [],
+                    }
                 updated = True
                 break
         if not updated:
@@ -2923,7 +2972,12 @@ async def get_session_messages(session_id: str):
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
         messages = db.get_messages(sid)
-        return {"session_id": sid, "messages": messages}
+        delegation_events = await asyncio.to_thread(_delegation_events_for_session, sid)
+        return {
+            "session_id": sid,
+            "messages": messages,
+            "delegation_events": delegation_events,
+        }
     finally:
         db.close()
 
@@ -2938,6 +2992,724 @@ async def delete_session_endpoint(session_id: str):
         return {"ok": True}
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Agent run persistence — agent-runs.json helpers
+# ---------------------------------------------------------------------------
+
+_AGENT_RUNS_PATH = get_hermes_home() / "agent-runs.json"
+_AGENT_CONSOLE_SESSIONS_PATH = get_hermes_home() / "agent-console-sessions.json"
+
+# Managed agent IDs (lazy-loaded from agents.yaml + runtime registry)
+_valid_agent_ids: Optional[frozenset] = None
+# Agent IDs backed by external CLI runtimes (claude_code_cli, codex_cli)
+_external_runtime_agent_ids: Optional[frozenset] = None
+
+
+def _reload_agent_ids() -> None:
+    """Refresh the cached set of valid managed agent IDs and external-runtime IDs."""
+    global _valid_agent_ids, _external_runtime_agent_ids
+    ids: set = set()
+    external_ids: set = set()
+    # 1. managed agents from agents.yaml
+    try:
+        cfg = _load_managed_agents_config()
+        for agent in cfg.get("agents") or []:
+            if isinstance(agent, dict) and agent.get("agent_id"):
+                aid = str(agent["agent_id"])
+                ids.add(aid)
+                runtime = str(agent.get("runtime") or "")
+                if runtime in _EXTERNAL_AGENT_RUNTIMES:
+                    external_ids.add(aid)
+    except Exception:
+        pass
+    # 2. runtime agent registry (user-defined agents)
+    reg_path = _RUNTIME_AGENT_REGISTRY_PATH
+    if reg_path.exists():
+        try:
+            reg = json.loads(reg_path.read_text(encoding="utf-8"))
+            for aid, info in (reg.get("agents") or {}).items():
+                if isinstance(info, dict):
+                    ids.add(str(aid))
+        except Exception:
+            pass
+    _valid_agent_ids = frozenset(ids)
+    _external_runtime_agent_ids = frozenset(external_ids)
+
+
+def _known_agent_ids() -> frozenset:
+    """Return the set of known agent IDs (lazy-loaded, cached)."""
+    global _valid_agent_ids
+    if _valid_agent_ids is None:
+        _reload_agent_ids()
+    return _valid_agent_ids  # type: ignore[return-value]
+
+
+def _external_agent_ids() -> frozenset:
+    """Return agent IDs backed by external CLI runtimes (claude/codex)."""
+    global _external_runtime_agent_ids
+    if _external_runtime_agent_ids is None:
+        _reload_agent_ids()
+    return _external_runtime_agent_ids  # type: ignore[return-value]
+
+
+def _load_agent_runs() -> list:
+    """Load the agent-runs.json file, returning a list of run dicts."""
+    if not _AGENT_RUNS_PATH.exists():
+        return []
+    try:
+        raw = _AGENT_RUNS_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if isinstance(data, dict) and isinstance(data.get("runs"), list):
+            return data["runs"]
+        return []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _save_agent_runs(runs: list) -> None:
+    """Persist the run list to agent-runs.json atomically."""
+    _AGENT_RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _AGENT_RUNS_PATH.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps({"runs": runs}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(_AGENT_RUNS_PATH)
+
+
+def _find_run_index(runs: list, run_id: str) -> int:
+    """Return the index of a run by run_id, or -1 if not found."""
+    for i, r in enumerate(runs):
+        if r.get("run_id") == run_id:
+            return i
+    return -1
+
+
+# ---------------------------------------------------------------------------
+# Agent run endpoints
+# ---------------------------------------------------------------------------
+
+
+class AgentRunCreate(BaseModel):
+    prompt: str
+    workspace: str = ""
+    risk_level: str = "R0"
+    task_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+class AgentConsoleSessionCreate(BaseModel):
+    workspace: str = ""
+    risk_level: str = "R0"
+
+
+class AgentConsoleMessageCreate(BaseModel):
+    prompt: str
+    workspace: Optional[str] = None
+    risk_level: Optional[str] = None
+
+
+def _utc_iso(ts: Optional[float] = None) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts or time.time()))
+
+
+def _load_console_sessions() -> list:
+    if not _AGENT_CONSOLE_SESSIONS_PATH.exists():
+        return []
+    try:
+        data = json.loads(_AGENT_CONSOLE_SESSIONS_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("sessions"), list):
+            return data["sessions"]
+    except (json.JSONDecodeError, OSError):
+        pass
+    return []
+
+
+def _save_console_sessions(sessions: list) -> None:
+    _AGENT_CONSOLE_SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _AGENT_CONSOLE_SESSIONS_PATH.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps({"sessions": sessions}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(_AGENT_CONSOLE_SESSIONS_PATH)
+
+
+def _find_console_session_index(sessions: list, session_id: str) -> int:
+    for i, session in enumerate(sessions):
+        if session.get("session_id") == session_id:
+            return i
+    return -1
+
+
+def _resolve_console_agent(agent_id: str):
+    from agent.managed_agents.registry import load_agent_registry
+
+    requested_id = agent_id.strip()
+    if not requested_id:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    registry = load_agent_registry(_AGENTS_CONFIG_PATH)
+    resolved_agent_id = registry.resolve_agent_id(requested_id) or requested_id
+    known = _known_agent_ids()
+    if known and resolved_agent_id not in known:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown agent: {requested_id}. Known agents: {sorted(known)}",
+        )
+    try:
+        agent = registry.get(resolved_agent_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Unknown agent: {requested_id}") from exc
+    if resolved_agent_id in _external_agent_ids():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Agent '{resolved_agent_id}' is managed by external CLI runtime: {agent.runtime}",
+        )
+    return resolved_agent_id, agent
+
+
+def _new_console_session(agent_id: str, agent: Any, workspace: str, risk_level: str) -> dict:
+    now = _utc_iso()
+    resolved_workspace = workspace or str(get_hermes_home())
+    return {
+        "session_id": f"acs-{uuid.uuid4().hex[:12]}",
+        "agent_id": agent_id,
+        "display_name": agent.name,
+        "title": f"{agent.name} chat",
+        "workspace": resolved_workspace,
+        "risk_level": risk_level or "R0",
+        "model_ref": agent.model_ref,
+        "status": "idle",
+        "created_at": now,
+        "updated_at": now,
+        "messages": [],
+    }
+
+
+def _console_history_context(session: dict, max_messages: int = 12) -> str:
+    messages = session.get("messages") if isinstance(session.get("messages"), list) else []
+    previous = messages[:-1] if messages and messages[-1].get("role") == "user" else messages
+    tail = previous[-max_messages:]
+    if not tail:
+        return ""
+    lines = ["Previous messages in this Agent Console session:"]
+    for msg in tail:
+        role = msg.get("role", "message")
+        content = str(msg.get("content") or "").strip()
+        if content:
+            lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def _build_console_parent(agent: Any, workspace: str, session_id: str):
+    toolsets = list(agent.tools or [])
+    if agent.skills and "skills" not in toolsets:
+        toolsets.append("skills")
+    return SimpleNamespace(
+        api_key=None,
+        base_url=None,
+        provider=None,
+        api_mode=None,
+        model="default",
+        max_tokens=None,
+        reasoning_config=None,
+        enabled_toolsets=toolsets,
+        valid_tool_names=set(),
+        platform="dashboard",
+        session_id=session_id,
+        terminal_cwd=workspace,
+        cwd=workspace,
+        _current_task_id=session_id,
+        _delegate_depth=0,
+        _subagent_id=None,
+        _session_db=None,
+        _memory_manager=None,
+        _fallback_chain=None,
+        _credential_pool=None,
+        session_estimated_cost_usd=0.0,
+        session_cost_source="none",
+        session_cost_status="unknown",
+        _touch_activity=lambda *_args, **_kwargs: None,
+    )
+
+
+def _run_agent_console_turn(session: dict, prompt: str) -> dict:
+    resolved_agent_id, agent = _resolve_console_agent(str(session.get("agent_id") or ""))
+    workspace = str(session.get("workspace") or get_hermes_home())
+    parent = _build_console_parent(agent, workspace, str(session.get("session_id") or ""))
+    from tools.delegate_tool import delegate_task
+
+    raw = delegate_task(
+        goal=prompt,
+        context=_console_history_context(session),
+        agent_id=resolved_agent_id,
+        parent_agent=parent,
+    )
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError(f"Agent returned non-JSON result: {raw[:500]}") from exc
+    if payload.get("error"):
+        raise RuntimeError(str(payload.get("error")))
+    results = payload.get("results") if isinstance(payload.get("results"), list) else []
+    entry = results[0] if results else {}
+    if not isinstance(entry, dict):
+        raise RuntimeError("Agent returned an invalid result entry")
+    status = str(entry.get("status") or "unknown")
+    summary = str(entry.get("summary") or "").strip()
+    error = str(entry.get("error") or "").strip()
+    if not summary and error:
+        raise RuntimeError(error)
+    if not summary:
+        raise RuntimeError("Agent did not produce a response")
+    return {
+        "content": summary,
+        "status": status,
+        "duration_seconds": entry.get("duration_seconds"),
+        "api_calls": entry.get("api_calls"),
+        "usage": entry.get("usage") or entry.get("tokens") or {},
+        "model": entry.get("model"),
+    }
+
+
+@app.get("/api/agents/console/sessions")
+async def get_agent_console_sessions(agent_id: Optional[str] = None, limit: int = 50):
+    sessions = _load_console_sessions()
+    if agent_id:
+        sessions = [s for s in sessions if s.get("agent_id") == agent_id]
+    sessions.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
+    limit = max(1, min(int(limit or 50), 200))
+    return {"sessions": sessions[:limit], "total": len(sessions)}
+
+
+@app.post("/api/agents/{agent_id}/console/sessions")
+async def create_agent_console_session(agent_id: str, body: AgentConsoleSessionCreate):
+    resolved_agent_id, agent = _resolve_console_agent(agent_id)
+    sessions = _load_console_sessions()
+    session = _new_console_session(resolved_agent_id, agent, body.workspace, body.risk_level)
+    sessions.append(session)
+    _save_console_sessions(sessions)
+    return session
+
+
+@app.post("/api/agents/console/sessions/{session_id}/messages")
+async def send_agent_console_message(session_id: str, body: AgentConsoleMessageCreate):
+    prompt = (body.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+    sessions = _load_console_sessions()
+    idx = _find_console_session_index(sessions, session_id)
+    if idx == -1:
+        raise HTTPException(status_code=404, detail="Console session not found")
+    session = sessions[idx]
+    if body.workspace is not None:
+        session["workspace"] = body.workspace or session.get("workspace") or str(get_hermes_home())
+    if body.risk_level is not None:
+        session["risk_level"] = body.risk_level or session.get("risk_level") or "R0"
+    user_message = {
+        "message_id": f"msg-{uuid.uuid4().hex[:12]}",
+        "role": "user",
+        "content": prompt,
+        "created_at": _utc_iso(),
+    }
+    session.setdefault("messages", []).append(user_message)
+    session["status"] = "running"
+    session["updated_at"] = _utc_iso()
+    _save_console_sessions(sessions)
+
+    try:
+        result = await asyncio.to_thread(_run_agent_console_turn, session, prompt)
+        assistant_message = {
+            "message_id": f"msg-{uuid.uuid4().hex[:12]}",
+            "role": "assistant",
+            "content": result["content"],
+            "created_at": _utc_iso(),
+            "status": result.get("status"),
+            "duration_seconds": result.get("duration_seconds"),
+            "api_calls": result.get("api_calls"),
+            "usage": result.get("usage") or {},
+            "model": result.get("model"),
+        }
+        session.setdefault("messages", []).append(assistant_message)
+        session["status"] = "idle"
+        session["updated_at"] = _utc_iso()
+        if session.get("title", "").endswith(" chat"):
+            session["title"] = prompt[:40]
+    except Exception as exc:
+        assistant_message = {
+            "message_id": f"msg-{uuid.uuid4().hex[:12]}",
+            "role": "assistant",
+            "content": f"Agent run failed: {exc}",
+            "created_at": _utc_iso(),
+            "status": "failed",
+            "error": str(exc),
+        }
+        session.setdefault("messages", []).append(assistant_message)
+        session["status"] = "failed"
+        session["updated_at"] = _utc_iso()
+    sessions[idx] = session
+    _save_console_sessions(sessions)
+    return session
+
+
+@app.delete("/api/agents/console/sessions/{session_id}")
+async def delete_agent_console_session(session_id: str):
+    sessions = _load_console_sessions()
+    idx = _find_console_session_index(sessions, session_id)
+    if idx == -1:
+        raise HTTPException(status_code=404, detail="Console session not found")
+    deleted = sessions.pop(idx)
+    _save_console_sessions(sessions)
+    return {"ok": True, "session_id": deleted.get("session_id")}
+
+
+@app.get("/api/agents/runs")
+async def get_agent_runs(
+    agent_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+):
+    """List all agent runs, optionally filtered by agent_id or status."""
+    runs = _load_agent_runs()
+    if agent_id:
+        runs = [r for r in runs if r.get("agent_id") == agent_id]
+    if status:
+        runs = [r for r in runs if r.get("status") == status]
+    # newest first
+    runs.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    limit = max(1, min(int(limit), 200))
+    return {"runs": runs[:limit], "total": len(runs)}
+
+
+@app.get("/api/agents/runs/{run_id}")
+async def get_agent_run(run_id: str):
+    """Get a single agent run by run_id."""
+    runs = _load_agent_runs()
+    idx = _find_run_index(runs, run_id)
+    if idx == -1:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return runs[idx]
+
+
+@app.post("/api/agents/{agent_id}/runs")
+async def create_agent_run(agent_id: str, body: AgentRunCreate):
+    """Create a new agent run as a completed preview record.
+
+    No LLM is invoked. The run is recorded as ``status: completed`` with
+    the provided ``preview``. Unknown agent IDs and external CLI runtimes
+    (claude/codex) are rejected.
+    """
+    requested_id = agent_id.strip()
+    if not requested_id:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    if not (body.prompt or "").strip():
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    from agent.managed_agents.registry import load_agent_registry
+
+    registry = load_agent_registry(_AGENTS_CONFIG_PATH)
+    resolved_agent_id = registry.resolve_agent_id(requested_id) or requested_id
+    known = _known_agent_ids()
+    if known and resolved_agent_id not in known:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown agent: {requested_id}. Known agents: {sorted(known)}",
+        )
+    try:
+        agent = registry.get(resolved_agent_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Unknown agent: {requested_id}") from exc
+
+    external = _external_agent_ids()
+    if resolved_agent_id in external:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Agent '{resolved_agent_id}' is managed by external CLI runtime: {agent.runtime}",
+        )
+
+    started_at = time.time()
+    ended_at = started_at
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_at))
+    run = {
+        "run_id": str(uuid.uuid4()),
+        "agent_id": resolved_agent_id,
+        "display_name": agent.name,
+        "prompt": body.prompt,
+        "workspace": body.workspace,
+        "risk_level": body.risk_level or "R0",
+        "model_ref": agent.model_ref,
+        "status": "completed",
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "duration_seconds": 0.0,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "task_id": body.task_id,
+        "session_id": body.session_id,
+        "result_summary": (
+            "Console preview recorded only. This dashboard v1 does not invoke "
+            f"{agent.name} yet; use this record as a handoff/debug note."
+        ),
+        "error": None,
+    }
+
+    runs = _load_agent_runs()
+    runs.append(run)
+    _save_agent_runs(runs)
+    return run
+
+
+@app.post("/api/agents/runs/{run_id}/cancel")
+async def cancel_agent_run(run_id: str):
+    """Cancel a queued or running agent run."""
+    runs = _load_agent_runs()
+    idx = _find_run_index(runs, run_id)
+    if idx == -1:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run = runs[idx]
+    if run.get("status") not in ("queued", "running"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot cancel a run with status '{run.get('status')}'",
+        )
+
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    run["status"] = "cancelled"
+    run["updated_at"] = now_iso
+    _save_agent_runs(runs)
+    return run
+
+
+# ---------------------------------------------------------------------------
+# Delegation endpoints — subagent.* events from events.db
+# ---------------------------------------------------------------------------
+
+_SUBAGENT_EVENT_TYPES = frozenset({
+    "subagent.started",
+    "subagent.completed",
+    "subagent.failed",
+    "subagent.interrupted",
+    "subagent.backgrounded",
+})
+
+
+def _subagent_events_from_db(
+    days: int = 30,
+    agent_id: Optional[str] = None,
+    status: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> list:
+    """Query events.db for subagent.* events, returning a list of dicts."""
+    import sqlite3
+
+    db_path = get_hermes_home() / "events.db"
+    if not db_path.exists():
+        return []
+
+    cutoff = time.time() - (days * 86400)
+    params: list = [cutoff]
+    type_clause = "type IN ({})".format(",".join("?" for _ in _SUBAGENT_EVENT_TYPES))
+    where = f"timestamp > ? AND {type_clause}"
+    params.extend(_SUBAGENT_EVENT_TYPES)
+
+    if task_id:
+        where += " AND task_id = ?"
+        params.append(task_id)
+
+    conn = None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            f"SELECT event_id, session_id, task_id, type, timestamp, source, payload_json "
+            f"FROM events WHERE {where} ORDER BY timestamp",
+            params,
+        ).fetchall()
+    except Exception:
+        _log.debug("Failed to read subagent events from events.db", exc_info=True)
+        return []
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+    events = []
+    for r in rows:
+        try:
+            payload = json.loads(r[6])
+        except Exception:
+            payload = {}
+        ev = {
+            "event_id": r[0],
+            "session_id": r[1],
+            "task_id": r[2],
+            "type": r[3],
+            "timestamp": r[4],
+            "source": r[5],
+            "agent_id": payload.get("agent_id") or "unknown",
+            "subagent_id": payload.get("subagent_id"),
+            "status": payload.get("status"),
+            "error": payload.get("error"),
+            "reason": payload.get("reason"),
+            "goal_preview": payload.get("goal_preview"),
+            "duration_seconds": payload.get("duration_seconds"),
+            "tokens": payload.get("tokens") if isinstance(payload.get("tokens"), dict) else {},
+            "payload": payload,
+        }
+        # Apply agent_id / status filters (client-side after DB fetch)
+        if agent_id and str(payload.get("agent_id") or "") != agent_id:
+            continue
+        if status:
+            ev_status = payload.get("status") if ev["type"] in ("subagent.completed", "subagent.backgrounded") else ev["type"].split(".")[-1]
+            if ev_status != status:
+                continue
+        events.append(ev)
+    return events
+
+
+@app.get("/api/delegations")
+async def get_delegations(
+    days: int = 30,
+    agent_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+):
+    """List delegation traces (subagent.* events grouped by task_id).
+
+    Query params:
+    - days: lookback window (default 30, max 365)
+    - agent_id: filter by agent_id in event payloads
+    - status: filter by subagent status (started, completed, failed, interrupted)
+    """
+    days = max(1, min(int(days or 30), 365))
+    limit = max(1, min(int(limit or 50), 200))
+    events = _subagent_events_from_db(days=days, agent_id=agent_id, status=status)
+
+    # Group by task_id
+    grouped: Dict[str, dict] = {}
+    for ev in events:
+        tid = ev["task_id"]
+        if tid not in grouped:
+            grouped[tid] = {
+                "task_id": tid,
+                "events": [],
+                "event_count": 0,
+                "first_at": None,
+                "last_at": None,
+                "status": "unknown",
+            }
+        grp = grouped[tid]
+        grp["events"].append(ev)
+        grp["event_count"] += 1
+        ev_ts = float(ev.get("timestamp") or 0)
+        if grp["first_at"] is None or ev_ts < grp["first_at"]:
+            grp["first_at"] = ev_ts
+        if grp["last_at"] is None or ev_ts > grp["last_at"]:
+            grp["last_at"] = ev_ts
+        # Derive overall status from the latest event type
+        etype = ev["type"]
+        if etype == "subagent.completed":
+            grp["status"] = ev.get("payload", {}).get("status") or "completed"
+        elif etype == "subagent.failed":
+            grp["status"] = "failed"
+        elif etype == "subagent.interrupted":
+            grp["status"] = "interrupted"
+        elif etype == "subagent.started":
+            if grp["status"] == "unknown":
+                grp["status"] = "running"
+        elif etype == "subagent.backgrounded":
+            grp["status"] = "backgrounded"
+
+    # Sort traces newest-first
+    result = sorted(grouped.values(), key=lambda g: g.get("first_at") or 0, reverse=True)
+    # Drop the full events list; keep summary + first/last event IDs
+    for grp in result:
+        grp["first_event_id"] = grp["events"][0]["event_id"] if grp["events"] else None
+        grp["last_event_id"] = grp["events"][-1]["event_id"] if grp["events"] else None
+        # Keep only event type summaries
+        grp["event_types"] = [e["type"] for e in grp["events"]]
+        del grp["events"]
+
+    total = len(result)
+    return {"delegations": result[:limit], "total": total}
+
+
+@app.get("/api/delegations/{trace_id}")
+async def get_delegation_trace(trace_id: str):
+    """Get the full subagent event trace for a single task_id."""
+    events = _subagent_events_from_db(days=365, task_id=trace_id)
+    if not events:
+        raise HTTPException(status_code=404, detail="Delegation trace not found")
+    return {
+        "task_id": trace_id,
+        "events": events,
+        "event_count": len(events),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Enhanced session messages — include delegation events
+# ---------------------------------------------------------------------------
+
+
+def _delegation_events_for_session(session_id: str) -> list:
+    """Fetch subagent.* events from events.db for a given session_id."""
+    import sqlite3
+
+    db_path = get_hermes_home() / "events.db"
+    if not db_path.exists():
+        return []
+
+    type_clause = "type IN ({})".format(",".join("?" for _ in _SUBAGENT_EVENT_TYPES))
+    params: list = [session_id]
+    params.extend(_SUBAGENT_EVENT_TYPES)
+
+    conn = None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            f"SELECT event_id, session_id, task_id, type, timestamp, source, payload_json "
+            f"FROM events WHERE session_id = ? AND {type_clause} ORDER BY timestamp",
+            params,
+        ).fetchall()
+    except Exception:
+        _log.debug("Failed to read subagent events for session", exc_info=True)
+        return []
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+    result = []
+    for r in rows:
+        try:
+            payload = json.loads(r[6])
+        except Exception:
+            payload = {}
+        result.append({
+            "event_id": r[0],
+            "session_id": r[1],
+            "task_id": r[2],
+            "type": r[3],
+            "timestamp": r[4],
+            "source": r[5],
+            "agent_id": payload.get("agent_id") or "unknown",
+            "subagent_id": payload.get("subagent_id"),
+            "status": payload.get("status"),
+            "error": payload.get("error"),
+            "reason": payload.get("reason"),
+            "goal_preview": payload.get("goal_preview"),
+            "duration_seconds": payload.get("duration_seconds"),
+            "tokens": payload.get("tokens") if isinstance(payload.get("tokens"), dict) else {},
+            "payload": payload,
+        })
+    return result
 
 
 # ---------------------------------------------------------------------------

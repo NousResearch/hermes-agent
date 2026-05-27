@@ -97,6 +97,7 @@ class AgentSpec:
     aliases: tuple[str, ...] = ()
     role_summary: str = ""
     model_ref: str = ""
+    model_strategy: dict[str, Any] = field(default_factory=dict)
     runtime: str = ""
     skills: tuple[str, ...] = ()
     tools: tuple[str, ...] = ()
@@ -235,6 +236,7 @@ def _parse_yaml_agent(raw: Mapping[str, Any], *, source_path: Path | None) -> Ag
     aliases = _normalize_str_list(raw.get("aliases"))
     role_summary = str(raw.get("role_summary") or "").strip()
     model_ref = str(raw.get("model_ref") or "").strip()
+    model_strategy = _normalize_model_strategy(raw.get("model_strategy"), model_ref=model_ref)
     runtime = str(raw.get("runtime") or "").strip()
     skills = _normalize_str_list(raw.get("skills"))
     risk_allowed = _normalize_risk_levels(raw.get("risk_allowed"))
@@ -246,6 +248,7 @@ def _parse_yaml_agent(raw: Mapping[str, Any], *, source_path: Path | None) -> Ag
         aliases=aliases,
         role_summary=role_summary,
         model_ref=model_ref,
+        model_strategy=model_strategy,
         runtime=runtime,
         skills=skills,
         tools=tools,
@@ -275,6 +278,10 @@ def _parse_legacy_agent(agent_id: str, raw: Mapping[str, Any], *, source_path: P
     aliases = _normalize_str_list(raw.get("aliases"))
     role_summary = str(raw.get("role_summary") or "").strip()
     model_ref = str(profile.get("model_ref") or raw.get("model_ref") or "").strip()
+    model_strategy = _normalize_model_strategy(
+        profile.get("model_strategy") or raw.get("model_strategy"),
+        model_ref=model_ref,
+    )
     runtime = str(profile.get("runtime") or raw.get("runtime") or "").strip()
     skills = _normalize_str_list(profile.get("skills") or raw.get("skills"))
     risk_allowed = _normalize_risk_levels(raw.get("risk_allowed"))
@@ -287,6 +294,7 @@ def _parse_legacy_agent(agent_id: str, raw: Mapping[str, Any], *, source_path: P
         aliases=aliases,
         role_summary=role_summary,
         model_ref=model_ref,
+        model_strategy=model_strategy,
         runtime=runtime,
         skills=skills,
         tools=tools,
@@ -297,3 +305,35 @@ def _parse_legacy_agent(agent_id: str, raw: Mapping[str, Any], *, source_path: P
         status=status,
         source=str(source_path) if source_path else None,
     )
+
+
+def _normalize_model_strategy(raw: Any, *, model_ref: str = "") -> dict[str, Any]:
+    """Normalize optional agent model strategy metadata.
+
+    ``model_ref`` stays as the compatibility primary. A missing strategy means
+    fixed model behavior. Fallback chains are metadata until runtime chooses to
+    consume them.
+    """
+    if not isinstance(raw, Mapping):
+        return {}
+    mode = str(raw.get("mode") or "").strip().lower()
+    if mode not in {"fixed", "fallback", "external"}:
+        mode = "fixed"
+    primary = str(raw.get("primary") or model_ref or "").strip()
+    chain = _normalize_str_list(raw.get("chain"))
+    if mode == "fallback":
+        ordered: list[str] = []
+        for ref in (primary, *chain):
+            if ref and ref not in ordered:
+                ordered.append(ref)
+        chain = tuple(ordered)
+        if not primary and chain:
+            primary = chain[0]
+        if len(chain) < 2:
+            mode = "fixed"
+    return {
+        "mode": mode,
+        "primary": primary,
+        "chain": list(chain),
+        "fallback_on": list(_normalize_str_list(raw.get("fallback_on"))),
+    }

@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { KeyboardEvent } from "react";
 import {
   AlertTriangle,
+  MessageSquare,
+  X,
   ExternalLink,
+  Plus,
   RefreshCw,
   Save,
+  Send,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
   ManagedAgentEntry,
+  AgentConsoleSession,
   ManagedAgentsResponse,
   ManagedModelEntry,
 } from "@/lib/api";
@@ -78,6 +84,15 @@ function SubscriptionCell({ model }: { model?: ManagedModelEntry }) {
   if (!sub || sub.source === "unavailable") {
     return <span className="text-xs text-muted-foreground">No subscription data</span>;
   }
+  const limits = [
+    sub.five_hour_limit_usd ? `$${sub.five_hour_limit_usd}/5h` : null,
+    sub.weekly_limit_usd ? `$${sub.weekly_limit_usd}/wk` : null,
+    sub.monthly_limit_usd ? `$${sub.monthly_limit_usd}/mo` : null,
+  ].filter(Boolean);
+  const requestLimits = sub.request_limits;
+  const requestLine = requestLimits?.requests_per_5h
+    ? `${requestLimits.requests_per_5h.toLocaleString()}/5h · ${requestLimits.requests_per_week?.toLocaleString() ?? "?"}/wk · ${requestLimits.requests_per_month?.toLocaleString() ?? "?"}/mo`
+    : null;
   return (
     <div className="min-w-[10rem] space-y-1 text-xs">
       <div className="flex items-center gap-1.5">
@@ -87,9 +102,14 @@ function SubscriptionCell({ model }: { model?: ManagedModelEntry }) {
         ) : null}
       </div>
       <div className="text-muted-foreground">
-        {sub.monthly_limit_usd ? `$${sub.monthly_limit_usd}/mo` : "limit n/a"}
+        {limits.length ? limits.join(" · ") : "limit n/a"}
         {sub.expires_at ? ` · expires ${sub.expires_at}` : ""}
       </div>
+      {requestLine ? (
+        <div className="text-muted-foreground">est. requests {requestLine}</div>
+      ) : requestLimits?.notes ? (
+        <div className="line-clamp-2 text-[11px] text-muted-foreground">{requestLimits.notes}</div>
+      ) : null}
       {sub.reset_at ? (
         <div className="text-muted-foreground">resets {sub.reset_at}</div>
       ) : null}
@@ -98,6 +118,32 @@ function SubscriptionCell({ model }: { model?: ManagedModelEntry }) {
           {sub.error}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function ModelStrategySummary({ agent }: { agent: ManagedAgentEntry }) {
+  const strategy = agent.model_strategy || {};
+  const mode = strategy.mode || (agent.editable ? "fixed" : "external");
+  const chain = strategy.chain || [];
+  if (mode === "fallback" && chain.length > 1) {
+    return (
+      <div className="mt-1 max-w-[18rem] text-[11px] text-muted-foreground">
+        <Badge tone="outline">fallback chain</Badge>
+        <div className="mt-1 truncate">{chain.join(" → ")}</div>
+      </div>
+    );
+  }
+  if (mode === "external") {
+    return (
+      <div className="mt-1 text-[11px] text-muted-foreground">
+        <Badge tone="secondary">external CLI</Badge>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-1 text-[11px] text-muted-foreground">
+      <Badge tone="secondary">fixed model</Badge>
     </div>
   );
 }
@@ -178,6 +224,7 @@ function AgentModelSelect({
         </Button>
       </div>
       <ModelLabel model={modelByRef.get(selected)} />
+      <ModelStrategySummary agent={agent} />
       {error ? <div className="text-[11px] text-destructive">{error}</div> : null}
     </div>
   );
@@ -187,6 +234,16 @@ export default function AgentsPage() {
   const { setTitle } = usePageHeader();
   const [period, setPeriod] = useState<(typeof PERIODS)[number]>(PERIODS[1]);
   const [data, setData] = useState<ManagedAgentsResponse | null>(null);
+  const [consoleSessions, setConsoleSessions] = useState<AgentConsoleSession[]>([]);
+  const [activeConsoleSessionId, setActiveConsoleSessionId] = useState<string | null>(null);
+  const [consoleAgent, setConsoleAgent] = useState<ManagedAgentEntry | null>(null);
+  const [consolePrompt, setConsolePrompt] = useState("");
+  const [consoleWorkspace, setConsoleWorkspace] = useState("");
+  const [defaultWorkspace, setDefaultWorkspace] = useState("");
+  const [consoleRisk, setConsoleRisk] = useState("R0");
+  const [consoleBusy, setConsoleBusy] = useState(false);
+  const [consoleError, setConsoleError] = useState<string | null>(null);
+  const [consoleOpen, setConsoleOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -202,6 +259,25 @@ export default function AgentsPage() {
     }
   }, [period.days]);
 
+  const loadConsoleSessions = useCallback(async (agentId?: string) => {
+    try {
+      const resp = await api.getAgentConsoleSessions({ agent_id: agentId, limit: 20 });
+      setConsoleSessions(resp.sessions);
+      if (resp.sessions.length > 0) {
+        setActiveConsoleSessionId((current) => (
+          current && resp.sessions.some((session) => session.session_id === current)
+            ? current
+            : resp.sessions[0].session_id
+        ));
+      } else {
+        setActiveConsoleSessionId(null);
+      }
+    } catch {
+      setConsoleSessions([]);
+      setActiveConsoleSessionId(null);
+    }
+  }, []);
+
   useEffect(() => {
     setTitle("Agent Control");
     return () => setTitle(null);
@@ -210,6 +286,98 @@ export default function AgentsPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    api.getStatus()
+      .then((status) => {
+        setDefaultWorkspace(status.hermes_home);
+        setConsoleWorkspace((current) => current || status.hermes_home);
+      })
+      .catch(() => {
+        setDefaultWorkspace((current) => current || "");
+      });
+  }, []);
+
+  const activeConsoleSession = useMemo(
+    () => consoleSessions.find((session) => session.session_id === activeConsoleSessionId) || null,
+    [consoleSessions, activeConsoleSessionId],
+  );
+
+  const startConsoleSession = async (agent: ManagedAgentEntry) => {
+    setConsoleBusy(true);
+    setConsoleError(null);
+    try {
+      const session = await api.createAgentConsoleSession(agent.agent_id, {
+        workspace: consoleWorkspace,
+        risk_level: consoleRisk,
+      });
+      setConsoleSessions((prev) => [session, ...prev.filter((item) => item.session_id !== session.session_id)]);
+      setActiveConsoleSessionId(session.session_id);
+    } catch (e) {
+      setConsoleError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConsoleBusy(false);
+    }
+  };
+
+  const closeConsoleSession = async (sessionId: string) => {
+    setConsoleBusy(true);
+    setConsoleError(null);
+    try {
+      await api.deleteAgentConsoleSession(sessionId);
+      setConsoleSessions((prev) => {
+        const next = prev.filter((session) => session.session_id !== sessionId);
+        if (activeConsoleSessionId === sessionId) {
+          setActiveConsoleSessionId(next[0]?.session_id ?? null);
+        }
+        return next;
+      });
+    } catch (e) {
+      setConsoleError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConsoleBusy(false);
+    }
+  };
+
+  const sendConsoleMessage = async () => {
+    if (!consoleAgent) return;
+    let session = activeConsoleSession;
+    const prompt = consolePrompt.trim();
+    if (!prompt) return;
+    setConsoleBusy(true);
+    setConsoleError(null);
+    try {
+      if (!session) {
+        session = await api.createAgentConsoleSession(consoleAgent.agent_id, {
+          workspace: consoleWorkspace,
+          risk_level: consoleRisk,
+        });
+        setConsoleSessions((prev) => [session!, ...prev]);
+        setActiveConsoleSessionId(session.session_id);
+      }
+      const updated = await api.sendAgentConsoleMessage(session.session_id, {
+        prompt,
+        workspace: consoleWorkspace,
+        risk_level: consoleRisk,
+      });
+      setConsolePrompt("");
+      setConsoleSessions((prev) => [updated, ...prev.filter((item) => item.session_id !== updated.session_id)]);
+      setActiveConsoleSessionId(updated.session_id);
+      setConsoleWorkspace(updated.workspace || consoleWorkspace);
+      setConsoleRisk(updated.risk_level || consoleRisk);
+    } catch (e) {
+      setConsoleError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConsoleBusy(false);
+    }
+  };
+
+  const handlePromptKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void sendConsoleMessage();
+    }
+  };
 
   const models = data?.models ?? [];
   const agents = data?.agents ?? [];
@@ -223,6 +391,13 @@ export default function AgentsPage() {
     () => [...agents].sort((a, b) => usageTotal(b) - usageTotal(a)),
     [agents],
   );
+
+  const openConsole = (agent: ManagedAgentEntry) => {
+    setConsoleAgent(agent);
+    setConsoleError(null);
+    setConsoleOpen(true);
+    void loadConsoleSessions(agent.agent_id);
+  };
 
   return (
     <div className="space-y-5">
@@ -355,7 +530,7 @@ export default function AgentsPage() {
                           <SubscriptionCell model={model} />
                         </td>
                         <td className="py-3">
-                          <div className="flex max-w-[16rem] flex-wrap gap-1">
+                          <div className="mb-2 flex max-w-[16rem] flex-wrap gap-1">
                             {agent.tools.map((tool) => (
                               <span
                                 key={tool}
@@ -365,6 +540,20 @@ export default function AgentsPage() {
                               </span>
                             ))}
                           </div>
+                          <Button
+                            size="sm"
+                            outlined={consoleAgent?.agent_id !== agent.agent_id || !consoleOpen}
+                            disabled={!agent.editable}
+                            onClick={() => openConsole(agent)}
+                            prefix={<MessageSquare className="h-3.5 w-3.5" />}
+                          >
+                            Open Console
+                          </Button>
+                          {!agent.editable ? (
+                            <div className="mt-1 text-[11px] text-muted-foreground">
+                              External CLI only
+                            </div>
+                          ) : null}
                         </td>
                       </tr>
                     );
@@ -375,6 +564,180 @@ export default function AgentsPage() {
           )}
         </CardContent>
       </Card>
+
+      {consoleOpen ? (
+        <div className="fixed inset-0 z-50 bg-background/60 backdrop-blur-sm">
+          <div className="ml-auto flex h-full w-full max-w-3xl flex-col border-l border-border bg-background shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4 text-primary" />
+                  <h2 className="text-base font-semibold">Agent Console</h2>
+                </div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  {consoleAgent ? (
+                    <>
+                      Chatting with <span className="font-medium text-foreground">{consoleAgent.display_name}</span> · {consoleAgent.model_ref}
+                    </>
+                  ) : (
+                    "Choose an editable agent to start a console session."
+                  )}
+                </div>
+              </div>
+              <Button
+                size="sm"
+                outlined
+                onClick={() => setConsoleOpen(false)}
+                prefix={<X className="h-3.5 w-3.5" />}
+              >
+                Close
+              </Button>
+            </div>
+
+            <div className="border-b border-border px-5 py-3">
+              <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                {consoleSessions.map((session) => (
+                  <div
+                    key={session.session_id}
+                    className={`shrink-0 border px-3 py-1.5 text-xs ${
+                      activeConsoleSessionId === session.session_id
+                        ? "border-primary bg-primary/10 text-foreground"
+                        : "border-border bg-muted/20 text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        className="block max-w-36 truncate"
+                        onClick={() => {
+                          setActiveConsoleSessionId(session.session_id);
+                          setConsoleWorkspace(session.workspace || defaultWorkspace);
+                          setConsoleRisk(session.risk_level || "R0");
+                        }}
+                      >
+                        {session.title || session.display_name}
+                      </button>
+                      <button
+                        type="button"
+                        className="text-muted-foreground hover:text-destructive"
+                        disabled={consoleBusy}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void closeConsoleSession(session.session_id);
+                        }}
+                        aria-label={`Close ${session.title || session.display_name}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {consoleAgent ? (
+                  <Button
+                    size="sm"
+                    outlined
+                    disabled={consoleBusy}
+                    onClick={() => void startConsoleSession(consoleAgent)}
+                    prefix={consoleBusy ? <Spinner /> : <Plus className="h-3.5 w-3.5" />}
+                  >
+                    New Chat
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+              {!activeConsoleSession ? (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                  Start a new chat, then type your first message below.
+                </div>
+              ) : activeConsoleSession.messages.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                  No messages yet.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {activeConsoleSession.messages.map((message) => (
+                    <div
+                      key={message.message_id}
+                      className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[82%] border px-3 py-2 text-sm ${
+                          message.role === "user"
+                            ? "border-primary/30 bg-primary/10"
+                            : "border-border bg-muted/20"
+                        }`}
+                      >
+                        <div className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+                          {message.role === "user" ? "You" : activeConsoleSession.display_name}
+                          {message.status ? ` · ${message.status}` : ""}
+                        </div>
+                        <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
+                        {message.duration_seconds !== undefined && message.duration_seconds !== null ? (
+                          <div className="mt-2 text-[11px] text-muted-foreground">
+                            {message.duration_seconds}s{message.api_calls ? ` · ${message.api_calls} calls` : ""}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                  {consoleBusy ? (
+                    <div className="flex justify-start">
+                      <div className="border border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+                        <Spinner /> Thinking...
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-border p-4">
+              <div className="mb-2 flex flex-wrap gap-2">
+                <input
+                  className="h-8 min-w-0 flex-1 border border-border bg-background px-2 text-xs"
+                  value={consoleWorkspace}
+                  onChange={(e) => setConsoleWorkspace(e.target.value)}
+                  disabled={!consoleAgent || consoleBusy}
+                />
+                <select
+                  className="h-8 border border-border bg-background px-2 text-xs"
+                  value={consoleRisk}
+                  onChange={(e) => setConsoleRisk(e.target.value)}
+                  disabled={!consoleAgent || consoleBusy}
+                >
+                  {["R0", "R1", "R2", "R3", "R4"].map((risk) => <option key={risk}>{risk}</option>)}
+                </select>
+              </div>
+              <div className="flex items-end gap-2">
+                <textarea
+                  className="max-h-36 min-h-16 flex-1 resize-none border border-border bg-background p-3 text-sm outline-none focus:border-primary"
+                  placeholder="Message this agent..."
+                  value={consolePrompt}
+                  onChange={(e) => setConsolePrompt(e.target.value)}
+                  onKeyDown={handlePromptKeyDown}
+                  disabled={!consoleAgent || consoleBusy}
+                  autoFocus
+                />
+                <Button
+                  size="sm"
+                  className="mb-0.5"
+                  disabled={!consoleAgent || !consolePrompt.trim() || consoleBusy}
+                  onClick={() => void sendConsoleMessage()}
+                  prefix={consoleBusy ? <Spinner /> : <Send className="h-3.5 w-3.5" />}
+                >
+                  Send
+                </Button>
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                Press Enter to send. Shift+Enter inserts a new line.
+              </div>
+              {consoleError ? <div className="mt-2 text-xs text-destructive">{consoleError}</div> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

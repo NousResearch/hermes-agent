@@ -61,6 +61,7 @@ def _runtime_agent_payload(agent: AgentSpec) -> dict[str, Any]:
         "allow_background": False,
         "required_mcp_servers": _required_mcp_servers(agent),
         "model_ref": agent.model_ref,
+        "model_strategy": dict(agent.model_strategy),
         "skills": list(agent.skills),
     }
     if agent.runtime:
@@ -77,6 +78,7 @@ def _runtime_agent_payload(agent: AgentSpec) -> dict[str, Any]:
         "aliases": list(agent.aliases),
         "role_summary": agent.role_summary,
         "model_ref": agent.model_ref,
+        "model_strategy": dict(agent.model_strategy),
     }
     if agent.runtime:
         payload["runtime"] = agent.runtime

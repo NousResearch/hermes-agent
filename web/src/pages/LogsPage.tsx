@@ -22,6 +22,7 @@ const FILES = ["agent", "errors", "gateway"] as const;
 const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
 const COMPONENTS = ["all", "gateway", "agent", "tools", "cli", "cron"] as const;
 const LINE_COUNTS = [50, 100, 200, 500] as const;
+const QUICK_SEARCHES = ["delegate_task", "subagent", "agent_id", "model_ref", "error"] as const;
 
 function classifyLine(line: string): "error" | "warning" | "info" | "debug" {
   const upper = line.toUpperCase();
@@ -52,6 +53,7 @@ export default function LogsPage() {
   const [component, setComponent] =
     useState<(typeof COMPONENTS)[number]>("all");
   const [lineCount, setLineCount] = useState<(typeof LINE_COUNTS)[number]>(100);
+  const [search, setSearch] = useState("");
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [lines, setLines] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -64,7 +66,7 @@ export default function LogsPage() {
     setLoading(true);
     setError(null);
     api
-      .getLogs({ file, lines: lineCount, level, component })
+      .getLogs({ file, lines: lineCount, level, component, search })
       .then((resp) => {
         setLines(resp.lines);
         setTimeout(() => {
@@ -75,14 +77,14 @@ export default function LogsPage() {
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
-  }, [file, lineCount, level, component]);
+  }, [file, lineCount, level, component, search]);
 
   useLayoutEffect(() => {
     setAfterTitle(
       <span className="flex items-center gap-2">
         {loading && <Spinner className="shrink-0 text-base text-primary" />}
         <Badge tone="secondary" className="text-[10px]">
-          {file} · {level} · {component}
+          {file} · {level} · {component}{search ? ` · ${search}` : ""}
         </Badge>
       </span>,
     );
@@ -126,6 +128,7 @@ export default function LogsPage() {
     file,
     level,
     loading,
+    search,
     setAfterTitle,
     setEnd,
     t.common.live,
@@ -187,6 +190,21 @@ export default function LogsPage() {
               label: String(n),
             }))}
           />
+        </FilterGroup>
+        <FilterGroup label="Quick search">
+          <div className="flex flex-wrap gap-1">
+            {QUICK_SEARCHES.map((term) => (
+              <Button
+                key={term}
+                type="button"
+                size="sm"
+                outlined={search !== term}
+                onClick={() => setSearch(search === term ? "" : term)}
+              >
+                {term}
+              </Button>
+            ))}
+          </div>
         </FilterGroup>
       </div>
 

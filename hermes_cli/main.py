@@ -2374,8 +2374,6 @@ def select_provider_and_model(args=None):
     # Step 2: Provider-specific setup + model selection
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
-    elif selected_provider == "ai-gateway":
-        _model_flow_ai_gateway(config, current_model)
     elif selected_provider == "nous":
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
@@ -2958,59 +2956,6 @@ def _model_flow_openrouter(config, current_model=""):
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
-    else:
-        print("No change.")
-
-
-def _model_flow_ai_gateway(config, current_model=""):
-    """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
-    from hermes_constants import AI_GATEWAY_BASE_URL
-    from hermes_cli.auth import (
-        PROVIDER_REGISTRY,
-        _prompt_model_selection,
-        _save_model_choice,
-        deactivate_provider,
-    )
-    from hermes_cli.config import get_env_value
-
-    # Route through _prompt_api_key so users can replace a stale/broken key
-    # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand.
-    pconfig = PROVIDER_REGISTRY["ai-gateway"]
-    existing_key = get_env_value("AI_GATEWAY_API_KEY") or ""
-    if not existing_key:
-        print(
-            "Create API key here: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway&title=AI+Gateway"
-        )
-        print("Add a payment method to get $5 in free credits.")
-        print()
-    _resolved, abort = _prompt_api_key(pconfig, existing_key, provider_id="ai-gateway")
-    if abort:
-        return
-
-    from hermes_cli.models import ai_gateway_model_ids, get_pricing_for_provider
-
-    models_list = ai_gateway_model_ids(force_refresh=True)
-    pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
-
-    selected = _prompt_model_selection(
-        models_list, current_model=current_model, pricing=pricing
-    )
-    if selected:
-        _save_model_choice(selected)
-
-        from hermes_cli.config import load_config, save_config
-
-        cfg = load_config()
-        model = cfg.get("model")
-        if not isinstance(model, dict):
-            model = {"default": model} if model else {}
-            cfg["model"] = model
-        model["provider"] = "ai-gateway"
-        model["base_url"] = AI_GATEWAY_BASE_URL
-        model["api_mode"] = "chat_completions"
-        save_config(cfg)
-        deactivate_provider()
-        print(f"Default model set to: {selected} (via Vercel AI Gateway)")
     else:
         print("No change.")
 
@@ -6988,7 +6933,25 @@ def _update_via_zip(args):
     import zipfile
     from urllib.request import urlretrieve
 
-    branch = "main"
+    # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
+    # static archive from GitHub, which is fine for the default "main"
+    # channel but would silently ignore --branch and update from main even
+    # if the user asked for something else — exactly the silent-divergence
+    # bug --branch was added to prevent. Refuse to proceed in that case
+    # rather than lie.
+    branch = _resolve_update_branch(args)
+    if branch != "main":
+        print(
+            f"✗ --branch={branch} is not supported on the Windows ZIP-fallback "
+            "update path."
+        )
+        print(
+            "  This path runs when git file I/O is broken on the system. "
+            "Either resolve the git-side breakage (typically an antivirus "
+            "or NTFS filter holding files open) and rerun `hermes update "
+            f"--branch {branch}`, or update against main with `hermes update`."
+        )
+        sys.exit(1)
     zip_url = (
         f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )
@@ -8395,13 +8358,36 @@ def _finalize_update_output(state):
             pass
 
 
-def _cmd_update_check():
-    """Implement ``hermes update --check``: fetch and report without installing."""
+def _resolve_update_branch(args) -> str:
+    """Normalize ``args.branch`` into a non-empty branch name.
+
+    Centralizes the "default to main, accept --branch override, treat empty
+    or whitespace-only values as the default" parsing so every consumer of
+    ``--branch`` (check path, git-update path, ZIP-fallback path) agrees on
+    the same answer.
+    """
+    return (getattr(args, "branch", None) or "main").strip() or "main"
+
+
+def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+    """Implement ``hermes update --check``: fetch and report without installing.
+
+    ``branch`` selects which branch the check compares against. Default is
+    "main"; callers can pass another branch to ask "are there new commits
+    on origin/<branch>?" without performing the update.
+
+    ``branch_explicit`` is True iff the caller passed --branch on the CLI.
+    PyPI installs can't honor non-default branches, so when this is True
+    on a PyPI install we surface a one-line notice instead of silently
+    dropping the flag.
+    """
     from hermes_cli.config import detect_install_method
     method = detect_install_method(PROJECT_ROOT)
     if method == "pip":
         from hermes_cli.config import recommended_update_command
         from hermes_cli.banner import check_via_pypi
+        if branch_explicit and branch != "main":
+            print(f"⚠ --branch is ignored for PyPI installs (would have checked '{branch}').")
         result = check_via_pypi()
         if result is None:
             print("✗ Could not reach PyPI to check for updates.")
@@ -8422,16 +8408,34 @@ def _cmd_update_check():
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Fetch both origin and upstream; prefer upstream as the canonical reference
-    print("→ Fetching from upstream...")
-    fetch_result = subprocess.run(
-        git_cmd + ["fetch", "upstream"],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if fetch_result.returncode != 0:
-        # Fallback to origin if upstream doesn't exist
+    # Fetch both origin and upstream; prefer upstream as the canonical reference.
+    # Note: upstream/<branch> may not exist for non-main branches (a fork's
+    # bb/gui has no upstream counterpart), so when the caller picks a
+    # non-default branch we skip the upstream probe and use origin directly.
+    if branch == "main":
+        print("→ Fetching from upstream...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "upstream"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if fetch_result.returncode != 0:
+            # Fallback to origin if upstream doesn't exist
+            print("→ Fetching from origin...")
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "origin"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            upstream_exists = False
+            compare_branch = f"origin/{branch}"
+        else:
+            upstream_exists = True
+            compare_branch = f"upstream/{branch}"
+    else:
+        # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch", "origin"],
@@ -8440,10 +8444,7 @@ def _cmd_update_check():
             text=True,
         )
         upstream_exists = False
-        compare_branch = "origin/main"
-    else:
-        upstream_exists = True
-        compare_branch = "upstream/main"
+        compare_branch = f"origin/{branch}"
 
     if fetch_result.returncode != 0:
         stderr = fetch_result.stderr.strip()
@@ -8455,6 +8456,20 @@ def _cmd_update_check():
             print("✗ Failed to fetch.")
             if stderr:
                 print(f"  {stderr.splitlines()[0]}")
+        sys.exit(1)
+
+    # Verify the compare ref actually exists before asking rev-list about it.
+    # Without this, `git rev-list HEAD..origin/<bogus> --count` exits 128 and
+    # (with check=True) raises CalledProcessError, surfacing a Python
+    # traceback. Friendlier to detect-and-report.
+    verify_result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if verify_result.returncode != 0:
+        print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
 
     rev_result = subprocess.run(
@@ -8675,7 +8690,13 @@ def cmd_update(args):
         return
 
     if getattr(args, "check", False):
-        _cmd_update_check()
+        # --check honors --branch so the "any new commits?" answer matches
+        # what a subsequent `hermes update --branch=<x>` would actually pull.
+        branch = _resolve_update_branch(args)
+        _cmd_update_check(
+            branch=branch,
+            branch_explicit=bool(getattr(args, "branch", None)),
+        )
         return
 
     gateway_mode = getattr(args, "gateway", False)
@@ -8835,26 +8856,57 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
-        # Always update against main
-        branch = "main"
+        # Determine the target branch. Default is "main" (the long-standing
+        # CLI behavior); --branch overrides for callers that want to update
+        # against a non-default channel.
+        branch = _resolve_update_branch(args)
 
-        # If user is on a non-main branch or detached HEAD, switch to main
-        if current_branch != "main":
+        # If user is on a different branch than the update target, switch
+        # to the target. When the target is "main" this is the historical
+        # "always update against main" behavior; for any other target it's
+        # the same thing — get HEAD onto the requested branch first, then
+        # fast-forward.
+        if current_branch != branch:
             label = (
                 "detached HEAD"
                 if current_branch == "HEAD"
                 else f"branch '{current_branch}'"
             )
-            print(f"  ⚠ Currently on {label} — switching to main for update...")
+            print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            subprocess.run(
-                git_cmd + ["checkout", "main"],
+            checkout_result = subprocess.run(
+                git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
-                check=True,
             )
+            if checkout_result.returncode != 0:
+                # Local checkout doesn't have this branch yet. Try to set
+                # it up as a tracking branch of origin/<branch>. This is
+                # the common case when the requested branch exists upstream
+                # but was never checked out locally.
+                track_result = subprocess.run(
+                    git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if track_result.returncode != 0:
+                    # Restore the user's prior branch + stash before bailing
+                    # so we don't leave them stranded in a weird state.
+                    if auto_stash_ref is not None:
+                        _restore_stashed_changes(
+                            git_cmd,
+                            PROJECT_ROOT,
+                            auto_stash_ref,
+                            prompt_user=False,
+                            input_fn=gw_input_fn,
+                        )
+                    print(f"✗ Branch '{branch}' does not exist locally or on origin.")
+                    if track_result.stderr.strip():
+                        print(f"  {track_result.stderr.strip().splitlines()[0]}")
+                    sys.exit(1)
         else:
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
@@ -8885,7 +8937,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in {"main", "HEAD"}:
+            if current_branch not in {branch, "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=PROJECT_ROOT,
@@ -8947,7 +8999,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
                     print(
-                        "  Try manually: git fetch origin && git reset --hard origin/main"
+                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
                     )
                     sys.exit(1)
 
@@ -10682,6 +10734,22 @@ def cmd_dashboard(args):
             print("  Or drop --skip-build to build automatically.")
             sys.exit(1)
         print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
+
+    # Discover and load plugins so any DashboardAuthProvider plugin
+    # (e.g. plugins/dashboard_auth/nous) registers BEFORE start_server's
+    # fail-closed gate check runs. The top-level argparse setup skips
+    # plugin discovery for built-in subcommands like ``dashboard`` to
+    # save ~500ms startup; we have to trigger it explicitly here because
+    # the dashboard's server-side runtime depends on plugin-registered
+    # providers (image_gen, web, dashboard_auth, …).
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    except Exception as exc:
+        # Discovery failures must not block dashboard startup outright —
+        # log and proceed; the gate's fail-closed branch will surface
+        # the missing-provider state if it matters.
+        print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
     from hermes_cli.web_server import start_server
 
@@ -13448,6 +13516,17 @@ Examples:
         action="store_true",
         default=False,
         help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
+    )
+    update_parser.add_argument(
+        "--branch",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Update against this branch instead of the default (main). "
+            "If the local checkout is on a different branch, hermes will "
+            "switch to the requested branch first (auto-stashing any "
+            "uncommitted changes)."
+        ),
     )
     update_parser.add_argument(
         "--force",

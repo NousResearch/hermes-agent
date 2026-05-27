@@ -1019,6 +1019,7 @@ def run_conversation(
         nous_auth_retry_attempted=False
         copilot_auth_retry_attempted=False
         thinking_sig_retry_attempted = False
+        invalid_encrypted_content_retry_attempted = False
         image_shrink_retry_attempted = False
         multimodal_tool_content_retry_attempted = False
         oauth_1m_beta_retry_attempted = False
@@ -2296,6 +2297,49 @@ def run_conversation(
                     )
                     continue
 
+                # ── Invalid encrypted reasoning replay recovery ───────
+                # OpenAI Responses API surfaces (and some compatible relays)
+                # return HTTP 400 ``invalid_encrypted_content`` when a
+                # replayed ``codex_reasoning_items`` blob from a previous
+                # turn fails verification (provider rotated the encryption
+                # key, the route doesn't actually persist reasoning state,
+                # etc.).  Recovery: disable replay for the rest of the
+                # session, strip cached items from history, retry once.
+                # One-shot — if a second 400 fires we fall through to the
+                # normal retry/backoff path.  Only fires for codex_responses
+                # mode with at least one assistant message that has cached
+                # ``codex_reasoning_items``; without replay state, the
+                # error is unrelated to our cache so the normal retry path
+                # handles it (the provider is rejecting something else).
+                if (
+                    classified.reason == FailoverReason.invalid_encrypted_content
+                    and not invalid_encrypted_content_retry_attempted
+                    and agent.api_mode == "codex_responses"
+                    and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
+                    and any(
+                        isinstance(_m, dict)
+                        and _m.get("role") == "assistant"
+                        and isinstance(_m.get("codex_reasoning_items"), list)
+                        and _m.get("codex_reasoning_items")
+                        for _m in messages
+                    )
+                ):
+                    invalid_encrypted_content_retry_attempted = True
+                    replay_stats = agent._disable_codex_reasoning_replay(messages)
+                    agent._vprint(
+                        f"{agent.log_prefix}⚠️  Encrypted reasoning replay was rejected by the provider — "
+                        f"disabled replay and stripped {replay_stats['items']} item(s) from "
+                        f"{replay_stats['messages']} message(s), retrying...",
+                        force=True,
+                    )
+                    logger.warning(
+                        "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
+                        agent.log_prefix,
+                        replay_stats["items"],
+                        replay_stats["messages"],
+                    )
+                    continue
+
                 # ── llama.cpp grammar-parse recovery ──────────────────
                 # llama.cpp's ``json-schema-to-grammar`` converter rejects
                 # regex escape classes (``\d``, ``\w``, ``\s``) and most
@@ -2835,6 +2879,21 @@ def run_conversation(
                     # ssl.SSLError explicitly so the error classifier's
                     # retryable=True mapping takes effect instead.
                     and not isinstance(api_error, ssl.SSLError)
+                    # Provider/SDK "NoneType is not iterable" failures are
+                    # shape mismatches from upstream (e.g. chatgpt.com Codex
+                    # backend response.completed.output=null) — not local
+                    # programming bugs.  Even after #33042 made our own
+                    # consumer immune, third-party shims and mocked clients
+                    # can still surface this shape via TypeError.  Treat
+                    # them as retryable so the error classifier's normal
+                    # retry/fallback path runs instead of killing the turn
+                    # as non-retryable (which left Telegram users staring
+                    # at a bare "Non-retryable error" with no recovery).
+                    and not (
+                        isinstance(api_error, TypeError)
+                        and "nonetype" in str(api_error).lower()
+                        and "not iterable" in str(api_error).lower()
+                    )
                 )
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this
                 # exclusion set.  By the time we reach this block:

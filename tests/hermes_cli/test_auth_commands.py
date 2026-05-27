@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import json
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import pytest
+import yaml
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
@@ -105,7 +107,7 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
             "portal_base_url": "https://portal.example.com",
             "inference_base_url": "https://inference.example.com/v1",
             "client_id": "hermes-cli",
-            "scope": "inference:mint_agent_key",
+            "scope": "inference:invoke inference:mint_agent_key",
             "token_type": "Bearer",
             "access_token": token,
             "refresh_token": "refresh-token",
@@ -168,6 +170,50 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert singleton["inference_base_url"] == "https://inference.example.com/v1"
 
 
+def test_auth_add_minimax_oauth_starts_login_and_persists_pool_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("minimax@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._minimax_oauth_login",
+        lambda **kwargs: {
+            "provider": "minimax-oauth",
+            "region": "global",
+            "portal_base_url": "https://api.minimax.io",
+            "inference_base_url": "https://api.minimax.io/anthropic",
+            "client_id": "client-id",
+            "scope": "group_id profile model.completion",
+            "token_type": "Bearer",
+            "access_token": token,
+            "refresh_token": "refresh-token",
+            "resource_url": None,
+            "obtained_at": "2026-05-11T10:00:00+00:00",
+            "expires_at": "2026-05-14T10:00:00+00:00",
+            "expires_in": 259200,
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "minimax-oauth"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        no_browser = True
+        timeout = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["minimax-oauth"]
+    entry = next(item for item in entries if item["source"] == "manual:minimax_oauth")
+    assert entry["label"] == "minimax@example.com"
+    assert entry["access_token"] == token
+    assert entry["refresh_token"] == "refresh-token"
+    assert entry["base_url"] == "https://api.minimax.io/anthropic"
+
+
 def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
     """`hermes auth add nous --type oauth --label <name>` must preserve the
     custom label end-to-end — it was silently dropped in the first cut of the
@@ -182,7 +228,7 @@ def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
             "portal_base_url": "https://portal.example.com",
             "inference_base_url": "https://inference.example.com/v1",
             "client_id": "hermes-cli",
-            "scope": "inference:mint_agent_key",
+            "scope": "inference:invoke inference:mint_agent_key",
             "token_type": "Bearer",
             "access_token": token,
             "refresh_token": "refresh-token",
@@ -587,6 +633,39 @@ def test_logout_clears_stale_active_codex_without_provider_credentials(tmp_path,
     assert auth_payload.get("active_provider") is None
     config_text = (hermes_home / "config.yaml").read_text()
     assert "provider: auto" in config_text
+
+
+def test_reset_config_provider_uses_atomic_yaml_write(tmp_path, monkeypatch):
+    """Logout config reset should delegate the YAML write atomically."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    config_path = hermes_home / "config.yaml"
+    original = {
+        "model": {
+            "default": "gpt-5.3-codex",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+    }
+    config_path.write_text(yaml.safe_dump(original, sort_keys=False), encoding="utf-8")
+    original_text = config_path.read_text(encoding="utf-8")
+
+    from hermes_cli.auth import _reset_config_provider
+
+    def _boom(path, data, **kwargs):
+        assert path == config_path
+        assert data["model"]["provider"] == "auto"
+        assert data["model"]["base_url"] == "https://openrouter.ai/api/v1"
+        assert kwargs["sort_keys"] is False
+        raise OSError("simulated atomic write failure")
+
+    with patch("hermes_cli.auth.atomic_yaml_write", side_effect=_boom) as mock_write:
+        with pytest.raises(OSError, match="simulated atomic write failure"):
+            _reset_config_provider()
+
+    assert mock_write.call_count == 1
+    assert config_path.read_text(encoding="utf-8") == original_text
 
 
 def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
@@ -1511,20 +1590,16 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
     hermes_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
+    # The copilot pool entry is no longer persisted directly in auth.json —
+    # `(copilot, gh_cli)` is borrowed and stripped by
+    # sanitize_borrowed_credential_payload (PR #31416, May 2026). Tokens are
+    # hydrated at runtime via resolve_copilot_token(). Mock that path so the
+    # pool has an entry to remove.
     _write_auth_store(
         tmp_path,
         {
             "version": 1,
-            "credential_pool": {
-                "copilot": [{
-                    "id": "c1",
-                    "label": "gh auth token",
-                    "auth_type": "api_key",
-                    "priority": 0,
-                    "source": "gh_cli",
-                    "access_token": "ghp_fake",
-                }]
-            },
+            "credential_pool": {"copilot": []},
         },
     )
 
@@ -1532,7 +1607,14 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
     from hermes_cli.auth import is_source_suppressed
     from hermes_cli.auth_commands import auth_remove_command
 
-    auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
+    with patch(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        return_value=("ghp_fake", "gh"),
+    ), patch(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        return_value="ghu_fake_api",
+    ):
+        auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
 
     assert is_source_suppressed("copilot", "gh_cli")
     assert is_source_suppressed("copilot", "env:COPILOT_GITHUB_TOKEN")

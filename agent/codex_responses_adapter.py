@@ -244,8 +244,24 @@ def _normalize_responses_message_status(value: Any, *, default: str = "completed
     return default
 
 
-def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Convert internal chat-style messages to Responses input items."""
+def _chat_messages_to_responses_input(
+    messages: List[Dict[str, Any]],
+    *,
+    is_xai_responses: bool = False,
+) -> List[Dict[str, Any]]:
+    """Convert internal chat-style messages to Responses input items.
+
+    ``is_xai_responses`` is kept for transport signature compatibility but
+    no longer suppresses encrypted reasoning replay.  Earlier (PR #26644,
+    May 2026) we believed xAI's OAuth/SuperGrok ``/v1/responses`` surface
+    rejected replayed ``encrypted_content`` reasoning items minted by
+    prior turns, and we stripped them.  That decision was wrong — xAI
+    explicitly relies on Hermes threading encrypted reasoning back across
+    turns for cross-turn coherence (the whole point of their partnership
+    integration).  We now replay encrypted reasoning on every Responses
+    transport (xAI, native Codex, custom relays) and let xAI tell us
+    explicitly if a specific surface ever rejects a payload.
+    """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
 
@@ -271,6 +287,9 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
             if role == "assistant":
                 # Replay encrypted reasoning items from previous turns
                 # so the API can maintain coherent reasoning chains.
+                # This applies to every Responses transport including
+                # xAI — see _chat_messages_to_responses_input docstring
+                # for the May 2026 reversal of the earlier xAI gate.
                 codex_reasoning = msg.get("codex_reasoning_items")
                 has_codex_reasoning = False
                 if isinstance(codex_reasoning, list):
@@ -410,10 +429,29 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
                     call_id = raw_tool_call_id.strip()
             if not isinstance(call_id, str) or not call_id.strip():
                 continue
+
+            # Multimodal tool result: convert OpenAI-style content list into
+            # Responses ``function_call_output.output`` array. The Responses
+            # API accepts ``output`` as either a string or an array of
+            # ``input_text``/``input_image`` items. See
+            # https://developers.openai.com/api/reference/python/resources/responses/.
+            tool_content = msg.get("content")
+            output_value: Any
+            if isinstance(tool_content, list):
+                converted = _chat_content_to_responses_parts(
+                    tool_content, role="user",
+                )
+                if converted:
+                    output_value = converted
+                else:
+                    output_value = ""
+            else:
+                output_value = str(tool_content or "")
+
             items.append({
                 "type": "function_call_output",
                 "call_id": call_id,
-                "output": str(msg.get("content", "") or ""),
+                "output": output_value,
             })
 
     return items
@@ -466,6 +504,38 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
             output = item.get("output", "")
             if output is None:
                 output = ""
+            # Output may be a string OR an array of structured content
+            # items (input_text / input_image) for multimodal tool results.
+            # Both shapes are accepted by the Responses API. We preserve
+            # the array form when present.
+            if isinstance(output, list):
+                # Validate each item is a recognised content shape; drop
+                # anything else to avoid 4xx from the API.
+                cleaned: List[Dict[str, Any]] = []
+                for part in output:
+                    if not isinstance(part, dict):
+                        continue
+                    ptype = part.get("type")
+                    if ptype == "input_text":
+                        text = part.get("text")
+                        if isinstance(text, str) and text:
+                            cleaned.append({"type": "input_text", "text": text})
+                    elif ptype == "input_image":
+                        url = part.get("image_url")
+                        if isinstance(url, str) and url:
+                            entry: Dict[str, Any] = {"type": "input_image", "image_url": url}
+                            detail = part.get("detail")
+                            if isinstance(detail, str) and detail.strip():
+                                entry["detail"] = detail.strip()
+                            cleaned.append(entry)
+                normalized.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id.strip(),
+                        "output": cleaned if cleaned else "",
+                    }
+                )
+                continue
             if not isinstance(output, str):
                 output = str(output)
 
@@ -675,7 +745,7 @@ def _preflight_codex_api_kwargs(
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
-        "extra_headers",
+        "extra_headers", "extra_body", "timeout",
     }
     normalized: Dict[str, Any] = {
         "model": model,
@@ -701,6 +771,13 @@ def _preflight_codex_api_kwargs(
     max_output_tokens = api_kwargs.get("max_output_tokens")
     if isinstance(max_output_tokens, (int, float)) and max_output_tokens > 0:
         normalized["max_output_tokens"] = int(max_output_tokens)
+    timeout = api_kwargs.get("timeout")
+    if (
+        isinstance(timeout, (int, float))
+        and not isinstance(timeout, bool)
+        and 0 < float(timeout) < float("inf")
+    ):
+        normalized["timeout"] = float(timeout)
     temperature = api_kwargs.get("temperature")
     if isinstance(temperature, (int, float)):
         normalized["temperature"] = float(temperature)
@@ -724,6 +801,19 @@ def _preflight_codex_api_kwargs(
             normalized_headers[key.strip()] = str(value)
         if normalized_headers:
             normalized["extra_headers"] = normalized_headers
+
+    extra_body = api_kwargs.get("extra_body")
+    if extra_body is not None:
+        if not isinstance(extra_body, dict):
+            raise ValueError("Codex Responses request 'extra_body' must be an object.")
+        # Pass extra_body through verbatim — used by xAI Responses to
+        # carry `prompt_cache_key` as a body-level field (the documented
+        # cache-routing surface on /v1/responses). The openai SDK
+        # serializes extra_body into the JSON body without per-field
+        # type checks, so it survives Responses.stream() kwarg-signature
+        # changes that would otherwise raise TypeError before the wire.
+        if extra_body:
+            normalized["extra_body"] = dict(extra_body)
 
     if allow_stream:
         stream = api_kwargs.get("stream")

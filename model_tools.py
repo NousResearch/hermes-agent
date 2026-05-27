@@ -20,7 +20,9 @@ Public API (signatures preserved from the original 2,400-line version):
     check_tool_availability(quiet) -> tuple
 """
 
+import os
 import json
+import re
 import asyncio
 import logging
 import threading
@@ -97,9 +99,7 @@ def _run_async(coro):
     asyncio.run()'s create-and-destroy lifecycle.
 
     This is the single source of truth for sync->async bridging in tool
-    handlers. The RL paths (agent_loop.py, tool_context.py) also provide
-    outer thread-pool wrapping as defense-in-depth, but each handler is
-    self-protecting via this function.
+    handlers. Each handler is self-protecting via this function.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -231,13 +231,6 @@ _LEGACY_TOOLSET_MAP = {
         "browser_vision", "browser_console"
     ],
     "cronjob_tools": ["cronjob"],
-    "rl_tools": [
-        "rl_list_environments", "rl_select_environment",
-        "rl_get_current_config", "rl_edit_config",
-        "rl_start_training", "rl_check_status",
-        "rl_stop_training", "rl_get_results",
-        "rl_list_runs", "rl_test_inference"
-    ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
 }
@@ -307,6 +300,7 @@ def get_tool_definitions(
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,
+            bool(os.environ.get("HERMES_KANBAN_TASK")),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -342,7 +336,15 @@ def _compute_tool_definitions(
     tools_to_include: set = set()
 
     if enabled_toolsets is not None:
-        for toolset_name in enabled_toolsets:
+        effective_enabled_toolsets = list(enabled_toolsets)
+        if os.environ.get("HERMES_KANBAN_TASK") and "kanban" not in effective_enabled_toolsets:
+            # Dispatcher-spawned workers are scoped by HERMES_KANBAN_TASK and
+            # must always receive the lifecycle handoff tools. Assignee
+            # profiles may intentionally restrict their normal chat toolsets
+            # (for token/cost reasons), but that should not strip the kanban
+            # worker's completion/block/heartbeat surface.
+            effective_enabled_toolsets.append("kanban")
+        for toolset_name in effective_enabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
                 tools_to_include.update(resolved)
@@ -353,15 +355,19 @@ def _compute_tool_definitions(
                 tools_to_include.update(legacy_tools)
                 if not quiet_mode:
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            else:
-                if not quiet_mode:
-                    print(f"⚠️  Unknown toolset: {toolset_name}")
-
-    elif disabled_toolsets:
+            elif not quiet_mode:
+                print(f"⚠️  Unknown toolset: {toolset_name}")
+    else:
+        # Default: start with everything
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
+    # Always apply disabled toolsets as a subtraction step at the end.
+    # This ensures that even if a composite toolset (like hermes-cli)
+    # is enabled, any tools belonging to a disabled toolset are strictly
+    # stripped out. See issue #17309.
+    if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
@@ -373,13 +379,8 @@ def _compute_tool_definitions(
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            else:
-                if not quiet_mode:
-                    print(f"⚠️  Unknown toolset: {toolset_name}")
-    else:
-        from toolsets import get_all_toolsets
-        for ts_name in get_all_toolsets():
-            tools_to_include.update(resolve_toolset(ts_name))
+            elif not quiet_mode:
+                print(f"⚠️  Unknown toolset: {toolset_name}")
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
@@ -496,6 +497,48 @@ _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
 # =========================================================================
+# Tool error sanitization
+# =========================================================================
+#
+# Tool exceptions can carry arbitrary text into the model's context as the
+# `tool` message content. json.dumps() handles quote/backslash escaping so a
+# raw injection of `</tool_call>` won't break message framing, but the model
+# still *reads* those tokens and they can confuse downstream tool-call
+# parsing or, in adversarial cases, nudge it toward role-confusion framing.
+#
+# This helper strips structural framing tokens (XML role tags, CDATA,
+# markdown code fences) and caps the message at a sane upper bound before it
+# becomes part of the conversation. It's defense-in-depth — the json layer
+# already prevents framing escape — but cheap and worth having.
+#
+# Ported from ironclaw#1639.
+_TOOL_ERROR_ROLE_TAG_RE = re.compile(
+    r'</?(?:tool_call|function_call|result|response|output|input|system|assistant|user)>',
+    re.IGNORECASE,
+)
+_TOOL_ERROR_FENCE_OPEN_RE = re.compile(r'^\s*```(?:json|xml|html|markdown)?\s*', re.MULTILINE)
+_TOOL_ERROR_FENCE_CLOSE_RE = re.compile(r'\s*```\s*$', re.MULTILINE)
+_TOOL_ERROR_CDATA_RE = re.compile(r'<!\[CDATA\[.*?\]\]>', re.DOTALL)
+_TOOL_ERROR_MAX_LEN = 2000
+
+
+def _sanitize_tool_error(error_msg: str) -> str:
+    """Strip structural framing tokens from a tool error before showing it to the model.
+
+    See _TOOL_ERROR_ROLE_TAG_RE docstring above for rationale.
+    """
+    if not error_msg:
+        return "[TOOL_ERROR] "
+    sanitized = _TOOL_ERROR_ROLE_TAG_RE.sub("", error_msg)
+    sanitized = _TOOL_ERROR_FENCE_OPEN_RE.sub("", sanitized)
+    sanitized = _TOOL_ERROR_FENCE_CLOSE_RE.sub("", sanitized)
+    sanitized = _TOOL_ERROR_CDATA_RE.sub("", sanitized)
+    if len(sanitized) > _TOOL_ERROR_MAX_LEN:
+        sanitized = sanitized[:_TOOL_ERROR_MAX_LEN - 3] + "..."
+    return f"[TOOL_ERROR] {sanitized}"
+
+
+# =========================================================================
 # Tool argument type coercion
 # =========================================================================
 
@@ -510,6 +553,12 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
     Handles ``"type": "integer"``, ``"type": "number"``, ``"type": "boolean"``,
     and union types (``"type": ["integer", "string"]``).
+
+    Also wraps bare scalar values in a single-element list when the schema
+    declares ``"type": "array"``.  Open-weight models (DeepSeek, Qwen, GLM)
+    sometimes emit ``{"urls": "https://a.com"}`` when the tool expects
+    ``{"urls": ["https://a.com"]}``; wrapping here avoids a confusing tool
+    failure on what is otherwise a well-formed call.
     """
     if not args or not isinstance(args, dict):
         return args
@@ -522,13 +571,52 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if not properties:
         return args
 
-    for key, value in args.items():
-        if not isinstance(value, str):
-            continue
+    for key, value in list(args.items()):
         prop_schema = properties.get(key)
         if not prop_schema:
             continue
         expected = prop_schema.get("type")
+
+        # Wrap bare non-list values when the schema declares ``array``.
+        # Strings still go through _coerce_value first so JSON-encoded
+        # arrays (``'["a","b"]'``) get parsed and nullable ``"null"``
+        # becomes ``None`` rather than ``["null"]``.
+        # ``None`` itself is preserved — we don't know whether the model
+        # meant "omit" or "empty list", and tools with sensible defaults
+        # (e.g. read_file's normalize_read_pagination) already handle it.
+        if expected == "array" and value is not None and not isinstance(value, (list, tuple)):
+            if isinstance(value, str):
+                coerced = _coerce_value(value, expected, schema=prop_schema)
+                if coerced is not value:
+                    # _coerce_value handled it (JSON-parsed list or
+                    # nullable "null" → None).
+                    args[key] = coerced
+                    continue
+                # If the string looks like a JSON array but _coerce_value
+                # failed to parse it, warn clearly instead of silently wrapping.
+                if value.strip().startswith("["):
+                    logger.warning(
+                        "coerce_tool_args: %s.%s looks like a JSON array string "
+                        "but could not be parsed — model may have emitted a "
+                        "JSON-encoded string instead of a native array. "
+                        "Falling back to single-element list.",
+                        tool_name, key,
+                    )
+                args[key] = [value]
+                logger.info(
+                    "coerce_tool_args: wrapped bare string in list for %s.%s",
+                    tool_name, key,
+                )
+                continue
+            args[key] = [value]
+            logger.info(
+                "coerce_tool_args: wrapped bare %s in list for %s.%s",
+                type(value).__name__, tool_name, key,
+            )
+            continue
+
+        if not isinstance(value, str):
+            continue
         if not expected and not _schema_allows_null(prop_schema):
             continue
         coerced = _coerce_value(value, expected, schema=prop_schema)
@@ -554,7 +642,7 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
                 return result
         return value
 
-    if expected_type in ("integer", "number"):
+    if expected_type in {"integer", "number"}:
         return _coerce_number(value, integer_only=(expected_type == "integer"))
     if expected_type == "boolean":
         return _coerce_boolean(value)
@@ -601,7 +689,12 @@ def _coerce_json(value: str, expected_python_type: type):
     """
     try:
         parsed = json.loads(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
+        logger.warning(
+            "coerce_tool_args: failed to parse string as JSON for expected type %s: %s",
+            expected_python_type.__name__,
+            exc,
+        )
         return value
     if isinstance(parsed, expected_python_type):
         logger.debug(
@@ -609,6 +702,11 @@ def _coerce_json(value: str, expected_python_type: type):
             expected_python_type.__name__,
         )
         return parsed
+    logger.warning(
+        "coerce_tool_args: JSON-parsed value is %s, expected %s — skipping coercion",
+        type(parsed).__name__,
+        expected_python_type.__name__,
+    )
     return value
 
 
@@ -694,11 +792,25 @@ def handle_function_call(
                     session_id=session_id or "",
                     tool_call_id=tool_call_id or "",
                 )
-            except Exception:
-                pass
+            except Exception as _hook_err:
+                logger.debug("pre_tool_call hook error: %s", _hook_err)
 
             if block_message is not None:
                 return json.dumps({"error": block_message}, ensure_ascii=False)
+
+        # ACP/Zed edit approval runs before any file mutation.  The requester
+        # is bound via ContextVar only for ACP sessions, so CLI/gateway paths
+        # are unaffected when it is unset.
+        try:
+            from acp_adapter.edit_approval import maybe_require_edit_approval
+
+            edit_block_message = maybe_require_edit_approval(function_name, function_args)
+            if edit_block_message is not None:
+                return edit_block_message
+        except Exception as _edit_approval_err:
+            logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
+            if function_name in {"write_file", "patch"}:
+                return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).
@@ -746,8 +858,8 @@ def handle_function_call(
                 tool_call_id=tool_call_id or "",
                 duration_ms=duration_ms,
             )
-        except Exception:
-            pass
+        except Exception as _hook_err:
+            logger.debug("post_tool_call hook error: %s", _hook_err)
 
         # Generic tool-result canonicalization seam: plugins receive the
         # final result string (JSON, usually) and may replace it by
@@ -771,15 +883,15 @@ def handle_function_call(
                 if isinstance(hook_result, str):
                     result = hook_result
                     break
-        except Exception:
-            pass
+        except Exception as _hook_err:
+            logger.debug("transform_tool_result hook error: %s", _hook_err)
 
         return result
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+        return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
 
 
 # =============================================================================

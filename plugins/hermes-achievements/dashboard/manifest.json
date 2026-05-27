@@ -3,7 +3,7 @@
   "label": "Achievements",
   "description": "Steam-style achievements for vibe coding and agentic Hermes workflows.",
   "icon": "Star",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "tab": { "path": "/achievements", "position": "after:analytics" },
   "entry": "dist/index.js",
   "css": "dist/style.css",

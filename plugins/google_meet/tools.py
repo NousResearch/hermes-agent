@@ -36,7 +36,7 @@ def check_meet_requirements() -> bool:
     handlers relax the requirement when a node is addressed.
     """
     import platform as _p
-    if _p.system().lower() not in ("linux", "darwin"):
+    if _p.system().lower() not in {"linux", "darwin"}:
         return False
     try:
         import playwright  # noqa: F401
@@ -238,7 +238,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
     if not url:
         return _err("url is required")
     mode = (args.get("mode") or "transcribe").strip().lower()
-    if mode not in ("transcribe", "realtime"):
+    if mode not in {"transcribe", "realtime"}:
         return _err(f"mode must be 'transcribe' or 'realtime' (got {mode!r})")
 
     node = args.get("node")

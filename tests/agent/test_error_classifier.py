@@ -56,9 +56,11 @@ class TestFailoverReason:
             "overloaded", "server_error", "timeout",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
+            "multimodal_tool_content_unsupported",
             "provider_policy_blocked",
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
+            "llama_cpp_grammar_pattern",
             "unknown",
         }
         actual = {r.value for r in FailoverReason}
@@ -291,6 +293,64 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
 
+    # ── 5xx that are actually request-validation errors ──
+    # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
+    # request-validation failures with a 5xx status. These are
+    # deterministic, so they must NOT be retried — otherwise the retry
+    # loop hammers the identical bad request into a flood.
+
+    def test_502_with_unknown_parameter_is_non_retryable(self):
+        e = MockAPIError(
+            "Unknown parameter: 'input[617]._empty_recovery_synthetic'",
+            status_code=502,
+            body={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        "[ObjectParam] [input[617]._empty_recovery_synthetic] "
+                        "[unknown_parameter] Unknown parameter: "
+                        "'input[617]._empty_recovery_synthetic'."
+                    ),
+                }
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_502_with_unsupported_parameter_is_non_retryable(self):
+        e = MockAPIError(
+            "Unsupported parameter: logprobs",
+            status_code=502,
+            body={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Unsupported parameter: logprobs",
+                }
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_500_with_invalid_request_error_type_is_non_retryable(self):
+        e = MockAPIError(
+            "bad request",
+            status_code=500,
+            body={"error": {"type": "invalid_request_error", "message": "bad request"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_502_plain_bad_gateway_still_retryable(self):
+        """A genuine 502 with no request-validation signal stays retryable."""
+        e = MockAPIError("Bad Gateway", status_code=502)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
     # ── Model not found ──
 
     def test_404_model_not_found(self):
@@ -410,6 +470,24 @@ class TestClassifyApiError:
         result = classify_api_error(e, approx_tokens=1000, context_length=200000)
         assert result.reason == FailoverReason.format_error
 
+    def test_400_generic_many_messages_below_large_context_pressure_is_format_error(self):
+        """Large-context sessions should not overflow solely due to message count."""
+        e = MockAPIError(
+            "Error",
+            status_code=400,
+            body={"error": {"message": "Error"}},
+        )
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.5",
+            approx_tokens=74320,
+            context_length=1_000_000,
+            num_messages=432,
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.should_compress is False
+
     # ── Server disconnect + large session ──
 
     def test_disconnect_large_session_context_overflow(self):
@@ -424,6 +502,20 @@ class TestClassifyApiError:
         e = Exception("server disconnected without sending complete message")
         result = classify_api_error(e, approx_tokens=5000, context_length=200000)
         assert result.reason == FailoverReason.timeout
+
+    def test_disconnect_many_messages_below_large_context_pressure_is_timeout(self):
+        """Large-context disconnects should not overflow solely due to message count."""
+        e = Exception("server disconnected without sending complete message")
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.5",
+            approx_tokens=74320,
+            context_length=1_000_000,
+            num_messages=432,
+        )
+        assert result.reason == FailoverReason.timeout
+        assert result.should_compress is False
 
     # ── Provider-specific: Anthropic thinking signature ──
 
@@ -442,6 +534,43 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="openrouter", approx_tokens=0)
         # Without "thinking" in the message, it shouldn't be thinking_signature
         assert result.reason != FailoverReason.thinking_signature
+
+    # ── Provider-specific: llama.cpp grammar-parse ──
+
+    def test_llama_cpp_grammar_parse_error(self):
+        """llama.cpp rejects regex escapes in JSON Schema `pattern`."""
+        e = MockAPIError(
+            "parse: error parsing grammar: unknown escape at \\d",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai-compatible")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_llama_cpp_unable_to_generate_parser(self):
+        """Older llama.cpp builds surface the error as 'unable to generate parser'."""
+        e = MockAPIError(
+            "Unable to generate parser for this template",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai-compatible")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+
+    def test_llama_cpp_json_schema_to_grammar_phrase(self):
+        """Some builds mention the module name explicitly."""
+        e = MockAPIError(
+            "json-schema-to-grammar failed to convert schema",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai-compatible")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+
+    def test_llama_cpp_grammar_requires_400(self):
+        """A 500 with the same phrase isn't the llama.cpp grammar case."""
+        e = MockAPIError("error parsing grammar", status_code=500)
+        result = classify_api_error(e, provider="openai-compatible")
+        assert result.reason != FailoverReason.llama_cpp_grammar_pattern
 
     # ── Provider-specific: Anthropic long-context tier ──
 
@@ -516,6 +645,28 @@ class TestClassifyApiError:
         e = TimeoutError("timed out")
         result = classify_api_error(e)
         assert result.reason == FailoverReason.timeout
+
+    def test_runtime_error_cli_turn_timed_out_classifies_as_timeout(self):
+        # RuntimeError from a local claude-cli shim that wraps a subprocess
+        # timeout must classify as FailoverReason.timeout, not unknown, so
+        # the retry loop rebuilds the client instead of treating the turn as
+        # an empty model response (#22548).
+        e = RuntimeError("claude CLI turn timed out")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
+    def test_runtime_error_request_timed_out_classifies_as_timeout(self):
+        e = RuntimeError("request timed out after 120s")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
+    def test_runtime_error_deadline_exceeded_classifies_as_timeout(self):
+        e = RuntimeError("deadline exceeded")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
 
     # ── Error code classification ──
 
@@ -1164,3 +1315,66 @@ class TestRateLimitErrorWithoutStatusCode:
         e.status_code = None
         result = classify_api_error(e, provider="copilot", model="gpt-4o")
         assert result.reason != FailoverReason.rate_limit
+
+
+
+# ── Test: multimodal_tool_content_unsupported pattern ───────────────────
+
+class TestMultimodalToolContentUnsupported:
+    """Issue #27344 — providers that reject list-type tool message content
+    should be classified as ``multimodal_tool_content_unsupported`` so the
+    retry loop can downgrade screenshots to text and try again.
+    """
+
+    def test_xiaomi_mimo_text_is_not_set_pattern(self):
+        """The actual Xiaomi MiMo 400 wording from the bug report."""
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'code': '400', 'message': 'Param Incorrect', 'param': 'text is not set', 'type': ''}}",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="xiaomi", model="mimo-v2.5")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
+    def test_generic_tool_message_must_be_string(self):
+        e = MockAPIError(
+            "tool message content must be a string",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="some-model")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_expected_string_got_list(self):
+        e = MockAPIError(
+            "Schema validation failed: expected string, got list",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="some-model")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_multimodal_tool_content_takes_priority_over_context_overflow(self):
+        """Some providers return a 400 whose message contains BOTH
+        'text is not set' and a length-shaped phrase; the tool-content
+        recovery is cheaper than compression so it must win the priority.
+        """
+        e = MockAPIError(
+            "text is not set; context length exceeded",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="xiaomi", model="mimo-v2.5")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_no_status_code_path_also_classifies(self):
+        """When the error reaches us without a status code (transport
+        layer ate it) the message-only classifier branch must also
+        recognise the pattern.
+        """
+        e = MockTransportError("tool_call.content must be string")
+        result = classify_api_error(e, provider="alibaba", model="qwen3.5-plus")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_unrelated_400_is_not_misclassified(self):
+        """Make sure the patterns don't false-positive on normal 400s."""
+        e = MockAPIError("bad request: missing field 'model'", status_code=400)
+        result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
+        assert result.reason != FailoverReason.multimodal_tool_content_unsupported

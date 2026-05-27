@@ -32,6 +32,14 @@ hermes profile create mybot
 
 Creates a fresh profile with bundled skills seeded. Run `mybot setup` to configure API keys, model, and gateway tokens.
 
+If you plan to use this profile as a kanban worker (or want the kanban orchestrator to route work to it), pass `--description "<role>"` at create time so the orchestrator knows what it's good at:
+
+```bash
+hermes profile create researcher --description "Reads source code and external docs, writes findings."
+```
+
+You can also set or auto-generate the description later with `hermes profile describe` — see the [Kanban guide](./features/kanban#auto-vs-manual-orchestration) for the full routing model.
+
 ### Clone config only (`--clone`)
 
 ```bash
@@ -164,6 +172,10 @@ assistant gateway install     # creates hermes-gateway-assistant service
 
 Each profile gets its own service name. They run independently.
 
+:::note Inside the official Docker image
+Per-profile gateways are supervised by [s6-overlay](https://github.com/just-containers/s6-overlay) (PID 1 in the container), so `hermes profile create <name>` automatically registers an s6 service slot at `/run/service/gateway-<name>/`. `hermes -p <name> gateway start/stop/restart` dispatches to `s6-svc` instead of spawning a bare process — crashes are auto-restarted and `docker restart` preserves the previously-running set of gateways. See [Per-profile gateway supervision](/user-guide/docker#per-profile-gateway-supervision) for details.
+:::
+
 ## Configuring profiles
 
 Each profile has its own:
@@ -238,3 +250,17 @@ Profiles use the `HERMES_HOME` environment variable. When you run `coder chat`, 
 This is separate from terminal working directory. Tool execution starts from `terminal.cwd` (or the launch directory when `cwd: "."` on the local backend), not automatically from `HERMES_HOME`.
 
 The default profile is simply `~/.hermes` itself. No migration needed — existing installs work identically.
+
+## Sharing profiles as distributions
+
+A profile you built on one machine can be packaged as a **git repository** and installed with one command on another machine — your own workstation, a teammate's laptop, or a community user's environment. The shared package includes the SOUL, config, skills, cron jobs, and MCP connections. Credentials, memories, and sessions stay per-machine.
+
+```bash
+# Install a whole agent from a git repo
+hermes profile install github.com/you/research-bot --alias
+
+# Update later when the author ships a new version (keeps your memories + .env)
+hermes profile update research-bot
+```
+
+See **[Profile Distributions: Share a Whole Agent](./profile-distributions.md)** for the full guide — authoring, publishing, update semantics, security model, and use cases.

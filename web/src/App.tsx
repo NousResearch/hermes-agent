@@ -65,16 +65,27 @@ import ModelsPage from "@/pages/ModelsPage";
 import CronPage from "@/pages/CronPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
+import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
+import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import { api } from "@/lib/api";
 
 function RootRedirect() {
+  return <Navigate to="/sessions" replace />;
+}
+
+function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
+  if (pluginsLoading) {
+    // Render nothing during the plugin-load window — a spinner here would just flash.
+    return null;
+  }
   return <Navigate to="/sessions" replace />;
 }
 
@@ -102,6 +113,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/logs": LogsPage,
   "/cron": CronPage,
   "/skills": SkillsPage,
+  "/plugins": PluginsPage,
   "/profiles": ProfilesPage,
   "/config": ConfigPage,
   "/env": EnvPage,
@@ -138,6 +150,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
+  { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
@@ -213,6 +226,22 @@ function buildNavItems(
   return items;
 }
 
+/** Split merged nav into built-in sidebar entries vs plugin tabs, preserving plugin order hints. */
+function partitionSidebarNav(
+  builtIn: NavItem[],
+  manifests: PluginManifest[],
+): { coreItems: NavItem[]; pluginItems: NavItem[] } {
+  const merged = buildNavItems(builtIn, manifests);
+  const builtinPaths = new Set(builtIn.map((i) => i.path));
+  const coreItems: NavItem[] = [];
+  const pluginItems: NavItem[] = [];
+  for (const item of merged) {
+    if (builtinPaths.has(item.path)) coreItems.push(item);
+    else pluginItems.push(item);
+  }
+  return { coreItems, pluginItems };
+}
+
 function buildRoutes(
   builtinRoutes: Record<string, ComponentType>,
   manifests: PluginManifest[],
@@ -253,6 +282,7 @@ function buildRoutes(
 
   for (const m of addons) {
     if (m.tab.hidden) continue;
+    if (m.tab.path === "/plugins") continue;
     if (builtinRoutes[m.tab.path]) continue;
     routes.push({
       key: `plugin:${m.name}`,
@@ -263,6 +293,7 @@ function buildRoutes(
 
   for (const m of manifests) {
     if (!m.tab.hidden) continue;
+    if (m.tab.path === "/plugins") continue;
     if (builtinRoutes[m.tab.path] || m.tab.override) continue;
     routes.push({
       key: `plugin:hidden:${m.name}`,
@@ -285,6 +316,23 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
+
+  // `dashboard.show_token_analytics` gates the Analytics nav item.  The
+  // page itself remains reachable by URL (it renders an explanation when
+  // the flag is off — see AnalyticsPage), but hiding the nav entry avoids
+  // surfacing misleading token/cost numbers in the sidebar.  Default off.
+  const [showTokenAnalytics, setShowTokenAnalytics] = useState(false);
+  useEffect(() => {
+    api
+      .getConfig()
+      .then((cfg) => {
+        const dash = (cfg?.dashboard ?? {}) as {
+          show_token_analytics?: unknown;
+        };
+        setShowTokenAnalytics(dash.show_token_analytics === true);
+      })
+      .catch(() => setShowTokenAnalytics(false));
+  }, []);
 
   // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
   // in its manifest.  When one does, `buildRoutes` already swaps the route
@@ -316,14 +364,17 @@ export default function App() {
     [embeddedChat],
   );
 
-  const builtinNav = useMemo(
-    () =>
-      embeddedChat ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST] : BUILTIN_NAV_REST,
-    [embeddedChat],
-  );
+  const builtinNav = useMemo(() => {
+    const base = embeddedChat
+      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
+      : BUILTIN_NAV_REST;
+    return showTokenAnalytics
+      ? base
+      : base.filter((n) => n.path !== "/analytics");
+  }, [embeddedChat, showTokenAnalytics]);
 
-  const navItems = useMemo(
-    () => buildNavItems(builtinNav, manifests),
+  const sidebarNav = useMemo(
+    () => partitionSidebarNav(builtinNav, manifests),
     [builtinNav, manifests],
   );
   const routes = useMemo(
@@ -369,7 +420,7 @@ export default function App() {
   return (
     <div
       data-layout-variant={layoutVariant}
-      className="font-mondwest flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black uppercase text-midground antialiased"
+      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased"
     >
       <SelectionSwitcher />
       <Backdrop />
@@ -377,8 +428,8 @@ export default function App() {
 
       <header
         className={cn(
-          "lg:hidden fixed top-0 left-0 right-0 z-40 h-12",
-          "flex items-center gap-2 px-3",
+          "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
+          "flex items-center gap-2 px-4 py-2",
           "border-b border-current/20",
           "bg-background-base/90 backdrop-blur-sm",
         )}
@@ -395,7 +446,7 @@ export default function App() {
           aria-label={t.app.openNavigation}
           aria-expanded={mobileOpen}
           aria-controls="app-sidebar"
-          className="text-midground/70 hover:text-midground"
+          className="text-text-secondary hover:text-midground"
         >
           <Menu />
         </Button>
@@ -422,7 +473,7 @@ export default function App() {
 
       <PluginSlot name="header-banner" />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-12 lg:pt-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"
@@ -443,7 +494,7 @@ export default function App() {
           >
             <div
               className={cn(
-                "flex h-14 shrink-0 items-center justify-between gap-2",
+                "flex h-14 shrink-0 items-center justify-between gap-2 px-4",
                 "border-b border-current/20",
               )}
             >
@@ -451,7 +502,7 @@ export default function App() {
                 <PluginSlot name="header-left" />
 
                 <Typography
-                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
+                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
                   style={{ mixBlendMode: "plus-lighter" }}
                 >
                   Hermes
@@ -465,7 +516,7 @@ export default function App() {
                 size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className="lg:hidden text-midground/70 hover:text-midground"
+                className="lg:hidden text-text-secondary hover:text-midground"
               >
                 <X />
               </Button>
@@ -476,56 +527,44 @@ export default function App() {
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
-                {navItems.map(({ path, label, labelKey, icon: Icon }) => {
-                  const navLabel = labelKey
-                    ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
-                    : label;
-                  return (
-                    <li key={path}>
-                      <NavLink
-                        to={path}
-                        end={path === "/sessions"}
-                        onClick={closeMobile}
-                        className={({ isActive }) =>
-                          cn(
-                            "group relative flex items-center gap-3",
-                            "px-5 py-2.5",
-                            "font-mondwest text-[0.8rem] tracking-[0.12em]",
-                            "whitespace-nowrap transition-colors cursor-pointer",
-                            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-                            isActive
-                              ? "text-midground"
-                              : "opacity-60 hover:opacity-100",
-                          )
-                        }
-                        style={{
-                          clipPath: "var(--component-tab-clip-path)",
-                        }}
-                      >
-                        {({ isActive }) => (
-                          <>
-                            <Icon className="h-3.5 w-3.5 shrink-0" />
-                            <span className="truncate">{navLabel}</span>
-
-                            <span
-                              aria-hidden
-                              className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
-                            />
-
-                            {isActive && (
-                              <span
-                                aria-hidden
-                                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                                style={{ mixBlendMode: "plus-lighter" }}
-                              />
-                            )}
-                          </>
-                        )}
-                      </NavLink>
-                    </li>
-                  );
-                })}
+                {sidebarNav.coreItems.map((item) => (
+                  <SidebarNavLink
+                    closeMobile={closeMobile}
+                    item={item}
+                    key={item.path}
+                    t={t}
+                  />
+                ))}
               </ul>
+
+              {sidebarNav.pluginItems.length > 0 && (
+                <div
+                  aria-labelledby="hermes-sidebar-plugin-nav-heading"
+                  className="flex flex-col border-t border-current/10 pb-2"
+                  role="group"
+                >
+                  <span
+                    className={cn(
+                      "px-5 pt-2.5 pb-1",
+                      "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+                    )}
+                    id="hermes-sidebar-plugin-nav-heading"
+                  >
+                    {t.app.pluginNavSection}
+                  </span>
+
+                  <ul className="flex flex-col">
+                    {sidebarNav.pluginItems.map((item) => (
+                      <SidebarNavLink
+                        closeMobile={closeMobile}
+                        item={item}
+                        key={item.path}
+                        t={t}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              )}
             </nav>
 
             <SidebarSystemActions onNavigate={closeMobile} />
@@ -540,7 +579,7 @@ export default function App() {
               <div className="flex min-w-0 items-center gap-2">
                 <PluginSlot name="header-right" />
                 <ThemeSwitcher dropUp />
-                <LanguageSwitcher />
+                <LanguageSwitcher dropUp />
               </div>
             </div>
 
@@ -553,8 +592,8 @@ export default function App() {
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
                 "px-3 sm:px-6",
                 isChatRoute
-                  ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
-                  : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
+                  ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
+                  : "pt-2 sm:pt-4 lg:pt-6",
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >
@@ -562,6 +601,8 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
+                  !isChatRoute &&
+                    "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
                   (isDocsRoute || isChatRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
@@ -572,7 +613,9 @@ export default function App() {
                   ))}
                   <Route
                     path="*"
-                    element={<Navigate to="/sessions" replace />}
+                    element={
+                      <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                    }
                   />
                 </Routes>
 
@@ -612,6 +655,59 @@ export default function App() {
 
       <PluginSlot name="overlay" />
     </div>
+  );
+}
+
+function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
+  const { path, label, labelKey, icon: Icon } = item;
+
+  const navLabel = labelKey
+    ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
+    : label;
+
+  return (
+    <li>
+      <NavLink
+        to={path}
+        end={path === "/sessions"}
+        onClick={closeMobile}
+        className={({ isActive }) =>
+          cn(
+            "group relative flex items-center gap-3",
+            "px-5 py-2.5",
+            "font-mondwest text-display uppercase text-sm tracking-[0.12em]",
+            "whitespace-nowrap transition-colors cursor-pointer",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+            isActive
+              ? "text-midground"
+              : "text-text-secondary hover:text-midground",
+          )
+        }
+        style={{
+          clipPath: "var(--component-tab-clip-path)",
+        }}
+      >
+        {({ isActive }) => (
+          <>
+            <Icon className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{navLabel}</span>
+
+            <span
+              aria-hidden
+              className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
+            />
+
+            {isActive && (
+              <span
+                aria-hidden
+                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
+                style={{ mixBlendMode: "plus-lighter" }}
+              />
+            )}
+          </>
+        )}
+      </NavLink>
+    </li>
   );
 }
 
@@ -656,7 +752,7 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
       <span
         className={cn(
           "px-5 pt-0.5 pb-0.5",
-          "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
+          "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
         )}
       >
         {t.app.system}
@@ -682,12 +778,12 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                 active={busy}
                 className={cn(
                   "gap-3 px-5 py-1.5 whitespace-nowrap",
-                  "font-mondwest text-[0.75rem] tracking-[0.1em]",
-                  "transition-opacity",
+                  "font-mondwest text-display text-xs tracking-[0.1em]",
+                  "transition-colors",
                   busy
-                    ? "text-midground opacity-100"
-                    : "opacity-60 hover:opacity-100",
-                  "disabled:opacity-30",
+                    ? "text-midground"
+                    : "text-text-secondary hover:text-midground",
+                  "disabled:text-text-disabled",
                 )}
               >
                 {isPending ? (
@@ -731,6 +827,12 @@ interface NavItem {
   label: string;
   labelKey?: string;
   path: string;
+}
+
+interface SidebarNavLinkProps {
+  closeMobile: () => void;
+  item: NavItem;
+  t: Translations;
 }
 
 interface SystemActionItem {

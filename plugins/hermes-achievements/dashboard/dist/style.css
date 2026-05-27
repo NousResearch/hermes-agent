@@ -118,3 +118,29 @@
 .ha-scan-banner-text p { margin: .25rem 0 0; font-size: .78rem; line-height: 1.35; color: var(--color-muted-foreground); text-transform: none; letter-spacing: normal; }
 .ha-scan-progress-track { height: .4rem; border: 1px solid color-mix(in srgb, #67e8f9 28%, var(--color-border)); background: rgba(0,0,0,.22); overflow: hidden; }
 .ha-scan-progress-fill { height: 100%; background: linear-gradient(90deg, #67e8f9, color-mix(in srgb, #67e8f9 48%, white)); transition: width .4s ease-out; }
+
+/* Share achievement — trigger button on unlocked cards + modal dialog.
+ * Added to the vendored bundle (on top of the upstream PCinkusz base).
+ * Canvas rendering is pure client-side, no backend, no network.
+ */
+.ha-share-trigger { border: 1px solid color-mix(in srgb, var(--ha-tier) 58%, var(--color-border)); color: var(--ha-tier); background: color-mix(in srgb, var(--ha-tier) 8%, transparent); padding: .18rem .42rem; font-size: .66rem; text-transform: uppercase; letter-spacing: .08em; font-family: var(--font-mono, ui-monospace, monospace); cursor: pointer; margin-top: .05rem; transition: background .12s ease, border-color .12s ease; }
+.ha-share-trigger:hover { background: color-mix(in srgb, var(--ha-tier) 20%, transparent); border-color: var(--ha-tier); }
+.ha-share-trigger:focus-visible { outline: 2px solid var(--ha-tier); outline-offset: 2px; }
+
+.ha-share-backdrop { position: fixed; inset: 0; z-index: 1000; background: rgba(4,6,10,.72); backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; padding: 1.5rem; animation: ha-fade-in .14s ease-out; }
+.ha-share-dialog { width: min(760px, 100%); max-height: calc(100vh - 3rem); overflow: auto; border: 1px solid color-mix(in srgb, var(--color-border) 70%, var(--color-ring)); background: color-mix(in srgb, var(--color-card) 94%, #000); box-shadow: 0 24px 60px rgba(0,0,0,.55); display: flex; flex-direction: column; gap: .9rem; padding: 1rem 1.1rem 1.1rem; }
+.ha-share-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.ha-share-head strong { font-size: .82rem; text-transform: uppercase; letter-spacing: .1em; font-family: var(--font-mono, ui-monospace, monospace); color: var(--color-foreground); }
+.ha-share-close { width: 1.9rem; height: 1.9rem; display: grid; place-items: center; border: 1px solid var(--color-border); background: transparent; color: var(--color-muted-foreground); font-size: 1.1rem; cursor: pointer; line-height: 1; }
+.ha-share-close:hover { color: var(--color-foreground); border-color: var(--color-ring); }
+.ha-share-preview { position: relative; border: 1px solid var(--color-border); background: #0b0d11; overflow: hidden; aspect-ratio: 1200 / 630; }
+.ha-share-preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.ha-share-placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: var(--color-muted-foreground); font-family: var(--font-mono, ui-monospace, monospace); font-size: .82rem; text-transform: uppercase; letter-spacing: .1em; animation: ha-pulse 1.4s ease-in-out infinite; border-radius: 0; }
+.ha-share-error { border: 1px solid #ef4444; color: #fecaca; background: color-mix(in srgb, #ef4444 10%, transparent); padding: .55rem .7rem; font-size: .78rem; font-family: var(--font-mono, ui-monospace, monospace); }
+.ha-share-actions { display: flex; gap: .55rem; flex-wrap: wrap; }
+.ha-share-btn { border: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-card) 72%, transparent); color: var(--color-foreground); padding: .5rem .85rem; font-size: .82rem; font-family: var(--font-mono, ui-monospace, monospace); text-transform: uppercase; letter-spacing: .08em; cursor: pointer; transition: border-color .12s ease, background .12s ease; }
+.ha-share-btn:hover:not(:disabled) { border-color: var(--color-ring); background: color-mix(in srgb, var(--color-primary) 16%, var(--color-card)); }
+.ha-share-btn:disabled { opacity: .5; cursor: not-allowed; }
+.ha-share-btn-primary { border-color: #ffffff; color: #ffffff; background: #000000; }
+.ha-share-btn-primary:hover:not(:disabled) { background: #1a1a1a; border-color: #67e8f9; color: #67e8f9; }
+.ha-share-hint { margin: 0; color: var(--color-muted-foreground); font-size: .76rem; line-height: 1.45; }

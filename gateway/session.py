@@ -458,6 +458,15 @@ class SessionEntry:
     was_auto_reset: bool = False
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
+
+    # Set by reset_session() when the user explicitly sends /new or /reset.
+    # Consumed once by _handle_message_with_agent to trigger topic/channel
+    # skill re-injection on the first message of the new session.  We can't
+    # reuse was_auto_reset for this because that flag fires the "session
+    # expired due to inactivity" user-facing notice and a misleading
+    # context-note prepend — both wrong for an explicit manual reset.
+    # See issue #6508.
+    is_fresh_reset: bool = False
     
     # Set by the background expiry watcher after it finalizes an expired
     # session (invoking on_session_finalize hooks and evicting the cached
@@ -508,6 +517,10 @@ class SessionEntry:
                 if self.last_resume_marked_at
                 else None
             ),
+            "is_fresh_reset": self.is_fresh_reset,
+            "was_auto_reset": self.was_auto_reset,
+            "auto_reset_reason": self.auto_reset_reason,
+            "reset_had_activity": self.reset_had_activity,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -556,6 +569,10 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            is_fresh_reset=data.get("is_fresh_reset", False),
+            was_auto_reset=data.get("was_auto_reset", False),
+            auto_reset_reason=data.get("auto_reset_reason"),
+            reset_had_activity=data.get("reset_had_activity", False),
         )
 
 
@@ -753,12 +770,12 @@ class SessionStore:
 
         now = _now()
 
-        if policy.mode in ("idle", "both"):
+        if policy.mode in {"idle", "both"}:
             idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
             if now > idle_deadline:
                 return True
 
-        if policy.mode in ("daily", "both"):
+        if policy.mode in {"daily", "both"}:
             today_reset = now.replace(
                 hour=policy.at_hour,
                 minute=0, second=0, microsecond=0,
@@ -794,12 +811,12 @@ class SessionStore:
         
         now = _now()
         
-        if policy.mode in ("idle", "both"):
+        if policy.mode in {"idle", "both"}:
             idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
             if now > idle_deadline:
                 return "idle"
         
-        if policy.mode in ("daily", "both"):
+        if policy.mode in {"daily", "both"}:
             today_reset = now.replace(
                 hour=policy.at_hour, 
                 minute=0, 
@@ -1075,19 +1092,22 @@ class SessionStore:
         return len(removed_keys)
 
     def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
-        """Mark recently-active sessions as suspended.
+        """Mark recently-active sessions as resumable after an unexpected exit.
 
-        Called on gateway startup to prevent sessions that were likely
-        in-flight when the gateway last exited from being blindly resumed
-        (#7536).  Only suspends sessions updated within *max_age_seconds*
-        to avoid resetting long-idle sessions that are harmless to resume.
-        Returns the number of sessions that were suspended.
+        Called on gateway startup after a crash or fast restart to preserve
+        in-flight sessions instead of destroying their conversation history
+        (#7536).  Only marks sessions updated within *max_age_seconds* to
+        avoid touching long-idle sessions.  Sets ``resume_pending=True`` so
+        the next incoming message on the same session_key auto-resumes from
+        the existing transcript.
 
-        Entries flagged ``resume_pending=True`` are skipped — those were
-        marked intentionally by the drain-timeout path as recoverable.
-        Terminal escalation for genuinely stuck ``resume_pending`` sessions
-        is handled by the existing ``.restart_failure_counts`` stuck-loop
-        counter, which runs after this method on startup.
+        Entries already flagged ``resume_pending=True`` are skipped.  Entries
+        explicitly ``suspended=True`` (from /stop or stuck-loop escalation)
+        are also skipped.  Terminal escalation for genuinely stuck sessions
+        is still handled by the existing ``.restart_failure_counts`` counter
+        (threshold 3), which runs after this method and sets ``suspended=True``.
+
+        Returns the number of sessions marked resumable.
         """
         from datetime import timedelta
 
@@ -1099,13 +1119,15 @@ class SessionStore:
                 if entry.resume_pending:
                     continue
                 if not entry.suspended and entry.updated_at >= cutoff:
-                    entry.suspended = True
+                    entry.resume_pending = True
+                    entry.resume_reason = "restart_interrupted"
+                    entry.last_resume_marked_at = _now()
                     count += 1
             if count:
                 self._save()
         return count
 
-    def reset_session(self, session_key: str) -> Optional[SessionEntry]:
+    def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         db_end_session_id = None
         db_create_kwargs = None
@@ -1129,9 +1151,10 @@ class SessionStore:
                 created_at=now,
                 updated_at=now,
                 origin=old_entry.origin,
-                display_name=old_entry.display_name,
+                display_name=display_name if display_name is not None else old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                is_fresh_reset=True,
             )
 
             self._entries[session_key] = new_entry
@@ -1225,20 +1248,15 @@ class SessionStore:
 
         return entries
     
-    def get_transcript_path(self, session_id: str) -> Path:
-        """Get the path to a session's legacy transcript file."""
-        return self.sessions_dir / f"{session_id}.jsonl"
-    
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
-        """Append a message to a session's transcript (SQLite + legacy JSONL).
+        """Append a message to a session's transcript (SQLite).
 
         Args:
-            skip_db: When True, only write to JSONL and skip the SQLite write.
-                     Used when the agent already persisted messages to SQLite
-                     via its own _flush_messages_to_session_db(), preventing
-                     the duplicate-write bug (#860).
+            skip_db: When True, skip the SQLite write. Used when the agent
+                     already persisted messages to SQLite via its own
+                     _flush_messages_to_session_db(), preventing the
+                     duplicate-write bug (#860).
         """
-        # Write to SQLite (unless the agent already handled it)
         if self._db and not skip_db:
             try:
                 self._db.append_message(
@@ -1253,82 +1271,43 @@ class SessionStore:
                     reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
                     codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
                     codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
+                    # Platform-side message id (yuanbao msg_id, telegram update_id, …).
+                    # Accept either explicit ``platform_message_id`` or the legacy
+                    # ``message_id`` key the JSONL transcript used.
+                    platform_message_id=(
+                        message.get("platform_message_id") or message.get("message_id")
+                    ),
+                    observed=bool(message.get("observed")),
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
-        
-        # Also write legacy JSONL (keeps existing tooling working during transition)
-        transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(message, ensure_ascii=False) + "\n")
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
-        
-        Used by /retry, /undo, and /compress to persist modified conversation history.
-        Rewrites both SQLite and legacy JSONL storage.
+
+        Used by /retry, /undo, and /compress to persist modified conversation
+        history. state.db is the canonical store.
         """
-        # SQLite: replace atomically so a mid-rewrite failure doesn't leave
-        # the session half-empty in the DB while JSONL still has history.
         if self._db:
             try:
                 self._db.replace_messages(session_id, messages)
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
-        
-        # JSONL: overwrite the file
-        transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
-        """Load all messages from a session's transcript."""
-        db_messages = []
-        # Try SQLite first
-        if self._db:
-            try:
-                db_messages = self._db.get_messages_as_conversation(session_id)
-            except Exception as e:
-                logger.debug("Could not load messages from DB: %s", e)
+        """Load all messages from a session's transcript.
 
-        # Load legacy JSONL transcript (may contain more history than SQLite
-        # for sessions created before the DB layer was introduced).
-        transcript_path = self.get_transcript_path(session_id)
-        jsonl_messages = []
-        if transcript_path.exists():
-            with open(transcript_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            jsonl_messages.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            logger.warning(
-                                "Skipping corrupt line in transcript %s: %s",
-                                session_id, line[:120],
-                            )
-
-        # Prefer whichever source has more messages.
-        #
-        # Background: when a session pre-dates SQLite storage (or when the DB
-        # layer was added while a long-lived session was already active), the
-        # first post-migration turn writes only the *new* messages to SQLite
-        # (because _flush_messages_to_session_db skips messages already in
-        # conversation_history, assuming they're persisted).  On the *next*
-        # turn load_transcript returns those few SQLite rows and ignores the
-        # full JSONL history — the model sees a context of 1-4 messages instead
-        # of hundreds.  Using the longer source prevents this silent truncation.
-        if len(jsonl_messages) > len(db_messages):
-            if db_messages:
-                logger.debug(
-                    "Session %s: JSONL has %d messages vs SQLite %d — "
-                    "using JSONL (legacy session not yet fully migrated)",
-                    session_id, len(jsonl_messages), len(db_messages),
-                )
-            return jsonl_messages
-
-        return db_messages
+        state.db is the canonical store. The legacy JSONL fallback was removed
+        in spec 002 — pre-DB sessions on existing disks have already been
+        migrated (their DB row holds the full message history).
+        """
+        if not self._db:
+            return []
+        try:
+            return self._db.get_messages_as_conversation(session_id)
+        except Exception as e:
+            logger.debug("Could not load messages from DB: %s", e)
+            return []
 
 
 def build_session_context(

@@ -1649,3 +1649,307 @@ class TestSignalSendTimeout:
         # 32 attachments × 5s = 160s; ought to comfortably outlast a
         # serial upload of an attachment-heavy batch.
         assert _signal_send_timeout(32) == 160.0
+
+
+# ---------------------------------------------------------------------------
+# Contentless Envelope Filtering (profile key updates, empty messages)
+# ---------------------------------------------------------------------------
+
+class TestSignalContentlessEnvelope:
+    """Verify that profile key updates and empty Signal messages are skipped."""
+
+    @pytest.mark.asyncio
+    async def test_skips_profile_key_update_no_message_field(self, monkeypatch):
+        """Profile key updates may carry a dataMessage without 'message' field.
+        Must be skipped to avoid triggering agent turns for metadata."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Profile key update: dataMessage exists but has no "message" field
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    # No "message" field — profile key update metadata only
+                    "profileKey": "some-profile-key-data",
+                },
+            }
+        })
+
+        assert "event" not in captured, "Profile key update should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_skips_empty_message(self, monkeypatch):
+        """Empty text messages (message='') should be skipped."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "",
+                },
+            }
+        })
+
+        assert "event" not in captured, "Empty message should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_skips_whitespace_only_message(self, monkeypatch):
+        """Whitespace-only messages ('   ') should be skipped."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "   \n\t  ",
+                },
+            }
+        })
+
+        assert "event" not in captured, "Whitespace-only message should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_allows_message_with_attachment_no_text(self, monkeypatch):
+        """Messages with attachments but no text should still be processed."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Mock attachment fetch to return a cached image
+        png_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+        b64_data = base64.b64encode(png_data).decode()
+        adapter._rpc, _ = _stub_rpc({"data": b64_data})
+
+        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/img.png"):
+            await adapter._handle_envelope({
+                "envelope": {
+                    "sourceNumber": "+155****9999",
+                    "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                    "sourceName": "Elliott McManis",
+                    "timestamp": 1777600696077,
+                    "dataMessage": {
+                        "message": "",  # No text
+                        "attachments": [{"id": "att-123", "size": 200}],
+                    },
+                }
+            })
+
+        assert "event" in captured, "Message with attachment should NOT be skipped"
+        assert captured["event"].media_urls == ["/tmp/img.png"]
+
+    @pytest.mark.asyncio
+    async def test_allows_normal_text_message(self, monkeypatch):
+        """Normal text messages should still flow through."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "hello world",
+                },
+            }
+        })
+
+        assert "event" in captured, "Normal message should NOT be skipped"
+        assert captured["event"].text == "hello world"
+
+
+# ---------------------------------------------------------------------------
+# Envelope handling — group routing (legacy groupInfo vs modern groupV2)
+# ---------------------------------------------------------------------------
+
+class TestSignalGroupV2Routing:
+    """Regression coverage for groupV2 envelope handling.
+
+    signal-cli's JSON-RPC ``subscribeReceive`` envelope shape has drifted across
+    versions: some forward the underlying libsignal V2 envelope as
+    ``dataMessage.groupV2.id`` while older / normalized paths still use
+    ``dataMessage.groupInfo.groupId``. The adapter must read groupV2 first and
+    fall back to groupInfo so V2-only groups aren't misrouted as DMs.
+
+    Ported from qwibitai/nanoclaw#1962 (V2 adapter improvements).
+    """
+
+    def _base_envelope(self, data_message: dict) -> dict:
+        return {
+            "envelope": {
+                "sourceNumber": "+15559998888",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Alice",
+                "timestamp": 1700000000000,
+                "dataMessage": data_message,
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_group_v2_id_routes_as_group(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._base_envelope({
+            "message": "hello v2",
+            "groupV2": {"id": "v2group=="},
+        })
+
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == "group:v2group=="
+        assert captured[0].source.chat_type == "group"
+        assert captured[0].text == "hello v2"
+
+    @pytest.mark.asyncio
+    async def test_legacy_group_info_still_works(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._base_envelope({
+            "message": "hello v1",
+            "groupInfo": {"groupId": "legacy=="},
+        })
+
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == "group:legacy=="
+        assert captured[0].source.chat_type == "group"
+
+    @pytest.mark.asyncio
+    async def test_group_v2_preferred_over_group_info(self, monkeypatch):
+        """When both fields are present, groupV2 wins — it's the authoritative V2 id."""
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._base_envelope({
+            "message": "hello",
+            "groupV2": {"id": "v2=="},
+            "groupInfo": {"groupId": "v1=="},
+        })
+
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == "group:v2=="
+
+    @pytest.mark.asyncio
+    async def test_no_group_fields_routes_as_dm(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._base_envelope({"message": "direct message"})
+
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_type == "dm"
+        assert captured[0].source.chat_id == "+15559998888"
+
+    @pytest.mark.asyncio
+    async def test_group_v2_respects_allowlist(self, monkeypatch):
+        """V2 group ids flow through the same SIGNAL_GROUP_ALLOWED_USERS filter."""
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="allowed-v2==")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        # Blocked group (not in allowlist)
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "blocked",
+            "groupV2": {"id": "blocked-v2=="},
+        }))
+        assert len(captured) == 0
+
+        # Allowed group
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "allowed",
+            "groupV2": {"id": "allowed-v2=="},
+        }))
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == "group:allowed-v2=="
+
+    @pytest.mark.asyncio
+    async def test_malformed_group_fields_fall_through_to_dm(self, monkeypatch):
+        """Non-dict groupV2 / groupInfo shouldn't crash — treat as DM."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._base_envelope({
+            "message": "malformed",
+            "groupV2": "not-a-dict",
+            "groupInfo": 42,
+        })
+
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_type == "dm"

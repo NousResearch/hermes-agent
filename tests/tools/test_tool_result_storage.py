@@ -90,8 +90,11 @@ class TestWriteToSandbox:
         env.execute.assert_called_once()
         cmd = env.execute.call_args[0][0]
         assert "mkdir -p" in cmd
-        assert "hello world" in cmd
-        assert HEREDOC_MARKER in cmd
+        # Content travels through stdin, NOT inside the command string —
+        # otherwise large content would hit Linux's 128 KB MAX_ARG_STRLEN
+        # ceiling on `bash -c <cmd>` (#22906).
+        assert "hello world" not in cmd
+        assert env.execute.call_args[1]["stdin_data"] == "hello world"
 
     def test_failure_returns_false(self):
         env = MagicMock()
@@ -99,16 +102,16 @@ class TestWriteToSandbox:
         result = _write_to_sandbox("content", "/tmp/hermes-results/abc.txt", env)
         assert result is False
 
-    def test_heredoc_collision_uses_uuid_marker(self):
+    def test_large_content_via_stdin(self):
+        """Regression: 200 KB content exceeds Linux MAX_ARG_STRLEN (128 KB).
+        It must travel via stdin, never inside the command string."""
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
-        content = f"text with {HEREDOC_MARKER} inside"
-        _write_to_sandbox(content, "/tmp/hermes-results/abc.txt", env)
+        big = "x" * 200_000
+        _write_to_sandbox(big, "/tmp/hermes-results/big.txt", env)
         cmd = env.execute.call_args[0][0]
-        # The default marker should NOT be used as the delimiter
-        lines = cmd.split("\n")
-        # The first and last lines contain the actual delimiter
-        assert HEREDOC_MARKER not in lines[0].split("<<")[1]
+        assert len(cmd) < 1_000  # cmd is just `mkdir -p X && cat > Y`
+        assert env.execute.call_args[1]["stdin_data"] == big
 
     def test_timeout_passed(self):
         env = MagicMock()
@@ -247,9 +250,9 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         assert PERSISTED_OUTPUT_TAG in result
-        # The heredoc written to sandbox should contain the full JSON blob
-        cmd = env.execute.call_args[0][0]
-        assert '"exit_code"' in cmd
+        # Content is delivered through stdin (no longer embedded in the
+        # command string — see test_large_content_via_stdin for why).
+        assert env.execute.call_args[1]["stdin_data"] == content
 
     def test_above_threshold_no_env_truncates_inline(self):
         content = "x" * 60_000
@@ -516,12 +519,25 @@ class TestPerToolThresholds:
         except ImportError:
             pytest.skip("terminal_tool not importable in test env")
 
-    def test_read_file_never_persisted(self):
+    def test_read_file_result_size_cap(self):
         from tools.registry import registry
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("read_file")
-            assert val == float("inf")
+            assert val == 100_000
+        except ImportError:
+            pytest.skip("file_tools not importable in test env")
+
+    def test_read_file_registry_cap_is_100k(self):
+        """Regression test: read_file must have a 100_000 char registry cap (Layer 2 safety net)."""
+        from tools.registry import registry
+        try:
+            import tools.file_tools  # noqa: F401
+            val = registry.get_max_result_size("read_file")
+            assert val == 100_000, (
+                f"read_file registry cap must be 100_000, got {val!r}. "
+                "float('inf') is not allowed — it disables the Layer 2 result-size guard."
+            )
         except ImportError:
             pytest.skip("file_tools not importable in test env")
 

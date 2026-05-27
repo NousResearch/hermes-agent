@@ -2,6 +2,7 @@
 name: kanban-worker
 description: Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper detail on specific scenarios.
 version: 2.0.0
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [kanban, multi-agent, collaboration, workflow, pitfalls]
@@ -20,7 +21,7 @@ Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORK
 |---|---|---|
 | `scratch` | Fresh tmp dir, yours alone | Read/write freely; it gets GC'd when the task is archived. |
 | `dir:<path>` | Shared persistent directory | Other runs will read what you write. Treat it like long-lived state. Path is guaranteed absolute (the kernel rejects relative paths). |
-| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> <branch>` from the main repo first, then cd and work normally. Commit work here. |
+| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> ${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo first, then cd and work normally. Commit work here. |
 
 ## Tenant isolation
 
@@ -45,6 +46,29 @@ kanban_complete(
     },
 )
 ```
+
+**Coding task that needs human review (review-required):**
+
+For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
+
+```python
+import json
+
+kanban_comment(
+    body="review-required handoff:\n" + json.dumps({
+        "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
+        "tests_run": 14,
+        "tests_passed": 14,
+        "diff_path": "/path/to/worktree",  # or PR url if pushed
+        "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
+    }, indent=2),
+)
+kanban_block(
+    reason="review-required: rate limiter shipped, 14/14 tests pass — needs eyes on the user_id/IP fallback choice before merging",
+)
+```
+
+Use `kanban_complete` only when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, or a research task where the artifact IS the writeup itself.
 
 **Research task:**
 ```python
@@ -74,6 +98,32 @@ kanban_complete(
 ```
 
 Shape `metadata` so downstream parsers (reviewers, aggregators, schedulers) can use it without re-reading your prose.
+
+## Claiming cards you actually created
+
+If your run produced new kanban tasks (via `kanban_create`), pass the ids in `created_cards` on `kanban_complete`. The kernel verifies each id exists and was created by your profile; any phantom id blocks the completion with an error listing what went wrong, and the rejected attempt is permanently recorded on the task's event log. **Only list ids you captured from a successful `kanban_create` return value — never invent ids from prose, never paste ids from earlier runs, never claim cards another worker created.**
+
+```python
+# GOOD — capture return values, then claim them.
+c1 = kanban_create(title="remediate SQL injection", assignee="security-worker")
+c2 = kanban_create(title="fix CSRF middleware", assignee="web-worker")
+
+kanban_complete(
+    summary="Review done; spawned remediations for both findings.",
+    metadata={"pr_number": 123, "approved": False},
+    created_cards=[c1["task_id"], c2["task_id"]],
+)
+```
+
+```python
+# BAD — claiming ids you don't have captured return values for.
+kanban_complete(
+    summary="Created remediation cards t_a1b2c3d4, t_deadbeef",  # hallucinated
+    created_cards=["t_a1b2c3d4", "t_deadbeef"],                   # → gate rejects
+)
+```
+
+If a `kanban_create` call fails (exception, tool_error), the card was NOT created — do not include a phantom id for it. Retry the create, or omit the id and mention the failure in your summary. The prose-scan pass also catches `t_<hex>` references in your free-form summary that don't resolve; these don't block the completion but show up as advisory warnings on the task in the dashboard.
 
 ## Block reasons that get answered fast
 
@@ -106,6 +156,13 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - `outcome: "spawn_failed"` + `error: "..."` — usually a profile config issue (missing credential, bad PATH). Ask the human via `kanban_block` instead of retrying blindly.
 - `outcome: "reclaimed"` + `summary: "task archived..."` — operator archived the task out from under the previous run; you probably shouldn't be running at all, check status carefully.
 - `outcome: "blocked"` — a previous attempt blocked; the unblock comment should be in the thread by now.
+
+## Notification routing
+
+You can configure the gateway to receive cross-profile Kanban task notifications by adding `notification_sources` to `~/.hermes/config.yaml`.
+- `notification_sources: ['*']` accepts subscriptions from all profiles.
+- `notification_sources: ['default', 'zilor-ppt']` or `"default,zilor-ppt"` restricts subscriptions to specified profiles.
+- Omitting the key keeps the default behavior (profile isolation).
 
 ## Do NOT
 

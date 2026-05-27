@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { getViewportSnapshot, viewportSnapshotKey } from '../lib/viewportStore.js'
+import { getScrollbarSnapshot, getViewportSnapshot, scrollbarSnapshotKey, viewportSnapshotKey } from '../lib/viewportStore.js'
 
 describe('viewportStore', () => {
   it('normalizes absent scroll handles', () => {
@@ -50,5 +50,36 @@ describe('viewportStore', () => {
 
     expect(snap.atBottom).toBe(true)
     expect(snap.scrollHeight).toBe(20)
+  })
+
+  it('keeps scrollbar position tied to committed scrollTop, not pending target', () => {
+    const handle = {
+      getPendingDelta: () => 24,
+      getScrollHeight: () => 100,
+      getScrollTop: () => 10,
+      getViewportHeight: () => 20,
+      isSticky: () => false
+    }
+
+    const viewport = getViewportSnapshot(handle as any)
+    const scrollbar = getScrollbarSnapshot(handle as any)
+
+    expect(viewport.top).toBe(34)
+    expect(scrollbar).toEqual({
+      scrollHeight: 100,
+      top: 10,
+      viewportHeight: 20
+    })
+    expect(scrollbarSnapshotKey(scrollbar)).toBe('10:20:100')
+  })
+
+  it('clamps scrollbar position to committed scroll bounds', () => {
+    const handle = {
+      getScrollHeight: () => 30,
+      getScrollTop: () => 50,
+      getViewportHeight: () => 20
+    }
+
+    expect(getScrollbarSnapshot(handle as any).top).toBe(10)
   })
 })

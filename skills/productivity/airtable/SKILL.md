@@ -4,6 +4,7 @@ description: Airtable REST API via curl. Records CRUD, filters, upserts.
 version: 1.1.0
 author: community
 license: MIT
+platforms: [linux, macos, windows]
 prerequisites:
   env_vars: [AIRTABLE_API_KEY]
   commands: [curl]

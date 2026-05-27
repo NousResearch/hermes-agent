@@ -1,16 +1,75 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
+import logging
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
+
+logger = logging.getLogger(__name__)
+
+
+def _msys_to_windows_path(cwd: str) -> str:
+    """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
+    native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
+    ``subprocess.Popen(..., cwd=...)`` can find it.
+
+    No-ops on non-Windows hosts or for paths that aren't in MSYS form.
+    Returns the input unchanged when no translation applies. This is
+    idempotent — calling it on an already-Windows path returns it as-is.
+    """
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
+    m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
+    if not m:
+        return cwd
+    drive = m.group(1).upper()
+    tail = (m.group(2) or "").replace('/', '\\')
+    return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
+
+
+def _resolve_safe_cwd(cwd: str) -> str:
+    """Return ``cwd`` if it exists as a directory, else the nearest existing
+    ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
+    path can't find any existing directory (effectively never on a healthy
+    filesystem, but cheap belt-and-braces).
+
+    On Windows, also normalizes Git Bash / MSYS-style POSIX paths
+    (``/c/Users/x``) to native Windows form before the isdir check so a
+    perfectly valid ``pwd -P`` result from bash doesn't get rejected as
+    "missing" (see ``_msys_to_windows_path``).
+
+    Used by ``_run_bash`` to recover when the configured cwd is gone — most
+    commonly because a previous tool call deleted its own working directory
+    (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``
+    raises ``FileNotFoundError`` before bash starts, wedging every subsequent
+    terminal call until the gateway restarts.
+    """
+    cwd = _msys_to_windows_path(cwd) if _IS_WINDOWS else cwd
+    if cwd and os.path.isdir(cwd):
+        return cwd
+    parent = os.path.dirname(cwd) if cwd else ""
+    while parent:
+        if os.path.isdir(parent):
+            return parent
+        next_parent = os.path.dirname(parent)
+        if next_parent == parent:
+            # Reached the filesystem root and it doesn't exist either —
+            # genuinely nothing to fall back to except the temp dir.
+            break
+        parent = next_parent
+    return tempfile.gettempdir()
 
 
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
@@ -112,6 +171,18 @@ def _build_provider_env_blocklist() -> frozenset:
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
+def _inject_context_hermes_home(env: dict) -> None:
+    """Bridge the context-local Hermes home override into subprocess env."""
+    try:
+        from hermes_constants import get_hermes_home_override
+
+        value = get_hermes_home_override()
+        if value:
+            env["HERMES_HOME"] = value
+    except Exception:
+        pass
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -133,6 +204,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             sanitized[real_key] = value
         elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
+
+    _inject_context_hermes_home(sanitized)
 
     # Per-profile HOME isolation for background processes (same as _make_run_env).
     from hermes_constants import get_subprocess_home
@@ -158,6 +231,25 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
+    # Prefer our own portable Git install first — this way a broken or
+    # partially-uninstalled system Git can't hijack the bash lookup.  The
+    # install.ps1 installer always drops portable Git here when the user
+    # didn't already have a working system Git.
+    #
+    # Layouts (both checked so upgrades between MinGit and PortableGit
+    # installs work transparently):
+    #   PortableGit: %LOCALAPPDATA%\hermes\git\bin\bash.exe   (primary)
+    #   MinGit:      %LOCALAPPDATA%\hermes\git\usr\bin\bash.exe (legacy/32-bit fallback)
+    _local_appdata = os.environ.get("LOCALAPPDATA", "")
+    _hermes_portable_git = os.path.join(_local_appdata, "hermes", "git") if _local_appdata else ""
+    if _hermes_portable_git:
+        for candidate in (
+            os.path.join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
+            os.path.join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
+        ):
+            if os.path.isfile(candidate):
+                return candidate
+
     found = shutil.which("bash")
     if found:
         return found
@@ -165,7 +257,7 @@ def _find_bash() -> str:
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
+        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
@@ -204,8 +296,18 @@ def _make_run_env(env: dict) -> dict:
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
-    if "/usr/bin" not in existing_path.split(":"):
+    # The "/usr/bin not already present → inject sane POSIX path" heuristic
+    # only makes sense on POSIX.  On Windows the PATH separator is ";"
+    # (the split(":") above turns a full Windows PATH into a single
+    # unrecognisable chunk, which then triggers prepending POSIX paths
+    # to a Windows PATH — completely wrong).  Skip the injection entirely
+    # on Windows; the native PATH already points at whatever shell
+    # Hermes is driving via _find_bash (Git Bash), and Git Bash itself
+    # prepends its MSYS2 /usr/bin equivalent via the shell-init files.
+    if not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":"):
         run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+
+    _inject_context_hermes_home(run_env)
 
     # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
     # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
@@ -214,6 +316,17 @@ def _make_run_env(env: dict) -> dict:
     _profile_home = get_subprocess_home()
     if _profile_home:
         run_env["HOME"] = _profile_home
+
+    # Inject ContextVar-based session vars into subprocess env.
+    # ContextVars don't propagate to child processes, so we bridge them here.
+    try:
+        from gateway.session_context import get_session_env, _UNSET, _VAR_MAP
+        for var_name, var in _VAR_MAP.items():
+            value = var.get()
+            if value is not _UNSET and value:
+                run_env[var_name] = value
+    except Exception:
+        pass
 
     return run_env
 
@@ -326,7 +439,29 @@ class LocalEnvironment(BaseEnvironment):
         Check the environment configured for this backend first so callers can
         override the temp root explicitly (for example via terminal.env or a
         custom TMPDIR), then fall back to the host process environment.
+
+        **Windows:** hardcoded ``/tmp`` is wrong in two ways — native Python
+        can't open the path, and the Windows default temp (``%TEMP%``) often
+        contains spaces (``C:\\Users\\Some Name\\AppData\\Local\\Temp``) that
+        break unquoted bash interpolations.  Use a dedicated cache dir under
+        ``HERMES_HOME`` instead — single-word path, guaranteed to exist, same
+        string resolves in both Git Bash and native Python.
         """
+        if _IS_WINDOWS:
+            # Derive a Windows-safe temp dir under HERMES_HOME.  Using
+            # forward slashes makes the same string work unchanged in bash
+            # command interpolations AND in Python ``open()`` — Windows
+            # accepts forward slashes in filesystem paths, and we control
+            # the path so we can guarantee no spaces.
+            try:
+                from hermes_constants import get_hermes_home
+                cache_dir = get_hermes_home() / "cache" / "terminal"
+            except Exception:
+                cache_dir = Path(tempfile.gettempdir()) / "hermes_terminal"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            # Force forward slashes so the same string serves both contexts.
+            return str(cache_dir).replace("\\", "/")
+
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):
@@ -358,6 +493,35 @@ class LocalEnvironment(BaseEnvironment):
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
+        # Recover when the cwd has been deleted out from under us — usually by
+        # a previous tool call that ran ``rm -rf`` on its own working dir
+        # (issue #17558).  Popen would otherwise raise FileNotFoundError on
+        # the cwd before bash starts, wedging every subsequent call until the
+        # gateway restarts.
+        #
+        # On Windows, ``_resolve_safe_cwd`` also normalises Git Bash-style
+        # POSIX paths (``/c/Users/...``) to native form so a perfectly valid
+        # ``pwd -P`` result from bash isn't mistakenly treated as "missing"
+        # and spammed as a warning on every command.
+        safe_cwd = _resolve_safe_cwd(self.cwd)
+        if safe_cwd != self.cwd:
+            # MSYS → Windows translation alone shouldn't surface as a warning
+            # (it's a benign normalization, not a recovery). Only warn when
+            # the directory really doesn't exist on disk.
+            normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
+            if safe_cwd != normalized:
+                logger.warning(
+                    "LocalEnvironment cwd %r is missing on disk; "
+                    "falling back to %r so terminal commands keep working.",
+                    self.cwd,
+                    safe_cwd,
+                )
+            self.cwd = safe_cwd
+
+        _popen_cwd = self.cwd
+
+        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+
         proc = subprocess.Popen(
             args,
             text=True,
@@ -368,7 +532,8 @@ class LocalEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            cwd=self.cwd,
+            cwd=_popen_cwd,
+            **_popen_kwargs,
         )
         if not _IS_WINDOWS:
             try:
@@ -387,7 +552,7 @@ class LocalEnvironment(BaseEnvironment):
         def _group_alive(pgid: int) -> bool:
             try:
                 # POSIX-only: _IS_WINDOWS is handled before this helper is used.
-                os.killpg(pgid, 0)
+                os.killpg(pgid, 0)  # windows-footgun: ok — POSIX process-group alive probe
                 return True
             except ProcessLookupError:
                 return False
@@ -425,7 +590,7 @@ class LocalEnvironment(BaseEnvironment):
                         raise
 
                 try:
-                    os.killpg(pgid, signal.SIGTERM)
+                    os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)
                 except ProcessLookupError:
                     return
 
@@ -437,7 +602,7 @@ class LocalEnvironment(BaseEnvironment):
 
                 try:
                     # POSIX-only: _IS_WINDOWS is handled by the outer branch.
-                    os.killpg(pgid, signal.SIGKILL)
+                    os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX process-group SIGKILL
                 except ProcessLookupError:
                     return
                 _wait_for_group_exit(pgid, 2.0)
@@ -452,17 +617,56 @@ class LocalEnvironment(BaseEnvironment):
                 pass
 
     def _update_cwd(self, result: dict):
-        """Read CWD from temp file (local-only, no round-trip needed)."""
+        """Read CWD from temp file (local-only, no round-trip needed).
+
+        Skip the assignment when the path no longer exists as a directory —
+        ``pwd -P`` on a deleted cwd can leave a stale value in the marker
+        file, and propagating it would re-wedge the next ``Popen``.  The
+        ``_run_bash`` recovery path will resolve a safe fallback if needed.
+
+        On Windows, the value written by Git Bash's ``pwd -P`` is in
+        MSYS form (``/c/Users/x``). Translate it to native Windows form
+        before validating with ``os.path.isdir`` and before storing on
+        ``self.cwd``; otherwise the isdir check rejects every valid
+        result and ``_run_bash`` later prints a misleading "cwd is
+        missing" warning on every command.
+        """
         try:
-            with open(self._cwd_file) as f:
+            with open(self._cwd_file, encoding="utf-8") as f:
                 cwd_path = f.read().strip()
-            if cwd_path:
+            if _IS_WINDOWS:
+                cwd_path = _msys_to_windows_path(cwd_path)
+            if cwd_path and os.path.isdir(cwd_path):
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):
             pass
 
         # Still strip the marker from output so it's not visible
         self._extract_cwd_from_output(result)
+
+    def _extract_cwd_from_output(self, result: dict):
+        """Same semantics as the base class, but on Windows the value
+        emitted by ``pwd -P`` inside Git Bash is in MSYS form
+        (``/c/Users/x``). Normalize to native Windows form and validate
+        the directory exists before assigning to ``self.cwd`` — otherwise
+        ``_run_bash``'s safe-cwd recovery would warn on every subsequent
+        command.
+
+        Always defers to the base class for stripping the marker text from
+        ``result["output"]`` so output formatting is identical.
+        """
+        # Snapshot pre-existing cwd, defer to base for parsing + marker
+        # stripping, then validate / normalize whatever it assigned.
+        prev_cwd = self.cwd
+        super()._extract_cwd_from_output(result)
+        if self.cwd != prev_cwd:
+            normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
+            if normalized and os.path.isdir(normalized):
+                self.cwd = normalized
+            else:
+                # Stale / non-existent path — keep previous cwd; _run_bash
+                # will resolve a safe fallback on the next call if needed.
+                self.cwd = prev_cwd
 
     def cleanup(self):
         """Clean up temp files."""

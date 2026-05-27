@@ -1,4 +1,11 @@
 @import 'tailwindcss';
+/* `fonts.css` must come BEFORE `globals.css`: as of @nous-research/ui 0.14.x,
+   `globals.css` only declares the `--font-*` CSS variables (Collapse, Rules
+   Compressed/Expanded, Mondwest). The `@font-face` registrations live in
+   `fonts.css`, so without this import the DS variables resolve to font
+   families the browser never loads and components fall back to a system
+   stack (Tabs, Segmented, Typography, Buttons, etc. all look unstyled). */
+@import '@nous-research/ui/styles/fonts.css';
 @import '@nous-research/ui/styles/globals.css';
 
 /* Scan the published design-system bundle so its utility classes survive
@@ -139,7 +146,11 @@ code { font-size: 0.875rem; }
   --color-secondary: color-mix(in srgb, var(--midground-base) 6%, var(--background-base));
   --color-secondary-foreground: var(--midground);
   --color-muted: color-mix(in srgb, var(--midground-base) 8%, var(--background-base));
-  --color-muted-foreground: color-mix(in srgb, var(--midground-base) 55%, transparent);
+  /* Routes the shadcn `muted-foreground` slot through the DS semantic
+     text-secondary token (defaults to midground 80%) so legacy call
+     sites that use `text-muted-foreground` get a readable color
+     instead of the old 55%-transparent default. */
+  --color-muted-foreground: var(--color-text-secondary);
   --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
   --color-accent-foreground: var(--midground);
   --color-destructive: #fb2c36;

@@ -94,6 +94,7 @@ class ProcessSession:
     task_id: str = ""                           # Task/sandbox isolation key
     session_key: str = ""                       # Gateway session key (for reset protection)
     pid: Optional[int] = None                   # OS process ID
+    pgid: Optional[int] = None                  # POSIX process group ID (when known)
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
     env_ref: Any = None                         # Reference to the environment object
     cwd: Optional[str] = None                   # Working directory
@@ -104,6 +105,13 @@ class ProcessSession:
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
+    kill_attempted: bool = False                # A kill request was attempted for this session
+    kill_requested: bool = False                # A termination signal/request was sent or attempted
+    kill_failed: bool = False                   # The kill request failed before the process was observed dead
+    kill_error: str = ""                        # Last kill error, if any
+    termination_method: str = ""                # psutil/taskkill/os.killpg/os.kill/env.kill/etc.
+    terminated_by_agent: bool = False           # Hermes process tool marked this as terminated
+    trusted_completion: bool = True             # False after any kill/termination attempt
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
@@ -413,6 +421,100 @@ class ProcessRegistry:
         from gateway.status import _pid_exists
         return _pid_exists(pid)
 
+    @staticmethod
+    def _process_state_metadata(session: ProcessSession) -> dict:
+        """Return process-state fields that disambiguate natural vs forced exits."""
+        kill_related = bool(
+            session.kill_attempted
+            or session.kill_requested
+            or session.kill_failed
+            or session.terminated_by_agent
+            or session.termination_method
+        )
+        trusted = bool(session.trusted_completion and not kill_related)
+        data = {"trusted_completion": trusted}
+        if kill_related:
+            data.update({
+                "kill_attempted": session.kill_attempted,
+                "kill_requested": session.kill_requested,
+                "kill_failed": session.kill_failed,
+                "termination_method": session.termination_method,
+                "terminated_by_agent": session.terminated_by_agent,
+            })
+            if session.kill_error:
+                data["kill_error"] = session.kill_error
+        return data
+
+    @staticmethod
+    def _mark_kill_attempt(session: ProcessSession) -> None:
+        with session._lock:
+            session.kill_attempted = True
+            session.kill_requested = True
+            session.kill_failed = False
+            session.kill_error = ""
+            session.trusted_completion = False
+
+    @staticmethod
+    def _mark_kill_failure(session: ProcessSession, exc: BaseException) -> None:
+        with session._lock:
+            session.kill_attempted = True
+            session.kill_requested = True
+            session.kill_failed = True
+            session.kill_error = str(exc)
+            session.trusted_completion = False
+
+    @staticmethod
+    def _record_termination(session: ProcessSession, info: dict) -> None:
+        with session._lock:
+            session.kill_attempted = True
+            session.kill_requested = True
+            session.kill_failed = False
+            session.kill_error = ""
+            session.termination_method = info.get("method", "")
+            session.terminated_by_agent = True
+            session.trusted_completion = False
+
+    @staticmethod
+    def _terminate_posix_process_group_or_pid(
+        pid: int,
+        sig: int = signal.SIGTERM,
+        *,
+        allow_process_group: bool = False,
+        pgid: Optional[int] = None,
+    ) -> dict:
+        """Terminate a POSIX PID, optionally its isolated process group.
+
+        Generic host PID callers must not kill ``os.getpgid(pid)`` because the
+        target may share Hermes/gateway's process group. Group termination is
+        allowed only for sessions we created as isolated groups and only when
+        the target is the group leader (``pgid == pid``).
+        """
+        group_exc: Optional[BaseException] = None
+        if allow_process_group:
+            try:
+                target_pgid = int(pgid) if pgid is not None else os.getpgid(pid)
+                if target_pgid == pid:
+                    os.killpg(target_pgid, sig)
+                    return {"method": "os.killpg", "fallback_used": True, "pgid": target_pgid, "signal": sig}
+                group_exc = OSError(f"refusing killpg for non-leader pid={pid}, pgid={target_pgid}")
+            except (ProcessLookupError, PermissionError, OSError) as exc:
+                group_exc = exc
+
+        try:
+            os.kill(pid, sig)
+            result = {
+                "method": "os.kill",
+                "fallback_used": True,
+                "signal": sig,
+            }
+            if group_exc is not None:
+                result["fallback_error"] = str(group_exc)
+            return result
+        except (ProcessLookupError, PermissionError, OSError) as pid_exc:
+            if group_exc is not None:
+                raise pid_exc from group_exc
+            raise
+
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
         """Update recovered host-PID sessions when the underlying process has exited."""
         if session is None or session.exited or not session.detached or session.pid_scope != "host":
@@ -433,54 +535,53 @@ class ProcessRegistry:
         return session
 
     @staticmethod
-    def _terminate_host_pid(pid: int) -> None:
-        """Terminate a host-visible PID and its descendants.
+    def _terminate_host_pid(
+        pid: int,
+        *,
+        allow_process_group: bool = False,
+        pgid: Optional[int] = None,
+    ) -> dict:
+        """Terminate a host-visible PID and descendants when possible.
 
-        POSIX: walks the process tree with ``psutil`` and SIGTERMs
-        children before the parent so subprocess trees (e.g. Chromium
-        renderers/GPU helpers spawned by an ``agent-browser`` daemon)
-        don't get reparented to init and survive cleanup.
-
-        Windows: shells out to ``taskkill /PID <pid> /T /F``. This is
-        the documented Microsoft primitive for tree-kill and matches the
-        existing convention in ``gateway.status.terminate_pid``. We can't
-        reuse the POSIX psutil path on Windows because:
-
-          1. Windows doesn't maintain a Unix-style process tree —
-             ``psutil.Process.children(recursive=True)`` walks PPID
-             links that go stale when intermediate processes exit, so
-             enumeration is best-effort and misses orphaned descendants.
-          2. ``psutil.Process.terminate()`` on Windows is
-             ``TerminateProcess()`` which kills only the target handle
-             and is a hard kill — there is no Windows equivalent of a
-             SIGTERM that cascades through a process group. (See the
-             warning in ``gateway/status.py::terminate_pid``: "os.kill
-             with SIGTERM is not equivalent to a tree-killing hard stop"
-             on Windows.) Headless Chromium has no GUI window, so the
-             softer ``taskkill /T`` without ``/F`` won't reach it either.
-
-        ``psutil`` is a hard dependency (see ``pyproject.toml``); the
-        bare-``os.kill`` fallback covers OSError / PermissionError on
-        POSIX and a missing ``taskkill.exe`` on Windows (effectively
-        unreachable on real Windows installs, but cheap insurance).
+        ``psutil`` is optional at runtime. When it is unavailable, POSIX falls
+        back to a single-PID SIGTERM by default. Callers that know the process
+        was launched in an isolated group may opt into guarded process-group
+        termination with ``allow_process_group=True`` and ``pgid``.
         """
         if _IS_WINDOWS:
             try:
-                subprocess.run(
+                completed = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     capture_output=True,
                     text=True,
                     timeout=10,
                     creationflags=windows_hide_flags(),
                 )
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                if completed.returncode != 0:
+                    detail = completed.stderr or completed.stdout or f"taskkill exited {completed.returncode}"
+                    raise OSError(detail)
+                return {"method": "taskkill", "fallback_used": False, "signal": None}
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
                 try:
                     os.kill(pid, signal.SIGTERM)
-                except (OSError, ProcessLookupError, PermissionError):
-                    pass
-            return
+                    return {
+                        "method": "os.kill",
+                        "fallback_used": True,
+                        "signal": signal.SIGTERM,
+                        "fallback_error": str(exc),
+                    }
+                except (OSError, ProcessLookupError, PermissionError) as kill_exc:
+                    raise kill_exc from exc
 
-        import psutil
+        try:
+            import psutil
+        except ImportError:
+            return ProcessRegistry._terminate_posix_process_group_or_pid(
+                pid,
+                allow_process_group=allow_process_group,
+                pgid=pgid,
+            )
+
         try:
             parent = psutil.Process(pid)
             for child in parent.children(recursive=True):
@@ -489,13 +590,15 @@ class ProcessRegistry:
                 except psutil.NoSuchProcess:
                     pass
             parent.terminate()
+            return {"method": "psutil", "fallback_used": False, "signal": signal.SIGTERM}
         except psutil.NoSuchProcess:
-            return
+            return {"method": "psutil.no_such_process", "fallback_used": False, "signal": None}
         except (OSError, PermissionError):
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except (OSError, ProcessLookupError, PermissionError):
-                pass
+            return ProcessRegistry._terminate_posix_process_group_or_pid(
+                pid,
+                allow_process_group=allow_process_group,
+                pgid=pgid,
+            )
 
     # ----- Spawn -----
 
@@ -557,6 +660,11 @@ class ProcessRegistry:
                     dimensions=(30, 120),
                 )
                 session.pid = pty_proc.pid
+                if not _IS_WINDOWS and session.pid:
+                    try:
+                        session.pgid = os.getpgid(session.pid)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        session.pgid = session.pid
                 # Store the pty handle on the session for read/write
                 session._pty = pty_proc
 
@@ -609,6 +717,11 @@ class ProcessRegistry:
 
         session.process = proc
         session.pid = proc.pid
+        if not _IS_WINDOWS and session.pid:
+            try:
+                session.pgid = os.getpgid(session.pid)
+            except (ProcessLookupError, PermissionError, OSError):
+                session.pgid = session.pid
 
         try:
             # Start output reader thread
@@ -754,8 +867,11 @@ class ProcessRegistry:
                 session.process.wait(timeout=5)
             except Exception as e:
                 logger.debug("Process wait timed out or failed: %s", e)
-            session.exited = True
-            session.exit_code = session.process.returncode
+            with session._lock:
+                session.exited = True
+                session.exit_code = session.process.returncode
+                if session.kill_attempted or session.kill_requested or session.kill_failed:
+                    session.trusted_completion = False
             self._move_to_finished(session)
 
     def _env_poller_loop(
@@ -797,17 +913,24 @@ class ProcessRegistry:
                     )
                     exit_str = exit_result.get("output", "").strip()
                     try:
-                        session.exit_code = int(exit_str.splitlines()[-1].strip())
+                        exit_code = int(exit_str.splitlines()[-1].strip())
                     except (ValueError, IndexError):
-                        session.exit_code = -1
-                    session.exited = True
+                        exit_code = -1
+                    with session._lock:
+                        session.exit_code = exit_code
+                        session.exited = True
+                        if session.kill_attempted or session.kill_requested or session.kill_failed:
+                            session.trusted_completion = False
                     self._move_to_finished(session)
                     return
 
             except Exception:
                 # Environment might be gone (sandbox reaped, etc.)
-                session.exited = True
-                session.exit_code = -1
+                with session._lock:
+                    session.exited = True
+                    session.exit_code = -1
+                    if session.kill_attempted or session.kill_requested or session.kill_failed:
+                        session.trusted_completion = False
                 self._move_to_finished(session)
                 return
 
@@ -838,8 +961,11 @@ class ProcessRegistry:
             pty.wait()
         except Exception as e:
             logger.debug("PTY wait timed out or failed: %s", e)
-        session.exited = True
-        session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
+        with session._lock:
+            session.exited = True
+            session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
+            if session.kill_attempted or session.kill_requested or session.kill_failed:
+                session.trusted_completion = False
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession):
@@ -860,13 +986,15 @@ class ProcessRegistry:
         if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
-            self.completion_queue.put({
+            event = {
                 "type": "completion",
                 "session_id": session.id,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "output": output_tail,
-            })
+            }
+            event.update(self._process_state_metadata(session))
+            self.completion_queue.put(event)
 
     # ----- Query Methods -----
 
@@ -997,6 +1125,7 @@ class ProcessRegistry:
         }
         if session.exited:
             result["exit_code"] = session.exit_code
+            result.update(self._process_state_metadata(session))
             self._completion_consumed.add(session_id)
         if session.detached:
             result["detached"] = True
@@ -1065,6 +1194,12 @@ class ProcessRegistry:
             )
         else:
             effective_timeout = requested_timeout or max_timeout
+        timeout_metadata = {
+            "requested_timeout": requested_timeout,
+            "effective_timeout": effective_timeout,
+            "max_wait_timeout": max_timeout,
+            "clamped": bool(requested_timeout and requested_timeout > max_timeout),
+        }
 
         session = self.get(session_id)
         if session is None:
@@ -1085,6 +1220,8 @@ class ProcessRegistry:
                     "exit_code": session.exit_code,
                     "output": strip_ansi(session.output_buffer[-2000:]),
                 }
+                result.update(timeout_metadata)
+                result.update(self._process_state_metadata(session))
                 if timeout_note:
                     result["timeout_note"] = timeout_note
                 return result
@@ -1095,6 +1232,7 @@ class ProcessRegistry:
                     "output": strip_ansi(session.output_buffer[-1000:]),
                     "note": "User sent a new message -- wait interrupted",
                 }
+                result.update(timeout_metadata)
                 if timeout_note:
                     result["timeout_note"] = timeout_note
                 return result
@@ -1105,6 +1243,7 @@ class ProcessRegistry:
             "status": "timeout",
             "output": strip_ansi(session.output_buffer[-1000:]),
         }
+        result.update(timeout_metadata)
         if timeout_note:
             result["timeout_note"] = timeout_note
         else:
@@ -1118,68 +1257,95 @@ class ProcessRegistry:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         if session.exited:
-            return {
+            result = {
                 "status": "already_exited",
                 "exit_code": session.exit_code,
             }
+            result.update(self._process_state_metadata(session))
+            return result
+
+        self._mark_kill_attempt(session)
+        termination_info: dict = {}
 
         # Kill via PTY, Popen (local), or env execute (non-local)
         try:
             if session._pty:
-                # PTY process -- terminate via ptyprocess
-                try:
+                # PTY-backed CLIs (Codex/Claude Code) often have wrapper child
+                # chains. Prefer the POSIX process group so children do not
+                # survive when only the wrapper PID is killed.
+                if session.pid and not _IS_WINDOWS:
+                    termination_info = self._terminate_posix_process_group_or_pid(
+                        session.pid,
+                        allow_process_group=True,
+                        pgid=session.pgid,
+                    )
+                else:
                     session._pty.terminate(force=True)
-                except Exception:
-                    if session.pid:
-                        os.kill(session.pid, signal.SIGTERM)
+                    termination_info = {"method": "pty.terminate", "fallback_used": False, "signal": signal.SIGTERM}
             elif session.process:
-                # Local process -- kill the process tree
-                try:
-                    if _IS_WINDOWS:
-                        session.process.terminate()
-                    else:
-                        import psutil
-                        try:
-                            parent = psutil.Process(session.process.pid)
-                            for child in parent.children(recursive=True):
-                                try:
-                                    child.terminate()
-                                except psutil.NoSuchProcess:
-                                    pass
-                            parent.terminate()
-                        except psutil.NoSuchProcess:
-                            pass
-                except (ProcessLookupError, PermissionError):
-                    session.process.kill()
+                termination_info = self._terminate_host_pid(
+                    session.process.pid,
+                    allow_process_group=not _IS_WINDOWS,
+                    pgid=session.pgid,
+                )
             elif session.env_ref and session.pid:
-                # Non-local -- kill inside sandbox
-                session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+                # Non-local -- kill inside sandbox. Try process-group kill first;
+                # fall back to the specific PID for shells that lack a matching group.
+                session.env_ref.execute(
+                    f"kill -TERM -{session.pid} 2>/dev/null || kill -TERM {session.pid} 2>/dev/null",
+                    timeout=5,
+                )
+                termination_info = {"method": "env.kill", "fallback_used": False, "signal": signal.SIGTERM}
             elif session.detached and session.pid_scope == "host" and session.pid:
                 if not self._is_host_pid_alive(session.pid):
                     with session._lock:
                         session.exited = True
                         session.exit_code = None
                     self._move_to_finished(session)
-                    return {
+                    result = {
                         "status": "already_exited",
                         "exit_code": session.exit_code,
                     }
-                self._terminate_host_pid(session.pid)
+                    result.update(self._process_state_metadata(session))
+                    return result
+                termination_info = self._terminate_host_pid(
+                    session.pid,
+                    allow_process_group=bool(session.pgid) and not _IS_WINDOWS,
+                    pgid=session.pgid,
+                )
             else:
+                error = RuntimeError(
+                    "Recovered process cannot be killed after restart because "
+                    "its original runtime handle is no longer available"
+                )
+                self._mark_kill_failure(session, error)
+                self._write_checkpoint()
                 return {
                     "status": "error",
-                    "error": (
-                        "Recovered process cannot be killed after restart because "
-                        "its original runtime handle is no longer available"
-                    ),
+                    "error": str(error),
+                    **self._process_state_metadata(session),
                 }
-            session.exited = True
-            session.exit_code = -15  # SIGTERM
+
+            self._record_termination(session, termination_info)
+            with session._lock:
+                session.exited = True
+                session.exit_code = -15  # SIGTERM requested by process tool
+                session.trusted_completion = False
             self._move_to_finished(session)
             self._write_checkpoint()
-            return {"status": "killed", "session_id": session.id}
+            result = {
+                "status": "killed",
+                "session_id": session.id,
+                "exit_code": session.exit_code,
+                "termination_method": termination_info.get("method", ""),
+                "fallback_used": bool(termination_info.get("fallback_used", False)),
+            }
+            result.update(self._process_state_metadata(session))
+            return result
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            self._mark_kill_failure(session, e)
+            self._write_checkpoint()
+            return {"status": "error", "error": str(e), **self._process_state_metadata(session)}
 
     def write_stdin(self, session_id: str, data: str) -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""
@@ -1259,6 +1425,7 @@ class ProcessRegistry:
             }
             if s.exited:
                 entry["exit_code"] = s.exit_code
+                entry.update(self._process_state_metadata(s))
             if s.detached:
                 entry["detached"] = True
             result.append(entry)
@@ -1351,6 +1518,7 @@ class ProcessRegistry:
                             "session_id": s.id,
                             "command": s.command,
                             "pid": s.pid,
+                            "pgid": s.pgid,
                             "pid_scope": s.pid_scope,
                             "cwd": s.cwd,
                             "started_at": s.started_at,
@@ -1416,6 +1584,7 @@ class ProcessRegistry:
                     task_id=entry.get("task_id", ""),
                     session_key=entry.get("session_key", ""),
                     pid=pid,
+                    pgid=entry.get("pgid"),
                     pid_scope=pid_scope,
                     cwd=entry.get("cwd"),
                     started_at=entry.get("started_at", time.time()),
@@ -1489,6 +1658,15 @@ def format_process_notification(evt: dict) -> "str | None":
 
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
+    _trusted = evt.get("trusted_completion", True)
+    if evt.get("kill_requested") or evt.get("kill_attempted") or _trusted is False:
+        _method = evt.get("termination_method") or "unknown"
+        return (
+            f"[IMPORTANT: Background process {_sid} exited after a kill/termination request "
+            f"(exit code {_exit}, trusted_completion=false, method={_method}).\n"
+            f"Command: {_cmd}\n"
+            f"Output:\n{_out}]"
+        )
     return (
         f"[IMPORTANT: Background process {_sid} completed "
         f"(exit code {_exit}).\n"

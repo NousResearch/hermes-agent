@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -108,6 +109,7 @@ class TestGetAndPoll:
 # =========================================================================
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: uses setsid/fcntl")
+@pytest.mark.live_system_guard_bypass
 class TestOrphanedPipeReconciliation:
     """Regression tests for issue #17327.
 
@@ -303,6 +305,7 @@ class TestStdinHelpers:
         lockout (#17959). For interactive stdin → PTY mode is now the only
         supported path.
         """
+        pytest.importorskip("ptyprocess", reason="PTY process tests require ptyprocess")
         session = registry.spawn_local(
             'python3 -c "import sys; print(sys.stdin.read().strip())"',
             cwd=str(tmp_path),
@@ -654,7 +657,8 @@ class TestCheckpoint:
             "pid": 999999999,  # almost certainly not running
             "task_id": "t1",
         }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), \
+             patch.object(registry, "_is_host_pid_alive", return_value=False):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 0
 
@@ -773,7 +777,8 @@ class TestCheckpoint:
         }]))
 
         try:
-            with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), \
+                 patch.object(registry, "_is_host_pid_alive", side_effect=lambda _pid: proc.poll() is None):
                 recovered = registry.recover_from_checkpoint()
                 assert recovered == 1
 
@@ -835,22 +840,143 @@ class TestKillProcess:
             def terminate(self):
                 terminate_calls.append(("terminate", self.pid))
 
-        import psutil as _psutil
-
         try:
             # Post-#21561: liveness probe routes through
             # ``ProcessRegistry._is_host_pid_alive`` (→
-            # ``gateway.status._pid_exists``), and the actual kill on POSIX
-            # routes through ``psutil.Process(pid).terminate()``. Neither
-            # touches ``os.kill`` directly. Mock both seams.
+            # ``gateway.status._pid_exists``), and the actual kill routes
+            # through ``ProcessRegistry._terminate_host_pid``. Mock both seams
+            # so the test does not depend on optional psutil being installed.
             with patch("gateway.status._pid_exists", return_value=True), \
-                 patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)):
+                 patch("tools.process_registry.ProcessRegistry._terminate_host_pid", return_value={"method": "psutil", "fallback_used": False}):
                 result = registry.kill_process(s.id)
 
             assert result["status"] == "killed"
-            assert ("terminate", 424242) in terminate_calls
+            assert result["termination_method"] == "psutil"
         finally:
             registry._running.pop(s.id, None)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group fallback")
+    def test_kill_local_process_falls_back_without_psutil(self, registry, monkeypatch):
+        """Missing psutil must not make process(action='kill') unusable."""
+        proc = MagicMock()
+        proc.pid = 12345
+        proc.poll.return_value = None
+        proc.wait.return_value = -15
+        s = _make_session(sid="proc_no_psutil", command="sleep 999")
+        s.process = proc
+        s.pid = proc.pid
+        s.pgid = proc.pid
+        registry._running[s.id] = s
+
+        real_import = __import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "psutil":
+                raise ImportError("No module named 'psutil'")
+            return real_import(name, *args, **kwargs)
+
+        killpg_calls = []
+
+        def fake_killpg(pgid, sig):
+            killpg_calls.append((pgid, sig))
+
+        monkeypatch.setattr("builtins.__import__", fake_import)
+        monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(os, "killpg", fake_killpg)
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "killed"
+        assert result["fallback_used"] is True
+        assert result["termination_method"] == "os.killpg"
+        assert killpg_calls == [(12345, signal.SIGTERM)]
+        assert s.kill_requested is True
+        assert s.trusted_completion is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group fallback")
+    def test_kill_pty_process_prefers_process_group(self, registry, monkeypatch):
+        """PTY-backed Codex wrappers should be killed by process group, not just parent PID."""
+        pty = MagicMock()
+        pty.pid = 23456
+        pty.isalive.return_value = True
+        s = _make_session(sid="proc_pty", command="codex-yuna exec ...")
+        s._pty = pty
+        s.pid = pty.pid
+        s.pgid = pty.pid
+        registry._running[s.id] = s
+
+        killpg_calls = []
+        monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "killed"
+        assert result["termination_method"] == "os.killpg"
+        assert killpg_calls == [(23456, signal.SIGTERM)]
+        pty.terminate.assert_not_called()
+
+    def test_kill_failed_records_state(self, registry, monkeypatch):
+        proc = MagicMock()
+        proc.pid = 34567
+        proc.poll.return_value = None
+        s = _make_session(sid="proc_kill_error", command="sleep 999")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        def boom(*args, **kwargs):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr("tools.process_registry.ProcessRegistry._terminate_host_pid", staticmethod(boom))
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "error"
+        assert s.kill_attempted is True
+        assert s.kill_failed is True
+        assert "denied" in s.kill_error
+
+    def test_no_runtime_handle_branch_returns_kill_failure_metadata(self, registry):
+        s = _make_session(sid="proc_no_handle", command="sleep 999")
+        registry._running[s.id] = s
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "error"
+        assert result["kill_attempted"] is True
+        assert result["kill_requested"] is True
+        assert result["kill_failed"] is True
+        assert result["trusted_completion"] is False
+        assert s.kill_failed is True
+
+
+class TestWaitTimeoutMetadata:
+    def test_wait_clamp_returns_structured_metadata(self, registry, monkeypatch):
+        s = _make_session(sid="proc_wait_clamp")
+        registry._running[s.id] = s
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "1")
+
+        result = registry.wait(s.id, timeout=5)
+
+        assert result["status"] == "timeout"
+        assert result["requested_timeout"] == 5
+        assert result["effective_timeout"] == 1
+        assert result["max_wait_timeout"] == 1
+        assert result["clamped"] is True
+
+    def test_exited_after_kill_request_is_not_trusted_completion(self, registry):
+        s = _make_session(sid="proc_killed_then_zero", exited=True, exit_code=0)
+        s.kill_requested = True
+        s.termination_method = "os.killpg"
+        registry._finished[s.id] = s
+
+        result = registry.poll(s.id)
+
+        assert result["status"] == "exited"
+        assert result["exit_code"] == 0
+        assert result["kill_requested"] is True
+        assert result["trusted_completion"] is False
 
 
 # =========================================================================
@@ -894,6 +1020,25 @@ def test_format_completion_event():
     assert "exit code 0" in result
     assert "Command: sleep 5" in result
     assert "Output:\ndone]" in result
+
+
+def test_format_completion_event_after_kill_request_is_not_plain_completed():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_killed",
+        "command": "codex-yuna exec ...",
+        "exit_code": 0,
+        "output": "",
+        "kill_requested": True,
+        "trusted_completion": False,
+        "termination_method": "os.killpg",
+    }
+
+    result = format_process_notification(evt)
+
+    assert "exited after a kill/termination request" in result
+    assert "trusted_completion=false" in result
+    assert "completed (exit code 0)" not in result
 
 
 def test_format_watch_match_event():
@@ -1066,11 +1211,33 @@ class TestTerminateHostPidWindows:
 
         assert kill_calls == [(12345, signal.SIGTERM)]
 
+    def test_windows_falls_back_to_os_kill_when_taskkill_returns_nonzero(self, monkeypatch):
+        """taskkill can fail with a non-zero return code instead of raising."""
+        from tools import process_registry as pr
+
+        kill_calls = []
+
+        def fake_run(*args, **kwargs):
+            return MagicMock(returncode=1, stderr="Access is denied", stdout="")
+
+        def fake_kill(pid, sig):
+            kill_calls.append((pid, sig))
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", True)
+        monkeypatch.setattr(pr.subprocess, "run", fake_run)
+        monkeypatch.setattr(pr.os, "kill", fake_kill)
+
+        result = pr.ProcessRegistry._terminate_host_pid(12345)
+
+        assert kill_calls == [(12345, signal.SIGTERM)]
+        assert result["method"] == "os.kill"
+        assert result["fallback_used"] is True
+        assert "Access is denied" in result["fallback_error"]
+
     def test_windows_does_not_call_psutil(self, monkeypatch):
         """The Windows branch must NOT exercise the psutil tree-walk
         (it's unreliable on Windows — see the function docstring)."""
         from tools import process_registry as pr
-        import psutil
 
         psutil_calls = []
 
@@ -1085,12 +1252,14 @@ class TestTerminateHostPidWindows:
             def terminate(self):
                 psutil_calls.append(("terminate",))
 
+        fake_psutil = types.SimpleNamespace(Process=_BoomProcess, NoSuchProcess=Exception)
+
         def fake_run(args, **kwargs):
             return MagicMock(returncode=0, stderr="", stdout="")
 
         monkeypatch.setattr(pr, "_IS_WINDOWS", True)
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
         monkeypatch.setattr(pr.subprocess, "run", fake_run)
-        monkeypatch.setattr(psutil, "Process", _BoomProcess)
 
         pr.ProcessRegistry._terminate_host_pid(12345)
 
@@ -1104,7 +1273,6 @@ class TestTerminateHostPidPosix:
 
     def test_posix_walks_tree_and_terminates_children_then_parent(self, monkeypatch):
         from tools import process_registry as pr
-        import psutil
 
         terminate_order = []
 
@@ -1126,44 +1294,114 @@ class TestTerminateHostPidPosix:
             def terminate(self):
                 terminate_order.append(self.pid)
 
+        class _NoSuchProcess(Exception):
+            pass
+
+        fake_psutil = types.SimpleNamespace(Process=_FakeParent, NoSuchProcess=_NoSuchProcess)
         monkeypatch.setattr(pr, "_IS_WINDOWS", False)
-        monkeypatch.setattr(psutil, "Process", _FakeParent)
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
-        pr.ProcessRegistry._terminate_host_pid(12345)
+        result = pr.ProcessRegistry._terminate_host_pid(12345)
 
+        assert result["method"] == "psutil"
         assert terminate_order == [101, 102, 103, 12345], (
             "Children must be terminated before the parent"
         )
 
     def test_posix_no_such_process_swallowed(self, monkeypatch):
         from tools import process_registry as pr
-        import psutil
+
+        class _NoSuchProcess(Exception):
+            pass
 
         def boom(pid):
-            raise psutil.NoSuchProcess(pid)
+            raise _NoSuchProcess(pid)
 
+        fake_psutil = types.SimpleNamespace(Process=boom, NoSuchProcess=_NoSuchProcess)
         monkeypatch.setattr(pr, "_IS_WINDOWS", False)
-        monkeypatch.setattr(psutil, "Process", boom)
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
         # Must not raise.
-        pr.ProcessRegistry._terminate_host_pid(999999999)
+        result = pr.ProcessRegistry._terminate_host_pid(999999999)
+        assert result["method"] == "psutil.no_such_process"
 
-    def test_posix_oserror_falls_back_to_os_kill(self, monkeypatch):
+    def test_posix_oserror_default_fallback_kills_only_pid(self, monkeypatch):
         from tools import process_registry as pr
-        import psutil
+
+        class _NoSuchProcess(Exception):
+            pass
 
         def boom(pid):
             raise PermissionError("can't read /proc")
 
+        fake_psutil = types.SimpleNamespace(Process=boom, NoSuchProcess=_NoSuchProcess)
+        killpg_calls = []
         kill_calls = []
+
+        def fake_killpg(pgid, sig):
+            killpg_calls.append((pgid, sig))
 
         def fake_kill(pid, sig):
             kill_calls.append((pid, sig))
 
         monkeypatch.setattr(pr, "_IS_WINDOWS", False)
-        monkeypatch.setattr(psutil, "Process", boom)
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+        monkeypatch.setattr(pr.os, "getpgid", lambda pid: 99999)
+        monkeypatch.setattr(pr.os, "killpg", fake_killpg)
         monkeypatch.setattr(pr.os, "kill", fake_kill)
 
-        pr.ProcessRegistry._terminate_host_pid(12345)
+        result = pr.ProcessRegistry._terminate_host_pid(12345)
 
+        assert result["method"] == "os.kill"
+        assert killpg_calls == []
         assert kill_calls == [(12345, signal.SIGTERM)]
+
+    def test_posix_oserror_allows_process_group_only_for_isolated_group_leader(self, monkeypatch):
+        from tools import process_registry as pr
+
+        class _NoSuchProcess(Exception):
+            pass
+
+        def boom(pid):
+            raise PermissionError("can't read /proc")
+
+        fake_psutil = types.SimpleNamespace(Process=boom, NoSuchProcess=_NoSuchProcess)
+        killpg_calls = []
+        kill_calls = []
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+        monkeypatch.setattr(pr.os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(pr.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+        monkeypatch.setattr(pr.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+        result = pr.ProcessRegistry._terminate_host_pid(
+            12345,
+            allow_process_group=True,
+            pgid=12345,
+        )
+
+        assert result["method"] == "os.killpg"
+        assert killpg_calls == [(12345, signal.SIGTERM)]
+        assert kill_calls == []
+
+    def test_posix_allow_process_group_rejects_non_leader_pgid(self, monkeypatch):
+        from tools import process_registry as pr
+
+        killpg_calls = []
+        kill_calls = []
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
+        monkeypatch.setattr(pr.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+        monkeypatch.setattr(pr.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+        result = pr.ProcessRegistry._terminate_posix_process_group_or_pid(
+            12345,
+            allow_process_group=True,
+            pgid=99999,
+        )
+
+        assert result["method"] == "os.kill"
+        assert killpg_calls == []
+        assert kill_calls == [(12345, signal.SIGTERM)]
+        assert "refusing killpg for non-leader" in result["fallback_error"]

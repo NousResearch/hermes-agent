@@ -149,6 +149,9 @@ jobs:
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py
 
+      - name: Regenerate per-MCP docs pages + catalog
+        run: python3 website/scripts/generate-mcp-catalog-docs.py
+
       - name: Install dependencies
         run: npm ci
         working-directory: website

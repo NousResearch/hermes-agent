@@ -39,6 +39,9 @@ jobs:
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py
 
+      - name: Regenerate per-MCP docs pages + catalog
+        run: python3 website/scripts/generate-mcp-catalog-docs.py
+
       - name: Lint docs diagrams
         run: npm run lint:diagrams
         working-directory: website

@@ -18,8 +18,11 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from tools.environments.local import hermes_subprocess_env
+from agent.secret_sources.onepassword import fetch_onepassword_secrets
 
 MIN_CODEX_VERSION = (0, 125, 0)
+CODEX_ACCESS_TOKEN_OP_REF_ENV = "CODEX_ACCESS_TOKEN_OP_REF"
+HERMES_CODEX_ACCESS_TOKEN_OP_REF_ENV = "HERMES_CODEX_ACCESS_TOKEN_OP_REF"
 
 
 @dataclass
@@ -32,6 +35,24 @@ class CodexAppServerError(RuntimeError):
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"codex app-server error {self.code}: {self.message}"
+
+
+def _resolve_codex_access_token_from_1password(env: dict[str, str]) -> Optional[str]:
+    """Resolve a Codex app-server token through the hardened 1Password source."""
+    if (env.get("CODEX_ACCESS_TOKEN") or "").strip():
+        return None
+    ref = (env.get(HERMES_CODEX_ACCESS_TOKEN_OP_REF_ENV)
+           or env.get(CODEX_ACCESS_TOKEN_OP_REF_ENV) or "").strip()
+    if not ref.startswith("op://"):
+        return None
+    try:
+        secrets, warnings = fetch_onepassword_secrets(
+            references={"CODEX_ACCESS_TOKEN": ref}, use_cache=False)
+    except RuntimeError:
+        return None
+    if warnings:
+        return None
+    return (secrets.get("CODEX_ACCESS_TOKEN") or "").strip() or None
 
 
 class CodexAppServerClient:
@@ -61,6 +82,8 @@ class CodexAppServerClient:
             spawn_env.update(env)
         if codex_home:
             spawn_env["CODEX_HOME"] = codex_home
+        if resolved_token := _resolve_codex_access_token_from_1password(spawn_env):
+            spawn_env["CODEX_ACCESS_TOKEN"] = resolved_token
 
         cmd = [codex_bin, "app-server", *(extra_args or [])]
         from agent.delegation_context import (

@@ -79,6 +79,7 @@ from hermes_cli.auth_xai import (  # noqa: F401  re-exported
 from hermes_cli.auth_codex import (  # noqa: F401  re-exported
     _codex_access_token_is_expiring, _codex_device_code_login, _codex_http_client,
     _codex_pool_rate_limit_status, _codex_quota_probe_cache, _codex_usage_probe_url,
+    _codex_access_token_env_backend_compatible, _read_codex_access_token_env,
     _import_codex_cli_tokens, _is_codex_rate_limit_shaped, _login_openai_codex,
     _probe_codex_quota_restored, _read_codex_tokens, _refresh_codex_auth_tokens, _save_codex_tokens,
     clear_codex_pool_quota_cooldowns, refresh_codex_oauth_pure, resolve_codex_runtime_credentials)

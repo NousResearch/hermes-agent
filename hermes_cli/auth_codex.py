@@ -376,10 +376,33 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         return None
 
 
+def _codex_access_token_env_backend_compatible(token: str) -> bool:
+    """Return whether an env token is valid for the ChatGPT Codex backend."""
+    if not token or "." not in token:
+        return False
+    try:
+        import base64
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return False
+    aud = claims.get("aud")
+    audiences = {aud} if isinstance(aud, str) else {str(item) for item in aud} if isinstance(aud, list) else set()
+    exp = claims.get("exp")
+    return isinstance(exp, (int, float)) and exp > time.time() and "https://api.openai.com/v1" in audiences
+
+
+def _read_codex_access_token_env() -> str:
+    """Return an explicit, unexpired backend-compatible Codex token from env."""
+    token = (os.getenv("CODEX_ACCESS_TOKEN") or "").strip()
+    return token if _codex_access_token_env_backend_compatible(token) else ""
+
+
 def resolve_codex_runtime_credentials(
     *, force_refresh: bool = False, refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> Dict[str, Any]:
-    """Resolve runtime credentials from Hermes's own Codex token store.
+    """Resolve runtime credentials for the ChatGPT Codex backend.
 
     Falls back to the credential pool when the singleton (``providers.openai-codex.tokens``) has no
     usable access_token but the pool (``credential_pool.openai-codex``) does.
@@ -390,6 +413,17 @@ def resolve_codex_runtime_credentials(
     backup — gets a bare HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
     credential. See issue #32992.
     """
+    access_token_env = _read_codex_access_token_env()
+    if access_token_env:
+        return {
+            "provider": "openai-codex",
+            "base_url": _codex_base_url(),
+            "api_key": access_token_env,
+            "source": "codex-access-token-env",
+            "last_refresh": None,
+            "auth_mode": "access_token",
+        }
+
     from hermes_cli.auth import (
         _auth_store_lock, _codex_access_token_is_expiring, _probe_codex_quota_restored,
         _read_codex_tokens)

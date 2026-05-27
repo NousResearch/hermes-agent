@@ -1980,6 +1980,12 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
 
 def _read_codex_access_token() -> Optional[str]:
     """Valid, non-expired Codex OAuth access token; an exhausted pool falls back to the profile's auth.json token."""
+    try:
+        from hermes_cli.auth import _read_codex_access_token_env
+        if env_token := _read_codex_access_token_env():
+            return env_token
+    except Exception:
+        pass
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         token = _pool_runtime_api_key(entry)

@@ -332,9 +332,16 @@ def run_codex_app_server_turn(
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
+        # Bridge codex JSON-RPC notifications (item/started, item/completed,
+        # item/agentMessage/delta, ...) into Hermes' gateway UI callbacks
+        # (tool_progress_callback, _fire_stream_delta,
+        # _emit_interim_assistant_message). Without this, Discord/Telegram
+        # users see no live tool-progress or interim commentary while
+        # codex_app_server is running — only the final answer (#33200).
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            on_event=make_codex_app_server_event_bridge(agent),
         )
 
     # NOTE: the user message is ALREADY appended to messages by the

@@ -9,6 +9,7 @@ from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 from gateway.sidequests import SidequestStore
+from gateway.run import _normalize_sidequest_shortcut_text
 
 
 def _make_event(text, platform=Platform.WHATSAPP, chat_id="chat-1", user_id="user-1"):
@@ -39,6 +40,20 @@ def _close_created_task(coro, *args, **kwargs):
     task = MagicMock()
     task.add_done_callback = MagicMock()
     return task
+
+
+def test_sidequest_shortcut_normalizer_expands_compact_aliases_only_at_start():
+    assert _normalize_sidequest_shortcut_text("sq2") == "/sq 2 resume"
+    assert _normalize_sidequest_shortcut_text("sq2 status") == "/sq 2 status"
+    assert _normalize_sidequest_shortcut_text("/sq1 status") == "/sq 1 status"
+    assert _normalize_sidequest_shortcut_text("/sidequest2 add docs") == "/sq 2 add docs"
+    assert _normalize_sidequest_shortcut_text("#sq3 status") == "/sq 3 status"
+    assert _normalize_sidequest_shortcut_text("/sq1") == "/sq 1"
+    assert _normalize_sidequest_shortcut_text("/sq 1 status") == "/sq 1 status"
+    assert _normalize_sidequest_shortcut_text("please check #sq1 later") == "please check #sq1 later"
+    assert _normalize_sidequest_shortcut_text("please check sq1 later") == "please check sq1 later"
+    assert _normalize_sidequest_shortcut_text("#sqlite note") == "#sqlite note"
+    assert _normalize_sidequest_shortcut_text("/sqldb migrate") == "/sqldb migrate"
 
 
 @pytest.mark.asyncio

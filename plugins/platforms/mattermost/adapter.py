@@ -152,7 +152,8 @@ class MattermostAdapter(BasePlatformAdapter):
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
             async with self._session.put(
-                url, headers=self._headers(), json=payload
+                url, headers=self._headers(), json=payload,
+                timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()

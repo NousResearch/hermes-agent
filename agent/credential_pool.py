@@ -369,7 +369,8 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     # long cooldown regardless of any reset hint that may have been attached
     # (token revocation responses occasionally inherit a Retry-After header
     # from upstream proxies — that header is meaningless here).
-    if _is_terminal_failure_reason(entry.last_error_reason):
+    error_reason = getattr(entry, "last_error_reason", None)
+    if _is_terminal_failure_reason(error_reason):
         if entry.last_status_at is None:
             return None
         return entry.last_status_at + EXHAUSTED_TTL_TERMINAL_SECONDS
@@ -378,7 +379,7 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
         return reset_at
     if entry.last_status_at:
         return entry.last_status_at + _exhausted_ttl(
-            entry.last_error_code, entry.last_error_reason
+            entry.last_error_code, error_reason
         )
     return None
 

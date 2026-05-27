@@ -67,7 +67,35 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function sendWithTimeout(chatId, payload, timeoutMs = SEND_TIMEOUT_MS) {
+// ── Send serialization queue (fixes #33360) ──────────────────────────
+// Baileys can misroute messages when multiple sock.sendMessage() calls
+// run concurrently. Serialize all sends so only one is active at a time.
+const sendQueue = [];
+let sendActive = false;
+
+async function _drainSendQueue() {
+  if (sendActive) return;
+  sendActive = true;
+  while (sendQueue.length > 0) {
+    const { chatId, payload, timeoutMs, resolve, reject } = sendQueue.shift();
+    try {
+      const result = await _sendWithTimeoutUnlocked(chatId, payload, timeoutMs);
+      resolve(result);
+    } catch (err) {
+      reject(err);
+    }
+  }
+  sendActive = false;
+}
+
+function _enqueueSend(chatId, payload, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    sendQueue.push({ chatId, payload, timeoutMs, resolve, reject });
+    _drainSendQueue();
+  });
+}
+
+function _sendWithTimeoutUnlocked(chatId, payload, timeoutMs = SEND_TIMEOUT_MS) {
   let timer;
   const timeoutPromise = new Promise((_, reject) => {
     timer = setTimeout(
@@ -78,6 +106,12 @@ function sendWithTimeout(chatId, payload, timeoutMs = SEND_TIMEOUT_MS) {
   return Promise.race([sock.sendMessage(chatId, payload), timeoutPromise])
     .finally(() => clearTimeout(timer));
 }
+
+// Public API: always use the serialized queue
+function sendWithTimeout(chatId, payload, timeoutMs = SEND_TIMEOUT_MS) {
+  return _enqueueSend(chatId, payload, timeoutMs);
+}
+// ──────────────────────────────────────────────────────────────────────
 
 function formatOutgoingMessage(message) {
   // In bot mode, messages come from a different number so the prefix is

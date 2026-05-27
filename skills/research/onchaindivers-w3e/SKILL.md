@@ -1,7 +1,7 @@
 ---
 name: onchaindivers-w3e
 description: "Use when querying OnchainDivers / W3E hosted warehouse data for Polymarket, Hyperliquid, or Solana research without exposing credentials."
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -211,6 +211,57 @@ After that, pull fills from `polymarket_order_filled_v3` only for the shortliste
 - Add explicit `ORDER BY` so outputs are reproducible
 - Save intermediate candidate IDs before running heavy fill queries
 - When comparing strategies, use **executed fill prices**, not just quoted probabilities
+
+## Practical PM Microstructure Notes
+
+These points came from practical trading discussion and are worth preserving as hypotheses / implementation constraints, not as proven alpha.
+
+### 1) Entry quality can destroy most of the edge
+
+A common failure mode is assuming the theoretical edge survives market-order entry. In practice, shallow books can move the fill from something like `0.70` to `0.73`, which can compress a nominal `~5%` edge down to `~1–2%`.
+
+Implication: when evaluating a PM strategy, model **actual reachable fills**, not just top-of-book snapshots or event probabilities.
+
+### 2) Marketable limit orders are often better than pure market orders
+
+For these setups, speed is often less important than preserving price.
+
+Useful execution pattern:
+- place a **marketable limit** at the worst acceptable price,
+- let the instantly available size fill,
+- leave the rest resting in the book,
+- monitor whether the original alpha still exists,
+- cancel and unwind filled inventory if the delta / thesis moves away.
+
+This is especially relevant around balanced prices like `0.45–0.55`, where preserving a few cents matters a lot.
+
+### 3) Partial-maker execution can help fees and realized entry
+
+A marketable limit can behave better than a blunt market order because:
+- part of the order may execute immediately,
+- part may rest as maker,
+- effective fees can be lower,
+- realized entry may stay closer to the intended threshold.
+
+### 4) Book-update streams may contain duplicates
+
+When reconstructing order-book or event streams, expect duplicate updates by hash and/or server timestamp. Deduplication is part of the research problem, not an optional cleanup step.
+
+### 5) Monitoring across many BTC expiries/time windows increases opportunity count
+
+One research idea worth checking empirically: monitoring BTC markets across many expiries / time windows can produce a larger event set, making systematic placement through the book more realistic than judging the opportunity from one isolated market.
+
+Do **not** treat this as validated alpha without fill-level evidence.
+
+### 6) Narrow-loss-range structures must be tested against real fills
+
+A proposed framing from the notes: structure straddle / volatility exposure so that loss is concentrated in a narrow central band, then rebalance the rest. This kind of idea must be tested against:
+- actual PM fills,
+- available size,
+- duplicate-book noise,
+- and real execution latency.
+
+If you cannot show the realized fills, you do not yet know whether the structure works.
 
 ## Common Pitfalls
 

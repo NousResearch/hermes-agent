@@ -1113,7 +1113,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
-                "skills_api": False,
+                "skills_api": True,
                 "audio_api": False,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",

@@ -51,6 +51,7 @@ from typing import Dict, Optional, Any, List, Union
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
+from agent.redact import redact_sensitive_text
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -112,6 +113,7 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
 # is still classified fresh.  Override via
 # ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
+_GATEWAY_QUEUE_MAX_DEPTH_DEFAULT = 25
 
 
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
@@ -2012,13 +2014,29 @@ class GatewayRunner:
     # it up.  Clearing happens on /new and /reset via
     # _handle_reset_command.
 
-    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
+    def _gateway_queue_max_depth(self) -> int:
+        """Return the per-session cap for pending gateway /queue turns."""
+        raw_limit = cfg_get(
+            getattr(self, "config", None),
+            "agent",
+            "gateway_queue_max_depth",
+            default=_GATEWAY_QUEUE_MAX_DEPTH_DEFAULT,
+        )
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return _GATEWAY_QUEUE_MAX_DEPTH_DEFAULT
+        return max(1, limit)
+
+    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> bool:
         """Append a /queue event to the FIFO chain for a session."""
         if adapter is None:
-            return
+            return False
         pending_slot = getattr(adapter, "_pending_messages", None)
         if pending_slot is None:
-            return
+            return False
+        if self._queue_depth(session_key, adapter=adapter) >= self._gateway_queue_max_depth():
+            return False
         queued_events = getattr(self, "_queued_events", None)
         if queued_events is None:
             queued_events = {}
@@ -2027,6 +2045,7 @@ class GatewayRunner:
             queued_events.setdefault(session_key, []).append(queued_event)
         else:
             pending_slot[session_key] = queued_event
+        return True
 
     def _promote_queued_event(
         self,
@@ -5995,8 +6014,13 @@ class GatewayRunner:
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
                     )
-                    self._enqueue_fifo(_quick_key, queued_event, adapter)
-                depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
+                    accepted = self._enqueue_fifo(_quick_key, queued_event, adapter)
+                    depth = self._queue_depth(_quick_key, adapter=adapter)
+                    if not accepted:
+                        limit = self._gateway_queue_max_depth()
+                        return f"Queue is full ({depth}/{limit} queued). Wait for a queued turn to finish, then try again."
+                else:
+                    depth = 0
                 if depth <= 1:
                     return "Queued for the next turn."
                 return f"Queued for the next turn. ({depth} queued)"
@@ -6825,15 +6849,13 @@ class GatewayRunner:
                     )
                 message_text = f"{context_note}\n\n{message_text}"
 
+        reply_prefix = ""
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            # Always inject the reply-to pointer — even when the quoted text
-            # already appears in history. The prefix isn't deduplication, it's
-            # disambiguation: it tells the agent *which* prior message the user
-            # is referencing. History can contain the same or similar text
-            # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
+            # Always preserve the reply-to pointer for disambiguation, but keep
+            # the platform-controlled quote inert by adding it only after
+            # current-turn @ context references have been expanded.
             reply_snippet = event.reply_to_text[:500]
-            message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            reply_prefix = f'[Replying to: "{reply_snippet}"]\n\n'
 
         if "@" in message_text:
             try:
@@ -6876,6 +6898,9 @@ class GatewayRunner:
                     message_text = _ctx_result.message
             except Exception as exc:
                 logger.debug("@ context reference expansion failed: %s", exc)
+
+        if reply_prefix:
+            message_text = f"{reply_prefix}{message_text}"
 
         return message_text
 
@@ -7391,8 +7416,14 @@ class GatewayRunner:
                                     # is something only they can fix, and
                                     # silent recovery would hide it.
                                     elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
-                                        _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
-                                        _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
+                                        _aux_model = redact_sensitive_text(
+                                            getattr(_comp, "_last_aux_model_failure_model", ""),
+                                            force=True,
+                                        )
+                                        _aux_err = redact_sensitive_text(
+                                            getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error",
+                                            force=True,
+                                        )
                                         _aux_msg = (
                                             f"ℹ️ Configured compression model `{_aux_model}` "
                                             f"failed ({_aux_err}). Recovered using your main "
@@ -10760,8 +10791,14 @@ class GatewayRunner:
                 # Separately: did the user's CONFIGURED aux model fail
                 # and we recovered via main?  Surface that as an info
                 # note so they can fix their config.
-                _aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
-                _aux_fail_err = getattr(compressor, "_last_aux_model_failure_error", None)
+                _aux_fail_model = redact_sensitive_text(
+                    getattr(compressor, "_last_aux_model_failure_model", None),
+                    force=True,
+                )
+                _aux_fail_err = redact_sensitive_text(
+                    getattr(compressor, "_last_aux_model_failure_error", None),
+                    force=True,
+                )
             finally:
                 # Evict cached agent so next turn rebuilds system prompt
                 # from current files (SOUL.md, memory, etc.).
@@ -11240,6 +11277,18 @@ class GatewayRunner:
                 return "That session is already linked to another Telegram topic."
 
         session_key = self._session_key_for_source(source)
+        current_entry = self.session_store.get_or_create_session(source)
+        if current_entry.session_id != session_id:
+            # /topic <session_id> creates the same kind of conversation
+            # boundary as /resume: the in-memory SessionStore entry and any
+            # cached AIAgent must move with the persistent topic binding.
+            self._release_running_agent_state(session_key)
+            switched_entry = self.session_store.switch_session(session_key, session_id)
+            if not switched_entry:
+                return t("gateway.resume.switch_failed")
+            self._clear_session_boundary_security_state(session_key)
+            self._evict_cached_agent(session_key)
+
         try:
             self._session_db.bind_telegram_topic(
                 chat_id=str(source.chat_id),
@@ -12119,6 +12168,8 @@ class GatewayRunner:
             anchor = reply_to_message_id or getattr(source, "message_id", None)
             if anchor is not None:
                 metadata["telegram_reply_to_message_id"] = str(anchor)
+        if getattr(source, "platform", None) == Platform.FEISHU and reply_to_message_id is not None:
+            metadata["reply_to_message_id"] = str(reply_to_message_id)
         return metadata
 
     @staticmethod
@@ -16076,11 +16127,15 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     cron delivery path so live adapters can be used for E2EE rooms.
 
     Also refreshes the channel directory every 5 minutes and prunes the
-    image/audio/document cache + expired ``hermes debug share`` pastes
+    image/audio/document/video cache + expired ``hermes debug share`` pastes
     once per hour.
     """
     from cron.scheduler import tick as cron_tick
-    from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
+    from gateway.platforms.base import (
+        cleanup_document_cache,
+        cleanup_image_cache,
+        cleanup_video_cache,
+    )
     from hermes_cli.debug import _sweep_expired_pastes
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
@@ -16126,6 +16181,12 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                     logger.info("Document cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
                 logger.debug("Document cache cleanup error: %s", e)
+            try:
+                removed = cleanup_video_cache(max_age_hours=24)
+                if removed:
+                    logger.info("Video cache cleanup: removed %d stale file(s)", removed)
+            except Exception as e:
+                logger.debug("Video cache cleanup error: %s", e)
 
         if tick_count % PASTE_SWEEP_EVERY == 0:
             try:

@@ -83,7 +83,6 @@ def _global_allow_private_urls() -> bool:
     Checks (in priority order):
     1. ``HERMES_ALLOW_PRIVATE_URLS`` env var  (``true``/``1``/``yes``)
     2. ``security.allow_private_urls`` in config.yaml
-    3. ``browser.allow_private_urls`` in config.yaml  (legacy / backward compat)
 
     Result is cached for the process lifetime.
     """
@@ -111,13 +110,6 @@ def _global_allow_private_urls() -> bool:
         sec = cfg.get("security", {})
         if isinstance(sec, dict) and is_truthy_value(
             sec.get("allow_private_urls"), default=False
-        ):
-            _cached_allow_private = True
-            return _cached_allow_private
-        # browser.allow_private_urls (legacy fallback)
-        browser = cfg.get("browser", {})
-        if isinstance(browser, dict) and is_truthy_value(
-            browser.get("allow_private_urls"), default=False
         ):
             _cached_allow_private = True
             return _cached_allow_private

@@ -430,7 +430,7 @@ def _format_web_extract_result(result: Optional[str]) -> Optional[str]:
     if not isinstance(data, dict):
         return None
     if data.get("success") is False and data.get("error"):
-        return f"Web extract failed: {data.get('error')}"
+        return _truncate_text(f"Web extract failed: {data.get('error')}", limit=7000)
     results = data.get("results")
     if not isinstance(results, list):
         return None
@@ -442,8 +442,8 @@ def _format_web_extract_result(result: Optional[str]) -> Optional[str]:
         error = str(item.get("error") or "").strip()
         if not error or error in {"None", "null"}:
             continue
-        url = str(item.get("url") or "").strip()
-        title = str(item.get("title") or url or "Untitled").strip()
+        url = _truncate_text(str(item.get("url") or "").strip(), limit=1000)
+        title = _truncate_text(str(item.get("title") or url or "Untitled").strip(), limit=1000)
         failures.append(
             f"- {title}" + (f" — {url}" if url and url != title else "") + f"\n  Error: {_truncate_text(error, limit=500)}"
         )
@@ -452,7 +452,7 @@ def _format_web_extract_result(result: Optional[str]) -> Optional[str]:
         return None
     lines = [f"Web extract failed for {len(failures)} URL{'s' if len(failures) != 1 else ''}"]
     lines.extend(failures)
-    return "\n".join(lines)
+    return _truncate_text("\n".join(lines), limit=7000)
 
 
 def _format_process_result(result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:

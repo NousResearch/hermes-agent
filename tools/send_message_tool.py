@@ -51,6 +51,7 @@ _VOICE_EXTS = {".ogg", ".opus"}
 # document delivery.
 _TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
 _MATRIX_MEDIA_MAX_BYTES = 50 * 1024 * 1024
+_DISCORD_FORUM_MEDIA_MAX_BYTES = 25 * 1024 * 1024
 _SENSITIVE_MEDIA_DIR_NAMES = frozenset({".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"})
 _SENSITIVE_MEDIA_FILE_NAMES = frozenset({".env", ".netrc", ".pgpass", ".npmrc", ".pypirc", "id_rsa", "id_ed25519"})
 _URL_SECRET_QUERY_RE = re.compile(
@@ -185,6 +186,24 @@ def _validate_signal_attachment_path(media_path: str) -> tuple[str | None, str |
         return None, "unavailable"
     except OSError:
         return None, "unavailable"
+    return str(path), None
+
+
+def _validate_discord_forum_media_path(media_path: str) -> tuple[str | None, str | None]:
+    """Validate Discord forum media before multipart upload."""
+    try:
+        path = Path(media_path).expanduser().resolve(strict=True)
+        stat_result = path.stat()
+    except FileNotFoundError:
+        return None, "Media file not found"
+    except OSError:
+        return None, "Media file is not accessible"
+
+    if not stat.S_ISREG(stat_result.st_mode):
+        return None, "Media path must be a regular file"
+    if stat_result.st_size > _DISCORD_FORUM_MEDIA_MAX_BYTES:
+        limit_mib = _DISCORD_FORUM_MEDIA_MAX_BYTES // (1024 * 1024)
+        return None, f"Media file exceeds Discord forum upload safety limit ({limit_mib} MiB)"
     return str(path), None
 
 
@@ -379,6 +398,7 @@ def _handle_send(args):
                 home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
         if home:
             chat_id = home.chat_id
+            thread_id = getattr(home, "thread_id", None)
             used_home_channel = True
         else:
             return json.dumps({
@@ -1041,6 +1061,35 @@ def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
     return _DISCORD_CHANNEL_TYPE_PROBE_CACHE.get(str(chat_id))
 
 
+def _discord_allowed_mentions_payload() -> dict:
+    """Return Discord REST ``allowed_mentions`` with safe defaults.
+
+    Mirrors gateway Discord adapter defaults: block @everyone/@here and role
+    pings by default, while allowing user mentions and replied-user pings.
+    """
+
+    def _b(name: str, default: bool) -> bool:
+        raw = os.getenv(name, "").strip().lower()
+        if not raw:
+            return default
+        return raw in ("true", "1", "yes", "on")
+
+    allow_everyone = _b("DISCORD_ALLOW_MENTION_EVERYONE", False)
+    allow_roles = _b("DISCORD_ALLOW_MENTION_ROLES", False)
+    allow_users = _b("DISCORD_ALLOW_MENTION_USERS", True)
+    allow_replied_user = _b("DISCORD_ALLOW_MENTION_REPLIED_USER", True)
+
+    parse = []
+    if allow_everyone:
+        parse.append("everyone")
+    if allow_roles:
+        parse.append("roles")
+    if allow_users:
+        parse.append("users")
+
+    return {"parse": parse, "replied_user": allow_replied_user}
+
+
 async def _send_discord(token, chat_id, message, thread_id=None, media_files=None):
     """Send a single message via Discord REST API (no websocket client needed).
 
@@ -1118,12 +1167,13 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                 # right code path (JSON vs multipart) before opening a session.
                 valid_media = []
                 for media_path, _is_voice in media_files:
-                    if not os.path.exists(media_path):
-                        warning = f"Media file not found, skipping: {media_path}"
+                    validated_path, skip_reason = _validate_discord_forum_media_path(media_path)
+                    if skip_reason:
+                        warning = f"Media skipped ({skip_reason}): {media_path}"
                         logger.warning(warning)
                         warnings.append(warning)
                         continue
-                    valid_media.append(media_path)
+                    valid_media.append(validated_path)
 
                 async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60), **_sess_kw) as session:
                     if valid_media:
@@ -1134,7 +1184,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                             {"id": str(idx), "filename": os.path.basename(path)}
                             for idx, path in enumerate(valid_media)
                         ]
-                        starter_message = {"content": message, "attachments": attachments_meta}
+                        starter_message = {"content": message, "allowed_mentions": _discord_allowed_mentions_payload(), "attachments": attachments_meta}
                         payload_json = json.dumps({"name": thread_name, "message": starter_message})
 
                         form = aiohttp.FormData()
@@ -1166,7 +1216,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                             headers=json_headers,
                             json={
                                 "name": thread_name,
-                                "message": {"content": message},
+                                "message": {"content": message, "allowed_mentions": _discord_allowed_mentions_payload()},
                             },
                             **_req_kw,
                         ) as resp:

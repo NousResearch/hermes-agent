@@ -45,9 +45,10 @@ if [ "$(id -u)" = "0" ]; then
     # edited on the host after initial ownership setup. Must run here (as root)
     # rather than after the gosu drop, otherwise a non-root caller like
     # `docker run -u $(id -u):$(id -g)` hits "Operation not permitted" (#15865).
-    if [ -f "$HERMES_HOME/config.yaml" ]; then
-        chown hermes:hermes "$HERMES_HOME/config.yaml" 2>/dev/null || true
-        chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
+    config_path="$HERMES_HOME/config.yaml"
+    if [ -f "$config_path" ] && [ ! -L "$config_path" ]; then
+        chown hermes:hermes "$config_path" 2>/dev/null || true
+        chmod 640 "$config_path" 2>/dev/null || true
     fi
 
     echo "Dropping root privileges"

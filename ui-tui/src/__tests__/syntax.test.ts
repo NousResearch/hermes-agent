@@ -37,6 +37,15 @@ describe('syntax highlighter', () => {
     expect(tokens).toEqual([['', 'const x = 1']])
   })
 
+
+  it('handles unterminated escaped strings without catastrophic parsing', () => {
+    const repeated = "\\'".repeat(2000)
+    const line = `'${repeated}`
+    const tokens = highlightLine(line, 'ts', t)
+
+    expect(tokens).toEqual([[t.color.accent, line]])
+  })
+
   it('treats `#` as a python comment, not a selector', () => {
     const tokens = highlightLine('# comment', 'py', t)
 

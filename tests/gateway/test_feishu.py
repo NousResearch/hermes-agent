@@ -198,6 +198,98 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         runner.setup.assert_awaited_once()
         site.start.assert_awaited_once()
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_topic_root_is_thread_anchor_not_reply_context(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._extract_message_content = AsyncMock(
+            return_value=("hello", MessageType.TEXT, [], [], [])
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="attacker root prompt")
+        adapter.get_chat_info = AsyncMock(return_value={"name": "Topic Chat"})
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={
+                "user_id": "ou_allowed",
+                "user_name": "Allowed",
+                "user_id_alt": None,
+            }
+        )
+        adapter._dispatch_inbound_event = AsyncMock()
+
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            chat_type="group",
+            root_id="om_topic_root",
+            parent_id=None,
+            upper_message_id=None,
+        )
+        sender_id = SimpleNamespace(open_id="ou_allowed", user_id=None, union_id=None)
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(),
+                message=message,
+                sender_id=sender_id,
+                chat_type="group",
+                message_id="om_current",
+            )
+        )
+
+        adapter._fetch_message_text.assert_not_awaited()
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.source.thread_id, "om_topic_root")
+        self.assertIsNone(event.reply_to_message_id)
+        self.assertIsNone(event.reply_to_text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_explicit_parent_reply_fetches_reply_context(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._extract_message_content = AsyncMock(
+            return_value=("hello", MessageType.TEXT, [], [], [])
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="selected parent text")
+        adapter.get_chat_info = AsyncMock(return_value={"name": "Topic Chat"})
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={
+                "user_id": "ou_allowed",
+                "user_name": "Allowed",
+                "user_id_alt": None,
+            }
+        )
+        adapter._dispatch_inbound_event = AsyncMock()
+
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            chat_type="group",
+            root_id="om_topic_root",
+            parent_id="om_selected_parent",
+            upper_message_id=None,
+        )
+        sender_id = SimpleNamespace(open_id="ou_allowed", user_id=None, union_id=None)
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(),
+                message=message,
+                sender_id=sender_id,
+                chat_type="group",
+                message_id="om_current",
+            )
+        )
+
+        adapter._fetch_message_text.assert_awaited_once_with("om_selected_parent")
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.source.thread_id, "om_topic_root")
+        self.assertEqual(event.reply_to_message_id, "om_selected_parent")
+        self.assertEqual(event.reply_to_text, "selected parent text")
+
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",

@@ -275,9 +275,16 @@ jobs:
       # commit gets its own immutable tag); releases use the release tag name.
       - name: Compute tag
         id: tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
+          set -euo pipefail
           if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            if ! [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+              echo "Invalid release tag for Docker: $RELEASE_TAG" >&2
+              exit 1
+            fi
+            printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           else
             echo "tag=sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
           fi

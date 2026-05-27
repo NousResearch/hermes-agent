@@ -157,10 +157,10 @@ If you want to protect a specific skill from ever being touched — for example 
 
 ## Pinning a skill
 
-Pinning protects a skill from deletion — both the curator's automated archive passes and the agent's `skill_manage(action="delete")` tool call. Once a skill is pinned:
+Pinning protects a skill from deletion and model-driven content changes. Once a skill is pinned:
 
 - The **curator** skips it during auto-transitions (`active → stale → archived`), and its LLM review pass is instructed to leave it alone.
-- The **agent's `skill_manage` tool** refuses `delete` on it, pointing the user at `hermes curator unpin <name>`. Patches and edits still go through, so the agent can improve a pinned skill's content as pitfalls come up without a pin/unpin/re-pin dance.
+- The **agent's `skill_manage` tool** refuses `edit`, `patch`, `write_file`, `remove_file`, and `delete` on it, pointing the user at `hermes curator unpin <name>` before changing it.
 
 Pin and unpin with:
 

@@ -253,12 +253,12 @@ class TestGlobalAllowPrivateUrls:
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _global_allow_private_urls() is True
 
-    def test_config_browser_fallback(self, monkeypatch):
-        """browser.allow_private_urls works as legacy fallback."""
+    def test_config_browser_allow_private_urls_is_not_global_opt_in(self, monkeypatch):
+        """browser.allow_private_urls must not bypass non-browser SSRF guards."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
         cfg = {"browser": {"allow_private_urls": True}}
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
-            assert _global_allow_private_urls() is True
+            assert _global_allow_private_urls() is False
 
     def test_config_security_string_false_stays_disabled(self, monkeypatch):
         """Quoted false must not opt out of SSRF protection."""
@@ -267,15 +267,8 @@ class TestGlobalAllowPrivateUrls:
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _global_allow_private_urls() is False
 
-    def test_config_browser_string_false_stays_disabled(self, monkeypatch):
-        """Legacy browser.allow_private_urls also normalises quoted false."""
-        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
-        cfg = {"browser": {"allow_private_urls": "false"}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
-            assert _global_allow_private_urls() is False
-
-    def test_config_security_takes_precedence_over_browser(self, monkeypatch):
-        """security section is checked before browser section."""
+    def test_config_security_allows_even_when_browser_disallows(self, monkeypatch):
+        """security.allow_private_urls is the config knob for global opt-in."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
         cfg = {"security": {"allow_private_urls": True}, "browser": {"allow_private_urls": False}}
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
@@ -337,6 +330,18 @@ class TestAllowPrivateUrlsIntegration:
             (2, 1, 6, "", ("127.0.0.1", 0)),
         ]):
             assert is_safe_url("http://localhost:8080/api") is True
+
+    def test_browser_config_does_not_allow_private_ip_in_is_safe_url(self, monkeypatch):
+        """Browser-only private URL opt-in must not affect shared URL safety."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"browser": {"allow_private_urls": True}}
+        with (
+            patch("hermes_cli.config.read_raw_config", return_value=cfg),
+            patch("socket.getaddrinfo", return_value=[
+                (2, 1, 6, "", ("127.0.0.1", 0)),
+            ]),
+        ):
+            assert is_safe_url("http://localhost:8080/api") is False
 
     # --- Cloud metadata always blocked regardless of toggle ---
 

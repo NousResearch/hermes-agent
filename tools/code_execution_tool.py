@@ -1239,6 +1239,11 @@ def execute_code(
             stdin=subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
         )
+        if not _IS_WINDOWS:
+            try:
+                proc._hermes_pgid = os.getpgid(proc.pid)
+            except (ProcessLookupError, OSError):
+                pass
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---
         deadline = time.monotonic() + timeout
@@ -1450,7 +1455,76 @@ def execute_code(
 
 
 def _kill_process_group(proc, escalate: bool = False):
-    """Kill the child and its entire process tree (cross-platform via psutil)."""
+    """Kill the child and any descendants that remain in its execution group."""
+    if not _IS_WINDOWS:
+        pgid = getattr(proc, "_hermes_pgid", None)
+        _killpg_ok = False
+        try:
+            if pgid is None:
+                pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — guarded by _IS_WINDOWS above
+            _killpg_ok = True
+        except (ProcessLookupError, PermissionError, OSError) as e:
+            logger.debug("Could not terminate process group: %s", e, exc_info=True)
+
+        if not _killpg_ok:
+            import psutil as _psutil
+            try:
+                _parent = _psutil.Process(proc.pid)
+                for _child in _parent.children(recursive=True):
+                    try:
+                        _child.terminate()
+                    except _psutil.NoSuchProcess:
+                        pass
+                try:
+                    _parent.terminate()
+                except _psutil.NoSuchProcess:
+                    pass
+            except _psutil.NoSuchProcess:
+                pass
+            except (PermissionError, OSError) as e2:
+                logger.debug("Could not terminate process tree: %s", e2, exc_info=True)
+                try:
+                    proc.terminate()
+                except Exception as e3:
+                    logger.debug("Could not terminate process: %s", e3, exc_info=True)
+
+        if escalate:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _killpg_kill_ok = False
+                try:
+                    if pgid is None:
+                        raise ProcessLookupError(proc.pid)
+                    os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — guarded by _IS_WINDOWS above
+                    _killpg_kill_ok = True
+                except (ProcessLookupError, PermissionError, OSError) as e:
+                    logger.debug("Could not kill process group: %s", e, exc_info=True)
+
+                if not _killpg_kill_ok:
+                    import psutil as _psutil
+                    try:
+                        _parent = _psutil.Process(proc.pid)
+                        for _child in _parent.children(recursive=True):
+                            try:
+                                _child.kill()
+                            except _psutil.NoSuchProcess:
+                                pass
+                        try:
+                            _parent.kill()
+                        except _psutil.NoSuchProcess:
+                            pass
+                    except _psutil.NoSuchProcess:
+                        pass
+                    except (PermissionError, OSError) as e2:
+                        logger.debug("Could not kill process tree: %s", e2, exc_info=True)
+                        try:
+                            proc.kill()
+                        except Exception as e3:
+                            logger.debug("Could not kill process: %s", e3, exc_info=True)
+        return
+
     import psutil
     try:
         parent = psutil.Process(proc.pid)
@@ -1563,11 +1637,24 @@ def _is_usable_python(python_path: str) -> bool:
     Cached so we don't fork a subprocess on every execute_code call.
     """
     try:
+        _probe_env = {"PYTHONDONTWRITEBYTECODE": "1"}
+        # Keep minimal runtime discovery stable across platforms while
+        # avoiding parent-process secret exposure during interpreter probing.
+        if _IS_WINDOWS:
+            for key in ("SYSTEMROOT", "COMSPEC", "WINDIR", "PATHEXT"):
+                val = os.environ.get(key)
+                if val:
+                    _probe_env[key] = val
+        _path_val = os.environ.get("PATH")
+        if _path_val:
+            _probe_env["PATH"] = _path_val
+
         result = subprocess.run(
             [python_path, "-c",
              "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)"],
             timeout=5,
             capture_output=True,
+            env=_probe_env,
         )
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):

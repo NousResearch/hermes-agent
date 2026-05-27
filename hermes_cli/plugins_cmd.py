@@ -1436,9 +1436,12 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
 
 
 def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
-    """Add or remove a plugin's toolset from platform_toolsets for all platforms.
+    """Add or remove a plugin's toolset from the local CLI platform only.
 
-    Only acts if the plugin actually provides tools (has a toolset key).
+    Dashboard plugin enablement controls whether a plugin is loaded.  Tool
+    exposure remains a per-platform authorization decision, so this helper must
+    not grant plugin tools to gateway/API platforms when making them available
+    for local dashboard/CLI sessions.
     """
     toolset_key = _get_plugin_toolset_key(name)
     if not toolset_key:
@@ -1452,21 +1455,18 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
         platform_toolsets = {}
         config["platform_toolsets"] = platform_toolsets
 
-    changed = False
-    for platform, ts_list in platform_toolsets.items():
-        if not isinstance(ts_list, list):
-            continue
-        if enable:
-            if toolset_key not in ts_list:
-                ts_list.append(toolset_key)
-                changed = True
-        elif toolset_key in ts_list:
-            ts_list.remove(toolset_key)
-            changed = True
+    cli_toolsets = platform_toolsets.get("cli")
+    if not isinstance(cli_toolsets, list):
+        cli_toolsets = []
+        platform_toolsets["cli"] = cli_toolsets
 
-    # If enabling and no platforms have toolset lists yet, add to "cli" at minimum
-    if enable and not changed and not platform_toolsets:
-        platform_toolsets["cli"] = [toolset_key]
+    changed = False
+    if enable:
+        if toolset_key not in cli_toolsets:
+            cli_toolsets.append(toolset_key)
+            changed = True
+    elif toolset_key in cli_toolsets:
+        cli_toolsets.remove(toolset_key)
         changed = True
 
     if changed:
@@ -1476,8 +1476,9 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
 def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str, Any]:
     """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists).
 
-    For plugins that provide tools (toolsets), also toggles the toolset in
-    ``platform_toolsets`` so the agent actually sees the tools in sessions.
+    For plugins that provide tools (toolsets), also toggles the local CLI
+    platform entry so dashboard/CLI sessions can see the tools without
+    broadening gateway/API platform authorization.
     """
     if not _plugin_exists(name):
         return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}

@@ -32,7 +32,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 import json
+import shlex
 import time
+
+
+def _cli_command(*argv: object) -> str:
+    """Return a copy/paste-safe shell command for diagnostic hints."""
+    return shlex.join(str(part) for part in argv)
 
 
 # Severity rungs, ordered least → most urgent. The UI colors them
@@ -364,14 +370,14 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
         # Spawn is failing specifically — profile setup issue.
         actions.append(DiagnosticAction(
             kind="cli_hint",
-            label=f"Verify profile: hermes -p {assignee} doctor",
-            payload={"command": f"hermes -p {assignee} doctor"},
+            label=f"Verify profile: {_cli_command('hermes', '-p', assignee, 'doctor')}",
+            payload={"command": _cli_command("hermes", "-p", assignee, "doctor")},
             suggested=True,
         ))
         actions.append(DiagnosticAction(
             kind="cli_hint",
-            label=f"Fix profile auth: hermes -p {assignee} auth",
-            payload={"command": f"hermes -p {assignee} auth"},
+            label=f"Fix profile auth: {_cli_command('hermes', '-p', assignee, 'auth')}",
+            payload={"command": _cli_command("hermes", "-p", assignee, "auth")},
         ))
     elif most_recent_outcome in {"timed_out", "crashed"}:
         # Worker got off the ground but died. Logs are the right place
@@ -380,8 +386,8 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
         if task_id:
             actions.append(DiagnosticAction(
                 kind="cli_hint",
-                label=f"Check logs: hermes kanban log {task_id}",
-                payload={"command": f"hermes kanban log {task_id}"},
+                label=f"Check logs: {_cli_command('hermes', 'kanban', 'log', task_id)}",
+                payload={"command": _cli_command("hermes", "kanban", "log", task_id)},
                 suggested=True,
             ))
     actions.extend(_generic_recovery_actions(
@@ -481,8 +487,8 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
     if task_id:
         actions.append(DiagnosticAction(
             kind="cli_hint",
-            label=f"Check logs: hermes kanban log {task_id}",
-            payload={"command": f"hermes kanban log {task_id}"},
+            label=f"Check logs: {_cli_command('hermes', 'kanban', 'log', task_id)}",
+            payload={"command": _cli_command("hermes", "kanban", "log", task_id)},
             suggested=True,
         ))
     running = _task_field(task, "status") == "running"

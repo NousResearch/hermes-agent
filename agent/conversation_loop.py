@@ -74,6 +74,146 @@ from utils import base_url_host_matches, env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+_KANBAN_FINAL_RESPONSE_BLOCK_MARKERS = (
+    "i can't",
+    "i cannot",
+    "cannot complete",
+    "couldn't complete",
+    "unable to complete",
+    "unable to proceed",
+    "need clarification",
+    "needs clarification",
+    "requires clarification",
+    "missing credentials",
+    "authentication failed",
+    "permission denied",
+    "traceback",
+    "unhandled exception",
+    "できません",
+    "できなかった",
+    "失敗",
+    "未完了",
+    "エラー",
+    "認証",
+    "権限",
+    "確認が必要",
+    "不明です",
+)
+
+
+def _kanban_final_response_should_block(final_response: str) -> bool:
+    """Heuristic for the kanban final-response fail-safe.
+
+    Dispatcher-spawned workers are supposed to end with ``kanban_complete`` or
+    ``kanban_block``.  If a model returns ordinary final text instead, the
+    conversation loop must choose a terminal Kanban state on the worker's
+    behalf so the dispatcher does not report a protocol violation.  Positive
+    summaries are completed; obvious inability/error text is blocked so a human
+    can decide the next step.
+    """
+    text = (final_response or "").strip()
+    if not text:
+        return True
+    lowered = text.lower()
+    return any(marker in lowered for marker in _KANBAN_FINAL_RESPONSE_BLOCK_MARKERS)
+
+
+def _kanban_summary_preview(final_response: str, *, limit: int = 500) -> str:
+    """Return a compact one-line summary suitable for Kanban run fields."""
+    preview = re.sub(r"\s+", " ", (final_response or "").strip())
+    if not preview:
+        return "worker returned an empty final response"
+    if len(preview) <= limit:
+        return preview
+    return preview[: limit - 1].rstrip() + "…"
+
+
+def _maybe_close_kanban_task_from_final_response(
+    agent: Any,
+    final_response: Optional[str],
+    *,
+    effective_task_id: Optional[str],
+) -> None:
+    """Fail-safe: convert a kanban worker's ordinary final text into a
+    terminal Kanban transition when the task is still running.
+
+    This protects dispatcher-spawned workers from the clean-exit protocol
+    violation path when the LLM answers conversationally instead of using the
+    terminal kanban tool.  The normal path (model calls kanban_complete/block)
+    remains authoritative; this helper first checks the DB and no-ops unless
+    the env task is still ``running`` for the current run.
+    """
+    kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+    if not kanban_task or final_response is None:
+        return
+
+    try:
+        from hermes_cli import kanban_db as _kb
+
+        with _kb.connect() as conn:
+            task = _kb.get_task(conn, kanban_task)
+        if task is None or task.status != "running":
+            return
+        expected_run = os.environ.get("HERMES_KANBAN_RUN_ID")
+        if expected_run and task.current_run_id is not None:
+            try:
+                if int(expected_run) != int(task.current_run_id):
+                    return
+            except (TypeError, ValueError):
+                return
+    except Exception:
+        logger.warning(
+            "Failed to inspect kanban task %s before final-response fail-safe",
+            kanban_task,
+            exc_info=True,
+        )
+        return
+
+    summary = _kanban_summary_preview(final_response)
+    try:
+        if _kanban_final_response_should_block(final_response):
+            _ra().handle_function_call(
+                "kanban_block",
+                {
+                    "task_id": kanban_task,
+                    "reason": (
+                        "error: worker returned final text without calling "
+                        f"kanban_complete/kanban_block: {summary}"
+                    ),
+                },
+                task_id=effective_task_id,
+            )
+            logger.info(
+                "kanban_block fail-safe called for task %s after ordinary final response",
+                kanban_task,
+            )
+        else:
+            _ra().handle_function_call(
+                "kanban_complete",
+                {
+                    "task_id": kanban_task,
+                    "result": "success",
+                    "summary": summary,
+                    "metadata": {
+                        "auto_completed_by": "conversation_loop_final_response_failsafe",
+                        "reason": "worker_final_response_without_terminal_kanban_tool",
+                        "response_length": len(final_response),
+                    },
+                },
+                task_id=effective_task_id,
+            )
+            logger.info(
+                "kanban_complete fail-safe called for task %s after ordinary final response",
+                kanban_task,
+            )
+    except Exception:
+        logger.warning(
+            "Failed to close kanban task %s from final-response fail-safe",
+            kanban_task,
+            exc_info=True,
+        )
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -4092,6 +4232,16 @@ def run_conversation(
                     _kanban_task,
                     exc_info=True,
                 )
+
+    # Kanban worker fail-safe: if the LLM produced ordinary final text instead
+    # of calling kanban_complete/kanban_block, close the task here while the
+    # process is still alive.  No-ops when the task was already transitioned by
+    # the normal tool path.
+    _maybe_close_kanban_task_from_final_response(
+        agent,
+        final_response,
+        effective_task_id=effective_task_id,
+    )
 
     # Determine if conversation completed successfully
     completed = (

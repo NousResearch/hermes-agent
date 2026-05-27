@@ -2706,6 +2706,78 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_kanban_final_text_completes_running_task(self, agent, monkeypatch):
+        """Kanban workers that return ordinary final text must still close the task.
+
+        This is the dispatcher fail-safe for clean exits where the model forgot
+        to call kanban_complete/kanban_block itself.
+        """
+        self._setup_agent(agent)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "7")
+        resp = _mock_response(content="調査完了: 3件確認しました。", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        fake_conn = MagicMock()
+        fake_connect = MagicMock()
+        fake_connect.return_value.__enter__.return_value = fake_conn
+        fake_task = SimpleNamespace(status="running", current_run_id=7)
+
+        with (
+            patch("hermes_cli.kanban_db.connect", fake_connect),
+            patch("hermes_cli.kanban_db.get_task", return_value=fake_task),
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do the kanban work")
+
+        assert result["final_response"] == "調査完了: 3件確認しました。"
+        kanban_complete_calls = [
+            c for c in mock_hfc.call_args_list if c[0][0] == "kanban_complete"
+        ]
+        assert len(kanban_complete_calls) == 1
+        args = kanban_complete_calls[0][0]
+        assert args[1]["task_id"] == "t_test_task_123"
+        assert args[1]["result"] == "success"
+        assert args[1]["summary"] == "調査完了: 3件確認しました。"
+        assert args[1]["metadata"]["auto_completed_by"] == (
+            "conversation_loop_final_response_failsafe"
+        )
+
+    def test_kanban_error_final_text_blocks_running_task(self, agent, monkeypatch):
+        self._setup_agent(agent)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+        resp = _mock_response(content="できません: 認証エラーです。", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        fake_connect = MagicMock()
+        fake_connect.return_value.__enter__.return_value = MagicMock()
+        fake_task = SimpleNamespace(status="running", current_run_id=7)
+
+        with (
+            patch("hermes_cli.kanban_db.connect", fake_connect),
+            patch("hermes_cli.kanban_db.get_task", return_value=fake_task),
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do the kanban work")
+
+        assert result["final_response"] == "できません: 認証エラーです。"
+        kanban_block_calls = [
+            c for c in mock_hfc.call_args_list if c[0][0] == "kanban_block"
+        ]
+        assert len(kanban_block_calls) == 1
+        args = kanban_block_calls[0][0]
+        assert args[1]["task_id"] == "t_test_task_123"
+        assert args[1]["reason"].startswith(
+            "error: worker returned final text without calling kanban_complete/kanban_block"
+        )
+        assert "認証エラー" in args[1]["reason"]
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"

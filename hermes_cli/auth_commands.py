@@ -34,7 +34,15 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {
+    "anthropic",
+    "copilot",
+    "nous",
+    "openai-codex",
+    "xai-oauth",
+    "qwen-oauth",
+    "minimax-oauth",
+}
 
 
 def _get_custom_provider_names() -> list:
@@ -341,6 +349,30 @@ def auth_add_command(args) -> None:
         # _save_provider_state). Subsequent adds leave the active provider as-is.
         if first_credential:
             auth_mod.mark_provider_active_if_unset(provider)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "copilot":
+        from hermes_cli.copilot_auth import copilot_device_code_login
+
+        token = copilot_device_code_login(timeout_seconds=getattr(args, "timeout", None) or 300)
+        if not token:
+            raise SystemExit("GitHub Copilot OAuth login did not return a token.")
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            token,
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:device_code",
+            access_token=token,
+            base_url=_provider_base_url(provider),
+        )
+        pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 

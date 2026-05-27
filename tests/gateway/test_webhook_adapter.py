@@ -956,6 +956,93 @@ class TestDeliverCrossPlatformThreadId:
             "12345", "hello", metadata=None
         )
 
+    @pytest.mark.asyncio
+    async def test_telegram_reply_to_message_id_forwarded(self):
+        """telegram_reply_to_message_id in deliver_extra reaches metadata so
+        the Telegram adapter's anchor-required guard accepts a DM-topic send."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "message_thread_id": "888",
+                "telegram_reply_to_message_id": "42",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345",
+            "hello",
+            metadata={"thread_id": "888", "telegram_reply_to_message_id": "42"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_telegram_dm_topic_opt_out_flags_forwarded(self):
+        """telegram_dm_topic_created_for_send and direct_messages_topic_id are
+        forwarded so a webhook route can opt out of the reply-anchor guard
+        when sending to a true Bot-API DM topic."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "message_thread_id": "888",
+                "telegram_dm_topic_created_for_send": True,
+                "direct_messages_topic_id": "777",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345",
+            "hello",
+            metadata={
+                "thread_id": "888",
+                "telegram_dm_topic_created_for_send": True,
+                "direct_messages_topic_id": "777",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_telegram_reply_fallback_marker_forwarded(self):
+        """telegram_dm_topic_reply_fallback combined with the reply anchor lets
+        the Telegram adapter pick its reply_to_mode-aware send path."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "message_thread_id": "888",
+                "telegram_dm_topic_reply_fallback": True,
+                "telegram_reply_to_message_id": "42",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345",
+            "hello",
+            metadata={
+                "thread_id": "888",
+                "telegram_dm_topic_reply_fallback": True,
+                "telegram_reply_to_message_id": "42",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_dm_topic_keys_without_thread_id(self):
+        """deliver_extra may carry the opt-out flags without a thread_id (e.g.
+        a DM topic created by the route handler upstream). The metadata dict
+        still contains the forwarded keys."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "telegram_dm_topic_created_for_send": True,
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345",
+            "hello",
+            metadata={"telegram_dm_topic_created_for_send": True},
+        )
+
 
 class TestInsecureNoAuthSafetyRail:
     """connect() refuses to start when INSECURE_NO_AUTH is combined with a

@@ -916,10 +916,28 @@ class WebhookAdapter(BasePlatformAdapter):
                     error=f"No chat_id or home channel for {platform_name}",
                 )
 
-        # Pass thread_id from deliver_extra so Telegram forum topics work
-        metadata = None
+        # Pass thread_id from deliver_extra so Telegram forum topics work.
+        # Also forward the Telegram DM-topic routing signals the adapter needs
+        # to satisfy the fail-loud anchor-required guard added in PR #32270:
+        # without one of telegram_reply_to_message_id, direct_messages_topic_id,
+        # or telegram_dm_topic_created_for_send, a private DM with a thread_id
+        # is rejected with "requires a reply anchor". Webhook routes have no
+        # other channel to express the opt-out, so plumb the keys straight
+        # through from deliver_extra.
+        metadata: Optional[Dict[str, Any]] = None
         thread_id = extra.get("message_thread_id") or extra.get("thread_id")
         if thread_id:
             metadata = {"thread_id": thread_id}
+        for key in (
+            "telegram_reply_to_message_id",
+            "telegram_dm_topic_created_for_send",
+            "telegram_dm_topic_reply_fallback",
+            "direct_messages_topic_id",
+        ):
+            value = extra.get(key)
+            if value is not None:
+                if metadata is None:
+                    metadata = {}
+                metadata[key] = value
 
         return await adapter.send(chat_id, content, metadata=metadata)

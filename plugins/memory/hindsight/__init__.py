@@ -629,13 +629,13 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
         """Custom setup wizard — installs only the deps needed for the selected mode."""
-        import getpass
         import subprocess
         import shutil
         import sys
         from pathlib import Path
 
         from hermes_cli.config import save_config
+        from hermes_cli.secret_prompt import masked_secret_prompt
 
         from hermes_cli.memory_setup import _curses_select
 
@@ -696,11 +696,11 @@ class HindsightMemoryProvider(MemoryProvider):
                 masked = f"...{existing_key[-4:]}" if len(existing_key) > 4 else "set"
                 sys.stdout.write(f"  API key (current: {masked}, blank to keep): ")
                 sys.stdout.flush()
-                api_key = getpass.getpass(prompt="") if sys.stdin.isatty() else sys.stdin.readline().strip()
+                api_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
             else:
                 sys.stdout.write("  API key: ")
                 sys.stdout.flush()
-                api_key = getpass.getpass(prompt="") if sys.stdin.isatty() else sys.stdin.readline().strip()
+                api_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
             if api_key:
                 env_writes["HINDSIGHT_API_KEY"] = api_key
 
@@ -714,7 +714,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
             sys.stdout.write("  API key (optional, blank to skip): ")
             sys.stdout.flush()
-            api_key = getpass.getpass(prompt="") if sys.stdin.isatty() else sys.stdin.readline().strip()
+            api_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
             if api_key:
                 env_writes["HINDSIGHT_API_KEY"] = api_key
 
@@ -750,7 +750,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
             sys.stdout.write("  LLM API key: ")
             sys.stdout.flush()
-            llm_key = getpass.getpass(prompt="") if sys.stdin.isatty() else sys.stdin.readline().strip()
+            llm_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
             if llm_key:
                 env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
             else:

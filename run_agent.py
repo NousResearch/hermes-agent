@@ -124,6 +124,7 @@ from agent.memory_manager import StreamingContextScrubber, build_memory_context_
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
+from agent.redact import redact_sensitive_text
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -716,6 +717,39 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
 
+    def _disable_codex_reasoning_replay(
+        self,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, int]:
+        """Disable Responses encrypted reasoning replay and strip cached state.
+
+        Called from the conversation_loop retry path when the provider
+        rejects a replayed ``codex_reasoning_items`` blob with HTTP 400
+        ``invalid_encrypted_content``.  Sets ``self._codex_reasoning_replay_enabled``
+        to ``False`` (consumed by ``codex_responses_adapter._chat_messages_to_responses_input``
+        and ``transports/codex.py`` to drop ``reasoning.encrypted_content``
+        from subsequent requests) and pops ``codex_reasoning_items`` from
+        every assistant message in ``messages`` so they cannot be replayed
+        again later in the session.
+
+        Returns a small stats dict ``{"messages": int, "items": int}``
+        counting what was stripped — purely for diagnostic logging.
+        """
+        stripped_messages = 0
+        stripped_items = 0
+        target_messages = messages if isinstance(messages, list) else []
+
+        for msg in target_messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            items = msg.pop("codex_reasoning_items", None)
+            if isinstance(items, list) and items:
+                stripped_messages += 1
+                stripped_items += len(items)
+
+        self._codex_reasoning_replay_enabled = False
+        return {"messages": stripped_messages, "items": stripped_items}
+
     # Stream-diagnostic class header preserved for backward compat —
     # actual list lives in ``agent.stream_diag.STREAM_DIAG_HEADERS``.
     from agent.stream_diag import STREAM_DIAG_HEADERS as _STREAM_DIAG_HEADERS  # noqa: E402
@@ -884,7 +918,11 @@ class AIAgent:
           1. ``providers.<id>.models.<model>.stale_timeout_seconds``
           2. ``providers.<id>.stale_timeout_seconds``
           3. ``HERMES_API_CALL_STALE_TIMEOUT`` env var
-          4. 300.0s default
+          4. 90.0s default (time-to-first-byte for non-streaming / Codex
+             internal-streaming requests; lowered from 300s in May 2026 so
+             fallback providers kick in faster when upstream providers
+             stall).  The detector still scales up for large contexts in
+             ``_compute_non_stream_stale_timeout``.
 
         Returns ``(timeout_seconds, uses_implicit_default)`` so the caller can
         preserve legacy behaviors that only apply when the user has *not*
@@ -899,21 +937,80 @@ class AIAgent:
         if env_timeout is not None:
             return float(env_timeout), False
 
-        return 300.0, True
+        return 90.0, True
 
-    def _compute_non_stream_stale_timeout(self, messages: list[dict[str, Any]]) -> float:
-        """Compute the effective non-stream stale timeout for this request."""
+    def _compute_non_stream_stale_timeout(self, api_payload: Any) -> float:
+        """Compute the effective non-stream stale timeout for this request.
+
+        Accepts either the full ``api_kwargs`` dict (Chat Completions or
+        Responses API) or a legacy ``messages`` list.  Context-size scaling
+        applies the same way to both shapes via
+        :func:`agent.chat_completion_helpers.estimate_request_context_tokens`.
+        """
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        est_tokens = sum(len(str(v)) for v in messages) // 4
+        from agent.chat_completion_helpers import estimate_request_context_tokens
+        est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:
-            return max(stale_base, 600.0)
+            return max(stale_base, 240.0)
         if est_tokens > 50_000:
-            return max(stale_base, 450.0)
+            return max(stale_base, 150.0)
         return stale_base
+
+    def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:
+        """Return an actionable hint when this request matches a known
+        Codex silent-reject configuration, else ``None``.
+
+        The ChatGPT Codex backend (``chatgpt.com/backend-api/codex``) has
+        historically silently dropped certain model requests: the connection
+        is accepted but no stream events are emitted and no error is raised.
+        The stale-call detector ends the hang, but a generic "timed out"
+        message gives the user no path forward.
+
+        This helper substitutes an actionable hint into the stale-timeout
+        warning when the request matches a known silent-reject pattern.
+        Currently flagged: ``gpt-5.5`` family on the Codex backend.  See
+        hermes-agent #21444 for the symptom history.  The upstream backend
+        behavior has historically come and gone with ChatGPT entitlement
+        changes — the heuristic stays in place as future-proofing even when
+        the symptom is dormant.
+
+        Does NOT fix the backend issue.  Only converts an opaque stale-timeout
+        into actionable text so users learn the workaround in seconds rather
+        than digging through logs.
+        """
+        if self.api_mode != "codex_responses":
+            return None
+        is_codex_backend = (
+            self.provider == "openai-codex"
+            or (
+                getattr(self, "_base_url_hostname", "") == "chatgpt.com"
+                and "/backend-api/codex" in (getattr(self, "_base_url_lower", "") or "")
+            )
+        )
+        if not is_codex_backend:
+            return None
+        eff_model = (model if model is not None else self.model) or ""
+        model_lower = eff_model.lower()
+        # Match the gpt-5.5 family — bare ``gpt-5.5``, ``gpt-5.5-codex``,
+        # vendor-prefixed variants like ``openai/gpt-5.5``, and any future
+        # ``gpt-5.5-*`` SKU.  Anchor at a word boundary on either side so
+        # unrelated tokens like ``gpt-5.50`` do not match.
+        if not re.search(r"(?:^|[/\-_])gpt-5\.5(?:$|[\-_])", model_lower):
+            return None
+        return (
+            f"Codex backend appears to be silently rejecting {eff_model!r} "
+            "on chatgpt.com/backend-api/codex (no stream events, no error). "
+            "This is a known backend-side pattern that has affected ChatGPT "
+            "Plus accounts intermittently. "
+            "Workaround: try `gpt-5.4` on the same OAuth profile, or `gpt-5.3-codex`, "
+            "or switch to a different model/provider in your fallback chain. "
+            "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`. "
+            "See hermes-agent#21444 for symptom history."
+        )
 
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
@@ -1368,6 +1465,18 @@ class AIAgent:
           * xAI OAuth: "do not have an active Grok subscription" /
             "out of available resources" / "does not have permission" + "grok"
 
+        Disambiguator for xAI (#29344): the same ``code`` text ("The caller
+        does not have permission to execute the specified operation") is
+        returned for BOTH an unsubscribed account AND a stale OAuth access
+        token.  xAI ships an explicit signal in the ``error`` field that
+        tells the two apart: a ``[WKE=unauthenticated:...]`` suffix (and/or
+        the ``OAuth2 access token could not be validated`` phrasing) means
+        the credentials failed validation — that's recoverable by refreshing
+        the token, NOT by surfacing an entitlement message.  When either
+        signal is present we return False eagerly so the credential-pool
+        refresh path runs, letting long-running TUI sessions recover from
+        stale tokens without an exit/reopen cycle.
+
         Extend here for new providers as we discover them (Anthropic's
         Claude Max OAuth entitlement errors look distinct enough today that
         the existing 1M-context-beta branch handles them; revisit if other
@@ -1377,10 +1486,28 @@ class AIAgent:
             return False
         if not isinstance(error_context, dict):
             return False
+        # Build a single lowercase haystack covering every field shape the
+        # body might land in.  ``_extract_api_error_context`` normalises to
+        # ``message``/``reason``, but callers (and the test suite) may also
+        # hand us the raw body with ``code``/``error`` keys; cover both so
+        # the WKE disambiguator below fires regardless of entry point.
         message = str(error_context.get("message") or "").lower()
         reason = str(error_context.get("reason") or "").lower()
-        haystack = f"{message} {reason}"
+        code = str(error_context.get("code") or "").lower()
+        err = str(error_context.get("error") or "").lower()
+        haystack = f"{message} {reason} {code} {err}"
         if not haystack.strip():
+            return False
+        # xAI's authoritative disambiguator for "stale token" vs
+        # "unsubscribed account".  Both conditions share the same
+        # permission-denied ``code`` text; only one carries this suffix.
+        # Bail out before the entitlement keyword checks so a stale OAuth
+        # token routes through the credential-refresh path instead of the
+        # surface-error-as-entitlement path.  See #29344 for the long-
+        # running TUI failure mode this closes.
+        if "[wke=unauthenticated:" in haystack:
+            return False
+        if "oauth2 access token could not be validated" in haystack:
             return False
         if "do not have an active grok subscription" in haystack:
             return True
@@ -1516,6 +1643,36 @@ class AIAgent:
         content = re.sub(r'(</think>)\n+', r'\1\n', content)
         return content.strip()
 
+    @staticmethod
+    def _redact_message_content(content):
+        """Apply secret redaction to message content (str or list-of-parts).
+
+        Handles both plain-string content and the OpenAI/Anthropic multimodal
+        shape where ``content`` is a list of ``{"type": "text", "text": ...}``
+        / ``{"type": "image_url", ...}`` / ``{"type": "input_text", "content": ...}``
+        parts. Image / binary parts are left untouched; only text fields are
+        passed through ``redact_sensitive_text``.
+
+        Respects ``HERMES_REDACT_SECRETS`` via ``redact_sensitive_text`` —
+        when disabled the helper is effectively a no-op.
+        """
+        if content is None:
+            return content
+        if isinstance(content, str):
+            return redact_sensitive_text(content)
+        if isinstance(content, list):
+            redacted = []
+            for part in content:
+                if isinstance(part, dict):
+                    part = dict(part)
+                    if isinstance(part.get("text"), str):
+                        part["text"] = redact_sensitive_text(part["text"])
+                    if isinstance(part.get("content"), str):
+                        part["content"] = redact_sensitive_text(part["content"])
+                redacted.append(part)
+            return redacted
+        return content
+
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
         """Optional per-session JSON snapshot writer.
 
@@ -1551,6 +1708,14 @@ class AIAgent:
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])
+                # Defence-in-depth: redact credentials from every message
+                # content before persistence. Catches PATs / API keys / Bearer
+                # tokens that may have leaked into assistant responses, tool
+                # output, or user paste. Respects HERMES_REDACT_SECRETS via
+                # redact_sensitive_text — no-op when disabled. (#19798, #19845)
+                if "content" in msg:
+                    msg = dict(msg)
+                    msg["content"] = self._redact_message_content(msg.get("content"))
                 cleaned.append(msg)
 
             # Guard: never overwrite a larger session log with fewer messages.
@@ -1576,7 +1741,7 @@ class AIAgent:
                 "platform": self.platform,
                 "session_start": self.session_start.isoformat(),
                 "last_updated": datetime.now().isoformat(),
-                "system_prompt": self._cached_system_prompt or "",
+                "system_prompt": redact_sensitive_text(self._cached_system_prompt or ""),
                 "tools": self.tools or [],
                 "message_count": len(cleaned),
                 "messages": cleaned,
@@ -2563,6 +2728,39 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
+    def _abort_request_openai_client(self, client: Any, *, reason: str) -> None:
+        """Cross-thread abort: shut sockets down without releasing FDs.
+
+        Companion to :meth:`_close_request_openai_client` for stranger-thread
+        callers (interrupt-check loop, stale-call detector). Calling
+        ``client.close()`` from a thread that does not own the active httpx
+        connection raced the still-live SSL BIO and corrupted unrelated file
+        descriptors when the kernel recycled the just-freed TCP FD (#29507).
+
+        Here we only ``shutdown(SHUT_RDWR)`` the pool's sockets. That unblocks
+        the owning worker thread's pending ``recv``/``send`` with an EOF or
+        ``EPIPE`` so it can unwind and close ``client`` from its own context
+        — which is where the FD release belongs.
+        """
+        if client is None:
+            return
+        try:
+            shutdown_count = self._force_close_tcp_sockets(client)
+            logger.info(
+                "OpenAI client aborted (%s, shared=False, tcp_force_closed=%d, "
+                "deferred_close=stranger_thread) %s",
+                reason,
+                shutdown_count,
+                self._client_log_context(),
+            )
+        except Exception as exc:
+            logger.debug(
+                "OpenAI client abort failed (%s, shared=False) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Forwarder — see ``agent.codex_runtime.run_codex_stream``."""
         from agent.codex_runtime import run_codex_stream
@@ -2778,15 +2976,12 @@ class AIAgent:
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
         from agent.auxiliary_client import (
-            _AI_GATEWAY_HEADERS,
             build_nvidia_nim_headers,
             build_or_headers,
         )
 
         if base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = build_or_headers()
-        elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
-            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             self._client_kwargs["default_headers"] = build_nvidia_nim_headers(base_url)
         elif base_url_host_matches(base_url, "api.routermint.com"):
@@ -3590,8 +3785,6 @@ class AIAgent:
         known reasoning-capable model families and direct Nous Portal.
         """
         if base_url_host_matches(self._base_url_lower, "nousresearch.com"):
-            return True
-        if base_url_host_matches(self._base_url_lower, "ai-gateway.vercel.sh"):
             return True
         if (
             base_url_host_matches(self._base_url_lower, "models.github.ai")

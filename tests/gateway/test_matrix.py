@@ -797,6 +797,79 @@ class TestMatrixRequirements:
                 with patch("tools.lazy_deps.ensure", side_effect=ImportError("mautrix unavailable")):
                     assert matrix_mod.check_matrix_requirements() is False
 
+    def test_check_e2ee_deps_requires_asyncpg(self, monkeypatch):
+        """E2EE deps check must reject when asyncpg is missing — even if olm is present.
+
+        Regression for #31116: ``mautrix[encryption]`` extra installs python-olm
+        but NOT asyncpg/aiosqlite, which are required by mautrix's crypto store
+        at connect time.  ``_check_e2ee_deps`` previously only tested
+        ``OlmMachine`` import and returned True, so the failure manifested as
+        a confusing ``No module named 'asyncpg'`` deep in
+        ``MatrixAdapter.connect()``.
+        """
+        from gateway.platforms.matrix import _check_e2ee_deps
+        import builtins
+        real_import = builtins.__import__
+
+        def _blocking_import(name, *args, **kwargs):
+            if name == "asyncpg" or name.startswith("asyncpg."):
+                raise ImportError("blocked for test")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", _blocking_import):
+            assert _check_e2ee_deps() is False
+
+    def test_check_e2ee_deps_requires_aiosqlite(self):
+        """E2EE deps check must reject when aiosqlite is missing.
+
+        Mautrix's ``Database.create("sqlite:///...")`` driver lookup imports
+        aiosqlite lazily — without it, connect fails at ``crypto_db.start()``.
+        """
+        from gateway.platforms.matrix import _check_e2ee_deps
+        import builtins
+        real_import = builtins.__import__
+
+        def _blocking_import(name, *args, **kwargs):
+            if name == "aiosqlite" or name.startswith("aiosqlite."):
+                raise ImportError("blocked for test")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", _blocking_import):
+            assert _check_e2ee_deps() is False
+
+    def test_check_requirements_runs_lazy_install_when_partial(self, monkeypatch):
+        """When mautrix is installed but asyncpg/aiosqlite are missing,
+        check_matrix_requirements must still run the lazy installer.
+
+        Regression for #31116: the previous ``try: import mautrix`` gate
+        short-circuited the install of the OTHER 4 platform.matrix packages,
+        so a partial install (mautrix only) was treated as fully installed.
+        """
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
+
+        from gateway.platforms import matrix as matrix_mod
+
+        # Simulate "mautrix installed, asyncpg missing" → feature_missing
+        # returns a non-empty tuple → ensure_and_bind MUST be called.
+        called = {"ensure_and_bind": False}
+
+        def _fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
+            called["ensure_and_bind"] = True
+            assert feature == "platform.matrix"
+            return True  # Pretend install succeeded.
+
+        with patch("tools.lazy_deps.feature_missing", return_value=("asyncpg==0.31.0",)), \
+             patch("tools.lazy_deps.ensure_and_bind", side_effect=_fake_ensure_and_bind):
+            matrix_mod.check_matrix_requirements()
+
+        assert called["ensure_and_bind"], (
+            "check_matrix_requirements must call ensure_and_bind whenever ANY "
+            "platform.matrix dep is missing, not just when mautrix itself is "
+            "missing (#31116)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Access-token auth / E2EE bootstrap

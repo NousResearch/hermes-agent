@@ -71,7 +71,7 @@ delegation:
 
 Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a referenced variable is not set, the placeholder is kept verbatim (`${UNDEFINED_VAR}` stays as-is). Only the `${VAR}` syntax is supported — bare `$VAR` is not expanded.
 
-For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/docs/integrations/providers).
+For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/integrations/providers).
 
 ### Provider Timeouts
 
@@ -83,11 +83,11 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
@@ -96,7 +96,7 @@ terminal:
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
 ```
 
-For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+For cloud sandboxes such as Modal and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
 ### Backend Overview
 
@@ -107,7 +107,6 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
-| **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -231,49 +230,6 @@ terminal:
 **Persistence:** When enabled, sandboxes are stopped (not deleted) on cleanup and resumed on next session. Sandbox names follow the pattern `hermes-{task_id}`.
 
 **Disk limit:** Daytona enforces a 10 GiB maximum. Requests above this are capped with a warning.
-
-### Vercel Sandbox Backend
-
-Runs commands in a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) cloud microVM. Hermes uses the normal terminal and file tool surfaces; there are no Vercel-specific model-facing tools.
-
-```yaml
-terminal:
-  backend: vercel_sandbox
-  vercel_runtime: node24          # node24 | node22 | python3.13
-  cwd: /vercel/sandbox            # default workspace root
-  container_persistent: true      # Snapshot/restore filesystem
-  container_disk: 51200           # Shared default only; custom disk is unsupported
-```
-
-**Required install:** Install the optional SDK extra:
-
-```bash
-pip install 'hermes-agent[vercel]'
-```
-
-**Required authentication:** Configure access-token auth with all three of `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, and `VERCEL_TEAM_ID`. This is the supported setup for deployments and normal long-running Hermes processes on Render, Railway, Docker, and similar hosts.
-
-For one-off local development, Hermes also accepts short-lived Vercel OIDC tokens:
-
-```bash
-VERCEL_OIDC_TOKEN="$(vc project token <project-name>)" hermes chat
-```
-
-From a linked Vercel project directory, you can omit the project name:
-
-```bash
-VERCEL_OIDC_TOKEN="$(vc project token)" hermes chat
-```
-
-OIDC tokens are short-lived and should not be used as the documented deployment path.
-
-**Runtime:** `terminal.vercel_runtime` supports `node24`, `node22`, and `python3.13`. If unset, Hermes defaults to `node24`.
-
-**Persistence:** When `container_persistent: true`, Hermes snapshots the sandbox filesystem during cleanup and restores a later sandbox for the same task from that snapshot. Snapshot contents can include Hermes-synced credentials, skills, and cache files that were copied into the sandbox. This preserves filesystem state only; it does not preserve live sandbox identity, PID space, shell state, or running background processes.
-
-**Background commands:** `terminal(background=true)` uses Hermes' generic non-local background process flow. You can spawn, poll, wait, view logs, and kill processes through the normal process tool while the sandbox is alive. Hermes does not provide native Vercel detached-process recovery after cleanup or restart.
-
-**Disk sizing:** Vercel Sandbox does not currently support Hermes' `container_disk` resource knob. Leave `container_disk` unset or at the shared default `51200`; non-default values fail diagnostics and backend creation instead of being silently ignored.
 
 ### Singularity/Apptainer Backend
 
@@ -484,7 +440,7 @@ skills:
 hermes config set skills.config.myplugin.path ~/myplugin-data
 ```
 
-For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/docs/developer-guide/creating-skills#config-settings-configyaml).
+For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml).
 
 ### Guard on agent-created skill writes
 
@@ -672,7 +628,7 @@ The summary model **must** have a context window at least as large as your main 
 
 ## Context Engine
 
-The context engine controls how conversations are managed when approaching the model's token limit. The built-in `compressor` engine uses lossy summarization (see [Context Compression](/docs/developer-guide/context-compression-and-caching)). Plugin engines can replace it with alternative strategies.
+The context engine controls how conversations are managed when approaching the model's token limit. The built-in `compressor` engine uses lossy summarization (see [Context Compression](/developer-guide/context-compression-and-caching)). Plugin engines can replace it with alternative strategies.
 
 ```yaml
 context:
@@ -688,7 +644,7 @@ context:
 
 Plugin engines are **never auto-activated** — you must explicitly set `context.engine` to the plugin name. Available engines can be browsed and selected via `hermes plugins` → Provider Plugins → Context Engine.
 
-See [Memory Providers](/docs/user-guide/features/memory-providers) for the analogous single-select system for memory plugins.
+See [Memory Providers](/user-guide/features/memory-providers) for the analogous single-select system for memory plugins.
 
 ## Iteration Budget Pressure
 
@@ -711,7 +667,7 @@ Budget pressure is enabled by default. The agent sees warnings naturally as part
 
 When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (90/90) — response may be incomplete`. If the budget runs out during active work, the agent generates a summary of what was accomplished before stopping.
 
-`agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/docs/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
+`agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
 ### API Timeouts
 
@@ -765,7 +721,7 @@ credential_pool_strategies:
   anthropic: least_used      # always pick the least-used key
 ```
 
-Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/docs/user-guide/features/credential-pools) for full documentation.
+Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/user-guide/features/credential-pools) for full documentation.
 
 ## Prompt caching
 
@@ -773,7 +729,7 @@ Hermes turns on cross-session prompt caching automatically when the active provi
 
 For Claude on **native Anthropic**, **OpenRouter**, and **Nous Portal**, Hermes attaches `cache_control` breakpoints with the 1-hour TTL (`ttl: "1h"`) on the system prompt and skill blocks. The first send within a fresh hour pays full input rates; subsequent sends across any session within the same hour pull from the cache at the discounted cached-read rate. This means the system prompt, loaded skill content, and the early portion of any long-context include get reused across `hermes` sessions and across forked subagents for the first hour.
 
-The Qwen Cloud (Alibaba DashScope) upstream caps cache TTL at 5 minutes, so Hermes uses the 5-minute breakpoint TTL there instead. Other Claude-via-third-party paths (AWS Bedrock, Azure Foundry) fall back to the provider's own caching defaults. xAI Grok uses a separate session-pinned conversation-id mechanism — see [xAI prompt caching](/docs/integrations/providers#xai-grok--responses-api--prompt-caching).
+The Qwen Cloud (Alibaba DashScope) upstream caps cache TTL at 5 minutes, so Hermes uses the 5-minute breakpoint TTL there instead. Other Claude-via-third-party paths (AWS Bedrock, Azure Foundry) fall back to the provider's own caching defaults. xAI Grok uses a separate session-pinned conversation-id mechanism — see [xAI prompt caching](/integrations/providers#xai-grok--responses-api--prompt-caching).
 
 No knob exists to disable this — caching is always-on and saves money even on single-turn conversations because the system prompt alone is a meaningful fraction of the input token count.
 
@@ -829,18 +785,18 @@ Every model slot in Hermes — auxiliary tasks, compression, fallback — uses t
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
-Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/docs/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `custom_providers` list (e.g. `provider: "beans"`).
+Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `azure-foundry` — or any named custom provider from your `custom_providers` list (e.g. `provider: "beans"`).
 
 :::tip MiniMax OAuth
 `minimax-oauth` logs in via browser OAuth (no API key needed). Run `hermes model` and select **MiniMax (OAuth)** to authenticate. Auxiliary tasks use `MiniMax-M2.7-highspeed` automatically. See the [MiniMax OAuth guide](../guides/minimax-oauth.md).
 :::
 
 :::tip xAI Grok OAuth
-`xai-oauth` logs in via browser OAuth for SuperGrok and X Premium+ subscribers (no API key needed). Run `hermes model` and select **xAI Grok OAuth (SuperGrok Subscription)** to authenticate. The same OAuth token is reused for every direct-to-xAI surface (chat, auxiliary tasks, TTS, image gen, video gen, transcription). See the [xAI Grok OAuth guide](../guides/xai-grok-oauth.md), and if Hermes is on a remote host see [OAuth over SSH / Remote Hosts](../guides/oauth-over-ssh.md).
+`xai-oauth` logs in via browser OAuth for SuperGrok and X Premium+ subscribers (no API key needed). Run `hermes model` and select **xAI Grok OAuth (SuperGrok / Premium+)** to authenticate. The same OAuth token is reused for every direct-to-xAI surface (chat, auxiliary tasks, TTS, image gen, video gen, transcription). See the [xAI Grok OAuth guide](../guides/xai-grok-oauth.md), and if Hermes is on a remote host see [OAuth over SSH / Remote Hosts](../guides/oauth-over-ssh.md).
 :::
 
 :::warning `"main"` is for auxiliary tasks only
-The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and `fallback_model:` configs. It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](/docs/integrations/providers) for all main model provider options.
+The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and `fallback_model:` configs. It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](/integrations/providers) for all main model provider options.
 :::
 
 ### Full auxiliary config reference
@@ -910,12 +866,12 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 :::
 
 :::info
-Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/docs/integrations/providers#fallback-model). All three follow the same provider/model/base_url pattern.
+Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/integrations/providers#fallback-model). All three follow the same provider/model/base_url pattern.
 :::
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
 
-When an auxiliary task resolves to OpenRouter (either explicitly or via `provider: "main"` while your main agent is on OpenRouter), the main agent's `provider_routing` and `openrouter.min_coding_score` settings **do not propagate** — by design, each auxiliary task is independent. To set OpenRouter provider preferences or use the [Pareto Code router](/docs/integrations/providers#openrouter-pareto-code-router) for a specific aux task, set them per-task via `extra_body`:
+When an auxiliary task resolves to OpenRouter (either explicitly or via `provider: "main"` while your main agent is on OpenRouter), the main agent's `provider_routing` and `openrouter.min_coding_score` settings **do not propagate** — by design, each auxiliary task is independent. To set OpenRouter provider preferences or use the [Pareto Code router](/integrations/providers#openrouter-pareto-code-router) for a specific aux task, set them per-task via `extra_body`:
 
 ```yaml
 auxiliary:
@@ -962,7 +918,7 @@ These options apply to **auxiliary task configs** (`auxiliary:`, `compression:`,
 | `"nous"` | Force Nous Portal | `hermes auth` |
 | `"codex"` | Force Codex OAuth (ChatGPT account). Supports vision (gpt-5.3-codex). | `hermes model` → Codex |
 | `"minimax-oauth"` | Force MiniMax OAuth (browser login, no API key). Uses MiniMax-M2.7-highspeed for auxiliary tasks. | `hermes model` → MiniMax (OAuth) |
-| `"xai-oauth"` | Force xAI Grok OAuth (browser login for SuperGrok or X Premium+ subscribers, no API key). Same OAuth token covers chat, TTS, image, video, and transcription. | `hermes model` → xAI Grok OAuth (SuperGrok Subscription) |
+| `"xai-oauth"` | Force xAI Grok OAuth (browser login for SuperGrok or X Premium+ subscribers, no API key). Same OAuth token covers chat, TTS, image, video, and transcription. | `hermes model` → xAI Grok OAuth (SuperGrok / Premium+) |
 | `"main"` | Use your active custom/main endpoint. This can come from `OPENAI_BASE_URL` + `OPENAI_API_KEY` or from a custom endpoint saved via `hermes model` / `config.yaml`. Works with OpenAI, local models, or any OpenAI-compatible API. **Auxiliary tasks only — not valid for `model.provider`.** | Custom endpoint credentials + base URL |
 
 Direct API-key providers from the main provider catalog also work here when you want side tasks to bypass your default router. `gmi` is valid once `GMI_API_KEY` is configured:
@@ -1332,7 +1288,7 @@ voice:
   silence_duration: 3.0         # Seconds of silence before auto-stop
 ```
 
-Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](/docs/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.
+Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.
 
 ## Streaming
 
@@ -1385,7 +1341,7 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 - Direct messages are unaffected. Hermes still keys DMs by chat/DM ID as usual.
 - Threads stay isolated from their parent channel either way; with `true`, each participant also gets their own session inside the thread.
 
-For the behavior details and examples, see [Sessions](/docs/user-guide/sessions) and the [Discord guide](/docs/user-guide/messaging/discord).
+For the behavior details and examples, see [Sessions](/user-guide/sessions) and the [Discord guide](/user-guide/messaging/discord).
 
 ## Unauthorized DM Behavior
 
@@ -1487,7 +1443,7 @@ web:
 
 **Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `SEARXNG_URL` is set, SearXNG is used. If only `EXA_API_KEY` is set, Exa is used. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
 
-**SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` and `web_crawl` require a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/docs/user-guide/features/web-search) for Docker setup instructions.
+**SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` and `web_crawl` require a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
 
 **Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=*** on the server to disable auth).
 
@@ -1527,7 +1483,7 @@ browser:
 
 See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
 
-The browser toolset supports multiple providers. See the [Browser feature page](/docs/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chromium-family CDP setup.
+The browser toolset supports multiple providers. See the [Browser feature page](/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chromium-family CDP setup.
 
 ## Timezone
 
@@ -1627,7 +1583,7 @@ Setting `approvals.mode: off` disables all safety checks for terminal commands. 
 
 ## Checkpoints
 
-Automatic filesystem snapshots before destructive file operations. See the [Checkpoints & Rollback](/docs/user-guide/checkpoints-and-rollback) for details.
+Automatic filesystem snapshots before destructive file operations. See the [Checkpoints & Rollback](/user-guide/checkpoints-and-rollback) for details.
 
 ```yaml
 checkpoints:
@@ -1694,8 +1650,8 @@ Hermes uses two different context scopes:
 - All loaded context files are capped at 20,000 characters with smart truncation.
 
 See also:
-- [Personality & SOUL.md](/docs/user-guide/features/personality)
-- [Context Files](/docs/user-guide/features/context-files)
+- [Personality & SOUL.md](/user-guide/features/personality)
+- [Context Files](/user-guide/features/context-files)
 
 ## Working Directory
 

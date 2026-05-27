@@ -736,8 +736,8 @@ def init_agent(
                 client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
             elif "default_headers" not in client_kwargs:
                 # Fall back to profile.default_headers for providers that
-                # declare custom headers (e.g. Vercel AI Gateway attribution,
-                # Kimi User-Agent on non-kimi.com endpoints).
+                # declare custom headers (e.g. Kimi User-Agent on non-kimi.com
+                # endpoints).
                 try:
                     from providers import get_provider_profile as _gpf
                     _ph = _gpf(agent.provider)
@@ -976,16 +976,14 @@ def init_agent(
 
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session
-    # coordination, and logging.  Uses the ContextVar system from
-    # session_context.py for concurrency safety (gateway runs multiple
-    # sessions in one process).  Also writes os.environ as fallback for
-    # CLI mode where ContextVars aren't used.
-    os.environ["HERMES_SESSION_ID"] = agent.session_id
+    # coordination, and logging. Keep the ContextVar and os.environ
+    # fallback synchronized because different tool paths still read both.
     try:
-        from gateway.session_context import _SESSION_ID
-        _SESSION_ID.set(agent.session_id)
+        from gateway.session_context import set_current_session_id
+
+        set_current_session_id(agent.session_id)
     except Exception:
-        pass  # CLI/test mode — ContextVar not needed
+        os.environ["HERMES_SESSION_ID"] = agent.session_id
 
     # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
     hermes_home = get_hermes_home()
@@ -1007,6 +1005,13 @@ def init_agent(
     
     # Track conversation messages for session logging
     agent._session_messages: List[Dict[str, Any]] = []
+    # Responses encrypted reasoning replay state.  Some OpenAI-compatible
+    # routes accept GPT-5 Responses requests but later reject replayed
+    # encrypted reasoning blobs (HTTP 400 ``invalid_encrypted_content``).
+    # When that happens we disable replay for the rest of the session and
+    # fall back to stateless continuity.  See
+    # agent/conversation_loop.py's invalid_encrypted_content retry branch.
+    agent._codex_reasoning_replay_enabled = True
     agent._memory_write_origin = "assistant_tool"
     agent._memory_write_context = "foreground"
     
@@ -1429,6 +1434,7 @@ def init_agent(
             base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""),
             provider=agent.provider,
+            api_mode=agent.api_mode,
         )
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)

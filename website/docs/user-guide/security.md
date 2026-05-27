@@ -144,7 +144,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 
 :::info
-**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `docker`, `singularity`, `modal`, or `daytona` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
 :::
 
 ### Approval Flow (CLI)
@@ -340,7 +340,7 @@ terminal:
 - **Ephemeral mode** (`container_persistent: false`): Uses tmpfs for workspace — everything is lost on cleanup
 
 :::tip
-For production gateway deployments, use `docker`, `modal`, `daytona`, or `vercel_sandbox` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+For production gateway deployments, use `docker`, `modal`, or `daytona` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
 :::
 
 :::warning
@@ -357,7 +357,6 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **singularity** | Container | ❌ Skipped | HPC environments |
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
-| **vercel_sandbox** | Cloud microVM | ❌ Skipped | Cloud execution with snapshot persistence |
 
 ## Environment Variable Passthrough {#environment-variable-passthrough}
 
@@ -495,7 +494,7 @@ security:
 
 When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_navigate`, and all URL-capable tools.
 
-See [Website Blocklist](/docs/user-guide/configuration#website-blocklist) in the configuration guide for full details.
+See [Website Blocklist](/user-guide/configuration#website-blocklist) in the configuration guide for full details.
 
 ### SSRF Protection
 

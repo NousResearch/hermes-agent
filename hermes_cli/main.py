@@ -280,20 +280,29 @@ load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 # module-import time). Without this, config.yaml's toggle is ignored because
 # the setup_logging() call below imports agent.redact, which reads the env var
 # exactly once. Env var in .env still wins — this is config.yaml fallback only.
+#
+# We also read network.force_ipv4 from the same yaml load to avoid two
+# separate config.yaml reads (saves ~17ms on every CLI startup — the second
+# `load_config()` was doing a full deep-merge for one boolean lookup).
+_FORCE_IPV4_EARLY = False
 try:
-    if "HERMES_REDACT_SECRETS" not in os.environ:
-        import yaml as _yaml_early
+    import yaml as _yaml_early
 
-        _cfg_path = get_hermes_home() / "config.yaml"
-        if _cfg_path.exists():
-            with open(_cfg_path, encoding="utf-8") as _f:
-                _early_sec_cfg = (_yaml_early.safe_load(_f) or {}).get("security", {})
+    _cfg_path = get_hermes_home() / "config.yaml"
+    if _cfg_path.exists():
+        with open(_cfg_path, encoding="utf-8") as _f:
+            _early_cfg_raw = _yaml_early.safe_load(_f) or {}
+        if "HERMES_REDACT_SECRETS" not in os.environ:
+            _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
                 _early_redact = _early_sec_cfg.get("redact_secrets")
                 if _early_redact is not None:
                     os.environ["HERMES_REDACT_SECRETS"] = str(_early_redact).lower()
-            del _early_sec_cfg
-        del _cfg_path
+        _early_net_cfg = _early_cfg_raw.get("network", {})
+        if isinstance(_early_net_cfg, dict) and _early_net_cfg.get("force_ipv4"):
+            _FORCE_IPV4_EARLY = True
+        del _early_cfg_raw
+    del _cfg_path
 except Exception:
     pass  # best-effort — redaction stays at default (enabled) on config errors
 
@@ -307,17 +316,15 @@ except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
 # Apply IPv4 preference early, before any HTTP clients are created.
-try:
-    from hermes_cli.config import load_config as _load_config_early
-    from hermes_constants import apply_ipv4_preference as _apply_ipv4
+# We already determined whether to force IPv4 from the raw yaml read above —
+# this just calls the toggle without a redundant load_config() round trip.
+if _FORCE_IPV4_EARLY:
+    try:
+        from hermes_constants import apply_ipv4_preference as _apply_ipv4
 
-    _early_cfg = _load_config_early()
-    _net = _early_cfg.get("network", {})
-    if isinstance(_net, dict) and _net.get("force_ipv4"):
         _apply_ipv4(force=True)
-    del _early_cfg, _net
-except Exception:
-    pass  # best-effort — don't crash if config isn't available yet
+    except Exception:
+        pass  # best-effort — don't crash if hermes_constants not importable yet
 
 import logging
 import threading
@@ -1454,7 +1461,7 @@ def _launch_tui(
     provider: Optional[str] = None,
     toolsets: object = None,
     skills: object = None,
-    verbose: bool = False,
+    verbose: Optional[bool] = None,
     quiet: bool = False,
     query: Optional[str] = None,
     image: Optional[str] = None,
@@ -1763,7 +1770,7 @@ def cmd_chat(args):
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             skills=getattr(args, "skills", None),
-            verbose=getattr(args, "verbose", False),
+            verbose=getattr(args, "verbose", None),
             quiet=getattr(args, "quiet", False),
             query=getattr(args, "query", None),
             image=getattr(args, "image", None),
@@ -1783,7 +1790,7 @@ def cmd_chat(args):
         "provider": getattr(args, "provider", None),
         "toolsets": args.toolsets,
         "skills": getattr(args, "skills", None),
-        "verbose": args.verbose,
+        "verbose": getattr(args, "verbose", None),
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
         "image": getattr(args, "image", None),
@@ -2367,8 +2374,6 @@ def select_provider_and_model(args=None):
     # Step 2: Provider-specific setup + model selection
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
-    elif selected_provider == "ai-gateway":
-        _model_flow_ai_gateway(config, current_model)
     elif selected_provider == "nous":
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
@@ -2412,6 +2417,7 @@ def select_provider_and_model(args=None):
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
     elif selected_provider in {
+        "openai-api",
         "gemini",
         "deepseek",
         "xai",
@@ -2505,6 +2511,27 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
 ]
 
 
+def _all_aux_tasks() -> list[tuple[str, str, str]]:
+    """Return built-in + plugin-registered auxiliary tasks for picker/menu use.
+
+    Built-in tasks come first (preserving order), followed by plugin tasks
+    sorted by key. Used by ``_aux_config_menu``, ``_reset_aux_to_auto``, and
+    display-name lookups so plugin-registered tasks (registered via
+    :meth:`hermes_cli.plugins.PluginContext.register_auxiliary_task`) appear
+    in the same surfaces as built-in ones without core knowing about them.
+    """
+    tasks = list(_AUX_TASKS)
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        for entry in get_plugin_auxiliary_tasks():
+            tasks.append((entry["key"], entry["display_name"], entry["description"]))
+    except Exception:
+        # Plugin discovery failure must not break the aux config UI.
+        # Built-in tasks remain available.
+        pass
+    return tasks
+
+
 def _format_aux_current(task_cfg: dict) -> str:
     """Render the current aux config for display in the task menu."""
     if not isinstance(task_cfg, dict):
@@ -2555,7 +2582,11 @@ def _save_aux_choice(
 
 
 def _reset_aux_to_auto() -> int:
-    """Reset every known aux task back to auto/empty. Returns number reset."""
+    """Reset every known aux task back to auto/empty. Returns number reset.
+
+    Includes plugin-registered tasks (via ``_all_aux_tasks``) so a plugin
+    that contributed an auxiliary task gets reset alongside built-ins.
+    """
     from hermes_cli.config import load_config, save_config
 
     cfg = load_config()
@@ -2564,7 +2595,7 @@ def _reset_aux_to_auto() -> int:
         aux = {}
         cfg["auxiliary"] = aux
     count = 0
-    for task, _name, _desc in _AUX_TASKS:
+    for task, _name, _desc in _all_aux_tasks():
         entry = aux.setdefault(task, {})
         if not isinstance(entry, dict):
             entry = {}
@@ -2607,10 +2638,11 @@ def _aux_config_menu() -> None:
         print()
 
         # Build the task menu with current settings inline
-        name_col = max(len(name) for _, name, _ in _AUX_TASKS) + 2
-        desc_col = max(len(desc) for _, _, desc in _AUX_TASKS) + 4
+        all_tasks = _all_aux_tasks()
+        name_col = max(len(name) for _, name, _ in all_tasks) + 2
+        desc_col = max(len(desc) for _, _, desc in all_tasks) + 4
         entries: list[tuple[str, str]] = []
-        for task_key, name, desc in _AUX_TASKS:
+        for task_key, name, desc in all_tasks:
             task_cfg = (
                 aux.get(task_key, {}) if isinstance(aux.get(task_key), dict) else {}
             )
@@ -2661,7 +2693,7 @@ def _aux_select_for_task(task: str) -> None:
     current_model = str(task_cfg.get("model") or "").strip()
     current_base_url = str(task_cfg.get("base_url") or "").strip()
 
-    display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
+    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
 
     # Gather authenticated providers (has credentials + curated model list)
     try:
@@ -2732,7 +2764,7 @@ def _aux_flow_provider_model(
     from hermes_cli.auth import _prompt_model_selection
     from hermes_cli.models import get_pricing_for_provider
 
-    display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
+    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
 
     # Fetch live pricing for this provider (non-blocking)
     pricing: dict = {}
@@ -2776,9 +2808,9 @@ def _aux_flow_provider_model(
 
 def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     """Prompt for a direct OpenAI-compatible base_url + optional api_key/model."""
-    import getpass
+    from hermes_cli.secret_prompt import masked_secret_prompt
 
-    display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
+    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
     current_base_url = str(task_cfg.get("base_url") or "").strip()
     current_model = str(task_cfg.get("model") or "").strip()
 
@@ -2810,7 +2842,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
         return
     model = model or current_model
     try:
-        api_key = getpass.getpass(
+        api_key = masked_secret_prompt(
             "API key (optional, blank = use OPENAI_API_KEY): "
         ).strip()
     except (KeyboardInterrupt, EOFError):
@@ -2924,59 +2956,6 @@ def _model_flow_openrouter(config, current_model=""):
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
-    else:
-        print("No change.")
-
-
-def _model_flow_ai_gateway(config, current_model=""):
-    """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
-    from hermes_constants import AI_GATEWAY_BASE_URL
-    from hermes_cli.auth import (
-        PROVIDER_REGISTRY,
-        _prompt_model_selection,
-        _save_model_choice,
-        deactivate_provider,
-    )
-    from hermes_cli.config import get_env_value
-
-    # Route through _prompt_api_key so users can replace a stale/broken key
-    # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand.
-    pconfig = PROVIDER_REGISTRY["ai-gateway"]
-    existing_key = get_env_value("AI_GATEWAY_API_KEY") or ""
-    if not existing_key:
-        print(
-            "Create API key here: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway&title=AI+Gateway"
-        )
-        print("Add a payment method to get $5 in free credits.")
-        print()
-    _resolved, abort = _prompt_api_key(pconfig, existing_key, provider_id="ai-gateway")
-    if abort:
-        return
-
-    from hermes_cli.models import ai_gateway_model_ids, get_pricing_for_provider
-
-    models_list = ai_gateway_model_ids(force_refresh=True)
-    pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
-
-    selected = _prompt_model_selection(
-        models_list, current_model=current_model, pricing=pricing
-    )
-    if selected:
-        _save_model_choice(selected)
-
-        from hermes_cli.config import load_config, save_config
-
-        cfg = load_config()
-        model = cfg.get("model")
-        if not isinstance(model, dict):
-            model = {"default": model} if model else {}
-            cfg["model"] = model
-        model["provider"] = "ai-gateway"
-        model["base_url"] = AI_GATEWAY_BASE_URL
-        model["api_mode"] = "chat_completions"
-        save_config(cfg)
-        deactivate_provider()
-        print(f"Default model set to: {selected} (via Vercel AI Gateway)")
     else:
         print("No change.")
 
@@ -3261,7 +3240,7 @@ def _model_flow_openai_codex(config, current_model=""):
 
 
 def _model_flow_xai_oauth(_config, current_model="", *, args=None):
-    """xAI Grok OAuth (SuperGrok Subscription) provider: ensure logged in, then pick model."""
+    """xAI Grok OAuth (SuperGrok / Premium+) provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_xai_oauth_auth_status,
         _prompt_model_selection,
@@ -3276,7 +3255,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
 
     status = get_xai_oauth_auth_status()
     if status.get("logged_in"):
-        print("  xAI Grok OAuth (SuperGrok Subscription) credentials: ✓")
+        print("  xAI Grok OAuth (SuperGrok / Premium+) credentials: ✓")
         print()
         print("    1. Use existing credentials")
         print("    2. Reauthenticate (new OAuth login)")
@@ -3314,7 +3293,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         elif choice == "3":
             return
     else:
-        print("Not logged into xAI Grok OAuth (SuperGrok Subscription). Starting login...")
+        print("Not logged into xAI Grok OAuth (SuperGrok / Premium+). Starting login...")
         print()
         try:
             mock_args = argparse.Namespace(
@@ -3348,7 +3327,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
-        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok Subscription)")
+        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
     else:
         print("No change.")
 
@@ -3534,6 +3513,7 @@ def _model_flow_custom(config):
     """
     from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import get_env_value, load_config, save_config
+    from hermes_cli.secret_prompt import masked_secret_prompt
 
     current_url = get_env_value("OPENAI_BASE_URL") or ""
     current_key = get_env_value("OPENAI_API_KEY") or ""
@@ -3549,9 +3529,7 @@ def _model_flow_custom(config):
         base_url = input(
             f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: "
         ).strip()
-        import getpass
-
-        api_key = getpass.getpass(
+        api_key = masked_secret_prompt(
             f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: "
         ).strip()
     except (KeyboardInterrupt, EOFError):
@@ -3963,7 +3941,6 @@ def _model_flow_azure_foundry(config, current_model=""):
         save_config,
     )
     from hermes_cli import azure_detect
-    import getpass
 
     # ── Load current Azure Foundry configuration ─────────────────────
     model_cfg = config.get("model", {})
@@ -4126,8 +4103,10 @@ def _model_flow_azure_foundry(config, current_model=""):
             token_provider = None
     else:
         print()
+        from hermes_cli.secret_prompt import masked_secret_prompt
+
         try:
-            api_key = getpass.getpass(
+            api_key = masked_secret_prompt(
                 f"API key [{current_api_key[:8] + '...' if current_api_key else 'required'}]: "
             ).strip()
         except (KeyboardInterrupt, EOFError):
@@ -4524,11 +4503,27 @@ def _model_flow_named_custom(config, provider_info):
     print(f"   Provider: {name} ({base_url})")
 
 
-# Keep the historical eager model catalog import on desktop/CI. Termux defers
-# it to the model-selection handlers so plain `hermes --tui` does not pay for
-# requests/models.dev catalog imports before the Node TUI starts.
-if not _is_termux_startup_environment():
-    from hermes_cli.models import _PROVIDER_MODELS
+# Lazy-export the model catalog at module level. Tests and a handful of
+# downstream call sites read `hermes_cli.main._PROVIDER_MODELS` directly,
+# so the symbol needs to be reachable as a module attribute. But importing
+# the catalog eagerly costs ~55ms on every `hermes` invocation — including
+# fast paths like `hermes --version` and slash-command dispatch that never
+# touch the catalog. PEP 562 module-level __getattr__ defers the import
+# until first attribute access, so the cost is only paid by callers that
+# actually look up the catalog. Termux already defers via the same
+# mechanism (its model-selection handlers do their own function-local
+# imports), so the explicit termux branch from before is no longer needed.
+_LAZY_MODEL_EXPORTS = ("_PROVIDER_MODELS",)
+
+
+def __getattr__(name):
+    """Defer the model-catalog import until something actually reads it."""
+    if name in _LAZY_MODEL_EXPORTS:
+        from hermes_cli.models import _PROVIDER_MODELS
+        # Cache on the module so subsequent accesses skip the import machinery.
+        globals()[name] = _PROVIDER_MODELS
+        return _PROVIDER_MODELS
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _current_reasoning_effort(config) -> str:
@@ -4698,10 +4693,10 @@ def _model_flow_copilot(config, current_model=""):
                 print(f"  Login failed: {exc}")
                 return
         elif choice == "2":
-            try:
-                import getpass
+            from hermes_cli.secret_prompt import masked_secret_prompt
 
-                new_key = getpass.getpass("  Token (COPILOT_GITHUB_TOKEN): ").strip()
+            try:
+                new_key = masked_secret_prompt("  Token (COPILOT_GITHUB_TOKEN): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
@@ -4953,10 +4948,9 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
     ``return`` immediately — the user cancelled entry, declined to replace, or
     cleared the key and is now unconfigured.
     """
-    import getpass
-
     from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
     from hermes_cli.config import save_env_value
+    from hermes_cli.secret_prompt import masked_secret_prompt
 
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
 
@@ -4966,7 +4960,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         else:
             prompt = f"{key_env} (or Enter to cancel): "
         try:
-            entered = getpass.getpass(prompt).strip()
+            entered = masked_secret_prompt(prompt).strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return ""
@@ -5281,10 +5275,10 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     else:
         print(f"  Endpoint: {mantle_base_url}")
         print()
-        try:
-            import getpass
+        from hermes_cli.secret_prompt import masked_secret_prompt
 
-            api_key = getpass.getpass("  Bedrock API Key: ").strip()
+        try:
+            api_key = masked_secret_prompt("  Bedrock API Key: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
@@ -5856,10 +5850,10 @@ def _run_anthropic_oauth_flow(save_env_value):
         print()
         print("  If the setup-token was displayed above, paste it here:")
         print()
-        try:
-            import getpass
+        from hermes_cli.secret_prompt import masked_secret_prompt
 
-            manual_token = getpass.getpass(
+        try:
+            manual_token = masked_secret_prompt(
                 "  Paste setup-token (or Enter to cancel): "
             ).strip()
         except (KeyboardInterrupt, EOFError):
@@ -5887,10 +5881,10 @@ def _run_anthropic_oauth_flow(save_env_value):
         print()
         print("  Or paste an existing setup-token now (sk-ant-oat-...):")
         print()
-        try:
-            import getpass
+        from hermes_cli.secret_prompt import masked_secret_prompt
 
-            token = getpass.getpass("  Setup-token (or Enter to cancel): ").strip()
+        try:
+            token = masked_secret_prompt("  Setup-token (or Enter to cancel): ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return False
@@ -6005,10 +5999,10 @@ def _model_flow_anthropic(config, current_model=""):
             print()
             print("  Get an API key at: https://platform.claude.com/settings/keys")
             print()
-            try:
-                import getpass
+            from hermes_cli.secret_prompt import masked_secret_prompt
 
-                api_key = getpass.getpass("  API key (sk-ant-...): ").strip()
+            try:
+                api_key = masked_secret_prompt("  API key (sk-ant-...): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
@@ -6097,6 +6091,13 @@ def cmd_webhook(args):
     webhook_command(args)
 
 
+def cmd_portal(args):
+    """Nous Portal status and Tool Gateway routing surface."""
+    from hermes_cli.portal_cli import portal_command
+
+    return portal_command(args)
+
+
 def cmd_slack(args):
     """Slack integration helpers.
 
@@ -6147,6 +6148,19 @@ def cmd_doctor(args):
     from hermes_cli.doctor import run_doctor
 
     run_doctor(args)
+
+
+def cmd_security(args):
+    """Dispatch `hermes security <subcmd>`."""
+    sub = getattr(args, "security_command", None)
+    if sub in ("audit", None):
+        from hermes_cli.security_audit import cmd_security_audit
+
+        # Default subcommand is `audit` when no subcmd is given.
+        code = cmd_security_audit(args)
+        sys.exit(int(code or 0))
+    print(f"unknown security subcommand: {sub}", file=sys.stderr)
+    sys.exit(2)
 
 
 def cmd_dump(args):
@@ -6919,20 +6933,43 @@ def _update_via_zip(args):
     import zipfile
     from urllib.request import urlretrieve
 
-    branch = "main"
+    # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
+    # static archive from GitHub, which is fine for the default "main"
+    # channel but would silently ignore --branch and update from main even
+    # if the user asked for something else — exactly the silent-divergence
+    # bug --branch was added to prevent. Refuse to proceed in that case
+    # rather than lie.
+    branch = _resolve_update_branch(args)
+    if branch != "main":
+        print(
+            f"✗ --branch={branch} is not supported on the Windows ZIP-fallback "
+            "update path."
+        )
+        print(
+            "  This path runs when git file I/O is broken on the system. "
+            "Either resolve the git-side breakage (typically an antivirus "
+            "or NTFS filter holding files open) and rerun `hermes update "
+            f"--branch {branch}`, or update against main with `hermes update`."
+        )
+        sys.exit(1)
     zip_url = (
         f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )
 
     print("→ Downloading latest version...")
+    tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
     try:
-        tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
         zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
         urlretrieve(zip_url, zip_path)
 
         print("→ Extracting...")
+        import stat as _stat
         with zipfile.ZipFile(zip_path, "r") as zf:
-            # Validate paths to prevent zip-slip (path traversal)
+            # Validate paths to prevent zip-slip (path traversal) AND reject
+            # symlink members. A GitHub source ZIP for hermes-agent itself
+            # should never contain symlinks — they'd point outside the
+            # extracted tree and let an attacker who can compromise the
+            # update mirror plant arbitrary files via the update path.
             tmp_dir_real = os.path.realpath(tmp_dir)
             for member in zf.infolist():
                 member_path = os.path.realpath(os.path.join(tmp_dir, member.filename))
@@ -6942,6 +6979,13 @@ def _update_via_zip(args):
                 ):
                     raise ValueError(
                         f"Zip-slip detected: {member.filename} escapes extraction directory"
+                    )
+                # Unix mode lives in the upper 16 bits of external_attr;
+                # mask to the file-type bits.
+                mode = (member.external_attr >> 16) & 0o170000
+                if _stat.S_ISLNK(mode):
+                    raise ValueError(
+                        f"ZIP contains unsupported symlink member: {member.filename}"
                     )
             zf.extractall(tmp_dir)
 
@@ -6973,12 +7017,11 @@ def _update_via_zip(args):
 
         print(f"✓ Updated {update_count} items from ZIP")
 
-        # Cleanup
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
     except Exception as e:
         print(f"✗ ZIP update failed: {e}")
         sys.exit(1)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # Clear stale bytecode after ZIP extraction
     removed = _clear_bytecode_cache(PROJECT_ROOT)
@@ -7620,8 +7663,11 @@ def _detect_concurrent_hermes_instances(
 
     This helper enumerates processes whose ``exe`` matches one of the venv's
     shims (``hermes.exe`` / ``hermes-gateway.exe``) and returns ``(pid,
-    process_name)`` pairs. The caller's own PID is excluded so the running
-    ``hermes update`` invocation never reports itself.
+    process_name)`` pairs. The caller's own PID and its entire ancestor
+    chain are excluded so the running ``hermes update`` invocation never
+    reports itself — this matters on Windows where the setuptools .exe
+    launcher (``hermes.exe``) is a separate process from the Python
+    interpreter it loads (``python.exe``).
 
     Returns an empty list off-Windows, on missing psutil, or when no other
     instances exist. Never raises — process enumeration is best-effort.
@@ -7634,8 +7680,38 @@ def _detect_concurrent_hermes_instances(
     except Exception:
         return []
 
-    if exclude_pid is None:
-        exclude_pid = os.getpid()
+    # Build a set of PIDs to exclude: the Python process itself plus its
+    # entire parent chain. On Windows the setuptools-generated hermes.exe
+    # launcher is a separate native process that spawns python.exe (the
+    # interpreter that runs our code).  os.getpid() returns the Python PID,
+    # but the launcher (which holds the file lock) is the parent.  Without
+    # walking the parent chain, every ``hermes update`` reports its own
+    # launcher as a concurrent instance — a false positive.
+    if exclude_pid is not None:
+        exclude_pids: set[int] = {exclude_pid}
+    else:
+        exclude_pids = {os.getpid()}
+    # The parent-walk is best-effort: if psutil rejects a PID (NoSuchProcess /
+    # AccessDenied) we stop walking and use whatever we've collected so far.
+    # Broader Exception catch on the outer block guards against partially-
+    # stubbed psutil in unit tests (e.g. a SimpleNamespace lacking Process /
+    # NoSuchProcess) — the surrounding update flow documents this helper as
+    # "never raises".
+    try:
+        current = psutil.Process(next(iter(exclude_pids)))
+        while True:
+            try:
+                parent = current.parent()
+            except Exception:
+                break
+            if parent is None or parent.pid <= 0:
+                break
+            if parent.pid in exclude_pids:
+                break  # loop detected
+            exclude_pids.add(parent.pid)
+            current = parent
+    except Exception:
+        pass
 
     # Resolve every shim path to its canonical form once for cheap comparison.
     shim_paths: set[str] = set()
@@ -7660,7 +7736,7 @@ def _detect_concurrent_hermes_instances(
             continue
         pid = info.get("pid")
         exe = info.get("exe")
-        if not exe or pid is None or pid == exclude_pid:
+        if not exe or pid is None or pid in exclude_pids:
             continue
         try:
             exe_norm = str(Path(exe).resolve()).lower()
@@ -8282,13 +8358,36 @@ def _finalize_update_output(state):
             pass
 
 
-def _cmd_update_check():
-    """Implement ``hermes update --check``: fetch and report without installing."""
+def _resolve_update_branch(args) -> str:
+    """Normalize ``args.branch`` into a non-empty branch name.
+
+    Centralizes the "default to main, accept --branch override, treat empty
+    or whitespace-only values as the default" parsing so every consumer of
+    ``--branch`` (check path, git-update path, ZIP-fallback path) agrees on
+    the same answer.
+    """
+    return (getattr(args, "branch", None) or "main").strip() or "main"
+
+
+def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+    """Implement ``hermes update --check``: fetch and report without installing.
+
+    ``branch`` selects which branch the check compares against. Default is
+    "main"; callers can pass another branch to ask "are there new commits
+    on origin/<branch>?" without performing the update.
+
+    ``branch_explicit`` is True iff the caller passed --branch on the CLI.
+    PyPI installs can't honor non-default branches, so when this is True
+    on a PyPI install we surface a one-line notice instead of silently
+    dropping the flag.
+    """
     from hermes_cli.config import detect_install_method
     method = detect_install_method(PROJECT_ROOT)
     if method == "pip":
         from hermes_cli.config import recommended_update_command
         from hermes_cli.banner import check_via_pypi
+        if branch_explicit and branch != "main":
+            print(f"⚠ --branch is ignored for PyPI installs (would have checked '{branch}').")
         result = check_via_pypi()
         if result is None:
             print("✗ Could not reach PyPI to check for updates.")
@@ -8309,16 +8408,34 @@ def _cmd_update_check():
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Fetch both origin and upstream; prefer upstream as the canonical reference
-    print("→ Fetching from upstream...")
-    fetch_result = subprocess.run(
-        git_cmd + ["fetch", "upstream"],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if fetch_result.returncode != 0:
-        # Fallback to origin if upstream doesn't exist
+    # Fetch both origin and upstream; prefer upstream as the canonical reference.
+    # Note: upstream/<branch> may not exist for non-main branches (a fork's
+    # bb/gui has no upstream counterpart), so when the caller picks a
+    # non-default branch we skip the upstream probe and use origin directly.
+    if branch == "main":
+        print("→ Fetching from upstream...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "upstream"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if fetch_result.returncode != 0:
+            # Fallback to origin if upstream doesn't exist
+            print("→ Fetching from origin...")
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "origin"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            upstream_exists = False
+            compare_branch = f"origin/{branch}"
+        else:
+            upstream_exists = True
+            compare_branch = f"upstream/{branch}"
+    else:
+        # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch", "origin"],
@@ -8327,10 +8444,7 @@ def _cmd_update_check():
             text=True,
         )
         upstream_exists = False
-        compare_branch = "origin/main"
-    else:
-        upstream_exists = True
-        compare_branch = "upstream/main"
+        compare_branch = f"origin/{branch}"
 
     if fetch_result.returncode != 0:
         stderr = fetch_result.stderr.strip()
@@ -8342,6 +8456,20 @@ def _cmd_update_check():
             print("✗ Failed to fetch.")
             if stderr:
                 print(f"  {stderr.splitlines()[0]}")
+        sys.exit(1)
+
+    # Verify the compare ref actually exists before asking rev-list about it.
+    # Without this, `git rev-list HEAD..origin/<bogus> --count` exits 128 and
+    # (with check=True) raises CalledProcessError, surfacing a Python
+    # traceback. Friendlier to detect-and-report.
+    verify_result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if verify_result.returncode != 0:
+        print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
 
     rev_result = subprocess.run(
@@ -8562,7 +8690,13 @@ def cmd_update(args):
         return
 
     if getattr(args, "check", False):
-        _cmd_update_check()
+        # --check honors --branch so the "any new commits?" answer matches
+        # what a subsequent `hermes update --branch=<x>` would actually pull.
+        branch = _resolve_update_branch(args)
+        _cmd_update_check(
+            branch=branch,
+            branch_explicit=bool(getattr(args, "branch", None)),
+        )
         return
 
     gateway_mode = getattr(args, "gateway", False)
@@ -8722,26 +8856,57 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
-        # Always update against main
-        branch = "main"
+        # Determine the target branch. Default is "main" (the long-standing
+        # CLI behavior); --branch overrides for callers that want to update
+        # against a non-default channel.
+        branch = _resolve_update_branch(args)
 
-        # If user is on a non-main branch or detached HEAD, switch to main
-        if current_branch != "main":
+        # If user is on a different branch than the update target, switch
+        # to the target. When the target is "main" this is the historical
+        # "always update against main" behavior; for any other target it's
+        # the same thing — get HEAD onto the requested branch first, then
+        # fast-forward.
+        if current_branch != branch:
             label = (
                 "detached HEAD"
                 if current_branch == "HEAD"
                 else f"branch '{current_branch}'"
             )
-            print(f"  ⚠ Currently on {label} — switching to main for update...")
+            print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            subprocess.run(
-                git_cmd + ["checkout", "main"],
+            checkout_result = subprocess.run(
+                git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
-                check=True,
             )
+            if checkout_result.returncode != 0:
+                # Local checkout doesn't have this branch yet. Try to set
+                # it up as a tracking branch of origin/<branch>. This is
+                # the common case when the requested branch exists upstream
+                # but was never checked out locally.
+                track_result = subprocess.run(
+                    git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if track_result.returncode != 0:
+                    # Restore the user's prior branch + stash before bailing
+                    # so we don't leave them stranded in a weird state.
+                    if auto_stash_ref is not None:
+                        _restore_stashed_changes(
+                            git_cmd,
+                            PROJECT_ROOT,
+                            auto_stash_ref,
+                            prompt_user=False,
+                            input_fn=gw_input_fn,
+                        )
+                    print(f"✗ Branch '{branch}' does not exist locally or on origin.")
+                    if track_result.stderr.strip():
+                        print(f"  {track_result.stderr.strip().splitlines()[0]}")
+                    sys.exit(1)
         else:
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
@@ -8772,7 +8937,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in {"main", "HEAD"}:
+            if current_branch not in {branch, "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=PROJECT_ROOT,
@@ -8834,7 +8999,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
                     print(
-                        "  Try manually: git fetch origin && git reset --hard origin/main"
+                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
                     )
                     sys.exit(1)
 
@@ -9810,6 +9975,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "honcho",
         "claw",
         "plugins",
+        "security",
         "acp",
         "webhook",
         "memory",
@@ -10569,6 +10735,22 @@ def cmd_dashboard(args):
             sys.exit(1)
         print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
 
+    # Discover and load plugins so any DashboardAuthProvider plugin
+    # (e.g. plugins/dashboard_auth/nous) registers BEFORE start_server's
+    # fail-closed gate check runs. The top-level argparse setup skips
+    # plugin discovery for built-in subcommands like ``dashboard`` to
+    # save ~500ms startup; we have to trigger it explicitly here because
+    # the dashboard's server-side runtime depends on plugin-registered
+    # providers (image_gen, web, dashboard_auth, …).
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    except Exception as exc:
+        # Discovery failures must not block dashboard startup outright —
+        # log and proceed; the gate's fail-closed branch will surface
+        # the missing-provider state if it matters.
+        print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
+
     from hermes_cli.web_server import start_server
 
     embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
@@ -10647,10 +10829,10 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "model", "pairing", "plugins", "postinstall", "profile", "proxy",
+        "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "chat", "secrets",
+        "version", "webhook", "whatsapp", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -11384,6 +11566,13 @@ def main():
         help="On existing installs: only prompt for items that are missing "
         "or unset, instead of running the full reconfigure wizard.",
     )
+    setup_parser.add_argument(
+        "--portal",
+        action="store_true",
+        help="One-shot Nous Portal setup: log in via OAuth, set Nous as the "
+        "inference provider, and opt into the Tool Gateway. Skips the "
+        "rest of the wizard.",
+    )
     setup_parser.set_defaults(func=cmd_setup)
 
     # =========================================================================
@@ -11860,6 +12049,12 @@ def main():
     webhook_parser.set_defaults(func=cmd_webhook)
 
     # =========================================================================
+    # portal command — Nous Portal status + Tool Gateway routing
+    # =========================================================================
+    from hermes_cli.portal_cli import add_parser as _add_portal_parser
+    _add_portal_parser(subparsers)
+
+    # =========================================================================
     # kanban command — multi-profile collaboration board
     # =========================================================================
     from hermes_cli.kanban import build_parser as _build_kanban_parser
@@ -11956,6 +12151,58 @@ def main():
         ),
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # security command — on-demand supply-chain audit
+    # =========================================================================
+    security_parser = subparsers.add_parser(
+        "security",
+        help="Supply-chain audit (OSV.dev) for venv, plugins, and MCP servers",
+        description=(
+            "On-demand vulnerability scan against OSV.dev. Covers the Hermes "
+            "venv (installed PyPI dists), Python deps declared by plugins under "
+            "~/.hermes/plugins/, and pinned npx/uvx MCP servers in config.yaml. "
+            "Does NOT scan globally-installed packages or editor/browser extensions."
+        ),
+    )
+    security_subparsers = security_parser.add_subparsers(
+        dest="security_command",
+        metavar="<subcommand>",
+    )
+
+    audit_parser = security_subparsers.add_parser(
+        "audit",
+        help="Run a one-shot supply-chain audit",
+        description="Query OSV.dev for known vulnerabilities in installed components.",
+    )
+    audit_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of human-readable text",
+    )
+    audit_parser.add_argument(
+        "--fail-on",
+        default="critical",
+        choices=["low", "moderate", "high", "critical"],
+        help="Exit non-zero when any finding meets this severity (default: critical)",
+    )
+    audit_parser.add_argument(
+        "--skip-venv",
+        action="store_true",
+        help="Skip scanning the Hermes Python venv",
+    )
+    audit_parser.add_argument(
+        "--skip-plugins",
+        action="store_true",
+        help="Skip scanning plugin requirements files",
+    )
+    audit_parser.add_argument(
+        "--skip-mcp",
+        action="store_true",
+        help="Skip scanning pinned MCP servers in config.yaml",
+    )
+    audit_parser.set_defaults(func=cmd_security)
+    security_parser.set_defaults(func=cmd_security)
 
     # =========================================================================
     # dump command
@@ -12281,6 +12528,11 @@ Examples:
     )
     skills_audit.add_argument(
         "name", nargs="?", help="Specific skill to audit (default: all)"
+    )
+    skills_audit.add_argument(
+        "--deep",
+        action="store_true",
+        help="Run AST-level analysis on Python files (opt-in diagnostic)",
     )
 
     skills_uninstall = skills_subparsers.add_parser(
@@ -12834,6 +13086,24 @@ Examples:
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
 
+    # ── Catalog (Nous-approved MCPs shipped with the repo) ─────────────────
+    mcp_sub.add_parser(
+        "picker",
+        help="Interactive catalog picker (also the default for `hermes mcp`)",
+    )
+    mcp_sub.add_parser(
+        "catalog",
+        help="List Nous-approved MCPs available for one-click install",
+    )
+    mcp_install_p = mcp_sub.add_parser(
+        "install",
+        help="Install a catalog MCP by name (e.g. `hermes mcp install n8n`)",
+    )
+    mcp_install_p.add_argument(
+        "identifier",
+        help="Catalog entry name (or `official/<name>`)",
+    )
+
     _add_accept_hooks_flag(mcp_parser)
 
     def cmd_mcp(args):
@@ -13246,6 +13516,17 @@ Examples:
         action="store_true",
         default=False,
         help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
+    )
+    update_parser.add_argument(
+        "--branch",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Update against this branch instead of the default (main). "
+            "If the local checkout is on a different branch, hermes will "
+            "switch to the requested branch first (auto-stashing any "
+            "uncommitted changes)."
+        ),
     )
     update_parser.add_argument(
         "--force",
@@ -13761,7 +14042,7 @@ Examples:
             ("model", None),
             ("provider", None),
             ("toolsets", None),
-            ("verbose", False),
+            ("verbose", None),
             ("worktree", False),
         ]:
             if not hasattr(args, attr):
@@ -13776,7 +14057,7 @@ Examples:
             ("model", None),
             ("provider", None),
             ("toolsets", None),
-            ("verbose", False),
+            ("verbose", None),
             ("resume", None),
             ("continue_last", None),
             ("worktree", False),

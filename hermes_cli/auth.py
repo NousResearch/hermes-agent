@@ -49,6 +49,7 @@ import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
+from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -196,9 +197,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CODEX_BASE_URL,
     ),
+    "openai-api": ProviderConfig(
+        id="openai-api",
+        name="OpenAI API",
+        auth_type="api_key",
+        inference_base_url="https://api.openai.com/v1",
+        api_key_env_vars=("OPENAI_API_KEY",),
+        base_url_env_var="OPENAI_BASE_URL",
+    ),
     "xai-oauth": ProviderConfig(
         id="xai-oauth",
-        name="xAI Grok OAuth (SuperGrok Subscription)",
+        name="xAI Grok OAuth (SuperGrok / Premium+)",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL,
     ),
@@ -370,14 +379,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("NVIDIA_API_KEY",),
         base_url_env_var="NVIDIA_BASE_URL",
     ),
-    "ai-gateway": ProviderConfig(
-        id="ai-gateway",
-        name="Vercel AI Gateway",
-        auth_type="api_key",
-        inference_base_url="https://ai-gateway.vercel.sh/v1",
-        api_key_env_vars=("AI_GATEWAY_API_KEY",),
-        base_url_env_var="AI_GATEWAY_BASE_URL",
-    ),
     "opencode-zen": ProviderConfig(
         id="opencode-zen",
         name="OpenCode Zen",
@@ -393,6 +394,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         # OpenCode Go mixes API surfaces by model:
         # - GLM / Kimi use OpenAI-compatible chat completions under /v1
         # - MiniMax models use Anthropic Messages under /v1/messages
+        # - Qwen 3.7 uses Anthropic Messages under /v1/messages
         # Keep the provider base at /v1 and select api_mode per-model.
         inference_base_url="https://opencode.ai/zen/go/v1",
         api_key_env_vars=("OPENCODE_GO_API_KEY",),
@@ -553,6 +555,7 @@ _PLACEHOLDER_SECRET_VALUES = {
     "***",
     "changeme",
     "your_api_key",
+    "your_api_key_here",
     "your-api-key",
     "placeholder",
     "example",
@@ -726,6 +729,12 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
 # Error Types
 # =============================================================================
 
+# Error code marking upstream rate-limit / usage-quota exhaustion (HTTP 429).
+# Such failures are transient and re-authenticating cannot resolve them, so
+# they must be kept distinct from missing/expired-credential errors.
+CODEX_RATE_LIMITED_CODE = "codex_rate_limited"
+
+
 class AuthError(RuntimeError):
     """Structured auth error with UX mapping hints."""
 
@@ -743,9 +752,50 @@ class AuthError(RuntimeError):
         self.relogin_required = relogin_required
 
 
+def is_rate_limited_auth_error(error: Exception) -> bool:
+    """True when an :class:`AuthError` represents upstream rate-limiting / quota
+    exhaustion rather than missing or invalid credentials.
+
+    These failures are transient — re-authenticating cannot resolve them — so
+    callers should surface a "retry later" notice and prefer a fallback chain
+    instead of prompting the operator to run ``hermes auth``.
+    """
+    return (
+        isinstance(error, AuthError)
+        and not error.relogin_required
+        and error.code == CODEX_RATE_LIMITED_CODE
+    )
+
+
+def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
+    """Best-effort parse of a ``Retry-After`` header into whole seconds.
+
+    Supports the delta-seconds form (e.g. ``"120"``). HTTP-date forms and
+    missing/unparseable values return ``None`` rather than guessing.
+    """
+    if headers is None:
+        return None
+    try:
+        raw = headers.get("retry-after")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds >= 0 else None
+
+
 def format_auth_error(error: Exception) -> str:
     """Map auth failures to concise user-facing guidance."""
     if not isinstance(error, AuthError):
+        return str(error)
+
+    # Rate-limit / quota errors are not credential problems — never append the
+    # "re-authenticate" remediation, which would mislead the operator.
+    if is_rate_limited_auth_error(error):
         return str(error)
 
     if error.relogin_required:
@@ -1167,14 +1217,23 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
 
 def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:
-    """Persist one provider's credential pool under auth.json."""
+    """Persist one provider's credential pool under auth.json.
+
+    This is the final disk-boundary guard for borrowed/reference-only
+    credentials. Callers may pass raw dictionaries, so sanitize here even when
+    ``PooledCredential.to_dict()`` already did the same work upstream.
+    """
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
             pool = {}
             auth_store["credential_pool"] = pool
-        pool[provider_id] = list(entries)
+        pool[provider_id] = [
+            sanitize_borrowed_credential_payload(entry, provider_id)
+            if isinstance(entry, dict) else entry
+            for entry in entries
+        ]
         return _save_auth_store(auth_store)
 
 
@@ -1420,7 +1479,6 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
-        "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
@@ -2065,7 +2123,10 @@ def resolve_qwen_runtime_credentials(
 def get_qwen_auth_status() -> Dict[str, Any]:
     auth_path = _qwen_cli_auth_path()
     try:
-        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        # Validate the runtime credentials, including refresh when the cached
+        # CLI token is expired. Otherwise stale tokens show up as "logged in"
+        # and `hermes model` walks users into a broken Qwen setup flow.
+        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
         return {
             "logged_in": True,
             "auth_file": str(auth_path),
@@ -2466,6 +2527,32 @@ def _make_xai_callback_handler(expected_path: str) -> tuple[type[BaseHTTPRequest
                 "error_description": params.get("error_description", [None])[0],
             }
 
+            # Diagnostic logging — emits at INFO so reporters of loopback bugs
+            # (#27385 — "callback received but Hermes times out") can produce
+            # actionable evidence without a code change.  Logged values are
+            # fingerprints / booleans only; no actual code/state strings leak
+            # into the log file.  Run with ``HERMES_LOG_LEVEL=INFO`` (or check
+            # ``~/.hermes/logs/agent.log`` which captures INFO+ unconditionally).
+            try:
+                logger.info(
+                    "xAI loopback callback received: path=%s has_code=%s has_state=%s has_error=%s "
+                    "ua=%s",
+                    parsed.path,
+                    incoming["code"] is not None,
+                    incoming["state"] is not None,
+                    incoming["error"] is not None,
+                    (self.headers.get("User-Agent") or "")[:80],
+                )
+                if incoming["error"]:
+                    logger.info(
+                        "xAI loopback callback carries error=%s error_description=%s",
+                        incoming["error"],
+                        (incoming["error_description"] or "")[:200],
+                    )
+            except Exception:
+                # Logging must never break the OAuth flow.
+                pass
+
             # Treat a hit on the callback path with neither `code` nor `error`
             # as a missing OAuth callback (e.g. xAI's auth backend failed to
             # redirect and the user navigated to the bare loopback URL by hand).
@@ -2570,6 +2657,17 @@ def _xai_wait_for_callback(
         server.shutdown()
         server.server_close()
         thread.join(timeout=1.0)
+    # Diagnostic: distinguish "no callback ever arrived" from "callback
+    # arrived but result wasn't populated" (#27385).  The per-hit handler
+    # also logs at INFO; if neither line appears, xAI's IDP never reached
+    # the loopback at all (firewall, port-binding, IPv6/IPv4 mismatch).
+    logger.info(
+        "xAI loopback wait timed out after %.0fs with no usable callback "
+        "(result.code=%s result.error=%s)",
+        max(5.0, timeout_seconds),
+        result["code"] is not None,
+        result["error"] is not None,
+    )
     raise AuthError(
         "xAI authorization timed out waiting for the local callback.",
         provider="xai-oauth",
@@ -3172,6 +3270,48 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
+def _sync_codex_pool_entries(
+    auth_store: Dict[str, Any],
+    tokens: Dict[str, str],
+    last_refresh: Optional[str],
+) -> None:
+    """Mirror a fresh Codex re-auth into the credential_pool singleton entries.
+
+    The runtime selects credentials from ``credential_pool.openai-codex``, not
+    from ``providers.openai-codex.tokens``.  A re-auth invalidates the prior
+    OAuth pair server-side, but the pool's ``device_code`` entry keeps holding
+    the now-consumed refresh token plus any stale error markers — so the next
+    request spends a dead token and gets a 401 ``token_invalidated``.  Update
+    the singleton-seeded entries in lockstep with the provider tokens and clear
+    the error state so the fresh credentials take effect immediately.  Manual
+    (``manual:*``) entries are independent credentials and are left untouched.
+    """
+    access_token = tokens.get("access_token")
+    if not access_token:
+        return
+    refresh_token = tokens.get("refresh_token")
+    pool = auth_store.get("credential_pool")
+    if not isinstance(pool, dict):
+        return
+    entries = pool.get("openai-codex")
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("source") != "device_code":
+            continue
+        entry["access_token"] = access_token
+        if refresh_token:
+            entry["refresh_token"] = refresh_token
+        if last_refresh:
+            entry["last_refresh"] = last_refresh
+        entry["last_status"] = None
+        entry["last_status_at"] = None
+        entry["last_error_code"] = None
+        entry["last_error_reason"] = None
+        entry["last_error_message"] = None
+        entry["last_error_reset_at"] = None
+
+
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
@@ -3183,6 +3323,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
         _save_provider_state(auth_store, "openai-codex", state)
+        _sync_codex_pool_entries(auth_store, tokens, last_refresh)
         _save_auth_store(auth_store)
 
 
@@ -3212,6 +3353,30 @@ def refresh_codex_oauth_pure(
                 "refresh_token": refresh_token,
                 "client_id": CODEX_OAUTH_CLIENT_ID,
             },
+        )
+
+    if response.status_code == 429:
+        # Upstream rate-limit / usage-quota exhaustion on the token endpoint.
+        # The stored refresh token is still valid here — re-authenticating
+        # cannot lift a quota cap. Classify distinctly from auth failures so
+        # callers surface a "retry later" notice instead of a misleading
+        # "run hermes auth" prompt (see issue #32790).
+        retry_after = _parse_retry_after_seconds(getattr(response, "headers", None))
+        if retry_after is not None:
+            message = (
+                f"Codex provider quota exhausted (429); retry after {retry_after}s. "
+                "Credentials are still valid."
+            )
+        else:
+            message = (
+                "Codex provider quota exhausted (429). Credentials are still valid; "
+                "retry after the usage limit resets."
+            )
+        raise AuthError(
+            message,
+            provider="openai-codex",
+            code=CODEX_RATE_LIMITED_CODE,
+            relogin_required=False,
         )
 
     if response.status_code != 200:
@@ -3351,8 +3516,36 @@ def resolve_codex_runtime_credentials(
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
-    """Resolve runtime credentials from Hermes's own Codex token store."""
-    data = _read_codex_tokens()
+    """Resolve runtime credentials from Hermes's own Codex token store.
+
+    Falls back to the credential pool when the singleton (``providers.openai-codex.tokens``)
+    has no usable access_token but the pool (``credential_pool.openai-codex``) does. This
+    closes the divergence between the chat path (singleton-only via this function) and
+    the auxiliary path (pool-first via ``_read_codex_access_token``). Without this
+    fallback, a user whose tokens live only in the pool — for example after a manual
+    pool seed, a partial re-auth, or pool-only restoration from a backup — gets a bare
+    HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
+    credential. See issue #32992.
+    """
+    try:
+        data = _read_codex_tokens()
+    except AuthError:
+        pool_token = _pool_codex_access_token()
+        if pool_token:
+            base_url = (
+                os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+                or DEFAULT_CODEX_BASE_URL
+            )
+            return {
+                "provider": "openai-codex",
+                "base_url": base_url,
+                "api_key": pool_token,
+                "source": "credential_pool",
+                "last_refresh": None,
+                "auth_mode": "chatgpt",
+            }
+        raise
+
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
@@ -3390,6 +3583,46 @@ def resolve_codex_runtime_credentials(
     }
 
 
+def _pool_codex_access_token() -> str:
+    """Return the most-recent usable access_token from the openai-codex pool.
+
+    Used as a fallback by ``resolve_codex_runtime_credentials`` when the
+    singleton has no creds.  Reads ``credential_pool.openai-codex`` entries
+    directly from auth.json and picks the first non-empty access_token,
+    preferring entries that are not currently in an exhaustion cooldown.
+    Returns ``""`` when no usable entry is found (caller handles by raising
+    the original AuthError).
+    """
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return ""
+        entries = pool.get("openai-codex")
+        if not isinstance(entries, list):
+            return ""
+
+        def _entry_usable(entry: Dict[str, Any]) -> bool:
+            if not isinstance(entry, dict):
+                return False
+            token = entry.get("access_token")
+            if not isinstance(token, str) or not token.strip():
+                return False
+            # Skip entries currently in an exhaustion cooldown window.
+            reset_at = entry.get("last_error_reset_at")
+            if isinstance(reset_at, (int, float)) and reset_at > time.time():
+                return False
+            return True
+
+        for entry in entries:
+            if _entry_usable(entry):
+                return str(entry.get("access_token", "")).strip()
+    except Exception:
+        logger.debug("Codex pool fallback lookup failed", exc_info=True)
+    return ""
+
+
 # =============================================================================
 # xAI Grok OAuth — tokens stored in ~/.hermes/auth.json
 # =============================================================================
@@ -3403,7 +3636,7 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     state = _load_provider_state(auth_store, "xai-oauth")
     if not state:
         raise AuthError(
-            "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok Subscription) in `hermes model`.",
+            "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
             provider="xai-oauth",
             code="xai_auth_missing",
             relogin_required=True,
@@ -6334,7 +6567,7 @@ def _login_xai_oauth(
             pass
 
     print()
-    print("Signing in to xAI Grok OAuth (SuperGrok Subscription)...")
+    print("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
     print("(Hermes creates its own local OAuth session)")
     print()
 

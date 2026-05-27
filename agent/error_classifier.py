@@ -50,6 +50,7 @@ class FailoverReason(enum.Enum):
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
+    invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
 
     # Provider-specific
@@ -238,6 +239,24 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no such model",
     "unknown model",
     "unsupported model",
+]
+
+# Request-validation patterns — the request is malformed and will fail
+# identically on every retry. Some OpenAI-compatible gateways (notably
+# codex.nekos.me) return these as 5xx instead of the standard 4xx, which
+# makes the generic "5xx → retryable server_error" rule misfire: the retry
+# loop hammers the same deterministic rejection 3+ times, then the
+# transport-recovery path resets the counter and does it again, producing
+# a request flood. When a 5xx body carries one of these unambiguous
+# request-validation signals, classify as a non-retryable format_error so
+# the loop fails fast and falls back instead of looping.
+_REQUEST_VALIDATION_PATTERNS = [
+    "unknown parameter",
+    "unsupported parameter",
+    "unrecognized request argument",
+    "invalid_request_error",
+    "unknown_parameter",
+    "unsupported_parameter",
 ]
 
 # OpenRouter aggregator policy-block patterns.
@@ -745,6 +764,23 @@ def _classify_by_status(
         )
 
     if status_code in {500, 502}:
+        # Some OpenAI-compatible gateways return request-validation errors
+        # with a 5xx status (codex.nekos.me returns 502 for unknown/
+        # unsupported parameters). These are deterministic — every retry
+        # gets the identical rejection — so the generic "5xx → retryable
+        # server_error" rule turns one bad request into a retry flood.
+        # Detect the unambiguous request-validation signals (in either the
+        # message text or the structured error code) and fail fast.
+        if (
+            any(p in error_msg for p in _REQUEST_VALIDATION_PATTERNS)
+            or error_code.lower() in {"invalid_request_error", "unknown_parameter",
+                                      "unsupported_parameter"}
+        ):
+            return result_fn(
+                FailoverReason.format_error,
+                retryable=False,
+                should_fallback=True,
+            )
         return result_fn(FailoverReason.server_error, retryable=True)
 
     if status_code in {503, 529}:
@@ -828,6 +864,26 @@ def _classify_400(
         return result_fn(
             FailoverReason.image_too_large,
             retryable=True,
+        )
+
+    # Invalid encrypted reasoning replay blob (OpenAI Responses API).  Must be
+    # checked BEFORE context_overflow because some surfaces emit messages that
+    # contain context-like phrasing ("encrypted content … could not be
+    # verified") which could otherwise trip the context_overflow heuristics.
+    # ``error_msg`` is lowercased upstream — match accordingly.
+    error_code_lower = (error_code or "").lower()
+    if (
+        error_code_lower == "invalid_encrypted_content"
+        or "invalid_encrypted_content" in error_msg
+        or (
+            "encrypted content for item" in error_msg
+            and "could not be verified" in error_msg
+        )
+    ):
+        return result_fn(
+            FailoverReason.invalid_encrypted_content,
+            retryable=True,
+            should_fallback=False,
         )
 
     # Context overflow from 400
@@ -937,6 +993,13 @@ def _classify_by_error_code(
             FailoverReason.context_overflow,
             retryable=True,
             should_compress=True,
+        )
+
+    if code_lower == "invalid_encrypted_content":
+        return result_fn(
+            FailoverReason.invalid_encrypted_content,
+            retryable=True,
+            should_fallback=False,
         )
 
     return None
@@ -1106,15 +1169,49 @@ def _extract_error_code(body: dict) -> str:
     """Extract an error code string from the response body."""
     if not body:
         return ""
+
+    def _code_from_payload(payload) -> str:
+        """Extract a code/type from a nested error payload dict (defensive)."""
+        if not isinstance(payload, dict):
+            return ""
+        payload_error = payload.get("error", {})
+        if isinstance(payload_error, dict):
+            nested = payload_error.get("code") or payload_error.get("type") or ""
+            if isinstance(nested, str) and nested.strip() and nested.strip() != "400":
+                return nested.strip()
+        code = payload.get("code") or payload.get("error_code") or ""
+        if isinstance(code, (str, int)):
+            text = str(code).strip()
+            if text and text != "400":
+                return text
+        return ""
+
     error_obj = body.get("error", {})
     if isinstance(error_obj, dict):
         code = error_obj.get("code") or error_obj.get("type") or ""
-        if isinstance(code, str) and code.strip():
+        if isinstance(code, str) and code.strip() and code.strip() != "400":
             return code.strip()
+
+        # Some providers wrap the real JSON error body as a string inside
+        # error.message — peek into it for a nested code (e.g. Responses API
+        # surfaces ``invalid_encrypted_content`` this way).
+        message = error_obj.get("message")
+        if isinstance(message, str) and message.strip().startswith("{"):
+            import json
+            try:
+                inner = json.loads(message)
+            except (json.JSONDecodeError, TypeError):
+                inner = None
+            nested_code = _code_from_payload(inner)
+            if nested_code:
+                return nested_code
+
     # Top-level code
     code = body.get("code") or body.get("error_code") or ""
     if isinstance(code, (str, int)):
-        return str(code).strip()
+        text = str(code).strip()
+        if text and text != "400":
+            return text
     return ""
 
 

@@ -430,6 +430,155 @@ class TestBuildCodexClient:
         assert mock_openai.call_count == 2
 
 
+class TestResolveProviderClientUniversalModelFallback:
+    """resolve_provider_client() picks a sensible model when callers pass none (#31845).
+
+    Aux tasks (title generation, vision, session search, etc.) routinely
+    reach this function without an explicit model — the user's main
+    provider was picked via ``hermes model``, no per-task override is
+    set, and the expectation is "just use my main model for side tasks
+    too."  The resolver fills in ``model`` from a 3-step universal
+    fallback before any provider branch runs:
+
+        1. ``model`` argument           (caller knew what they wanted)
+        2. provider's catalog default   (cheap aux model, if registered)
+        3. user's main model            (``model.model`` in config.yaml)
+
+    Pre-fix the OAuth providers (xai-oauth, openai-codex) returned
+    ``(None, None)`` on an empty model — both lack a catalog default
+    because their accepted-model lists drift on the backend.  That
+    silent failure caused ``_resolve_auto`` to drop to its Step-2
+    fallback chain (OpenRouter / Nous / etc.), so aux tasks billed
+    against the wrong subscription.
+    """
+
+    def test_empty_model_for_oauth_provider_falls_back_to_main_model(self):
+        """xai-oauth: no catalog default → uses main model."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        with (
+            patch(
+                "agent.auxiliary_client._read_main_model",
+                return_value="grok-4.3",
+            ),
+            patch(
+                "agent.auxiliary_client._get_aux_model_for_provider",
+                return_value="",  # xai-oauth has no catalog default
+            ),
+            patch(
+                "agent.auxiliary_client._build_xai_oauth_aux_client",
+                return_value=(MagicMock(), "grok-4.3"),
+            ) as mock_build,
+        ):
+            client, model = resolve_provider_client("xai-oauth", "")
+
+        assert client is not None, (
+            "should not fall through when main model is set"
+        )
+        assert model == "grok-4.3"
+        # The builder receives the main-model fallback, never the empty
+        # string the caller passed.
+        assert mock_build.call_args.args[0] == "grok-4.3"
+
+    def test_empty_model_for_codex_also_uses_main_model(self):
+        """openai-codex: symmetric with xai-oauth — same universal fallback."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        with (
+            patch(
+                "agent.auxiliary_client._read_main_model",
+                return_value="gpt-5.4",
+            ),
+            patch(
+                "agent.auxiliary_client._get_aux_model_for_provider",
+                return_value="",  # openai-codex has no catalog default either
+            ),
+            patch(
+                "agent.auxiliary_client._build_codex_client",
+                return_value=(MagicMock(), "gpt-5.4"),
+            ) as mock_build,
+            patch(
+                "agent.auxiliary_client._select_pool_entry",
+                return_value=(True, None),
+            ),
+        ):
+            client, model = resolve_provider_client("openai-codex", "")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_build.call_args.args[0] == "gpt-5.4"
+
+    def test_empty_model_for_catalog_provider_uses_catalog_default(self):
+        """anthropic / nous / openrouter / etc.: catalog default wins
+        over main model when no explicit model is passed.
+
+        This preserves the original \"cheap aux model for direct API
+        providers\" behaviour — users on anthropic for their main chat
+        still get claude-haiku-4-5 for title generation, NOT their
+        expensive chat model.  Step 2 of the universal fallback chain.
+        """
+        from agent.auxiliary_client import resolve_provider_client
+
+        with (
+            patch(
+                "agent.auxiliary_client._read_main_model",
+                # Main model is the expensive opus; if this leaks into
+                # aux it costs real money.
+                return_value="claude-opus-4-6",
+            ) as mock_read_main,
+            patch(
+                "agent.auxiliary_client._get_aux_model_for_provider",
+                return_value="claude-haiku-4-5-20251001",
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "agent.anthropic_adapter.resolve_anthropic_token",
+                return_value="sk-ant-***",
+            ),
+            patch(
+                "agent.auxiliary_client._read_nous_auth", return_value=None
+            ),
+        ):
+            client, model = resolve_provider_client("anthropic", "")
+
+        # Catalog default takes precedence — main_model was a no-op
+        # because step 2 of the fallback chain already produced a model.
+        assert client is not None
+        assert model == "claude-haiku-4-5-20251001"
+        mock_read_main.assert_not_called()
+
+    def test_explicit_model_takes_precedence_over_fallbacks(self):
+        """Step 1: caller-passed model wins.  Per-task config
+        (``auxiliary.<task>.model``) routes here — when the user
+        explicitly picks gemini-3-flash for title generation, that's
+        what runs, not their main model.
+        """
+        from agent.auxiliary_client import resolve_provider_client
+
+        with (
+            patch("agent.auxiliary_client._read_main_model") as mock_read_main,
+            patch(
+                "agent.auxiliary_client._get_aux_model_for_provider",
+                return_value="catalog-default-should-not-be-used",
+            ),
+            patch(
+                "agent.auxiliary_client._build_xai_oauth_aux_client",
+                return_value=(MagicMock(), "grok-4.20-multi-agent"),
+            ) as mock_build,
+        ):
+            client, model = resolve_provider_client(
+                "xai-oauth", "grok-4.20-multi-agent",
+            )
+
+        assert client is not None
+        assert model == "grok-4.20-multi-agent"
+        mock_read_main.assert_not_called()
+        assert mock_build.call_args.args[0] == "grok-4.20-multi-agent"
+
+
 class TestExpiredCodexFallback:
     """Test that expired Codex tokens don't block the auto chain."""
 
@@ -2073,34 +2222,45 @@ class TestCodexAdapterReasoningTranslation:
 
     @staticmethod
     def _build_adapter():
-        """Build a _CodexCompletionsAdapter with a mocked responses.stream()."""
+        """Build a _CodexCompletionsAdapter with a mocked responses.create()."""
         from agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
 
-        # Mock the stream context manager: yields no events, get_final_response
-        # returns a minimal empty-output response.
-        fake_final = SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="hi")],
-            )],
-            usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        # The event-driven path consumes ``responses.create(stream=True)`` as a
+        # raw iterable of SSE events.  Emit a minimal stream containing one
+        # ``response.output_item.done`` (message) and a ``response.completed``
+        # terminal frame.
+        message_item = SimpleNamespace(
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text="hi")],
         )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed",
+                    id="resp_test",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                ),
+            ),
+        ]
 
-        class _FakeStream:
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def __iter__(self): return iter([])
-            def get_final_response(self): return fake_final
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
 
         captured_kwargs = {}
 
-        def _stream(**kwargs):
+        def _create(**kwargs):
             captured_kwargs.update(kwargs)
-            return _FakeStream()
+            return _FakeCreateStream()
 
         real_client = MagicMock()
-        real_client.responses.stream = _stream
+        real_client.responses.create = _create
         adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
         return adapter, captured_kwargs
 
@@ -2327,33 +2487,29 @@ class TestVisionAutoSkipsKimiCoding:
 
 
 class TestCodexAuxiliaryAdapterTimeout:
-    def test_forwards_timeout_to_responses_stream(self):
-        class FakeStream:
-            def __enter__(self):
-                return self
+    def test_forwards_timeout_to_responses_create(self):
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="summary")],
+        )
+        events = [
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                status="completed", id="r1", usage=None,
+            )),
+        ]
 
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def __iter__(self):
-                return iter(())
-
-            def get_final_response(self):
-                return SimpleNamespace(
-                    output=[SimpleNamespace(
-                        type="message",
-                        content=[SimpleNamespace(type="output_text", text="summary")],
-                    )],
-                    usage=None,
-                )
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
 
         class FakeResponses:
             def __init__(self):
                 self.kwargs = None
 
-            def stream(self, **kwargs):
+            def create(self, **kwargs):
                 self.kwargs = kwargs
-                return FakeStream()
+                return _FakeCreateStream()
 
         fake_client = SimpleNamespace(responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
@@ -2364,33 +2520,21 @@ class TestCodexAuxiliaryAdapterTimeout:
         )
 
         assert fake_client.responses.kwargs["timeout"] == 12.5
+        assert fake_client.responses.kwargs["stream"] is True
         assert response.choices[0].message.content == "summary"
 
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
-        class SlowAliveStream:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
+        class _SlowAliveCreateStream:
             def __iter__(self):
                 for _ in range(5):
                     time.sleep(0.03)
                     yield SimpleNamespace(type="response.in_progress")
 
-            def get_final_response(self):
-                return SimpleNamespace(
-                    output=[SimpleNamespace(
-                        type="message",
-                        content=[SimpleNamespace(type="output_text", text="late")],
-                    )],
-                    usage=None,
-                )
+            def close(self): pass
 
         class FakeResponses:
-            def stream(self, **kwargs):
-                return SlowAliveStream()
+            def create(self, **kwargs):
+                return _SlowAliveCreateStream()
 
         fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
@@ -2403,6 +2547,49 @@ class TestCodexAuxiliaryAdapterTimeout:
             )
 
         assert time.monotonic() - started < 0.14
+
+
+class TestCodexAuxiliaryAdapterNullOutputRecovery:
+    def test_recovers_output_item_when_terminal_event_has_null_output(self):
+        """Regression for #11179 in auxiliary calls.
+
+        The wire shape that broke the SDK is ``response.completed`` with
+        ``response.output = null``.  The event-driven path is structurally
+        immune because it reconstructs from ``response.output_item.done``
+        events and never reads the terminal event's ``output`` field for
+        content.  Assert the auxiliary path returns the streamed item even
+        when the terminal frame's output is ``null``.
+        """
+        output_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="aux survived")],
+        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=output_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                status="completed",
+                id="resp_null_output",
+                # This is the field the SDK helper would have iterated and crashed on:
+                output=None,
+                usage=None,
+            )),
+        ]
+
+        class _NullOutputCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                return _NullOutputCreateStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
+        assert response.choices[0].message.content == "aux survived"
 
 
 # ---------------------------------------------------------------------------
@@ -2508,26 +2695,19 @@ class TestAuxiliaryClientPoisonedCacheEviction:
             _CodexCompletionsAdapter, CodexAuxiliaryClient,
         )
 
-        class SlowAliveStream:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
+        class _SlowAliveCreateStream:
             def __iter__(self):
                 for _ in range(20):
                     time.sleep(0.01)
                     yield SimpleNamespace(type="response.in_progress")
 
-            def get_final_response(self):  # pragma: no cover — timeout fires first
-                return SimpleNamespace(output=[], usage=None)
+            def close(self): pass
 
         closed = {"flag": False}
 
         class FakeClient:
             def __init__(self):
-                self.responses = SimpleNamespace(stream=lambda **k: SlowAliveStream())
+                self.responses = SimpleNamespace(create=lambda **k: _SlowAliveCreateStream())
                 self.api_key = "k"
                 self.base_url = "https://chatgpt.com/backend-api/codex"
 

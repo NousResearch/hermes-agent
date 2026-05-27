@@ -364,7 +364,7 @@ Total messages: 3847
 Database size: 12.4 MB
 ```
 
-For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/docs/reference/cli-commands#hermes-insights).
+For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/reference/cli-commands#hermes-insights).
 
 ## Session Search Tool
 

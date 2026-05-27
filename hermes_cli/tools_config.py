@@ -101,7 +101,7 @@ def _xai_credentials_present() -> bool:
     """Cheap, side-effect-free check for usable xAI credentials.
 
     Used to auto-enable the ``x_search`` toolset when the user has either
-    completed xAI Grok OAuth (SuperGrok subscription) or set
+    completed xAI Grok OAuth (SuperGrok / Premium+) or set
     ``XAI_API_KEY``. Does NOT hit the network — only inspects the local
     auth store and environment. The tool's runtime ``check_fn`` still
     gates schema registration if creds later expire or get revoked.
@@ -356,7 +356,7 @@ TOOL_CATEGORIES = {
         "icon": "🐦",
         "providers": [
             {
-                "name": "xAI Grok OAuth (SuperGrok Subscription)",
+                "name": "xAI Grok OAuth (SuperGrok / Premium+)",
                 "badge": "subscription",
                 "tag": "Browser login at accounts.x.ai — no API key required",
                 "env_vars": [],
@@ -1008,7 +1008,7 @@ def _run_post_setup(post_setup_key: str):
 
         if oauth_logged_in:
             _print_success(
-                "    xAI will use your xAI Grok OAuth (SuperGrok Subscription) credentials"
+                "    xAI will use your xAI Grok OAuth (SuperGrok / Premium+) credentials"
             )
             return
         if existing_api_key:
@@ -1031,7 +1031,7 @@ def _run_post_setup(post_setup_key: str):
         idx = prompt_choice(
             "    How do you want xAI to authenticate?",
             choices=[
-                "Sign in with xAI Grok OAuth (SuperGrok Subscription) — browser login",
+                "Sign in with xAI Grok OAuth (SuperGrok / Premium+) — browser login",
                 "Paste an xAI API key (console.x.ai)",
                 "Skip — configure later via `hermes auth add xai-oauth`",
             ],
@@ -1753,6 +1753,62 @@ def _plugin_browser_providers() -> list[dict]:
     return rows
 
 
+def _plugin_tts_providers() -> list[dict]:
+    """Build picker-row dicts from plugin-registered TTS providers.
+
+    Issue #30398 — the ``register_tts_provider()`` plugin hook
+    coexists alongside the 10 built-in TTS providers
+    (``edge``/``openai``/``elevenlabs``/…) and the
+    ``tts.providers.<name>: type: command`` registry from PR #17843.
+    Built-in rows stay hardcoded in ``TOOL_CATEGORIES["tts"]``; this
+    function only injects PLUGIN-registered providers.
+
+    Defensive: plugins whose name collides with a built-in TTS provider
+    are filtered out — even though the registry already rejects them
+    at registration time, a future code path that registers directly
+    via :func:`agent.tts_registry.register_provider` could slip
+    through. Filtering here keeps the picker invariant.
+    """
+    try:
+        from agent.tts_registry import _BUILTIN_NAMES, list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        name = getattr(provider, "name", None)
+        if not name:
+            continue
+        # Defensive: reject built-in shadowing at the picker layer too.
+        if name.lower().strip() in _BUILTIN_NAMES:
+            continue
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            continue
+        if not isinstance(schema, dict):
+            continue
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            # Selecting this row writes ``tts.provider: <name>`` — the
+            # same write-path used by hardcoded rows. The plugin
+            # dispatcher picks it up automatically from there.
+            "tts_provider": name,
+            "tts_plugin_name": name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
+    return rows
+
+
 def _visible_providers(cat: dict, config: dict) -> list[dict]:
     """Return provider entries visible for the current auth/config state."""
     features = get_nous_subscription_features(config)
@@ -1789,6 +1845,12 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     # local fallback, and the REST-API anti-detection backend respectively).
     if cat.get("name") == "Browser Automation":
         visible.extend(_plugin_browser_providers())
+
+    # Inject plugin-registered TTS backends (issue #30398). Plugin rows
+    # render BELOW the 10 hardcoded built-in rows. Built-in shadowing
+    # is filtered out by ``_plugin_tts_providers`` defensively.
+    if cat.get("name") == "Text-to-Speech":
+        visible.extend(_plugin_tts_providers())
 
     return visible
 
@@ -1925,6 +1987,16 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         print()
 
         # Plain text labels only (no ANSI codes in menu items)
+        # When the user is logged into Nous, surface a marker on providers
+        # whose access is included in their subscription so it's visually
+        # obvious which options cost extra vs. cost nothing on top of Nous.
+        try:
+            _nous_logged_in = bool(
+                get_nous_subscription_features(config).nous_auth_present
+            )
+        except Exception:
+            _nous_logged_in = False
+
         provider_choices = []
         for p in providers:
             badge = f" [{p['badge']}]" if p.get("badge") else ""
@@ -1938,7 +2010,15 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
                     configured = ""
                 else:
                     configured = " [configured]"
-            provider_choices.append(f"{p['name']}{badge}{tag}{configured}")
+            # Highlight Nous-managed entries when the user has Portal auth.
+            # curses_radiolist can't render ANSI inside item strings, so we
+            # use a plain unicode star + parenthetical phrase. Suppressed
+            # when no Portal auth is present so non-subscribers see the
+            # picker unchanged.
+            sub_marker = ""
+            if _nous_logged_in and p.get("managed_nous_feature"):
+                sub_marker = "  ★ Included with your Nous subscription"
+            provider_choices.append(f"{p['name']}{badge}{tag}{configured}{sub_marker}")
 
         # Add skip option
         provider_choices.append("Skip — keep defaults / configure later")
@@ -2405,6 +2485,30 @@ def _configure_provider(provider: dict, config: dict):
 
     # Prompt for each required env var
     all_configured = True
+    # If this BYOK provider lives in a category that ALSO has a
+    # Nous-managed sibling, show a single dim hint so users know
+    # they can avoid the key entirely via a Portal subscription.
+    # Suppressed when the user is already authed to Nous.
+    _show_portal_hint = False
+    if env_vars and not managed_feature and not provider.get("requires_nous_auth"):
+        try:
+            _has_managed_sibling = False
+            for _cat_key, _cat in TOOL_CATEGORIES.items():
+                _providers = _cat.get("providers", [])
+                if provider in _providers and any(
+                    sib.get("managed_nous_feature") for sib in _providers
+                ):
+                    _has_managed_sibling = True
+                    break
+            if _has_managed_sibling:
+                _features = get_nous_subscription_features(config)
+                _show_portal_hint = not _features.nous_auth_present
+        except Exception:
+            _show_portal_hint = False
+
+    if _show_portal_hint:
+        _print_info("  Available through Nous Portal subscription.")
+
     for var in env_vars:
         existing = get_env_value(var["key"])
         if existing:
@@ -3086,21 +3190,26 @@ def _configure_mcp_tools_interactive(config: dict):
             _print_info(f"  {server_name}: no changes")
             continue
 
-        # Compute new exclude list based on unchecked tools
-        new_exclude = [tool_names[i] for i in range(len(tool_names)) if i not in chosen]
+        # Compute new include list (the chosen tools). We standardize on
+        # tools.include across the codebase (catalog installs, hermes mcp
+        # configure, and this UI) so a server\'s on-disk config shape doesn\'t
+        # depend on which UI the user touched last.
+        chosen_names = [tool_names[i] for i in sorted(chosen)]
 
         # Update config
         srv_cfg = mcp_servers.setdefault(server_name, {})
         tools_cfg = srv_cfg.setdefault("tools", {})
 
-        if new_exclude:
-            tools_cfg["exclude"] = new_exclude
-            # Remove include if present — we're switching to exclude mode
-            tools_cfg.pop("include", None)
-        else:
-            # All tools enabled — clear filters
+        if len(chosen) == len(tools):
+            # All tools enabled — clear filters (cleanest config shape; the
+            # server\'s native tool set is the active set, and any tools the
+            # server adds later are auto-enabled).
             tools_cfg.pop("exclude", None)
             tools_cfg.pop("include", None)
+        else:
+            tools_cfg["include"] = chosen_names
+            # Drop any legacy exclude block — we\'re include-mode now.
+            tools_cfg.pop("exclude", None)
 
         enabled_count = len(chosen)
         disabled_count = len(tools) - enabled_count

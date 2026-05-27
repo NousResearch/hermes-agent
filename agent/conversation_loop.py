@@ -65,7 +65,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
-from hermes_constants import display_hermes_home as _dhh_fn
+from hermes_constants import display_hermes_home as _dhh_fn, PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
 from tools.schema_sanitizer import strip_pattern_and_format
 from tools.skill_provenance import set_current_write_origin
@@ -227,6 +227,37 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 "miss the prefix cache.",
                 agent.session_id, exc,
             )
+
+
+def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
+    if is_partial_stub and dropped_tools:
+        tool_list = ", ".join(dropped_tools[:3])
+        return (
+            "[System: Your previous tool call "
+            f"({tool_list}) was too large and "
+            "the stream timed out before it "
+            "could be delivered. Do NOT retry "
+            "the same tool call with the same "
+            "large content. Instead, break the "
+            "content into multiple smaller tool "
+            "calls (e.g. use multiple patch calls "
+            "or write smaller files). Each tool "
+            "call's arguments must be under ~8K "
+            "tokens to avoid stream timeouts.]"
+        )
+    elif is_partial_stub:
+        return (
+            "[System: The previous response was cut off by a "
+            "network error mid-stream. Continue exactly where "
+            "you left off. Do not restart or repeat prior text. "
+            "Finish the answer directly.]"
+        )
+    else:
+        return (
+            "[System: Your previous response was truncated by the output "
+            "length limit. Continue exactly where you left off. Do not "
+            "restart or repeat prior text. Finish the answer directly.]"
+        )
 
 
 def run_conversation(
@@ -484,7 +515,7 @@ def run_conversation(
             tools=agent.tools or None,
         )
 
-        if _preflight_tokens >= agent.context_compressor.threshold_tokens:
+        if agent.context_compressor.should_compress(_preflight_tokens):
             logger.info(
                 "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                 f"{_preflight_tokens:,}",
@@ -988,6 +1019,7 @@ def run_conversation(
         nous_auth_retry_attempted=False
         copilot_auth_retry_attempted=False
         thinking_sig_retry_attempted = False
+        invalid_encrypted_content_retry_attempted = False
         image_shrink_retry_attempted = False
         multimodal_tool_content_retry_attempted = False
         oauth_1m_beta_retry_attempted = False
@@ -1183,7 +1215,7 @@ def run_conversation(
                                     else str(_codex_error_obj) if _codex_error_obj
                                     else f"Responses API returned status '{_codex_resp_status}'"
                                 )
-                                logging.warning(
+                                logger.warning(
                                     "Codex response status='%s' (error=%s). Routing to fallback. %s",
                                     _codex_resp_status, _codex_error_msg,
                                     agent._client_log_context(),
@@ -1335,7 +1367,7 @@ def run_conversation(
                             primary_recovery_attempted = False
                             continue
                         agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
-                        logging.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
+                        logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
@@ -1348,7 +1380,7 @@ def run_conversation(
                     # Backoff before retry — jittered exponential: 5s base, 120s cap
                     wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
                     agent._vprint(f"{agent.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
-                    logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
+                    logger.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                     
                     # Sleep in small increments to stay responsive to interrupts
                     sleep_end = time.time() + wait_time
@@ -1414,7 +1446,18 @@ def run_conversation(
                         finish_reason = "length"
 
                 if finish_reason == "length":
-                    agent._vprint(f"{agent.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens", force=True)
+                    if getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID:
+                        agent._vprint(
+                            f"{agent.log_prefix}⚠️  Stream interrupted by network error "
+                            f"(finish_reason='length' on partial-stream-stub)",
+                            force=True,
+                        )
+                    else:
+                        agent._vprint(
+                            f"{agent.log_prefix}⚠️  Response truncated "
+                            f"(finish_reason='length') - model hit max output tokens",
+                            force=True,
+                        )
 
                     # Normalize the truncated response to a single OpenAI-style
                     # message shape so text-continuation and tool-call retry
@@ -1507,17 +1550,39 @@ def run_conversation(
                                 truncated_response_parts.append(assistant_message.content)
 
                             if length_continue_retries < 3:
-                                agent._vprint(
-                                    f"{agent.log_prefix}↻ Requesting continuation "
-                                    f"({length_continue_retries}/3)..."
+                                _is_partial_stream_stub = (
+                                    getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
+                                )
+                                _dropped_tools = getattr(
+                                    response, "_dropped_tool_names", None
+                                )
+
+                                if _is_partial_stream_stub and _dropped_tools:
+                                    _tool_list = ", ".join(_dropped_tools[:3])
+                                    agent._vprint(
+                                        f"{agent.log_prefix}↻ Stream interrupted mid "
+                                        f"tool-call ({_tool_list}) — requesting "
+                                        f"chunked retry "
+                                        f"({length_continue_retries}/3)..."
+                                    )
+                                elif _is_partial_stream_stub:
+                                    agent._vprint(
+                                        f"{agent.log_prefix}↻ Stream interrupted — "
+                                        f"requesting continuation "
+                                        f"({length_continue_retries}/3)..."
+                                    )
+                                else:
+                                    agent._vprint(
+                                        f"{agent.log_prefix}↻ Requesting continuation "
+                                        f"({length_continue_retries}/3)..."
+                                    )
+
+                                _continue_content = _get_continuation_prompt(
+                                    _is_partial_stream_stub, _dropped_tools
                                 )
                                 continue_msg = {
                                     "role": "user",
-                                    "content": (
-                                        "[System: Your previous response was truncated by the output "
-                                        "length limit. Continue exactly where you left off. Do not "
-                                        "restart or repeat prior text. Finish the answer directly.]"
-                                    ),
+                                    "content": _continue_content,
                                 }
                                 messages.append(continue_msg)
                                 agent._session_messages = messages
@@ -2154,7 +2219,7 @@ def run_conversation(
                         print(f"{agent.log_prefix}   Response: {_body_text}")
                     print(f"{agent.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
                     print(f"{agent.log_prefix}   Troubleshooting:")
-                    print(f"{agent.log_prefix}     • Re-authenticate: hermes login --provider nous")
+                    print(f"{agent.log_prefix}     • Re-authenticate: hermes auth add nous")
                     print(f"{agent.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
                     print(f"{agent.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
                     print(f"{agent.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
@@ -2225,10 +2290,53 @@ def run_conversation(
                         f"stripped all thinking blocks, retrying...",
                         force=True,
                     )
-                    logging.warning(
+                    logger.warning(
                         "%sThinking block signature recovery: stripped "
                         "reasoning_details from %d messages",
                         agent.log_prefix, len(messages),
+                    )
+                    continue
+
+                # ── Invalid encrypted reasoning replay recovery ───────
+                # OpenAI Responses API surfaces (and some compatible relays)
+                # return HTTP 400 ``invalid_encrypted_content`` when a
+                # replayed ``codex_reasoning_items`` blob from a previous
+                # turn fails verification (provider rotated the encryption
+                # key, the route doesn't actually persist reasoning state,
+                # etc.).  Recovery: disable replay for the rest of the
+                # session, strip cached items from history, retry once.
+                # One-shot — if a second 400 fires we fall through to the
+                # normal retry/backoff path.  Only fires for codex_responses
+                # mode with at least one assistant message that has cached
+                # ``codex_reasoning_items``; without replay state, the
+                # error is unrelated to our cache so the normal retry path
+                # handles it (the provider is rejecting something else).
+                if (
+                    classified.reason == FailoverReason.invalid_encrypted_content
+                    and not invalid_encrypted_content_retry_attempted
+                    and agent.api_mode == "codex_responses"
+                    and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
+                    and any(
+                        isinstance(_m, dict)
+                        and _m.get("role") == "assistant"
+                        and isinstance(_m.get("codex_reasoning_items"), list)
+                        and _m.get("codex_reasoning_items")
+                        for _m in messages
+                    )
+                ):
+                    invalid_encrypted_content_retry_attempted = True
+                    replay_stats = agent._disable_codex_reasoning_replay(messages)
+                    agent._vprint(
+                        f"{agent.log_prefix}⚠️  Encrypted reasoning replay was rejected by the provider — "
+                        f"disabled replay and stripped {replay_stats['items']} item(s) from "
+                        f"{replay_stats['messages']} message(s), retrying...",
+                        force=True,
+                    )
+                    logger.warning(
+                        "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
+                        agent.log_prefix,
+                        replay_stats["items"],
+                        replay_stats["messages"],
                     )
                     continue
 
@@ -2250,7 +2358,7 @@ def run_conversation(
                         from tools.schema_sanitizer import strip_pattern_and_format
                         _, _stripped = strip_pattern_and_format(agent.tools)
                     except Exception as _strip_exc:  # pragma: no cover — defensive
-                        logging.warning(
+                        logger.warning(
                             "%sllama.cpp grammar recovery: strip helper failed: %s",
                             agent.log_prefix, _strip_exc,
                         )
@@ -2261,7 +2369,7 @@ def run_conversation(
                             f"stripped {_stripped} pattern/format keyword(s), retrying...",
                             force=True,
                         )
-                        logging.warning(
+                        logger.warning(
                             "%sllama.cpp grammar recovery: stripped %d "
                             "pattern/format keyword(s) from tool schemas",
                             agent.log_prefix, _stripped,
@@ -2269,7 +2377,7 @@ def run_conversation(
                         continue
                     # No keywords found to strip — fall through to normal
                     # retry path rather than loop forever on the same error.
-                    logging.warning(
+                    logger.warning(
                         "%sllama.cpp grammar error but no pattern/format "
                         "keywords to strip — falling through to normal retry",
                         agent.log_prefix,
@@ -2370,6 +2478,7 @@ def run_conversation(
                             base_url=agent.base_url,
                             api_key=getattr(agent, "api_key", ""),
                             provider=agent.provider,
+                            api_mode=agent.api_mode,
                         )
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).
@@ -2483,7 +2592,7 @@ def run_conversation(
                                 error_context=error_context,
                             )
                         else:
-                            logging.info(
+                            logger.info(
                                 "Nous 429 looks like upstream capacity "
                                 "(no exhausted bucket in headers or "
                                 "last-known state) -- not tripping "
@@ -2543,7 +2652,7 @@ def run_conversation(
                     if compression_attempts > max_compression_attempts:
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
-                        logging.error(f"{agent.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
+                        logger.error(f"{agent.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
@@ -2574,7 +2683,7 @@ def run_conversation(
                     else:
                         agent._vprint(f"{agent.log_prefix}❌ Payload too large and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
-                        logging.error(f"{agent.log_prefix}413 payload too large. Cannot compress further.")
+                        logger.error(f"{agent.log_prefix}413 payload too large. Cannot compress further.")
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
@@ -2627,7 +2736,7 @@ def run_conversation(
                         if compression_attempts > max_compression_attempts:
                             agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                             agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
-                            logging.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+                            logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                             agent._persist_session(messages, conversation_history)
                             return {
                                 "messages": messages,
@@ -2679,6 +2788,7 @@ def run_conversation(
                             base_url=agent.base_url,
                             api_key=getattr(agent, "api_key", ""),
                             provider=agent.provider,
+                            api_mode=agent.api_mode,
                         )
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).
@@ -2700,7 +2810,7 @@ def run_conversation(
                     if compression_attempts > max_compression_attempts:
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
-                        logging.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+                        logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
@@ -2733,7 +2843,7 @@ def run_conversation(
                         # Can't compress further and already at minimum tier
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
-                        logging.error(f"{agent.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
+                        logger.error(f"{agent.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
@@ -2770,6 +2880,21 @@ def run_conversation(
                     # retryable=True mapping takes effect instead.
                     and not isinstance(api_error, ssl.SSLError)
                 )
+                # ``FailoverReason.billing`` (HTTP 402) is NOT in this
+                # exclusion set.  By the time we reach this block:
+                #   • credential-pool rotation (line ~2031) has already
+                #     fired for billing and either ``continue``d or
+                #     returned (False, ...) — pool is exhausted or absent.
+                #   • the eager-fallback branch above (line ~2422) also
+                #     fires on billing and ``continue``s if a fallback
+                #     provider is configured.
+                # Falling through to here means BOTH recovery paths
+                # gave up.  Treating 402 as retryable from this point
+                # just burns more paid requests against a depleted
+                # balance with no recovery mechanism left — see #31273
+                # (real-world: ~$40 in 48h on a 24/7 gateway).  Aborting
+                # mirrors how 401/403 (also ``should_fallback=True``)
+                # already behave once their recovery paths have failed.
                 is_client_error = (
                     is_local_validation_error
                     or (
@@ -2777,7 +2902,6 @@ def run_conversation(
                         and not classified.should_compress
                         and classified.reason not in {
                             FailoverReason.rate_limit,
-                            FailoverReason.billing,
                             FailoverReason.overloaded,
                             FailoverReason.context_overflow,
                             FailoverReason.payload_too_large,
@@ -2809,15 +2933,26 @@ def run_conversation(
                     agent._vprint(f"{agent.log_prefix}   🌐 Endpoint: {_base}", force=True)
                     # Actionable guidance for common auth errors
                     if classified.is_auth or classified.reason == FailoverReason.billing:
-                        if _provider in {"openai-codex", "xai-oauth"} and status_code == 401:
+                        if _provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
                             if _provider == "openai-codex":
                                 agent._vprint(f"{agent.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
                                 agent._vprint(f"{agent.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
                                 agent._vprint(f"{agent.log_prefix}      1. Run `codex` in your terminal to generate fresh tokens.", force=True)
                                 agent._vprint(f"{agent.log_prefix}      2. Then run `hermes auth` to re-authenticate.", force=True)
-                            else:
+                            elif _provider == "xai-oauth":
                                 agent._vprint(f"{agent.log_prefix}   💡 xAI OAuth token was rejected (HTTP 401). To fix:", force=True)
-                                agent._vprint(f"{agent.log_prefix}      re-authenticate with xAI Grok OAuth (SuperGrok Subscription) from `hermes model`.", force=True)
+                                agent._vprint(f"{agent.log_prefix}      re-authenticate with xAI Grok OAuth (SuperGrok / Premium+) from `hermes model`.", force=True)
+                            else:  # nous
+                                agent._vprint(f"{agent.log_prefix}   💡 Nous Portal OAuth token was rejected (HTTP 401). Your token may be", force=True)
+                                agent._vprint(f"{agent.log_prefix}      expired, revoked, or your account may be out of credits. To fix:", force=True)
+                                agent._vprint(f"{agent.log_prefix}      1. Re-authenticate: hermes auth add nous --type oauth", force=True)
+                                agent._vprint(f"{agent.log_prefix}      2. Check your portal account: https://portal.nousresearch.com", force=True)
+                                # ``:free`` is OpenRouter slug syntax; Nous Portal will reject
+                                # the model name even after a successful re-auth.
+                                if isinstance(_model, str) and _model.endswith(":free"):
+                                    agent._vprint(f"{agent.log_prefix}      ⚠️  Note: `{_model}` looks like an OpenRouter slug (`:free` suffix).", force=True)
+                                    agent._vprint(f"{agent.log_prefix}         Nous Portal won't recognize that model name. Either switch to a", force=True)
+                                    agent._vprint(f"{agent.log_prefix}         Nous catalog model, or run `/model openrouter:{_model}` to use OpenRouter.", force=True)
                         else:
                             agent._vprint(f"{agent.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
                             agent._vprint(f"{agent.log_prefix}      • Is the key valid? Run: hermes setup", force=True)
@@ -2826,7 +2961,7 @@ def run_conversation(
                                 agent._vprint(f"{agent.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
                     else:
                         agent._vprint(f"{agent.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
-                    logging.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
+                    logger.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
                     # Skip session persistence when the error is likely
                     # context-overflow related (status 400 + large session).
                     # Persisting the failed user message would make the
@@ -2903,7 +3038,7 @@ def run_conversation(
                             force=True,
                         )
 
-                    logging.error(
+                    logger.error(
                         "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
                         agent.log_prefix, max_retries, _final_summary,
                         _provider, _model, len(api_messages), f"{approx_tokens:,}",
@@ -3434,6 +3569,19 @@ def run_conversation(
                         f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
                     )
                     messages.append({"role": "assistant", "content": final_response})
+                    # Emit the halt message to the client so it's not
+                    # indistinguishable from a crash.  The stream display
+                    # was flushed (callback(None)) before tool execution,
+                    # but the callback is still alive — fire the text
+                    # through it so SSE/TUI clients see the explanation.
+                    if final_response:
+                        agent._safe_print(f"\n{final_response}\n")
+                        if agent.stream_delta_callback:
+                            try:
+                                agent.stream_delta_callback(final_response)
+                                agent.stream_delta_callback(None)
+                            except Exception:
+                                pass
                     break
 
                 # Reset per-turn retry counters after successful tool
@@ -3841,8 +3989,14 @@ def run_conversation(
                 print(f"❌ {error_msg}")
             except (OSError, ValueError):
                 logger.error(error_msg)
-            
-            logger.debug("Outer loop error in API call #%d", api_call_count, exc_info=True)
+
+            # Emit the full traceback at ERROR level so it lands in both
+            # agent.log AND errors.log.  Previously this was logged at DEBUG,
+            # which meant intermittent outer-loop failures were unreproducible
+            # — users would see a one-line summary on screen with no way to
+            # recover the call site.  logger.exception() includes the
+            # traceback automatically and emits at ERROR.
+            logger.exception("Outer loop error in API call #%d", api_call_count)
             
             # If an assistant message with tool_calls was already appended,
             # the API expects a role="tool" result for every tool_call_id.
@@ -4029,6 +4183,8 @@ def run_conversation(
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
+    _response_transformed = False
+
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can transform the LLM's output text before it's returned.
@@ -4046,6 +4202,7 @@ def run_conversation(
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:
                     final_response = _hook_result
+                    _response_transformed = True
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
@@ -4097,6 +4254,7 @@ def run_conversation(
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
+        "response_transformed": _response_transformed,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         "model": agent.model,
         "provider": agent.provider,
@@ -4113,6 +4271,7 @@ def run_conversation(
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
+        "session_id": agent.session_id,
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()

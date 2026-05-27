@@ -2,9 +2,12 @@
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from gateway.pairing import (
     PairingStore,
@@ -37,6 +40,10 @@ class TestSecureWrite:
         assert target.exists()
         assert json.loads(target.read_text()) == {"hello": "world"}
 
+    @pytest.mark.skipif(
+        sys.platform.startswith("win"),
+        reason="POSIX file modes are not enforced on Windows",
+    )
     def test_sets_file_permissions(self, tmp_path):
         target = tmp_path / "secret.json"
         _secure_write(target, "data")
@@ -305,6 +312,23 @@ class TestRateLimiting:
         assert isinstance(code2, str) and len(code2) == CODE_LENGTH
         assert code2 != code1
 
+    def test_whatsapp_alias_flip_hits_same_rate_limit(self, tmp_path, monkeypatch):
+        mapping_dir = tmp_path / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code1 = store.generate_code("whatsapp", "15551234567@s.whatsapp.net")
+            code2 = store.generate_code("whatsapp", "999999999999999@lid")
+
+        assert isinstance(code1, str) and len(code1) == CODE_LENGTH
+        assert code2 is None
+
 
 # ---------------------------------------------------------------------------
 # Max pending limit
@@ -396,6 +420,55 @@ class TestApprovalFlow:
             store = PairingStore()
             result = store.approve_code("telegram", "INVALIDCODE")
         assert result is None
+
+    def test_whatsapp_approved_user_survives_alias_flip(self, tmp_path, monkeypatch):
+        mapping_dir = tmp_path / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("whatsapp", "15551234567@s.whatsapp.net", "Alice")
+            store.approve_code("whatsapp", code)
+
+            assert store.is_approved("whatsapp", "15551234567@s.whatsapp.net") is True
+            assert store.is_approved("whatsapp", "999999999999999@lid") is True
+
+            approved = store.list_approved("whatsapp")
+
+        assert len(approved) == 1
+        assert approved[0]["user_id"] == "15551234567"
+
+    def test_whatsapp_legacy_raw_jid_approval_survives_alias_flip(self, tmp_path, monkeypatch):
+        mapping_dir = tmp_path / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        approved_path = tmp_path / "whatsapp-approved.json"
+        approved_path.write_text(
+            json.dumps(
+                {
+                    "15551234567@s.whatsapp.net": {
+                        "user_name": "Legacy Alice",
+                        "approved_at": time.time(),
+                    }
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            assert store.is_approved("whatsapp", "999999999999999@lid") is True
 
 
 # ---------------------------------------------------------------------------

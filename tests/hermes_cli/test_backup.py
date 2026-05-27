@@ -59,6 +59,22 @@ def _make_hermes_tree(root: Path) -> None:
     (root / "plugins").mkdir(exist_ok=True)
     (root / "plugins" / "__pycache__").mkdir()
     (root / "plugins" / "__pycache__" / "mod.cpython-312.pyc").write_bytes(b"\x00")
+    (root / "plugins" / ".pytest_cache").mkdir()
+    (root / "plugins" / ".pytest_cache" / "nodeids").write_text("[]")
+    (root / "plugins" / ".ruff_cache").mkdir()
+    (root / "plugins" / ".ruff_cache" / "cache").write_text("{}")
+    (root / "plugins" / ".mypy_cache").mkdir()
+    (root / "plugins" / ".mypy_cache" / "cache").write_text("{}")
+
+    # Generated indexes and local virtualenvs (should be EXCLUDED)
+    (root / "profiles" / "coder" / "skills").mkdir()
+    (root / "profiles" / "coder" / "skills" / ".gitnexus").mkdir()
+    (root / "profiles" / "coder" / "skills" / ".gitnexus" / "graph.kuzu").write_bytes(b"graph")
+    (root / "profiles" / "coder" / "skills" / ".venv-mlx-tts").mkdir()
+    (root / "profiles" / "coder" / "skills" / ".venv-mlx-tts" / "python").write_bytes(b"venv")
+    (root / "state-snapshots").mkdir()
+    (root / "state-snapshots" / "20260513-123559-pre-update").mkdir()
+    (root / "state-snapshots" / "20260513-123559-pre-update" / "state.db").write_bytes(b"snapshot")
 
     # PID files (should be EXCLUDED)
     (root / "gateway.pid").write_text("12345")
@@ -109,6 +125,16 @@ class TestShouldExclude:
         """backups/ is excluded so pre-update backups don't nest exponentially."""
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
+
+    def test_excludes_generated_cache_dirs(self):
+        """Generated cache dirs are large, machine-specific, and safe to rebuild."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("state-snapshots/20260513-123559/state.db"))
+        assert _should_exclude(Path("profiles/coder/skills/.gitnexus/graph.kuzu"))
+        assert _should_exclude(Path("profiles/coder/skills/.venv-mlx-tts/bin/python"))
+        assert _should_exclude(Path("plugins/.pytest_cache/nodeids"))
+        assert _should_exclude(Path("plugins/.ruff_cache/cache"))
+        assert _should_exclude(Path("plugins/.mypy_cache/cache"))
 
     def test_excludes_sqlite_sidecars(self):
         """SQLite WAL/SHM/journal sidecars must not ship alongside the
@@ -225,6 +251,18 @@ class TestBackup:
             names = zf.namelist()
             pycache_files = [n for n in names if "__pycache__" in n]
             assert pycache_files == []
+            generated_cache_files = [
+                n for n in names
+                if (
+                    "state-snapshots/" in n
+                    or ".gitnexus/" in n
+                    or ".venv" in n
+                    or ".pytest_cache/" in n
+                    or ".ruff_cache/" in n
+                    or ".mypy_cache/" in n
+                )
+            ]
+            assert generated_cache_files == []
 
     def test_excludes_pid_files(self, tmp_path, monkeypatch):
         """Backup does NOT include PID files."""
@@ -1215,11 +1253,16 @@ class TestQuickSnapshot:
         assert len(snaps) <= _QUICK_DEFAULT_KEEP
 
     def test_manual_prune(self, hermes_home):
-        from hermes_cli.backup import create_quick_snapshot, prune_quick_snapshots, list_quick_snapshots
+        from hermes_cli.backup import (
+            _QUICK_DEFAULT_KEEP,
+            create_quick_snapshot,
+            prune_quick_snapshots,
+            list_quick_snapshots,
+        )
         for i in range(10):
             create_quick_snapshot(label=f"s{i}", hermes_home=hermes_home)
         deleted = prune_quick_snapshots(keep=3, hermes_home=hermes_home)
-        assert deleted == 7
+        assert deleted == max(_QUICK_DEFAULT_KEEP - 3, 0)
         assert len(list_quick_snapshots(hermes_home=hermes_home)) == 3
 
     def test_snapshot_includes_pairing_directories(self, hermes_home):
@@ -1341,6 +1384,10 @@ class TestPreUpdateBackup:
         assert not any(n.startswith("hermes-agent/") for n in names)
         # __pycache__ excluded
         assert not any("__pycache__" in n for n in names)
+        # Generated caches excluded
+        assert not any(n.startswith("state-snapshots/") for n in names)
+        assert not any(".gitnexus/" in n for n in names)
+        assert not any(".venv" in n for n in names)
         # pid files excluded
         assert "gateway.pid" not in names
 
@@ -1623,6 +1670,9 @@ class TestPreMigrationBackup:
         # Same exclusions as the shared helper
         assert not any(n.startswith("hermes-agent/") for n in names)
         assert not any("__pycache__" in n for n in names)
+        assert not any(n.startswith("state-snapshots/") for n in names)
+        assert not any(".gitnexus/" in n for n in names)
+        assert not any(".venv" in n for n in names)
         assert "gateway.pid" not in names
 
     def test_restorable_with_hermes_import(self, hermes_home, tmp_path):

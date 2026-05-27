@@ -418,6 +418,23 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _format_job_summary(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Compact job shape for agent-facing list output."""
+    job_id = str(job.get("id") or "unknown")
+    name = str(job.get("name") or job_id or "cron job")
+    return {
+        "job_id": job_id,
+        "name": name,
+        "schedule": job.get("schedule_display") or "?",
+        "repeat": _repeat_display(job),
+        "deliver": job.get("deliver", "local"),
+        "next_run_at": job.get("next_run_at"),
+        "last_status": job.get("last_status"),
+        "enabled": job.get("enabled", True),
+        "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
+    }
+
+
 def cronjob(
     action: str,
     job_id: Optional[str] = None,
@@ -439,6 +456,7 @@ def cronjob(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    include_details: bool = True,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -525,7 +543,8 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            formatter = _format_job if include_details else _format_job_summary
+            jobs = [formatter(job) for job in list_jobs(include_disabled=include_disabled)]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
@@ -708,6 +727,16 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
             },
+            "include_disabled": {
+                "type": "boolean",
+                "default": False,
+                "description": "For action='list': include disabled/paused jobs. Default false keeps the output focused on active jobs."
+            },
+            "include_details": {
+                "type": "boolean",
+                "default": False,
+                "description": "For action='list': include prompt previews, script paths, and advanced fields. Default false keeps tool output compact; set true only when those details are specifically needed."
+            },
             "job_id": {
                 "type": "string",
                 "description": "Required for update/pause/resume/remove/run"
@@ -843,7 +872,7 @@ registry.register(
         name=args.get("name"),
         repeat=args.get("repeat"),
         deliver=args.get("deliver"),
-        include_disabled=args.get("include_disabled", True),
+        include_disabled=args.get("include_disabled", False),
         skill=args.get("skill"),
         skills=args.get("skills"),
         model=_mo[1],
@@ -856,6 +885,7 @@ registry.register(
         workdir=args.get("workdir"),
         profile=args.get("profile"),
         no_agent=args.get("no_agent"),
+        include_details=args.get("include_details", False),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

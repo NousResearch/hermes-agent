@@ -37,9 +37,20 @@ _EXCLUDED_DIRS = {
     ".git",             # nested git dirs (profiles shouldn't have these, but safety)
     "node_modules",     # js deps if website/ somehow leaks in
     "backups",          # prior auto-backups — don't nest backups exponentially
+    "state-snapshots",  # quick snapshots rotate separately; never nest them into full zips
+    ".gitnexus",        # generated code graph indexes — re-analyze instead
+    ".pytest_cache",    # test caches — regenerated locally
+    ".mypy_cache",      # type-checker caches — regenerated locally
+    ".ruff_cache",      # linter caches — regenerated locally
     "checkpoints",      # session-local trajectory caches — regenerated per-session,
                         # session-hash-keyed so they don't port to another machine anyway
 }
+
+# Directory prefixes to skip. Profile skill bundles can contain local virtualenvs
+# such as ``.venv-mlx-tts``; they are large and machine-specific.
+_EXCLUDED_DIR_PREFIXES = (
+    ".venv",
+)
 
 # File-name suffixes to skip
 _EXCLUDED_SUFFIXES = (
@@ -71,7 +82,7 @@ def _should_exclude(rel_path: Path) -> bool:
 
     # Any path component matches an excluded dir name
     for part in parts:
-        if part in _EXCLUDED_DIRS:
+        if part in _EXCLUDED_DIRS or part.startswith(_EXCLUDED_DIR_PREFIXES):
             return True
 
     name = rel_path.name
@@ -180,7 +191,7 @@ def run_backup(args) -> None:
         orig_dirnames = dirnames[:]
         dirnames[:] = [
             d for d in dirnames
-            if d not in _EXCLUDED_DIRS
+            if d not in _EXCLUDED_DIRS and not d.startswith(_EXCLUDED_DIR_PREFIXES)
         ]
         for removed in set(orig_dirnames) - set(dirnames):
             skipped_dirs.add(str(rel_dir / removed))
@@ -501,7 +512,10 @@ _QUICK_STATE_FILES = (
 )
 
 _QUICK_SNAPSHOTS_DIR = "state-snapshots"
-_QUICK_DEFAULT_KEEP = 20
+# Quick snapshots include state.db, which can grow into multi-GB FTS indexes on
+# gateway-heavy installs. Keep a short rollback window by default so pre-update
+# snapshots do not silently dominate HERMES_HOME disk usage.
+_QUICK_DEFAULT_KEEP = 3
 
 
 def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
@@ -726,7 +740,10 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
             # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in _EXCLUDED_DIRS and not d.startswith(_EXCLUDED_DIR_PREFIXES)
+            ]
 
             for fname in filenames:
                 fpath = dp / fname

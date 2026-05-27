@@ -50,8 +50,10 @@ def api_module(monkeypatch, tmp_path):
     # installed (CI).  Without this, calendar_list() falls through to the
     # Python SDK path which imports ``googleapiclient`` — not in deps.
     module._gws_binary = lambda: "/usr/bin/gws"
-    # Bypass authentication check — no real token file in CI.
+    # Bypass authentication check, but still provide the token material that
+    # the gws CLI credentials-file path now derives from.
     module._ensure_authenticated = lambda: None
+    _write_token(module.TOKEN_PATH)
     return module
 
 
@@ -263,6 +265,9 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     oauth2_module = types.ModuleType("google.oauth2")
     credentials_module = types.ModuleType("google.oauth2.credentials")
     credentials_module.Credentials = FakeCredentialsModule
+    auth_module = types.ModuleType("google.auth")
+    auth_exceptions_module = types.ModuleType("google.auth.exceptions")
+    setattr(auth_exceptions_module, "RefreshError", Exception)
     transport_module = types.ModuleType("google.auth.transport")
     requests_module = types.ModuleType("google.auth.transport.requests")
     requests_module.Request = lambda: object()
@@ -270,6 +275,8 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     monkeypatch.setitem(sys.modules, "google", google_module)
     monkeypatch.setitem(sys.modules, "google.oauth2", oauth2_module)
     monkeypatch.setitem(sys.modules, "google.oauth2.credentials", credentials_module)
+    monkeypatch.setitem(sys.modules, "google.auth", auth_module)
+    monkeypatch.setitem(sys.modules, "google.auth.exceptions", auth_exceptions_module)
     monkeypatch.setitem(sys.modules, "google.auth.transport", transport_module)
     monkeypatch.setitem(sys.modules, "google.auth.transport.requests", requests_module)
 

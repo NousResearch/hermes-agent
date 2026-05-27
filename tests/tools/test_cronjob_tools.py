@@ -253,6 +253,25 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["prompt_preview"] == ""
         assert listing["jobs"][0]["schedule"] == "every 60m"
 
+    def test_list_can_return_compact_agent_facing_records(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status and produce a detailed incident report",
+                schedule="every 1h",
+                name="Server Check",
+            )
+        )
+        assert created["success"] is True
+
+        listing = json.loads(cronjob(action="list", include_details=False))
+
+        assert listing["success"] is True
+        assert listing["jobs"][0]["name"] == "Server Check"
+        assert listing["jobs"][0]["state"] == "scheduled"
+        assert "prompt_preview" not in listing["jobs"][0]
+        assert "script" not in listing["jobs"][0]
+
     def test_pause_and_resume(self):
         created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
         job_id = created["job_id"]

@@ -3609,7 +3609,7 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
     return parsed
 
 
-def save_config_value(key_path: str, value: any) -> bool:
+def save_config_value(key_path: str, value: Any) -> bool:
     """
     Save a value to the active config file at the specified key path.
     

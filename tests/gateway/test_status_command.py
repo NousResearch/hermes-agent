@@ -47,6 +47,7 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner.session_store.load_transcript.return_value = []
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.append_to_transcript = MagicMock()
+    runner.session_store.delete_transcript_message = MagicMock()
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
@@ -413,7 +414,10 @@ async def test_handle_message_discards_stale_result_after_session_invalidation(m
     result = await runner._handle_message(_make_event("hello"))
 
     assert result is None
-    runner.session_store.append_to_transcript.assert_not_called()
+    runner.session_store.append_to_transcript.assert_called_once()
+    runner.session_store.delete_transcript_message.assert_called_once_with(
+        runner.session_store.append_to_transcript.return_value
+    )
     runner.session_store.update_session.assert_not_called()
     assert session_key not in runner.adapters[Platform.TELEGRAM]._post_delivery_callbacks
 

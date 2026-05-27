@@ -1292,8 +1292,13 @@ class SessionStore:
                     return entry
         return None
     
-    def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
+    def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> Optional[int]:
         """Append a message to a session's transcript (SQLite).
+
+        Returns the SQLite message row id when a DB row was written; otherwise
+        ``None``.  Callers that pre-persist crash-recovery markers use the row
+        id to remove that provisional row after the agent successfully writes
+        the full turn.
 
         Args:
             skip_db: When True, skip the SQLite write. Used when the agent
@@ -1303,7 +1308,7 @@ class SessionStore:
         """
         if self._db and not skip_db:
             try:
-                self._db.append_message(
+                return self._db.append_message(
                     session_id=session_id,
                     role=message.get("role", "unknown"),
                     content=message.get("content"),
@@ -1325,6 +1330,17 @@ class SessionStore:
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
+        return None
+
+    def delete_transcript_message(self, message_id: Optional[int]) -> bool:
+        """Delete one transcript message row by SQLite message id."""
+        if not message_id or not self._db:
+            return False
+        try:
+            return bool(self._db.delete_message(message_id))
+        except Exception as e:
+            logger.debug("Session DB delete failed: %s", e)
+            return False
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.

@@ -115,7 +115,15 @@ async def test_silence_token_suppresses_delivery_but_preserves_transcript(monkey
     assert response == ""
     appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
     assert {"role": "assistant", "content": "[SILENT]"}.items() <= appended[-1].items()
-    assert [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}] == ["user", "assistant"]
+    # The gateway now pre-persists the inbound user turn before the agent run
+    # so a crash cannot lose it.  Successful runs remove that provisional row
+    # before writing the full agent transcript, but this unit test uses mocks
+    # and therefore observes both the provisional append call and the final
+    # transcript append call.  The delivery contract we care about here is that
+    # intentional silence suppresses outbound delivery while the final turn still
+    # ends with normal user/assistant alternation.
+    visible_roles = [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}]
+    assert visible_roles[-2:] == ["user", "assistant"]
 
 
 @pytest.mark.asyncio

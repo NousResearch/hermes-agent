@@ -545,7 +545,26 @@ class GatewayConfig:
         if config:
             return config.home_channel
         return None
-    
+
+    def get_handoff_platforms(self) -> List[tuple]:
+        """Return ``(platform, home_channel)`` pairs eligible for /handoff.
+
+        A platform is handoff-eligible when it is enabled and has a home
+        channel with a chat_id — the same gate ``/handoff`` enforces before
+        queuing a handoff (see ``cli.py::_handle_handoff_command``).  Shared by
+        the CLI completer so autocomplete can't drift from what the command
+        actually accepts.
+        """
+        eligible: List[tuple] = []
+        for platform, config in self.platforms.items():
+            if not config or not config.enabled:
+                continue
+            home = config.home_channel
+            if not home or not home.chat_id:
+                continue
+            eligible.append((platform, home))
+        return eligible
+
     def get_reset_policy(
         self, 
         platform: Optional[Platform] = None,

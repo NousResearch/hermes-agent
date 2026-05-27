@@ -1198,6 +1198,11 @@ class SlashCommandCompleter(Completer):
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
         self._file_cache_cwd: str = ""
+        # Cached gateway config for /handoff completions. load_gateway_config()
+        # re-reads config files, runs plugin discovery, and mutates os.environ,
+        # so we must not call it on every keystroke (complete_while_typing).
+        self._gateway_cfg = None
+        self._gateway_cfg_time: float = 0.0
 
     def _command_allowed(self, slash_command: str) -> bool:
         if self._command_filter is None:
@@ -1598,25 +1603,24 @@ class SlashCommandCompleter(Completer):
         except Exception:
             pass
 
-    @staticmethod
-    def _handoff_completions(sub_text: str, sub_lower: str):
-        """Yield completions for /handoff from configured gateway platforms."""
+    def _handoff_completions(self, sub_text: str, sub_lower: str):
+        """Yield completions for /handoff from handoff-eligible gateway platforms."""
         try:
-            from gateway.config import load_gateway_config
-            gw = load_gateway_config()
-            for platform, pcfg in gw.platforms.items():
-                if not pcfg or not pcfg.enabled:
-                    continue
-                home = pcfg.home_channel
-                if not home or not home.chat_id:
-                    continue
+            now = time.monotonic()
+            gw = self._gateway_cfg
+            if gw is None or now - self._gateway_cfg_time >= 5.0:
+                from gateway.config import load_gateway_config
+                gw = load_gateway_config()
+                self._gateway_cfg = gw
+                self._gateway_cfg_time = now
+            for platform, home in gw.get_handoff_platforms():
                 name = platform.value
                 if name.startswith(sub_lower) and name != sub_lower:
                     yield Completion(
                         name,
                         start_position=-len(sub_text),
                         display=name,
-                        display_meta=pcfg.name if hasattr(pcfg, 'name') and pcfg.name else "",
+                        display_meta=home.name or "",
                     )
         except Exception:
             pass

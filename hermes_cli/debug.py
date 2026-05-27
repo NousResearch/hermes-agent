@@ -14,6 +14,7 @@ Currently supports:
 import io
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -43,6 +44,34 @@ _EMAIL_ADDRESS_RE = re.compile(
     r"(?![A-Za-z0-9._%+-])"
 )
 
+# Structured-PII patterns for upload-bound log content (debug share). These
+# catch PII that regex can mask reliably without shredding ordinary log noise
+# (timestamps, ids, counts). NOTE: bare personal NAMES are deliberately NOT
+# covered — they are not reliably regex-detectable, so the real protection for
+# names is HERMES_DEBUG_LOCAL_DEFAULT=1 (no upload by default). E.164 phones are
+# already handled upstream by agent.redact.redact_sensitive_text.
+_PII_PATTERNS = [
+    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[REDACTED_SSN]"),
+    (re.compile(r"(?<!\d)(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}(?!\d)"),
+     "[REDACTED_PHONE]"),
+    (re.compile(
+        r"\b\d{1,6}\s+(?:[NSEW]\.?\s+)?[A-Za-z0-9.'\-]+(?:\s+[A-Za-z0-9.'\-]+){0,4}\s+"
+        r"(?:St|Street|Ave|Avenue|Rd|Road|Dr|Drive|Ln|Lane|Blvd|Boulevard|Way|Ct|Court|"
+        r"Cir|Circle|Pl|Place|Pkwy|Parkway|Hwy|Highway|Ter|Terrace|Trail|Loop)\b\.?",
+        re.I), "[REDACTED_ADDRESS]"),
+    (re.compile(r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b"), "[REDACTED_ZIP]"),
+]
+
+
+def _redact_pii_text(text: str) -> str:
+    """Mask structured PII (SSN, US/NA phones, street addresses, ZIP) in
+    upload-bound text. Over-redaction is the safe failure mode here."""
+    if not text:
+        return text
+    for rx, repl in _PII_PATTERNS:
+        text = rx.sub(repl, text)
+    return text
+
 
 # ---------------------------------------------------------------------------
 # Paste services — try paste.rs first, dpaste.com as fallback.
@@ -50,13 +79,18 @@ _EMAIL_ADDRESS_RE = re.compile(
 
 _PASTE_RS_URL = "https://paste.rs/"
 _DPASTE_COM_URL = "https://dpaste.com/api/"
+_GIST_API_URL = "https://api.github.com/gists"
 
 # Maximum bytes to read from a single log file for upload.
 # paste.rs caps at ~1 MB; we stay under that with headroom.
 _MAX_LOG_BYTES = 512_000
 
-# Auto-delete pastes after this many seconds (6 hours).
-_AUTO_DELETE_SECONDS = 21600
+# Auto-delete pastes after this many seconds. Default 15 min; override with
+# HERMES_DEBUG_AUTO_DELETE_SECONDS (was a hard-coded 6h — long public exposure).
+try:
+    _AUTO_DELETE_SECONDS = int(os.environ.get("HERMES_DEBUG_AUTO_DELETE_SECONDS", "900"))
+except ValueError:
+    _AUTO_DELETE_SECONDS = 900
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +164,35 @@ def _record_pending(urls: list[str], delay_seconds: int = _AUTO_DELETE_SECONDS) 
     _save_pending(merged)
 
 
+def _record_pending_gist(gist_id: str, ref_url: str = "",
+                         delay_seconds: int = _AUTO_DELETE_SECONDS) -> None:
+    """Record a secret gist for deletion at ``now + delay_seconds``.
+
+    Deduped by ``gist_id`` (the 3 file raw URLs share one gist — one DELETE
+    revokes all of them). Entries carry ``kind="gist"`` so the sweep dispatches
+    to :func:`delete_gist` instead of :func:`delete_paste`.
+    """
+    if not gist_id:
+        return
+    entries = _load_pending()
+    expire_at = time.time() + delay_seconds
+    for e in entries:
+        if e.get("kind") == "gist" and e.get("gist_id") == gist_id:
+            try:
+                e["expire_at"] = max(float(e.get("expire_at", 0)), expire_at)
+            except (TypeError, ValueError):
+                e["expire_at"] = expire_at
+            _save_pending(entries)
+            return
+    entries.append({
+        "url": ref_url or f"{_GIST_API_URL}/{gist_id}",
+        "expire_at": expire_at,
+        "kind": "gist",
+        "gist_id": gist_id,
+    })
+    _save_pending(entries)
+
+
 def _sweep_expired_pastes(now: Optional[float] = None) -> tuple[int, int]:
     """Synchronously DELETE any pending pastes whose ``expire_at`` has passed.
 
@@ -155,9 +218,12 @@ def _sweep_expired_pastes(now: Optional[float] = None) -> tuple[int, int]:
             remaining.append(entry)
             continue
 
-        url = entry.get("url", "")
         try:
-            if delete_paste(url):
+            if entry.get("kind") == "gist":
+                if delete_gist(entry.get("gist_id", "")):
+                    deleted += 1
+                    continue
+            elif delete_paste(entry.get("url", "")):
                 deleted += 1
                 continue
         except Exception:
@@ -198,7 +264,7 @@ _PRIVACY_NOTICE = """\
   • Full agent.log and gateway.log (up to 512 KB each — likely contains
     conversation content, tool outputs, and file paths)
 
-Pastes auto-delete after 6 hours.
+Pastes auto-delete after ~15 minutes.
 """
 
 _GATEWAY_PRIVACY_NOTICE = (
@@ -206,7 +272,7 @@ _GATEWAY_PRIVACY_NOTICE = (
     "(may contain conversation fragments) to a public paste service. "
     "Full logs are NOT included from the gateway — use `hermes debug share` "
     "from the CLI for full log uploads.\n"
-    "Pastes auto-delete after 6 hours."
+    "Pastes auto-delete after ~15 minutes."
 )
 
 
@@ -220,6 +286,51 @@ def _extract_paste_id(url: str) -> Optional[str]:
         if url.startswith(prefix):
             return url[len(prefix):]
     return None
+
+
+def _extract_gist_id(url: str) -> Optional[str]:
+    """Extract the gist id from a gist URL (raw or html). None if not a gist.
+
+    Raw URL: ``https://gist.githubusercontent.com/<user>/<id>/raw/<sha>/<file>``
+    HTML URL: ``https://gist.github.com/<user>/<id>``
+    The id is the second non-empty path segment and is hex.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url.strip())
+    except Exception:
+        return None
+    if parts.netloc not in ("gist.githubusercontent.com", "gist.github.com"):
+        return None
+    segs = [s for s in parts.path.split("/") if s]
+    if len(segs) >= 2 and re.fullmatch(r"[0-9a-fA-F]+", segs[1]):
+        return segs[1]
+    return None
+
+
+def delete_gist(gist_id: str) -> bool:
+    """Delete a secret gist by id via the authenticated GitHub API.
+
+    Returns True on success (204). Unlike paste.rs, gist DELETE requires the
+    same ``HERMES_DEBUG_GIST_TOKEN`` (classic PAT, ``gist`` scope) used to
+    create it. Deleting the gist revokes ALL of its file raw URLs at once.
+    """
+    if not gist_id:
+        raise ValueError("delete_gist: empty gist_id")
+    token = os.environ.get("HERMES_DEBUG_GIST_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("HERMES_DEBUG_GIST_TOKEN is not set")
+    target = f"{_GIST_API_URL}/{gist_id}"
+    req = urllib.request.Request(
+        target, method="DELETE",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "hermes-agent/debug-share",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return 200 <= resp.status < 300
 
 
 def delete_paste(url: str) -> bool:
@@ -258,6 +369,23 @@ def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SEC
     policy handles cleanup.
     """
     _record_pending(urls, delay_seconds=delay_seconds)
+
+
+def _schedule_gist_auto_delete(urls: list[str],
+                               delay_seconds: int = _AUTO_DELETE_SECONDS) -> Optional[str]:
+    """Schedule deletion of the secret gist behind *urls* (its file raw URLs).
+
+    All raw URLs from one ``/debug`` share a single gist id; we extract it from
+    the first parseable URL and record ONE pending entry. The gateway cron
+    ticker's hourly sweep then issues the authenticated DELETE once the entry
+    expires. Returns the gist id (or None if no URL looked like a gist).
+    """
+    for u in urls:
+        gid = _extract_gist_id(u)
+        if gid:
+            _record_pending_gist(gid, ref_url=u, delay_seconds=delay_seconds)
+            return gid
+    return None
 
 
 def _delete_hint(url: str) -> str:
@@ -349,6 +477,56 @@ def upload_to_pastebin(content: str, expiry_days: int = 7) -> str:
     )
 
 
+def _gist_enabled() -> bool:
+    """True when a GitHub token is configured for private-gist debug uploads."""
+    return bool(os.environ.get("HERMES_DEBUG_GIST_TOKEN", "").strip())
+
+
+def _local_default() -> bool:
+    """When HERMES_DEBUG_LOCAL_DEFAULT is truthy, `hermes debug share` prints
+    locally and never uploads to a public pastebin."""
+    return os.environ.get("HERMES_DEBUG_LOCAL_DEFAULT", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def upload_to_gist(files: dict, description: str = "hermes debug share",
+                   public: bool = False) -> dict:
+    """Upload {filename: content} to a SECRET GitHub gist.
+
+    Returns {filename: raw_url}. Requires env HERMES_DEBUG_GIST_TOKEN — a
+    classic PAT with the 'gist' scope (fine-grained PATs are not reliably
+    accepted by the gists API and return 401).
+    """
+    token = os.environ.get("HERMES_DEBUG_GIST_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("HERMES_DEBUG_GIST_TOKEN is not set")
+    payload = json.dumps({
+        "description": description,
+        "public": bool(public),
+        "files": {name: {"content": (content or "(empty)")}
+                  for name, content in files.items()},
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        _GIST_API_URL, data=payload, method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+            "User-Agent": "hermes-agent/debug-share",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    out = {name: f["raw_url"]
+           for name, f in data.get("files", {}).items()
+           if f and f.get("raw_url")}
+    if not out:
+        raise ValueError("Gist API returned no file URLs")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Log file reading
 # ---------------------------------------------------------------------------
@@ -406,7 +584,8 @@ def _redact_log_text(text: str) -> str:
     from agent.redact import redact_sensitive_text
 
     text = redact_sensitive_text(text, force=True)
-    return _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
+    text = _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
+    return _redact_pii_text(text)
 
 
 def _capture_log_snapshot(
@@ -595,7 +774,7 @@ def run_debug_share(args):
 
     log_lines = getattr(args, "lines", 200)
     expiry = getattr(args, "expire", 7)
-    local_only = getattr(args, "local", False)
+    local_only = getattr(args, "local", False) or _local_default()
     redact = not getattr(args, "no_redact", False)
 
     if not local_only:
@@ -690,7 +869,7 @@ def run_debug_share(args):
 
     # Schedule auto-deletion after 6 hours
     _schedule_auto_delete(list(urls.values()))
-    print(f"\n⏱  Pastes will auto-delete in 6 hours.")
+    print(f"\n⏱  Pastes will auto-delete in ~15 minutes.")
 
     # Manual delete fallback
     print(f"To delete now:  hermes debug delete <url>")

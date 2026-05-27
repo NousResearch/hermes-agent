@@ -1,7 +1,9 @@
 """Tests for ``hermes debug`` CLI command and debug utilities."""
 
+import json
 import os
 import sys
+import time
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
@@ -1259,3 +1261,339 @@ class TestShareIncludesAutoDelete:
 
         out = capsys.readouterr().out
         assert "public paste service" not in out
+
+
+# ---------------------------------------------------------------------------
+# Secret-gist sink: id parsing, pending-record dedup, sweep dispatch, delete,
+# env gating, and upload. All network is mocked; no real HTTP is issued.
+# ---------------------------------------------------------------------------
+
+# A realistic gist id (hex) and its file raw URLs (all share one gist id).
+_GID = "aa5a315d61ae9438b18d"
+_RAW_REPORT = (
+    f"https://gist.githubusercontent.com/octocat/{_GID}/raw/abc123/report.txt"
+)
+_RAW_AGENT = (
+    f"https://gist.githubusercontent.com/octocat/{_GID}/raw/abc123/agent.log"
+)
+_RAW_GATEWAY = (
+    f"https://gist.githubusercontent.com/octocat/{_GID}/raw/abc123/gateway.log"
+)
+_HTML_GIST = f"https://gist.github.com/octocat/{_GID}"
+
+
+def _mock_http_response(body: bytes = b"", status: int = 200):
+    """Build a context-manager mock matching urllib.request.urlopen()."""
+    resp = MagicMock()
+    resp.read.return_value = body
+    resp.status = status
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+class TestExtractGistId:
+    """_extract_gist_id parses the id from raw/html gist URLs only."""
+
+    def test_raw_url_returns_id(self):
+        from hermes_cli.debug import _extract_gist_id
+        assert _extract_gist_id(_RAW_REPORT) == _GID
+
+    def test_html_url_returns_id(self):
+        from hermes_cli.debug import _extract_gist_id
+        assert _extract_gist_id(_HTML_GIST) == _GID
+
+    def test_pastebin_url_returns_none(self):
+        from hermes_cli.debug import _extract_gist_id
+        assert _extract_gist_id("https://paste.rs/abc123") is None
+
+    def test_non_gist_github_host_returns_none(self):
+        from hermes_cli.debug import _extract_gist_id
+        assert _extract_gist_id("https://github.com/octocat/repo") is None
+
+    def test_non_hex_id_segment_returns_none(self):
+        from hermes_cli.debug import _extract_gist_id
+        assert _extract_gist_id("https://gist.github.com/octocat/zzznothex") is None
+
+    def test_junk_returns_none(self):
+        from hermes_cli.debug import _extract_gist_id
+        assert _extract_gist_id("not a url") is None
+        assert _extract_gist_id("") is None
+
+
+class TestRecordPendingGist:
+    """_record_pending_gist writes one deduped kind='gist' entry."""
+
+    def test_records_single_gist_entry(self, hermes_home):
+        from hermes_cli.debug import _record_pending_gist, _load_pending
+
+        _record_pending_gist(_GID, ref_url=_RAW_REPORT, delay_seconds=900)
+        entries = _load_pending()
+
+        assert len(entries) == 1
+        e = entries[0]
+        assert e["kind"] == "gist"
+        assert e["gist_id"] == _GID
+        assert e["url"] == _RAW_REPORT
+        assert e["expire_at"] > time.time()
+
+    def test_dedupes_by_gist_id_and_keeps_max_expiry(self, hermes_home):
+        from hermes_cli.debug import _record_pending_gist, _load_pending
+
+        _record_pending_gist(_GID, ref_url=_RAW_REPORT, delay_seconds=10)
+        _record_pending_gist(_GID, ref_url=_RAW_AGENT, delay_seconds=10_000)
+        entries = [e for e in _load_pending() if e.get("kind") == "gist"]
+
+        assert len(entries) == 1, "same gist id must not create a second entry"
+        # Later (larger) expiry wins.
+        assert entries[0]["expire_at"] > time.time() + 1000
+
+    def test_empty_gist_id_is_noop(self, hermes_home):
+        from hermes_cli.debug import _record_pending_gist, _load_pending
+
+        _record_pending_gist("", ref_url=_RAW_REPORT)
+        assert _load_pending() == []
+
+    def test_url_defaults_to_api_url_when_no_ref(self, hermes_home):
+        from hermes_cli.debug import _record_pending_gist, _load_pending
+
+        _record_pending_gist(_GID, delay_seconds=900)
+        assert _load_pending()[0]["url"].endswith(f"/gists/{_GID}")
+
+
+class TestScheduleGistAutoDelete:
+    """_schedule_gist_auto_delete records exactly one entry for a 3-URL share."""
+
+    def test_three_raw_urls_one_pending_entry(self, hermes_home):
+        from hermes_cli.debug import _schedule_gist_auto_delete, _load_pending
+
+        gid = _schedule_gist_auto_delete(
+            [_RAW_REPORT, _RAW_AGENT, _RAW_GATEWAY], delay_seconds=900
+        )
+        assert gid == _GID
+        gist_entries = [e for e in _load_pending() if e.get("kind") == "gist"]
+        assert len(gist_entries) == 1
+
+    def test_no_gist_urls_returns_none_and_records_nothing(self, hermes_home):
+        from hermes_cli.debug import _schedule_gist_auto_delete, _load_pending
+
+        gid = _schedule_gist_auto_delete(["https://paste.rs/x", "garbage"])
+        assert gid is None
+        assert _load_pending() == []
+
+
+class TestSweepDispatch:
+    """_sweep_expired_pastes routes by entry kind (gist vs legacy paste)."""
+
+    def _write(self, entries):
+        from hermes_cli.debug import _save_pending
+        _save_pending(entries)
+
+    def test_expired_gist_routes_to_delete_gist(self, hermes_home):
+        from hermes_cli import debug
+
+        self._write([{
+            "url": _RAW_REPORT, "expire_at": 1000.0,
+            "kind": "gist", "gist_id": _GID,
+        }])
+        with patch.object(debug, "delete_gist", return_value=True) as dg, \
+                patch.object(debug, "delete_paste", return_value=True) as dp:
+            deleted, remaining = debug._sweep_expired_pastes(now=2000.0)
+
+        dg.assert_called_once_with(_GID)
+        dp.assert_not_called()
+        assert (deleted, remaining) == (1, 0)
+        assert debug._load_pending() == []
+
+    def test_legacy_no_kind_entry_routes_to_delete_paste(self, hermes_home):
+        from hermes_cli import debug
+
+        self._write([{"url": "https://paste.rs/legacy1", "expire_at": 1000.0}])
+        with patch.object(debug, "delete_gist", return_value=True) as dg, \
+                patch.object(debug, "delete_paste", return_value=True) as dp:
+            deleted, remaining = debug._sweep_expired_pastes(now=2000.0)
+
+        dp.assert_called_once_with("https://paste.rs/legacy1")
+        dg.assert_not_called()
+        assert (deleted, remaining) == (1, 0)
+
+    def test_mixed_entries_each_routed_correctly(self, hermes_home):
+        from hermes_cli import debug
+
+        self._write([
+            {"url": _RAW_REPORT, "expire_at": 1000.0, "kind": "gist",
+             "gist_id": _GID},
+            {"url": "https://paste.rs/legacy2", "expire_at": 1000.0},
+        ])
+        with patch.object(debug, "delete_gist", return_value=True) as dg, \
+                patch.object(debug, "delete_paste", return_value=True) as dp:
+            deleted, remaining = debug._sweep_expired_pastes(now=2000.0)
+
+        dg.assert_called_once_with(_GID)
+        dp.assert_called_once_with("https://paste.rs/legacy2")
+        assert (deleted, remaining) == (2, 0)
+
+    def test_unexpired_entry_is_retained_and_not_deleted(self, hermes_home):
+        from hermes_cli import debug
+
+        self._write([{
+            "url": _RAW_REPORT, "expire_at": 5000.0,
+            "kind": "gist", "gist_id": _GID,
+        }])
+        with patch.object(debug, "delete_gist", return_value=True) as dg, \
+                patch.object(debug, "delete_paste", return_value=True) as dp:
+            deleted, remaining = debug._sweep_expired_pastes(now=2000.0)
+
+        dg.assert_not_called()
+        dp.assert_not_called()
+        assert (deleted, remaining) == (0, 1)
+
+
+class TestDeleteGist:
+    """delete_gist requires id + token and issues an authenticated DELETE."""
+
+    def test_empty_id_raises_value_error(self):
+        from hermes_cli.debug import delete_gist
+        with pytest.raises(ValueError):
+            delete_gist("")
+
+    def test_missing_token_raises_runtime_error(self, monkeypatch):
+        from hermes_cli.debug import delete_gist
+        monkeypatch.delenv("HERMES_DEBUG_GIST_TOKEN", raising=False)
+        with pytest.raises(RuntimeError, match="HERMES_DEBUG_GIST_TOKEN"):
+            delete_gist(_GID)
+
+    def test_authenticated_delete_succeeds(self, monkeypatch):
+        from hermes_cli.debug import delete_gist
+        monkeypatch.setenv("HERMES_DEBUG_GIST_TOKEN", "ghp_testtoken")
+        resp = _mock_http_response(status=204)
+
+        with patch("hermes_cli.debug.urllib.request.urlopen",
+                   return_value=resp) as m:
+            ok = delete_gist(_GID)
+
+        assert ok is True
+        req = m.call_args[0][0]
+        assert req.method == "DELETE"
+        assert req.full_url.endswith(f"/gists/{_GID}")
+        assert any("Bearer ghp_testtoken" in str(v) for v in req.headers.values())
+
+
+class TestGistEnvGating:
+    """_gist_enabled / _local_default read env at call time."""
+
+    def test_gist_enabled_true_when_token_set(self, monkeypatch):
+        from hermes_cli.debug import _gist_enabled
+        monkeypatch.setenv("HERMES_DEBUG_GIST_TOKEN", "ghp_x")
+        assert _gist_enabled() is True
+
+    def test_gist_enabled_false_when_unset_or_blank(self, monkeypatch):
+        from hermes_cli.debug import _gist_enabled
+        monkeypatch.delenv("HERMES_DEBUG_GIST_TOKEN", raising=False)
+        assert _gist_enabled() is False
+        monkeypatch.setenv("HERMES_DEBUG_GIST_TOKEN", "   ")
+        assert _gist_enabled() is False
+
+    def test_local_default_truthy_values(self, monkeypatch):
+        from hermes_cli.debug import _local_default
+        for val in ("1", "true", "yes", "on", "TRUE", "On"):
+            monkeypatch.setenv("HERMES_DEBUG_LOCAL_DEFAULT", val)
+            assert _local_default() is True, val
+
+    def test_local_default_falsey_values(self, monkeypatch):
+        from hermes_cli.debug import _local_default
+        for val in ("0", "", "no", "false", "off"):
+            monkeypatch.setenv("HERMES_DEBUG_LOCAL_DEFAULT", val)
+            assert _local_default() is False, val
+
+
+class TestUploadToGist:
+    """upload_to_gist posts a SECRET gist and returns {filename: raw_url}."""
+
+    def test_missing_token_raises(self, monkeypatch):
+        from hermes_cli.debug import upload_to_gist
+        monkeypatch.delenv("HERMES_DEBUG_GIST_TOKEN", raising=False)
+        with pytest.raises(RuntimeError, match="HERMES_DEBUG_GIST_TOKEN"):
+            upload_to_gist({"report.txt": "hi"})
+
+    def test_returns_raw_urls_and_posts_secret(self, monkeypatch):
+        from hermes_cli.debug import upload_to_gist
+        monkeypatch.setenv("HERMES_DEBUG_GIST_TOKEN", "ghp_testtoken")
+        body = json.dumps({"files": {
+            "report.txt": {"raw_url": _RAW_REPORT},
+            "agent.log": {"raw_url": _RAW_AGENT},
+        }}).encode("utf-8")
+        resp = _mock_http_response(body=body, status=201)
+
+        with patch("hermes_cli.debug.urllib.request.urlopen",
+                   return_value=resp) as m:
+            out = upload_to_gist({"report.txt": "r", "agent.log": "a"})
+
+        assert out == {"report.txt": _RAW_REPORT, "agent.log": _RAW_AGENT}
+        req = m.call_args[0][0]
+        assert req.method == "POST"
+        sent = json.loads(req.data.decode("utf-8"))
+        assert sent["public"] is False, "gist must be secret, not public"
+        assert set(sent["files"]) == {"report.txt", "agent.log"}
+
+    def test_empty_content_replaced_so_api_accepts_it(self, monkeypatch):
+        from hermes_cli.debug import upload_to_gist
+        monkeypatch.setenv("HERMES_DEBUG_GIST_TOKEN", "ghp_testtoken")
+        body = json.dumps({"files": {"e.txt": {"raw_url": _RAW_REPORT}}}).encode()
+        resp = _mock_http_response(body=body, status=201)
+
+        with patch("hermes_cli.debug.urllib.request.urlopen",
+                   return_value=resp) as m:
+            upload_to_gist({"e.txt": ""})
+
+        sent = json.loads(m.call_args[0][0].data.decode("utf-8"))
+        assert sent["files"]["e.txt"]["content"] == "(empty)"
+
+    def test_no_file_urls_in_response_raises(self, monkeypatch):
+        from hermes_cli.debug import upload_to_gist
+        monkeypatch.setenv("HERMES_DEBUG_GIST_TOKEN", "ghp_testtoken")
+        resp = _mock_http_response(body=json.dumps({"files": {}}).encode(),
+                                   status=201)
+        with patch("hermes_cli.debug.urllib.request.urlopen", return_value=resp):
+            with pytest.raises(ValueError, match="no file URLs"):
+                upload_to_gist({"report.txt": "hi"})
+
+
+# ---------------------------------------------------------------------------
+# PII redaction for upload-bound log content: masks structured PII (SSN,
+# US/NA phones, street addresses, ZIP) while leaving ordinary log noise alone.
+# ---------------------------------------------------------------------------
+class TestRedactPiiText:
+    def test_masks_ssn_phone_address_zip(self):
+        from hermes_cli.debug import _redact_pii_text
+        s = ("Customer 602-834-5366 at 14892 E Summit Dr, Mesa AZ 85207; "
+             "ssn 602-83-4536; call (480) 266-6672 or 480.560.4318")
+        out = _redact_pii_text(s)
+        assert "602-834-5366" not in out
+        assert "480.560.4318" not in out
+        assert "602-83-4536" not in out
+        assert "14892 E Summit Dr" not in out
+        assert "AZ 85207" not in out
+        assert "[REDACTED_PHONE]" in out
+        assert "[REDACTED_SSN]" in out
+        assert "[REDACTED_ADDRESS]" in out
+        assert "[REDACTED_ZIP]" in out
+
+    def test_does_not_redact_log_noise(self):
+        from hermes_cli.debug import _redact_pii_text
+        for noise in (
+            "2026-05-26 12:28:16,049 INFO latency=30.0s in=19474 out=194 total=19668",
+            "session=20260526_122736_a64039a9 uptime=2401s rss=251MB",
+            "commit 003db3244 4 files changed, 507 insertions",
+        ):
+            assert _redact_pii_text(noise) == noise
+
+    def test_empty_is_noop(self):
+        from hermes_cli.debug import _redact_pii_text
+        assert _redact_pii_text("") == ""
+
+    def test_redact_log_text_runs_pii_pass(self):
+        from hermes_cli.debug import _redact_log_text
+        out = _redact_log_text("reach me at 602-834-5366")
+        assert "602-834-5366" not in out
+        assert "[REDACTED_PHONE]" in out

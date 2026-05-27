@@ -13944,6 +13944,9 @@ class GatewayRunner:
             _capture_dump, collect_debug_report,
             upload_to_pastebin, _schedule_auto_delete,
             _GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
+            _capture_default_log_snapshots, _REDACTION_BANNER,
+            upload_to_gist, _gist_enabled,
+            _schedule_gist_auto_delete, _AUTO_DELETE_SECONDS,
         )
 
         loop = asyncio.get_running_loop()
@@ -13952,8 +13955,51 @@ class GatewayRunner:
         def _collect_and_upload():
             _best_effort_sweep_expired_pastes()
             dump_text = _capture_dump()
-            report = collect_debug_report(log_lines=200, dump_text=dump_text)
 
+            if _gist_enabled():
+                # Private secret-gist path: report + full agent.log + full gateway.log.
+                snaps = _capture_default_log_snapshots(200, redact=True)
+                report = collect_debug_report(
+                    log_lines=200, dump_text=dump_text, log_snapshots=snaps,
+                )
+                files = {"report.txt": _REDACTION_BANNER + report}
+                if snaps["agent"].full_text:
+                    files["agent.log"] = (
+                        _REDACTION_BANNER + dump_text
+                        + "\n\n--- full agent.log ---\n" + snaps["agent"].full_text
+                    )
+                if snaps["gateway"].full_text:
+                    files["gateway.log"] = (
+                        _REDACTION_BANNER + dump_text
+                        + "\n\n--- full gateway.log ---\n" + snaps["gateway"].full_text
+                    )
+                try:
+                    urls = upload_to_gist(files, description="hermes /debug")
+                except Exception as exc:
+                    return t("gateway.debug.upload_failed", error=exc)
+
+                # Auto-delete the gist after the configured window (mirrors the
+                # pastebin path). The gateway cron ticker's hourly sweep issues
+                # the authenticated DELETE once the entry expires.
+                gist_id = _schedule_gist_auto_delete(list(urls.values()))
+
+                lines = [_GATEWAY_PRIVACY_NOTICE, "", t("gateway.debug.header"), ""]
+                label_width = max(len(k) for k in urls)
+                for label, url in urls.items():
+                    lines.append(f"`{label:<{label_width}}`  {url}")
+                lines.append("")
+                mins = max(1, _AUTO_DELETE_SECONDS // 60)
+                if gist_id:
+                    lines.append(
+                        f"Secret gist (unlisted, your GitHub). Auto-deletes ~{mins} min "
+                        f"after expiry (hourly sweep); delete the gist now to revoke sooner."
+                    )
+                else:
+                    lines.append("Secret gist (unlisted, your GitHub). Delete the gist to revoke.")
+                return "\n".join(lines)
+
+            # Fallback: summary report to a public pastebin (original behavior).
+            report = collect_debug_report(log_lines=200, dump_text=dump_text)
             urls = {}
             try:
                 urls["Report"] = upload_to_pastebin(report)

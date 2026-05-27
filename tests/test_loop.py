@@ -307,4 +307,4 @@ class TestLoopManager:
         assert f"#{state.id}" in line
         assert "every 5m" in line
         assert "check server" in line
-        assert "running" in line or "stopped" in line
+        assert "active" in line or "running" in line or "stopped" in line

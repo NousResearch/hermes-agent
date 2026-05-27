@@ -46,8 +46,8 @@ class TestSupportsMediaInToolResults:
     def test_openai_chat_yes(self):
         assert _supports_media_in_tool_results("openai", "gpt-5.4") is True
 
-    def test_openai_codex_yes(self):
-        assert _supports_media_in_tool_results("openai-codex", "gpt-5-codex") is True
+    def test_openai_codex_no(self):
+        assert _supports_media_in_tool_results("openai-codex", "gpt-5-codex") is False
 
     def test_gemini_3_yes(self):
         assert _supports_media_in_tool_results("google", "gemini-3-flash-preview") is True
@@ -211,3 +211,25 @@ class TestHandleVisionAnalyzeFastPath:
 
         assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
             "Fast path fired for unknown provider; should have fallen through"
+
+    def test_openai_codex_forces_aux_fallback(self, tmp_path):
+        """Codex Responses currently rejects image-bearing tool results."""
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        async def _aux_sentinel(*args, **kwargs):
+            return '{"sentinel": "aux-path"}'
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("openai-codex", "gpt-5.4")
+        try:
+            with patch(
+                "agent.image_routing.decide_image_input_mode",
+                return_value="native",
+            ), patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel):
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        assert result == '{"sentinel": "aux-path"}'

@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from agent.chat_completion_helpers import estimate_request_context_tokens
 from agent.codex_responses_adapter import _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
 
 import run_agent
@@ -50,6 +51,37 @@ def test_is_destructive_command_treats_cp_as_mutating():
 
 def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
+
+
+def test_estimate_request_context_tokens_counts_chat_messages():
+    payload = {
+        "messages": [
+            {"role": "user", "content": "hello world"},
+            {"role": "assistant", "content": [{"type": "text", "text": "abc"}]},
+        ]
+    }
+
+    estimate = estimate_request_context_tokens(payload)
+
+    assert estimate > 0
+
+
+def test_estimate_request_context_tokens_counts_responses_input_images_and_text():
+    payload = {
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "describe this image"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                ],
+            }
+        ]
+    }
+
+    estimate = estimate_request_context_tokens(payload)
+
+    assert estimate >= len("describe this image") // 4
 
 
 @pytest.fixture()

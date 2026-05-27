@@ -42,6 +42,8 @@ def _clean_env(tmp_path, monkeypatch):
         "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "HINDSIGHT_MODEL_API_KEY", "HINDSIGHT_MODEL_BASE_URL",
+        "HINDSIGHT_MODEL_NAME", "HINDSIGHT_MODEL_PROVIDER",
         "HINDSIGHT_API_LLM_BASE_URL", "HINDSIGHT_API_LLM_PROVIDER",
         "HINDSIGHT_API_LLM_MODEL", "HINDSIGHT_API_LLM_API_KEY",
     ):
@@ -385,6 +387,77 @@ class TestConfig:
         assert env["HINDSIGHT_API_LLM_MODEL"] == "global-model"
         assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
 
+    def test_embedded_profile_env_reads_friendly_model_aliases_from_global_env(
+        self, tmp_path, monkeypatch
+    ):
+        user_home = tmp_path / "user-home"
+        global_env = user_home / ".hindsight" / ".env"
+        global_env.parent.mkdir(parents=True)
+        global_env.write_text(
+            "HINDSIGHT_MODEL_API_KEY=alias-key\n"
+            "HINDSIGHT_MODEL_BASE_URL=https://alias.example.test/v1\n"
+            "HINDSIGHT_MODEL_NAME=alias-model\n"
+            "HINDSIGHT_MODEL_PROVIDER=openrouter\n"
+        )
+        monkeypatch.setattr(Path, "home", lambda: user_home)
+
+        env = _build_embedded_profile_env({})
+
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "alias-key"
+        assert env["HINDSIGHT_API_LLM_BASE_URL"] == "https://alias.example.test/v1"
+        assert env["HINDSIGHT_API_LLM_MODEL"] == "alias-model"
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+
+    def test_embedded_profile_env_prefers_friendly_process_aliases_over_legacy_global_env(
+        self, tmp_path, monkeypatch
+    ):
+        user_home = tmp_path / "user-home"
+        global_env = user_home / ".hindsight" / ".env"
+        global_env.parent.mkdir(parents=True)
+        global_env.write_text(
+            "HINDSIGHT_API_LLM_API_KEY=legacy-global-key\n"
+            "HINDSIGHT_API_LLM_BASE_URL=https://legacy-global.example.test/v1\n"
+            "HINDSIGHT_API_LLM_MODEL=legacy-global-model\n"
+            "HINDSIGHT_API_LLM_PROVIDER=anthropic\n"
+        )
+        monkeypatch.setattr(Path, "home", lambda: user_home)
+        monkeypatch.setenv("HINDSIGHT_MODEL_API_KEY", "alias-process-key")
+        monkeypatch.setenv("HINDSIGHT_MODEL_BASE_URL", "https://alias-process.example.test/v1")
+        monkeypatch.setenv("HINDSIGHT_MODEL_NAME", "alias-process-model")
+        monkeypatch.setenv("HINDSIGHT_MODEL_PROVIDER", "openrouter")
+
+        env = _build_embedded_profile_env({})
+
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "alias-process-key"
+        assert env["HINDSIGHT_API_LLM_BASE_URL"] == "https://alias-process.example.test/v1"
+        assert env["HINDSIGHT_API_LLM_MODEL"] == "alias-process-model"
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+
+    def test_embedded_profile_env_prefers_friendly_global_aliases_over_legacy_global_names(
+        self, tmp_path, monkeypatch
+    ):
+        user_home = tmp_path / "user-home"
+        global_env = user_home / ".hindsight" / ".env"
+        global_env.parent.mkdir(parents=True)
+        global_env.write_text(
+            "HINDSIGHT_API_LLM_API_KEY=legacy-global-key\n"
+            "HINDSIGHT_MODEL_API_KEY=alias-global-key\n"
+            "HINDSIGHT_API_LLM_BASE_URL=https://legacy-global.example.test/v1\n"
+            "HINDSIGHT_MODEL_BASE_URL=https://alias-global.example.test/v1\n"
+            "HINDSIGHT_API_LLM_MODEL=legacy-global-model\n"
+            "HINDSIGHT_MODEL_NAME=alias-global-model\n"
+            "HINDSIGHT_API_LLM_PROVIDER=anthropic\n"
+            "HINDSIGHT_MODEL_PROVIDER=openrouter\n"
+        )
+        monkeypatch.setattr(Path, "home", lambda: user_home)
+
+        env = _build_embedded_profile_env({})
+
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "alias-global-key"
+        assert env["HINDSIGHT_API_LLM_BASE_URL"] == "https://alias-global.example.test/v1"
+        assert env["HINDSIGHT_API_LLM_MODEL"] == "alias-global-model"
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+
     def test_embedded_profile_env_keeps_profile_overrides_above_global_env(
         self, tmp_path, monkeypatch
     ):
@@ -493,7 +566,7 @@ class TestPostSetup:
 
         assert saved_configs[-1]["memory"]["provider"] == "hindsight"
         env_text = (hermes_home / ".env").read_text()
-        assert "HINDSIGHT_LLM_API_KEY=sk-local-test\n" in env_text
+        assert "HINDSIGHT_MODEL_API_KEY=sk-local-test\n" in env_text
         assert "HINDSIGHT_TIMEOUT=120\n" in env_text
         assert "HINDSIGHT_IDLE_TIMEOUT=300\n" in env_text
 

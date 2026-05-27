@@ -21,6 +21,12 @@ Config via environment variables:
   HINDSIGHT_RETAIN_SOURCE          — metadata source value attached to retained memories
   HINDSIGHT_RETAIN_USER_PREFIX     — label used before user turns in retained transcripts
   HINDSIGHT_RETAIN_ASSISTANT_PREFIX — label used before assistant turns in retained transcripts
+  HINDSIGHT_MODEL_API_KEY          — preferred LLM API key alias for local embedded mode
+  HINDSIGHT_MODEL_BASE_URL         — preferred LLM endpoint/base URL alias
+  HINDSIGHT_MODEL_NAME             — preferred LLM model name alias
+  HINDSIGHT_MODEL_PROVIDER         — preferred LLM provider alias
+  HINDSIGHT_LLM_API_KEY            — legacy local LLM API key alias
+  HINDSIGHT_API_LLM_*              — daemon-facing LLM vars (still accepted)
 
 Or via ~/.hindsight/config.json (shared defaults) merged with
 $HERMES_HOME/hindsight/config.json (profile-scoped overrides). A single
@@ -71,6 +77,23 @@ _PROVIDER_DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "openai_compatible": "your-model-name",
 }
+_LLM_API_KEY_ENV_KEYS = (
+    "HINDSIGHT_MODEL_API_KEY",
+    "HINDSIGHT_LLM_API_KEY",
+    "HINDSIGHT_API_LLM_API_KEY",
+)
+_LLM_BASE_URL_ENV_KEYS = (
+    "HINDSIGHT_MODEL_BASE_URL",
+    "HINDSIGHT_API_LLM_BASE_URL",
+)
+_LLM_MODEL_ENV_KEYS = (
+    "HINDSIGHT_MODEL_NAME",
+    "HINDSIGHT_API_LLM_MODEL",
+)
+_LLM_PROVIDER_ENV_KEYS = (
+    "HINDSIGHT_MODEL_PROVIDER",
+    "HINDSIGHT_API_LLM_PROVIDER",
+)
 
 
 def _parse_int_setting(value: Any, default: int) -> int:
@@ -520,23 +543,23 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         current_key = _resolve_llm_setting(
             config,
             ("llmApiKey", "llm_api_key"),
-            ("HINDSIGHT_LLM_API_KEY", "HINDSIGHT_API_LLM_API_KEY"),
+            _LLM_API_KEY_ENV_KEYS,
         )
 
     current_provider = _resolve_llm_setting(
         config,
         ("llm_provider",),
-        ("HINDSIGHT_API_LLM_PROVIDER",),
+        _LLM_PROVIDER_ENV_KEYS,
     )
     current_model = _resolve_llm_setting(
         config,
         ("llm_model",),
-        ("HINDSIGHT_API_LLM_MODEL",),
+        _LLM_MODEL_ENV_KEYS,
     )
     current_base_url = _resolve_llm_setting(
         config,
         ("llm_base_url",),
-        ("HINDSIGHT_API_LLM_BASE_URL",),
+        _LLM_BASE_URL_ENV_KEYS,
     )
 
     # The embedded daemon expects OpenAI wire format for these providers.
@@ -872,20 +895,20 @@ class HindsightMemoryProvider(MemoryProvider):
             val = input(f"  LLM model [{current_model}]: ").strip()
             provider_config["llm_model"] = val or current_model
 
-            sys.stdout.write("  LLM API key: ")
+            sys.stdout.write("  LLM API key (saved as HINDSIGHT_MODEL_API_KEY): ")
             sys.stdout.flush()
             llm_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
             if llm_key:
-                env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
+                env_writes["HINDSIGHT_MODEL_API_KEY"] = llm_key
             else:
                 env_path = Path(hermes_home) / ".env"
                 existing_llm_key = ""
                 if env_path.exists():
-                    for line in env_path.read_text().splitlines():
-                        if line.startswith("HINDSIGHT_LLM_API_KEY="):
-                            existing_llm_key = line.split("=", 1)[1]
-                            break
-                env_writes["HINDSIGHT_LLM_API_KEY"] = existing_llm_key
+                    existing_llm_key = _first_nonempty_mapping_value(
+                        _load_simple_env(env_path),
+                        _LLM_API_KEY_ENV_KEYS,
+                    )
+                env_writes["HINDSIGHT_MODEL_API_KEY"] = existing_llm_key
 
         # Step 4: Save everything
         provider_config.setdefault("bank_id", "hermes")
@@ -934,9 +957,12 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception:
                 pass
 
-            llm_api_key = env_writes.get("HINDSIGHT_LLM_API_KEY", "")
+            llm_api_key = _first_nonempty_mapping_value(env_writes, _LLM_API_KEY_ENV_KEYS)
             if not llm_api_key:
-                llm_api_key = _load_simple_env(Path(hermes_home) / ".env").get("HINDSIGHT_LLM_API_KEY", "")
+                llm_api_key = _first_nonempty_mapping_value(
+                    _load_simple_env(Path(hermes_home) / ".env"),
+                    _LLM_API_KEY_ENV_KEYS,
+                )
             if not llm_api_key:
                 llm_api_key = _load_simple_env(_embedded_profile_env_path(materialized_config)).get(
                     "HINDSIGHT_API_LLM_API_KEY",
@@ -963,10 +989,10 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "api_url", "description": "Hindsight API URL", "default": _DEFAULT_LOCAL_URL, "when": {"mode": "local_external"}},
             {"key": "api_key", "description": "API key (optional)", "secret": True, "env_var": "HINDSIGHT_API_KEY", "when": {"mode": "local_external"}},
             # Local embedded mode
-            {"key": "llm_provider", "description": "LLM provider", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "openrouter", "minimax", "ollama", "lmstudio", "openai_compatible"], "when": {"mode": "local_embedded"}},
-            {"key": "llm_base_url", "description": "Endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
-            {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
-            {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
+            {"key": "llm_provider", "description": "LLM provider (env: HINDSIGHT_MODEL_PROVIDER; legacy HINDSIGHT_API_LLM_PROVIDER still accepted)", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "openrouter", "minimax", "ollama", "lmstudio", "openai_compatible"], "env_var": "HINDSIGHT_MODEL_PROVIDER", "when": {"mode": "local_embedded"}},
+            {"key": "llm_base_url", "description": "Endpoint URL (env: HINDSIGHT_MODEL_BASE_URL; e.g. http://192.168.1.10:8080/v1)", "default": "", "env_var": "HINDSIGHT_MODEL_BASE_URL", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
+            {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible; preferred env: HINDSIGHT_MODEL_API_KEY)", "secret": True, "env_var": "HINDSIGHT_MODEL_API_KEY", "when": {"mode": "local_embedded"}},
+            {"key": "llm_model", "description": "LLM model (env: HINDSIGHT_MODEL_NAME)", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "env_var": "HINDSIGHT_MODEL_NAME", "when": {"mode": "local_embedded"}},
             {"key": "bank_id", "description": "Memory bank name (static fallback when bank_id_template is unset)", "default": "hermes"},
             {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},
@@ -1015,7 +1041,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 llm_provider = _resolve_llm_setting(
                     config,
                     ("llm_provider",),
-                    ("HINDSIGHT_API_LLM_PROVIDER",),
+                    _LLM_PROVIDER_ENV_KEYS,
                 )
                 if llm_provider in {"openai_compatible", "openrouter"}:
                     llm_provider = "openai"
@@ -1024,7 +1050,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 llm_base_url = self._llm_base_url or _resolve_llm_setting(
                     config,
                     ("llm_base_url",),
-                    ("HINDSIGHT_API_LLM_BASE_URL",),
+                    _LLM_BASE_URL_ENV_KEYS,
                 )
                 kwargs: dict[str, Any] = dict(
                     profile=config.get("profile", "hermes"),
@@ -1032,12 +1058,12 @@ class HindsightMemoryProvider(MemoryProvider):
                     llm_api_key=_resolve_llm_setting(
                         config,
                         ("llmApiKey", "llm_api_key"),
-                        ("HINDSIGHT_LLM_API_KEY", "HINDSIGHT_API_LLM_API_KEY"),
+                        _LLM_API_KEY_ENV_KEYS,
                     ),
                     llm_model=_resolve_llm_setting(
                         config,
                         ("llm_model",),
-                        ("HINDSIGHT_API_LLM_MODEL",),
+                        _LLM_MODEL_ENV_KEYS,
                     ),
                 )
                 if llm_base_url:

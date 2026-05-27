@@ -167,6 +167,18 @@ def _install_safe_stdio() -> None:
             setattr(sys, stream_name, _SafeWriter(stream))
 
 
+def _is_nonretryable_local_validation_error(error: Exception) -> bool:
+    """Return True for local validation bugs that retry/fallback cannot fix."""
+    if isinstance(error, UnicodeEncodeError):
+        return False
+    if isinstance(error, ValueError):
+        return True
+    if isinstance(error, TypeError):
+        error_text = str(error).lower()
+        return "nonetype" not in error_text and "not iterable" not in error_text
+    return False
+
+
 class IterationBudget:
     """Thread-safe iteration counter for an agent.
 
@@ -8444,7 +8456,6 @@ class AIAgent:
                         # Nothing to sanitize in messages — might be in system
                         # prompt or prefill. Fall through to normal error path.
 
-                    status_code = getattr(api_error, "status_code", None)
                     error_context = self._extract_api_error_context(api_error)
 
                     # ── Classify the error for structured recovery decisions ──
@@ -8458,6 +8469,7 @@ class AIAgent:
                         context_length=_ctx_len,
                         num_messages=len(api_messages) if api_messages else 0,
                     )
+                    status_code = classified.status_code
                     logger.debug(
                         "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s",
                         classified.reason.value, classified.status_code,
@@ -8883,11 +8895,11 @@ class AIAgent:
                     # Check for non-retryable client errors.  The classifier
                     # already accounts for 413, 429, 529 (transient), context
                     # overflow, and generic-400 heuristics.  Local validation
-                    # errors (ValueError, TypeError) are programming bugs.
-                    is_local_validation_error = (
-                        isinstance(api_error, (ValueError, TypeError))
-                        and not isinstance(api_error, UnicodeEncodeError)
-                    )
+                    # errors are programming bugs, except common SDK/provider
+                    # shape failures with no HTTP status, e.g.
+                    # "'NoneType' object is not iterable". Those should retry
+                    # and fall back instead of killing a Telegram turn.
+                    is_local_validation_error = _is_nonretryable_local_validation_error(api_error)
                     is_client_error = (
                         is_local_validation_error
                         or (

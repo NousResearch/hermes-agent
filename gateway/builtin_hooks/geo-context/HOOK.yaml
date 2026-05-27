@@ -1,0 +1,11 @@
+name: geo-context
+description: >
+  Refreshes ~/.hermes/memories/MEMORY.md from Gabriel's Geo data
+  (User Profile + Memory + Today's block) before every agent turn,
+  so the agent always sees fresh state. Hash-gated and TTL-gated so it
+  only rewrites MEMORY.md when content actually changed and at most
+  once per TTL window — keeps Anthropic prompt-cache hits intact.
+  Silently no-ops if Geo.app isn't running (geo-mcp-bridge socket missing).
+events:
+  - agent:start
+  - session:reset

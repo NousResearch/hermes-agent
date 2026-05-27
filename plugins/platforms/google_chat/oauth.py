@@ -61,6 +61,8 @@ import json
 import logging
 import os
 import re
+import secrets
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -88,6 +90,8 @@ except (ModuleNotFoundError, ImportError):
             return "~/" + str(home.relative_to(Path.home()))
         except ValueError:
             return str(home)
+
+from utils import atomic_replace
 
 
 def _hermes_home() -> Path:
@@ -296,14 +300,11 @@ def list_authorized_emails() -> List[str]:
 
 
 def _persist_credentials(creds: Any, token_path: Path) -> None:
-    """Atomic-ish JSON write of refreshed credentials."""
+    """Persist refreshed credentials atomically with private permissions."""
     try:
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(
-            json.dumps(
-                _normalize_authorized_user_payload(json.loads(creds.to_json())),
-                indent=2,
-            )
+        _write_private_json(
+            token_path,
+            _normalize_authorized_user_payload(json.loads(creds.to_json())),
         )
     except Exception:
         logger.debug(
@@ -323,6 +324,38 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
     if not normalized.get("type"):
         normalized["type"] = "authorized_user"
     return normalized
+
+
+def _write_private_json(path: Path, data: Any) -> None:
+    """Atomically write JSON with 0o600 permissions where supported."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+
+    tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+    try:
+        fd = os.open(
+            str(tmp_path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        atomic_replace(tmp_path, path)
+        try:
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
 
 
 def _ensure_deps() -> None:
@@ -402,25 +435,21 @@ def store_client_secret(path: str) -> None:
         sys.exit(1)
 
     target = _client_secret_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, indent=2))
+    _write_private_json(target, data)
     print(f"OK: Client secret saved to {target}")
 
 
 def _save_pending_auth(*, state: str, code_verifier: str,
                       email: Optional[str] = None) -> None:
     pending = _pending_auth_path(email)
-    pending.parent.mkdir(parents=True, exist_ok=True)
-    pending.write_text(
-        json.dumps(
-            {
-                "state": state,
-                "code_verifier": code_verifier,
-                "redirect_uri": _REDIRECT_URI,
-                "email": email or "",
-            },
-            indent=2,
-        )
+    _write_private_json(
+        pending,
+        {
+            "state": state,
+            "code_verifier": code_verifier,
+            "redirect_uri": _REDIRECT_URI,
+            "email": email or "",
+        },
     )
 
 
@@ -548,8 +577,7 @@ def exchange_auth_code(code: str, email: Optional[str] = None) -> None:
         token_payload["scopes"] = granted_scopes
 
     token_path = _token_path(email)
-    token_path.parent.mkdir(parents=True, exist_ok=True)
-    token_path.write_text(json.dumps(token_payload, indent=2))
+    _write_private_json(token_path, token_payload)
     _pending_auth_path(email).unlink(missing_ok=True)
 
     print(f"OK: Authenticated. Token saved to {token_path}")
@@ -586,7 +614,8 @@ def revoke(email: Optional[str] = None) -> None:
                 f"https://oauth2.googleapis.com/revoke?token={creds.token}",
                 method="POST",
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
+            ),
+            timeout=15,
         )
         print("Token revoked with Google.")
     except Exception as exc:

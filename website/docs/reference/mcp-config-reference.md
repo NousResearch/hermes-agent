@@ -9,8 +9,8 @@ description: "Reference for Hermes Agent MCP configuration keys, filtering seman
 This page is the compact reference companion to the main MCP docs.
 
 For conceptual guidance, see:
-- [MCP (Model Context Protocol)](/docs/user-guide/features/mcp)
-- [Use MCP with Hermes](/docs/guides/use-mcp-with-hermes)
+- [MCP (Model Context Protocol)](/user-guide/features/mcp)
+- [Use MCP with Hermes](/guides/use-mcp-with-hermes)
 
 ## Root config shape
 
@@ -28,6 +28,7 @@ mcp_servers:
     enabled: true
     timeout: 120
     connect_timeout: 60
+    supports_parallel_tool_calls: false
     tools:
       include: []
       exclude: []
@@ -47,6 +48,7 @@ mcp_servers:
 | `enabled` | bool | both | Skip the server entirely when false |
 | `timeout` | number | both | Tool call timeout |
 | `connect_timeout` | number | both | Initial connection timeout |
+| `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |

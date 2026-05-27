@@ -29,43 +29,30 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Context file scanning — detect prompt injection in AGENTS.md, .cursorrules,
-# SOUL.md before they get injected into the system prompt.
+# Context file scanning — detect prompt injection / promptware in AGENTS.md,
+# .cursorrules, SOUL.md before they get injected into the system prompt.
+#
+# Patterns live in ``tools/threat_patterns.py`` — the single source of truth
+# shared with the memory-tool scanner and the tool-result delimiter system.
+# This module just chooses how to react when a match is found (block-with-
+# placeholder; the actual content never reaches the system prompt).
 # ---------------------------------------------------------------------------
 
-_CONTEXT_THREAT_PATTERNS = [
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
-    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
-    (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
-    (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
-]
-
-_CONTEXT_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
+from tools.threat_patterns import scan_for_threats as _scan_for_threats
 
 
 def _scan_context_content(content: str, filename: str) -> str:
-    """Scan context file content for injection. Returns sanitized content."""
-    findings = []
+    """Scan context file content for injection. Returns sanitized content.
 
-    # Check invisible unicode
-    for char in _CONTEXT_INVISIBLE_CHARS:
-        if char in content:
-            findings.append(f"invisible unicode U+{ord(char):04X}")
-
-    # Check threat patterns
-    for pattern, pid in _CONTEXT_THREAT_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
-            findings.append(pid)
-
+    Uses the "context" scope from the shared threat-pattern library, which
+    covers classic injection + promptware/C2 patterns + role-play hijack.
+    Strict-scope patterns (SSH backdoor, persistence, exfil-URL) are NOT
+    applied here — those are too aggressive for a context file in a
+    cloned repo (security research, infra docs).  Content matching is
+    BLOCKED at this layer because the file would otherwise enter the
+    system prompt verbatim and the user has no chance to intervene.
+    """
+    findings = _scan_for_threats(content, scope="context")
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
@@ -157,6 +144,9 @@ MEMORY_GUIDANCE = (
     "User preferences and recurring corrections matter more than procedural task details.\n"
     "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
     "state to memory; use session_search to recall those from past transcripts. "
+    "Specifically: do not record PR numbers, issue numbers, commit SHAs, 'fixed bug X', "
+    "'submitted PR Y', 'Phase N done', file counts, or any artifact that will be stale "
+    "in 7 days. If a fact will be stale in a week, it does not belong in memory. "
     "If you've discovered a new way to do something, solved a problem that could be "
     "necessary later, save it as a skill with the skill tool.\n"
     "Write memories as declarative facts, not instructions to yourself. "
@@ -203,7 +193,12 @@ KANBAN_GUIDANCE = (
     "files outside it unless the task explicitly asks.\n"
     "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
     "every few minutes during long subprocesses (training, encoding, crawling). "
-    "Skip heartbeats for short tasks.\n"
+    "Skip heartbeats for short tasks. **If your task may run longer than 1 hour, "
+    "you MUST call `kanban_heartbeat` at least once an hour** — the dispatcher "
+    "reclaims tasks running past `kanban.dispatch_stale_timeout_seconds` "
+    "(default 4 hours) when no heartbeat has arrived in the last hour. A "
+    "reclaim re-queues the task as `ready` without penalty (no failure counter "
+    "tick), but you lose your current run's progress.\n"
     "4. **Block on genuine ambiguity.** If you need a human decision you cannot "
     "infer (missing credentials, UX choice, paywalled source, peer output you "
     "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
@@ -213,7 +208,15 @@ KANBAN_GUIDANCE = (
     "artifacts. `metadata` is machine-readable facts "
     "(`{changed_files: [...], tests_run: N, decisions: [...]}`). Downstream "
     "workers read both via their own `kanban_show`. Never put secrets / "
-    "tokens / raw PII in either field — run rows are durable forever.\n"
+    "tokens / raw PII in either field — run rows are durable forever. "
+    "Exception: if your output is a code change that needs human review "
+    "before counting as merged/done (most coding tasks), drop the "
+    "structured metadata (changed_files / tests_run / diff_path) into a "
+    "`kanban_comment` first, then end with "
+    "`kanban_block(reason=\"review-required: <one-line summary>\")` so a "
+    "reviewer can approve+unblock or request changes. Reviewing-then-"
+    "completing is more honest than auto-completing work that still needs "
+    "eyes on it.\n"
     "6. **If follow-up work appears, create it; don't do it.** Use "
     "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
     "to spawn a child task for the appropriate specialist profile instead of "
@@ -257,12 +260,16 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.
 # Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
+# Also applied to xAI Grok — same failure modes in practice (claims completion
+# without tool calls, suggests workarounds instead of using existing tools,
+# replies with plans/suggestions instead of executing). The body is
+# family-agnostic; the OPENAI_ prefix reflects origin, not exclusivity.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
@@ -564,6 +571,18 @@ PLATFORM_HINTS = {
         "code fences). Treat this like a conversation, not a document. Keep responses "
         "brief and natural."
     ),
+    "webui": (
+        "You are in the Hermes WebUI, a browser-based chat interface. "
+        "Full Markdown rendering is supported — headings, bold, italic, code "
+        "blocks, tables, math (LaTeX), and Mermaid diagrams all render natively. "
+        "To display local or remote media/files inline, include "
+        "MEDIA:/absolute/path/to/file or MEDIA:https://... in your response. "
+        "Local file paths must be absolute. Images, audio (with playback speed "
+        "controls), video, PDFs, HTML, CSV, diffs/patches, and Excalidraw files "
+        "render as rich previews. Do not use Markdown image syntax like "
+        "![alt](/path) for local files; local paths are not served that way. "
+        "Use MEDIA:/absolute/path instead."
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -591,7 +610,7 @@ WSL_ENVIRONMENT_HINT = (
 # misleading — the agent should only see the machine it can actually touch.
 _REMOTE_TERMINAL_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh",
-    "vercel_sandbox", "managed_modal",
+    "managed_modal",
 })
 
 
@@ -605,7 +624,6 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "modal": "a Modal sandbox (Linux)",
     "managed_modal": "a managed Modal sandbox (Linux)",
     "daytona": "a Daytona workspace (Linux)",
-    "vercel_sandbox": "a Vercel sandbox (Linux)",
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
@@ -719,7 +737,7 @@ def build_environment_hints() -> str:
       and a Windows-only note that `terminal` shells out to bash, not
       PowerShell).
     - For **remote / sandbox** terminal backends (docker, singularity,
-      modal, daytona, ssh, vercel_sandbox): host info is **suppressed**
+      modal, daytona, ssh): host info is **suppressed**
       because the agent's tools can't touch the host — only the backend
       matters. A live probe inside the backend reports its OS, user, $HOME,
       and cwd. Falls back to a static summary if the probe fails.

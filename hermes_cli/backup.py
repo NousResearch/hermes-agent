@@ -85,6 +85,22 @@ def _should_exclude(rel_path: Path) -> bool:
     return False
 
 
+def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> bool:
+    """Return True when a candidate file should not be written to a backup zip."""
+    if _should_exclude(rel_path):
+        return True
+
+    # zipfile.write() follows file symlinks, so skip links before any archive
+    # write can copy data from outside HERMES_HOME.
+    if abs_path.is_symlink():
+        return True
+
+    try:
+        return abs_path.resolve() == out_path.resolve()
+    except (OSError, ValueError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # SQLite safe copy
 # ---------------------------------------------------------------------------
@@ -173,15 +189,8 @@ def run_backup(args) -> None:
             fpath = dp / fname
             rel = fpath.relative_to(hermes_root)
 
-            if _should_exclude(rel):
+            if _should_skip_backup_file(fpath, rel, out_path):
                 continue
-
-            # Skip the output zip itself if it happens to be inside hermes root
-            try:
-                if fpath.resolve() == out_path.resolve():
-                    continue
-            except (OSError, ValueError):
-                pass
 
             files_to_add.append((fpath, rel))
 
@@ -298,7 +307,7 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
     if len(first_parts) == 1:
         prefix = first_parts.pop()
         # Only strip if it looks like a hermes dir name
-        if prefix in (".hermes", "hermes"):
+        if prefix in {".hermes", "hermes"}:
             return prefix + "/"
 
     return ""
@@ -349,7 +358,7 @@ def run_import(args) -> None:
             except (EOFError, KeyboardInterrupt):
                 print("\nAborted.")
                 sys.exit(1)
-            if answer not in ("y", "yes"):
+            if answer not in {"y", "yes"}:
                 print("Aborted.")
                 return
 
@@ -726,15 +735,8 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                 except ValueError:
                     continue
 
-                if _should_exclude(rel):
+                if _should_skip_backup_file(fpath, rel, out_path):
                     continue
-
-                # Skip the output zip itself if it already exists inside root.
-                try:
-                    if fpath.resolve() == out_path.resolve():
-                        continue
-                except (OSError, ValueError):
-                    pass
 
                 files_to_add.append((fpath, rel))
     except OSError as exc:
@@ -802,8 +804,7 @@ def _prune_pre_update_backups(backup_dir: Path, keep: int) -> int:
     Operators who genuinely don't want a backup should set
     ``updates.pre_update_backup: false`` in config — that gates creation.
     """
-    if keep < 1:
-        keep = 1
+    keep = max(keep, 1)
     if not backup_dir.exists():
         return 0
 
@@ -875,8 +876,7 @@ def _prune_pre_migration_backups(backup_dir: Path, keep: int) -> int:
     Only touches files matching ``pre-migration-*.zip`` so other backups in
     the same directory are never touched.
     """
-    if keep < 0:
-        keep = 0
+    keep = max(keep, 0)
     if not backup_dir.exists():
         return 0
 

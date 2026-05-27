@@ -601,6 +601,7 @@ class SessionManager:
             ),
             "quiet_mode": True,
             "session_id": session_id,
+            "session_db": self._get_db(),
             "model": model or default_model,
         }
 

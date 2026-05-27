@@ -19,7 +19,7 @@ _OTHER_PROVIDER_KEYS = (
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY",
     "GOOGLE_API_KEY", "GEMINI_API_KEY", "DASHSCOPE_API_KEY",
     "XAI_API_KEY", "KIMI_API_KEY", "KIMI_CN_API_KEY",
-    "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY", "AI_GATEWAY_API_KEY",
+    "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY", "HF_TOKEN", "GLM_API_KEY", "ZAI_API_KEY",
     "XIAOMI_API_KEY", "OPENROUTER_API_KEY", "COPILOT_GITHUB_TOKEN",
     "GH_TOKEN", "GITHUB_TOKEN", "ARCEEAI_API_KEY",
@@ -304,12 +304,20 @@ class TestTencentTokenhubURLMapping:
 
 
 class TestTencentTokenhubContextLength:
-    """hy3-preview context length is registered."""
+    """hy3-preview has a context-length entry registered.
 
-    def test_hy3_preview_context_length(self):
+    Asserting the relationship (registered + ≥ 4096) instead of a
+    specific value, per AGENTS.md "Don't write change-detector tests".
+    The previous version of this class pinned an exact integer that
+    broke whenever Tencent / OpenRouter bumped the published context
+    window (#22268).
+    """
+
+    def test_hy3_preview_has_registered_context_length(self):
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length("hy3-preview")
-        assert ctx == 256000
+        assert isinstance(ctx, int)
+        assert ctx >= 4096, f"hy3-preview context length looks unset/wrong: {ctx}"
 
 
 # =============================================================================

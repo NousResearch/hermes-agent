@@ -33,6 +33,7 @@ import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, SHOW_CURSOR } from '../term
 
 import AppContext from './AppContext.js'
 import { ClockProvider } from './ClockContext.js'
+import CursorAdvanceContext, { type CursorAdvanceNotifier } from './CursorAdvanceContext.js'
 import CursorDeclarationContext, { type CursorDeclarationSetter } from './CursorDeclarationContext.js'
 import ErrorOverview from './ErrorOverview.js'
 import StdinContext from './StdinContext.js'
@@ -75,6 +76,10 @@ type Props = {
   // DOM elements. Called for mode-1003 motion events with no button held.
   // No-op outside fullscreen (Ink.dispatchHover gates on altScreenActive).
   readonly onHoverAt: (col: number, row: number) => void
+  // Copy the active fullscreen text selection without clearing the highlight.
+  // Used for terminal-native right-click-copy behaviour.
+  readonly onCopySelectionNoClear: () => Promise<string>
+  readonly getSelectedText: () => string
   // Look up the OSC 8 hyperlink at (col, row) synchronously at click
   // time. Returns the URL or undefined. The browser-open is deferred by
   // MULTI_CLICK_TIMEOUT_MS so double-click can cancel it.
@@ -100,6 +105,18 @@ type Props = {
   // Enables IME composition at the input caret and lets screen readers /
   // magnifiers track the input. Optional so testing.tsx doesn't stub it.
   readonly onCursorDeclaration?: CursorDeclarationSetter
+  // Receives notifications that the physical cursor was advanced out-of-band
+  // (e.g. TextInput's fast-echo bypass writing directly to stdout). The
+  // handler in ink.tsx updates two pieces of state from a single call:
+  //   - `displayCursor` (the relative-move basis log-update uses on the
+  //     next frame; skipped on alt-screen where CSI H resets it every
+  //     frame anyway), and
+  //   - the active `cursorDeclaration.relativeX/Y` (the target the cursor
+  //     parks at after every frame; bumped on BOTH screens because
+  //     onRender's alt-screen branch emits an absolute CUP from it and
+  //     a stale declaration there is still visibly wrong).
+  // Optional so testing.tsx doesn't need to stub it.
+  readonly onCursorAdvance?: CursorAdvanceNotifier
   // Dispatch a keyboard event through the DOM tree. Called for each
   // parsed key alongside the legacy EventEmitter path.
   readonly dispatchKeyboardEvent: (parsedKey: ParsedKey) => void
@@ -196,7 +213,9 @@ export default class App extends PureComponent<Props, State> {
             <TerminalFocusProvider>
               <ClockProvider>
                 <CursorDeclarationContext.Provider value={this.props.onCursorDeclaration ?? (() => {})}>
-                  {this.state.error ? <ErrorOverview error={this.state.error as Error} /> : this.props.children}
+                  <CursorAdvanceContext.Provider value={this.props.onCursorAdvance ?? (() => {})}>
+                    {this.state.error ? <ErrorOverview error={this.state.error as Error} /> : this.props.children}
+                  </CursorAdvanceContext.Provider>
                 </CursorDeclarationContext.Provider>
               </ClockProvider>
             </TerminalFocusProvider>
@@ -616,6 +635,28 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     if (baseButton !== 0) {
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
+
+      if (baseButton === 2 && hasSelection(sel)) {
+        if ((m.button & 0x20) !== 0) {
+          return
+        }
+
+        if (!app.props.getSelectedText()) {
+          return
+        }
+
+        void app.props
+          .onCopySelectionNoClear()
+          .then(text => {
+            if (!text) {
+              app.props.onMouseDownAt(col, row, baseButton)
+            }
+          })
+          .catch(() => app.props.onMouseDownAt(col, row, baseButton))
+
+        return
+      }
+
       app.props.onMouseDownAt(col, row, baseButton)
 
       return

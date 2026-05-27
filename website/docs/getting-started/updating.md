@@ -8,23 +8,40 @@ description: "How to update Hermes Agent to the latest version or uninstall it"
 
 ## Updating
 
+### Git installs
+
 Update to the latest version with a single command:
 
 ```bash
 hermes update
 ```
 
-This pulls the latest code, updates dependencies, and prompts you to configure any new options that were added since your last update.
+This pulls the latest code from `main`, updates dependencies, and prompts you to configure any new options that were added since your last update.
+
+### pip installs
+
+PyPI releases track **tagged versions** (major and minor releases), not every commit on `main`. Check for updates and upgrade with:
+
+```bash
+hermes update --check    # see if a newer release is on PyPI
+hermes update            # runs pip install --upgrade hermes-agent
+```
+
+Or manually:
+
+```bash
+pip install --upgrade hermes-agent    # or: uv pip install --upgrade hermes-agent
+```
 
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
 :::
 
-### What happens during an update
+### What happens during an update (git installs)
 
 When you run `hermes update`, the following steps occur:
 
-1. **Pairing-data snapshot** — a lightweight pre-update state snapshot is saved (covers `~/.hermes/pairing/`, Feishu comment rules, and other state files that get modified at runtime). Rollbackable via `hermes backup restore --state pre-update`.
+1. **Pairing-data snapshot** — a lightweight pre-update state snapshot is saved (covers `~/.hermes/pairing/`, Feishu comment rules, and other state files that get modified at runtime). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md), or by extracting the most recent quick-snapshot zip Hermes wrote next to your `~/.hermes/` directory.
 2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
 3. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 4. **Config migration** — detects new config options added since your version and prompts you to set them
@@ -32,7 +49,7 @@ When you run `hermes update`, the following steps occur:
 
 ### Preview-only: `hermes update --check`
 
-Want to know if you're behind `origin/main` before actually pulling? Run `hermes update --check` — it fetches, prints your local commit and the latest remote commit side-by-side, and exits `0` if in sync or `1` if behind. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+Want to know if an update is available before pulling? Run `hermes update --check` — for git installs it fetches and compares commits against `origin/main`; for pip installs it queries PyPI for the latest release. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
 
 ### Full pre-update backup: `--backup`
 
@@ -46,11 +63,31 @@ Or make it the default for every run:
 
 ```yaml
 # ~/.hermes/config.yaml
-update:
-  backup: true
+updates:
+  pre_update_backup: true
 ```
 
 `--backup` was the always-on behavior in earlier builds, but it was adding minutes to every update on large homes, so it's now opt-in. The lightweight pairing-data snapshot above still runs unconditionally.
+
+### Windows: another `hermes.exe` is running
+
+On Windows, `hermes update` will refuse to run if it detects another `hermes.exe` process holding the venv's entry-point executable open — most commonly the Hermes Desktop app's spawned backend, an open `hermes` REPL in another terminal, or a running gateway:
+
+```
+$ hermes update
+✗ Another hermes.exe is running:
+    PID 12345  hermes.exe
+
+  Updating now would fail to overwrite ...\venv\Scripts\hermes.exe because
+  Windows blocks REPLACE on a running executable.
+
+  Close Hermes Desktop, exit any open `hermes` REPLs, and
+  stop the gateway (`hermes gateway stop`) before retrying.
+  Override with `hermes update --force` if you've already
+  confirmed those processes will not write to the venv.
+```
+
+Close the listed processes and re-run. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
 
 Expected output looks like:
 
@@ -123,13 +160,11 @@ If you installed manually (not via the quick installer):
 cd /path/to/hermes-agent
 export VIRTUAL_ENV="$(pwd)/venv"
 
-# Pull latest code and submodules
+# Pull latest code
 git pull origin main
-git submodule update --init --recursive
 
 # Reinstall (picks up new dependencies)
 uv pip install -e ".[all]"
-uv pip install -e "./tinker-atropos"
 
 # Check for new config options
 hermes config check
@@ -191,11 +226,20 @@ See [Nix Setup](./nix-setup.md) for more details.
 
 ## Uninstalling
 
+### Git installs
+
 ```bash
 hermes uninstall
 ```
 
 The uninstaller gives you the option to keep your configuration files (`~/.hermes/`) for a future reinstall.
+
+### pip installs
+
+```bash
+pip uninstall hermes-agent
+rm -rf ~/.hermes            # Optional — keep if you plan to reinstall
+```
 
 ### Manual Uninstall
 

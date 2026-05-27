@@ -35,6 +35,11 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    # Gateway-only assistant/status chatter controls. These default on for
+    # back-compat, but mobile platforms can opt down to final-answer-first.
+    "interim_assistant_messages": True,
+    "long_running_notifications": True,
+    "busy_ack_detail": True,
     # When true, delete tool-progress / "Still working..." / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown
@@ -56,6 +61,9 @@ _TIER_HIGH = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,  # follow global
+    "interim_assistant_messages": True,
+    "long_running_notifications": True,
+    "busy_ack_detail": True,
 }
 
 _TIER_MEDIUM = {
@@ -63,6 +71,9 @@ _TIER_MEDIUM = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,
+    "interim_assistant_messages": True,
+    "long_running_notifications": True,
+    "busy_ack_detail": True,
 }
 
 _TIER_LOW = {
@@ -70,6 +81,9 @@ _TIER_LOW = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": False,
+    "interim_assistant_messages": False,
+    "long_running_notifications": False,
+    "busy_ack_detail": False,
 }
 
 _TIER_MINIMAL = {
@@ -77,11 +91,23 @@ _TIER_MINIMAL = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": False,
+    "interim_assistant_messages": False,
+    "long_running_notifications": False,
+    "busy_ack_detail": False,
 }
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 1 — full edit support, personal/team use
-    "telegram":    _TIER_HIGH,
+    # Telegram is usually a mobile inbox: default to final-answer-first and
+    # avoid permanent operational breadcrumbs unless users opt back in with
+    # display.platforms.telegram.tool_progress / long_running_notifications.
+    "telegram":    {
+        **_TIER_HIGH,
+        "tool_progress": "off",
+        "interim_assistant_messages": False,
+        "long_running_notifications": False,
+        "busy_ack_detail": False,
+    },
     "discord":     _TIER_HIGH,
 
     # Tier 2 — edit support, often customer/workspace channels
@@ -190,13 +216,19 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in ("show_reasoning", "streaming"):
+    if setting in {
+        "show_reasoning",
+        "streaming",
+        "interim_assistant_messages",
+        "long_running_notifications",
+        "busy_ack_detail",
+    }:
         if isinstance(value, str):
-            return value.lower() in ("true", "1", "yes", "on")
+            return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
     if setting == "cleanup_progress":
         if isinstance(value, str):
-            return value.lower() in ("true", "1", "yes", "on")
+            return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
     if setting == "tool_preview_length":
         try:

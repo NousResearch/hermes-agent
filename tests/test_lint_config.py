@@ -160,3 +160,18 @@ class TestToolsPatchParserE741:
             "tools/patch_parser.py has E741 violation(s):\n"
             f"{result.stdout}"
         )
+class TestToolsBrowserToolF401:
+    """tools/browser_tool.py must have zero F401 (unused-import) violations."""
+
+    def test_browser_tool_has_zero_f401_violations(self):
+        """tools/browser_tool.py must have zero unused-import violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", "tools/browser_tool.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/browser_tool.py has F401 violation(s):\n"
+            f"{result.stdout}"
+        )

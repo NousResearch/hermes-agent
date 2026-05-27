@@ -1788,6 +1788,19 @@ class TestInstallPathSafety:
         )
         assert lock.get_installed("good")["install_path"] == "devops/good"
 
+    def test_record_install_accepts_nested_official_skill_path(self, tmp_path):
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        lock.record_install(
+            name="trl-fine-tuning", source="official",
+            identifier="official/mlops/training/trl-fine-tuning",
+            trust_level="builtin", scan_verdict="pass",
+            skill_hash="h", install_path="mlops/training/trl-fine-tuning",
+            files=["SKILL.md"],
+        )
+        entry = lock.get_installed("trl-fine-tuning")
+        assert entry is not None
+        assert entry["install_path"] == "mlops/training/trl-fine-tuning"
+
     def test_uninstall_rejects_poisoned_absolute_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
         """Hand-edited lock.json with absolute install_path must not delete anything."""
         from tools.skills_hub import uninstall_skill

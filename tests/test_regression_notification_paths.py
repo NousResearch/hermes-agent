@@ -252,8 +252,12 @@ class TestCliDrainPath:
 class TestNoDuplicateNotifications:
     """Verify the three dedup mechanisms are intact."""
 
-    def test_poll_marks_consumed(self):
-        """poll() on exited session marks completion as consumed."""
+    def test_poll_does_not_mark_consumed(self):
+        """poll() on exited session must NOT mark completion as consumed.
+
+        poll() is a read-only status query. Only mark_completion_consumed()
+        and wait() are allowed to consume notifications.
+        """
         registry = ProcessRegistry()
         s = _make_session(sid="proc_poll_dup", notify_on_complete=True, output="done")
         s.exited = True
@@ -262,7 +266,7 @@ class TestNoDuplicateNotifications:
 
         result = registry.poll("proc_poll_dup")
         assert result["status"] == "exited"
-        assert registry.is_completion_consumed("proc_poll_dup")
+        assert not registry.is_completion_consumed("proc_poll_dup")
 
     def test_wait_marks_consumed(self):
         """wait() must mark completion as consumed."""
@@ -316,12 +320,12 @@ class TestNoDuplicateNotifications:
 class TestPollFixPreserved:
     """Verify the core poll() fix (#10156) is still in effect."""
 
-    def test_poll_function_has_completion_consumed_add(self):
-        """AST guard: poll() body MUST contain _completion_consumed.add().
+    def test_poll_function_lacks_completion_consumed_add(self):
+        """AST guard: poll() body MUST NOT contain _completion_consumed.add().
 
-        Upstream (2bbd53493) re-added _completion_consumed.add to poll() to
-        suppress duplicate notifications.  The old fork-only guard asserted
-        its ABSENCE; this flipped guard asserts its PRESENCE.
+        poll() is a read-only status query.  mark_completion_consumed() is the
+        explicit writer.  Adding _completion_consumed.add to poll() causes
+        duplicate-notification suppression on read-only status checks.
         """
         src = Path("tools/process_registry.py").read_text()
         tree = ast.parse(src)
@@ -343,9 +347,9 @@ class TestPollFixPreserved:
                         found = True
                         break
 
-        assert found, (
-            "poll() is missing _completion_consumed.add() — "
-            "upstream expects it for duplicate-notification suppression"
+        assert not found, (
+            "poll() contains _completion_consumed.add() — "
+            "poll is read-only, use mark_completion_consumed() instead"
         )
 
     def test_mark_completion_consumed_method_exists(self):

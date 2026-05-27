@@ -23,6 +23,38 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 
+def _classify_responses_issuer(
+    *,
+    is_xai_responses: bool = False,
+    is_github_responses: bool = False,
+    is_codex_backend: bool = False,
+    base_url: Optional[str] = None,
+) -> str:
+    """Stable identifier for the Responses endpoint that mints encrypted_content.
+
+    ``reasoning.encrypted_content`` is sealed to the endpoint that issued it:
+    replaying a Codex-minted blob against xAI (or vice versa) deterministically
+    returns HTTP 400 ``invalid_encrypted_content``. Stamping the issuer on
+    persisted reasoning items and filtering at replay time lets a single
+    conversation switch models without poisoning history with un-decryptable
+    reasoning blocks.
+    """
+    if is_xai_responses:
+        return "xai_responses"
+    if is_github_responses:
+        return "github_responses"
+    if is_codex_backend:
+        return "codex_backend"
+    if base_url:
+        return f"other:{base_url}"
+    return "other"
+
+
+# Throttle the per-process cross-issuer skip warning so we don't flood logs
+# when a long history contains many stale-issuer reasoning blocks.
+_CROSS_ISSUER_WARN_EMITTED = False
+
+
 # Matches Codex/Harmony tool-call serialization that occasionally leaks into
 # assistant-message content when the model fails to emit a structured
 # ``function_call`` item.  Accepts the common forms:
@@ -249,6 +281,7 @@ def _chat_messages_to_responses_input(
     *,
     is_xai_responses: bool = False,
     replay_encrypted_reasoning: bool = True,
+    current_issuer_kind: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
@@ -270,6 +303,19 @@ def _chat_messages_to_responses_input(
     ``AIAgent._disable_codex_reasoning_replay`` which both strips cached
     items from the conversation history and threads ``replay_enabled=False``
     through this converter so subsequent turns send no reasoning items.
+
+    ``current_issuer_kind`` enables a per-item cross-issuer guard. The
+    Responses API's ``encrypted_content`` blob is decryptable only by the
+    endpoint that minted it — replaying a Codex-issued blob against xAI
+    (or vice versa) always yields HTTP 400 ``invalid_encrypted_content``
+    and breaks every subsequent turn in the same session.  When this
+    argument is provided and a reasoning item carries an ``_issuer_kind``
+    stamp from a different endpoint, the item is dropped from the replayed
+    input.  Legacy items without a stamp are still replayed
+    (backwards-compatible).  The two guards compose:
+    ``replay_encrypted_reasoning=False`` is the session-wide kill switch
+    (drops ALL replay); ``current_issuer_kind`` is the per-item filter
+    that runs only when replay is still enabled.
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
@@ -311,11 +357,40 @@ def _chat_messages_to_responses_input(
                             item_id = ri.get("id")
                             if item_id and item_id in seen_item_ids:
                                 continue
+                            # Cross-issuer guard: drop reasoning blocks that
+                            # were minted by a different Responses endpoint.
+                            # The current endpoint cannot decrypt foreign
+                            # encrypted_content and would reject the whole
+                            # request with HTTP 400 invalid_encrypted_content.
+                            # Unstamped (legacy) items pass through.
+                            item_issuer = ri.get("_issuer_kind")
+                            if (
+                                current_issuer_kind is not None
+                                and item_issuer is not None
+                                and item_issuer != current_issuer_kind
+                            ):
+                                global _CROSS_ISSUER_WARN_EMITTED
+                                if not _CROSS_ISSUER_WARN_EMITTED:
+                                    logger.warning(
+                                        "Dropping reasoning item minted by %s while "
+                                        "calling %s — encrypted_content is sealed to "
+                                        "its issuer. This happens when a session "
+                                        "switches model providers mid-conversation.",
+                                        item_issuer, current_issuer_kind,
+                                    )
+                                    _CROSS_ISSUER_WARN_EMITTED = True
+                                continue
                             # Strip the "id" field — with store=False the
                             # Responses API cannot look up items by ID and
                             # returns 404.  The encrypted_content blob is
                             # self-contained for reasoning chain continuity.
-                            replay_item = {k: v for k, v in ri.items() if k != "id"}
+                            # Also strip the internal "_issuer_kind" stamp;
+                            # it is a Hermes-side metadata key and not part
+                            # of the Responses API schema.
+                            replay_item = {
+                                k: v for k, v in ri.items()
+                                if k not in ("id", "_issuer_kind")
+                            }
                             items.append(replay_item)
                             if item_id:
                                 seen_item_ids.add(item_id)
@@ -889,8 +964,18 @@ def _extract_responses_reasoning_text(item: Any) -> str:
 # Full response normalization
 # ---------------------------------------------------------------------------
 
-def _normalize_codex_response(response: Any) -> tuple[Any, str]:
-    """Normalize a Responses API object to an assistant_message-like object."""
+def _normalize_codex_response(
+    response: Any,
+    *,
+    issuer_kind: Optional[str] = None,
+) -> tuple[Any, str]:
+    """Normalize a Responses API object to an assistant_message-like object.
+
+    ``issuer_kind`` (when provided) is stamped onto each reasoning item the
+    response yields, so future replays can detect when the active endpoint
+    differs from the one that minted the encrypted_content blob and drop
+    the item instead of triggering HTTP 400 invalid_encrypted_content.
+    """
     output = getattr(response, "output", None)
     if not isinstance(output, list) or not output:
         # The Codex backend can return empty output when the answer was
@@ -980,6 +1065,12 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             encrypted = getattr(item, "encrypted_content", None)
             if isinstance(encrypted, str) and encrypted:
                 raw_item = {"type": "reasoning", "encrypted_content": encrypted}
+                # Stamp the issuer so future turns can detect when a
+                # model swap moved the conversation to an endpoint that
+                # cannot decrypt this blob — see _chat_messages_to_responses_input
+                # cross-issuer guard.
+                if issuer_kind:
+                    raw_item["_issuer_kind"] = issuer_kind
                 item_id = getattr(item, "id", None)
                 if isinstance(item_id, str) and item_id.startswith("rs_tmp_"):
                     logger.debug(

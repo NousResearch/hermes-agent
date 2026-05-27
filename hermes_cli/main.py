@@ -12530,7 +12530,7 @@ Examples:
         "--interactive", "-i",
         action="store_true",
         help=(
-            "Run a dry run curator review"
+            "Run a dry run curator review "
             "and prompt for confirmation before consolidation/pruning"
         )
     )

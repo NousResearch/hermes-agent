@@ -258,7 +258,7 @@ export const DARK_THEME: Theme = {
     primary: '#FFD700',
     accent: '#FFBF00',
     border: '#CD7F32',
-    text: '#FFF8DC',
+    text: '#FFFFFF',
     muted: '#CC9B1F',
     // Bumped from the old `#B8860B` darkgoldenrod (~53% luminance) which
     // read as barely-visible on dark terminals for long body text.  The
@@ -275,7 +275,7 @@ export const DARK_THEME: Theme = {
     error: '#ef5350',
     warn: '#ffa726',
 
-    prompt: '#FFF8DC',
+    prompt: '#FFFFFF',
     // sessionLabel/sessionBorder intentionally track the `dim` value — they
     // are "same role, same colour" by design.  fromSkin's banner_dim fallback
     // relies on this pairing (#11300).

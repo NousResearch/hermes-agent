@@ -23,6 +23,11 @@ def _patch_bootstrap(monkeypatch):
         "function": {"name": "t", "description": "t", "parameters": {"type": "object", "properties": {}}},
     }])
     monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("agent.context_compressor.get_model_context_length", lambda *a, **kw: 256_000)
+    monkeypatch.setattr(
+        "agent.conversation_loop.estimate_usage_cost",
+        lambda *a, **kw: SimpleNamespace(amount_usd=None, status="unavailable", source="test"),
+    )
 
 
 class _FakeAnthropicClient:

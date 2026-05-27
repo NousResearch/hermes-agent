@@ -37,6 +37,7 @@ def _patch_agent_bootstrap(monkeypatch):
         ],
     )
     monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("agent.context_compressor.get_model_context_length", lambda *a, **kw: 256_000)
 
 
 def _build_agent(monkeypatch):

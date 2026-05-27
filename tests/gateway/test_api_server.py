@@ -14,6 +14,8 @@ Tests cover:
 
 import asyncio
 import json
+import os
+import stat
 import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -127,6 +129,37 @@ class TestResponseStore:
         assert store.get_conversation("chat-a") is None
         # resp_2 mapping should still be intact
         assert store.get_conversation("chat-b") == "resp_2"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
+    def test_file_store_created_owner_only_under_permissive_umask(self, tmp_path):
+        """response_store.db must be 0o600 on creation even under umask 022."""
+        db_path = tmp_path / "response_store.db"
+        store = None
+        old_umask = os.umask(0o022)
+        try:
+            store = ResponseStore(max_size=10, db_path=str(db_path))
+            store.put(
+                "resp_secret",
+                {
+                    "response": {"id": "resp_secret"},
+                    "conversation_history": [{"role": "tool", "content": "dummy-marker"}],
+                },
+            )
+        finally:
+            os.umask(old_umask)
+            if store is not None:
+                store.close()
+
+        assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+        # WAL/SHM sidecars are owner-only too when present. WAL mode may be
+        # unavailable on some filesystems (NFS/SMB) — only assert when the
+        # sidecar files actually exist.
+        for sidecar in (
+            db_path.with_name(db_path.name + "-wal"),
+            db_path.with_name(db_path.name + "-shm"),
+        ):
+            if sidecar.exists():
+                assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
 
 
 # ---------------------------------------------------------------------------

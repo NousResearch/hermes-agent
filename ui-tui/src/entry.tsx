@@ -43,23 +43,24 @@ setupGracefulExit({
     () => {
       resetTerminalModes()
 
-      return gw.kill()
+      return gw.kill('graceful-exit-cleanup')
     }
   ],
   onError: (scope, err) => {
-    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+    const message = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
 
-    process.stderr.write(`hermes-tui ${scope}: ${message.slice(0, 2000)}\n`)
+    process.stderr.write(`hermes-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
   },
   onSignal: signal => {
     resetTerminalModes()
-    process.stderr.write(`hermes-tui: received ${signal}\n`)
+    process.stderr.write(`hermes-tui lifecycle: received ${signal}\n`)
   }
 })
 
 const stopMemoryMonitor = startMemoryMonitor({
   onCritical: (snap, dump) => {
     resetTerminalModes()
+    process.stderr.write(`hermes-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`)
     process.stderr.write(dumpNotice(snap, dump))
     process.stderr.write('hermes-tui: exiting to avoid OOM; restart to recover\n')
     process.exit(137)

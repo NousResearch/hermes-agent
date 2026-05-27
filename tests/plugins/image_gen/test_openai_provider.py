@@ -229,14 +229,43 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "empty_response"
 
-    def test_url_fallback_if_api_changes(self, provider):
-        """Defensive: if OpenAI ever returns URL instead of b64, pass through."""
+    def test_url_response_is_cached_locally(self, provider):
+        """OpenAI URL response (if API ever returns one) is cached locally.
+
+        Pre-fix this asserted the bare URL passed through; symmetric to the
+        xAI #26942 fix.  Even though gpt-image-2 returns b64 today, every
+        ``image_gen`` provider must guarantee the gateway gets a stable
+        file path so ephemeral signed URLs can't expire mid-flight.
+        """
         fake_client = MagicMock()
         fake_client.images.generate.return_value = _fake_response(
             b64=None, url="https://example.com/img.png",
         )
 
-        with _patched_openai(fake_client):
+        with _patched_openai(fake_client), patch(
+            "plugins.image_gen.openai.save_url_image",
+            return_value=Path("/tmp/openai_gpt-image-2_20260524_000000_deadbeef.png"),
+        ) as mock_save_url:
+            result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert result["image"].startswith("/")
+        assert "example.com" not in result["image"]
+        mock_save_url.assert_called_once()
+
+    def test_url_response_falls_back_to_bare_url_when_download_fails(self, provider):
+        """Cache failure must not turn into a tool error — symmetric with xAI."""
+        import requests as req_lib
+
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(
+            b64=None, url="https://example.com/img.png",
+        )
+
+        with _patched_openai(fake_client), patch(
+            "plugins.image_gen.openai.save_url_image",
+            side_effect=req_lib.HTTPError("404 from CDN"),
+        ):
             result = provider.generate("a cat")
 
         assert result["success"] is True

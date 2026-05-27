@@ -17,7 +17,7 @@ The `x_search` tool lets the agent search X (Twitter) posts, profiles, and threa
 
 | Credential | Source | Setup |
 |------------|--------|-------|
-| **SuperGrok OAuth** (preferred) | Browser login at `accounts.x.ai`, refreshed automatically | `hermes auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok Subscription)](../../guides/xai-grok-oauth.md) |
+| **SuperGrok / X Premium+ OAuth** (preferred) | Browser login at `accounts.x.ai`, refreshed automatically | `hermes auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok / X Premium+)](../../guides/xai-grok-oauth.md) |
 | **`XAI_API_KEY`** | Paid xAI API key | Set in `~/.hermes/.env` |
 
 Both hit the same endpoint with the same payload — the only difference is the bearer token. **When both are configured, SuperGrok OAuth wins** so x_search runs against your subscription quota instead of paid API spend.
@@ -35,7 +35,7 @@ hermes tools
 
 The picker offers two credential choices:
 
-1. **xAI Grok OAuth (SuperGrok Subscription)** — opens the browser to `accounts.x.ai` if you're not already logged in
+1. **xAI Grok OAuth (SuperGrok / Premium+)** — opens the browser to `accounts.x.ai` if you're not already logged in
 2. **xAI API key** — prompts for `XAI_API_KEY`
 
 Either choice satisfies the gating. You can pick whichever credentials you already have; the tool works identically with both. If both end up configured, OAuth is preferred at call time.
@@ -78,8 +78,21 @@ The tool returns JSON with:
 - `answer` — synthesized text response from Grok
 - `citations` — citations returned by the Responses API top-level field
 - `inline_citations` — `url_citation` annotations extracted from the message body (each with `url`, `title`, `start_index`, `end_index`)
+- `degraded` — `true` when any narrowing filter (`allowed_x_handles`, `excluded_x_handles`, `from_date`, `to_date`) was set AND both citation channels came back empty. In that case the `answer` was synthesized from the model's own knowledge rather than the X index, so treat it as unsourced. `false` otherwise (including the "no filters set" case — a broad unsourced answer is just an answer, not a filter miss)
+- `degraded_reason` — short string naming which filters were active, or `null` when `degraded` is `false`
 - `credential_source` — `"xai-oauth"` if OAuth resolved, `"xai"` if API key resolved
 - `model`, `query`, `provider`, `tool`, `success`
+
+### Date validation
+
+`from_date` / `to_date` are validated client-side before the HTTP call:
+
+- Both, if provided, must parse as `YYYY-MM-DD`.
+- When both are set, `from_date` must be on or before `to_date`.
+- `from_date` must not be later than today UTC — no posts can exist in a window that hasn't started yet, so the call would be guaranteed to return zero citations.
+- `to_date` in the future is allowed (callers may legitimately request "from yesterday to tomorrow" to catch posts as they arrive).
+
+Validation failures surface as a structured `{"error": "..."}` tool result, never as an HTTP call to xAI.
 
 ## Example
 
@@ -110,8 +123,18 @@ Two possible causes:
 1. **Toolset not enabled.** Run `hermes tools` and confirm `🐦 X (Twitter) Search` is checked.
 2. **No xAI credentials.** The check_fn returns False, so the schema stays hidden. Run `hermes auth status` to confirm xai-oauth login state, and check that `XAI_API_KEY` is set (if you're using the API-key path).
 
+### `degraded: true` — answer with no citations
+
+When you used `allowed_x_handles`, `excluded_x_handles`, or a date range and the response comes back with `degraded: true`, xAI's X index returned no matching posts but Grok still produced a synthesized answer from its own training data. The answer is unsourced — do not treat it as a real X result.
+
+Causes worth checking:
+
+- **Typo in the handle.** Strip the `@`, double-check spelling, and confirm the account exists.
+- **Date range too narrow** or sliding past today's posts; widen and retry.
+- **xAI index gap.** Some active accounts intermittently fail to surface in `x_search` even when they post regularly. Retry after a few minutes, or use the `xurl` skill for direct X API reads when you need an exact handle's timeline.
+
 ## See Also
 
-- [xAI Grok OAuth (SuperGrok Subscription)](../../guides/xai-grok-oauth.md) — the OAuth setup guide
+- [xAI Grok OAuth (SuperGrok / Premium+)](../../guides/xai-grok-oauth.md) — the OAuth setup guide
 - [Web Search & Extract](web-search.md) — for general (non-X) web search
 - [Tools Reference](../../reference/tools-reference.md) — full tool catalog

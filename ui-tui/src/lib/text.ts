@@ -212,6 +212,28 @@ export const buildToolTrailLine = (
   return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
 
+const verboseToolBlock = (label: string, text?: string) => {
+  const body = (text ?? '').trim()
+
+  return body ? `${label}:\n${boundedLiveRenderText(body)}` : ''
+}
+
+export const buildVerboseToolTrailLine = (
+  name: string,
+  context: string,
+  error?: boolean,
+  duration?: number,
+  argsText?: string,
+  resultText?: string
+) => {
+  const detail = [verboseToolBlock('Args', argsText), verboseToolBlock(error ? 'Error' : 'Result', resultText)]
+    .filter(Boolean)
+    .join('\n')
+  const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
+
+  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+}
+
 export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
 
 export const parseToolTrailResultLine = (line: string) => {
@@ -221,10 +243,10 @@ export const parseToolTrailResultLine = (line: string) => {
 
   const mark = line.endsWith(' ✗') ? '✗' : '✓'
   const body = line.slice(0, -2)
-  const [call, detail] = body.split(' :: ', 2)
+  const sep = body.indexOf(' :: ')
 
-  if (detail != null) {
-    return { call, detail, mark }
+  if (sep >= 0) {
+    return { call: body.slice(0, sep), detail: body.slice(sep + 4), mark }
   }
 
   const legacy = body.indexOf(': ')

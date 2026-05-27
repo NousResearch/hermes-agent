@@ -61,12 +61,76 @@ try:
 except ModuleNotFoundError:
     pass
 
+import os
+import sys
+
+
+def _is_termux_startup_environment_fast() -> bool:
+    """Tiny Termux check for pre-import startup shortcuts."""
+    prefix = os.environ.get("PREFIX", "")
+    return bool(
+        os.environ.get("TERMUX_VERSION")
+        or "com.termux/files/usr" in prefix
+        or prefix.startswith("/data/data/com.termux/")
+    )
+
+
+def _is_termux_fast_version_argv(argv: list[str]) -> bool:
+    return argv in (["--version"], ["-V"], ["version"])
+
+
+def _read_openai_version_fast() -> str | None:
+    """Read OpenAI SDK version without importing ``importlib.metadata``."""
+    for base in sys.path:
+        if not base:
+            base = os.getcwd()
+        version_file = os.path.join(base, "openai", "_version.py")
+        try:
+            with open(version_file, encoding="utf-8") as handle:
+                for line in handle:
+                    stripped = line.strip()
+                    if not stripped.startswith("__version__"):
+                        continue
+                    _key, _sep, value = stripped.partition("=")
+                    value = value.split("#", 1)[0].strip().strip("\"'")
+                    return value or None
+        except OSError:
+            continue
+    return None
+
+
+def _print_fast_version_info() -> None:
+    from hermes_cli import __release_date__, __version__
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    print(f"Hermes Agent v{__version__} ({__release_date__})")
+    print(f"Project: {project_root}")
+    print(f"Python: {sys.version.split()[0]}")
+
+    openai_version = _read_openai_version_fast()
+    print(f"OpenAI SDK: {openai_version}" if openai_version else "OpenAI SDK: Not installed")
+
+
+def _try_termux_ultrafast_version() -> bool:
+    """Handle ``hermes --version`` before config/logging imports on Termux."""
+    if os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1":
+        return False
+    if not _is_termux_startup_environment_fast():
+        return False
+    if not _is_termux_fast_version_argv(sys.argv[1:]):
+        return False
+
+    _print_fast_version_info()
+    return True
+
+
+if _try_termux_ultrafast_version():
+    raise SystemExit(0)
+
 import argparse
 import json
-import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -216,20 +280,29 @@ load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 # module-import time). Without this, config.yaml's toggle is ignored because
 # the setup_logging() call below imports agent.redact, which reads the env var
 # exactly once. Env var in .env still wins — this is config.yaml fallback only.
+#
+# We also read network.force_ipv4 from the same yaml load to avoid two
+# separate config.yaml reads (saves ~17ms on every CLI startup — the second
+# `load_config()` was doing a full deep-merge for one boolean lookup).
+_FORCE_IPV4_EARLY = False
 try:
-    if "HERMES_REDACT_SECRETS" not in os.environ:
-        import yaml as _yaml_early
+    import yaml as _yaml_early
 
-        _cfg_path = get_hermes_home() / "config.yaml"
-        if _cfg_path.exists():
-            with open(_cfg_path, encoding="utf-8") as _f:
-                _early_sec_cfg = (_yaml_early.safe_load(_f) or {}).get("security", {})
+    _cfg_path = get_hermes_home() / "config.yaml"
+    if _cfg_path.exists():
+        with open(_cfg_path, encoding="utf-8") as _f:
+            _early_cfg_raw = _yaml_early.safe_load(_f) or {}
+        if "HERMES_REDACT_SECRETS" not in os.environ:
+            _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
                 _early_redact = _early_sec_cfg.get("redact_secrets")
                 if _early_redact is not None:
                     os.environ["HERMES_REDACT_SECRETS"] = str(_early_redact).lower()
-            del _early_sec_cfg
-        del _cfg_path
+        _early_net_cfg = _early_cfg_raw.get("network", {})
+        if isinstance(_early_net_cfg, dict) and _early_net_cfg.get("force_ipv4"):
+            _FORCE_IPV4_EARLY = True
+        del _early_cfg_raw
+    del _cfg_path
 except Exception:
     pass  # best-effort — redaction stays at default (enabled) on config errors
 
@@ -243,17 +316,15 @@ except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
 # Apply IPv4 preference early, before any HTTP clients are created.
-try:
-    from hermes_cli.config import load_config as _load_config_early
-    from hermes_constants import apply_ipv4_preference as _apply_ipv4
+# We already determined whether to force IPv4 from the raw yaml read above —
+# this just calls the toggle without a redundant load_config() round trip.
+if _FORCE_IPV4_EARLY:
+    try:
+        from hermes_constants import apply_ipv4_preference as _apply_ipv4
 
-    _early_cfg = _load_config_early()
-    _net = _early_cfg.get("network", {})
-    if isinstance(_net, dict) and _net.get("force_ipv4"):
         _apply_ipv4(force=True)
-    del _early_cfg, _net
-except Exception:
-    pass  # best-effort — don't crash if config isn't available yet
+    except Exception:
+        pass  # best-effort — don't crash if hermes_constants not importable yet
 
 import logging
 import threading
@@ -261,9 +332,145 @@ import time as _time
 from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
-from hermes_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
-
 logger = logging.getLogger(__name__)
+
+
+def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
+    """Import-safe Termux check for cold-start-sensitive CLI paths."""
+    check = env or os.environ
+    prefix = str(check.get("PREFIX", ""))
+    return bool(
+        check.get("TERMUX_VERSION")
+        or "com.termux/files/usr" in prefix
+        or prefix.startswith("/data/data/com.termux/")
+    )
+
+
+def _read_packed_ref(common_dir: Path, ref: str) -> str | None:
+    """Look up a ref in .git/packed-refs without spawning git.
+
+    packed-refs lines look like ``<sha> <ref>`` with optional ``^<sha>``
+    peel lines and ``#``-prefixed comments / ``# pack-refs with:`` header.
+    """
+    try:
+        text = (common_dir / "packed-refs").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if not line or line.startswith("#") or line.startswith("^"):
+            continue
+        parts = line.split(" ", 1)
+        if len(parts) == 2 and parts[1].strip() == ref:
+            return parts[0].strip()
+    return None
+
+
+def _read_git_revision_fingerprint(repo_root: Path) -> str | None:
+    """Return a cheap checkout fingerprint without spawning git."""
+    git_dir = repo_root / ".git"
+    try:
+        if git_dir.is_file():
+            for line in git_dir.read_text(encoding="utf-8", errors="replace").splitlines():
+                key, _, value = line.partition(":")
+                if key.strip() == "gitdir" and value.strip():
+                    git_dir = (repo_root / value.strip()).resolve()
+                    break
+        # Worktrees point HEAD at a per-worktree gitdir but pack their refs
+        # in the main repo's gitdir (referenced via ``commondir``). Resolve
+        # that up front so packed-refs lookups hit the right file.
+        common_dir = git_dir
+        commondir_file = git_dir / "commondir"
+        if commondir_file.exists():
+            try:
+                rel = commondir_file.read_text(encoding="utf-8", errors="replace").strip()
+                if rel:
+                    common_dir = (git_dir / rel).resolve()
+            except OSError:
+                pass
+        head_file = git_dir / "HEAD"
+        head = head_file.read_text(encoding="utf-8", errors="replace").strip()
+        if head.startswith("ref:"):
+            ref = head.split(":", 1)[1].strip()
+            # Loose refs may live in the worktree gitdir OR the common dir
+            # (branches created via `git worktree add` typically live in the
+            # common dir's refs/heads/).
+            for candidate in (git_dir, common_dir):
+                ref_file = candidate / ref
+                if ref_file.exists():
+                    return f"git:{ref}:{ref_file.read_text(encoding='utf-8', errors='replace').strip()}"
+            packed_sha = _read_packed_ref(common_dir, ref)
+            if packed_sha:
+                return f"git:{ref}:{packed_sha}"
+            # Ref name is known but unresolved — still stable across launches,
+            # and the version/release fallback in the caller will invalidate
+            # after `hermes update`.
+            return f"git:{ref}:unresolved"
+        return f"git:HEAD:{head}"
+    except OSError:
+        return None
+
+
+def _termux_bundled_skills_fingerprint() -> str:
+    """Cheap invalidation key for Termux bundled-skill startup sync."""
+    git_fp = _read_git_revision_fingerprint(PROJECT_ROOT)
+    if git_fp:
+        return git_fp
+    skills_dir = PROJECT_ROOT / "skills"
+    try:
+        stat = skills_dir.stat()
+        return f"skills:{__version__}:{__release_date__}:{stat.st_mtime_ns}:{stat.st_size}"
+    except OSError:
+        return f"skills:{__version__}:{__release_date__}:missing"
+
+
+def _termux_bundled_skills_stamp_path() -> Path:
+    return get_hermes_home() / "skills" / ".termux_bundled_sync_stamp"
+
+
+def _termux_bundled_skills_sync_needed() -> bool:
+    if not _is_termux_startup_environment():
+        return True
+    if os.environ.get("HERMES_TERMUX_FORCE_SKILLS_SYNC") == "1":
+        return True
+    try:
+        stamp = _termux_bundled_skills_stamp_path()
+        return stamp.read_text(encoding="utf-8").strip() != _termux_bundled_skills_fingerprint()
+    except OSError:
+        return True
+
+
+def _mark_termux_bundled_skills_synced() -> None:
+    if not _is_termux_startup_environment():
+        return
+    try:
+        stamp = _termux_bundled_skills_stamp_path()
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(_termux_bundled_skills_fingerprint() + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _sync_bundled_skills_for_startup() -> bool:
+    """Sync bundled skills, but skip unchanged Termux checkouts cheaply.
+
+    Hashing every bundled skill is safe but expensive on older Android
+    storage. The git/ref stamp keeps post-update correctness: a changed
+    checkout revision forces one real sync, then later starts skip it.
+    """
+    if _is_termux_startup_environment() and not _termux_bundled_skills_sync_needed():
+        return False
+
+    from tools.skills_sync import sync_skills
+
+    sync_skills(quiet=True)
+    _mark_termux_bundled_skills_synced()
+    return True
+
+
+def _termux_should_prefetch_update_check() -> bool:
+    if not _is_termux_startup_environment():
+        return True
+    return os.environ.get("HERMES_TERMUX_PREFETCH_UPDATES") == "1"
 
 
 def _relative_time(ts) -> str:
@@ -455,7 +662,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 curses.init_pair(1, curses.COLOR_GREEN, -1)  # selected
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)  # header
                 curses.init_pair(3, curses.COLOR_CYAN, -1)  # search
-                curses.init_pair(4, 8, -1)  # dim
+                curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)  # dim
 
             cursor = 0
             scroll_offset = 0
@@ -967,6 +1174,72 @@ def _tui_need_npm_install(root: Path) -> bool:
     return False
 
 
+_TUI_BUILD_INPUT_DIRS = (
+    "src",
+    "packages/hermes-ink/src",
+)
+
+_TUI_BUILD_INPUT_FILES = (
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+    "tsconfig.build.json",
+    "babel.compiler.config.cjs",
+    "scripts/build.mjs",
+    "packages/hermes-ink/package.json",
+    "packages/hermes-ink/package-lock.json",
+    "packages/hermes-ink/index.js",
+    "packages/hermes-ink/text-input.js",
+)
+
+_TUI_BUILD_INPUT_SUFFIXES = frozenset(
+    {".cjs", ".js", ".jsx", ".json", ".mjs", ".ts", ".tsx"}
+)
+
+
+def _iter_tui_build_inputs(root: Path):
+    """Yield source/config files that affect ``ui-tui/dist/entry.js``."""
+    for rel in _TUI_BUILD_INPUT_FILES:
+        path = root / rel
+        if path.is_file():
+            yield path
+
+    for rel in _TUI_BUILD_INPUT_DIRS:
+        base = root / rel
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if path.is_file() and path.suffix in _TUI_BUILD_INPUT_SUFFIXES:
+                yield path
+
+
+def _tui_need_rebuild(root: Path) -> bool:
+    """True when ``dist/entry.js`` is missing or older than TUI inputs.
+
+    The TUI bundle is self-contained. Rebuilding it on every launch adds a
+    visible cold-start tax on slow Termux CPUs, while a simple mtime freshness
+    check still rebuilds immediately after source updates, dependency updates,
+    or local edits. Set ``HERMES_TUI_FORCE_BUILD=1`` to force the old behaviour.
+    """
+    force = (os.environ.get("HERMES_TUI_FORCE_BUILD") or "").strip().lower()
+    if force in {"1", "true", "yes", "on"}:
+        return True
+
+    entry = root / "dist" / "entry.js"
+    try:
+        output_mtime = entry.stat().st_mtime
+    except OSError:
+        return True
+
+    for path in _iter_tui_build_inputs(root):
+        try:
+            if path.stat().st_mtime > output_mtime:
+                return True
+        except OSError:
+            return True
+    return False
+
+
 def _ensure_tui_node() -> None:
     """Make sure `node` + `npm` are on PATH for the TUI.
 
@@ -1071,16 +1344,17 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             p = Path(ext_dir)
             if (p / "dist" / "entry.js").is_file():
                 node = _node_bin("node")
-                return [node, str(p / "dist" / "entry.js")], p
+                return [node, "--expose-gc", str(p / "dist" / "entry.js")], p
 
         # 1b. Bundled in wheel (pip install)
         bundled = _find_bundled_tui()
         if bundled is not None:
             node = _node_bin("node")
-            return [node, str(bundled)], bundled.parent
+            return [node, "--expose-gc", str(bundled)], bundled.parent
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
+    did_install = False
     if _tui_need_npm_install(tui_dir):
         npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
@@ -1100,6 +1374,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             if preview:
                 print(preview)
             sys.exit(1)
+        did_install = True
 
     if tui_dev:
         # Keep the local @hermes/ink package exports in sync with source.
@@ -1128,24 +1403,31 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             return [str(tsx), "src/entry.tsx"], tui_dir
         return [npm, "start"], tui_dir
 
-    # Always rebuild — esbuild is fast and this avoids staleness-edge-case bugs.
-    npm = _node_bin("npm")
-    result = subprocess.run(
-        [npm, "run", "build"],
-        cwd=str(tui_dir),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
-        preview = "\n".join(combined.splitlines()[-30:])
-        print("TUI build failed.")
-        if preview:
-            print(preview)
-        sys.exit(1)
+    # Desktop/dev launches retain the historical "always rebuild" behaviour.
+    # Termux cold starts use the freshness check because esbuild startup is
+    # expensive on old mobile CPUs.
+    should_build = True
+    if _is_termux_startup_environment():
+        should_build = did_install or _tui_need_rebuild(tui_dir)
+
+    if should_build:
+        npm = _node_bin("npm")
+        result = subprocess.run(
+            [npm, "run", "build"],
+            cwd=str(tui_dir),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+            preview = "\n".join(combined.splitlines()[-30:])
+            print("TUI build failed.")
+            if preview:
+                print(preview)
+            sys.exit(1)
 
     node = _node_bin("node")
-    return [node, str(tui_dir / "dist" / "entry.js")], tui_dir
+    return [node, "--expose-gc", str(tui_dir / "dist" / "entry.js")], tui_dir
 
 
 def _normalize_tui_toolsets(toolsets: object) -> list[str]:
@@ -1179,7 +1461,7 @@ def _launch_tui(
     provider: Optional[str] = None,
     toolsets: object = None,
     skills: object = None,
-    verbose: bool = False,
+    verbose: Optional[bool] = None,
     quiet: bool = False,
     query: Optional[str] = None,
     image: Optional[str] = None,
@@ -1267,16 +1549,16 @@ def _launch_tui(
         env["HERMES_TUI_TOOL_PROGRESS"] = "off"
     if accept_hooks:
         env["HERMES_ACCEPT_HOOKS"] = "1"
-    # Guarantee an 8GB V8 heap + exposed GC for the TUI. Default node cap is
-    # ~1.5–4GB depending on version and can fatal-OOM on long sessions with
-    # large transcripts / reasoning blobs. Token-level merge: respect any
-    # user-supplied --max-old-space-size (they may have set it higher) and
-    # avoid duplicating --expose-gc.
+    # Guarantee an 8GB V8 heap for the TUI. Default node cap is ~1.5–4GB
+    # depending on version and can fatal-OOM on long sessions with large
+    # transcripts / reasoning blobs. Token-level merge: respect any
+    # user-supplied --max-old-space-size (they may have set it higher).
+    # --expose-gc is *not* added here: Node rejects it in NODE_OPTIONS
+    # ("--expose-gc is not allowed in NODE_OPTIONS") and refuses to start.
+    # It is passed as a direct argv flag in _make_tui_argv() instead.
     _tokens = env.get("NODE_OPTIONS", "").split()
     if not any(t.startswith("--max-old-space-size=") for t in _tokens):
         _tokens.append("--max-old-space-size=8192")
-    if "--expose-gc" not in _tokens:
-        _tokens.append("--expose-gc")
     env["NODE_OPTIONS"] = " ".join(_tokens)
     # HERMES_TUI_RESUME is an internal hand-off from the Python wrapper to the
     # Ink app.  Because we start from os.environ.copy(), an exported/stale value
@@ -1384,6 +1666,29 @@ def cmd_chat(args):
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
+    # xAI retirement warning — one-shot, non-blocking, never fails startup
+    try:
+        from hermes_cli.xai_retirement import (
+            MIGRATION_GUIDE_URL,
+            RETIREMENT_DATE,
+            find_retired_xai_refs,
+            format_issue,
+        )
+        from hermes_cli.config import load_config as _load_config_for_xai_check
+
+        _retired_xai_refs = find_retired_xai_refs(_load_config_for_xai_check())
+        if _retired_xai_refs:
+            sys.stderr.write(
+                f"\033[33m⚠ xAI retires {len(_retired_xai_refs)} model(s) "
+                f"in your config on {RETIREMENT_DATE}:\033[0m\n"
+            )
+            for _ref in _retired_xai_refs:
+                sys.stderr.write(f"  \033[33m⚠\033[0m {format_issue(_ref)}\n")
+            sys.stderr.write(f"  \033[2mMigration guide: {MIGRATION_GUIDE_URL}\033[0m\n")
+            sys.stderr.write("  \033[2mRun 'hermes doctor' for details.\033[0m\n\n")
+    except Exception:
+        pass
+
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
         print()
@@ -1416,19 +1721,20 @@ def cmd_chat(args):
         print("You can run 'hermes setup' at any time to configure.")
         sys.exit(1)
 
-    # Start update check in background (runs while other init happens)
-    try:
-        from hermes_cli.banner import prefetch_update_check
+    # Start update check in background (runs while other init happens).
+    # On Termux this imports rich/prompt_toolkit in the foreground and then
+    # competes for CPU on single-core devices, so keep it opt-in there.
+    if _termux_should_prefetch_update_check():
+        try:
+            from hermes_cli.banner import prefetch_update_check
 
-        prefetch_update_check()
-    except Exception:
-        pass
+            prefetch_update_check()
+        except Exception:
+            pass
 
     # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
     try:
-        from tools.skills_sync import sync_skills
-
-        sync_skills(quiet=True)
+        _sync_bundled_skills_for_startup()
     except Exception:
         pass
 
@@ -1464,7 +1770,7 @@ def cmd_chat(args):
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             skills=getattr(args, "skills", None),
-            verbose=getattr(args, "verbose", False),
+            verbose=getattr(args, "verbose", None),
             quiet=getattr(args, "quiet", False),
             query=getattr(args, "query", None),
             image=getattr(args, "image", None),
@@ -1484,7 +1790,7 @@ def cmd_chat(args):
         "provider": getattr(args, "provider", None),
         "toolsets": args.toolsets,
         "skills": getattr(args, "skills", None),
-        "verbose": args.verbose,
+        "verbose": getattr(args, "verbose", None),
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
         "image": getattr(args, "image", None),
@@ -1495,6 +1801,7 @@ def cmd_chat(args):
         "max_turns": getattr(args, "max_turns", None),
         "ignore_rules": getattr(args, "ignore_rules", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False),
+        "compact": getattr(args, "compact", False),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -2112,6 +2419,7 @@ def select_provider_and_model(args=None):
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
     elif selected_provider in {
+        "openai-api",
         "gemini",
         "deepseek",
         "xai",
@@ -2198,8 +2506,32 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
     ("skills_hub", "Skills hub", "skills search/install"),
+    ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
+    ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
+    ("profile_describer", "Profile describer", "auto profile descriptions"),
     ("curator", "Curator", "skill-usage review pass"),
 ]
+
+
+def _all_aux_tasks() -> list[tuple[str, str, str]]:
+    """Return built-in + plugin-registered auxiliary tasks for picker/menu use.
+
+    Built-in tasks come first (preserving order), followed by plugin tasks
+    sorted by key. Used by ``_aux_config_menu``, ``_reset_aux_to_auto``, and
+    display-name lookups so plugin-registered tasks (registered via
+    :meth:`hermes_cli.plugins.PluginContext.register_auxiliary_task`) appear
+    in the same surfaces as built-in ones without core knowing about them.
+    """
+    tasks = list(_AUX_TASKS)
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        for entry in get_plugin_auxiliary_tasks():
+            tasks.append((entry["key"], entry["display_name"], entry["description"]))
+    except Exception:
+        # Plugin discovery failure must not break the aux config UI.
+        # Built-in tasks remain available.
+        pass
+    return tasks
 
 
 def _format_aux_current(task_cfg: dict) -> str:
@@ -2252,7 +2584,11 @@ def _save_aux_choice(
 
 
 def _reset_aux_to_auto() -> int:
-    """Reset every known aux task back to auto/empty. Returns number reset."""
+    """Reset every known aux task back to auto/empty. Returns number reset.
+
+    Includes plugin-registered tasks (via ``_all_aux_tasks``) so a plugin
+    that contributed an auxiliary task gets reset alongside built-ins.
+    """
     from hermes_cli.config import load_config, save_config
 
     cfg = load_config()
@@ -2261,7 +2597,7 @@ def _reset_aux_to_auto() -> int:
         aux = {}
         cfg["auxiliary"] = aux
     count = 0
-    for task, _name, _desc in _AUX_TASKS:
+    for task, _name, _desc in _all_aux_tasks():
         entry = aux.setdefault(task, {})
         if not isinstance(entry, dict):
             entry = {}
@@ -2304,10 +2640,11 @@ def _aux_config_menu() -> None:
         print()
 
         # Build the task menu with current settings inline
-        name_col = max(len(name) for _, name, _ in _AUX_TASKS) + 2
-        desc_col = max(len(desc) for _, _, desc in _AUX_TASKS) + 4
+        all_tasks = _all_aux_tasks()
+        name_col = max(len(name) for _, name, _ in all_tasks) + 2
+        desc_col = max(len(desc) for _, _, desc in all_tasks) + 4
         entries: list[tuple[str, str]] = []
-        for task_key, name, desc in _AUX_TASKS:
+        for task_key, name, desc in all_tasks:
             task_cfg = (
                 aux.get(task_key, {}) if isinstance(aux.get(task_key), dict) else {}
             )
@@ -2358,7 +2695,7 @@ def _aux_select_for_task(task: str) -> None:
     current_model = str(task_cfg.get("model") or "").strip()
     current_base_url = str(task_cfg.get("base_url") or "").strip()
 
-    display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
+    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
 
     # Gather authenticated providers (has credentials + curated model list)
     try:
@@ -2429,7 +2766,7 @@ def _aux_flow_provider_model(
     from hermes_cli.auth import _prompt_model_selection
     from hermes_cli.models import get_pricing_for_provider
 
-    display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
+    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
 
     # Fetch live pricing for this provider (non-blocking)
     pricing: dict = {}
@@ -2473,9 +2810,9 @@ def _aux_flow_provider_model(
 
 def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     """Prompt for a direct OpenAI-compatible base_url + optional api_key/model."""
-    import getpass
+    from hermes_cli.secret_prompt import masked_secret_prompt
 
-    display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
+    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
     current_base_url = str(task_cfg.get("base_url") or "").strip()
     current_model = str(task_cfg.get("model") or "").strip()
 
@@ -2507,7 +2844,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
         return
     model = model or current_model
     try:
-        api_key = getpass.getpass(
+        api_key = masked_secret_prompt(
             "API key (optional, blank = use OPENAI_API_KEY): "
         ).strip()
     except (KeyboardInterrupt, EOFError):
@@ -2566,6 +2903,7 @@ def _prompt_provider_choice(choices, *, default=0):
 
 def _model_flow_openrouter(config, current_model=""):
     """OpenRouter provider: ensure API key, then pick model."""
+    from hermes_constants import OPENROUTER_BASE_URL
     from hermes_cli.auth import (
         ProviderConfig,
         _prompt_model_selection,
@@ -2626,6 +2964,7 @@ def _model_flow_openrouter(config, current_model=""):
 
 def _model_flow_ai_gateway(config, current_model=""):
     """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
+    from hermes_constants import AI_GATEWAY_BASE_URL
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
         _prompt_model_selection,
@@ -2956,7 +3295,7 @@ def _model_flow_openai_codex(config, current_model=""):
 
 
 def _model_flow_xai_oauth(_config, current_model="", *, args=None):
-    """xAI Grok OAuth (SuperGrok Subscription) provider: ensure logged in, then pick model."""
+    """xAI Grok OAuth (SuperGrok / Premium+) provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_xai_oauth_auth_status,
         _prompt_model_selection,
@@ -2971,7 +3310,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
 
     status = get_xai_oauth_auth_status()
     if status.get("logged_in"):
-        print("  xAI Grok OAuth (SuperGrok Subscription) credentials: ✓")
+        print("  xAI Grok OAuth (SuperGrok / Premium+) credentials: ✓")
         print()
         print("    1. Use existing credentials")
         print("    2. Reauthenticate (new OAuth login)")
@@ -3009,7 +3348,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         elif choice == "3":
             return
     else:
-        print("Not logged into xAI Grok OAuth (SuperGrok Subscription). Starting login...")
+        print("Not logged into xAI Grok OAuth (SuperGrok / Premium+). Starting login...")
         print()
         try:
             mock_args = argparse.Namespace(
@@ -3043,7 +3382,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
-        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok Subscription)")
+        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
     else:
         print("No change.")
 
@@ -3229,6 +3568,7 @@ def _model_flow_custom(config):
     """
     from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import get_env_value, load_config, save_config
+    from hermes_cli.secret_prompt import masked_secret_prompt
 
     current_url = get_env_value("OPENAI_BASE_URL") or ""
     current_key = get_env_value("OPENAI_API_KEY") or ""
@@ -3244,9 +3584,7 @@ def _model_flow_custom(config):
         base_url = input(
             f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: "
         ).strip()
-        import getpass
-
-        api_key = getpass.getpass(
+        api_key = masked_secret_prompt(
             f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: "
         ).strip()
     except (KeyboardInterrupt, EOFError):
@@ -3658,7 +3996,6 @@ def _model_flow_azure_foundry(config, current_model=""):
         save_config,
     )
     from hermes_cli import azure_detect
-    import getpass
 
     # ── Load current Azure Foundry configuration ─────────────────────
     model_cfg = config.get("model", {})
@@ -3821,8 +4158,10 @@ def _model_flow_azure_foundry(config, current_model=""):
             token_provider = None
     else:
         print()
+        from hermes_cli.secret_prompt import masked_secret_prompt
+
         try:
-            api_key = getpass.getpass(
+            api_key = masked_secret_prompt(
                 f"API key [{current_api_key[:8] + '...' if current_api_key else 'required'}]: "
             ).strip()
         except (KeyboardInterrupt, EOFError):
@@ -4219,8 +4558,27 @@ def _model_flow_named_custom(config, provider_info):
     print(f"   Provider: {name} ({base_url})")
 
 
-# Curated model lists for direct API-key providers — single source in models.py
-from hermes_cli.models import _PROVIDER_MODELS
+# Lazy-export the model catalog at module level. Tests and a handful of
+# downstream call sites read `hermes_cli.main._PROVIDER_MODELS` directly,
+# so the symbol needs to be reachable as a module attribute. But importing
+# the catalog eagerly costs ~55ms on every `hermes` invocation — including
+# fast paths like `hermes --version` and slash-command dispatch that never
+# touch the catalog. PEP 562 module-level __getattr__ defers the import
+# until first attribute access, so the cost is only paid by callers that
+# actually look up the catalog. Termux already defers via the same
+# mechanism (its model-selection handlers do their own function-local
+# imports), so the explicit termux branch from before is no longer needed.
+_LAZY_MODEL_EXPORTS = ("_PROVIDER_MODELS",)
+
+
+def __getattr__(name):
+    """Defer the model-catalog import until something actually reads it."""
+    if name in _LAZY_MODEL_EXPORTS:
+        from hermes_cli.models import _PROVIDER_MODELS
+        # Cache on the module so subsequent accesses skip the import machinery.
+        globals()[name] = _PROVIDER_MODELS
+        return _PROVIDER_MODELS
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _current_reasoning_effort(config) -> str:
@@ -4337,6 +4695,7 @@ def _model_flow_copilot(config, current_model=""):
     )
     from hermes_cli.config import save_env_value, load_config, save_config
     from hermes_cli.models import (
+        _PROVIDER_MODELS,
         fetch_api_models,
         fetch_github_model_catalog,
         github_model_reasoning_efforts,
@@ -4389,10 +4748,10 @@ def _model_flow_copilot(config, current_model=""):
                 print(f"  Login failed: {exc}")
                 return
         elif choice == "2":
-            try:
-                import getpass
+            from hermes_cli.secret_prompt import masked_secret_prompt
 
-                new_key = getpass.getpass("  Token (COPILOT_GITHUB_TOKEN): ").strip()
+            try:
+                new_key = masked_secret_prompt("  Token (COPILOT_GITHUB_TOKEN): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
@@ -4421,7 +4780,9 @@ def _model_flow_copilot(config, current_model=""):
         source = creds.get("source", "")
     else:
         if source in {"GITHUB_TOKEN", "GH_TOKEN"}:
-            print(f"  GitHub token: {api_key[:8]}... ✓ ({source})")
+            from hermes_cli.env_loader import format_secret_source_suffix
+            bw_suffix = format_secret_source_suffix(source)
+            print(f"  GitHub token: {api_key[:8]}... ✓ ({source}{bw_suffix})")
         elif source == "gh auth token":
             print("  GitHub token: ✓ (from `gh auth token`)")
         else:
@@ -4529,6 +4890,7 @@ def _model_flow_copilot_acp(config, current_model=""):
         resolve_external_process_provider_credentials,
     )
     from hermes_cli.models import (
+        _PROVIDER_MODELS,
         fetch_github_model_catalog,
         normalize_copilot_model_id,
     )
@@ -4641,10 +5003,9 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
     ``return`` immediately — the user cancelled entry, declined to replace, or
     cleared the key and is now unconfigured.
     """
-    import getpass
-
     from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
     from hermes_cli.config import save_env_value
+    from hermes_cli.secret_prompt import masked_secret_prompt
 
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
 
@@ -4654,7 +5015,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         else:
             prompt = f"{key_env} (or Enter to cancel): "
         try:
-            entered = getpass.getpass(prompt).strip()
+            entered = masked_secret_prompt(prompt).strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return ""
@@ -4677,7 +5038,10 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         return new_key, False
 
     # Already configured — offer K / R / C ────────────────────────────────
-    print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+    from hermes_cli.env_loader import format_secret_source_suffix
+
+    source_suffix = format_secret_source_suffix(key_env) if key_env else ""
+    print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓{source_suffix}")
     if not key_env:
         # Nothing we can rewrite; just acknowledge and move on.
         print()
@@ -4732,6 +5096,7 @@ def _model_flow_kimi(config, current_model=""):
         load_config,
         save_config,
     )
+    from hermes_cli.models import _PROVIDER_MODELS
 
     provider_id = "kimi-coding"
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -4842,7 +5207,7 @@ def _model_flow_stepfun(config, current_model=""):
         load_config,
         save_config,
     )
-    from hermes_cli.models import fetch_api_models
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
 
     provider_id = "stepfun"
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -4959,14 +5324,16 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     # Prompt for API key
     existing_key = get_env_value("AWS_BEARER_TOKEN_BEDROCK") or ""
     if existing_key:
-        print(f"  Bedrock API Key: {existing_key[:12]}... ✓")
+        from hermes_cli.env_loader import format_secret_source_suffix
+        source_suffix = format_secret_source_suffix("AWS_BEARER_TOKEN_BEDROCK")
+        print(f"  Bedrock API Key: {existing_key[:12]}... ✓{source_suffix}")
     else:
         print(f"  Endpoint: {mantle_base_url}")
         print()
-        try:
-            import getpass
+        from hermes_cli.secret_prompt import masked_secret_prompt
 
-            api_key = getpass.getpass("  Bedrock API Key: ").strip()
+        try:
+            api_key = masked_secret_prompt("  Bedrock API Key: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
@@ -5222,6 +5589,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         save_config,
     )
     from hermes_cli.models import (
+        _PROVIDER_MODELS,
         fetch_api_models,
         opencode_model_api_mode,
         normalize_opencode_model_id,
@@ -5537,10 +5905,10 @@ def _run_anthropic_oauth_flow(save_env_value):
         print()
         print("  If the setup-token was displayed above, paste it here:")
         print()
-        try:
-            import getpass
+        from hermes_cli.secret_prompt import masked_secret_prompt
 
-            manual_token = getpass.getpass(
+        try:
+            manual_token = masked_secret_prompt(
                 "  Paste setup-token (or Enter to cancel): "
             ).strip()
         except (KeyboardInterrupt, EOFError):
@@ -5568,10 +5936,10 @@ def _run_anthropic_oauth_flow(save_env_value):
         print()
         print("  Or paste an existing setup-token now (sk-ant-oat-...):")
         print()
-        try:
-            import getpass
+        from hermes_cli.secret_prompt import masked_secret_prompt
 
-            token = getpass.getpass("  Setup-token (or Enter to cancel): ").strip()
+        try:
+            token = masked_secret_prompt("  Setup-token (or Enter to cancel): ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return False
@@ -5629,7 +5997,22 @@ def _model_flow_anthropic(config, current_model=""):
     if has_creds:
         # Show what we found
         if existing_key:
-            print(f"  Anthropic credentials: {existing_key[:12]}... ✓")
+            from hermes_cli.env_loader import format_secret_source_suffix
+            from hermes_cli.auth import PROVIDER_REGISTRY
+
+            # Surface which env var supplied the key so users with
+            # Bitwarden see "(from Bitwarden)" — without this, a detected
+            # BSM key looks identical to a key in .env and users assume
+            # nothing is wired up.
+            source_suffix = ""
+            for var in PROVIDER_REGISTRY["anthropic"].api_key_env_vars:
+                if os.getenv(var, "").strip() == existing_key:
+                    source_suffix = format_secret_source_suffix(var)
+                    if source_suffix:
+                        break
+            print(
+                f"  Anthropic credentials: {existing_key[:12]}... ✓{source_suffix}"
+            )
         elif cc_available:
             print("  Claude Code credentials: ✓ (auto-detected)")
         print()
@@ -5671,10 +6054,10 @@ def _model_flow_anthropic(config, current_model=""):
             print()
             print("  Get an API key at: https://platform.claude.com/settings/keys")
             print()
-            try:
-                import getpass
+            from hermes_cli.secret_prompt import masked_secret_prompt
 
-                api_key = getpass.getpass("  API key (sk-ant-...): ").strip()
+            try:
+                api_key = masked_secret_prompt("  API key (sk-ant-...): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
@@ -5763,6 +6146,13 @@ def cmd_webhook(args):
     webhook_command(args)
 
 
+def cmd_portal(args):
+    """Nous Portal status and Tool Gateway routing surface."""
+    from hermes_cli.portal_cli import portal_command
+
+    return portal_command(args)
+
+
 def cmd_slack(args):
     """Slack integration helpers.
 
@@ -5815,6 +6205,19 @@ def cmd_doctor(args):
     run_doctor(args)
 
 
+def cmd_security(args):
+    """Dispatch `hermes security <subcmd>`."""
+    sub = getattr(args, "security_command", None)
+    if sub in ("audit", None):
+        from hermes_cli.security_audit import cmd_security_audit
+
+        # Default subcommand is `audit` when no subcmd is given.
+        code = cmd_security_audit(args)
+        sys.exit(int(code or 0))
+    print(f"unknown security subcommand: {sub}", file=sys.stderr)
+    sys.exit(2)
+
+
 def cmd_dump(args):
     """Dump setup summary for support/debugging."""
     from hermes_cli.dump import run_dump
@@ -5855,8 +6258,7 @@ def cmd_import(args):
     run_import(args)
 
 
-def cmd_version(args):
-    """Show version."""
+def _print_version_info(*, check_updates: bool = True) -> None:
     print(f"Hermes Agent v{__version__} ({__release_date__})")
     print(f"Project: {PROJECT_ROOT}")
 
@@ -5876,6 +6278,9 @@ def cmd_version(args):
     except ImportError:
         print("OpenAI SDK: Not installed")
 
+    if not check_updates:
+        return
+
     # Show update status (synchronous — acceptable since user asked for version info)
     try:
         from hermes_cli.banner import check_for_updates
@@ -5892,6 +6297,11 @@ def cmd_version(args):
             print("Up to date")
     except Exception:
         pass
+
+
+def cmd_version(args):
+    """Show version."""
+    _print_version_info(check_updates=True)
 
 
 def cmd_uninstall(args):
@@ -5970,24 +6380,36 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
     them after a successful ``git pull`` so we can auto-roll-back instead of
     leaving the user with a bricked install.
 
+    The compiled ``.pyc`` is written to a temp directory rather than the
+    source tree's ``__pycache__/`` so we don't race with concurrent test
+    workers that walk the same dir, and so we don't leave a stale pyc
+    behind in production if the next interpreter run picks a different
+    Python version. The pyc is discarded on function return either way —
+    we only care about the compile-or-not signal.
+
     Returns ``(ok, failing_path, error_message)``. ``ok=True`` means every
     file parsed cleanly.
     """
     import py_compile
+    import tempfile
 
     root = Path(root)
-    for relpath in _UPDATE_CRITICAL_FILES:
-        path = root / relpath
-        if not path.exists():
-            # Missing file is suspicious but not necessarily fatal — a future
-            # refactor may legitimately remove one of these. Skip and move on.
-            continue
-        try:
-            py_compile.compile(str(path), doraise=True)
-        except py_compile.PyCompileError as exc:
-            return False, str(path), str(exc)
-        except OSError as exc:
-            return False, str(path), f"could not read: {exc}"
+    with tempfile.TemporaryDirectory(prefix="hermes-syntax-check-") as tmpdir:
+        for relpath in _UPDATE_CRITICAL_FILES:
+            path = root / relpath
+            if not path.exists():
+                # Missing file is suspicious but not necessarily fatal — a future
+                # refactor may legitimately remove one of these. Skip and move on.
+                continue
+            # Mirror the relative path under the tmpdir so two different
+            # files with the same basename don't collide on the cfile name.
+            cfile = Path(tmpdir) / (relpath.replace("/", "__") + "c")
+            try:
+                py_compile.compile(str(path), cfile=str(cfile), doraise=True)
+            except py_compile.PyCompileError as exc:
+                return False, str(path), str(exc)
+            except OSError as exc:
+                return False, str(path), f"could not read: {exc}"
     return True, None, None
 
 
@@ -6572,14 +6994,19 @@ def _update_via_zip(args):
     )
 
     print("→ Downloading latest version...")
+    tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
     try:
-        tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
         zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
         urlretrieve(zip_url, zip_path)
 
         print("→ Extracting...")
+        import stat as _stat
         with zipfile.ZipFile(zip_path, "r") as zf:
-            # Validate paths to prevent zip-slip (path traversal)
+            # Validate paths to prevent zip-slip (path traversal) AND reject
+            # symlink members. A GitHub source ZIP for hermes-agent itself
+            # should never contain symlinks — they'd point outside the
+            # extracted tree and let an attacker who can compromise the
+            # update mirror plant arbitrary files via the update path.
             tmp_dir_real = os.path.realpath(tmp_dir)
             for member in zf.infolist():
                 member_path = os.path.realpath(os.path.join(tmp_dir, member.filename))
@@ -6589,6 +7016,13 @@ def _update_via_zip(args):
                 ):
                     raise ValueError(
                         f"Zip-slip detected: {member.filename} escapes extraction directory"
+                    )
+                # Unix mode lives in the upper 16 bits of external_attr;
+                # mask to the file-type bits.
+                mode = (member.external_attr >> 16) & 0o170000
+                if _stat.S_ISLNK(mode):
+                    raise ValueError(
+                        f"ZIP contains unsupported symlink member: {member.filename}"
                     )
             zf.extractall(tmp_dir)
 
@@ -6620,12 +7054,11 @@ def _update_via_zip(args):
 
         print(f"✓ Updated {update_count} items from ZIP")
 
-        # Cleanup
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
     except Exception as e:
         print(f"✗ ZIP update failed: {e}")
         sys.exit(1)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # Clear stale bytecode after ZIP extraction
     removed = _clear_bytecode_cache(PROJECT_ROOT)
@@ -7267,8 +7700,11 @@ def _detect_concurrent_hermes_instances(
 
     This helper enumerates processes whose ``exe`` matches one of the venv's
     shims (``hermes.exe`` / ``hermes-gateway.exe``) and returns ``(pid,
-    process_name)`` pairs. The caller's own PID is excluded so the running
-    ``hermes update`` invocation never reports itself.
+    process_name)`` pairs. The caller's own PID and its entire ancestor
+    chain are excluded so the running ``hermes update`` invocation never
+    reports itself — this matters on Windows where the setuptools .exe
+    launcher (``hermes.exe``) is a separate process from the Python
+    interpreter it loads (``python.exe``).
 
     Returns an empty list off-Windows, on missing psutil, or when no other
     instances exist. Never raises — process enumeration is best-effort.
@@ -7281,8 +7717,38 @@ def _detect_concurrent_hermes_instances(
     except Exception:
         return []
 
-    if exclude_pid is None:
-        exclude_pid = os.getpid()
+    # Build a set of PIDs to exclude: the Python process itself plus its
+    # entire parent chain. On Windows the setuptools-generated hermes.exe
+    # launcher is a separate native process that spawns python.exe (the
+    # interpreter that runs our code).  os.getpid() returns the Python PID,
+    # but the launcher (which holds the file lock) is the parent.  Without
+    # walking the parent chain, every ``hermes update`` reports its own
+    # launcher as a concurrent instance — a false positive.
+    if exclude_pid is not None:
+        exclude_pids: set[int] = {exclude_pid}
+    else:
+        exclude_pids = {os.getpid()}
+    # The parent-walk is best-effort: if psutil rejects a PID (NoSuchProcess /
+    # AccessDenied) we stop walking and use whatever we've collected so far.
+    # Broader Exception catch on the outer block guards against partially-
+    # stubbed psutil in unit tests (e.g. a SimpleNamespace lacking Process /
+    # NoSuchProcess) — the surrounding update flow documents this helper as
+    # "never raises".
+    try:
+        current = psutil.Process(next(iter(exclude_pids)))
+        while True:
+            try:
+                parent = current.parent()
+            except Exception:
+                break
+            if parent is None or parent.pid <= 0:
+                break
+            if parent.pid in exclude_pids:
+                break  # loop detected
+            exclude_pids.add(parent.pid)
+            current = parent
+    except Exception:
+        pass
 
     # Resolve every shim path to its canonical form once for cheap comparison.
     shim_paths: set[str] = set()
@@ -7307,7 +7773,7 @@ def _detect_concurrent_hermes_instances(
             continue
         pid = info.get("pid")
         exe = info.get("exe")
-        if not exe or pid is None or pid == exclude_pid:
+        if not exe or pid is None or pid in exclude_pids:
             continue
         try:
             exe_norm = str(Path(exe).resolve()).lower()
@@ -7639,9 +8105,7 @@ def _install_python_dependencies_with_optional_fallback(
 
 
 def _is_termux_env(env: dict[str, str] | None = None) -> bool:
-    check = env or os.environ
-    prefix = str(check.get("PREFIX", ""))
-    return "com.termux" in prefix or prefix.startswith("/data/data/com.termux/")
+    return _is_termux_startup_environment(env)
 
 
 def _is_android_python() -> bool:
@@ -9459,6 +9923,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "honcho",
         "claw",
         "plugins",
+        "security",
         "acp",
         "webhook",
         "memory",
@@ -10295,11 +10760,11 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
-        "model", "pairing", "plugins", "postinstall", "profile", "proxy",
+        "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
+        "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "chat",
+        "version", "webhook", "whatsapp", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -10389,6 +10854,184 @@ def _plugin_cli_discovery_needed() -> bool:
     return True
 
 
+_AGENT_COMMANDS = {None, "chat", "acp", "rl"}
+_AGENT_SUBCOMMANDS = {
+    "cron": ("cron_command", {"run", "tick"}),
+    "gateway": ("gateway_command", {"run"}),
+    "mcp": ("mcp_action", {"serve"}),
+}
+
+
+def _prepare_agent_startup(args) -> None:
+    """Discover plugins/MCP/hooks for commands that can run an agent turn."""
+    _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
+    if not (
+        args.command in _AGENT_COMMANDS
+        or (_sub_attr and getattr(args, _sub_attr, None) in _sub_set)
+    ):
+        return
+
+    _accept_hooks = bool(getattr(args, "accept_hooks", False))
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+    except Exception:
+        logger.warning(
+            "plugin discovery failed at CLI startup",
+            exc_info=True,
+        )
+    try:
+        # MCP tool discovery — no event loop running in CLI/TUI startup,
+        # so inline is safe.  Moved here from model_tools.py module scope
+        # to avoid freezing the gateway's event loop on its first message
+        # via the same lazy import path (#16856).
+        from tools.mcp_tool import discover_mcp_tools
+
+        discover_mcp_tools()
+    except Exception:
+        logger.debug(
+            "MCP tool discovery failed at CLI startup",
+            exc_info=True,
+        )
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        register_from_config(load_config(), accept_hooks=_accept_hooks)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at CLI startup",
+            exc_info=True,
+        )
+
+
+def _set_chat_arg_defaults(args) -> None:
+    for attr, default in [
+        ("query", None),
+        ("model", None),
+        ("provider", None),
+        ("toolsets", None),
+        ("verbose", False),
+        ("resume", None),
+        ("continue_last", None),
+        ("worktree", False),
+    ]:
+        if not hasattr(args, attr):
+            setattr(args, attr, default)
+
+
+def _try_termux_fast_cli_launch() -> bool:
+    """Run obvious Termux non-TUI chat/oneshot/version paths on a light parser."""
+    if not _is_termux_startup_environment():
+        return False
+    if os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1":
+        return False
+
+    argv = sys.argv[1:]
+    if "-h" in argv or "--help" in argv:
+        return False
+    if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv:
+        return False
+
+    if _is_termux_fast_version_argv(argv):
+        _print_version_info(check_updates=False)
+        return True
+
+    first = _first_positional_argv()
+    has_oneshot = any(
+        arg == "-z" or arg == "--oneshot" or arg.startswith("--oneshot=")
+        for arg in argv
+    )
+    if not has_oneshot and first not in {None, "chat"}:
+        return False
+
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=cmd_chat)
+    args = parser.parse_args(_coalesce_session_name_args(argv))
+
+    if getattr(args, "version", False):
+        _print_version_info(check_updates=False)
+        return True
+
+    if getattr(args, "oneshot", None):
+        _prepare_agent_startup(args)
+        from hermes_cli.oneshot import run_oneshot
+
+        sys.exit(
+            run_oneshot(
+                args.oneshot,
+                model=getattr(args, "model", None),
+                provider=getattr(args, "provider", None),
+                toolsets=getattr(args, "toolsets", None),
+            )
+        )
+
+    if (args.resume or args.continue_last) and args.command is None:
+        args.command = "chat"
+
+    if args.command in {None, "chat"}:
+        _set_chat_arg_defaults(args)
+        interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
+        if interactive_prompt:
+            # Bare Termux CLI should reach the prompt first and do agent-only
+            # discovery on the first submitted turn instead of before input.
+            setattr(args, "compact", True)
+            os.environ["HERMES_DEFER_AGENT_STARTUP"] = "1"
+            os.environ["HERMES_FAST_STARTUP_BANNER"] = "1"
+            if getattr(args, "accept_hooks", False):
+                os.environ["HERMES_ACCEPT_HOOKS"] = "1"
+        else:
+            _prepare_agent_startup(args)
+        cmd_chat(args)
+        return True
+
+    return False
+
+
+def _try_termux_fast_tui_launch() -> bool:
+    """Launch obvious Termux TUI invocations before building every subparser.
+
+    `hermes --tui` is the hot path on phones. The full parser setup imports
+    command modules for model, fallback, migrate, kanban, bundles, plugins,
+    etc. even though the TUI immediately execs Node. On Termux only, parse the
+    lightweight top-level/chat parser and hand off to ``cmd_chat`` when the
+    invocation is unambiguously the built-in TUI/chat path.
+    """
+    if not _is_termux_startup_environment():
+        return False
+
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        return False
+
+    wants_tui = os.environ.get("HERMES_TUI") == "1" or "--tui" in sys.argv[1:]
+    if not wants_tui:
+        return False
+
+    first = _first_positional_argv()
+    if first not in {None, "chat"}:
+        return False
+
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=cmd_chat)
+    args = parser.parse_args(_coalesce_session_name_args(sys.argv[1:]))
+
+    # Preserve top-level behaviours whose semantics are not "launch chat/TUI".
+    if getattr(args, "version", False) or getattr(args, "oneshot", None):
+        return False
+    if getattr(args, "command", None) not in {None, "chat"}:
+        return False
+    if not (getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"):
+        return False
+
+    cmd_chat(args)
+    return True
+
+
 def main():
     """Main entry point for hermes CLI."""
     # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
@@ -10405,6 +11048,11 @@ def main():
         _cleanup_quarantined_exes()
     except Exception:
         pass
+
+    if _try_termux_fast_tui_launch():
+        return
+    if _try_termux_fast_cli_launch():
+        return
 
     from hermes_cli._parser import build_top_level_parser
 
@@ -10501,6 +11149,80 @@ def main():
         help="Remove all fallback entries",
     )
     fallback_parser.set_defaults(func=cmd_fallback)
+
+    # =========================================================================
+    # secrets command — external secret managers (currently: Bitwarden)
+    # =========================================================================
+    secrets_parser = subparsers.add_parser(
+        "secrets",
+        help="Manage external secret sources (Bitwarden Secrets Manager)",
+        description=(
+            "Pull API keys from an external secret manager at process startup "
+            "instead of storing them in ~/.hermes/.env.  Currently supports "
+            "Bitwarden Secrets Manager.  See: "
+            "https://hermes-agent.nousresearch.com/docs/user-guide/secrets/bitwarden"
+        ),
+    )
+    secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command")
+
+    secrets_bw = secrets_subparsers.add_parser(
+        "bitwarden",
+        aliases=["bw"],
+        help="Bitwarden Secrets Manager integration",
+    )
+
+    # Lazy import — only pays for itself when this subcommand is actually used.
+    from hermes_cli import secrets_cli as _secrets_cli
+
+    _secrets_cli.register_cli(secrets_bw)
+
+    def _dispatch_secrets(args):  # noqa: ANN001
+        sub = getattr(args, "secrets_command", None)
+        bw_sub = getattr(args, "secrets_bw_command", None)
+        if sub in ("bitwarden", "bw") and bw_sub is not None:
+            return args.func(args)
+        secrets_parser.print_help()
+        return 0
+
+    secrets_parser.set_defaults(func=_dispatch_secrets)
+
+    # =========================================================================
+    # migrate command
+    # =========================================================================
+    from hermes_cli.migrate import cmd_migrate, cmd_migrate_xai
+
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="Migrate configuration for retired models or deprecated settings",
+        description=(
+            "Diagnose and (optionally) rewrite the active config.yaml to "
+            "replace references to retired models or deprecated settings."
+        ),
+    )
+    migrate_subparsers = migrate_parser.add_subparsers(dest="migrate_type")
+
+    migrate_xai = migrate_subparsers.add_parser(
+        "xai",
+        help="Migrate xAI models scheduled for retirement on May 15, 2026",
+        description=(
+            "Scan config.yaml for references to xAI models retiring on "
+            "May 15, 2026 and, with --apply, rewrite them in-place to the "
+            "official replacements per the xAI migration guide. The original "
+            "config.yaml is backed up before any rewrite."
+        ),
+    )
+    migrate_xai.add_argument(
+        "--apply",
+        action="store_true",
+        help="Rewrite config.yaml in-place (default: dry-run, no writes)",
+    )
+    migrate_xai.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip the timestamped backup of config.yaml when applying",
+    )
+    migrate_xai.set_defaults(func=cmd_migrate_xai)
+    migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================
     # gateway command
@@ -10775,6 +11497,13 @@ def main():
         action="store_true",
         help="On existing installs: only prompt for items that are missing "
         "or unset, instead of running the full reconfigure wizard.",
+    )
+    setup_parser.add_argument(
+        "--portal",
+        action="store_true",
+        help="One-shot Nous Portal setup: log in via OAuth, set Nous as the "
+        "inference provider, and opt into the Tool Gateway. Skips the "
+        "rest of the wizard.",
     )
     setup_parser.set_defaults(func=cmd_setup)
 
@@ -11252,6 +11981,12 @@ def main():
     webhook_parser.set_defaults(func=cmd_webhook)
 
     # =========================================================================
+    # portal command — Nous Portal status + Tool Gateway routing
+    # =========================================================================
+    from hermes_cli.portal_cli import add_parser as _add_portal_parser
+    _add_portal_parser(subparsers)
+
+    # =========================================================================
     # kanban command — multi-profile collaboration board
     # =========================================================================
     from hermes_cli.kanban import build_parser as _build_kanban_parser
@@ -11348,6 +12083,58 @@ def main():
         ),
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # security command — on-demand supply-chain audit
+    # =========================================================================
+    security_parser = subparsers.add_parser(
+        "security",
+        help="Supply-chain audit (OSV.dev) for venv, plugins, and MCP servers",
+        description=(
+            "On-demand vulnerability scan against OSV.dev. Covers the Hermes "
+            "venv (installed PyPI dists), Python deps declared by plugins under "
+            "~/.hermes/plugins/, and pinned npx/uvx MCP servers in config.yaml. "
+            "Does NOT scan globally-installed packages or editor/browser extensions."
+        ),
+    )
+    security_subparsers = security_parser.add_subparsers(
+        dest="security_command",
+        metavar="<subcommand>",
+    )
+
+    audit_parser = security_subparsers.add_parser(
+        "audit",
+        help="Run a one-shot supply-chain audit",
+        description="Query OSV.dev for known vulnerabilities in installed components.",
+    )
+    audit_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of human-readable text",
+    )
+    audit_parser.add_argument(
+        "--fail-on",
+        default="critical",
+        choices=["low", "moderate", "high", "critical"],
+        help="Exit non-zero when any finding meets this severity (default: critical)",
+    )
+    audit_parser.add_argument(
+        "--skip-venv",
+        action="store_true",
+        help="Skip scanning the Hermes Python venv",
+    )
+    audit_parser.add_argument(
+        "--skip-plugins",
+        action="store_true",
+        help="Skip scanning plugin requirements files",
+    )
+    audit_parser.add_argument(
+        "--skip-mcp",
+        action="store_true",
+        help="Skip scanning pinned MCP servers in config.yaml",
+    )
+    audit_parser.set_defaults(func=cmd_security)
+    security_parser.set_defaults(func=cmd_security)
 
     # =========================================================================
     # dump command
@@ -11673,6 +12460,11 @@ Examples:
     )
     skills_audit.add_argument(
         "name", nargs="?", help="Specific skill to audit (default: all)"
+    )
+    skills_audit.add_argument(
+        "--deep",
+        action="store_true",
+        help="Run AST-level analysis on Python files (opt-in diagnostic)",
     )
 
     skills_uninstall = skills_subparsers.add_parser(
@@ -12225,6 +13017,24 @@ Examples:
         help="Force re-authentication for an OAuth-based MCP server",
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
+
+    # ── Catalog (Nous-approved MCPs shipped with the repo) ─────────────────
+    mcp_sub.add_parser(
+        "picker",
+        help="Interactive catalog picker (also the default for `hermes mcp`)",
+    )
+    mcp_sub.add_parser(
+        "catalog",
+        help="List Nous-approved MCPs available for one-click install",
+    )
+    mcp_install_p = mcp_sub.add_parser(
+        "install",
+        help="Install a catalog MCP by name (e.g. `hermes mcp install n8n`)",
+    )
+    mcp_install_p.add_argument(
+        "identifier",
+        help="Catalog entry name (or `official/<name>`)",
+    )
 
     _add_accept_hooks_flag(mcp_parser)
 
@@ -13150,51 +13960,7 @@ Examples:
     # so introspection/management commands (hermes hooks list, cron
     # list, gateway status, mcp add, ...) don't pay discovery cost or
     # trigger consent prompts for hooks the user is still inspecting.
-    # Groups with mixed admin/CRUD vs. agent-running entries narrow via
-    # the nested subcommand (dest varies by parser).
-    _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
-    _AGENT_SUBCOMMANDS = {
-        "cron": ("cron_command", {"run", "tick"}),
-        "gateway": ("gateway_command", {"run"}),
-        "mcp": ("mcp_action", {"serve"}),
-    }
-    _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
-    if args.command in _AGENT_COMMANDS or (
-        _sub_attr and getattr(args, _sub_attr, None) in _sub_set
-    ):
-        _accept_hooks = bool(getattr(args, "accept_hooks", False))
-        try:
-            from hermes_cli.plugins import discover_plugins
-
-            discover_plugins()
-        except Exception:
-            logger.warning(
-                "plugin discovery failed at CLI startup",
-                exc_info=True,
-            )
-        try:
-            # MCP tool discovery — no event loop running in CLI/TUI startup,
-            # so inline is safe.  Moved here from model_tools.py module scope
-            # to avoid freezing the gateway's event loop on its first message
-            # via the same lazy import path (#16856).
-            from tools.mcp_tool import discover_mcp_tools
-
-            discover_mcp_tools()
-        except Exception:
-            logger.debug(
-                "MCP tool discovery failed at CLI startup",
-                exc_info=True,
-            )
-        try:
-            from hermes_cli.config import load_config
-            from agent.shell_hooks import register_from_config
-
-            register_from_config(load_config(), accept_hooks=_accept_hooks)
-        except Exception:
-            logger.debug(
-                "shell-hook registration failed at CLI startup",
-                exc_info=True,
-            )
+    _prepare_agent_startup(args)
 
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.
@@ -13218,7 +13984,7 @@ Examples:
             ("model", None),
             ("provider", None),
             ("toolsets", None),
-            ("verbose", False),
+            ("verbose", None),
             ("worktree", False),
         ]:
             if not hasattr(args, attr):
@@ -13233,7 +13999,7 @@ Examples:
             ("model", None),
             ("provider", None),
             ("toolsets", None),
-            ("verbose", False),
+            ("verbose", None),
             ("resume", None),
             ("continue_last", None),
             ("worktree", False),

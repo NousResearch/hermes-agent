@@ -130,6 +130,75 @@ def test_codex_stream_retries_remote_protocol_error_once():
     assert call_count["n"] == 2
 
 
+def test_codex_stream_none_output_typeerror_retries_once_before_fallback():
+    """SDK parser crashes on backend frames with null output should recover."""
+    agent = _make_codex_agent()
+
+    call_count = {"n": 0}
+
+    def stream_side_effect(**kwargs):
+        call_count["n"] += 1
+        raise TypeError("'NoneType' object is not iterable")
+
+    mock_client = MagicMock()
+    mock_client.responses.stream.side_effect = stream_side_effect
+
+    fallback_response = SimpleNamespace(
+        output=[SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="fallback ok")],
+        )],
+        status="completed",
+    )
+    with patch.object(
+        agent, "_run_codex_create_stream_fallback", return_value=fallback_response
+    ) as mock_fallback:
+        result = agent._run_codex_stream({}, client=mock_client)
+
+    assert result is fallback_response
+    assert call_count["n"] == 2
+    mock_fallback.assert_called_once_with({}, client=mock_client)
+
+
+def test_codex_create_stream_fallback_none_output_typeerror_uses_non_stream_create():
+    """If the fallback stream parser crashes too, non-stream create is last resort."""
+    agent = _make_codex_agent()
+    stream_error = TypeError("'NoneType' object is not iterable")
+    non_stream_response = SimpleNamespace(
+        output=[SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="non-stream ok")],
+        )],
+        status="completed",
+    )
+
+    calls = []
+
+    def create_side_effect(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs.get("stream") is True:
+            raise stream_error
+        return non_stream_response
+
+    mock_client = MagicMock()
+    mock_client.responses.create.side_effect = create_side_effect
+
+    request = {
+        "model": "gpt-5.5",
+        "instructions": "test",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+    }
+
+    result = agent._run_codex_create_stream_fallback(request, client=mock_client)
+
+    assert result is non_stream_response
+    preflight_request = {**request, "store": False}
+    assert calls == [
+        {**preflight_request, "stream": True},
+        preflight_request,
+    ]
+
+
 def test_codex_stream_unrelated_runtimeerror_still_raises():
     """RuntimeErrors that aren't transport errors must propagate.
 

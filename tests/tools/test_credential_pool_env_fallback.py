@@ -97,6 +97,44 @@ class TestCredentialPoolSeedsFromDotEnv:
             e.access_token == "sk-or-dotenv-abc" for e in entries
         )
 
+    def test_dotenv_var_reference_expansion(self, isolated_hermes_home, monkeypatch):
+        """${VAR} references in .env must be expanded before seeding the pool.
+
+        Regression test for #20310: .env with ANTHROPIC_API_KEY=${OPENAI_API_KEY}
+        was seeding the literal string "${OPENAI_API_KEY}" into the pool.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-expanded-real-key")
+        _write_env_file(isolated_hermes_home, ANTHROPIC_API_KEY="${OPENAI_API_KEY}")
+        assert "ANTHROPIC_API_KEY" not in os.environ
+
+        from agent.credential_pool import _seed_from_env
+        entries = []
+        changed, active_sources = _seed_from_env("anthropic", entries)
+
+        assert changed is True
+        assert "env:ANTHROPIC_API_KEY" in active_sources
+        assert any(
+            e.access_token == "sk-expanded-real-key"
+            and e.source == "env:ANTHROPIC_API_KEY"
+            for e in entries
+        ), f"Expected expanded key, got: {[(e.source, e.access_token) for e in entries]}"
+
+    def test_dotenv_unresolved_var_stays_literal(self, isolated_hermes_home):
+        """${VAR} referencing a nonexistent env var stays as-is (fail-open)."""
+        _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="${NONEXISTENT_VAR_XYZ}")
+        assert "NONEXISTENT_VAR_XYZ" not in os.environ
+
+        from agent.credential_pool import _seed_from_env
+        entries = []
+        changed, active_sources = _seed_from_env("deepseek", entries)
+
+        assert changed is True
+        # os.path.expandvars leaves ${NONEXISTENT_VAR_XYZ} unchanged
+        assert any(
+            e.access_token == "${NONEXISTENT_VAR_XYZ}"
+            for e in entries
+        ), f"Expected literal unresolved var, got: {[(e.source, e.access_token) for e in entries]}"
+
     def test_empty_dotenv_no_entries(self, isolated_hermes_home):
         """No .env file, no env vars → no entries seeded (and no crash)."""
         from agent.credential_pool import _seed_from_env

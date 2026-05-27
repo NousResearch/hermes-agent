@@ -1832,6 +1832,10 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     def _get_env_prefer_dotenv(key: str) -> str:
         env_file = load_env()
         val = env_file.get(key) or os.environ.get(key) or ""
+        # Expand ${VAR} / $VAR references so that .env entries like
+        # ANTHROPIC_API_KEY=${OPENAI_API_KEY} resolve to the actual value
+        # instead of seeding the literal "${OPENAI_API_KEY}" into the pool.
+        val = os.path.expandvars(val)
         return val.strip()
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an

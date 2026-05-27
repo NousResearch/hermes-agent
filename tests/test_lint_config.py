@@ -192,3 +192,17 @@ class TestToolsLintRegression:
         assert result.returncode == 0, (
             f"tools/skill_usage.py has F841 violation(s):\n{result.stdout}"
         )
+    def test_send_message_tool_py_has_zero_f401_and_f811_violations(self):
+        """tools/send_message_tool.py must have zero F401 and F811 violations."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401,F811",
+             "--output-format=concise", "tools/send_message_tool.py"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, (
+            f"tools/send_message_tool.py has F401/F811 violation(s):\n{result.stdout}"
+        )

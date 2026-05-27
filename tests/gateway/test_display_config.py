@@ -228,34 +228,44 @@ class TestPlatformDefaults:
 
         assert resolve_display_setting({}, "telegram", "streaming") is None
 
-    def test_telegram_mobile_chatter_defaults_off(self):
-        """Telegram suppresses operational chat noise unless opted in."""
+    def test_telegram_mobile_chatter_defaults(self):
+        """Telegram keeps real mid-turn signal (interim commentary + heartbeats)
+        but skips the verbose busy-ack iteration counter by default."""
         from gateway.display_config import resolve_display_setting
 
-        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is False
-        assert resolve_display_setting({}, "telegram", "long_running_notifications") is False
+        # Real model voice — keep on. Without this, Telegram users see
+        # "typing..." for the entire turn duration with no feedback.
+        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is True
+        # Periodic "Working — N min" heartbeat — keep on. Otherwise long
+        # turns appear completely silent.
+        assert resolve_display_setting({}, "telegram", "long_running_notifications") is True
+        # Verbose iteration counter in busy-ack and heartbeat — off by
+        # default on Telegram (mobile chat is cramped enough without
+        # "iteration 21/60" debug detail).
         assert resolve_display_setting({}, "telegram", "busy_ack_detail") is False
+        # Discord keeps all of these on (desktop-first, more vertical space).
         assert resolve_display_setting({}, "discord", "interim_assistant_messages") is True
         assert resolve_display_setting({}, "discord", "long_running_notifications") is True
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
 
     def test_telegram_mobile_chatter_can_opt_in(self):
-        """Per-platform config can re-enable Telegram status chatter."""
+        """Per-platform config can re-enable Telegram busy-ack detail
+        and re-disable the kept-on defaults."""
         from gateway.display_config import resolve_display_setting
 
         config = {
             "display": {
                 "platforms": {
                     "telegram": {
-                        "interim_assistant_messages": True,
-                        "long_running_notifications": "yes",
+                        "interim_assistant_messages": False,
+                        "long_running_notifications": False,
                         "busy_ack_detail": "on",
                     }
                 }
             }
         }
-        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is True
-        assert resolve_display_setting(config, "telegram", "long_running_notifications") is True
+        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is False
+        assert resolve_display_setting(config, "telegram", "long_running_notifications") is False
         assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
 
 

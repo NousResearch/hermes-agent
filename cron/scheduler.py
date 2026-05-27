@@ -1792,6 +1792,16 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
+        # Annotate the common Codex/OpenAI Responses SDK bug where
+        # response.output=None at the end of an otherwise-valid stream.
+        # The raw TypeError is useless to the operator; add context.
+        _raw = str(e)
+        if "NoneType" in _raw and "not iterable" in _raw:
+            error_msg = (
+                f"OpenAI/Codex Responses SDK bug — "
+                f"response.output=None (transient upstream; will self-heal). "
+                f"Original: {error_msg}"
+            )
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         
         output = f"""# Cron Job: {job_name} (FAILED)

@@ -648,6 +648,19 @@ def classify_api_error(
             )
         return _result(FailoverReason.timeout, retryable=True)
 
+    # ── 6b. OpenAI Responses SDK response.output=None bug ─────────────
+    # The OpenAI SDK raises TypeError("'NoneType' object is not iterable")
+    # when the Responses API returns a terminal response with output=None.
+    # This is a transient upstream issue — the same request usually succeeds
+    # on the next attempt.  Classified as server_error so the retry loop
+    # treats it as retryable instead of falling to the generic unknown bucket.
+    if (
+        error_type == "TypeError"
+        and "nonetype" in error_msg
+        and "not iterable" in error_msg
+    ):
+        return _result(FailoverReason.server_error, retryable=True)
+
     # ── 7. Transport / timeout heuristics ───────────────────────────
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):

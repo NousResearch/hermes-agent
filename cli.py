@@ -29,6 +29,7 @@ import shutil
 import sys
 import json
 import re
+import subprocess
 import concurrent.futures
 import base64
 import atexit
@@ -3405,6 +3406,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
+        # answer_bell: optional external one-shot notifier when a terminal answer is ready.
+        self.answer_bell = CLI_CONFIG["display"].get("answer_bell", {})
+        if not isinstance(self.answer_bell, dict):
+            self.answer_bell = {"enabled": bool(self.answer_bell)}
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         # reasoning_full: when reasoning display is on, print the post-response
@@ -11152,6 +11157,50 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             except Exception:
                 pass
 
+    def _send_answer_bell(self, response: str, result: Optional[dict] = None) -> None:
+        """Fire a tiny external notification after a terminal answer is ready.
+
+        This is intentionally dumb: no answer text, no logs, no blocking. The
+        configured command decides where to send the bell (Discord webhook/bot,
+        OS notification, etc.). Failures are logged only so notifications never
+        break the chat loop.
+        """
+        cfg = self.answer_bell if isinstance(getattr(self, "answer_bell", None), dict) else {}
+        if not cfg.get("enabled"):
+            return
+        if not response:
+            return
+        if result and result.get("response_previewed"):
+            return
+
+        cmd = (
+            os.environ.get("HERMES_ANSWER_BELL_CMD")
+            or cfg.get("command")
+            or str(Path.home() / ".local" / "bin" / "hermes-discord-bell")
+        )
+        cmd = str(cmd).strip()
+        if not cmd:
+            return
+        cmd = os.path.expanduser(cmd)
+
+        message = str(cfg.get("message") or os.environ.get("HERMES_ANSWER_BELL_MESSAGE") or "끝")
+        env = os.environ.copy()
+        env.setdefault("HERMES_HOME", str(_hermes_home))
+        env["HERMES_ANSWER_BELL_MESSAGE"] = message
+        env["HERMES_ANSWER_BELL_SESSION"] = str(getattr(self, "session_id", "") or "")
+
+        try:
+            subprocess.Popen(
+                [cmd],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+                start_new_session=True,
+            )
+        except Exception as exc:
+            logger.debug("answer bell command failed to start: %s", exc)
+
     def chat(self, message, images: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
@@ -11736,6 +11785,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         width=self._scrollback_box_width(),
                     ))
 
+
+            # Fire external answer-ready bell (Discord webhook/bot, OS notify, etc.)
+            # after the terminal answer is ready. This intentionally sends only
+            # a tiny configured message (default: 끝), never the answer content.
+            self._send_answer_bell(response, result)
 
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.

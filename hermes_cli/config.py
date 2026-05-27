@@ -1577,6 +1577,11 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        "answer_bell": {
+            "enabled": False,
+            "command": "~/.local/bin/hermes-discord-bell",
+            "message": "끝",
+        },
         "show_reasoning": False,
         # When reasoning display is on, the post-response "Reasoning" recap box
         # collapses long thinking to the first 10 lines. Set true to print the

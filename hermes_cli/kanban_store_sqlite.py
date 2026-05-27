@@ -26,6 +26,10 @@ class SQLiteKanbanStore:
         production_ready=True,
     )
 
+    def __getattr__(self, name: str) -> Any:
+        """Delegate legacy constants and helper functions during migration."""
+        return getattr(kb, name)
+
     def connect(self, *args: Any, **kwargs: Any):
         return kb.connect(*args, **kwargs)
 
@@ -34,6 +38,9 @@ class SQLiteKanbanStore:
 
     def write_txn(self, conn):
         return kb.write_txn(conn)
+
+    def run_daemon(self, *args: Any, **kwargs: Any):
+        return kb.run_daemon(*args, **kwargs)
 
     def create_task(
         self,

@@ -1,8 +1,8 @@
 """CLI for the Hermes Kanban board — ``hermes kanban …`` subcommand.
 
 Exposes the full Kanban command surface documented in the design spec
-(``docs/hermes-kanban-v1-spec.pdf``).  All DB work is delegated to
-``kanban_db``.  This module adds:
+(``docs/hermes-kanban-v1-spec.pdf``).  DB work is delegated through the
+selected Kanban store adapter.  This module adds:
 
   * Argparse subcommand construction (``build_parser``).
   * Argument dispatch (``kanban_command``).
@@ -23,9 +23,12 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_store import Task
+from hermes_cli.kanban_store_factory import get_default_kanban_store
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
+
+kb = get_default_kanban_store()
 
 
 # ---------------------------------------------------------------------------
@@ -49,14 +52,14 @@ def _fmt_ts(ts: Optional[int]) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
 
-def _fmt_task_line(t: kb.Task) -> str:
+def _fmt_task_line(t: Task) -> str:
     icon = _STATUS_ICONS.get(t.status, "?")
     assignee = t.assignee or "(unassigned)"
     tenant = f" [{t.tenant}]" if t.tenant else ""
     return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}"
 
 
-def _task_to_dict(t: kb.Task) -> dict[str, Any]:
+def _task_to_dict(t: Task) -> dict[str, Any]:
     return {
         "id": t.id,
         "title": t.title,

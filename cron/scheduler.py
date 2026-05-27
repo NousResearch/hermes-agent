@@ -1489,8 +1489,8 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # first successful pull. Any failure is logged and swallowed — BSM
         # must never block job execution.
         try:
-            from hermes_cli.env_loader import _apply_external_secret_sources
-            _apply_external_secret_sources(_get_hermes_home())
+            from hermes_cli.env_loader import apply_external_secret_sources
+            apply_external_secret_sources(_get_hermes_home())
         except Exception:
             logger.debug("BSM secret apply failed", exc_info=True)
 

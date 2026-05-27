@@ -2624,20 +2624,36 @@ class TestRunJobBSMSecretResolution:
         run_agent.py runs ``load_hermes_dotenv()`` at module-import time. If we
         let ``patch("run_agent.AIAgent")`` trigger that import inside the test
         body, the module-level dotenv load picks up our tmp_path-rooted
-        HERMES_HOME and calls _apply_external_secret_sources for us — masking
+        HERMES_HOME and calls apply_external_secret_sources for us — masking
         whether the scheduler itself is doing the work. Force run_agent to
         load once, with the ambient HERMES_HOME, before the test starts."""
         import run_agent  # noqa: F401
+
+    @pytest.fixture(autouse=True)
+    def _isolate_secret_source_state(self):
+        """Reset env_loader's per-process secret-source state around every test.
+
+        Both ``_SECRET_SOURCES`` (the bitwarden-origin label cache) and the
+        ``_APPLIED_HOMES`` dedup set are process-global. Clearing only at
+        end-of-test would leak state into sibling tests if an assertion fails
+        first; the autouse setup+teardown form guarantees cleanup even on
+        failure. ``test_scheduler.py`` is large and many tests share env state.
+        """
+        from hermes_cli import env_loader
+
+        env_loader._SECRET_SOURCES.clear()
+        env_loader.reset_secret_source_cache()
+        try:
+            yield
+        finally:
+            env_loader._SECRET_SOURCES.clear()
+            env_loader.reset_secret_source_cache()
 
     def test_run_job_applies_bitwarden_secrets(self, tmp_path, monkeypatch):
         """BSM apply must run during run_job so the secret lands in os.environ
         before AIAgent is constructed."""
         from agent.secret_sources.bitwarden import FetchResult
         from hermes_cli import env_loader
-
-        # Clean per-process dedup state so the apply path actually runs.
-        env_loader._SECRET_SOURCES.clear()
-        env_loader.reset_secret_source_cache()
 
         (tmp_path / "config.yaml").write_text(
             "secrets:\n"
@@ -2701,17 +2717,9 @@ class TestRunJobBSMSecretResolution:
         # Origin tracking must still record where the value came from.
         assert env_loader.get_secret_source("ANTHROPIC_API_KEY") == "bitwarden"
 
-        env_loader._SECRET_SOURCES.clear()
-        env_loader.reset_secret_source_cache()
-
     def test_run_job_does_not_crash_when_bsm_apply_raises(self, tmp_path, monkeypatch):
         """A failure in the BSM apply path must never block job execution —
         the cron scheduler swallows the error and continues."""
-        from hermes_cli import env_loader
-
-        env_loader._SECRET_SOURCES.clear()
-        env_loader.reset_secret_source_cache()
-
         (tmp_path / "config.yaml").write_text(
             "secrets:\n"
             "  bitwarden:\n"
@@ -2745,6 +2753,3 @@ class TestRunJobBSMSecretResolution:
 
         # Job must still succeed — BSM failures cannot block cron execution.
         assert success is True, f"run_job failed when BSM raised: {error!r}"
-
-        env_loader._SECRET_SOURCES.clear()
-        env_loader.reset_secret_source_cache()

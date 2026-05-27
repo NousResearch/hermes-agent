@@ -55,7 +55,7 @@ def get_secret_source(env_var: str) -> str | None:
 def reset_secret_source_cache() -> None:
     """Forget which HERMES_HOME paths have already had external secrets applied.
 
-    The first call to ``_apply_external_secret_sources(home_path)`` in a
+    The first call to ``apply_external_secret_sources(home_path)`` in a
     process pulls from Bitwarden (or other configured backend), records the
     applied keys in ``_SECRET_SOURCES``, and remembers ``home_path`` so
     subsequent calls in the same process are no-ops.  Call this to force the
@@ -242,12 +242,12 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
-    _apply_external_secret_sources(home_path)
+    apply_external_secret_sources(home_path)
 
     return loaded
 
 
-def _apply_external_secret_sources(home_path: Path) -> None:
+def apply_external_secret_sources(home_path: Path) -> None:
     """Pull secrets from external sources (currently Bitwarden) into env.
 
     Runs AFTER dotenv loads so .env values are visible (we use them to
@@ -263,6 +263,11 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     ``reset_secret_source_cache()`` if you need to force a re-pull
     (tests, future ``hermes secrets bitwarden sync`` from a long-running
     process).
+
+    Exposed as a public name so callers outside ``load_hermes_dotenv()``
+    (notably ``cron/scheduler.py:run_job``, which does its own dotenv
+    reload per tick) can reuse the same code path without reaching into
+    a name-mangled private symbol.
     """
     home_key = str(Path(home_path).resolve())
     if home_key in _APPLIED_HOMES:
@@ -321,6 +326,12 @@ def _apply_external_secret_sources(home_path: Path) -> None:
             f"  Bitwarden Secrets Manager: {warn}",
             file=sys.stderr,
         )
+
+
+# Backward-compatible alias: existing tests / out-of-tree callers may still
+# import the private name.  Keep the alias so they don't break; new callers
+# should use the public ``apply_external_secret_sources`` instead.
+_apply_external_secret_sources = apply_external_secret_sources
 
 
 def _load_secrets_config(home_path: Path) -> dict:

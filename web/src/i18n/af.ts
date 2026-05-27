@@ -422,7 +422,7 @@ export const af: Translations = {
   },
 
   language: {
-    switchTo: "Skakel oor na Engels",
+    switchTo: "Verander taal",
   },
 
   theme: {

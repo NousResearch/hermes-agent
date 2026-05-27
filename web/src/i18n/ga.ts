@@ -422,7 +422,7 @@ export const ga: Translations = {
   },
 
   language: {
-    switchTo: "Athraigh go Béarla",
+    switchTo: "Athraigh teanga",
   },
 
   theme: {

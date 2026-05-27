@@ -422,7 +422,7 @@ export const fr: Translations = {
   },
 
   language: {
-    switchTo: "Passer à l'anglais",
+    switchTo: "Changer de langue",
   },
 
   theme: {

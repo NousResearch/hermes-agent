@@ -422,7 +422,7 @@ export const zhHant: Translations = {
   },
 
   language: {
-    switchTo: "切換為英文",
+    switchTo: "切換語言",
   },
 
   theme: {

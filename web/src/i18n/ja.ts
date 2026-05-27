@@ -422,7 +422,7 @@ export const ja: Translations = {
   },
 
   language: {
-    switchTo: "英語に切り替え",
+    switchTo: "言語を切り替え",
   },
 
   theme: {

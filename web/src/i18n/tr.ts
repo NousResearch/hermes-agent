@@ -422,7 +422,7 @@ export const tr: Translations = {
   },
 
   language: {
-    switchTo: "İngilizce'ye geç",
+    switchTo: "Dil değiştir",
   },
 
   theme: {

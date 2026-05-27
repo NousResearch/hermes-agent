@@ -422,7 +422,7 @@ export const ko: Translations = {
   },
 
   language: {
-    switchTo: "영어로 전환",
+    switchTo: "언어 변경",
   },
 
   theme: {

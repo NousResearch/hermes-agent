@@ -422,7 +422,7 @@ export const hu: Translations = {
   },
 
   language: {
-    switchTo: "Váltás angolra",
+    switchTo: "Nyelv váltása",
   },
 
   theme: {

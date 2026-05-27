@@ -422,7 +422,7 @@ export const uk: Translations = {
   },
 
   language: {
-    switchTo: "Перемкнути на англійську",
+    switchTo: "Змінити мову",
   },
 
   theme: {

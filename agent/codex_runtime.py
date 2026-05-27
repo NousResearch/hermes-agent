@@ -173,6 +173,10 @@ def run_codex_app_server_turn(
         "codex_turn_id": turn.turn_id,
     }
 
+def _is_codex_null_output_type_error(exc: TypeError) -> bool:
+    return "'NoneType' object is not iterable" in str(exc)
+
+
 def _build_recovered_codex_stream_response(
     *,
     api_kwargs: dict,
@@ -255,12 +259,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     except StopIteration:
                         break
                     except TypeError as exc:
-                        err_text = str(exc)
                         # ChatGPT Codex can stream valid output and then send a
                         # terminal response with output=None. openai-python may
                         # raise while parsing that final SSE frame; recover only
                         # if we already captured usable streamed content.
-                        if "'NoneType' object is not iterable" in err_text:
+                        if _is_codex_null_output_type_error(exc):
                             recovered = _build_recovered_codex_stream_response(
                                 api_kwargs=api_kwargs,
                                 collected_output_items=collected_output_items,
@@ -324,12 +327,29 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             sum(len(p) for p in agent._codex_streamed_text_parts),
                             agent._client_log_context(),
                         )
-                final_response = stream.get_final_response()
+                try:
+                    final_response = stream.get_final_response()
+                except TypeError as exc:
+                    # Some SDK versions defer final Responses object parsing
+                    # until get_final_response(), so the same output=None
+                    # terminal payload can fail here after iteration ends.
+                    if _is_codex_null_output_type_error(exc):
+                        recovered = _build_recovered_codex_stream_response(
+                            api_kwargs=api_kwargs,
+                            collected_output_items=collected_output_items,
+                            streamed_text_parts=agent._codex_streamed_text_parts,
+                            has_tool_calls=has_tool_calls,
+                            terminal_status=terminal_status,
+                            reason="SDK final response parser saw response.output=None",
+                        )
+                        if recovered is not None:
+                            return recovered
+                    raise
                 # PATCH: ChatGPT Codex backend streams valid output items
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
                 _out = getattr(final_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if _out is None or (isinstance(_out, list) and not _out):
                     recovered = _build_recovered_codex_stream_response(
                         api_kwargs=api_kwargs,
                         collected_output_items=collected_output_items,

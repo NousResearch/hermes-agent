@@ -202,6 +202,23 @@ class _FakeResponsesStreamTypeErrorAfterEvents:
         raise AssertionError("should recover before get_final_response()")
 
 
+class _FakeResponsesStreamTypeErrorInFinalResponse:
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def get_final_response(self):
+        raise TypeError("'NoneType' object is not iterable")
+
+
 class _FakeResponsesStreamTypeErrorInCallback:
     def __enter__(self):
         return self
@@ -217,13 +234,16 @@ class _FakeResponsesStreamTypeErrorInCallback:
 
 
 class _FakeResponsesForFinalNone:
-    def __init__(self, events):
+    def __init__(self, events, *, fail_in_get_final_response: bool = False):
         self.events = list(events)
+        self.fail_in_get_final_response = fail_in_get_final_response
         self.stream_calls = 0
         self.create_calls = 0
 
     def stream(self, **kwargs):
         self.stream_calls += 1
+        if self.fail_in_get_final_response:
+            return _FakeResponsesStreamTypeErrorInFinalResponse(self.events)
         return _FakeResponsesStreamTypeErrorAfterEvents(self.events)
 
     def create(self, **kwargs):
@@ -577,6 +597,25 @@ def test_run_codex_stream_recovers_when_sdk_final_parser_sees_none_output(
     assert response.model == "gpt-5-codex"
     assert response.output[0].type == "message"
     assert response.output[0].content[0].text == expected_text
+
+
+def test_run_codex_stream_recovers_when_get_final_response_sees_none_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    fake_responses = _FakeResponsesForFinalNone(
+        [
+            SimpleNamespace(type="response.output_text.delta", delta="Hello "),
+            SimpleNamespace(type="response.output_text.delta", delta="from final"),
+        ],
+        fail_in_get_final_response=True,
+    )
+    agent.client = SimpleNamespace(responses=fake_responses)
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert fake_responses.stream_calls == 1
+    assert fake_responses.create_calls == 0
+    assert response.status == "completed"
+    assert response.output[0].content[0].text == "Hello from final"
 
 
 def test_run_codex_stream_does_not_synthesize_text_after_tool_call(monkeypatch):

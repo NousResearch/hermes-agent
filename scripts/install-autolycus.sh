@@ -3,7 +3,9 @@
 # Autolycus Agent Installer
 # ============================================================================
 # POSIX-compliant installer for FreeBSD, Linux, macOS, and BSD.
-# Works with /bin/sh (dash, ash, ksh, bash, zsh, csh).
+# Works with /bin/sh (dash, ash, ksh, bash, zsh).
+# NOTE: Does NOT use printf '%b\n' or &> which are non-POSIX bash-isms.
+# Uses printf '%b\n' for escape sequence interpretation everywhere.
 # Assumes the repository is already cloned and the script is run from
 # inside the autolycus-agent directory, or uses HERMES_HOME fallback.
 #
@@ -67,7 +69,7 @@ cd "$REPO_DIR"
 PYTHON_VERSION="3.11"
 
 echo ""
-echo -e "${CYAN}${BOLD}⚕ Autolycus Agent Installer${NC}"
+printf '%b\n' "${CYAN}${BOLD}⚕ Autolycus Agent Installer${NC}"
 echo ""
 
 # ============================================================================
@@ -93,12 +95,12 @@ detect_os() {
             ;;
         *)
             OS="unknown"
-            echo -e "${RED}✗${NC} Unsupported operating system: $(uname -s)"
+            printf '%b\n' "${RED}✗${NC} Unsupported operating system: $(uname -s)"
             exit 1
             ;;
     esac
 
-    echo -e "${GREEN}✓${NC} Detected: $OS"
+    printf '%b\n' "${GREEN}✓${NC} Detected: $OS"
 }
 
 detect_os
@@ -108,14 +110,14 @@ detect_os
 # ============================================================================
 
 check_prerequisites() {
-    echo -e "${CYAN}→${NC} Checking prerequisites..."
+    printf '%b\n' "${CYAN}→${NC} Checking prerequisites..."
 
     # Check for cargo/rust
     # On FreeBSD, cargo may be at /usr/local/bin even if not in PATH (e.g. under sudo)
     # On Debian/Ubuntu, cargo may be at /usr/bin/cargo or ~/.cargo/bin/cargo
     # Use `type` instead of `command -v` for better portability and reliability
     CARGO_CMD=""
-    if type cargo &> /dev/null; then
+    if type cargo > /dev/null 2>&1; then
         CARGO_CMD="cargo"
     elif [ -x "/usr/local/bin/cargo" ]; then
         CARGO_CMD="/usr/local/bin/cargo"
@@ -126,7 +128,7 @@ check_prerequisites() {
     fi
 
     if [ -z "$CARGO_CMD" ]; then
-        echo -e "${RED}✗${NC} Rust/Cargo not found."
+        printf '%b\n' "${RED}✗${NC} Rust/Cargo not found."
         echo ""
         echo "Install Rust:"
         echo "  FreeBSD:  pkg install rust"
@@ -140,16 +142,16 @@ check_prerequisites() {
 
     # Verify cargo actually works (command -v can be misleading)
     if ! CARGO_VERSION=$($CARGO_CMD --version 2>/dev/null | awk '{print $2}'); then
-        echo -e "${RED}✗${NC} Found cargo at $CARGO_CMD but it failed to run."
+        printf '%b\n' "${RED}✗${NC} Found cargo at $CARGO_CMD but it failed to run."
         echo "Check your Rust installation or add cargo to PATH."
         exit 1
     fi
-    echo -e "${GREEN}✓${NC} Cargo $CARGO_VERSION found"
+    printf '%b\n' "${GREEN}✓${NC} Cargo $CARGO_VERSION found"
 
     # Check for make (required for cargo build on non-FreeBSD)
     if [ "$OS" != "freebsd" ]; then
-        if ! command -v make &> /dev/null; then
-            echo -e "${RED}✗${NC} make not found (required for building uv from source)."
+        if ! command -v make > /dev/null 2>&1; then
+            printf '%b\n' "${RED}✗${NC} make not found (required for building uv from source)."
             echo ""
             echo "Install make:"
             echo "  Arch:     sudo pacman -S make"
@@ -158,7 +160,7 @@ check_prerequisites() {
             echo ""
             exit 1
         fi
-        echo -e "${GREEN}✓${NC} make found"
+        printf '%b\n' "${GREEN}✓${NC} make found"
     fi
 }
 
@@ -169,48 +171,48 @@ check_prerequisites
 # ============================================================================
 
 install_uv() {
-    echo -e "${CYAN}→${NC} Installing uv..."
+    printf '%b\n' "${CYAN}→${NC} Installing uv..."
 
     # Check if uv is already available
-    if command -v uv &> /dev/null; then
+    if command -v uv > /dev/null 2>&1; then
         UV_CMD="uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        echo -e "${GREEN}✓${NC} uv already installed ($UV_VERSION)"
+        printf '%b\n' "${GREEN}✓${NC} uv already installed ($UV_VERSION)"
         return 0
     fi
 
     if [ -x "$HOME/.cargo/bin/uv" ]; then
         UV_CMD="$HOME/.cargo/bin/uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        echo -e "${GREEN}✓${NC} uv found at ~/.cargo/bin ($UV_VERSION)"
+        printf '%b\n' "${GREEN}✓${NC} uv found at ~/.cargo/bin ($UV_VERSION)"
         return 0
     fi
 
     if [ -x "$HOME/.local/bin/uv" ]; then
         UV_CMD="$HOME/.local/bin/uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        echo -e "${GREEN}✓${NC} uv found at ~/.local/bin ($UV_VERSION)"
+        printf '%b\n' "${GREEN}✓${NC} uv found at ~/.local/bin ($UV_VERSION)"
         return 0
     fi
 
     # Prefer pre-built binary installer (much faster, no Rust toolchain needed)
-    echo -e "${CYAN}→${NC} Installing uv via official installer (pre-built binary)..."
+    printf '%b\n' "${CYAN}→${NC} Installing uv via official installer (pre-built binary)..."
     if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
         if [ -x "$HOME/.local/bin/uv" ]; then
             UV_CMD="$HOME/.local/bin/uv"
-        elif command -v uv &> /dev/null; then
+        elif command -v uv > /dev/null 2>&1; then
             UV_CMD="uv"
         else
-            echo -e "${RED}✗${NC} uv installed but not found on PATH"
+            printf '%b\n' "${RED}✗${NC} uv installed but not found on PATH"
             exit 1
         fi
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        echo -e "${GREEN}✓${NC} uv installed ($UV_VERSION)"
+        printf '%b\n' "${GREEN}✓${NC} uv installed ($UV_VERSION)"
         return 0
     fi
 
     # Fallback: install via cargo (requires Rust toolchain)
-    echo -e "${YELLOW}⚠${NC} Pre-built installer failed, falling back to cargo install (slower)..."
+    printf '%b\n' "${YELLOW}⚠${NC} Pre-built installer failed, falling back to cargo install (slower)..."
 
     # Arch Linux enforces systemd user quotas on /tmp even when df shows free space.
     # Use home dir for cargo staging on Arch, /tmp everywhere else.
@@ -224,18 +226,18 @@ install_uv() {
             UV_CMD="$HOME/.cargo/bin/uv"
         elif [ -x "$HOME/.local/bin/uv" ]; then
             UV_CMD="$HOME/.local/bin/uv"
-        elif command -v uv &> /dev/null; then
+        elif command -v uv > /dev/null 2>&1; then
             UV_CMD="uv"
         else
-            echo -e "${RED}✗${NC} uv installed but not found on PATH"
+            printf '%b\n' "${RED}✗${NC} uv installed but not found on PATH"
             echo "Try adding ~/.cargo/bin to PATH and re-running"
             exit 1
         fi
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        echo -e "${GREEN}✓${NC} uv installed ($UV_VERSION)"
+        printf '%b\n' "${GREEN}✓${NC} uv installed ($UV_VERSION)"
         return 0
     else
-        echo -e "${RED}✗${NC} Failed to install uv."
+        printf '%b\n' "${RED}✗${NC} Failed to install uv."
         echo ""
         echo "Possible causes:"
         echo "  - Rust/Cargo not installed"
@@ -254,20 +256,20 @@ install_uv
 # ============================================================================
 
 setup_python() {
-    echo -e "${CYAN}→${NC} Checking Python $PYTHON_VERSION..."
+    printf '%b\n' "${CYAN}→${NC} Checking Python $PYTHON_VERSION..."
 
-    if $UV_CMD python find "$PYTHON_VERSION" &> /dev/null; then
+    if $UV_CMD python find "$PYTHON_VERSION" > /dev/null 2>&1; then
         PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
         PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
-        echo -e "${GREEN}✓${NC} Python found: $PYTHON_FOUND_VERSION"
+        printf '%b\n' "${GREEN}✓${NC} Python found: $PYTHON_FOUND_VERSION"
     else
-        echo -e "${CYAN}→${NC} Python $PYTHON_VERSION not found, installing via uv..."
+        printf '%b\n' "${CYAN}→${NC} Python $PYTHON_VERSION not found, installing via uv..."
         if $UV_CMD python install "$PYTHON_VERSION"; then
             PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
             PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
-            echo -e "${GREEN}✓${NC} Python installed: $PYTHON_FOUND_VERSION"
+            printf '%b\n' "${GREEN}✓${NC} Python installed: $PYTHON_FOUND_VERSION"
         else
-            echo -e "${RED}✗${NC} Failed to install Python $PYTHON_VERSION"
+            printf '%b\n' "${RED}✗${NC} Failed to install Python $PYTHON_VERSION"
             echo "Install Python manually, then re-run this script"
             exit 1
         fi
@@ -281,15 +283,15 @@ setup_python
 # ============================================================================
 
 setup_venv() {
-    echo -e "${CYAN}→${NC} Setting up virtual environment..."
+    printf '%b\n' "${CYAN}→${NC} Setting up virtual environment..."
 
     if [ -d "venv" ]; then
-        echo -e "${CYAN}→${NC} Removing old venv..."
+        printf '%b\n' "${CYAN}→${NC} Removing old venv..."
         rm -rf venv
     fi
 
     $UV_CMD venv venv --python "$PYTHON_VERSION"
-    echo -e "${GREEN}✓${NC} venv created (Python $PYTHON_VERSION)"
+    printf '%b\n' "${GREEN}✓${NC} venv created (Python $PYTHON_VERSION)"
 
     export VIRTUAL_ENV="$REPO_DIR/venv"
 }
@@ -301,29 +303,29 @@ setup_venv
 # ============================================================================
 
 install_deps() {
-    echo -e "${CYAN}→${NC} Installing dependencies..."
+    printf '%b\n' "${CYAN}→${NC} Installing dependencies..."
 
     # Determine extras based on OS
     if [ "$OS" = "freebsd" ]; then
         EXTRAS="[modal,daytona,messaging,cron,cli,dev,tts-premium,slack,honcho,mcp]"
-        echo -e "${CYAN}→${NC} FreeBSD detected — installing selective extras (voice excluded)"
+        printf '%b\n' "${CYAN}→${NC} FreeBSD detected — installing selective extras (voice excluded)"
     else
         EXTRAS="[all]"
-        echo -e "${CYAN}→${NC} Installing full stack"
+        printf '%b\n' "${CYAN}→${NC} Installing full stack"
     fi
 
     # Prefer uv sync with lockfile
     if [ -f "uv.lock" ]; then
-        echo -e "${CYAN}→${NC} Using uv.lock for hash-verified installation..."
+        printf '%b\n' "${CYAN}→${NC} Using uv.lock for hash-verified installation..."
         UV_PROJECT_ENVIRONMENT="$REPO_DIR/venv" $UV_CMD sync --all-extras --locked 2>/dev/null && \
-            echo -e "${GREEN}✓${NC} Dependencies installed (lockfile verified)" || {
-            echo -e "${YELLOW}⚠${NC} Lockfile install failed (may be outdated), falling back to pip..."
+            printf '%b\n' "${GREEN}✓${NC} Dependencies installed (lockfile verified)" || {
+            printf '%b\n' "${YELLOW}⚠${NC} Lockfile install failed (may be outdated), falling back to pip..."
             $UV_CMD pip install -e ".$EXTRAS" || $UV_CMD pip install -e "."
-            echo -e "${GREEN}✓${NC} Dependencies installed"
+            printf '%b\n' "${GREEN}✓${NC} Dependencies installed"
         }
     else
         $UV_CMD pip install -e ".$EXTRAS" || $UV_CMD pip install -e "."
-        echo -e "${GREEN}✓${NC} Dependencies installed"
+        printf '%b\n' "${GREEN}✓${NC} Dependencies installed"
     fi
 }
 
@@ -334,15 +336,15 @@ install_deps
 # ============================================================================
 
 setup_path() {
-    echo -e "${CYAN}→${NC} Setting up hermes and lycus commands..."
+    printf '%b\n' "${CYAN}→${NC} Setting up hermes and lycus commands..."
 
     HERMES_BIN="$REPO_DIR/venv/bin/hermes"
     LYCUS_BIN="$REPO_DIR/venv/bin/lycus"
     mkdir -p "$HOME/.local/bin"
     ln -sf "$HERMES_BIN" "$HOME/.local/bin/hermes"
-    echo -e "${GREEN}✓${NC} Symlinked hermes → ~/.local/bin/hermes"
+    printf '%b\n' "${GREEN}✓${NC} Symlinked hermes → ~/.local/bin/hermes"
     ln -sf "$LYCUS_BIN" "$HOME/.local/bin/lycus"
-    echo -e "${GREEN}✓${NC} Symlinked lycus → ~/.local/bin/lycus"
+    printf '%b\n' "${GREEN}✓${NC} Symlinked lycus → ~/.local/bin/lycus"
 
     # Add ~/.local/bin to shell config if needed
     if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
@@ -387,13 +389,13 @@ setup_path() {
                 else
                     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_CONFIG"
                 fi
-                echo -e "${GREEN}✓${NC} Added ~/.local/bin to PATH in $SHELL_CONFIG"
+                printf '%b\n' "${GREEN}✓${NC} Added ~/.local/bin to PATH in $SHELL_CONFIG"
             else
-                echo -e "${GREEN}✓${NC} ~/.local/bin already in $SHELL_CONFIG"
+                printf '%b\n' "${GREEN}✓${NC} ~/.local/bin already in $SHELL_CONFIG"
             fi
         fi
     else
-        echo -e "${GREEN}✓${NC} ~/.local/bin already on PATH"
+        printf '%b\n' "${GREEN}✓${NC} ~/.local/bin already on PATH"
     fi
 }
 
@@ -404,7 +406,7 @@ setup_path
 # ============================================================================
 
 setup_config() {
-    echo -e "${CYAN}→${NC} Setting up configuration files..."
+    printf '%b\n' "${CYAN}→${NC} Setting up configuration files..."
 
     HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
     mkdir -p "$HERMES_HOME"/{cron,sessions,logs,memories,skills}
@@ -413,23 +415,23 @@ setup_config() {
     if [ ! -f "$HERMES_HOME/.env" ]; then
         if [ -f ".env.example" ]; then
             cp .env.example "$HERMES_HOME/.env"
-            echo -e "${GREEN}✓${NC} Created ~/.hermes/.env from template"
+            printf '%b\n' "${GREEN}✓${NC} Created ~/.hermes/.env from template"
         else
             touch "$HERMES_HOME/.env"
-            echo -e "${GREEN}✓${NC} Created ~/.hermes/.env"
+            printf '%b\n' "${GREEN}✓${NC} Created ~/.hermes/.env"
         fi
     else
-        echo -e "${GREEN}✓${NC} ~/.hermes/.env already exists"
+        printf '%b\n' "${GREEN}✓${NC} ~/.hermes/.env already exists"
     fi
 
     # config.yaml
     if [ ! -f "$HERMES_HOME/config.yaml" ]; then
         if [ -f "cli-config.yaml.example" ]; then
             cp cli-config.yaml.example "$HERMES_HOME/config.yaml"
-            echo -e "${GREEN}✓${NC} Created ~/.hermes/config.yaml from template"
+            printf '%b\n' "${GREEN}✓${NC} Created ~/.hermes/config.yaml from template"
         fi
     else
-        echo -e "${GREEN}✓${NC} ~/.hermes/config.yaml already exists"
+        printf '%b\n' "${GREEN}✓${NC} ~/.hermes/config.yaml already exists"
     fi
 
     # Agent identity — assign a random name on first install
@@ -447,10 +449,10 @@ setup_config() {
         AGENT_NAME=$(echo "$AGENT_NAMES" | tr ' ' '\n' | sed -n "$((IDX + 1))p")
         [ -z "$AGENT_NAME" ] && AGENT_NAME="Terra"
         echo "$AGENT_NAME" > "$HERMES_HOME/.hermes_agent_name"
-        echo -e "${GREEN}✓${NC} Agent identity assigned: $AGENT_NAME"
+        printf '%b\n' "${GREEN}✓${NC} Agent identity assigned: $AGENT_NAME"
     else
         EXISTING_NAME=$(cat "$HERMES_HOME/.hermes_agent_name")
-        echo -e "${GREEN}✓${NC} Agent identity: $EXISTING_NAME"
+        printf '%b\n' "${GREEN}✓${NC} Agent identity: $EXISTING_NAME"
     fi
 
     # SOUL.md
@@ -467,7 +469,7 @@ This file is loaded fresh each message -- no restart needed.
 Delete the contents (or this file) to use the default personality.
 -->
 SOUL_EOF
-        echo -e "${GREEN}✓${NC} Created ~/.hermes/SOUL.md"
+        printf '%b\n' "${GREEN}✓${NC} Created ~/.hermes/SOUL.md"
     fi
 }
 
@@ -478,15 +480,15 @@ setup_config
 # ============================================================================
 
 sync_skills() {
-    echo -e "${CYAN}→${NC} Syncing bundled skills..."
+    printf '%b\n' "${CYAN}→${NC} Syncing bundled skills..."
 
     if "$REPO_DIR/venv/bin/python" "$REPO_DIR/tools/skills_sync.py" 2>/dev/null; then
-        echo -e "${GREEN}✓${NC} Skills synced"
+        printf '%b\n' "${GREEN}✓${NC} Skills synced"
     else
         # Fallback: simple copy
         if [ -d "skills" ]; then
             cp -rn "skills/"* "$HOME/.hermes/skills/" 2>/dev/null || true
-            echo -e "${GREEN}✓${NC} Skills copied"
+            printf '%b\n' "${GREEN}✓${NC} Skills copied"
         fi
     fi
 }
@@ -498,7 +500,7 @@ sync_skills
 # ============================================================================
 
 echo ""
-echo -e "${GREEN}${BOLD}✓ Installation complete!${NC}"
+printf '%b\n' "${GREEN}${BOLD}✓ Installation complete!${NC}"
 echo ""
 
 # Detect actual shell for reload instructions
@@ -541,7 +543,7 @@ echo ""
 
 # FreeBSD: remind about python-sqlite
 if [ "$OS" = "freebsd" ]; then
-    echo -e "${YELLOW}⚠ Note:${NC} For long-term memory support, install python-sqlite:"
+    printf '%b\n' "${YELLOW}⚠ Note:${NC} For long-term memory support, install python-sqlite:"
     echo "     pkg install py311-sqlite"
     echo ""
 fi

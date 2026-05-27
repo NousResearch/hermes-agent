@@ -192,6 +192,12 @@ $GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent
 $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
 $GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
 
+# Drafts (stage a message for human review before it sends)
+# create accepts any subset of --to/--subject/--body (at least one required), plus --cc/--from/--html
+$GAPI gmail draft create --to user@example.com --subject "Hello" --body "Message text"
+$GAPI gmail draft list --max 10          # JSON array: draftId, messageId, to, subject, date, snippet
+$GAPI gmail draft send DRAFT_ID          # send an existing draft (returns status, id, threadId)
+
 # Labels
 $GAPI gmail labels
 $GAPI gmail modify MESSAGE_ID --add-labels LABEL_ID

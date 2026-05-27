@@ -137,6 +137,15 @@ Codex uses a separate Responses API path:
 - `api_mode = codex_responses`
 - dedicated credential resolution and auth store support
 
+The `openai-codex` provider is OAuth-backed, not an `OPENAI_API_KEY` check.
+Hermes reads Codex tokens from its own provider auth state in
+`~/.hermes/auth.json` after `hermes auth add openai-codex` or `hermes model`
+selects OpenAI Codex. During setup it can also import an existing Codex CLI
+session from `${CODEX_HOME:-~/.codex}/auth.json`, then stores the imported
+tokens in Hermes' auth store. Diagnostics for this provider should check the
+Hermes auth state, and optionally the Codex CLI auth file as an import source,
+before reporting missing OpenAI credentials.
+
 ## Auxiliary model routing
 
 Auxiliary tasks such as:

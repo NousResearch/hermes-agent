@@ -1,12 +1,14 @@
 """Kanban storage backend selection.
 
 The selector defaults to the existing SQLite implementation so runtime
-behavior remains unchanged while call sites move behind the store boundary.
+behavior remains unchanged unless the operator explicitly selects a backend
+through ``HERMES_KANBAN_BACKEND`` or ``kanban.storage.backend`` in config.yaml.
 """
 
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from hermes_cli.kanban_store import KanbanStore
 from hermes_cli.kanban_store_postgres import PostgresKanbanStore
@@ -22,13 +24,22 @@ def normalize_backend_name(value: str | None) -> str:
     return name or _DEFAULT_BACKEND
 
 
-def create_kanban_store(backend: str | None = None) -> KanbanStore:
-    """Create a Kanban store for ``backend``.
+def _load_config_backend() -> str | None:
+    """Read the optional Kanban storage backend from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
 
-    Only SQLite is runtime-ready today.  PostgreSQL is registered as an
-    explicit placeholder so deployments fail closed until its implementation
-    passes the shared store contract.
-    """
+        cfg: dict[str, Any] = load_config()
+        kanban_cfg = cfg.get("kanban") or {}
+        storage_cfg = kanban_cfg.get("storage") or {}
+        backend = storage_cfg.get("backend") or kanban_cfg.get("storage_backend")
+        return str(backend) if backend else None
+    except Exception:
+        return None
+
+
+def create_kanban_store(backend: str | None = None) -> KanbanStore:
+    """Create a Kanban store for ``backend``."""
     name = normalize_backend_name(backend)
     if name == "sqlite":
         return SQLiteKanbanStore()
@@ -41,8 +52,8 @@ def create_kanban_store(backend: str | None = None) -> KanbanStore:
 
 
 def get_default_kanban_store() -> KanbanStore:
-    """Return the store selected by environment/config defaults."""
-    return create_kanban_store(os.environ.get(_BACKEND_ENV))
+    """Return the store selected by env/config defaults."""
+    return create_kanban_store(os.environ.get(_BACKEND_ENV) or _load_config_backend())
 
 
 __all__ = [

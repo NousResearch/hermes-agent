@@ -5346,9 +5346,14 @@ class GatewayRunner:
 
         try:
             from hermes_cli import kanban_db as _kb
+            from hermes_cli.kanban_store_factory import get_default_kanban_store
         except Exception:
-            logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
+            logger.warning("kanban dispatcher: kanban storage not importable; dispatcher disabled")
             return
+
+        store = get_default_kanban_store()
+        store_backend = getattr(getattr(store, "capabilities", None), "backend", "sqlite")
+        logger.info("kanban dispatcher: storage backend=%s", store_backend)
 
         interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
         interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
@@ -5456,6 +5461,23 @@ class GatewayRunner:
                 or "database disk image is malformed" in msg
             )
 
+        def _connect_store_for_board(slug: str):
+            """Open the selected Kanban store and return (conn, context)."""
+            if store_backend == "sqlite":
+                return store.connect(board=slug), None
+            ctx = store.connect()
+            return ctx.__enter__(), ctx
+
+        def _close_store_connection(conn, ctx) -> None:
+            if ctx is not None:
+                ctx.__exit__(*sys.exc_info())
+                return
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
@@ -5466,6 +5488,7 @@ class GatewayRunner:
             connection handle or accidentally claim across each other.
             """
             conn = None
+            conn_context = None
             fingerprint = _board_db_fingerprint(slug)
             disabled_entry = disabled_corrupt_boards.get(slug)
             if disabled_entry is not None:
@@ -5490,14 +5513,14 @@ class GatewayRunner:
                     )
                 disabled_corrupt_boards.pop(slug, None)
             try:
-                conn = _kb.connect(board=slug)
+                conn, conn_context = _connect_store_for_board(slug)
                 # `connect()` runs the schema + idempotent migration on
                 # first open per process; the previous explicit
                 # `init_db()` call here busted the per-process cache and
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
-                return _kb.dispatch_once(
+                return store.dispatch_once(
                     conn,
                     board=slug,
                     max_spawn=max_spawn,
@@ -5506,7 +5529,7 @@ class GatewayRunner:
                     stale_timeout_seconds=stale_timeout_seconds,
                 )
             except sqlite3.DatabaseError as exc:
-                if _is_corrupt_board_db_error(exc):
+                if store_backend == "sqlite" and _is_corrupt_board_db_error(exc):
                     disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
                     logger.error(
                         "kanban dispatcher: board %s database %s is not a valid "
@@ -5536,11 +5559,7 @@ class GatewayRunner:
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None
             finally:
-                if conn is not None:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
+                _close_store_connection(conn, conn_context)
 
         def _tick_once() -> "list[tuple[str, Optional[object]]]":
             """Run one dispatch_once per board. Returns (slug, result) pairs.
@@ -5578,20 +5597,17 @@ class GatewayRunner:
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 conn = None
+                conn_context = None
                 try:
-                    conn = _kb.connect(board=slug)
-                    if _kb.has_spawnable_ready(conn):
+                    conn, conn_context = _connect_store_for_board(slug)
+                    if store.has_spawnable_ready(conn):
                         return True
-                    if _kb.has_spawnable_review(conn):
+                    if store.has_spawnable_review(conn):
                         return True
                 except Exception:
                     continue
                 finally:
-                    if conn is not None:
-                        try:
-                            conn.close()
-                        except Exception:
-                            pass
+                    _close_store_connection(conn, conn_context)
             return False
 
         # Auto-decompose: turn fresh triage tasks into ready workgraphs

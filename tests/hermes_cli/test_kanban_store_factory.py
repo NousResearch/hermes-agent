@@ -29,6 +29,17 @@ def test_default_kanban_store_accepts_explicit_sqlite_backend(monkeypatch):
     assert isinstance(get_default_kanban_store(), SQLiteKanbanStore)
 
 
+def test_default_kanban_store_reads_config_backend_when_env_unset(monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_BACKEND", raising=False)
+
+    import hermes_cli.kanban_store_factory as factory
+    from hermes_cli.kanban_store_postgres import PostgresKanbanStore
+
+    monkeypatch.setattr(factory, "_load_config_backend", lambda: "postgres")
+
+    assert isinstance(factory.get_default_kanban_store(), PostgresKanbanStore)
+
+
 def test_default_kanban_store_rejects_unknown_backend(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_BACKEND", "mysql")
 

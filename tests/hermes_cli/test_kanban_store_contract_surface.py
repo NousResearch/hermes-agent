@@ -85,7 +85,7 @@ def test_sqlite_store_exposes_required_cli_and_dispatcher_surface():
     assert missing_constants == []
 
 
-def test_postgres_backend_has_explicit_placeholder_but_is_not_runtime_enabled(monkeypatch):
+def test_postgres_backend_has_explicit_runtime_adapter(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_BACKEND", "postgres")
 
     from hermes_cli.kanban_store_factory import create_kanban_store, get_default_kanban_store
@@ -97,11 +97,8 @@ def test_postgres_backend_has_explicit_placeholder_but_is_not_runtime_enabled(mo
     assert store.capabilities.backend == "postgres"
     assert store.capabilities.supports_concurrent_writers is True
     assert store.capabilities.supports_skip_locked is True
-    assert store.capabilities.production_ready is False
-    with pytest.raises(NotImplementedError, match="PostgresKanbanStore is a placeholder"):
-        store.connect()
-    with pytest.raises(NotImplementedError, match="PostgresKanbanStore is a placeholder"):
-        get_default_kanban_store().connect()
+    assert store.capabilities.production_ready is True
+    assert get_default_kanban_store().capabilities.backend == "postgres"
 
 
 def test_postgres_store_declares_same_contract_methods_as_protocol():

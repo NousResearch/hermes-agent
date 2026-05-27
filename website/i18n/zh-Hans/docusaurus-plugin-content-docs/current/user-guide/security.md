@@ -144,7 +144,7 @@ approvals:
 | `gateway run` 配合 `&`/`disown`/`nohup`/`setsid` | 防止在服务管理器外启动 gateway |
 
 :::info
-**容器绕过**：在 `docker`、`singularity`、`modal`、`daytona` 或 `vercel_sandbox` 后端运行时，危险命令检查会被**跳过**，因为容器本身就是安全边界。容器内的破坏性命令不会危害宿主机。
+**容器绕过**：在 `docker`、`singularity`、`modal` 或 `daytona` 后端运行时，危险命令检查会被**跳过**，因为容器本身就是安全边界。容器内的破坏性命令不会危害宿主机。
 :::
 
 ### 审批流程（CLI）
@@ -340,7 +340,7 @@ terminal:
 - **临时模式**（`container_persistent: false`）：工作区使用 tmpfs——清理后所有内容丢失
 
 :::tip
-对于生产 gateway 部署，使用 `docker`、`modal`、`daytona` 或 `vercel_sandbox` 后端，将 Agent 命令与宿主机系统隔离。这样可以完全消除危险命令审批的需要。
+对于生产 gateway 部署，使用 `docker`、`modal` 或 `daytona` 后端，将 Agent 命令与宿主机系统隔离。这样可以完全消除危险命令审批的需要。
 :::
 
 :::warning
@@ -357,7 +357,6 @@ terminal:
 | **singularity** | 容器 | ❌ 跳过 | HPC 环境 |
 | **modal** | 云沙箱 | ❌ 跳过 | 可扩展的云隔离 |
 | **daytona** | 云沙箱 | ❌ 跳过 | 持久化云工作区 |
-| **vercel_sandbox** | 云微虚拟机 | ❌ 跳过 | 带快照持久化的云执行 |
 
 ## 环境变量透传 {#environment-variable-passthrough}
 

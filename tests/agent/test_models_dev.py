@@ -94,7 +94,6 @@ class TestProviderMapping:
         assert PROVIDER_TO_MODELS_DEV["copilot"] == "github-copilot"
         assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun"
         assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
-        assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
 
     def test_xai_oauth_uses_xai_catalog(self):
         assert PROVIDER_TO_MODELS_DEV["xai"] == "xai"

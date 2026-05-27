@@ -42,7 +42,6 @@ That ordering matters because Hermes treats the saved model/provider choice as t
 
 Current provider families include (see `plugins/model-providers/` for the complete bundled set):
 
-- AI Gateway (Vercel)
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
@@ -93,18 +92,13 @@ This resolver is the main reason Hermes can share auth/runtime logic between:
 - ACP editor sessions
 - auxiliary model tasks
 
-## AI Gateway
+## OpenRouter and custom OpenAI-compatible base URLs
 
-Set `AI_GATEWAY_API_KEY` in `~/.hermes/.env` and run with `--provider ai-gateway`. Hermes fetches available models from the gateway's `/models` endpoint, filtering to language models with tool-use support.
-
-## OpenRouter, AI Gateway, and custom OpenAI-compatible base URLs
-
-Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when multiple provider keys exist (e.g. `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`, and `OPENAI_API_KEY`).
+Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when multiple provider keys exist (e.g. `OPENROUTER_API_KEY` and `OPENAI_API_KEY`).
 
 Each provider's API key is scoped to its own base URL:
 
 - `OPENROUTER_API_KEY` is only sent to `openrouter.ai` endpoints
-- `AI_GATEWAY_API_KEY` is only sent to `ai-gateway.vercel.sh` endpoints
 - `OPENAI_API_KEY` is used for custom endpoints and as a fallback
 
 Hermes also distinguishes between:
@@ -115,7 +109,7 @@ Hermes also distinguishes between:
 That distinction is especially important for:
 
 - local model servers
-- non-OpenRouter/non-AI Gateway OpenAI-compatible APIs
+- non-OpenRouter OpenAI-compatible APIs
 - switching providers without re-running setup
 - config-saved custom endpoints that should keep working even when `OPENAI_BASE_URL` is not exported in the current shell
 

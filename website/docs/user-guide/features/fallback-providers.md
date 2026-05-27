@@ -47,7 +47,6 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 
 | Provider | Value | Requirements |
 |----------|-------|-------------|
-| AI Gateway | `ai-gateway` | `AI_GATEWAY_API_KEY` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes setup --portal` (fresh) or `hermes auth add nous` (OAuth) |
 | OpenAI Codex | `openai-codex` | `hermes model` (ChatGPT OAuth) |

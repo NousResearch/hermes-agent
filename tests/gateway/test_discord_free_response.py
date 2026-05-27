@@ -114,6 +114,7 @@ def adapter(monkeypatch):
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
         "DISCORD_ALLOW_BOTS",
+        "DISCORD_IGNORE_OTHER_USER_MENTIONS",
     ):
         monkeypatch.delenv(_var, raising=False)
 
@@ -274,6 +275,63 @@ async def test_discord_free_response_channel_overrides_mention_requirement(adapt
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "allowed without mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_channel_ignores_human_mentions_not_for_bot(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+
+    other_human = SimpleNamespace(id=111, bot=False)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="<@111> this is for you",
+        mentions=[other_human],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_channel_can_opt_out_of_ignoring_other_human_mentions(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_IGNORE_OTHER_USER_MENTIONS", "false")
+
+    other_human = SimpleNamespace(id=111, bot=False)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="<@111> this is still ambient chatter",
+        mentions=[other_human],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "<@111> this is still ambient chatter"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_channel_allows_human_mention_when_bot_also_mentioned(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+
+    bot_user = adapter._client.user
+    other_human = SimpleNamespace(id=111, bot=False)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content=f"<@{bot_user.id}> can you help <@111>?",
+        mentions=[bot_user, other_human],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "can you help <@111>?"
 
 
 @pytest.mark.asyncio

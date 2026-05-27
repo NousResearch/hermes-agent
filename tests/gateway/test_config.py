@@ -343,6 +343,42 @@ class TestLoadGatewayConfig:
         # Env value preserved, not clobbered by yaml.
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
 
+    def test_bridges_discord_ignore_other_user_mentions_from_config_yaml(self, tmp_path, monkeypatch):
+        """discord.ignore_other_user_mentions should reach the runtime env var."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  ignore_other_user_mentions: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_IGNORE_OTHER_USER_MENTIONS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_IGNORE_OTHER_USER_MENTIONS") == "false"
+
+    def test_ignore_other_user_mentions_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
+        """Explicit env var should win over config.yaml (env > yaml precedence)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  ignore_other_user_mentions: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_IGNORE_OTHER_USER_MENTIONS", "false")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_IGNORE_OTHER_USER_MENTIONS") == "false"
+
     def test_bridges_quoted_false_platform_enabled_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

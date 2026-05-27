@@ -3585,6 +3585,38 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
+    def _discord_ignore_other_user_mentions(self) -> bool:
+        """Return whether messages @mentioning other users should be ignored.
+
+        This keeps free-response channels from treating messages explicitly
+        addressed to another human as ambient chat for the bot. The check is
+        intentionally scoped to human mentions; bot mentions are handled by
+        the multi-agent filtering in ``on_message``.
+        """
+        configured = self.config.extra.get("ignore_other_user_mentions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("DISCORD_IGNORE_OTHER_USER_MENTIONS", "true").lower() not in {
+            "false",
+            "0",
+            "no",
+            "off",
+        }
+
+    def _discord_mentions_other_human_without_self(self, message: Any) -> bool:
+        """Return True when a server message targets another human, not this bot."""
+        bot_user = self._client.user if self._client else None
+        if not bot_user or not getattr(message, "mentions", None):
+            return False
+        if bot_user in message.mentions:
+            return False
+        return any(
+            mentioned != bot_user and not getattr(mentioned, "bot", False)
+            for mentioned in message.mentions
+        )
+
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
 
@@ -4498,6 +4530,15 @@ class DiscordAdapter(BasePlatformAdapter):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
+
+            # Free-response channels allow normal unmentioned chatter, but a
+            # message that explicitly @mentions another human is directed at
+            # that person, not the bot. Stay silent unless we are mentioned too.
+            if (
+                self._discord_ignore_other_user_mentions()
+                and self._discord_mentions_other_human_without_self(message)
+            ):
+                return
 
             # Check allowed channels - if set, only respond in these channels
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
@@ -6060,7 +6101,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_ALLOWED_CHANNELS``, ``DISCORD_NO_THREAD_CHANNELS``,
     ``DISCORD_HISTORY_BACKFILL``, ``DISCORD_HISTORY_BACKFILL_LIMIT``,
     ``DISCORD_ALLOW_MENTION_*``, ``DISCORD_REPLY_TO_MODE``,
-    ``DISCORD_THREAD_REQUIRE_MENTION``).  Rather than rewrite ~50 call sites
+    ``DISCORD_THREAD_REQUIRE_MENTION``,
+    ``DISCORD_IGNORE_OTHER_USER_MENTIONS``).  Rather than rewrite ~50 call sites
     inside the adapter to read from ``PlatformConfig.extra`` instead, this
     hook keeps the existing env-driven model and merely owns the
     YAML→env translation here, next to the adapter that consumes it.
@@ -6074,6 +6116,10 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
+    if "ignore_other_user_mentions" in discord_cfg and not os.getenv("DISCORD_IGNORE_OTHER_USER_MENTIONS"):
+        os.environ["DISCORD_IGNORE_OTHER_USER_MENTIONS"] = str(
+            discord_cfg["ignore_other_user_mentions"]
+        ).lower()
     frc = discord_cfg.get("free_response_channels")
     if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):
@@ -6171,9 +6217,10 @@ def register(ctx) -> None:
         # ``discord:`` keys (require_mention, free_response_channels,
         # auto_thread, reactions, ignored_channels, allowed_channels,
         # no_thread_channels, allow_mentions.*, reply_to_mode,
-        # thread_require_mention) into ``DISCORD_*`` env vars that the
-        # adapter reads via ``os.getenv()``.  Replaces the hardcoded block
-        # that used to live in ``gateway/config.py``.  Hook contract: #24836.
+        # thread_require_mention, ignore_other_user_mentions) into
+        # ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``.
+        # Replaces the hardcoded block that used to live in
+        # ``gateway/config.py``.  Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="DISCORD_ALLOWED_USERS",

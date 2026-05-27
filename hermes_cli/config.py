@@ -1441,6 +1441,9 @@ DEFAULT_CONFIG = {
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+        # In channels, ignore messages that @mention another human unless the
+        # bot is also mentioned. Env override: DISCORD_IGNORE_OTHER_USER_MENTIONS.
+        "ignore_other_user_mentions": True,
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)

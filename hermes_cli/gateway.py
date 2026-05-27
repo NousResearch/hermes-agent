@@ -110,22 +110,30 @@ def _get_service_pids() -> set:
     # --- launchd (macOS) ---
     if is_macos():
         try:
-            label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[2] == label:
-                        try:
-                            pid = int(parts[0])
-                            if pid > 0:
-                                pids.add(pid)
-                        except ValueError:
-                            pass
+            _launchd_dir = Path.home() / "Library" / "LaunchAgents"
+            _labels = set()
+            _labels.add(get_launchd_label())
+            # Discover profile labels from plist files on disk
+            if _launchd_dir.exists():
+                for _pf in _launchd_dir.glob("ai.hermes.gateway.*.plist"):
+                    _labels.add(_pf.stem)
+                for _pf in _launchd_dir.glob("ai.hermes.gateway-*.plist"):
+                    _labels.add(_pf.stem)
+            for _lbl in _labels:
+                result = subprocess.run(
+                    ["launchctl", "list", _lbl],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.strip().splitlines():
+                        parts = line.split()
+                        if len(parts) >= 3 and parts[2] == _lbl:
+                            try:
+                                pid = int(parts[0])
+                                if pid > 0:
+                                    pids.add(pid)
+                            except ValueError:
+                                pass
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 

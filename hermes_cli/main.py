@@ -9749,23 +9749,75 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         launchd_restart,
                         get_launchd_label,
                         get_launchd_plist_path,
+                        _launchd_domain,
                     )
 
-                    plist_path = get_launchd_plist_path()
-                    if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
+                    _launchd_dir = Path.home() / "Library" / "LaunchAgents"
+                    _domain = _launchd_domain()
+
+                    # Collect all hermes gateway plist labels (main + profiles).
+                    # Supports both dot naming (ai.hermes.gateway.dave) and
+                    # dash naming (ai.hermes.gateway-dave) for compatibility.
+                    _launchd_labels = []
+
+                    # Main gateway
+                    _main_plist = get_launchd_plist_path()
+                    if _main_plist.exists():
+                        _launchd_labels.append(get_launchd_label())
+
+                    # Profile gateways — discover from plist files on disk
+                    if _launchd_dir.exists():
+                        for _plist_file in _launchd_dir.glob("ai.hermes.gateway.*.plist"):
+                            _label = _plist_file.stem
+                            if _label != get_launchd_label():
+                                _launchd_labels.append(_label)
+                        for _plist_file in _launchd_dir.glob("ai.hermes.gateway-*.plist"):
+                            _label = _plist_file.stem
+                            if _label != get_launchd_label():
+                                _launchd_labels.append(_label)
+
+                    for _label in sorted(set(_launchd_labels)):
+                        _check = subprocess.run(
+                            ["launchctl", "list", _label],
                             capture_output=True,
                             text=True,
                             timeout=5,
                         )
-                        if check.returncode == 0:
-                            try:
-                                launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
-                                print(f"  ⚠ Gateway restart failed: {stderr}")
+                        if _check.returncode != 0:
+                            continue
+
+                        _target = f"{_domain}/{_label}"
+                        try:
+                            # Attempt graceful restart via launchctl kickstart -k
+                            subprocess.run(
+                                ["launchctl", "kickstart", "-k", _target],
+                                check=True,
+                                timeout=90,
+                            )
+                            restarted_services.append(_label)
+                            print(f"  ✓ Restarted {_label}")
+                        except subprocess.CalledProcessError as _e:
+                            _stderr = (getattr(_e, "stderr", "") or "").strip()
+                            # Code 3 or 113 = job not loaded; try bootstrap + kickstart
+                            if _e.returncode in (3, 113):
+                                try:
+                                    _plist = _launchd_dir / f"{_label}.plist"
+                                    subprocess.run(
+                                        ["launchctl", "bootstrap", _domain, str(_plist)],
+                                        check=True,
+                                        timeout=30,
+                                    )
+                                    subprocess.run(
+                                        ["launchctl", "kickstart", _target],
+                                        check=True,
+                                        timeout=30,
+                                    )
+                                    restarted_services.append(_label)
+                                    print(f"  ✓ Reloaded and restarted {_label}")
+                                except subprocess.CalledProcessError as _e2:
+                                    print(f"  ⚠ {_label} reload failed: {_e2}")
+                            else:
+                                print(f"  ⚠ {_label} restart failed: {_stderr}")
                 except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
                     pass
 

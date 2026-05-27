@@ -136,6 +136,27 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _merge_custom_provider_default_headers(agent, custom_providers: List[Dict[str, Any]]) -> None:
+    from hermes_cli.runtime_provider import _custom_provider_request_overrides
+    from agent.context_compressor import _match_custom_provider_entry
+
+    match = _match_custom_provider_entry(
+        provider=agent.provider,
+        model=agent.model,
+        base_url=agent.base_url,
+        custom_providers=custom_providers,
+    )
+    if not match:
+        return
+    request_overrides = _custom_provider_request_overrides(match)
+    default_headers = request_overrides.get("default_headers")
+    if not isinstance(default_headers, dict) or not default_headers:
+        return
+    headers = dict(agent._client_kwargs.get("default_headers") or {})
+    headers.update(default_headers)
+    agent._client_kwargs["default_headers"] = headers
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1320,6 +1341,7 @@ def init_agent(
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
+    _merge_custom_provider_default_headers(agent, _custom_providers)
 
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:

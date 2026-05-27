@@ -3437,6 +3437,15 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                _request_overrides = {}
+                try:
+                    from hermes_cli.runtime_provider import _custom_provider_request_overrides
+                    _request_overrides = _custom_provider_request_overrides(custom_entry)
+                except Exception:
+                    _request_overrides = {}
+                _default_headers = _request_overrides.get("default_headers")
+                if isinstance(_default_headers, dict) and _default_headers:
+                    _extra2["default_headers"] = dict(_default_headers)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
@@ -3459,6 +3468,8 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
+                        if isinstance(_default_headers, dict) and _default_headers:
+                            _fb_extra["default_headers"] = dict(_default_headers)
                         client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))

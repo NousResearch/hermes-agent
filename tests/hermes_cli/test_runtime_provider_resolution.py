@@ -1614,6 +1614,56 @@ def test_named_custom_runtime_propagates_extra_body_direct_path(monkeypatch):
     }
 
 
+def test_named_custom_runtime_propagates_default_headers(monkeypatch):
+    """Custom provider default_headers should become runtime request_overrides."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-gemma")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-gemma",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "google/gemma-4-31b-it",
+            "default_headers": {
+                "User-Agent": "curl/8.7.1",
+                "X-Custom-Gateway": "test",
+            },
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-gemma")
+    assert resolved["request_overrides"] == {
+        "default_headers": {
+            "User-Agent": "curl/8.7.1",
+            "X-Custom-Gateway": "test",
+        }
+    }
+
+
+def test_custom_provider_config_normalizes_default_headers(monkeypatch, tmp_path):
+    """default_headers from config.yaml should survive runtime normalization."""
+    cfg = {
+        "custom_providers": [
+            {
+                "name": "my-gateway",
+                "base_url": "https://gateway.example/v1",
+                "api_key": "sk-test",
+                "model": "gpt-5.5",
+                "default_headers": {"User-Agent": "curl/8.7.1"},
+            }
+        ],
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: cfg)
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-gateway")
+
+    assert resolved["request_overrides"] == {
+        "default_headers": {"User-Agent": "curl/8.7.1"}
+    }
+
+
 def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
     """Model should propagate even when credential pool handles credentials."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")

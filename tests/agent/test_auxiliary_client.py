@@ -578,6 +578,37 @@ class TestResolveProviderClientUniversalModelFallback:
         mock_read_main.assert_not_called()
         assert mock_build.call_args.args[0] == "grok-4.20-multi-agent"
 
+    def test_named_custom_provider_passes_default_headers(self, monkeypatch):
+        """Named custom providers can configure OpenAI SDK default headers."""
+        import agent.auxiliary_client as aux
+
+        captured = {}
+
+        class _Client:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.api_key = kwargs.get("api_key")
+                self.base_url = kwargs.get("base_url")
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            lambda provider: {
+                "name": "my-gateway",
+                "base_url": "https://gateway.example/v1",
+                "api_key": "sk-test",
+                "model": "gpt-5.5",
+                "api_mode": "chat_completions",
+                "default_headers": {"User-Agent": "curl/8.7.1"},
+            },
+        )
+        monkeypatch.setattr(aux, "OpenAI", _Client)
+
+        client, model = resolve_provider_client("my-gateway", "")
+
+        assert client is not None
+        assert model == "gpt-5.5"
+        assert captured["default_headers"] == {"User-Agent": "curl/8.7.1"}
+
 
 class TestExpiredCodexFallback:
     """Test that expired Codex tokens don't block the auto chain."""

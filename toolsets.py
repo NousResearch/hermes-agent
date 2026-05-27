@@ -29,6 +29,8 @@ from typing import List, Dict, Any, Set, Optional
 # Shared tool list for CLI and all messaging platform toolsets.
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
+    # Tool discovery and meta-tools
+    "list_tool_tags", "search_tools_by_tag", "invoke_tool",
     # Web
     "web_search", "web_extract",
     # Terminal + process management
@@ -86,6 +88,13 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
 TOOLSETS = {
+    # Tool registry / meta-tools
+    "tools_registry": {
+        "description": "Tag-based tool discovery and invocation meta-tools (list tags, search tools, invoke tool)",
+        "tools": ["list_tool_tags", "search_tools_by_tag", "invoke_tool"],
+        "includes": []
+    },
+    
     # Basic toolsets - individual tool categories
     "web": {
         "description": "Web research and content extraction tools",

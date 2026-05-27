@@ -80,12 +80,13 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars", "dynamic_schema_overrides",
+        "max_result_size_chars", "dynamic_schema_overrides", "tags",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 tags=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -104,6 +105,7 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        self.tags = tags or []
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +246,7 @@ class ToolRegistry:
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
+        tags: list = None,
         override: bool = False,
     ):
         """Register a tool.  Called at module-import time by each tool file.
@@ -287,6 +290,10 @@ class ToolRegistry:
                         name, toolset, existing.toolset,
                     )
                     return
+            # Automatically include toolset name as a tag for easy discovery
+            tool_tags = list(tags or [])
+            if toolset not in tool_tags:
+                tool_tags.append(toolset)
             self._tools[name] = ToolEntry(
                 name=name,
                 toolset=toolset,
@@ -299,6 +306,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                tags=tool_tags,
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
@@ -455,6 +463,25 @@ class ToolRegistry:
     def get_tool_to_toolset_map(self) -> Dict[str, str]:
         """Return ``{tool_name: toolset_name}`` for every registered tool."""
         return {entry.name: entry.toolset for entry in self._snapshot_entries()}
+
+    def get_all_tags(self) -> List[str]:
+        """Return sorted list of all unique tags across registered tools."""
+        tags: Set[str] = set()
+        for entry in self._snapshot_entries():
+            tags.update(entry.tags or [])
+        return sorted(tags)
+
+    def find_tools_by_tags(self, tags: List[str]) -> List[ToolEntry]:
+        """Return list of tools that have any of the given tags.
+        
+        Uses OR semantics: a tool is included if it has at least one of the
+        requested tags.
+        """
+        tags_set = set(tags) if tags else set()
+        return [
+            entry for entry in self._snapshot_entries()
+            if entry.tags and any(tag in entry.tags for tag in tags_set)
+        ]
 
     def is_toolset_available(self, toolset: str) -> bool:
         """Check if a toolset's requirements are met.

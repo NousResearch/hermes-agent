@@ -177,6 +177,11 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         main_prov = (_read_main_provider() or "").strip().lower()
         if main_prov and main_prov not in {"auto", "main", ""}:
             normalized = main_prov
+            if normalized.startswith("custom:"):
+                suffix = normalized.split(":", 1)[1].strip()
+                if not suffix:
+                    return "custom"
+                normalized = suffix
         else:
             return "custom"
     return _PROVIDER_ALIASES.get(normalized, normalized)

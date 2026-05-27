@@ -32,7 +32,7 @@ class TestNormalizeVisionProvider:
             "custom_providers": [{"name": "beans", "base_url": "http://localhost/v1"}],
         })
         from agent.auxiliary_client import _normalize_vision_provider
-        assert _normalize_vision_provider("main") == "custom:beans"
+        assert _normalize_vision_provider("main") == "beans"
 
     def test_main_resolves_to_openrouter(self, tmp_path):
         _write_config(tmp_path, {

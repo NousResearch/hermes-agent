@@ -33,11 +33,20 @@ source "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.s
 | Create PR | POST | `/repos/{owner}/{repo}/pulls` |
 | Get PR | GET | `/repos/{owner}/{repo}/pulls/{number}` |
 | Update PR | PATCH | `/repos/{owner}/{repo}/pulls/{number}` |
+| Update PR branch | PUT | `/repos/{owner}/{repo}/pulls/{number}/update-branch` |
 | List PR files | GET | `/repos/{owner}/{repo}/pulls/{number}/files` |
 | Merge PR | PUT | `/repos/{owner}/{repo}/pulls/{number}/merge` |
 | Request reviewers | POST | `/repos/{owner}/{repo}/pulls/{number}/requested_reviewers` |
 | Create review | POST | `/repos/{owner}/{repo}/pulls/{number}/reviews` |
 | Inline comment | POST | `/repos/{owner}/{repo}/pulls/{number}/comments` |
+
+### Update PR Branch Body
+
+```json
+{"expected_head_sha": "<current_head_sha>"}
+```
+
+Use this when GitHub reports `mergeable_state == "behind"` and the stale branch only needs a safe base refresh.
 
 ### PR Merge Body
 

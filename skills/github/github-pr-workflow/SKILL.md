@@ -327,7 +327,105 @@ curl -s -X POST \
   -d "{\"query\": \"mutation { enablePullRequestAutoMerge(input: {pullRequestId: \\\"$PR_NODE_ID\\\", mergeMethod: SQUASH}) { clientMutationId } }\"}"
 ```
 
-## 7. Complete Workflow Example
+## 7. Stale Dependabot PR Hygiene
+
+Long-open Dependabot PRs are maintenance debt. Do not treat them like the same queue as feature PRs, and do not poll only "new PRs in the last few hours" if you want the backlog to stay healthy.
+
+### Audit the backlog first
+
+Use the shipped helper to classify open Dependabot PRs by age, idle time, mergeability, required-check state, and duplicate or superseded dependency updates:
+
+```bash
+source "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
+
+python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-pr-workflow/scripts/dependabot_pr_hygiene.py" \
+  --repo "$GH_OWNER/$GH_REPO" \
+  --stale-days 7
+```
+
+The helper emits JSON with one record per open Dependabot PR. Important fields:
+
+- `is_stale` — true when the PR is old enough, idle long enough, or already labeled stale
+- `outdated_base_branch` — true when GitHub reports the head branch is behind the base branch
+- `checks.summary` — `success`, `pending`, `failure`, or `none`
+- `superseded_by` — newer open Dependabot PR for the same dependency
+- `recommendation` — next safe action for this PR
+
+### Recommendation meanings
+
+- `ready_to_merge` — clean, green, and not blocked by stale branch state
+- `update_branch` — stale and behind base; refresh the branch before re-evaluating checks
+- `close_superseded` — older duplicate update for the same dependency; close it in favor of the newer PR
+- `recreate_or_manual_rebase` — merge conflict on an old PR; `update-branch` is not enough, so recreate or resolve manually
+- `manual_review` / `manual_conflict_review` / `wait_for_checks` — do not automate further without a human or a higher-level policy
+
+### Safe batch update flow
+
+The helper is dry-run by default. To refresh stale Dependabot PRs whose only blocker is an outdated base branch, opt in explicitly and cap the batch:
+
+```bash
+python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-pr-workflow/scripts/dependabot_pr_hygiene.py" \
+  --repo "$GH_OWNER/$GH_REPO" \
+  --stale-days 7 \
+  --update-branch \
+  --max-updates 3
+```
+
+Safety rules:
+
+1. Default to audit-only. Do not mutate PRs on the first pass.
+2. Only auto-update stale PRs that are merely `behind` the base branch.
+3. Never bulk-close unrelated PRs. `close_superseded` is only for older PRs targeting the same dependency while a newer one is already open.
+4. If the recommendation is `recreate_or_manual_rebase`, stop automating and decide whether to close/recreate or resolve conflicts manually.
+
+### Autonomous no-agent cron loop
+
+If you want Hermes to fix the easy stale-PR sludge by itself, use a script-only cron job instead of a prompt-driven review loop. The safe autonomous shape is:
+
+1. Close older superseded Dependabot PRs.
+2. Refresh a small capped batch of stale PRs whose only blocker is `mergeable_state == "behind"`.
+3. Stay silent when everything is healthy.
+4. Only emit output when actions were taken or manual backlog remains.
+
+Example wrapper for `~/.hermes/scripts/dependabot-hygiene-hermes-agent.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 /home/flip/hermes-agent/skills/github/github-pr-workflow/scripts/dependabot_pr_hygiene.py \
+  --repo NousResearch/hermes-agent \
+  --stale-days 7 \
+  --autofix \
+  --max-updates 3 \
+  --max-closes 10 \
+  --watchdog
+```
+
+Then schedule it with no LLM involvement:
+
+```bash
+hermes cron create "every 12h" \
+  --no-agent \
+  --script dependabot-hygiene-hermes-agent.sh \
+  --name "dependabot-hygiene-hermes-agent"
+```
+
+Because `--watchdog` prints nothing when the backlog is healthy, this behaves like a real maintenance watchdog instead of noisy periodic spam.
+
+### Batch triage order for old Dependabot stacks
+
+When multiple stale Dependabot PRs pile up, process them in this order:
+
+1. `close_superseded`
+2. `update_branch`
+3. `ready_to_merge`
+4. `recreate_or_manual_rebase`
+5. Everything else
+
+That order keeps duplicate noise down first, then refreshes stale-but-fixable branches, then surfaces the easy merges.
+
+## 8. Complete Workflow Example
 
 ```bash
 # 1. Start from clean main

@@ -181,6 +181,8 @@ def _strip_mdv2(text: str) -> str:
     """
     # Remove escape backslashes before special characters
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
+    # Remove raw **bold** markers (unconverted standard markdown)
+    cleaned = re.sub(r'\*\*(.+?)\*\*', r'\1', cleaned)
     # Remove MarkdownV2 bold markers that format_message converted from **bold**
     cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
     # Remove MarkdownV2 italic markers that format_message converted from *italic*
@@ -2144,6 +2146,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=True, message_id=message_id)
 
+            formatted = None
             formatted = self.format_message(content)
             try:
                 await self._bot.edit_message_text(
@@ -2156,11 +2159,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
-                # Fallback: retry without markdown formatting
+                # Fallback: strip markdown formatting and retry as plain text
+                if "parse" in str(fmt_err).lower() or "markdown" in str(fmt_err).lower():
+                    logger.warning("[%s] MarkdownV2 parse failed in edit_message, falling back to plain text: %s", self.name, fmt_err)
+                plain_content = _strip_mdv2(content)
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
-                    text=content,
+                    text=plain_content,
+                    parse_mode=None,
                 )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -2193,10 +2200,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"flood_control:{wait}")
                 await asyncio.sleep(wait)
                 try:
+                    # Prefer the already-formatted MarkdownV2 text; fall back
+                    # to plain-text stripping if formatting was never reached.
+                    retry_text = formatted if formatted is not None else _strip_mdv2(content)
+                    retry_parse = ParseMode.MARKDOWN_V2 if formatted is not None else None
                     await self._bot.edit_message_text(
                         chat_id=int(chat_id),
                         message_id=int(message_id),
-                        text=content,
+                        text=retry_text,
+                        parse_mode=retry_parse,
                     )
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:

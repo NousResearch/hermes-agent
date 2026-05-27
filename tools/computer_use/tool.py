@@ -255,7 +255,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         })
 
     try:
-        return _dispatch(backend, action, args)
+        return _dispatch(backend, action, args, **kwargs)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
@@ -313,7 +313,7 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
     return action
 
 
-def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
+def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], **kwargs) -> Any:
     capture_after = bool(args.get("capture_after"))
 
     if action == "capture":
@@ -321,7 +321,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
         cap = backend.capture(mode=mode, app=args.get("app"))
-        return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
+        return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")), **kwargs)
 
     if action == "wait":
         seconds = float(args.get("seconds", 1.0))
@@ -337,7 +337,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, **kwargs)
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
@@ -358,7 +358,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=x, y=y, button=button or "left", click_count=click_count,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, **kwargs)
 
     if action == "drag":
         has_elements = args.get("from_element") is not None and args.get("to_element") is not None
@@ -375,7 +375,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, **kwargs)
 
     if action == "scroll":
         coord = args.get("coordinate") or (None, None)
@@ -387,22 +387,22 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             y=coord[1] if coord and coord[1] is not None else None,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, **kwargs)
 
     if action == "type":
         res = backend.type_text(args.get("text", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, **kwargs)
 
     if action == "key":
         res = backend.key(args.get("keys", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, **kwargs)
 
     if action == "set_value":
         value = args.get("value")
         if value is None:
             return json.dumps({"error": "set_value requires `value`"})
         res = backend.set_value(value=str(value), element=args.get("element"))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, **kwargs)
 
     return json.dumps({"error": f"unknown action {action!r}"})
 
@@ -453,7 +453,7 @@ def _coerce_max_elements(value: Any) -> int:
     return n
 
 
-def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
+def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS, **kwargs) -> Any:
     total_elements = len(cap.elements)
     visible_elements = cap.elements[:max_elements]
     truncated_elements = max(0, total_elements - len(visible_elements))
@@ -485,14 +485,24 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         # multimodal envelope was returned unconditionally, so non-vision
         # main models tripped HTTP 404 / 400 at the provider boundary even
         # when auxiliary.vision was explicitly configured to handle this.
-        if _should_route_through_aux_vision():
+        if _should_route_through_aux_vision(**kwargs):
             routed = _route_capture_through_aux_vision(cap, summary)
             if routed is not None:
                 return routed
-            # Aux routing was requested but failed (no vision client, aux
-            # call raised, etc.). Fall through to the multimodal envelope —
-            # better to surface a tool-result error from the main model
-            # than to silently drop the screenshot entirely.
+            # Aux routing was required but failed (no vision client, aux call
+            # raised, etc.). Don't fall through to the multimodal envelope —
+            # that would trip a hard tool-result error on a non-vision main
+            # model. Return a text-only summary instead.
+            return json.dumps({
+                "mode": cap.mode,
+                "width": cap.width,
+                "height": cap.height,
+                "app": cap.app,
+                "window_title": cap.window_title,
+                "elements": [_element_to_dict(e) for e in cap.elements],
+                "summary": summary,
+                "note": "auxiliary vision unavailable — text summary only",
+            })
 
         # Detect actual image format from base64 magic bytes so the MIME type
         # matches what the data contains (cua-driver may return JPEG or PNG).
@@ -540,36 +550,46 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
 # auxiliary.vision routing for captured screenshots (#24015)
 # ---------------------------------------------------------------------------
 
-def _should_route_through_aux_vision() -> bool:
+def _should_route_through_aux_vision(**kwargs) -> bool:
     """Return True when ``_capture_response`` should hand the PNG to aux vision.
 
-    Reads the active main provider/model and the loaded config and asks the
-    routing helper. Any failure (config import, runtime override missing,
-    etc.) returns False so the existing multimodal envelope continues to be
-    returned — fail open on the routing decision so a broken config can
-    never silently drop the screenshot for vision-capable main models.
+    Reads the active main provider/model (from kwargs, then config) and asks
+    the routing helper. Any failure defaults to ``True`` — routing through
+    auxiliary vision costs one extra LLM call but always yields a usable
+    text description. Returning a raw screenshot to a non-vision main model
+    produces a hard tool-result error, so ``True`` is the safer default.
     """
+    provider = (kwargs.get("provider") or "").strip().lower()
+    model = (kwargs.get("model") or "").strip()
+
+    cfg: Optional[Dict[str, Any]] = None
     try:
-        from agent.auxiliary_client import _read_main_model, _read_main_provider
         from hermes_cli.config import load_config
-        from tools.computer_use.vision_routing import (
-            should_route_capture_to_aux_vision,
-        )
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("computer_use: aux-vision routing import failed: %s", exc)
-        return False
-    try:
-        provider = _read_main_provider()
-        model = _read_main_model()
         cfg = load_config()
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: aux-vision routing config read failed: %s", exc)
-        return False
+
+    if (not provider or not model) and isinstance(cfg, dict):
+        model_cfg = cfg.get("model", {}) or {}
+        if not provider:
+            provider = str(model_cfg.get("provider") or "").strip().lower()
+        if not model:
+            model = str(model_cfg.get("model") or model_cfg.get("default") or "").strip()
+
+    if not provider or not model:
+        # Can't determine model capabilities — fail safe (route through aux)
+        # so we never send a multimodal envelope to an unknown / non-vision
+        # main model.
+        return True
+
     try:
+        from tools.computer_use.vision_routing import (
+            should_route_capture_to_aux_vision,
+        )
         return bool(should_route_capture_to_aux_vision(provider, model, cfg))
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: aux-vision routing decision failed: %s", exc)
-        return False
+        return True
 
 
 def _route_capture_through_aux_vision(
@@ -672,6 +692,7 @@ def _route_capture_through_aux_vision(
 
 def _maybe_follow_capture(
     backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+    **kwargs,
 ) -> Any:
     if not do_capture:
         return _text_response(res)
@@ -690,7 +711,7 @@ def _maybe_follow_capture(
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
     # Combine action summary with the capture.
-    resp = _capture_response(cap)
+    resp = _capture_response(cap, **kwargs)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         prefix = f"[{res.action}] ok={res.ok}" + (f" — {res.message}" if res.message else "")
         resp["content"][0]["text"] = prefix + "\n\n" + resp["content"][0]["text"]

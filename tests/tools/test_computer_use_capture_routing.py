@@ -267,10 +267,14 @@ class TestCaptureResponseRoutedToAuxVision:
                    new_callable=lambda: fake_vat):
             resp = cu_tool._capture_response(cap)
 
-        # Aux failure → fall back to multimodal envelope (so the user still
-        # gets *something* useful even if vision is broken).
-        assert isinstance(resp, dict)
-        assert resp.get("_multimodal") is True
+        # Aux failure → fall back to text-only summary (so the user still
+        # gets *something* useful even if vision is broken, without tripping
+        # a hard tool-result error on a non-vision main model).
+        assert isinstance(resp, str)
+        body = json.loads(resp)
+        assert body["mode"] == "som"
+        assert "summary" in body
+        assert body.get("note", "").startswith("auxiliary vision unavailable")
         # Temp file must still be cleaned up.
         assert observed_path["path"]
         assert not os.path.exists(observed_path["path"])
@@ -292,10 +296,13 @@ class TestCaptureResponseRoutedToAuxVision:
                    new_callable=lambda: fake_vat):
             resp = cu_tool._capture_response(cap)
 
-        # Empty analysis is treated as failure — we'd rather show pixels
-        # than embed an empty 'vision_analysis' string into the result.
-        assert isinstance(resp, dict)
-        assert resp.get("_multimodal") is True
+        # Empty analysis is treated as failure — text-only summary so the
+        # agent still gets context without an image_url envelope.
+        assert isinstance(resp, str)
+        body = json.loads(resp)
+        assert body["mode"] == "som"
+        assert "summary" in body
+        assert body.get("note", "").startswith("auxiliary vision unavailable")
 
     def test_invalid_aux_response_falls_back_to_multimodal(self, tmp_cache_dir):
         from tools.computer_use import tool as cu_tool
@@ -314,8 +321,12 @@ class TestCaptureResponseRoutedToAuxVision:
                    new_callable=lambda: fake_vat):
             resp = cu_tool._capture_response(cap)
 
-        assert isinstance(resp, dict)
-        assert resp.get("_multimodal") is True
+        # Invalid aux response → text-only summary fallback.
+        assert isinstance(resp, str)
+        body = json.loads(resp)
+        assert body["mode"] == "som"
+        assert "summary" in body
+        assert body.get("note", "").startswith("auxiliary vision unavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -337,12 +348,10 @@ class TestRoutingDecisionWiring:
                 }
             },
         }
-        with patch("agent.auxiliary_client._read_main_provider",
-                   return_value="openrouter"), \
-             patch("agent.auxiliary_client._read_main_model",
-                   return_value="tencent/hy3-preview"), \
-             patch("hermes_cli.config.load_config", return_value=cfg):
-            assert cu_tool._should_route_through_aux_vision() is True
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert cu_tool._should_route_through_aux_vision(
+                provider="openrouter", model="tencent/hy3-preview"
+            ) is True
 
     def test_no_explicit_aux_and_vision_capable_main_keeps_multimodal(self):
         from tools.computer_use import tool as cu_tool
@@ -350,39 +359,35 @@ class TestRoutingDecisionWiring:
         cfg = {
             "model": {"default": "claude-opus-4-5", "provider": "anthropic"},
         }
-        with patch("agent.auxiliary_client._read_main_provider",
-                   return_value="anthropic"), \
-             patch("agent.auxiliary_client._read_main_model",
-                   return_value="claude-opus-4-5"), \
-             patch("hermes_cli.config.load_config", return_value=cfg), \
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
              patch("tools.computer_use.vision_routing._lookup_supports_vision",
                    return_value=True), \
              patch("tools.computer_use.vision_routing."
                    "_provider_accepts_multimodal_tool_result",
                    return_value=True):
-            assert cu_tool._should_route_through_aux_vision() is False
+            assert cu_tool._should_route_through_aux_vision(
+                provider="anthropic", model="claude-opus-4-5"
+            ) is False
 
-    def test_config_load_failure_disables_routing_safely(self):
+    def test_config_load_failure_defaults_to_safe_routing(self):
         from tools.computer_use import tool as cu_tool
 
         with patch("hermes_cli.config.load_config",
                    side_effect=RuntimeError("config.yaml unreadable")):
-            # No exception should bubble up — fail open by returning False
-            # so the legacy multimodal envelope continues to work.
-            assert cu_tool._should_route_through_aux_vision() is False
+            # No exception should bubble up — fail safe by returning True
+            # so we avoid sending image_url envelopes to unknown models.
+            assert cu_tool._should_route_through_aux_vision() is True
 
     def test_helper_decision_exception_is_swallowed(self):
         from tools.computer_use import tool as cu_tool
         from tools.computer_use import vision_routing as vr_mod
 
-        with patch("agent.auxiliary_client._read_main_provider",
-                   return_value="openrouter"), \
-             patch("agent.auxiliary_client._read_main_model",
-                   return_value="x"), \
-             patch("hermes_cli.config.load_config", return_value={}), \
+        with patch("hermes_cli.config.load_config", return_value={}), \
              patch.object(vr_mod, "should_route_capture_to_aux_vision",
                           side_effect=ValueError("policy bug")):
-            assert cu_tool._should_route_through_aux_vision() is False
+            assert cu_tool._should_route_through_aux_vision(
+                provider="openrouter", model="x"
+            ) is True
 
 
 # ---------------------------------------------------------------------------

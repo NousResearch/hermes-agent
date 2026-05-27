@@ -2256,6 +2256,8 @@ class TestConcurrentToolExecution:
                 session_id=agent.session_id,
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
+                provider=agent.provider,
+                model=agent.model,
             )
             assert result == "result"
 

@@ -143,7 +143,15 @@ def _get_backend() -> ComputerUseBackend:
                 _backend = _NoopBackend()
             else:
                 raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-            _backend.start()
+            try:
+                _backend.start()
+            except Exception:
+                # Don't cache a backend whose start() failed (e.g. a lazy
+                # dependency install was declined / failed). The next call
+                # retries cleanly instead of returning a half-initialised
+                # backend.
+                _backend = None
+                raise
         return _backend
 
 
@@ -256,7 +264,8 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     except Exception as e:
         return json.dumps({
             "error": f"computer_use backend unavailable: {e}",
-            "hint": "Run `hermes tools` and enable Computer Use to install cua-driver.",
+            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
+                    "If a Python dependency is missing, the error above shows the exact install command.",
         })
 
     try:

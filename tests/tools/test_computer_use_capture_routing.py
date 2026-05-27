@@ -204,7 +204,7 @@ class TestCaptureResponseRoutedToAuxVision:
         args, _kwargs = fake_vat.call_args
         path_arg, prompt_arg = args[0], args[1]
         assert str(tmp_cache_dir) in path_arg
-        assert "macOS application screenshot" in prompt_arg
+        assert "desktop application screenshot" in prompt_arg
         # AX summary is included so the aux model can ground its description
         # against the same set-of-mark index the agent will see.
         assert "Sign in" in prompt_arg

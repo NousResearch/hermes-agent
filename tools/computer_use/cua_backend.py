@@ -28,8 +28,7 @@ The macOS path uses private SkyLight SPIs (SLEventPostToPid,
 SLPSPostEventRecordTo, _AXObserverAddNotificationAndCheckRemote) that aren't
 Apple-public and can break on OS updates. The Windows path in cua-driver-rs
 uses stable Win32 APIs (SendInput + UI Automation) — not subject to the
-same SPI breakage class. Pin the installed version via
-HERMES_CUA_DRIVER_VERSION if you want reproducibility across an OS bump.
+same SPI breakage class.
 """
 
 from __future__ import annotations
@@ -56,10 +55,28 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Version pinning
+# Version compatibility
 # ---------------------------------------------------------------------------
-
-PINNED_CUA_DRIVER_VERSION = os.environ.get("HERMES_CUA_DRIVER_VERSION", "0.5.0")
+#
+# cua-driver ships as two independently-versioned products: the macOS Swift
+# build (~0.5.x) and the cross-platform Rust build, cua-driver-rs (~0.2.x),
+# used on Windows / Linux. Their version lines do NOT track each other, so the
+# minimum-supported version is per-OS.
+#
+# This is a SOFT floor: Hermes warns — it does not refuse to run — when the
+# installed binary is older than the version it was tested against. Newer is
+# always fine; local dev builds (0.0.0-local-*) are exempt. Bump these as
+# newer drivers are verified.
+#
+# There is intentionally no version *pin* knob: the upstream installer always
+# fetches the latest release, so a `HERMES_CUA_DRIVER_VERSION` env var would
+# only have *looked* like it pinned without doing so. For a reproducible
+# version, point `HERMES_CUA_DRIVER_CMD` at a specific binary instead.
+MIN_CUA_DRIVER_VERSION = {
+    "darwin": "0.5.0",   # macOS Swift build
+    "win32": "0.2.16",   # cua-driver-rs
+    "linux": "0.2.16",   # cua-driver-rs (alpha)
+}
 
 _CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
 _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport
@@ -98,6 +115,63 @@ def _is_macos() -> bool:
 def cua_driver_binary_available() -> bool:
     """True if `cua-driver` is on $PATH or HERMES_CUA_DRIVER_CMD resolves."""
     return bool(shutil.which(_CUA_DRIVER_CMD))
+
+
+def installed_cua_driver_version() -> Optional[str]:
+    """Return the installed cua-driver version (e.g. "0.2.18"), or None if it
+    can't be determined. Best-effort; never raises."""
+    try:
+        out = subprocess.run(
+            [_CUA_DRIVER_CMD, "--version"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except Exception:
+        return None
+    # Output looks like "cua-driver 0.2.18"; pull the first semver token.
+    m = re.search(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?", out)
+    return m.group(0) if m else None
+
+
+def cua_driver_version_warning() -> Optional[str]:
+    """Return a warning string if the installed cua-driver is older than the
+    per-OS minimum Hermes is tested against; otherwise None.
+
+    Soft check — stays quiet (returns None) when the platform has no declared
+    floor, the version can't be parsed, or it's a local dev build.
+    """
+    floor = MIN_CUA_DRIVER_VERSION.get(sys.platform)
+    if not floor:
+        return None
+    installed = installed_cua_driver_version()
+    if not installed:
+        return None
+    if installed.startswith("0.0.0") or "local" in installed:
+        return None  # local/dev build — intentionally exempt
+    try:
+        from packaging.version import Version
+        if Version(installed) >= Version(floor):
+            return None
+    except Exception:
+        return None  # unparseable → don't cry wolf
+    return (
+        f"cua-driver {installed} is older than {floor}, the minimum Hermes is "
+        f"tested against on this platform — some computer_use actions may "
+        f"misbehave. Update with `hermes computer-use install --upgrade`."
+    )
+
+
+_version_warned = False
+
+
+def _warn_if_cua_driver_outdated() -> None:
+    """Emit the version-compatibility warning at most once per process."""
+    global _version_warned
+    if _version_warned:
+        return
+    _version_warned = True
+    msg = cua_driver_version_warning()
+    if msg:
+        logger.warning("computer_use: %s", msg)
 
 
 def cua_driver_install_hint() -> str:
@@ -435,6 +509,21 @@ class CuaDriverBackend(ComputerUseBackend):
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
+        _warn_if_cua_driver_outdated()
+        # The MCP client SDK (`mcp`) is an optional dependency (the
+        # `computer-use` / `mcp` extras), not part of Hermes' minimal core.
+        # Lazy-install it on first use — the same pattern every other optional
+        # backend uses — so users never hit an opaque `No module named 'mcp'`
+        # at invoke time. Auto-install is gated by `security.allow_lazy_installs`
+        # (default on); when it's disabled or fails, ensure() raises
+        # FeatureUnavailable carrying an actionable `uv pip install mcp==…`
+        # hint, which surfaces via the backend-unavailable path in tool.py.
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tool.computer_use", prompt=False)
+        # A just-installed package may not be importable until the import
+        # machinery's caches are refreshed within this process.
+        import importlib
+        importlib.invalidate_caches()
         self._session.start()
 
     def stop(self) -> None:

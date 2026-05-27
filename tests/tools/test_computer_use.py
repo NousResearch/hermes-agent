@@ -109,12 +109,30 @@ class TestRegistration:
         assert entry.toolset == "computer_use"
         assert entry.schema["name"] == "computer_use"
 
-    def test_check_fn_is_false_on_linux(self):
-        import tools.computer_use_tool  # noqa: F401
-        from tools.registry import registry
-        entry = registry._tools["computer_use"]
-        if sys.platform != "darwin":
-            assert entry.check_fn() is False
+    def test_check_fn_false_on_linux(self):
+        # Linux is gated off (cua-driver-rs Linux is alpha), regardless of
+        # whether a cua-driver binary happens to be on PATH.
+        from tools.computer_use import tool as cu_tool
+        with patch("tools.computer_use.tool.sys.platform", "linux"):
+            assert cu_tool.check_computer_use_requirements() is False
+
+    def test_check_fn_false_on_unsupported_platform(self):
+        from tools.computer_use import tool as cu_tool
+        with patch("tools.computer_use.tool.sys.platform", "freebsd13"):
+            assert cu_tool.check_computer_use_requirements() is False
+
+    def test_check_fn_true_on_windows_when_binary_present(self):
+        # Windows is supported; gated only on the cua-driver binary resolving.
+        from tools.computer_use import tool as cu_tool
+        with patch("tools.computer_use.tool.sys.platform", "win32"), \
+             patch("tools.computer_use.cua_backend.cua_driver_binary_available", return_value=True):
+            assert cu_tool.check_computer_use_requirements() is True
+
+    def test_check_fn_false_on_windows_without_binary(self):
+        from tools.computer_use import tool as cu_tool
+        with patch("tools.computer_use.tool.sys.platform", "win32"), \
+             patch("tools.computer_use.cua_backend.cua_driver_binary_available", return_value=False):
+            assert cu_tool.check_computer_use_requirements() is False
 
 
 # ---------------------------------------------------------------------------
@@ -1107,6 +1125,105 @@ class TestElementLabelParsing:
         assert labels[1] == "Main Window"
         assert labels[14] == "One"
         assert labels[15] == "Search"
+
+
+class TestVersionWarning:
+    """cua_driver_version_warning(): soft, per-OS minimum-version check.
+
+    macOS (Swift build) and the cross-platform Rust build version
+    independently, so the floor is keyed by platform. Older → warn; equal /
+    newer / local-dev / unknown-platform / undeterminable → stay quiet.
+    """
+
+    def test_older_than_floor_warns(self):
+        from tools.computer_use import cua_backend
+        with patch.object(cua_backend, "installed_cua_driver_version", return_value="0.2.10"), \
+             patch("tools.computer_use.cua_backend.sys.platform", "win32"):
+            msg = cua_backend.cua_driver_version_warning()
+        assert msg is not None
+        assert "0.2.10" in msg and "0.2.16" in msg  # installed + floor
+
+    def test_equal_to_floor_is_quiet(self):
+        from tools.computer_use import cua_backend
+        with patch.object(cua_backend, "installed_cua_driver_version", return_value="0.2.16"), \
+             patch("tools.computer_use.cua_backend.sys.platform", "win32"):
+            assert cua_backend.cua_driver_version_warning() is None
+
+    def test_newer_than_floor_is_quiet(self):
+        from tools.computer_use import cua_backend
+        with patch.object(cua_backend, "installed_cua_driver_version", return_value="0.2.18"), \
+             patch("tools.computer_use.cua_backend.sys.platform", "win32"):
+            assert cua_backend.cua_driver_version_warning() is None
+
+    def test_local_build_exempt(self):
+        from tools.computer_use import cua_backend
+        with patch.object(cua_backend, "installed_cua_driver_version", return_value="0.0.0-local-release"), \
+             patch("tools.computer_use.cua_backend.sys.platform", "win32"):
+            assert cua_backend.cua_driver_version_warning() is None
+
+    def test_macos_floor_independent_of_rust_build(self):
+        # darwin floor is 0.5.0; a fresh 0.5.x macOS build must not warn even
+        # though it would be "newer" than the 0.2.x Rust floor.
+        from tools.computer_use import cua_backend
+        with patch.object(cua_backend, "installed_cua_driver_version", return_value="0.5.1"), \
+             patch("tools.computer_use.cua_backend.sys.platform", "darwin"):
+            assert cua_backend.cua_driver_version_warning() is None
+
+    def test_unknown_platform_is_quiet(self):
+        from tools.computer_use import cua_backend
+        with patch.object(cua_backend, "installed_cua_driver_version", return_value="0.0.1"), \
+             patch("tools.computer_use.cua_backend.sys.platform", "freebsd13"):
+            assert cua_backend.cua_driver_version_warning() is None
+
+    def test_undeterminable_version_is_quiet(self):
+        from tools.computer_use import cua_backend
+        with patch.object(cua_backend, "installed_cua_driver_version", return_value=None), \
+             patch("tools.computer_use.cua_backend.sys.platform", "win32"):
+            assert cua_backend.cua_driver_version_warning() is None
+
+    def test_installed_version_parses_cli_output(self):
+        from tools.computer_use import cua_backend
+        fake = MagicMock()
+        fake.stdout = "cua-driver 0.2.18\n"
+        with patch("tools.computer_use.cua_backend.subprocess.run", return_value=fake):
+            assert cua_backend.installed_cua_driver_version() == "0.2.18"
+
+
+class TestLazyMcpInstall:
+    """`mcp` is an optional extra; the backend lazy-installs it on start().
+
+    Keeps computer_use from dead-ending on `No module named 'mcp'` for lean /
+    partial installs, matching how every other optional backend behaves.
+    """
+
+    def test_feature_registered_in_allowlist(self):
+        from tools import lazy_deps
+        assert lazy_deps.feature_specs("tool.computer_use") == ("mcp==1.26.0",)
+
+    def test_start_lazy_installs_mcp(self):
+        from tools.computer_use import cua_backend
+        with patch.object(cua_backend, "_warn_if_cua_driver_outdated"), \
+             patch("tools.lazy_deps.ensure") as mock_ensure, \
+             patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
+            cua_backend.CuaDriverBackend().start()
+        mock_ensure.assert_called_once_with("tool.computer_use", prompt=False)
+        mock_sess_start.assert_called_once()
+
+    def test_start_propagates_feature_unavailable(self):
+        """When mcp can't be installed (lazy installs off / network), start()
+        surfaces the actionable FeatureUnavailable rather than a session that
+        crashes later on a bare import."""
+        from tools.computer_use import cua_backend
+        from tools.lazy_deps import FeatureUnavailable
+        unavailable = FeatureUnavailable(
+            "tool.computer_use", ("mcp==1.26.0",), "lazy installs disabled"
+        )
+        with patch.object(cua_backend, "_warn_if_cua_driver_outdated"), \
+             patch("tools.lazy_deps.ensure", side_effect=unavailable), \
+             patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
+            with pytest.raises(FeatureUnavailable):
+                cua_backend.CuaDriverBackend().start()
+        mock_sess_start.assert_not_called()  # never reaches the MCP session
 
 
 class TestCaptureAfterAppContext:

@@ -153,8 +153,10 @@ of screenshot context, not ~600K.
   Linux or Windows. For cross-platform GUI automation, use the `browser`
   toolset.
 - **Private SPI risk.** Apple can change SkyLight's symbol surface in any
-  OS update. Pin the driver version with the `HERMES_CUA_DRIVER_VERSION`
-  env var if you want reproducibility across a macOS bump.
+  OS update. Hermes always installs the latest cua-driver and warns when the
+  installed binary is older than the version it was tested against (the floor
+  is per-OS). There is no version-pin knob — for a reproducible version, point
+  `HERMES_CUA_DRIVER_CMD` at a specific binary.
 - **Performance.** Background mode is slower than foreground —
   SkyLight-routed events take ~5-20ms vs direct HID posting. Not
   noticeable for agent-speed clicking; noticeable if you try to record a
@@ -168,7 +170,6 @@ Override the driver binary path (tests / CI):
 
 ```
 HERMES_CUA_DRIVER_CMD=/opt/homebrew/bin/cua-driver
-HERMES_CUA_DRIVER_VERSION=0.5.0    # optional pin
 ```
 
 Swap the backend entirely (for testing):
@@ -176,6 +177,87 @@ Swap the backend entirely (for testing):
 ```
 HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
 ```
+
+## Testing against a local cua-driver build
+
+When you're developing cua-driver itself — or want to test an unreleased
+fix — point Hermes at a binary you built from source instead of the
+published release. Hermes resolves the driver with `shutil.which("cua-driver")`
+and **does not enforce `HERMES_CUA_DRIVER_VERSION`**, so a local build
+(reported as `0.0.0-local-*`) is accepted as-is. Two approaches:
+
+### Option A — `install-local` (build + put it on PATH)
+
+From your `trycua/cua` checkout, run the upstream local installer. It builds
+the Rust backend in release mode and drops `cua-driver` into the same install
+layout the production installer uses, adding its bin dir to your PATH:
+
+```powershell
+# Windows (PowerShell), from the cua repo root
+./libs/cua-driver/scripts/install-local.ps1 -NoAutoStart
+```
+
+```bash
+# macOS / Linux, from the cua repo root  (defaults to a debug build without --release)
+./libs/cua-driver/scripts/install-local.sh --release
+```
+
+- Windows stages the build under `%USERPROFILE%\.cua-driver\packages\…` and
+  junctions `%LOCALAPPDATA%\Programs\Cua\cua-driver\bin` (added to your User
+  PATH) to it. macOS/Linux symlinks `cua-driver` into `~/.local/bin`
+  (override with `--bin-dir <path>`).
+- `-NoAutoStart` skips registering the `cua-driver-serve` logon daemon — you
+  don't need it for Hermes testing (see notes).
+
+Then open a fresh shell (so the PATH change is visible) and confirm:
+
+```
+cua-driver --version                 # local builds report 0.0.0-local-release
+# Windows:      (Get-Command cua-driver).Source
+# macOS/Linux:  which cua-driver
+```
+
+### Option B — point Hermes straight at the built binary (fastest loop)
+
+Skip the install ceremony entirely: `cargo build` and set `HERMES_CUA_DRIVER_CMD`
+to the resulting binary. Best for rapid edit/build/test.
+
+```bash
+cargo build -p cua-driver            # add --release for a release build; run from libs/cua-driver/rust
+```
+
+```
+# Windows (.env)
+HERMES_CUA_DRIVER_CMD=C:\path\to\cua\libs\cua-driver\rust\target\debug\cua-driver.exe
+# macOS / Linux (.env)
+HERMES_CUA_DRIVER_CMD=/path/to/cua/libs/cua-driver/rust/target/debug/cua-driver
+```
+
+### Confirm Hermes is using your build
+
+- `hermes computer-use status` prints the resolved binary path and version.
+- In a session, `computer_use(action="capture")` exercises the spawned
+  `cua-driver mcp` child process.
+
+### Notes & gotchas
+
+- **Hermes spawns its own `cua-driver mcp` child over stdio** — it does *not*
+  attach to the long-running `cua-driver serve` autostart daemon or its named
+  pipe. So the scheduled task / LaunchAgent is unnecessary for testing
+  (`-NoAutoStart` is fine). The autostart daemon and the Windows UIAccess
+  worker (`cua-driver-uia.exe`) only matter for foreground-safe input on some
+  apps (e.g. WPF); the standard tool surface works through the stdio child.
+- **Locked binary on Windows.** A running `cua-driver-serve` daemon can hold
+  `cua-driver.exe` and block an overwrite on rebuild. `install-local.ps1`
+  renames the locked binary out of the way automatically; if you `cargo build`
+  manually (Option B), stop it first with `cua-driver autostart disable` (or
+  `schtasks /End /TN cua-driver-serve`).
+- **Rebuild loop.** After editing cua-driver source, re-run `install-local`
+  (rebuilds, restages, flips the `current` junction) for Option A, or just
+  re-`cargo build` for Option B — no Hermes change needed either way.
+- **Local builds skip the version check.** Hermes warns when the installed
+  cua-driver is older than its per-OS tested baseline, but exempts
+  `0.0.0-local-*` dev builds — so your local build never triggers that warning.
 
 ## Troubleshooting
 

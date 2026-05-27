@@ -58,12 +58,10 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("x-ai/grok-4.3",                          ""),
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
     ("deepseek/deepseek-v4-pro",               ""),
+    ("inclusionai/ring-2.6-1t",                ""),
     # Free tier
-    ("openrouter/elephant-alpha",              "free"),
     ("openrouter/owl-alpha",                   "free"),
-    ("tencent/hy3-preview:free",               "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
-    ("inclusionai/ring-2.6-1t:free",           "free"),
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
@@ -213,14 +211,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "gemini": [
         "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
         "gemini-3-flash-preview",
-        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
     ],
     "google-gemini-cli": [
         "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
         "gemini-3-flash-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
     ],
     "zai": [
         "glm-5.1",
@@ -1953,8 +1953,6 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "nvidia",
     "huggingface",
     "zai",
-    "gemini",
-    "google",
 })
 
 

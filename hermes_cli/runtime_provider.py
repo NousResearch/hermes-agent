@@ -474,6 +474,101 @@ def _try_resolve_from_custom_pool(
         return None
 
 
+def _configured_models_for_entry(entry: Dict[str, Any]) -> list[str]:
+    models: list[str] = []
+    default_model = entry.get("default_model", "") or entry.get("model", "")
+    if default_model:
+        models.append(str(default_model))
+    cfg_models = entry.get("models", [])
+    if isinstance(cfg_models, dict):
+        for model_id in cfg_models:
+            if model_id and str(model_id) not in models:
+                models.append(str(model_id))
+    elif isinstance(cfg_models, list):
+        for model_id in cfg_models:
+            if model_id and str(model_id) not in models:
+                models.append(str(model_id))
+    return models
+
+
+def _is_local_user_provider(ep_name: str, entry: Dict[str, Any]) -> bool:
+    display_name = str(entry.get("name", "") or ep_name or "").strip().lower()
+    provider_key = str(ep_name or "").strip().lower()
+    base_url = str(
+        entry.get("base_url", "")
+        or entry.get("api", "")
+        or entry.get("url", "")
+        or ""
+    ).strip().lower()
+    return (
+        provider_key.startswith("local-")
+        or display_name.startswith("local")
+        or any(host in base_url for host in ("127.0.0.1", "localhost", "[::1]", "0.0.0.0"))
+    )
+
+
+def _resolve_local_aggregate_runtime(target_model: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Resolve the synthetic `local` provider to the configured local endpoint.
+
+    The /model picker aggregates several user-configured local-* providers into
+    one row named Local. At runtime, the selected model still needs to route to
+    the loopback port configured for that model.
+    """
+    config = load_config()
+    providers = config.get("providers")
+    if not isinstance(providers, dict):
+        return None
+
+    requested_model = str(target_model or "").strip()
+    fallback: Optional[tuple[str, Dict[str, Any], list[str]]] = None
+    for ep_name, entry in providers.items():
+        if not isinstance(entry, dict) or not _is_local_user_provider(ep_name, entry):
+            continue
+        models = _configured_models_for_entry(entry)
+        if fallback is None:
+            fallback = (str(ep_name), entry, models)
+        if requested_model and requested_model not in models:
+            continue
+        base_url = str(
+            entry.get("base_url", "")
+            or entry.get("api", "")
+            or entry.get("url", "")
+            or ""
+        ).strip().rstrip("/")
+        if not base_url:
+            continue
+        api_key = str(entry.get("api_key", "") or "").strip() or "no-key-required"
+        api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport")) or _detect_api_mode_for_url(base_url) or "chat_completions"
+        result = {
+            "provider": "custom",
+            "api_mode": api_mode,
+            "base_url": base_url,
+            "api_key": api_key,
+            "source": f"local:{ep_name}",
+            "requested_provider": "local",
+        }
+        if requested_model:
+            result["model"] = requested_model
+        elif models:
+            result["model"] = models[0]
+        return result
+
+    if fallback is not None and not requested_model:
+        ep_name, entry, models = fallback
+        base_url = str(entry.get("base_url", "") or entry.get("api", "") or entry.get("url", "") or "").strip().rstrip("/")
+        if base_url:
+            return {
+                "provider": "custom",
+                "api_mode": _parse_api_mode(entry.get("api_mode") or entry.get("transport")) or _detect_api_mode_for_url(base_url) or "chat_completions",
+                "base_url": base_url,
+                "api_key": str(entry.get("api_key", "") or "").strip() or "no-key-required",
+                "source": f"local:{ep_name}",
+                "requested_provider": "local",
+                "model": models[0] if models else "",
+            }
+    return None
+
+
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "custom":
@@ -628,6 +723,7 @@ def _resolve_named_custom_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     # Bare `provider="custom"` with an explicit base_url (e.g. propagated
     # from a `model_aliases:` direct-alias resolution) — build a runtime
@@ -638,6 +734,10 @@ def _resolve_named_custom_runtime(
     # `provider: ollama` with a LAN/WireGuard `base_url` doesn't silently
     # fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
+    local_runtime = _resolve_local_aggregate_runtime(target_model) if requested_norm in {"local", "custom:local"} else None
+    if local_runtime:
+        return local_runtime
+
     if requested_norm and requested_norm != "custom":
         try:
             from hermes_cli.auth import resolve_provider as _resolve_provider
@@ -1255,6 +1355,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider

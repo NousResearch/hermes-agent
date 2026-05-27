@@ -46,6 +46,24 @@ from agent.models_dev import (
 logger = logging.getLogger(__name__)
 
 
+def _is_loopback_url(url: str) -> bool:
+    normalized = str(url or "").strip().lower()
+    return any(host in normalized for host in ("127.0.0.1", "localhost", "[::1]", "0.0.0.0"))
+
+
+def _is_local_user_provider(ep_name: str, display_name: str, api_url: str) -> bool:
+    """Return True for user-configured local model endpoints.
+
+    Trey's config runs several local OpenAI-compatible servers on different
+    loopback ports (local-mlx, local-heretic, local-hauhaucs, local-mlx-vlm).
+    The picker should show those as one provider row, "Local", while runtime
+    resolution still routes the selected model to its underlying port.
+    """
+    key = str(ep_name or "").strip().lower()
+    label = str(display_name or "").strip().lower()
+    return key.startswith("local-") or label.startswith("local") or _is_loopback_url(api_url)
+
+
 # ---------------------------------------------------------------------------
 # Non-agentic model warning
 # ---------------------------------------------------------------------------
@@ -1323,23 +1341,14 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
-        # Fallback: check external credential files directly.
-        # The credential pool gates anthropic behind
-        # is_provider_explicitly_configured() to prevent auxiliary tasks
-        # from silently consuming Claude Code tokens (PR #4210).
-        # But the /model picker is discovery-oriented — we WANT to show
-        # providers the user can switch to, even if they aren't currently
-        # configured.
+        # Fallback: check external Anthropic credentials by resolving a usable
+        # token, not merely by detecting a stale Claude Code credential file.
+        # Expired/unrefreshable OAuth records should not make /model show
+        # Anthropic as authenticated when runtime will immediately fail.
         if not has_creds and hermes_slug == "anthropic":
             try:
-                from agent.anthropic_adapter import (
-                    read_claude_code_credentials,
-                    read_hermes_oauth_credentials,
-                )
-                hermes_creds = read_hermes_oauth_credentials()
-                cc_creds = read_claude_code_credentials()
-                if (hermes_creds and hermes_creds.get("accessToken")) or \
-                   (cc_creds and cc_creds.get("accessToken")):
+                from agent.anthropic_adapter import resolve_anthropic_token
+                if resolve_anthropic_token():
                     has_creds = True
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
@@ -1466,6 +1475,14 @@ def list_authenticated_providers(
     # produces two picker rows: one bare-slug ("openrouter") from section 3
     # and one "custom:openrouter" from section 4, both labelled identically.
     _section3_emitted_pairs: set = set()
+    _local_group: dict = {
+        "slug": "local",
+        "name": "Local",
+        "models": [],
+        "routes": {},
+        "api_urls": [],
+        "is_current": str(current_provider or "").strip().lower() == "local",
+    }
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
@@ -1526,7 +1543,7 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
-            if api_url and api_key and discover:
+            if api_url and api_key and discover and not _is_local_user_provider(ep_name, display_name, api_url):
                 try:
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
@@ -1534,6 +1551,32 @@ def list_authenticated_providers(
                         models_list = live_models
                 except Exception:
                     pass
+
+            if _is_local_user_provider(ep_name, display_name, api_url):
+                for model_id in models_list:
+                    if not model_id:
+                        continue
+                    if model_id not in _local_group["models"]:
+                        _local_group["models"].append(model_id)
+                    _local_group["routes"].setdefault(model_id, ep_name)
+                if api_url and api_url not in _local_group["api_urls"]:
+                    _local_group["api_urls"].append(api_url)
+                current_base_norm = str(current_base_url or "").strip().rstrip("/").lower()
+                if (
+                    ep_name == current_provider
+                    or custom_provider_slug(display_name) == current_provider
+                    or (current_base_norm and current_base_norm == str(api_url).strip().rstrip("/").lower())
+                ):
+                    _local_group["is_current"] = True
+                seen_slugs.add(ep_name.lower())
+                seen_slugs.add(custom_provider_slug(display_name).lower())
+                _pair = (
+                    str(display_name).strip().lower(),
+                    str(api_url).strip().rstrip("/").lower(),
+                )
+                if _pair[0] and _pair[1]:
+                    _section3_emitted_pairs.add(_pair)
+                continue
 
             results.append({
                 "slug": ep_name,
@@ -1553,6 +1596,20 @@ def list_authenticated_providers(
             )
             if _pair[0] and _pair[1]:
                 _section3_emitted_pairs.add(_pair)
+
+    if _local_group["models"]:
+        results.append({
+            "slug": "local",
+            "name": "Local",
+            "is_current": bool(_local_group["is_current"]),
+            "is_user_defined": True,
+            "models": _local_group["models"][:max_models],
+            "total_models": len(_local_group["models"]),
+            "source": "user-config",
+            "api_url": ",".join(_local_group["api_urls"]),
+            "local_routes": dict(_local_group["routes"]),
+        })
+        seen_slugs.add("local")
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
@@ -1587,6 +1644,9 @@ def list_authenticated_providers(
                 or ""
             ).strip().rstrip("/")
             if not raw_name or not api_url:
+                continue
+            provider_key = str(entry.get("provider_key", "") or "").strip().lower()
+            if provider_key and provider_key in seen_slugs:
                 continue
             api_key = (entry.get("api_key") or "").strip()
 

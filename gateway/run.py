@@ -3303,9 +3303,16 @@ class GatewayRunner:
 
         self._busy_ack_ts[session_key] = now
 
-        # Build a status-rich acknowledgment
+        # Build a status-rich acknowledgment (gated on busy_ack_detail)
         status_parts = []
-        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+        _include_detail = True
+        try:
+            from gateway.display_config import resolve_display_setting as _rds
+            _platform_key = _platform_config_key(event.source.platform)
+            _include_detail = bool(_rds(_load_gateway_config(), _platform_key, "busy_ack_detail", True))
+        except Exception:
+            pass
+        if _include_detail and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
                 summary = running_agent.get_activity_summary()
                 iteration = summary.get("api_call_count", 0)
@@ -7291,6 +7298,11 @@ class GatewayRunner:
                 logger.info("STOP for session %s — agent interrupted, session lock released", _quick_key)
                 return EphemeralReply(t("gateway.stop.stopped"))
 
+            # /start is a Telegram platform ping — ignore silently even
+            # during an active session (don't interrupt, don't busy-ack).
+            if _cmd_def_inner and _cmd_def_inner.name == "start":
+                return ""
+
             # /reset and /new must bypass the running-agent guard so they
             # actually dispatch as commands instead of being queued as user
             # text (which would be fed back to the agent with the same
@@ -7718,7 +7730,12 @@ class GatewayRunner:
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
-        
+
+        if canonical == "start":
+            # Telegram /start is a platform ping (BotFather sends it on first
+            # contact).  Acknowledge silently — no help text, no agent spawn.
+            return ""
+
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
@@ -10804,7 +10821,10 @@ class GatewayRunner:
                         cfg = yaml.safe_load(f) or {}
                 else:
                     cfg = {}
-                model_cfg = cfg.setdefault("model", {})
+                model_cfg = cfg.get("model")
+                if not isinstance(model_cfg, dict):
+                    model_cfg = {}
+                    cfg["model"] = model_cfg
                 model_cfg["default"] = result.new_model
                 model_cfg["provider"] = result.target_provider
                 if result.base_url:
@@ -13865,6 +13885,25 @@ class GatewayRunner:
                 )
             except Exception:
                 pass  # Best-effort; don't fail the reload over a transcript write
+
+            # Refresh every cached agent's tool list so the next turn uses
+            # the freshly-discovered MCP tools without requiring /new.
+            try:
+                from contextlib import nullcontext as _nc
+                from model_tools import get_tool_definitions
+                _cache_lock = getattr(self, '_agent_cache_lock', None)
+                with (_cache_lock if _cache_lock else _nc()):
+                    for key, (agent, _sig) in getattr(self, '_agent_cache', {}).items():
+                        fresh = get_tool_definitions(
+                            enabled_toolsets=getattr(agent, 'enabled_toolsets', None),
+                            disabled_toolsets=getattr(agent, 'disabled_toolsets', None),
+                        )
+                        agent.tools = fresh
+                        agent.valid_tool_names = {
+                            t['function']['name'] for t in fresh if t.get('type') == 'function'
+                        }
+            except Exception as exc:
+                logger.debug("MCP reload: could not refresh cached agents: %s", exc)
 
             return "\n".join(lines)
 

@@ -222,18 +222,14 @@ all = [
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",
-  "hermes-agent[tts-premium]",
-  "hermes-agent[slack]",
   "hermes-agent[pty]",
-  "hermes-agent[honcho]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
-  "hermes-agent[voice]",
-  "hermes-agent[dingtalk]",
-  "hermes-agent[feishu]",
   "hermes-agent[google]",
+  # matrix: excluded from [all] — covered by LAZY_DEPS (lazy-install at first use).
+  # mautrix[encryption] depends on python-olm which has Linux-only wheels and no cp313 builds.
   # mistral: omitted from [all] — `mistralai` PyPI package is currently
   # quarantined (malicious 2.4.6 release on 2026-05-12). Pulling it from
   # [all] would break every fresh install / AUR build / Docker build / CI
@@ -242,6 +238,8 @@ all = [
   # bedrock: intentionally excluded from [all] — boto3 is a heavy AWS SDK
   # dependency that most users don't need; install explicitly with
   # `pip install hermes-agent[bedrock]` when using AWS Bedrock.
+  # tts-premium, slack, honcho, voice, dingtalk, feishu: excluded from [all] —
+  # covered by LAZY_DEPS (lazy-install at first use).
   "hermes-agent[web]",
   "hermes-agent[youtube]",
 ]

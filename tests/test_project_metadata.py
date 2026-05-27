@@ -14,21 +14,19 @@ def _load_optional_dependencies():
 def test_matrix_extra_linux_only_in_all():
     """mautrix[encryption] depends on python-olm which is upstream-broken on
     modern macOS (archived libolm, C++ errors with Clang 21+) and has no
-    cp313 wheels.  The [matrix] extra is included in [all] but gated to
-    Linux + Python < 3.13 so that ``hermes update`` doesn't fail."""
+    cp313 wheels.  The [matrix] extra is excluded from [all] and covered
+    by LAZY_DEPS so it lazy-installs at first use on Linux only."""
     optional_dependencies = _load_optional_dependencies()
 
     assert "matrix" in optional_dependencies
-    # Must NOT be unconditional — python-olm has no macOS wheels.
-    assert "hermes-agent[matrix]" not in optional_dependencies["all"]
-    # Must be present with a Linux platform marker and Python < 3.13 guard
-    # (python-olm 3.2.16 has no cp313 wheels).
-    linux_gated = [
+    # Must NOT be in [all] at all — python-olm has no macOS/cp313 wheels.
+    # Lazy-install on first use is the correct path.
+    offending = [
         dep for dep in optional_dependencies["all"]
-        if "matrix" in dep and "linux" in dep
+        if "matrix" in dep
     ]
-    assert linux_gated, (
-        "expected hermes-agent[matrix] with sys_platform=='linux' marker in [all]"
+    assert not offending, (
+        f"[matrix] should not be in [all] — covered by LAZY_DEPS. Found: {offending}"
     )
 
 

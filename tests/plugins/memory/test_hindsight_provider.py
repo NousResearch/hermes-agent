@@ -23,6 +23,7 @@ from plugins.memory.hindsight import (
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
+    _sanitize_retain_content,
 )
 
 
@@ -861,6 +862,92 @@ class TestSyncTurn:
         assert "你好" in raw_json
         assert "👨‍👩‍👧‍👦" in raw_json
 
+    def test_sync_turn_sanitizes_structured_multimodal_payload(self, provider_with_config):
+        p = provider_with_config()
+        data_url = "data:image/jpeg;base64," + ("A" * 1024)
+        user_content = [
+            {"type": "text", "text": "Please remember that this chart is about Q4 revenue."},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]
+
+        p.sync_turn(user_content, "The chart shows revenue rising in Q4.")
+        p._retain_queue.join()
+
+        raw_json = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        content = json.loads(raw_json)
+        assert content[0][0]["content"] == (
+            "User: Please remember that this chart is about Q4 revenue."
+        )
+        assert "The chart shows revenue rising in Q4." in content[0][1]["content"]
+        assert "data:image" not in raw_json
+        assert "base64" not in raw_json
+        assert "A" * 512 not in raw_json
+
+    def test_sync_turn_sanitizes_stringified_multimodal_payload(self, provider_with_config):
+        p = provider_with_config()
+        data_url = "data:image/png;base64," + ("B" * 1024)
+        user_content = str([
+            {"type": "text", "text": "The screenshot is from the onboarding flow."},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ])
+
+        p.sync_turn(user_content, "I see the onboarding flow screenshot.")
+        p._retain_queue.join()
+
+        raw_json = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        content = json.loads(raw_json)
+        assert content[0][0]["content"] == "User: The screenshot is from the onboarding flow."
+        assert "data:image" not in raw_json
+        assert "base64" not in raw_json
+        assert "B" * 512 not in raw_json
+
+    def test_retain_sanitizer_preserves_gateway_vision_description(self):
+        text = (
+            "[The user sent an image~ Here's what I can see:\n"
+            "A whiteboard shows the launch plan and the words 'ship Friday'.]\n"
+            "[If you need a closer look, use vision_analyze with "
+            "image_url: /tmp/hermes/images/abc123.png ~]\n\n"
+            "Can you turn this into tasks?"
+        )
+
+        clean = _sanitize_retain_content(text)
+
+        assert "Image description:" in clean
+        assert "ship Friday" in clean
+        assert "Can you turn this into tasks?" in clean
+        assert "vision_analyze" not in clean
+        assert "image_url" not in clean
+        assert "/tmp/hermes/images/abc123.png" not in clean
+
+    def test_retain_sanitizer_preserves_voice_transcript(self):
+        text = (
+            "[The user sent a voice message~ Here's what they said: "
+            "\"please remind me that the meeting moved to 3pm\"]"
+        )
+
+        clean = _sanitize_retain_content(text)
+
+        assert clean == "Voice transcript: please remind me that the meeting moved to 3pm"
+
+    def test_retain_sanitizer_keeps_non_binary_encoded_prose(self):
+        text = (
+            "The paper says the image is encoded by a vision transformer. "
+            "Short hash abc123def456 and https://example.com/data are meaningful here."
+        )
+
+        assert _sanitize_retain_content(text) == text
+
+    def test_retain_sanitizer_does_not_parse_arbitrary_json_with_type_field(self):
+        text = '{"type": "bug", "description": "encoded payload handling is broken"}'
+
+        assert _sanitize_retain_content(text) == text
+
+    def test_retain_sanitizer_keeps_long_non_media_tokens_without_base64_markers(self):
+        token = "A" * 600
+        text = f"Use this generated identifier in the migration test: {token}"
+
+        assert _sanitize_retain_content(text) == text
+
 
 # ---------------------------------------------------------------------------
 # Shutdown / writer tests
@@ -1548,4 +1635,3 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert embedded._client is None
         assert provider._client is None
-

@@ -29,17 +29,20 @@ Or via $HERMES_HOME/hindsight/config.json (profile-scoped), falling back to
 from __future__ import annotations
 
 import asyncio
+import ast
 import atexit
 import importlib
 import json
 import logging
 import os
 import queue
+import re
 import threading
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
+from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
@@ -59,6 +62,68 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_MAX_LITERAL_PARSE_CHARS = 2_000_000
+_DATA_URL_RE = re.compile(
+    r"data:[a-z0-9.+-]+/[a-z0-9.+-]+;base64,[a-z0-9+/=]+",
+    re.IGNORECASE,
+)
+_LONG_BASE64_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9+/=])(?=[A-Za-z0-9+/=]{512,}(?![A-Za-z0-9+/=]))"
+    r"(?=[A-Za-z0-9+/=]*[+/=])[A-Za-z0-9+/]{512,}={0,2}(?![A-Za-z0-9+/=])"
+)
+_IMAGE_RETRY_HINT_RE = re.compile(
+    r"\[If you need a closer look,\s*use vision_analyze with image_url:[^\]]+\]\s*",
+    re.IGNORECASE,
+)
+_IMAGE_FAILURE_HINT_RE = re.compile(
+    r"\[The user sent an image but[^\]]*(?:image_url|vision_analyze)[^\]]+\]\s*",
+    re.IGNORECASE,
+)
+_ATTACHMENT_HEADER_RE = re.compile(
+    r"\[Attached (?:image|audio|file):[^\]]+\]\s*(?:URI:\s*\S+\s*)?",
+    re.IGNORECASE,
+)
+_VISION_DESCRIPTION_RE = re.compile(
+    r"\[The user sent an image~ Here's what I can see:\n([\s\S]*?)\]\s*",
+    re.IGNORECASE,
+)
+_VOICE_TRANSCRIPT_RE = re.compile(
+    r"\[The user sent a voice message~ Here's what they said: \"([\s\S]*?)\"\]\s*",
+    re.IGNORECASE,
+)
+_MEDIA_BLOCK_TYPES = {
+    "audio",
+    "file",
+    "image",
+    "image_url",
+    "input_audio",
+    "input_file",
+    "input_image",
+    "resource",
+}
+_TEXT_BLOCK_TYPES = {"input_text", "text"}
+_BINARY_CARRIER_KEYS = {
+    "audio",
+    "base64",
+    "blob",
+    "b64_json",
+    "bytes",
+    "content_bytes",
+    "data",
+    "image_url",
+    "input_audio",
+    "input_image",
+    "media",
+    "source",
+}
+_TEXT_VALUE_KEYS = {
+    "analysis",
+    "caption",
+    "content",
+    "description",
+    "text",
+    "transcript",
+}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -70,6 +135,158 @@ _PROVIDER_DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "openai_compatible": "your-model-name",
 }
+
+
+def _looks_like_binary_blob(value: str) -> bool:
+    """Return True for transport payloads, not ordinary prose/code."""
+    stripped = value.strip()
+    if not stripped:
+        return False
+    if _DATA_URL_RE.search(stripped):
+        return True
+    compact = re.sub(r"\s+", "", stripped)
+    if len(compact) < 512:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", compact):
+        return False
+    # Most natural language and source snippets will fail the alphabet check
+    # above. Require a plausible encoded length as an extra guard.
+    return len(compact) % 4 == 0
+
+
+def _strip_generated_media_wrappers(text: str) -> str:
+    """Keep semantic vision/STT text while removing retry transport hints."""
+    text = _VISION_DESCRIPTION_RE.sub(
+        lambda match: f"Image description:\n{match.group(1).strip()}\n",
+        text,
+    )
+    text = _VOICE_TRANSCRIPT_RE.sub(
+        lambda match: f"Voice transcript: {match.group(1).strip()}\n",
+        text,
+    )
+    text = _IMAGE_RETRY_HINT_RE.sub("", text)
+    text = _IMAGE_FAILURE_HINT_RE.sub("", text)
+    text = _ATTACHMENT_HEADER_RE.sub("", text)
+    return text
+
+
+def _sanitize_retain_text(text: str) -> str:
+    text = sanitize_context(text)
+    text = _strip_generated_media_wrappers(text)
+    text = _DATA_URL_RE.sub("", text)
+    text = _LONG_BASE64_TOKEN_RE.sub("", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _parse_serialized_retain_content(text: str) -> Any | None:
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "[{":
+        return None
+    if len(stripped) > _MAX_LITERAL_PARSE_CHARS:
+        return None
+    # Avoid parsing arbitrary prose that happens to start with a bracket.
+    structured_markers = (
+        '"type": "text"',
+        '"type":"text"',
+        '"type": "input_text"',
+        '"type":"input_text"',
+        "'type': 'text'",
+        "'type':'text'",
+        "'type': 'input_text'",
+        "'type':'input_text'",
+        "image_url",
+        "input_image",
+        "input_audio",
+        "data:",
+        "base64",
+    )
+    if not any(marker in stripped for marker in structured_markers):
+        return None
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    try:
+        return ast.literal_eval(stripped)
+    except (SyntaxError, ValueError, TypeError, MemoryError, RecursionError):
+        return None
+
+
+def _sanitize_structured_retain_content(value: Any, *, carrier_key: str = "") -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return ""
+    if isinstance(value, str):
+        if carrier_key in _BINARY_CARRIER_KEYS and _looks_like_binary_blob(value):
+            return ""
+        return _sanitize_retain_text(value)
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        parts = [_sanitize_structured_retain_content(item) for item in value]
+        return "\n".join(part for part in parts if part)
+    if isinstance(value, tuple):
+        parts = [_sanitize_structured_retain_content(item) for item in value]
+        return "\n".join(part for part in parts if part)
+    if not isinstance(value, dict):
+        return _sanitize_retain_text(str(value))
+
+    block_type = str(value.get("type", "") or "").strip().lower()
+    if block_type in _TEXT_BLOCK_TYPES:
+        for key in ("text", "content"):
+            if key in value:
+                return _sanitize_structured_retain_content(
+                    value.get(key), carrier_key=key
+                )
+        return ""
+    if block_type in _MEDIA_BLOCK_TYPES:
+        # Transport-only block. Keep an explicit caption/description if a
+        # caller included one, but drop URLs/data/blob fields.
+        parts = []
+        for key in ("caption", "description", "analysis", "transcript"):
+            if key in value:
+                part = _sanitize_structured_retain_content(
+                    value.get(key), carrier_key=key
+                )
+                if part:
+                    parts.append(part)
+        return "\n".join(parts)
+
+    if "content" in value and set(value).issubset({"role", "content", "timestamp"}):
+        return _sanitize_structured_retain_content(value.get("content"), carrier_key="content")
+
+    parts: list[str] = []
+    for key, nested in value.items():
+        key_text = str(key).strip().lower()
+        if key_text in _BINARY_CARRIER_KEYS:
+            if isinstance(nested, str) and not _looks_like_binary_blob(nested):
+                # A normal URL or short field can be meaningful outside media
+                # blocks; only binary-looking carrier values are removed.
+                parts.append(_sanitize_retain_text(nested))
+            continue
+        if key_text in _TEXT_VALUE_KEYS or isinstance(nested, (list, tuple, dict)):
+            part = _sanitize_structured_retain_content(nested, carrier_key=key_text)
+            if part:
+                parts.append(part)
+    return "\n".join(parts)
+
+
+def _sanitize_retain_content(value: Any) -> str:
+    """Normalize auto-retained turn content to semantic text.
+
+    Hermes can receive structured multimodal user content from ACP/gateway
+    adapters. Hindsight retain accepts text, so keep human-visible semantic
+    text and discard binary transport payloads before building the transcript.
+    """
+    if isinstance(value, str):
+        parsed = _parse_serialized_retain_content(value)
+        if parsed is not None:
+            return _sanitize_structured_retain_content(parsed)
+        return _sanitize_retain_text(value)
+    return _sanitize_structured_retain_content(value)
 
 
 def _parse_int_setting(value: Any, default: int) -> int:
@@ -1341,17 +1558,19 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
         self._prefetch_thread.start()
 
-    def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
+    def _build_turn_messages(self, user_content: Any, assistant_content: Any) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
+        clean_user_content = _sanitize_retain_content(user_content)
+        clean_assistant_content = _sanitize_retain_content(assistant_content)
         return [
             {
                 "role": "user",
-                "content": f"{self._retain_user_prefix}: {user_content}",
+                "content": f"{self._retain_user_prefix}: {clean_user_content}",
                 "timestamp": now,
             },
             {
                 "role": "assistant",
-                "content": f"{self._retain_assistant_prefix}: {assistant_content}",
+                "content": f"{self._retain_assistant_prefix}: {clean_assistant_content}",
                 "timestamp": now,
             },
         ]

@@ -729,6 +729,12 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
 # Error Types
 # =============================================================================
 
+# Error code marking upstream rate-limit / usage-quota exhaustion (HTTP 429).
+# Such failures are transient and re-authenticating cannot resolve them, so
+# they must be kept distinct from missing/expired-credential errors.
+CODEX_RATE_LIMITED_CODE = "codex_rate_limited"
+
+
 class AuthError(RuntimeError):
     """Structured auth error with UX mapping hints."""
 
@@ -746,9 +752,50 @@ class AuthError(RuntimeError):
         self.relogin_required = relogin_required
 
 
+def is_rate_limited_auth_error(error: Exception) -> bool:
+    """True when an :class:`AuthError` represents upstream rate-limiting / quota
+    exhaustion rather than missing or invalid credentials.
+
+    These failures are transient — re-authenticating cannot resolve them — so
+    callers should surface a "retry later" notice and prefer a fallback chain
+    instead of prompting the operator to run ``hermes auth``.
+    """
+    return (
+        isinstance(error, AuthError)
+        and not error.relogin_required
+        and error.code == CODEX_RATE_LIMITED_CODE
+    )
+
+
+def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
+    """Best-effort parse of a ``Retry-After`` header into whole seconds.
+
+    Supports the delta-seconds form (e.g. ``"120"``). HTTP-date forms and
+    missing/unparseable values return ``None`` rather than guessing.
+    """
+    if headers is None:
+        return None
+    try:
+        raw = headers.get("retry-after")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds >= 0 else None
+
+
 def format_auth_error(error: Exception) -> str:
     """Map auth failures to concise user-facing guidance."""
     if not isinstance(error, AuthError):
+        return str(error)
+
+    # Rate-limit / quota errors are not credential problems — never append the
+    # "re-authenticate" remediation, which would mislead the operator.
+    if is_rate_limited_auth_error(error):
         return str(error)
 
     if error.relogin_required:
@@ -3306,6 +3353,30 @@ def refresh_codex_oauth_pure(
                 "refresh_token": refresh_token,
                 "client_id": CODEX_OAUTH_CLIENT_ID,
             },
+        )
+
+    if response.status_code == 429:
+        # Upstream rate-limit / usage-quota exhaustion on the token endpoint.
+        # The stored refresh token is still valid here — re-authenticating
+        # cannot lift a quota cap. Classify distinctly from auth failures so
+        # callers surface a "retry later" notice instead of a misleading
+        # "run hermes auth" prompt (see issue #32790).
+        retry_after = _parse_retry_after_seconds(getattr(response, "headers", None))
+        if retry_after is not None:
+            message = (
+                f"Codex provider quota exhausted (429); retry after {retry_after}s. "
+                "Credentials are still valid."
+            )
+        else:
+            message = (
+                "Codex provider quota exhausted (429). Credentials are still valid; "
+                "retry after the usage limit resets."
+            )
+        raise AuthError(
+            message,
+            provider="openai-codex",
+            code=CODEX_RATE_LIMITED_CODE,
+            relogin_required=False,
         )
 
     if response.status_code != 200:

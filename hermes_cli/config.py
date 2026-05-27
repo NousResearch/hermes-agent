@@ -1569,6 +1569,7 @@ DEFAULT_CONFIG = {
         "tirith_path": "tirith",
         "tirith_timeout": 5,
         "tirith_fail_open": True,
+        "trusted_executable_dirs": [],
         "website_blocklist": {
             "enabled": False,
             "domains": [],
@@ -4629,6 +4630,7 @@ _SECURITY_COMMENT = """
 #   tirith_path: "tirith"
 #   tirith_timeout: 5
 #   tirith_fail_open: true
+#   trusted_executable_dirs: []
 """
 
 _FALLBACK_COMMENT = """

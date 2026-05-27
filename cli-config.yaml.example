@@ -307,6 +307,7 @@ terminal:
 #   tirith_path: "tirith"       # Path to tirith binary (supports ~ expansion)
 #   tirith_timeout: 5           # Scan timeout in seconds
 #   tirith_fail_open: true      # Allow commands if tirith unavailable
+#   trusted_executable_dirs: [] # Extra local script dirs allowed to pipe into interpreters
 
 # =============================================================================
 # Browser Tool Configuration

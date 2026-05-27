@@ -1197,6 +1197,228 @@ class TestDeleteAndExport:
 
 
 # =========================================================================
+# Session import (round-trip from export)
+# =========================================================================
+
+class TestSessionImport:
+    def test_import_new_session(self, db):
+        db.create_session(session_id="s1", source="cli", model="test")
+        db.append_message("s1", role="user", content="Hello")
+        db.append_message("s1", role="assistant", content="Hi")
+
+        exported = db.export_session("s1")
+
+        db2 = SessionDB(db_path=db.db_path.parent / "test_state2.db")
+        try:
+            result = db2.import_session(exported)
+            assert result == "inserted"
+
+            session = db2.get_session("s1")
+            assert session is not None
+            assert session["source"] == "cli"
+            assert session["model"] == "test"
+
+            messages = db2.get_messages("s1")
+            assert len(messages) == 2
+            assert messages[0]["content"] == "Hello"
+            assert messages[1]["content"] == "Hi"
+        finally:
+            db2.close()
+
+    def test_import_round_trip_preserves_messages(self, db):
+        db.create_session(session_id="s1", source="cli", model="test")
+        db.set_session_title("s1", "Round trip")
+        db.append_message("s1", role="user", content="What is 2+2?")
+        db.append_message(
+            "s1", role="assistant", content="4",
+            reasoning="This is a simple arithmetic question.",
+        )
+
+        exported = db.export_session("s1")
+
+        db2 = SessionDB(db_path=db.db_path.parent / "test_rt.db")
+        try:
+            db2.import_session(exported)
+            imported = db2.export_session("s1")
+            assert imported is not None
+            assert imported["title"] == "Round trip"
+            assert len(imported["messages"]) == 2
+            assert imported["messages"][0]["content"] == "What is 2+2?"
+            assert imported["messages"][1]["reasoning"] == "This is a simple arithmetic question."
+        finally:
+            db2.close()
+
+    def test_import_skip_on_collision(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="original")
+
+        exported = db.export_session("s1")
+
+        db2 = SessionDB(db_path=db.db_path.parent / "test_coll.db")
+        try:
+            db2.create_session(session_id="s1", source="telegram")
+
+            result = db2.import_session(exported)
+            assert result == "skipped"
+
+            # Original session data is preserved
+            session = db2.get_session("s1")
+            assert session["source"] == "telegram"
+        finally:
+            db2.close()
+
+    def test_import_force_overwrite(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="original")
+
+        exported = db.export_session("s1")
+
+        db2 = SessionDB(db_path=db.db_path.parent / "test_force.db")
+        try:
+            db2.create_session(session_id="s1", source="telegram")
+            db2.append_message("s1", role="user", content="different")
+
+            result = db2.import_session(exported, force=True)
+            assert result == "overwritten"
+
+            session = db2.get_session("s1")
+            assert session["source"] == "cli"
+            messages = db2.get_messages("s1")
+            assert len(messages) == 1
+            assert messages[0]["content"] == "original"
+        finally:
+            db2.close()
+
+    def test_import_dangling_parent_set_to_null(self, db):
+        # We can't use create_session() with a non-existent parent_id
+        # (FK constraint), so craft the export data directly.
+        export_data = {
+            "id": "child",
+            "source": "cli",
+            "parent_session_id": "nonexistent_parent",
+            "started_at": time.time(),
+            "ended_at": None,
+            "end_reason": None,
+            "message_count": 0,
+            "tool_call_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "messages": [],
+        }
+
+        db2 = SessionDB(db_path=db.db_path.parent / "test_parent.db")
+        try:
+            result = db2.import_session(export_data)
+            assert result == "inserted"
+
+            session = db2.get_session("child")
+            assert session["parent_session_id"] is None
+        finally:
+            db2.close()
+
+    def test_import_valid_parent_preserved(self, db):
+        db.create_session(session_id="parent", source="cli")
+        db.create_session(session_id="child", source="cli", parent_session_id="parent")
+
+        exported_parent = db.export_session("parent")
+        exported_child = db.export_session("child")
+
+        db2 = SessionDB(db_path=db.db_path.parent / "test_vparent.db")
+        try:
+            db2.import_session(exported_parent)
+            result = db2.import_session(exported_child)
+            assert result == "inserted"
+
+            session = db2.get_session("child")
+            assert session["parent_session_id"] == "parent"
+        finally:
+            db2.close()
+
+    def test_import_missing_id_raises(self, db):
+        with pytest.raises(ValueError, match="missing required 'id' field"):
+            db.import_session({"source": "cli"})
+
+    def test_import_unknown_columns_stripped(self, db):
+        import time as _time
+        data = {
+            "id": "s1",
+            "source": "cli",
+            "started_at": _time.time(),
+            "future_column": "value",
+            "messages": [],
+        }
+
+        result = db.import_session(data)
+        assert result == "inserted"
+
+        session = db.get_session("s1")
+        assert session["source"] == "cli"
+        assert "future_column" not in session
+
+    def test_import_tool_calls_round_trip(self, db):
+        tool_calls = [
+            {"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}},
+        ]
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="assistant", content="", tool_calls=tool_calls)
+
+        exported = db.export_session("s1")
+
+        db2 = SessionDB(db_path=db.db_path.parent / "test_tc.db")
+        try:
+            db2.import_session(exported)
+            messages = db2.get_messages("s1")
+            assert len(messages) == 1
+            assert messages[0]["tool_calls"] == tool_calls
+        finally:
+            db2.close()
+
+    def test_import_with_title(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.set_session_title("s1", "My Important Session")
+
+        exported = db.export_session("s1")
+
+        db2 = SessionDB(db_path=db.db_path.parent / "test_title.db")
+        try:
+            db2.import_session(exported)
+            session = db2.get_session("s1")
+            assert session["title"] == "My Important Session"
+        finally:
+            db2.close()
+
+    def test_import_token_counts_preserved(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=1000, output_tokens=500, absolute=True)
+
+        exported = db.export_session("s1")
+
+        db2 = SessionDB(db_path=db.db_path.parent / "test_tokens.db")
+        try:
+            db2.import_session(exported)
+            session = db2.get_session("s1")
+            assert session["input_tokens"] == 1000
+            assert session["output_tokens"] == 500
+        finally:
+            db2.close()
+
+    def test_import_message_timestamps_preserved(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Hello")
+
+        exported = db.export_session("s1")
+        original_ts = exported["messages"][0]["timestamp"]
+
+        db2 = SessionDB(db_path=db.db_path.parent / "test_ts.db")
+        try:
+            db2.import_session(exported)
+            messages = db2.get_messages("s1")
+            assert messages[0]["timestamp"] == original_ts
+        finally:
+            db2.close()
+
+
+# =========================================================================
 # Prune
 # =========================================================================
 

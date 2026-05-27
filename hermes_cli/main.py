@@ -13179,6 +13179,29 @@ Examples:
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
     )
 
+    sessions_import = sessions_subparsers.add_parser(
+        "import",
+        help="Import sessions from a JSONL file (exported via 'sessions export')",
+    )
+    sessions_import.add_argument(
+        "input",
+        help="Input JSONL file path (use - for stdin)",
+    )
+    sessions_import.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Overwrite existing sessions with the same ID",
+    )
+    sessions_import.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview what would be imported without writing",
+    )
+    sessions_import.add_argument(
+        "--source",
+        help="Only import sessions from this source (e.g. cli, telegram)",
+    )
+
     def _confirm_prompt(prompt: str) -> bool:
         """Prompt for y/N confirmation, safe against non-TTY environments."""
         try:
@@ -13331,6 +13354,84 @@ Examples:
 
             relaunch(["--resume", selected_id])
             return  # won't reach here after execvp
+
+        elif action == "import":
+            import sys as _sys
+
+            # Read input
+            if args.input == "-":
+                lines = _sys.stdin.readlines()
+            else:
+                try:
+                    with open(args.input, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                except FileNotFoundError:
+                    print(f"Error: File '{args.input}' not found.")
+                    return
+
+            source_filter = getattr(args, "source", None)
+            dry_run = getattr(args, "dry_run", False)
+            force = getattr(args, "force", False)
+
+            inserted = 0
+            skipped = 0
+            overwritten = 0
+            errored = 0
+
+            for line_num, line in enumerate(lines, 1):
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    data = _json.loads(line)
+                except _json.JSONDecodeError as e:
+                    print(f"Warning: skipping malformed JSON on line {line_num}: {e}")
+                    errored += 1
+                    continue
+
+                # Filter by source if requested
+                if source_filter and data.get("source") != source_filter:
+                    continue
+
+                if dry_run:
+                    sid = data.get("id", "?")
+                    title = data.get("title", "")
+                    msg_count = len(data.get("messages", []))
+                    title_str = f" \"{title}\"" if title else ""
+                    print(f"Would import session {sid}{title_str} ({msg_count} messages)")
+                    inserted += 1  # counting for dry-run summary
+                    continue
+
+                try:
+                    result = db.import_session(data, force=force)
+                    if result == "inserted":
+                        inserted += 1
+                    elif result == "skipped":
+                        skipped += 1
+                    elif result == "overwritten":
+                        overwritten += 1
+                except Exception as e:
+                    sid = data.get("id", "?")
+                    print(f"Error importing session {sid} on line {line_num}: {e}")
+                    errored += 1
+
+            if dry_run:
+                print(f"\n{inserted} session(s) would be imported.")
+            else:
+                parts = []
+                if inserted:
+                    parts.append(f"{inserted} imported")
+                if overwritten:
+                    parts.append(f"{overwritten} overwritten")
+                if skipped:
+                    parts.append(f"{skipped} skipped")
+                if errored:
+                    parts.append(f"{errored} errored")
+                if parts:
+                    print(", ".join(parts) + ".")
+                else:
+                    print("No sessions found to import.")
 
         elif action == "stats":
             total = db.session_count()

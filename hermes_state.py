@@ -2502,6 +2502,118 @@ class SessionDB:
             results.append({**session, "messages": messages})
         return results
 
+    def import_session(
+        self, data: Dict[str, Any], force: bool = False
+    ) -> str:
+        """Import a session dict (as produced by ``export_session``).
+
+        Returns one of:
+        - ``"inserted"`` — new session added
+        - ``"overwritten"`` — existing session replaced (force=True)
+        - ``"skipped"`` — session ID already exists and force=False
+        """
+        session_id = data.get("id")
+        if not session_id:
+            raise ValueError("export data missing required 'id' field")
+
+        # Check if session already exists
+        existing = self.get_session(session_id)
+
+        if existing and not force:
+            return "skipped"
+
+        # Known columns for the sessions table (schema v6).  Unknown columns
+        # in the export (e.g. from a newer version) are silently dropped.
+        session_cols = frozenset({
+            "id", "source", "user_id", "model", "model_config",
+            "system_prompt", "parent_session_id", "started_at",
+            "ended_at", "end_reason", "message_count", "tool_call_count",
+            "input_tokens", "output_tokens", "cache_read_tokens",
+            "cache_write_tokens", "reasoning_tokens", "billing_provider",
+            "billing_base_url", "billing_mode", "estimated_cost_usd",
+            "actual_cost_usd", "cost_status", "cost_source",
+            "pricing_version", "title",
+        })
+
+        # Known message columns (all except auto-increment 'id').
+        msg_cols = frozenset({
+            "session_id", "role", "content", "tool_call_id",
+            "tool_calls", "tool_name", "timestamp", "token_count",
+            "finish_reason", "reasoning", "reasoning_details",
+            "codex_reasoning_items",
+        })
+
+        # Fields that are stored as JSON TEXT in the DB but may come
+        # back from export_session() already deserialized (because
+        # get_messages() calls json.loads on them).
+        json_text_fields = {"tool_calls", "reasoning_details", "codex_reasoning_items"}
+
+        def _do(conn):
+            # ── force overwrite: delete existing session + messages ──
+            if existing and force:
+                conn.execute(
+                    "UPDATE sessions SET parent_session_id = NULL "
+                    "WHERE parent_session_id = ?",
+                    (session_id,),
+                )
+                conn.execute(
+                    "DELETE FROM messages WHERE session_id = ?",
+                    (session_id,),
+                )
+                conn.execute(
+                    "DELETE FROM sessions WHERE id = ?",
+                    (session_id,),
+                )
+
+            # ── Validate parent_session_id ──
+            parent_id = data.get("parent_session_id")
+            if parent_id:
+                cursor = conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ?", (parent_id,)
+                )
+                if cursor.fetchone() is None:
+                    logger.warning(
+                        "import_session: parent_session_id %s not found, "
+                        "setting to NULL for session %s",
+                        parent_id, session_id,
+                    )
+                    parent_id = None
+
+            # ── Build session row ──
+            sess = {k: v for k, v in data.items() if k in session_cols}
+            sess["parent_session_id"] = parent_id
+
+            columns = ", ".join(f'"{c}"' for c in sess)
+            placeholders = ", ".join("?" for _ in sess)
+            conn.execute(
+                f"INSERT INTO sessions ({columns}) VALUES ({placeholders})",
+                list(sess.values()),
+            )
+
+            # ── Insert messages ──
+            messages = data.get("messages", [])
+            for msg in messages:
+                m = {
+                    k: v for k, v in msg.items()
+                    if k in msg_cols and k != "id"
+                }
+                # Re-serialize JSON fields if they came back as objects
+                for field in json_text_fields:
+                    val = m.get(field)
+                    if val is not None and not isinstance(val, str):
+                        m[field] = json.dumps(val)
+
+                m_columns = ", ".join(f'"{c}"' for c in m)
+                m_placeholders = ", ".join("?" for _ in m)
+                conn.execute(
+                    f"INSERT INTO messages ({m_columns}) VALUES ({m_placeholders})",
+                    list(m.values()),
+                )
+
+            return "overwritten" if (existing and force) else "inserted"
+
+        return self._execute_write(_do)
+
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
         def _do(conn):

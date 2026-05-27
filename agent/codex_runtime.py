@@ -26,6 +26,12 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _is_none_iterable_type_error(exc: TypeError) -> bool:
+    """Return true for the OpenAI SDK stream bug seen after valid Codex output."""
+    msg = str(exc)
+    return "NoneType" in msg and "iterable" in msg
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -193,8 +199,45 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             raise InterruptedError("Agent interrupted before Codex stream retry")
         collected_output_items: list = []
         try:
+            def _synthesize_final_response(reason: str):
+                synthesized_output = list(collected_output_items)
+                assembled = "".join(agent._codex_streamed_text_parts)
+                if not synthesized_output and assembled and not has_tool_calls:
+                    synthesized_output = [SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=assembled)],
+                    )]
+                if not synthesized_output:
+                    return None
+                logger.debug(
+                    "Codex stream: synthesized final response after %s "
+                    "(%d items, %d chars)",
+                    reason, len(synthesized_output), len(assembled),
+                )
+                return SimpleNamespace(
+                    output=synthesized_output,
+                    output_text=assembled,
+                    status="completed",
+                    model=api_kwargs.get("model"),
+                    usage=None,
+                )
+
             with active_client.responses.stream(**api_kwargs) as stream:
-                for event in stream:
+                stream_type_error = None
+                iterator = iter(stream)
+                while True:
+                    try:
+                        event = next(iterator)
+                    except StopIteration:
+                        break
+                    except TypeError as exc:
+                        if not _is_none_iterable_type_error(exc):
+                            raise
+                        stream_type_error = exc
+                        break
+
                     # Mark stream activity for the TTFB watchdog in
                     # interruptible_api_call. The Codex backend can accept the
                     # connection but never emit a single event; this timestamp
@@ -246,10 +289,22 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             sum(len(p) for p in agent._codex_streamed_text_parts),
                             agent._client_log_context(),
                         )
-                final_response = stream.get_final_response()
-                # PATCH: ChatGPT Codex backend streams valid output items
-                # but get_final_response() can return an empty output list.
-                # Backfill from collected items or synthesize from deltas.
+                if stream_type_error is not None:
+                    final_response = _synthesize_final_response("SDK stream iteration TypeError")
+                    if final_response is None:
+                        raise stream_type_error
+                else:
+                    try:
+                        final_response = stream.get_final_response()
+                    except TypeError as exc:
+                        if not _is_none_iterable_type_error(exc):
+                            raise
+                        final_response = _synthesize_final_response("SDK finalization TypeError")
+                        if final_response is None:
+                            raise
+                # ChatGPT Codex can stream valid output items while the SDK
+                # final response has an empty output list. Recover from the
+                # stream events before response validation treats it as empty.
                 _out = getattr(final_response, "output", None)
                 if isinstance(_out, list) and not _out:
                     if collected_output_items:

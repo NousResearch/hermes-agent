@@ -107,6 +107,12 @@ from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_
 logger = logging.getLogger(__name__)
 
 
+def _is_none_iterable_type_error(exc: TypeError) -> bool:
+    """Return true for the OpenAI SDK stream bug seen after valid Codex output."""
+    msg = str(exc)
+    return "NoneType" in msg and "iterable" in msg
+
+
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
     """Return False instead of raising when a patched symbol is not a type."""
     try:
@@ -791,13 +797,48 @@ class _CodexCompletionsAdapter:
             collected_output_items: List[Any] = []
             collected_text_deltas: List[str] = []
             has_function_calls = False
+            def _synthesize_final(reason: str):
+                synthesized_output = list(collected_output_items)
+                assembled = "".join(collected_text_deltas)
+                if not synthesized_output and assembled and not has_function_calls:
+                    synthesized_output = [SimpleNamespace(
+                        type="message", role="assistant", status="completed",
+                        content=[SimpleNamespace(type="output_text", text=assembled)],
+                    )]
+                if not synthesized_output:
+                    return None
+                logger.debug(
+                    "Codex auxiliary: synthesized final response after %s "
+                    "(%d items, %d chars)",
+                    reason, len(synthesized_output), len(assembled),
+                )
+                return SimpleNamespace(
+                    output=synthesized_output,
+                    output_text=assembled,
+                    status="completed",
+                    model=resp_kwargs.get("model"),
+                    usage=None,
+                )
+
             if total_timeout:
                 timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
             with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
+                stream_type_error = None
+                iterator = iter(stream)
+                while True:
+                    try:
+                        _event = next(iterator)
+                    except StopIteration:
+                        break
+                    except TypeError as exc:
+                        if not _is_none_iterable_type_error(exc):
+                            raise
+                        stream_type_error = exc
+                        break
+
                     _check_cancelled()
                     _etype = getattr(_event, "type", "")
                     if _etype == "response.output_item.done":
@@ -811,7 +852,19 @@ class _CodexCompletionsAdapter:
                     elif "function_call" in _etype:
                         has_function_calls = True
                 _check_cancelled()
-                final = stream.get_final_response()
+                if stream_type_error is not None:
+                    final = _synthesize_final("SDK stream iteration TypeError")
+                    if final is None:
+                        raise stream_type_error
+                else:
+                    try:
+                        final = stream.get_final_response()
+                    except TypeError as exc:
+                        if not _is_none_iterable_type_error(exc):
+                            raise
+                        final = _synthesize_final("SDK finalization TypeError")
+                        if final is None:
+                            raise
 
             # Backfill empty output from collected stream events
             _output = getattr(final, "output", None)

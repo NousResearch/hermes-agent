@@ -21,7 +21,10 @@ config migration (version bump) automatically moves the old format into the new
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Overrideable display settings and their global defaults
@@ -159,7 +162,10 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 # Canonical set of per-platform overrideable keys (for validation).
-OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
+# busy_input_mode is overrideable per platform but has no _GLOBAL_DEFAULTS
+# entry because its global default is managed by _load_busy_input_mode() in
+# the gateway runner (config/env var), not by the display_config module.
+OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys()) | {"busy_input_mode"}
 
 
 def resolve_display_setting(
@@ -185,6 +191,14 @@ def resolve_display_setting(
     Returns
     -------
     The resolved value, or *fallback* if nothing is configured.
+
+    .. note::
+
+        ``busy_input_mode`` is in ``OVERRIDEABLE_KEYS`` but has no
+        ``_GLOBAL_DEFAULTS`` entry because its global default is managed by
+        ``_load_busy_input_mode()`` in the gateway runner (config/env var),
+        not by this module.  Callers **must** pass a *fallback* for this key;
+        without one the resolver returns ``None`` when no config is set.
     """
     display_cfg = user_config.get("display") or {}
 
@@ -194,7 +208,9 @@ def resolve_display_setting(
     if isinstance(plat_overrides, dict):
         val = plat_overrides.get(setting)
         if val is not None:
-            return _normalise(setting, val)
+            normalised = _normalise(setting, val)
+            if normalised is not None:
+                return normalised
 
     # 1b. Backward compat: display.tool_progress_overrides.<platform>
     if setting == "tool_progress":
@@ -202,7 +218,9 @@ def resolve_display_setting(
         if isinstance(legacy, dict):
             val = legacy.get(platform_key)
             if val is not None:
-                return _normalise(setting, val)
+                normalised = _normalise(setting, val)
+                if normalised is not None:
+                    return normalised
 
     # 2. Global user setting (display.<key>).  Skip display.streaming because
     # that key controls only CLI terminal streaming; gateway token streaming is
@@ -210,7 +228,9 @@ def resolve_display_setting(
     if setting != "streaming":
         val = display_cfg.get(setting)
         if val is not None:
-            return _normalise(setting, val)
+            normalised = _normalise(setting, val)
+            if normalised is not None:
+                return normalised
 
     # 3. Built-in platform default
     plat_defaults = _PLATFORM_DEFAULTS.get(platform_key)
@@ -274,4 +294,14 @@ def _normalise(setting: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return 0
+    if setting == "busy_input_mode":
+        raw = str(value).strip().lower()
+        if raw in {"queue", "steer", "interrupt"}:
+            return raw
+        _log.warning(
+            "Invalid busy_input_mode=%r — expected interrupt/queue/steer; "
+            "skipping (will fall through to next resolution level)",
+            value,
+        )
+        return None
     return value

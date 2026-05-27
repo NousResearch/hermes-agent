@@ -5648,7 +5648,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         running_agent = self._running_agents.get(session_key)
 
-        effective_mode = self._busy_input_mode
+        # Resolve per-platform busy_input_mode (display.platforms.<platform>.busy_input_mode)
+        # falling back to the global/env-loaded self._busy_input_mode.
+        #
+        # Precedence note: self._busy_input_mode is loaded at startup by
+        # _load_busy_input_mode() which honours HERMES_GATEWAY_BUSY_INPUT_MODE
+        # env var > config.display.busy_input_mode.  The display_config resolver
+        # reads display.busy_input_mode at resolution level 2, which outranks
+        # the env var.  This is safe because startup syncs the config value into
+        # the env var (run.py:1130), so the two always agree.  If that sync
+        # is ever removed, an externally-set env var would be silently ignored
+        # for platforms without an explicit display override.
+        from gateway.display_config import resolve_display_setting
+        gw_config = _load_gateway_config()
+        plat_key = _platform_config_key(event.source.platform)
+        effective_mode = resolve_display_setting(
+            gw_config,
+            plat_key,
+            "busy_input_mode",
+            self._busy_input_mode,
+        )
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
         if (
             event.message_type == MessageType.TEXT
@@ -5789,8 +5808,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         status_parts = []
         busy_ack_detail_enabled = bool(
             resolve_display_setting(
-                _load_gateway_config(),
-                _platform_config_key(event.source.platform),
+                gw_config,
+                plat_key,
                 "busy_ack_detail",
                 True,
             )

@@ -607,3 +607,106 @@ class TestReasoningStyle:
 
         config = {"display": {"reasoning_style": "SUBTEXT"}}
         assert resolve_display_setting(config, "telegram", "reasoning_style") == "subtext"
+# ---------------------------------------------------------------------------
+# busy_input_mode: normalise + per-platform resolution
+# ---------------------------------------------------------------------------
+
+class TestBusyInputModeNormalise:
+    """busy_input_mode normalises to valid values."""
+
+    def test_valid_queue(self):
+        from gateway.display_config import _normalise
+        assert _normalise("busy_input_mode", "queue") == "queue"
+
+    def test_valid_steer(self):
+        from gateway.display_config import _normalise
+        assert _normalise("busy_input_mode", "steer") == "steer"
+
+    def test_valid_interrupt(self):
+        from gateway.display_config import _normalise
+        assert _normalise("busy_input_mode", "interrupt") == "interrupt"
+
+    def test_case_insensitive(self):
+        from gateway.display_config import _normalise
+        assert _normalise("busy_input_mode", "Steer") == "steer"
+        assert _normalise("busy_input_mode", "QUEUE") == "queue"
+
+    def test_invalid_value_returns_none(self):
+        """Invalid busy_input_mode values return None so the resolver
+        skips them and falls through to the next resolution level."""
+        from gateway.display_config import _normalise
+        assert _normalise("busy_input_mode", "banana") is None
+        assert _normalise("busy_input_mode", "") is None
+        assert _normalise("busy_input_mode", None) is None
+
+    def test_invalid_per_platform_skips_to_global(self):
+        """A bad per-platform value falls through to the global user setting."""
+        from gateway.display_config import resolve_display_setting
+        config = {
+            "display": {
+                "busy_input_mode": "steer",
+                "platforms": {
+                    "sendblue": {"busy_input_mode": "steerr"},  # typo
+                },
+            }
+        }
+        # Typo in platform override → skipped → falls through to global "steer"
+        assert resolve_display_setting(config, "sendblue", "busy_input_mode", "interrupt") == "steer"
+
+    def test_invalid_global_skips_to_fallback(self):
+        """A bad global value falls through to the fallback parameter."""
+        from gateway.display_config import resolve_display_setting
+        config = {
+            "display": {
+                "busy_input_mode": "banana",
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "busy_input_mode", "queue") == "queue"
+
+    def test_not_in_global_defaults_but_in_overrideable_keys(self):
+        """busy_input_mode is overrideable per platform but not in _GLOBAL_DEFAULTS
+        (its global default is managed by _load_busy_input_mode in the gateway)."""
+        from gateway.display_config import _GLOBAL_DEFAULTS, OVERRIDEABLE_KEYS
+        assert "busy_input_mode" not in _GLOBAL_DEFAULTS
+        assert "busy_input_mode" in OVERRIDEABLE_KEYS
+
+
+class TestBusyInputModeResolution:
+    """busy_input_mode resolves through the per-platform override chain."""
+
+    def test_platform_override_wins(self):
+        from gateway.display_config import resolve_display_setting
+        config = {
+            "display": {
+                "busy_input_mode": "interrupt",
+                "platforms": {
+                    "sendblue": {"busy_input_mode": "steer"},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "sendblue", "busy_input_mode") == "steer"
+        assert resolve_display_setting(config, "telegram", "busy_input_mode") == "interrupt"
+
+    def test_global_fallback_when_no_platform_override(self):
+        from gateway.display_config import resolve_display_setting
+        config = {"display": {"busy_input_mode": "queue"}}
+        assert resolve_display_setting(config, "telegram", "busy_input_mode") == "queue"
+        assert resolve_display_setting(config, "sendblue", "busy_input_mode") == "queue"
+
+    def test_builtin_default_when_no_config(self):
+        """With no _GLOBAL_DEFAULTS entry, resolve returns the fallback parameter."""
+        from gateway.display_config import resolve_display_setting
+        # No config, no platform default, no global default → returns fallback
+        assert resolve_display_setting({}, "telegram", "busy_input_mode", "interrupt") == "interrupt"
+        assert resolve_display_setting({}, "telegram", "busy_input_mode") is None
+
+    def test_platform_override_normalised(self):
+        from gateway.display_config import resolve_display_setting
+        config = {
+            "display": {
+                "platforms": {
+                    "sendblue": {"busy_input_mode": "STEER"},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "sendblue", "busy_input_mode") == "steer"

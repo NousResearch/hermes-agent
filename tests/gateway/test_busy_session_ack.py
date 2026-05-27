@@ -98,6 +98,13 @@ def _make_adapter(platform_val="telegram"):
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
+    @pytest.fixture(autouse=True)
+    def _no_gateway_config(self, monkeypatch):
+        """Mock _load_gateway_config to return empty dict so tests control
+        busy_input_mode purely via runner._busy_input_mode."""
+        import gateway.run as _gr
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
     @pytest.mark.asyncio
     async def test_handle_message_queue_mode_queues_without_interrupt(self):
         """Runner queue mode must not interrupt an active agent for text follow-ups."""
@@ -869,3 +876,237 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", agent, executor_task=live_task
         ) is True
+# ---------------------------------------------------------------------------
+# Per-platform busy_input_mode override
+# ---------------------------------------------------------------------------
+
+class TestPerPlatformBusyInputMode:
+    """busy_input_mode can be overridden per platform via display.platforms.<platform>."""
+
+    @pytest.mark.asyncio
+    async def test_platform_steer_overrides_global_interrupt(self, monkeypatch):
+        """sendblue configured as steer, global is interrupt — sendblue gets steer."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {
+                "display": {
+                    "busy_input_mode": "interrupt",
+                    "platforms": {
+                        "sendblue": {"busy_input_mode": "steer"},
+                    },
+                }
+            },
+        )
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"  # global default
+        adapter = _make_adapter(platform_val="sendblue")
+
+        event = _make_event(text="steer this", platform_val="sendblue")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event") as mock_merge:
+            await runner._handle_active_session_busy_message(event, sk)
+
+        # Steer was used — agent was NOT interrupted
+        agent.steer.assert_called_once_with("steer this")
+        agent.interrupt.assert_not_called()
+        mock_merge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_platform_interrupt_overrides_global_steer(self, monkeypatch):
+        """sendblue configured as interrupt, global is steer — sendblue gets interrupt."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {
+                "display": {
+                    "busy_input_mode": "steer",
+                    "platforms": {
+                        "sendblue": {"busy_input_mode": "interrupt"},
+                    },
+                }
+            },
+        )
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"  # global default
+        adapter = _make_adapter(platform_val="sendblue")
+
+        event = _make_event(text="interrupt this", platform_val="sendblue")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 600
+
+        with patch("gateway.run.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        # Interrupt was used — agent was NOT steered
+        agent.interrupt.assert_called_once_with("interrupt this")
+        if hasattr(agent, "steer"):
+            agent.steer.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_platform_uses_global(self, monkeypatch):
+        """telegram has no platform override — falls back to global busy_input_mode."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {
+                "display": {
+                    "busy_input_mode": "queue",
+                    "platforms": {
+                        "sendblue": {"busy_input_mode": "steer"},
+                    },
+                }
+            },
+        )
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        runner._busy_text_mode = "queue"  # realistic production default
+        adapter = _make_adapter(platform_val="telegram")
+
+        event = _make_event(text="queue me", platform_val="telegram")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        # With busy_text_mode="queue" + effective_mode="queue", the handler
+        # returns False (early exit for text in queue mode). The actual queueing
+        # is handled by the caller via the adapter's _pending_messages.
+        assert result is False
+        agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_per_platform_interrupt_demoted_with_subagents(self, monkeypatch):
+        """Per-platform interrupt override also gets demoted to queue when
+        subagents are active (#30170 interaction)."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {
+                "display": {
+                    "busy_input_mode": "queue",
+                    "platforms": {
+                        "sendblue": {"busy_input_mode": "interrupt"},
+                    },
+                }
+            },
+        )
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter(platform_val="sendblue")
+
+        event = _make_event(text="don't kill my subagents", platform_val="sendblue")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        # Parent with active subagents
+        parent = MagicMock()
+        parent._active_children = [MagicMock()]
+        runner._running_agents[sk] = parent
+
+        with patch("gateway.run.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        # Per-platform interrupt demoted to queue — parent.interrupt NOT called
+        parent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_invalid_per_platform_value_through_handler(self, monkeypatch):
+        """Invalid per-platform busy_input_mode falls through to global,
+        not silently forced to interrupt."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {
+                "display": {
+                    "busy_input_mode": "steer",
+                    "platforms": {
+                        "sendblue": {"busy_input_mode": "steerr"},  # typo
+                    },
+                }
+            },
+        )
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter(platform_val="sendblue")
+
+        event = _make_event(text="should steer not interrupt", platform_val="sendblue")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event") as mock_merge:
+            await runner._handle_active_session_busy_message(event, sk)
+
+        # Typo in platform override → skipped → global "steer" used
+        agent.steer.assert_called_once_with("should steer not interrupt")
+        agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_per_platform_steer_fallback_to_queue_when_agent_pending(self, monkeypatch):
+        """Per-platform steer falls back to queue when agent is still starting."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {
+                "display": {
+                    "busy_input_mode": "interrupt",
+                    "platforms": {
+                        "sendblue": {"busy_input_mode": "steer"},
+                    },
+                }
+            },
+        )
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter(platform_val="sendblue")
+
+        event = _make_event(text="arrived too early", platform_val="sendblue")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        # Agent is still being set up — sentinel in place
+        runner._running_agents[sk] = _sentinel
+
+        with patch("gateway.run.merge_pending_message_event") as mock_merge:
+            await runner._handle_active_session_busy_message(event, sk)
+
+        # Steer can't work with sentinel → falls back to queue
+        mock_merge.assert_called_once()
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
+        assert "Queued for the next turn" in content

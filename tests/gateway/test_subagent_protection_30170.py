@@ -210,6 +210,14 @@ class TestBusyHandlerDemotesInterruptForSubagents:
     """The Phase-1 fix from #30170: parent.interrupt() must NOT fire when
     the parent is currently driving subagents."""
 
+    @pytest.fixture(autouse=True)
+    def _no_gateway_config(self, monkeypatch):
+        """Mock _load_gateway_config to return empty dict so tests control
+        busy_input_mode purely via runner._busy_input_mode, not the real
+        display config on disk."""
+        import gateway.run as _gr
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
     @pytest.mark.asyncio
     async def test_does_not_call_interrupt_when_subagents_active(self) -> None:
         runner = _make_runner()

@@ -34,16 +34,7 @@ MODELS = {
         "strengths": ["fast", "local", "cheap", "good_for_simple"],
         "max_tokens": 4096,
     },
-    "mac-ollama:qwen3-coder:30b-a3b-q4_k_M": {
-        "provider": "mac-ollama",
-        "model": "qwen3-coder:30b-a3b-q4_k_M",
-        "context_length": 16384,
-        "cost_per_1k_input": 0.0,
-        "cost_per_1k_output": 0.0,
-        "latency_estimate_ms": 800,
-        "strengths": ["code_generation", "reasoning", "review", "long_context", "best_local"],
-        "max_tokens": 8192,
-    },
+    
     "linux-ollama:qwen3:8b": {
         "provider": "linux-ollama",
         "model": "qwen3:8b",

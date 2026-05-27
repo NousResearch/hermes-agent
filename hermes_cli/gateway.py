@@ -966,6 +966,18 @@ def _probe_launchd_service_running() -> bool:
         )
     except subprocess.TimeoutExpired:
         return False
+    if result.returncode == 0:
+        return True
+
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"{_launchd_domain()}/{get_launchd_label()}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return False
     return result.returncode == 0
 
 
@@ -3083,6 +3095,7 @@ def launchd_restart():
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
+    target = f"{_launchd_domain()}/{label}"
     try:
         result = subprocess.run(
             ["launchctl", "list", label],
@@ -3095,6 +3108,20 @@ def launchd_status(deep: bool = False):
     except subprocess.TimeoutExpired:
         loaded = False
         loaded_output = ""
+
+    if not loaded:
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", target],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                loaded = True
+                loaded_output = f"{target} is loaded (verified via launchctl print)\n"
+        except subprocess.TimeoutExpired:
+            pass
 
     print(f"Launchd plist: {plist_path}")
     if launchd_plist_is_current():

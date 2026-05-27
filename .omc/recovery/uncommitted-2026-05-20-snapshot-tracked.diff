@@ -1,0 +1,518 @@
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+index e7a14faf5..a808c7626 100644
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -763,6 +763,104 @@ class ContextCompressor(ContextEngine):
+ 
+         return "\n\n".join(parts)
+ 
++    def _build_extractive_fallback_summary(
++        self,
++        turns_to_summarize: List[Dict[str, Any]],
++        *,
++        dropped_count: int,
++        error_text: str,
++    ) -> str:
++        """Build a deterministic summary when the LLM summarizer is unavailable.
++
++        This is deliberately extractive rather than clever: preserve the most
++        recent user requests, assistant/tool actions, file paths, and command
++        snippets so compression failure degrades to a usable checkpoint instead
++        of a bare "context was lost" marker.  It never calls an LLM, so it works
++        during provider timeouts and keeps gateway turns moving.
++        """
++        serialized = self._serialize_for_summary(turns_to_summarize)
++        lines = [line.strip() for line in serialized.splitlines() if line.strip()]
++
++        latest_user = "None."
++        completed: list[str] = []
++        relevant_files: list[str] = []
++        critical: list[str] = []
++        file_pattern = re.compile(r"(?:(?:/|\./|~/)[\w.\-()/]+|[\w.\-()/]+\.(?:py|ts|tsx|js|jsx|json|ya?ml|md|toml|sh|txt))")
++        command_pattern = re.compile(r"`([^`]{3,160})`")
++
++        for line in lines:
++            if line.startswith("[USER]:"):
++                latest_user = line[len("[USER]:"):].strip() or latest_user
++            if line.startswith(("[ASSISTANT]:", "[TOOL RESULT")):
++                text = line
++                if len(text) > 280:
++                    text = text[:277].rstrip() + "..."
++                if text not in completed:
++                    completed.append(text)
++            for match in file_pattern.findall(line):
++                if match not in relevant_files:
++                    relevant_files.append(match)
++            for match in command_pattern.findall(line):
++                item = f"Command seen: `{match}`"
++                if item not in critical:
++                    critical.append(item)
++
++        recent_lines = lines[-12:]
++        recent = []
++        for line in recent_lines:
++            if len(line) > 320:
++                line = line[:317].rstrip() + "..."
++            recent.append(f"- {line}")
++
++        completed_block = "\n".join(
++            f"{idx}. {item}" for idx, item in enumerate(completed[-12:], start=1)
++        ) or "None captured."
++        files_block = "\n".join(f"- {item}" for item in relevant_files[:30]) or "None captured."
++        critical_block = "\n".join(f"- {item}" for item in critical[:20]) or "None captured."
++        recent_block = "\n".join(recent) or "- No recoverable text captured."
++
++        return self._with_summary_prefix(redact_sensitive_text(f"""## Active Task
++{latest_user}
++
++## Goal
++Continue the latest user request using the remaining live transcript and current filesystem/state. This checkpoint was generated locally because the LLM compression summarizer failed.
++
++## Constraints & Preferences
++Preserve user preferences from the system prompt and persistent memory. Treat this extractive summary as incomplete but authoritative for the dropped turns it quotes.
++
++## Completed Actions
++{completed_block}
++
++## Active State
++Compression fallback used after dropping {dropped_count} message(s). Summarizer error: {error_text or 'unknown'}.
++
++## In Progress
++Resume from the latest user request and the recent live tail after this summary.
++
++## Blocked
++LLM context summary generation failed; Hermes used deterministic extractive fallback instead of a bare context-loss marker.
++
++## Key Decisions
++None inferred by fallback summarizer.
++
++## Resolved Questions
++Unknown — fallback summarizer preserves excerpts only.
++
++## Pending User Asks
++{latest_user}
++
++## Relevant Files
++{files_block}
++
++## Remaining Work
++Inspect current repository/session state as needed, then continue without relying on dropped raw turns.
++
++## Critical Context
++{critical_block}
++
++## Recent Dropped-Turn Excerpts
++{recent_block}"""))
++
+     def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
+         """Switch from a separate ``summary_model`` back to the main model.
+ 
+@@ -1494,12 +1592,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
+             n_dropped = compress_end - compress_start
+             self._last_summary_dropped_count = n_dropped
+             self._last_summary_fallback_used = True
+-            summary = (
+-                f"{SUMMARY_PREFIX}\n"
+-                f"Summary generation was unavailable. {n_dropped} message(s) were "
+-                f"removed to free context space but could not be summarized. The removed "
+-                f"messages contained earlier work in this session. Continue based on the "
+-                f"recent messages below and the current state of any files or resources."
++            err_text = getattr(self, "_last_summary_error", None) or "unknown error"
++            summary = self._build_extractive_fallback_summary(
++                turns_to_summarize,
++                dropped_count=n_dropped,
++                error_text=err_text,
+             )
+ 
+         _merge_summary_into_tail = False
+diff --git a/gateway/run.py b/gateway/run.py
+index f9a282a41..c6472961a 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -8956,9 +8956,14 @@ class GatewayRunner:
+         # When running under a service manager (systemd/launchd), use the
+         # service restart path: exit with code 75 so the service manager
+         # restarts us.  The detached subprocess approach (setsid + bash)
+-        # doesn't work under systemd because KillMode=mixed kills all
+-        # processes in the cgroup, including the detached helper.
+-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
++        # is fragile under service managers: systemd may kill the whole
++        # cgroup, while launchd may leave the job unloaded if shutdown and
++        # bootstrap race each other.  Detect both managers explicitly.
++        _under_service = bool(
++            os.environ.get("INVOCATION_ID")  # systemd
++            or os.environ.get("LAUNCH_JOBKEY_LABEL")  # launchd
++            or os.environ.get("XPC_SERVICE_NAME")  # launchd
++        )
+         if _under_service:
+             self.request_restart(detached=False, via_service=True)
+         else:
+@@ -15684,6 +15689,27 @@ class GatewayRunner:
+             _approval_session_token = set_current_session_key(_approval_session_key)
+             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+             try:
++                # Hydrate last prompt-token usage from the gateway session entry
++                # before run_conversation() performs context-rollover preflight.
++                # Gateway agents can be freshly constructed on cache miss,
++                # config-signature change, or gateway restart; in those cases the
++                # in-memory ContextCompressor starts at last_prompt_tokens=0 even
++                # though SessionEntry persisted the previous API-reported prompt
++                # size.  Without this, fresh_subagent rollover silently falls
++                # back to a rough estimate and can miss high-context Slack
++                # thread turns that should be delegated.
++                try:
++                    _stored_entry = self.session_store._entries.get(session_key) if session_key else None
++                    _stored_prompt_tokens = int(getattr(_stored_entry, "last_prompt_tokens", 0) or 0)
++                    if _stored_prompt_tokens > 0 and hasattr(agent, "context_compressor"):
++                        _current_prompt_tokens = int(
++                            getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0
++                        )
++                        if _current_prompt_tokens <= 0:
++                            agent.context_compressor.last_prompt_tokens = _stored_prompt_tokens
++                except Exception as _hydrate_err:
++                    logger.debug("last_prompt_tokens hydration skipped: %s", _hydrate_err)
++
+                 # If _prepare_inbound_message_text buffered image paths for native
+                 # attachment, wrap the user turn as an OpenAI-style multimodal
+                 # content list. Consume-and-clear so subsequent turns on the same
+diff --git a/hermes_cli/config.py b/hermes_cli/config.py
+index 574f2397d..fb6d89c28 100644
+--- a/hermes_cli/config.py
++++ b/hermes_cli/config.py
+@@ -773,6 +773,15 @@ DEFAULT_CONFIG = {
+                                       # system prompt + rolling summary + recent tail.
+     },
+ 
++    "context_rollover": {
++        "enabled": False,             # when true, nudge large sessions to delegate long work to a fresh child
++        "warn_threshold": 0.30,       # reserved for status/UI warnings
++        "rollover_threshold": 0.40,   # inject fresh-session handoff at this context usage ratio
++        "hard_threshold": 0.60,       # reserved for future force-rollover policies
++        "mode": "fresh_subagent",    # fresh_subagent | compress_only
++        "max_handoff_messages": 12,   # recent transcript tail included in handoff prompt
++    },
++
+     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
+     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
+     "prompt_caching": {
+diff --git a/run_agent.py b/run_agent.py
+index 1dd4219b2..68a53441a 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -2368,6 +2368,24 @@ class AIAgent:
+             )
+         self.compression_enabled = compression_enabled
+ 
++        try:
++            from agent.context_rollover import ContextRolloverConfig
++            _rollover_cfg_raw = {}
++            if isinstance(_agent_cfg, dict):
++                # ``context_rollover`` is a top-level config section.  Older
++                # experimental builds briefly looked under ``agent``; keep that
++                # as a fallback so profile-local configs from that window still
++                # work, but prefer the documented location.
++                _rollover_cfg_raw = _agent_cfg.get("context_rollover")
++                if not isinstance(_rollover_cfg_raw, dict):
++                    _rollover_cfg_raw = (_agent_cfg.get("agent", {}) or {}).get("context_rollover", {})
++            self.context_rollover_config = ContextRolloverConfig.from_mapping(
++                _rollover_cfg_raw if isinstance(_rollover_cfg_raw, dict) else {}
++            )
++        except Exception as _rollover_cfg_err:
++            logger.warning("Context rollover config ignored: %s", _rollover_cfg_err)
++            self.context_rollover_config = None
++
+         # Reject models whose context window is below the minimum required
+         # for reliable tool-calling workflows (64K tokens).
+         from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+@@ -10695,7 +10713,7 @@ class AIAgent:
+                 self._last_compression_summary_warning = summary_error
+                 self._emit_warning(
+                     f"⚠ Compression summary failed: {summary_error}. "
+-                    "Inserted a fallback context marker."
++                    "Inserted a deterministic extractive fallback summary."
+                 )
+         else:
+             # No hard failure — but did the configured aux model error out
+@@ -10914,6 +10932,35 @@ class AIAgent:
+             parent_agent=self,
+         )
+ 
++    @staticmethod
++    def _format_forced_rollover_result(delegate_result: str) -> str:
++        """Turn a forced rollover delegate_task result into user-facing text.
++
++        Normal delegate_task calls feed JSON back to the parent model for
++        synthesis.  Forced rollover intentionally skips another parent-model
++        turn, so extract the child summary directly and fall back to the raw
++        result if the shape is unexpected.
++        """
++        try:
++            payload = json.loads(delegate_result or "{}")
++            if isinstance(payload, dict):
++                results = payload.get("results")
++                if isinstance(results, list) and results:
++                    first = results[0]
++                    if isinstance(first, dict):
++                        summary = first.get("summary") or first.get("final_response")
++                        if summary:
++                            return str(summary)
++                        error = first.get("error")
++                        if error:
++                            return f"Fresh-session delegation failed: {error}"
++                error = payload.get("error")
++                if error:
++                    return f"Fresh-session delegation failed: {error}"
++        except Exception:
++            pass
++        return str(delegate_result or "Fresh-session delegation completed without a summary.")
++
+     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
+                      tool_call_id: Optional[str] = None, messages: list = None,
+                      pre_tool_block_checked: bool = False) -> str:
+@@ -12305,6 +12352,89 @@ class AIAgent:
+         messages.append(user_msg)
+         current_turn_user_idx = len(messages) - 1
+         self._persist_user_message_idx = current_turn_user_idx
++
++        # Proactive context rollover: when the parent session is already large,
++        # force substantial continued work into a fresh delegate_task child
++        # instead of dragging the full parent transcript through more tool
++        # iterations.  The parent thread keeps continuity; the heavy work gets
++        # a clean child context.
++        _rollover_dispatch_started = False
++        try:
++            from agent.context_rollover import build_usage_snapshot, maybe_build_rollover_handoff
++
++            _rollover_cfg = getattr(self, "context_rollover_config", None)
++            _ctx_len = int(getattr(self.context_compressor, "context_length", 0) or 0)
++            _last_prompt = int(getattr(self.context_compressor, "last_prompt_tokens", 0) or 0)
++            if _last_prompt > 0:
++                _rollover_tokens = _last_prompt
++                _rollover_source = "actual"
++            else:
++                _rollover_tokens = estimate_request_tokens_rough(messages, tools=self.tools or None)
++                _rollover_source = "estimated"
++            _rollover_snapshot = build_usage_snapshot(
++                prompt_tokens=_rollover_tokens,
++                context_length=_ctx_len,
++                source=_rollover_source,
++            )
++            _rollover_handoff = maybe_build_rollover_handoff(
++                config=_rollover_cfg,
++                snapshot=_rollover_snapshot,
++                messages=messages,
++                user_message=user_message,
++                cwd=os.getcwd(),
++                valid_tool_names=getattr(self, "valid_tool_names", set()),
++            ) if _rollover_cfg else None
++            if _rollover_handoff:
++                # Rollover is a control-plane decision, not a suggestion to the
++                # model.  Older behavior appended a handoff prompt to the user
++                # message and hoped the model would call delegate_task; in busy
++                # gateway threads that often kept heavy work in the bloated
++                # parent session.  Force the fresh child session here before the
++                # next model call so thread continuity is preserved while tool
++                # work happens with a clean context.
++                if persist_user_message is None:
++                    self._persist_user_message_override = original_user_message
++                self._emit_status(
++                    f"↪ Context {(_rollover_snapshot.percent * 100):.0f}% — delegating to fresh session"
++                )
++                _rollover_dispatch_started = True
++                _delegate_result = self._dispatch_delegate_task({
++                    "goal": user_message,
++                    "context": _rollover_handoff,
++                })
++                final_response = self._format_forced_rollover_result(_delegate_result)
++                messages.append({"role": "assistant", "content": final_response})
++                self._persist_session(messages, conversation_history)
++                self._cleanup_task_resources(effective_task_id)
++                return {
++                    "final_response": final_response,
++                    "last_reasoning": None,
++                    "messages": messages,
++                    "api_calls": 0,
++                    "completed": True,
++                    "turn_exit_reason": "context_rollover_delegate",
++                    "partial": False,
++                    "interrupted": False,
++                    "model": self.model,
++                    "provider": self.provider,
++                    "base_url": self.base_url,
++                    "input_tokens": self.session_input_tokens,
++                    "output_tokens": self.session_output_tokens,
++                    "cache_read_tokens": self.session_cache_read_tokens,
++                    "cache_write_tokens": self.session_cache_write_tokens,
++                    "reasoning_tokens": self.session_reasoning_tokens,
++                    "prompt_tokens": self.session_prompt_tokens,
++                    "completion_tokens": self.session_completion_tokens,
++                    "total_tokens": self.session_total_tokens,
++                    "last_prompt_tokens": getattr(self.context_compressor, "last_prompt_tokens", 0) or 0,
++                    "estimated_cost_usd": self.session_estimated_cost_usd,
++                    "cost_status": self.session_cost_status,
++                    "cost_source": self.session_cost_source,
++                }
++        except Exception as _rollover_err:
++            if _rollover_dispatch_started:
++                raise
++            logger.debug("Context rollover preflight skipped: %s", _rollover_err, exc_info=True)
+         
+         if not self.quiet_mode:
+             _print_preview = _summarize_user_message_for_log(user_message)
+diff --git a/tests/agent/test_context_compressor.py b/tests/agent/test_context_compressor.py
+index 559cf2237..e0e5b74d1 100644
+--- a/tests/agent/test_context_compressor.py
++++ b/tests/agent/test_context_compressor.py
+@@ -727,9 +727,9 @@ class TestSummaryFailureTrackingForGatewayWarning:
+         msgs = [
+             {"role": "system", "content": "sys"},
+             {"role": "user", "content": "msg 1"},
+-            {"role": "assistant", "content": "msg 2"},
+-            {"role": "user", "content": "msg 3"},
+-            {"role": "assistant", "content": "msg 4"},
++            {"role": "assistant", "content": "read `pytest tests/agent/test_context_compressor.py -q`"},
++            {"role": "tool", "content": "edited agent/context_compressor.py successfully"},
++            {"role": "user", "content": "please inspect agent/context_compressor.py and run `pytest tests/agent/test_context_compressor.py -q`"},
+             {"role": "user", "content": "msg 5"},
+             {"role": "assistant", "content": "msg 6"},
+             {"role": "user", "content": "msg 7"},
+@@ -743,11 +743,14 @@ class TestSummaryFailureTrackingForGatewayWarning:
+         assert c._last_summary_fallback_used is True
+         assert c._last_summary_dropped_count > 0
+         assert c._last_summary_error is not None
+-        # Result must still be well-formed (fallback summary present).
+-        assert any(
+-            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
+-            for m in result
+-        )
++        # Result must still be well-formed (extractive fallback summary present).
++        summaries = [
++            m.get("content", "") for m in result
++            if isinstance(m.get("content"), str) and "Compression fallback used" in m["content"]
++        ]
++        assert summaries
++        assert "agent/context_compressor.py" in summaries[0]
++        assert "pytest tests/agent/test_context_compressor.py -q" in summaries[0]
+ 
+     def test_compress_clears_fallback_flag_on_subsequent_success(self):
+         mock_response = MagicMock()
+diff --git a/tests/run_agent/test_run_agent.py b/tests/run_agent/test_run_agent.py
+index cd62cd41d..4a39de456 100644
+--- a/tests/run_agent/test_run_agent.py
++++ b/tests/run_agent/test_run_agent.py
+@@ -2530,6 +2530,57 @@ class TestRunConversation:
+         assert result["final_response"] == "Final answer"
+         assert result["completed"] is True
+ 
++    def test_context_rollover_forces_fresh_subagent_for_large_long_task(self, agent):
++        from agent.context_rollover import ContextRolloverConfig
++
++        self._setup_agent(agent)
++        agent.valid_tool_names.add("delegate_task")
++        agent.context_rollover_config = ContextRolloverConfig.from_mapping({"enabled": True})
++        agent.context_compressor.context_length = 100_000
++        agent.context_compressor.last_prompt_tokens = 45_000
++        delegate_payload = '{"results":[{"status":"success","summary":"Delegated result"}]}'
++
++        with (
++            patch.object(agent, "_dispatch_delegate_task", return_value=delegate_payload) as mock_delegate,
++            patch.object(agent, "_persist_session") as mock_persist,
++            patch.object(agent, "_save_trajectory"),
++            patch.object(agent, "_cleanup_task_resources"),
++        ):
++            result = agent.run_conversation("fix the build and run tests")
++
++        assert result["final_response"] == "Delegated result"
++        assert result["turn_exit_reason"] == "context_rollover_delegate"
++        assert result["api_calls"] == 0
++        agent.client.chat.completions.create.assert_not_called()
++        delegate_args = mock_delegate.call_args.args[0]
++        assert delegate_args["goal"] == "fix the build and run tests"
++        assert "CONTEXT ROLLOVER HANDOFF" in delegate_args["context"]
++        assert "delegate_task" in delegate_args["context"]
++        persisted_messages = mock_persist.call_args.args[0]
++        assert persisted_messages[-1] == {"role": "assistant", "content": "Delegated result"}
++
++    def test_context_rollover_skips_short_reply_even_when_large(self, agent):
++        from agent.context_rollover import ContextRolloverConfig
++
++        self._setup_agent(agent)
++        agent.valid_tool_names.add("delegate_task")
++        agent.context_rollover_config = ContextRolloverConfig.from_mapping({"enabled": True})
++        agent.context_compressor.context_length = 100_000
++        agent.context_compressor.last_prompt_tokens = 45_000
++        resp = _mock_response(content="You're welcome", finish_reason="stop")
++        agent.client.chat.completions.create.return_value = resp
++
++        with (
++            patch.object(agent, "_persist_session"),
++            patch.object(agent, "_save_trajectory"),
++            patch.object(agent, "_cleanup_task_resources"),
++        ):
++            result = agent.run_conversation("thanks")
++
++        assert result["final_response"] == "You're welcome"
++        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
++        assert all("CONTEXT ROLLOVER HANDOFF" not in (m.get("content") or "") for m in sent_messages)
++
+     def test_tool_calls_then_stop(self, agent):
+         self._setup_agent(agent)
+         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+diff --git a/toolsets.py b/toolsets.py
+index 5de07e4c7..7038b15d0 100644
+--- a/toolsets.py
++++ b/toolsets.py
+@@ -54,6 +54,9 @@ _HERMES_CORE_TOOLS = [
+     "clarify",
+     # Code execution + delegation
+     "execute_code", "delegate_task",
++    # External LLM wrappers (Claude Code/Opus/Review, Codex web/consult, Gemini scan)
++    "claude_code_task", "claude_plan_task", "claude_opus_task", "claude_review_task",
++    "codex_web_research", "codex_consult_task", "gemini_scan_task",
+     # Cronjob management
+     "cronjob",
+     # Cross-platform messaging (gated on gateway running via check_fn)
+@@ -150,6 +153,15 @@ TOOLSETS = {
+         "tools": ["mixture_of_agents"],
+         "includes": []
+     },
++
++    "external_llm": {
++        "description": "Route heavy work to local Claude Code, Claude Opus/Review, Codex web/consult, and Gemini CLI wrappers",
++        "tools": [
++            "claude_code_task", "claude_plan_task", "claude_opus_task", "claude_review_task",
++            "codex_web_research", "codex_consult_task", "gemini_scan_task",
++        ],
++        "includes": []
++    },
+     
+     "skills": {
+         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
+diff --git a/website/docs/user-guide/configuration.md b/website/docs/user-guide/configuration.md
+index 77e5d74ad..a06acc90c 100644
+--- a/website/docs/user-guide/configuration.md
++++ b/website/docs/user-guide/configuration.md
+@@ -607,6 +607,14 @@ compression:
+   protect_last_n: 20                                # Min recent messages to keep uncompressed
+   hygiene_hard_message_limit: 400                   # Gateway safety valve — see below
+ 
++context_rollover:
++  enabled: false                                    # Nudge large sessions to delegate long work to a fresh child
++  warn_threshold: 0.30                              # Reserved for status/UI warnings
++  rollover_threshold: 0.40                          # Build fresh-session handoff at this context usage ratio
++  hard_threshold: 0.60                              # Reserved for future force-rollover policies
++  mode: fresh_subagent                              # fresh_subagent | compress_only
++  max_handoff_messages: 12                          # Recent transcript tail included in handoff prompt
++
+ # The summarization model/provider is configured under auxiliary:
+ auxiliary:
+   compression:
+@@ -621,6 +629,8 @@ Older configs with `compression.summary_model`, `compression.summary_provider`,
+ 
+ `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. Runaway sessions with thousands of messages can hit model context limits before the normal percent-of-context threshold fires; when message count crosses this ceiling, Hermes forces compression regardless of token usage. Default `400` — raise it for platforms where very long sessions are normal, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
+ 
++`context_rollover` is a proactive quality-preservation layer for large sessions. When enabled and a substantial request arrives after `rollover_threshold`, Hermes injects a temporary handoff nudge telling the parent agent to use `delegate_task` for fresh-context work. Short conversational replies are skipped, the synthetic handoff is not persisted into session history, and upstream defaults keep the feature disabled unless explicitly configured.
++
+ :::tip Gateway hot-reload of compression and context length
+ As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.
+ :::

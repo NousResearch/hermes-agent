@@ -140,6 +140,36 @@ class TestResolveChannelPrompts:
         }
         assert adapter._resolve_channel_prompt("999", parent_id="200") == "Thread override"
 
+    def test_wildcard_prompt_applies_to_any_channel(self):
+        adapter = _make_adapter()
+        adapter.config.extra = {"channel_prompts": {"*": "Global channel prompt"}}
+        assert adapter._resolve_channel_prompt("unknown") == "Global channel prompt"
+
+    def test_exact_prompt_overrides_wildcard_prompt(self):
+        adapter = _make_adapter()
+        adapter.config.extra = {
+            "channel_prompts": {
+                "*": "Global channel prompt",
+                "123": "Specific channel prompt",
+            }
+        }
+        assert adapter._resolve_channel_prompt("123") == "Specific channel prompt"
+
+    def test_default_prompt_fallback_applies_after_wildcard(self):
+        adapter = _make_adapter()
+        adapter.config.extra = {"channel_prompts": {"default": "Default prompt"}}
+        assert adapter._resolve_channel_prompt("unknown") == "Default prompt"
+
+    def test_wildcard_prompt_overrides_default_prompt(self):
+        adapter = _make_adapter()
+        adapter.config.extra = {
+            "channel_prompts": {
+                "*": "Wildcard prompt",
+                "default": "Default prompt",
+            }
+        }
+        assert adapter._resolve_channel_prompt("unknown") == "Wildcard prompt"
+
     def test_build_message_event_sets_channel_prompt(self):
         adapter = _make_adapter()
         adapter.config.extra = {"channel_prompts": {"321": "Command prompt"}}

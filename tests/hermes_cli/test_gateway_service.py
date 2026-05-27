@@ -38,6 +38,10 @@ class TestUserSystemdPrivateSocketPreflight:
 
 
 class TestSystemdServiceRefresh:
+    @pytest.fixture(autouse=True)
+    def _skip_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
+
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
@@ -678,6 +682,46 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
+    def test_launchd_status_falls_back_to_print_when_list_misses_loaded_job(self, tmp_path, monkeypatch, capsys):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
+            if cmd[:2] == ["launchctl", "print"]:
+                return SimpleNamespace(returncode=0, stdout="state = running\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_status()
+
+        output = capsys.readouterr().out
+        assert "matches the current Hermes install" in output
+        assert "Gateway service is loaded" in output
+        assert "verified via launchctl print" in output
+        assert "not loaded" not in output
+
+    def test_probe_launchd_service_running_falls_back_to_print(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
+            if cmd[:2] == ["launchctl", "print"]:
+                return SimpleNamespace(returncode=0, stdout="state = running\n", stderr="")
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._probe_launchd_service_running() is True
+
 
 class TestGatewayServiceDetection:
     def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):
@@ -737,6 +781,10 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _skip_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 

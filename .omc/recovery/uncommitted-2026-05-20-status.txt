@@ -1,0 +1,23 @@
+ M agent/context_compressor.py
+ M gateway/run.py
+ M hermes_cli/config.py
+ M run_agent.py
+ M tests/agent/test_context_compressor.py
+ M tests/run_agent/test_run_agent.py
+ M toolsets.py
+ M website/docs/user-guide/configuration.md
+?? .omc/
+?? .playwright-mcp/
+?? agent/context_rollover.py
+?? mcid_original_overlays/
+?? mcid_premium_original_overlays/
+?? mcid_revised_ad_1.png
+?? mcid_revised_ad_2.png
+?? mcid_revised_ad_3.png
+?? mcid_revised_ad_4.png
+?? mcid_revised_designs_board.png
+?? memory/
+?? stitch_mcid/
+?? tests/agent/test_context_rollover.py
+?? tests/tools/test_external_llm_tools.py
+?? tools/external_llm_tools.py

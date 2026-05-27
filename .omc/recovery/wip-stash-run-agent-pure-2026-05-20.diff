@@ -1,0 +1,164 @@
+diff --git a/run_agent.py b/run_agent.py
+index 1dd4219b2..68a53441a 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -2368,6 +2368,24 @@ class AIAgent:
+             )
+         self.compression_enabled = compression_enabled
+ 
++        try:
++            from agent.context_rollover import ContextRolloverConfig
++            _rollover_cfg_raw = {}
++            if isinstance(_agent_cfg, dict):
++                # ``context_rollover`` is a top-level config section.  Older
++                # experimental builds briefly looked under ``agent``; keep that
++                # as a fallback so profile-local configs from that window still
++                # work, but prefer the documented location.
++                _rollover_cfg_raw = _agent_cfg.get("context_rollover")
++                if not isinstance(_rollover_cfg_raw, dict):
++                    _rollover_cfg_raw = (_agent_cfg.get("agent", {}) or {}).get("context_rollover", {})
++            self.context_rollover_config = ContextRolloverConfig.from_mapping(
++                _rollover_cfg_raw if isinstance(_rollover_cfg_raw, dict) else {}
++            )
++        except Exception as _rollover_cfg_err:
++            logger.warning("Context rollover config ignored: %s", _rollover_cfg_err)
++            self.context_rollover_config = None
++
+         # Reject models whose context window is below the minimum required
+         # for reliable tool-calling workflows (64K tokens).
+         from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+@@ -10695,7 +10713,7 @@ class AIAgent:
+                 self._last_compression_summary_warning = summary_error
+                 self._emit_warning(
+                     f"⚠ Compression summary failed: {summary_error}. "
+-                    "Inserted a fallback context marker."
++                    "Inserted a deterministic extractive fallback summary."
+                 )
+         else:
+             # No hard failure — but did the configured aux model error out
+@@ -10914,6 +10932,35 @@ class AIAgent:
+             parent_agent=self,
+         )
+ 
++    @staticmethod
++    def _format_forced_rollover_result(delegate_result: str) -> str:
++        """Turn a forced rollover delegate_task result into user-facing text.
++
++        Normal delegate_task calls feed JSON back to the parent model for
++        synthesis.  Forced rollover intentionally skips another parent-model
++        turn, so extract the child summary directly and fall back to the raw
++        result if the shape is unexpected.
++        """
++        try:
++            payload = json.loads(delegate_result or "{}")
++            if isinstance(payload, dict):
++                results = payload.get("results")
++                if isinstance(results, list) and results:
++                    first = results[0]
++                    if isinstance(first, dict):
++                        summary = first.get("summary") or first.get("final_response")
++                        if summary:
++                            return str(summary)
++                        error = first.get("error")
++                        if error:
++                            return f"Fresh-session delegation failed: {error}"
++                error = payload.get("error")
++                if error:
++                    return f"Fresh-session delegation failed: {error}"
++        except Exception:
++            pass
++        return str(delegate_result or "Fresh-session delegation completed without a summary.")
++
+     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
+                      tool_call_id: Optional[str] = None, messages: list = None,
+                      pre_tool_block_checked: bool = False) -> str:
+@@ -12305,6 +12352,89 @@ class AIAgent:
+         messages.append(user_msg)
+         current_turn_user_idx = len(messages) - 1
+         self._persist_user_message_idx = current_turn_user_idx
++
++        # Proactive context rollover: when the parent session is already large,
++        # force substantial continued work into a fresh delegate_task child
++        # instead of dragging the full parent transcript through more tool
++        # iterations.  The parent thread keeps continuity; the heavy work gets
++        # a clean child context.
++        _rollover_dispatch_started = False
++        try:
++            from agent.context_rollover import build_usage_snapshot, maybe_build_rollover_handoff
++
++            _rollover_cfg = getattr(self, "context_rollover_config", None)
++            _ctx_len = int(getattr(self.context_compressor, "context_length", 0) or 0)
++            _last_prompt = int(getattr(self.context_compressor, "last_prompt_tokens", 0) or 0)
++            if _last_prompt > 0:
++                _rollover_tokens = _last_prompt
++                _rollover_source = "actual"
++            else:
++                _rollover_tokens = estimate_request_tokens_rough(messages, tools=self.tools or None)
++                _rollover_source = "estimated"
++            _rollover_snapshot = build_usage_snapshot(
++                prompt_tokens=_rollover_tokens,
++                context_length=_ctx_len,
++                source=_rollover_source,
++            )
++            _rollover_handoff = maybe_build_rollover_handoff(
++                config=_rollover_cfg,
++                snapshot=_rollover_snapshot,
++                messages=messages,
++                user_message=user_message,
++                cwd=os.getcwd(),
++                valid_tool_names=getattr(self, "valid_tool_names", set()),
++            ) if _rollover_cfg else None
++            if _rollover_handoff:
++                # Rollover is a control-plane decision, not a suggestion to the
++                # model.  Older behavior appended a handoff prompt to the user
++                # message and hoped the model would call delegate_task; in busy
++                # gateway threads that often kept heavy work in the bloated
++                # parent session.  Force the fresh child session here before the
++                # next model call so thread continuity is preserved while tool
++                # work happens with a clean context.
++                if persist_user_message is None:
++                    self._persist_user_message_override = original_user_message
++                self._emit_status(
++                    f"↪ Context {(_rollover_snapshot.percent * 100):.0f}% — delegating to fresh session"
++                )
++                _rollover_dispatch_started = True
++                _delegate_result = self._dispatch_delegate_task({
++                    "goal": user_message,
++                    "context": _rollover_handoff,
++                })
++                final_response = self._format_forced_rollover_result(_delegate_result)
++                messages.append({"role": "assistant", "content": final_response})
++                self._persist_session(messages, conversation_history)
++                self._cleanup_task_resources(effective_task_id)
++                return {
++                    "final_response": final_response,
++                    "last_reasoning": None,
++                    "messages": messages,
++                    "api_calls": 0,
++                    "completed": True,
++                    "turn_exit_reason": "context_rollover_delegate",
++                    "partial": False,
++                    "interrupted": False,
++                    "model": self.model,
++                    "provider": self.provider,
++                    "base_url": self.base_url,
++                    "input_tokens": self.session_input_tokens,
++                    "output_tokens": self.session_output_tokens,
++                    "cache_read_tokens": self.session_cache_read_tokens,
++                    "cache_write_tokens": self.session_cache_write_tokens,
++                    "reasoning_tokens": self.session_reasoning_tokens,
++                    "prompt_tokens": self.session_prompt_tokens,
++                    "completion_tokens": self.session_completion_tokens,
++                    "total_tokens": self.session_total_tokens,
++                    "last_prompt_tokens": getattr(self.context_compressor, "last_prompt_tokens", 0) or 0,
++                    "estimated_cost_usd": self.session_estimated_cost_usd,
++                    "cost_status": self.session_cost_status,
++                    "cost_source": self.session_cost_source,
++                }
++        except Exception as _rollover_err:
++            if _rollover_dispatch_started:
++                raise
++            logger.debug("Context rollover preflight skipped: %s", _rollover_err, exc_info=True)
+         
+         if not self.quiet_mode:
+             _print_preview = _summarize_user_message_for_log(user_message)

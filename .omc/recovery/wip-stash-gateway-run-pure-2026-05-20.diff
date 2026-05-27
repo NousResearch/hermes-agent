@@ -1,0 +1,50 @@
+diff --git a/gateway/run.py b/gateway/run.py
+index f9a282a41..c6472961a 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -8956,9 +8956,14 @@ class GatewayRunner:
+         # When running under a service manager (systemd/launchd), use the
+         # service restart path: exit with code 75 so the service manager
+         # restarts us.  The detached subprocess approach (setsid + bash)
+-        # doesn't work under systemd because KillMode=mixed kills all
+-        # processes in the cgroup, including the detached helper.
+-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
++        # is fragile under service managers: systemd may kill the whole
++        # cgroup, while launchd may leave the job unloaded if shutdown and
++        # bootstrap race each other.  Detect both managers explicitly.
++        _under_service = bool(
++            os.environ.get("INVOCATION_ID")  # systemd
++            or os.environ.get("LAUNCH_JOBKEY_LABEL")  # launchd
++            or os.environ.get("XPC_SERVICE_NAME")  # launchd
++        )
+         if _under_service:
+             self.request_restart(detached=False, via_service=True)
+         else:
+@@ -15684,6 +15689,27 @@ class GatewayRunner:
+             _approval_session_token = set_current_session_key(_approval_session_key)
+             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+             try:
++                # Hydrate last prompt-token usage from the gateway session entry
++                # before run_conversation() performs context-rollover preflight.
++                # Gateway agents can be freshly constructed on cache miss,
++                # config-signature change, or gateway restart; in those cases the
++                # in-memory ContextCompressor starts at last_prompt_tokens=0 even
++                # though SessionEntry persisted the previous API-reported prompt
++                # size.  Without this, fresh_subagent rollover silently falls
++                # back to a rough estimate and can miss high-context Slack
++                # thread turns that should be delegated.
++                try:
++                    _stored_entry = self.session_store._entries.get(session_key) if session_key else None
++                    _stored_prompt_tokens = int(getattr(_stored_entry, "last_prompt_tokens", 0) or 0)
++                    if _stored_prompt_tokens > 0 and hasattr(agent, "context_compressor"):
++                        _current_prompt_tokens = int(
++                            getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0
++                        )
++                        if _current_prompt_tokens <= 0:
++                            agent.context_compressor.last_prompt_tokens = _stored_prompt_tokens
++                except Exception as _hydrate_err:
++                    logger.debug("last_prompt_tokens hydration skipped: %s", _hydrate_err)
++
+                 # If _prepare_inbound_message_text buffered image paths for native
+                 # attachment, wrap the user turn as an OpenAI-style multimodal
+                 # content list. Consume-and-clear so subsequent turns on the same

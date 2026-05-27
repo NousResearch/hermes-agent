@@ -116,6 +116,14 @@ class TestResolveCommand:
         assert topic.name == "topic"
         assert "topic" in GATEWAY_KNOWN_COMMANDS
 
+    def test_loop_is_core_project_command(self):
+        loop = resolve_command("loop")
+        assert loop is not None
+        assert loop.name == "loop"
+        assert loop.args_hint == "[init|run|status|close] <slug>"
+        assert loop.subcommands == ("init", "run", "status", "close")
+        assert "loop" in GATEWAY_KNOWN_COMMANDS
+
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"

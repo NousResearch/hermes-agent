@@ -106,6 +106,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<prompt>"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | pause | resume | clear | status]"),
+    CommandDef("loop", "Run a simple Hermes-native PRD story loop", "Session",
+               args_hint="[init|run|status|close] <slug>",
+               subcommands=("init", "run", "status", "close")),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session info", "Session"),
@@ -1069,6 +1072,16 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         # Slack description cap is 2000 chars; keep it short.
         entries.append((slack_name, desc[:140], hint[:100]))
         seen.add(slack_name)
+
+    # Keep muscle-memory aliases first-class even when the 50-command Slack
+    # cap squeezes the long tail after new core commands are added.
+    for cmd in COMMAND_REGISTRY:
+        if cmd.name not in {"background", "new", "queue"}:
+            continue
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        for alias in cmd.aliases:
+            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:

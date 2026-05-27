@@ -8635,6 +8635,11 @@ class HermesCLI:
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "loop":
+            from hermes_cli.loops import loop_text
+            parts = cmd_original.split(None, 1)
+            payload = parts[1] if len(parts) > 1 else "status"
+            _cprint(loop_text(payload))
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":

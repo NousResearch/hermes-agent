@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -1569,6 +1570,45 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
 
     auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
 
+    assert is_source_suppressed("copilot", "gh_cli")
+    assert is_source_suppressed("copilot", "env:COPILOT_GITHUB_TOKEN")
+    assert is_source_suppressed("copilot", "env:GH_TOKEN")
+    assert is_source_suppressed("copilot", "env:GITHUB_TOKEN")
+
+
+def test_auth_remove_copilot_env_source_clears_dotenv_and_process_env(tmp_path, monkeypatch):
+    """Copilot env removals must clean the selected env source, not only suppress it."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / ".env").write_text("GH_TOKEN=ghp_fake\nOTHER_KEY=kept\n")
+    monkeypatch.setenv("GH_TOKEN", "ghp_fake")
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "copilot": [{
+                    "id": "c1",
+                    "label": "GH_TOKEN",
+                    "auth_type": "api_key",
+                    "priority": 0,
+                    "source": "env:GH_TOKEN",
+                    "access_token": "ghp_fake",
+                }]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import is_source_suppressed
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
+
+    assert (hermes_home / ".env").read_text() == "OTHER_KEY=kept\n"
+    assert "GH_TOKEN" not in os.environ
     assert is_source_suppressed("copilot", "gh_cli")
     assert is_source_suppressed("copilot", "env:COPILOT_GITHUB_TOKEN")
     assert is_source_suppressed("copilot", "env:GH_TOKEN")

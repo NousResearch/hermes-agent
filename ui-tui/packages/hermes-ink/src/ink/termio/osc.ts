@@ -526,18 +526,36 @@ function* splitTabStatusPairs(data: string): Generator<[string, string]> {
  *  cells with matching URI *and* nonempty id are joined; without an id each
  *  wrapped line is a separate link — inconsistent hover, partial tooltips).
  *  Empty url = close sequence (empty params per spec). */
+function isTerminalControl(code: number): boolean {
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f)
+}
+
+function stripTerminalControls(value: string): string {
+  let clean = ''
+
+  for (const char of value) {
+    if (!isTerminalControl(char.charCodeAt(0))) {
+      clean += char
+    }
+  }
+
+  return clean
+}
+
 export function link(url: string, params?: Record<string, string>): string {
-  if (!url) {
+  const safeUrl = stripTerminalControls(url)
+
+  if (!safeUrl) {
     return LINK_END
   }
 
-  const p = { id: osc8Id(url), ...params }
+  const p = { id: osc8Id(safeUrl), ...params }
 
   const paramStr = Object.entries(p)
-    .map(([k, v]) => `${k}=${v}`)
+    .map(([k, v]) => `${stripTerminalControls(k)}=${stripTerminalControls(v)}`)
     .join(':')
 
-  return osc(OSC.HYPERLINK, paramStr, url)
+  return osc(OSC.HYPERLINK, paramStr, safeUrl)
 }
 
 function osc8Id(url: string): string {

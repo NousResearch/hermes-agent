@@ -26,6 +26,13 @@ import tempfile
 from PIL import Image, ImageDraw
 
 
+MAX_DURATION_SECONDS = 30
+MAX_FPS = 30
+MAX_FRAMES = MAX_DURATION_SECONDS * MAX_FPS
+MAX_SOURCE_PIXELS = 1024 * 1024
+FFMPEG_TIMEOUT_SECONDS = 120
+
+
 # ── Pixel drawing helpers ──────────────────────────────────────────────
 
 def _px(draw, x, y, color, size=2):
@@ -244,6 +251,28 @@ def _ensure_ffmpeg():
         )
 
 
+def _validate_positive_int(name, value, maximum):
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    if value < 1 or value > maximum:
+        raise ValueError(f"{name} must be between 1 and {maximum}")
+
+
+def _validate_render_limits(duration, fps, width, height):
+    _validate_positive_int("duration", duration, MAX_DURATION_SECONDS)
+    _validate_positive_int("fps", fps, MAX_FPS)
+
+    n_frames = duration * fps
+    if n_frames > MAX_FRAMES:
+        raise ValueError(f"duration * fps must not exceed {MAX_FRAMES} frames")
+
+    pixels = width * height
+    if pixels > MAX_SOURCE_PIXELS:
+        raise ValueError(f"source image must not exceed {MAX_SOURCE_PIXELS} pixels")
+
+    return n_frames
+
+
 def pixel_art_video(
     base_image,
     output_path,
@@ -259,8 +288,8 @@ def pixel_art_video(
         base_image: path to source image (ideally already pixel-art styled)
         output_path: path to MP4 output (GIF sibling written if export_gif=True)
         scene: key from SCENES (night, urban, storm, snow, fire, ...)
-        duration: seconds of animation
-        fps: frames per second (default 15 for retro feel)
+        duration: seconds of animation (1-30)
+        fps: frames per second (1-30; default 15 for retro feel)
         seed: optional int for reproducible animation placement
         export_gif: also write a GIF alongside the MP4
 
@@ -271,10 +300,14 @@ def pixel_art_video(
         raise ValueError(
             f"Unknown scene {scene!r}. Choose from: {sorted(SCENES)}"
         )
+    _validate_positive_int("duration", duration, MAX_DURATION_SECONDS)
+    _validate_positive_int("fps", fps, MAX_FPS)
     _ensure_ffmpeg()
 
-    base = Image.open(base_image).convert("RGB")
-    W, H = base.size
+    with Image.open(base_image) as img:
+        W, H = img.size
+        n_frames = _validate_render_limits(duration, fps, W, H)
+        base = img.convert("RGB")
 
     rng = random.Random(seed if seed is not None else 42)
     layers = []
@@ -282,7 +315,6 @@ def pixel_art_video(
         init_fn, draw_fn = _LAYERS[name]
         layers.append((draw_fn, init_fn(rng, W, H)))
 
-    n_frames = fps * duration
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="pixelart_frames_") as frames_dir:
@@ -301,6 +333,7 @@ def pixel_art_video(
              "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
              output_path],
             check=True,
+            timeout=FFMPEG_TIMEOUT_SECONDS,
         )
 
         gif_path = None
@@ -315,6 +348,7 @@ def pixel_art_video(
                  "-loop", "0",
                  gif_path],
                 check=True,
+                timeout=FFMPEG_TIMEOUT_SECONDS,
             )
 
     return output_path, gif_path

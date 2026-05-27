@@ -208,19 +208,6 @@ export function useComposerState({
 
       setPasteSnips(prev => trimSnips([...prev, { label, text: cleanedText }]))
 
-      void gw
-        .request<{ path?: string }>('paste.collapse', { text: cleanedText })
-        .then(r => {
-          const path = r?.path
-
-          if (!path) {
-            return
-          }
-
-          setPasteSnips(prev => prev.map(s => (s.label === label ? { ...s, path } : s)))
-        })
-        .catch(() => {})
-
       return inserted
     },
     [gw, onClipboardPaste, onImageAttached]

@@ -340,15 +340,22 @@ def cronjob(
                 if script_error:
                     return tool_error(script_error, success=False)
 
-            # Validate context_from references existing jobs
+            # Validate context_from references existing jobs owned by the same origin.
+            job_origin = _origin_from_env()
             if context_from:
-                from cron.jobs import get_job as _get_job
+                from cron.jobs import origins_match_for_context, get_job as _get_job
                 refs = [context_from] if isinstance(context_from, str) else context_from
                 for ref_id in refs:
-                    if not _get_job(ref_id):
+                    source_job = _get_job(ref_id)
+                    if not source_job:
                         return tool_error(
                             f"context_from job '{ref_id}' not found. "
                             "Use cronjob(action='list') to see available jobs.",
+                            success=False,
+                        )
+                    if not origins_match_for_context(job_origin, source_job.get("origin")):
+                        return tool_error(
+                            f"context_from job '{ref_id}' is not available to this chat.",
                             success=False,
                         )
 
@@ -358,7 +365,7 @@ def cronjob(
                 name=name,
                 repeat=repeat,
                 deliver=_normalize_deliver_param(deliver),
-                origin=_origin_from_env(),
+                origin=job_origin,
                 skills=canonical_skills,
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
@@ -459,19 +466,26 @@ def cronjob(
                 updates["script"] = _normalize_optional_job_value(script) if script else None
             if context_from is not None:
                 # Empty string / empty list clears the field; otherwise validate
-                # each referenced job exists before storing. Normalized to a list
-                # (or None) to match the shape stored by create_job().
+                # each referenced job exists and is owned by the target job's origin.
+                # Normalized to a list (or None) to match create_job().
                 if isinstance(context_from, str):
                     refs = [context_from.strip()] if context_from.strip() else []
                 else:
                     refs = [str(j).strip() for j in context_from if str(j).strip()]
                 if refs:
-                    from cron.jobs import get_job as _get_job
+                    from cron.jobs import can_reference_context_job, get_job as _get_job
+                    target_job = _get_job(job_id)
                     for ref_id in refs:
-                        if not _get_job(ref_id):
+                        source_job = _get_job(ref_id)
+                        if not source_job:
                             return tool_error(
                                 f"context_from job '{ref_id}' not found. "
                                 "Use cronjob(action='list') to see available jobs.",
+                                success=False,
+                            )
+                        if not target_job or not can_reference_context_job(target_job, source_job):
+                            return tool_error(
+                                f"context_from job '{ref_id}' is not available to this chat.",
                                 success=False,
                             )
                 updates["context_from"] = refs or None

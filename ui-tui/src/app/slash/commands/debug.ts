@@ -3,12 +3,14 @@ import type { SlashCommand } from '../types.js'
 
 export const debugCommands: SlashCommand[] = [
   {
-    help: 'write a V8 heap snapshot + memory diagnostics (see HERMES_HEAPDUMP_DIR)',
+    help: 'write a raw V8 heap snapshot + memory diagnostics; may contain secrets (see HERMES_HEAPDUMP_DIR)',
     name: 'heapdump',
     run: (_arg, ctx) => {
       const { heapUsed, rss } = process.memoryUsage()
 
-      ctx.transcript.sys(`writing heap dump (heap ${formatBytes(heapUsed)} · rss ${formatBytes(rss)})…`)
+      ctx.transcript.sys(
+        `writing raw heap dump (heap ${formatBytes(heapUsed)} · rss ${formatBytes(rss)}); snapshots may contain secrets…`
+      )
 
       void performHeapDump('manual').then(r => {
         if (ctx.stale()) {

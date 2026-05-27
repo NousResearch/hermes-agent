@@ -1388,10 +1388,13 @@ class TestBankIdTemplate:
         assert _sanitize_bank_segment("hermes") == "hermes"
         assert _sanitize_bank_segment("my-agent_1") == "my-agent_1"
 
-    def test_sanitize_bank_segment_strips_unsafe(self):
-        assert _sanitize_bank_segment("josh@example.com") == "josh-example-com"
-        assert _sanitize_bank_segment("chat:#general") == "chat-general"
-        assert _sanitize_bank_segment("  spaces  ") == "spaces"
+    def test_sanitize_bank_segment_encodes_unsafe_without_collisions(self):
+        assert _sanitize_bank_segment("josh@example.com") == "josh~40example~2Ecom"
+        assert _sanitize_bank_segment("chat:#general") == "chat~3A~23general"
+        assert _sanitize_bank_segment("  spaces  ") == "~20~20spaces~20~20"
+        assert _sanitize_bank_segment("a-b@c.d") != _sanitize_bank_segment("a@b-c.d")
+        assert _sanitize_bank_segment("@a-b:c.d") != _sanitize_bank_segment("@a:b-c.d")
+        assert _sanitize_bank_segment("~40") != _sanitize_bank_segment("@")
 
     def test_sanitize_bank_segment_empty(self):
         assert _sanitize_bank_segment("") == ""
@@ -1448,7 +1451,22 @@ class TestBankIdTemplate:
             profile="", workspace="", platform="",
             user="josh@example.com", session="",
         )
-        assert result == "user-josh-example-com"
+        assert result == "user-josh~40example~2Ecom"
+
+    def test_resolve_user_template_keeps_distinct_punctuation_ids_isolated(self):
+        first = _resolve_bank_id_template(
+            "hermes-{user}", fallback="hermes",
+            profile="", workspace="", platform="email",
+            user="a-b@c.d", session="",
+        )
+        second = _resolve_bank_id_template(
+            "hermes-{user}", fallback="hermes",
+            profile="", workspace="", platform="email",
+            user="a@b-c.d", session="",
+        )
+        assert first == "hermes-a-b~40c~2Ed"
+        assert second == "hermes-a~40b-c~2Ed"
+        assert first != second
 
     def test_resolve_invalid_template_returns_fallback(self):
         # Unknown placeholder should fall back without raising

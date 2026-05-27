@@ -457,11 +457,6 @@ def parse_overpass_elements(elements, ref_lat=None, ref_lon=None):
             # Clickable Google Maps link so the agent can render a tap-to-open
             # URL in chat without composing one downstream.
             "maps_url": f"https://www.google.com/maps/search/?api=1&query={el_lat},{el_lon}",
-            "tags": {
-                k: v for k, v in tags.items()
-                if k not in ("name", "name:en",
-                             "addr:housenumber", "addr:street", "addr:city")
-            },
         }
 
         # Promote commonly-useful tags to top-level fields so agents can

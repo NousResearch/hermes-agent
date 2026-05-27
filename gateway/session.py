@@ -1311,7 +1311,9 @@ class SessionStore:
         # Try SQLite first
         if self._db:
             try:
-                db_messages = self._db.get_messages_as_conversation(session_id)
+                db_messages = self._db.get_messages_as_conversation(
+                    session_id, include_timestamps=True
+                )
             except Exception as e:
                 logger.debug("Could not load messages from DB: %s", e)
 

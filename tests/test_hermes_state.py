@@ -299,6 +299,20 @@ class TestMessageStorage:
         assert conv[0] == {"role": "user", "content": "Hello"}
         assert conv[1] == {"role": "assistant", "content": "Hi!"}
 
+    def test_get_messages_as_conversation_can_include_timestamps(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Hello")
+
+        default_conv = db.get_messages_as_conversation("s1")
+        timestamped_conv = db.get_messages_as_conversation(
+            "s1", include_timestamps=True
+        )
+
+        assert "timestamp" not in default_conv[0]
+        assert timestamped_conv[0]["role"] == "user"
+        assert timestamped_conv[0]["content"] == "Hello"
+        assert isinstance(timestamped_conv[0]["timestamp"], float)
+
     def test_get_messages_as_conversation_includes_ancestor_chain(self, db):
         db.create_session("root", "tui")
         db.append_message("root", role="user", content="first prompt")

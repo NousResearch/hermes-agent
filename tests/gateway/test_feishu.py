@@ -1695,10 +1695,32 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._dispatch_inbound_event.assert_awaited_once()
         event = adapter._dispatch_inbound_event.await_args.args[0]
         self.assertEqual(event.message_type, MessageType.TEXT)
-        self.assertEqual(event.source.user_id, "u_user")  # tenant-scoped user_id preferred over app-scoped open_id
+        self.assertEqual(event.source.user_id, "ou_user")  # app-scoped open_id is the auth principal
         self.assertEqual(event.source.user_name, "张三")
         self.assertEqual(event.source.user_id_alt, "on_union")
         self.assertEqual(event.source.chat_name, "Feishu DM")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_resolve_sender_profile_prefers_app_scoped_open_id_for_auth(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._resolve_sender_name_from_api = AsyncMock(return_value="张三")
+        sender_id = SimpleNamespace(
+            open_id="ou_app_scoped",
+            user_id="u_tenant_scoped",
+            union_id="on_union",
+        )
+
+        profile = asyncio.run(adapter._resolve_sender_profile(sender_id))
+
+        self.assertEqual(profile["user_id"], "ou_app_scoped")
+        self.assertEqual(profile["user_id_alt"], "on_union")
+        adapter._resolve_sender_name_from_api.assert_awaited_once_with(
+            "ou_app_scoped",
+            is_bot=False,
+        )
 
     @patch.dict(os.environ, {}, clear=True)
     def test_text_batch_merges_rapid_messages_into_single_event(self):

@@ -87,7 +87,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Collection, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -3158,7 +3158,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
-def discover_mcp_tools() -> List[str]:
+def discover_mcp_tools(allowed_server_names: Collection[str] | None = None) -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
     Called from ``model_tools`` after ``discover_builtin_tools()``. Safe to call even when
@@ -3166,6 +3166,10 @@ def discover_mcp_tools() -> List[str]:
 
     Idempotent for already-connected servers. If some servers failed on a
     previous call, only the missing ones are retried.
+
+    Args:
+        allowed_server_names: Optional MCP server-name allowlist. When provided,
+            only matching configured servers may be connected.
 
     Returns:
         List of all registered MCP tool names.
@@ -3175,6 +3179,9 @@ def discover_mcp_tools() -> List[str]:
         return []
 
     servers = _load_mcp_config()
+    if allowed_server_names is not None:
+        allowed = {str(name) for name in allowed_server_names}
+        servers = {name: cfg for name, cfg in servers.items() if str(name) in allowed}
     if not servers:
         logger.debug("No MCP servers configured")
         return []

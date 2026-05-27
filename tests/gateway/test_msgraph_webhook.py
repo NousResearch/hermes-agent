@@ -312,7 +312,7 @@ class TestMSGraphNotifications:
         assert len(scheduled) == 1
 
     @pytest.mark.anyio
-    async def test_notifications_without_id_are_not_deduped(self):
+    async def test_notifications_without_id_are_deduped_by_content_hash(self):
         adapter = _make_adapter()
         scheduled: list[tuple[dict, object]] = []
 
@@ -340,7 +340,9 @@ class TestMSGraphNotifications:
 
         await asyncio.sleep(0.05)
 
-        assert len(scheduled) == 2
+        assert adapter._duplicate_count == 1
+        assert len(scheduled) == 1
+        assert scheduled[0][1].message_id.startswith("sha1:")
 
     @pytest.mark.anyio
     async def test_resource_patterns_accept_leading_slash(self):

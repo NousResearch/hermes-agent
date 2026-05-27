@@ -2145,6 +2145,55 @@ class TestOrchestratorRoleBehavior(unittest.TestCase):
             self.assertEqual(mock_child._delegate_role, "orchestrator")
 
     @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_leaf_composite_parent_cannot_enable_messaging(
+        self, mock_cfg, mock_creds
+    ):
+        """A hermes-cli parent must not expand into a messaging-capable leaf."""
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["hermes-cli"]
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = _make_role_mock_child()
+            MockAgent.return_value = mock_child
+            delegate_task(
+                goal="test",
+                toolsets=["file", "messaging", "hermes-acp"],
+                parent_agent=parent,
+            )
+            kwargs = MockAgent.call_args[1]
+            self.assertEqual(kwargs["enabled_toolsets"], ["file"])
+            self.assertIn("messaging", kwargs["disabled_toolsets"])
+            self.assertIn("code_execution", kwargs["disabled_toolsets"])
+            self.assertIn("delegation", kwargs["disabled_toolsets"])
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config",
+           return_value={"max_spawn_depth": 2})
+    def test_orchestrator_disabled_toolsets_allow_delegation_only(
+        self, mock_cfg, mock_creds
+    ):
+        """Orchestrators may retain delegate_task but still subtract side-effect tools."""
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["hermes-cli"]
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = _make_role_mock_child()
+            MockAgent.return_value = mock_child
+            delegate_task(goal="test", role="orchestrator", parent_agent=parent)
+            kwargs = MockAgent.call_args[1]
+            self.assertIn("delegation", kwargs["enabled_toolsets"])
+            self.assertNotIn("delegation", kwargs["disabled_toolsets"])
+            self.assertIn("messaging", kwargs["disabled_toolsets"])
+            self.assertIn("code_execution", kwargs["disabled_toolsets"])
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
     @patch("tools.delegate_tool._load_config",
            return_value={"max_spawn_depth": 2})
     def test_orchestrator_blocked_at_max_spawn_depth(

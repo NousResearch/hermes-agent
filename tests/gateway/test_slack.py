@@ -2374,6 +2374,68 @@ class TestSlashCommands:
         msg = adapter.handle_message.call_args[0][0]
         assert msg.text == "/model anthropic/claude-sonnet-4"
 
+
+    @pytest.mark.asyncio
+    async def test_allowed_channels_blocks_legacy_hermes_freeform_in_disallowed_channel(self, adapter):
+        adapter.config.extra["allowed_channels"] = ["CALLOWED"]
+        command = {
+            "command": "/hermes",
+            "text": "what is the incident status?",
+            "user_id": "U1",
+            "channel_id": "CBAD",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_allowed_channels_blocks_native_slash_in_disallowed_channel(self, adapter):
+        adapter.config.extra["allowed_channels"] = ["CALLOWED"]
+        command = {
+            "command": "/model",
+            "text": "gpt-test",
+            "user_id": "U1",
+            "channel_id": "CBAD",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_allowed_channels_permits_slash_in_allowed_channel(self, adapter):
+        adapter.config.extra["allowed_channels"] = ["CALLOWED"]
+        command = {
+            "command": "/model",
+            "text": "gpt-test",
+            "user_id": "U1",
+            "channel_id": "CALLOWED",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_awaited_once()
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/model gpt-test"
+
+    @pytest.mark.asyncio
+    async def test_allowed_channels_does_not_block_dm_slash(self, adapter):
+        adapter.config.extra["allowed_channels"] = ["CALLOWED"]
+        command = {
+            "command": "/model",
+            "text": "gpt-test",
+            "user_id": "U1",
+            "channel_id": "D123",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_awaited_once()
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.source.chat_type == "dm"
+        assert msg.text == "/model gpt-test"
+
     @pytest.mark.asyncio
     async def test_legacy_hermes_prefix_still_works(self, adapter):
         """Backward compat: /hermes btw foo must still route to /btw foo.

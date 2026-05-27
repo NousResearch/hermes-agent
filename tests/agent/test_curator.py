@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib
 import json
 import sys
-from types import SimpleNamespace
+import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -308,7 +308,7 @@ def test_llm_review_dry_run_uses_readonly_curator_toolset(curator_env, monkeypat
         def close(self):
             pass
 
-    monkeypatch.setitem(sys.modules, "run_agent", SimpleNamespace(AIAgent=FakeAgent))
+    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=FakeAgent))
     importlib.reload(c)
 
     result = c._run_llm_review(f"{c.CURATOR_DRY_RUN_BANNER}\n\npreview")
@@ -352,7 +352,7 @@ def test_llm_review_live_uses_curator_only_toolset(curator_env, monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setitem(sys.modules, "run_agent", SimpleNamespace(AIAgent=FakeAgent))
+    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=FakeAgent))
     importlib.reload(c)
 
     result = c._run_llm_review("live")

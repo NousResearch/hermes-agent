@@ -10,7 +10,6 @@ Covers:
 - Provider registration — registry entry, aliases, runtime dispatch, auth
   status, _OAUTH_CAPABLE_PROVIDERS regression guard
 """
-
 from __future__ import annotations
 
 import base64
@@ -28,7 +27,6 @@ import pytest
 # =============================================================================
 # Fixtures
 # =============================================================================
-
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch, tmp_path):
@@ -55,18 +53,14 @@ def _isolate_env(monkeypatch, tmp_path):
 # google_oauth.py — PKCE + packed refresh format
 # =============================================================================
 
-
 class TestPkce:
     def test_verifier_and_challenge_s256_roundtrip(self):
         from agent.google_oauth import _generate_pkce_pair
 
         verifier, challenge = _generate_pkce_pair()
-        expected = (
-            base64
-            .urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
-            .rstrip(b"=")
-            .decode("ascii")
-        )
+        expected = base64.urlsafe_b64encode(
+            hashlib.sha256(verifier.encode("ascii")).digest()
+        ).rstrip(b"=").decode("ascii")
         assert challenge == expected
         assert 43 <= len(verifier) <= 128
 
@@ -97,9 +91,7 @@ class TestRefreshParts:
         from agent.google_oauth import RefreshParts
 
         packed = RefreshParts(
-            refresh_token="rt",
-            project_id="p1",
-            managed_project_id="m1",
+            refresh_token="rt", project_id="p1", managed_project_id="m1",
         ).format()
         assert packed == "rt|p1|m1"
         # Roundtrip
@@ -118,9 +110,7 @@ class TestClientCredResolution:
     def test_env_override(self, monkeypatch):
         from agent.google_oauth import _get_client_id
 
-        monkeypatch.setenv(
-            "HERMES_GEMINI_CLIENT_ID", "custom-id.apps.googleusercontent.com"
-        )
+        monkeypatch.setenv("HERMES_GEMINI_CLIENT_ID", "custom-id.apps.googleusercontent.com")
         assert _get_client_id() == "custom-id.apps.googleusercontent.com"
 
     def test_shipped_default_used_when_no_env(self):
@@ -149,15 +139,7 @@ class TestClientCredResolution:
         fake_bin = tmp_path / "bin" / "gemini"
         fake_bin.parent.mkdir(parents=True)
         fake_bin.write_text("#!/bin/sh\n")
-        oauth_dir = (
-            tmp_path
-            / "node_modules"
-            / "@google"
-            / "gemini-cli-core"
-            / "dist"
-            / "src"
-            / "code_assist"
-        )
+        oauth_dir = tmp_path / "node_modules" / "@google" / "gemini-cli-core" / "dist" / "src" / "code_assist"
         oauth_dir.mkdir(parents=True)
         (oauth_dir / "oauth2.js").write_text(
             'const OAUTH_CLIENT_ID = "99999-fakescrapedxyz.apps.googleusercontent.com";\n'
@@ -188,9 +170,7 @@ class TestClientCredResolution:
         monkeypatch.setattr("shutil.which", lambda _: None)
         assert google_oauth._locate_gemini_cli_oauth_js() is None
 
-    def test_scrape_client_credentials_parses_id_and_secret(
-        self, tmp_path, monkeypatch
-    ):
+    def test_scrape_client_credentials_parses_id_and_secret(self, tmp_path, monkeypatch):
         from agent import google_oauth
 
         # Create a fake gemini binary and oauth2.js
@@ -198,15 +178,7 @@ class TestClientCredResolution:
         fake_gemini_bin.parent.mkdir(parents=True)
         fake_gemini_bin.write_text("#!/bin/sh\necho gemini\n")
 
-        oauth_js_dir = (
-            tmp_path
-            / "node_modules"
-            / "@google"
-            / "gemini-cli-core"
-            / "dist"
-            / "src"
-            / "code_assist"
-        )
+        oauth_js_dir = tmp_path / "node_modules" / "@google" / "gemini-cli-core" / "dist" / "src" / "code_assist"
         oauth_js_dir.mkdir(parents=True)
         oauth_js = oauth_js_dir / "oauth2.js"
         # Synthesize a harmless test fingerprint (valid shape, obvious test values)
@@ -262,19 +234,14 @@ class TestCredentialIo:
 
     def test_update_project_ids(self):
         from agent.google_oauth import (
-            load_credentials,
-            save_credentials,
-            update_project_ids,
+            load_credentials, save_credentials, update_project_ids,
         )
         from agent.google_oauth import GoogleCredentials
 
-        save_credentials(
-            GoogleCredentials(
-                access_token="at",
-                refresh_token="rt",
-                expires_ms=int((time.time() + 3600) * 1000),
-            )
-        )
+        save_credentials(GoogleCredentials(
+            access_token="at", refresh_token="rt",
+            expires_ms=int((time.time() + 3600) * 1000),
+        ))
         update_project_ids(project_id="new-proj", managed_project_id="mgr-xyz")
 
         loaded = load_credentials()
@@ -287,8 +254,7 @@ class TestAccessTokenExpired:
         from agent.google_oauth import GoogleCredentials
 
         creds = GoogleCredentials(
-            access_token="at",
-            refresh_token="rt",
+            access_token="at", refresh_token="rt",
             expires_ms=int((time.time() + 3600) * 1000),
         )
         assert creds.access_token_expired() is False
@@ -298,8 +264,7 @@ class TestAccessTokenExpired:
         from agent.google_oauth import GoogleCredentials
 
         creds = GoogleCredentials(
-            access_token="at",
-            refresh_token="rt",
+            access_token="at", refresh_token="rt",
             expires_ms=int((time.time() + 30) * 1000),
         )
         assert creds.access_token_expired() is True
@@ -308,9 +273,7 @@ class TestAccessTokenExpired:
         from agent.google_oauth import GoogleCredentials
 
         creds = GoogleCredentials(
-            access_token="",
-            refresh_token="rt",
-            expires_ms=999999999,
+            access_token="", refresh_token="rt", expires_ms=999999999,
         )
         assert creds.access_token_expired() is True
 
@@ -338,8 +301,7 @@ class TestGetValidAccessToken:
 
         self._save(expires_ms=int((time.time() + 30) * 1000))
         monkeypatch.setattr(
-            google_oauth,
-            "_post_form",
+            google_oauth, "_post_form",
             lambda *a, **kw: {"access_token": "refreshed", "expires_in": 3600},
         )
         assert google_oauth.get_valid_access_token() == "refreshed"
@@ -351,8 +313,7 @@ class TestGetValidAccessToken:
 
         def boom(*a, **kw):
             raise google_oauth.GoogleOAuthError(
-                "invalid_grant",
-                code="google_oauth_invalid_grant",
+                "invalid_grant", code="google_oauth_invalid_grant",
             )
 
         monkeypatch.setattr(google_oauth, "_post_form", boom)
@@ -366,12 +327,9 @@ class TestGetValidAccessToken:
     def test_preserves_refresh_when_google_omits(self, monkeypatch):
         from agent import google_oauth
 
-        self._save(
-            expires_ms=int((time.time() + 30) * 1000), refresh_token="original-rt"
-        )
+        self._save(expires_ms=int((time.time() + 30) * 1000), refresh_token="original-rt")
         monkeypatch.setattr(
-            google_oauth,
-            "_post_form",
+            google_oauth, "_post_form",
             lambda *a, **kw: {"access_token": "new", "expires_in": 3600},
         )
         google_oauth.get_valid_access_token()
@@ -379,14 +337,11 @@ class TestGetValidAccessToken:
 
 
 class TestProjectIdResolution:
-    @pytest.mark.parametrize(
-        "env_var",
-        [
-            "HERMES_GEMINI_PROJECT_ID",
-            "GOOGLE_CLOUD_PROJECT",
-            "GOOGLE_CLOUD_PROJECT_ID",
-        ],
-    )
+    @pytest.mark.parametrize("env_var", [
+        "HERMES_GEMINI_PROJECT_ID",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_PROJECT_ID",
+    ])
     def test_env_vars_checked(self, monkeypatch, env_var):
         from agent.google_oauth import resolve_project_id_from_env
 
@@ -428,7 +383,6 @@ class TestHeadlessDetection:
 # =============================================================================
 # google_code_assist.py — project discovery, onboarding, quota, VPC-SC
 # =============================================================================
-
 
 class TestCodeAssistVpcScDetection:
     def test_detects_vpc_sc_in_json(self):
@@ -477,15 +431,12 @@ class TestLoadCodeAssist:
 
         def boom(*a, **kw):
             raise google_code_assist.CodeAssistError(
-                "VPC-SC policy violation",
-                code="code_assist_vpc_sc",
+                "VPC-SC policy violation", code="code_assist_vpc_sc",
             )
 
         monkeypatch.setattr(google_code_assist, "_post_json", boom)
 
-        info = google_code_assist.load_code_assist(
-            "access-token", project_id="corp-proj"
-        )
+        info = google_code_assist.load_code_assist("access-token", project_id="corp-proj")
         assert info.current_tier_id == "standard-tier"
         assert info.cloudaicompanion_project == "corp-proj"
 
@@ -512,21 +463,15 @@ class TestOnboardUser:
 
         with pytest.raises(google_code_assist.ProjectIdRequiredError):
             google_code_assist.onboard_user(
-                "at",
-                tier_id="standard-tier",
-                project_id="",
+                "at", tier_id="standard-tier", project_id="",
             )
 
     def test_free_tier_no_project_required(self, monkeypatch):
         from agent import google_code_assist
 
         monkeypatch.setattr(
-            google_code_assist,
-            "_post_json",
-            lambda *a, **kw: {
-                "done": True,
-                "response": {"cloudaicompanionProject": "gen-123"},
-            },
+            google_code_assist, "_post_json",
+            lambda *a, **kw: {"done": True, "response": {"cloudaicompanionProject": "gen-123"}},
         )
         resp = google_code_assist.onboard_user("at", tier_id="free-tier")
         assert resp["done"] is True
@@ -547,8 +492,7 @@ class TestOnboardUser:
         monkeypatch.setattr(google_code_assist.time, "sleep", lambda *_: None)
 
         resp = google_code_assist.onboard_user(
-            "at",
-            tier_id="free-tier",
+            "at", tier_id="free-tier",
         )
         assert resp["done"] is True
         assert call_count["n"] >= 2
@@ -590,8 +534,7 @@ class TestResolveProjectContext:
             raise AssertionError("should short-circuit")
 
         monkeypatch.setattr(
-            "agent.google_code_assist._post_json",
-            should_not_be_called,
+            "agent.google_code_assist._post_json", should_not_be_called,
         )
         ctx = resolve_project_context("at", configured_project_id="proj-abc")
         assert ctx.project_id == "proj-abc"
@@ -612,8 +555,7 @@ class TestResolveProjectContext:
         from agent import google_code_assist
 
         monkeypatch.setattr(
-            google_code_assist,
-            "_post_json",
+            google_code_assist, "_post_json",
             lambda *a, **kw: {
                 "currentTier": {"id": "free-tier"},
                 "cloudaicompanionProject": "discovered-proj",
@@ -629,35 +571,28 @@ class TestResolveProjectContext:
 # gemini_cloudcode_adapter.py — request/response translation
 # =============================================================================
 
-
 class TestBuildGeminiRequest:
     def test_user_assistant_messages(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 
-        req = build_gemini_request(
-            messages=[
-                {"role": "user", "content": "hi"},
-                {"role": "assistant", "content": "hello"},
-            ]
-        )
+        req = build_gemini_request(messages=[
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ])
         assert req["contents"][0] == {
-            "role": "user",
-            "parts": [{"text": "hi"}],
+            "role": "user", "parts": [{"text": "hi"}],
         }
         assert req["contents"][1] == {
-            "role": "model",
-            "parts": [{"text": "hello"}],
+            "role": "model", "parts": [{"text": "hello"}],
         }
 
     def test_system_instruction_separated(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 
-        req = build_gemini_request(
-            messages=[
-                {"role": "system", "content": "You are helpful"},
-                {"role": "user", "content": "hi"},
-            ]
-        )
+        req = build_gemini_request(messages=[
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "hi"},
+        ])
         assert req["systemInstruction"]["parts"][0]["text"] == "You are helpful"
         # System should NOT appear in contents
         assert all(c["role"] != "system" for c in req["contents"])
@@ -665,37 +600,28 @@ class TestBuildGeminiRequest:
     def test_multiple_system_messages_joined(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 
-        req = build_gemini_request(
-            messages=[
-                {"role": "system", "content": "A"},
-                {"role": "system", "content": "B"},
-                {"role": "user", "content": "hi"},
-            ]
-        )
+        req = build_gemini_request(messages=[
+            {"role": "system", "content": "A"},
+            {"role": "system", "content": "B"},
+            {"role": "user", "content": "hi"},
+        ])
         assert "A\nB" in req["systemInstruction"]["parts"][0]["text"]
 
     def test_tool_call_translation(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 
-        req = build_gemini_request(
-            messages=[
-                {"role": "user", "content": "what's the weather?"},
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": "get_weather",
-                                "arguments": '{"city": "SF"}',
-                            },
-                        }
-                    ],
-                },
-            ]
-        )
+        req = build_gemini_request(messages=[
+            {"role": "user", "content": "what's the weather?"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"city": "SF"}'},
+                }],
+            },
+        ])
         # Assistant turn should have a functionCall part
         model_turn = req["contents"][1]
         assert model_turn["role"] == "model"
@@ -706,27 +632,19 @@ class TestBuildGeminiRequest:
     def test_tool_result_translation(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 
-        req = build_gemini_request(
-            messages=[
-                {"role": "user", "content": "q"},
-                {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": "c1",
-                            "type": "function",
-                            "function": {"name": "get_weather", "arguments": "{}"},
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "name": "get_weather",
-                    "tool_call_id": "c1",
-                    "content": '{"temp": 72}',
-                },
-            ]
-        )
+        req = build_gemini_request(messages=[
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "get_weather", "arguments": "{}"},
+            }]},
+            {
+                "role": "tool",
+                "name": "get_weather",
+                "tool_call_id": "c1",
+                "content": '{"temp": 72}',
+            },
+        ])
         # Last content turn should carry functionResponse
         last = req["contents"][-1]
         fr_part = next(p for p in last["parts"] if "functionResponse" in p)
@@ -739,14 +657,10 @@ class TestBuildGeminiRequest:
         req = build_gemini_request(
             messages=[{"role": "user", "content": "hi"}],
             tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "fn1",
-                        "description": "foo",
-                        "parameters": {"type": "object"},
-                    },
-                },
+                {"type": "function", "function": {
+                    "name": "fn1", "description": "foo",
+                    "parameters": {"type": "object"},
+                }},
             ],
         )
         decls = req["tools"][0]["functionDeclarations"]
@@ -760,27 +674,24 @@ class TestBuildGeminiRequest:
         req = build_gemini_request(
             messages=[{"role": "user", "content": "hi"}],
             tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "fn1",
-                        "description": "foo",
-                        "parameters": {
-                            "$schema": "https://json-schema.org/draft/2020-12/schema",
-                            "type": "object",
-                            "additionalProperties": False,
-                            "properties": {
-                                "city": {
-                                    "type": "string",
-                                    "$schema": "ignored",
-                                    "description": "City name",
-                                    "additionalProperties": False,
-                                }
-                            },
-                            "required": ["city"],
+                {"type": "function", "function": {
+                    "name": "fn1",
+                    "description": "foo",
+                    "parameters": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "city": {
+                                "type": "string",
+                                "$schema": "ignored",
+                                "description": "City name",
+                                "additionalProperties": False,
+                            }
                         },
+                        "required": ["city"],
                     },
-                },
+                }},
             ],
         )
         params = req["tools"][0]["functionDeclarations"][0]["parameters"]
@@ -856,9 +767,7 @@ class TestWrapCodeAssistRequest:
 
         inner = {"contents": [], "generationConfig": {}}
         wrapped = wrap_code_assist_request(
-            project_id="p1",
-            model="gemini-2.5-pro",
-            inner_request=inner,
+            project_id="p1", model="gemini-2.5-pro", inner_request=inner,
         )
         assert wrapped["project"] == "p1"
         assert wrapped["model"] == "gemini-2.5-pro"
@@ -873,12 +782,10 @@ class TestTranslateGeminiResponse:
 
         resp = {
             "response": {
-                "candidates": [
-                    {
-                        "content": {"parts": [{"text": "hello world"}]},
-                        "finishReason": "STOP",
-                    }
-                ],
+                "candidates": [{
+                    "content": {"parts": [{"text": "hello world"}]},
+                    "finishReason": "STOP",
+                }],
                 "usageMetadata": {
                     "promptTokenCount": 10,
                     "candidatesTokenCount": 5,
@@ -899,21 +806,12 @@ class TestTranslateGeminiResponse:
 
         resp = {
             "response": {
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {
-                                    "functionCall": {
-                                        "name": "lookup",
-                                        "args": {"q": "weather"},
-                                    },
-                                }
-                            ]
-                        },
-                        "finishReason": "STOP",
-                    }
-                ],
+                "candidates": [{
+                    "content": {"parts": [{
+                        "functionCall": {"name": "lookup", "args": {"q": "weather"}},
+                    }]},
+                    "finishReason": "STOP",
+                }],
             }
         }
         result = _translate_gemini_response(resp, model="gemini-2.5-flash")
@@ -927,16 +825,12 @@ class TestTranslateGeminiResponse:
 
         resp = {
             "response": {
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {"thought": True, "text": "let me think"},
-                                {"text": "final answer"},
-                            ]
-                        },
-                    }
-                ],
+                "candidates": [{
+                    "content": {"parts": [
+                        {"thought": True, "text": "let me think"},
+                        {"text": "final answer"},
+                    ]},
+                }],
             }
         }
         result = _translate_gemini_response(resp, model="gemini-2.5-flash")
@@ -948,12 +842,10 @@ class TestTranslateGeminiResponse:
         from agent.gemini_cloudcode_adapter import _translate_gemini_response
 
         resp = {
-            "candidates": [
-                {
-                    "content": {"parts": [{"text": "hi"}]},
-                    "finishReason": "STOP",
-                }
-            ],
+            "candidates": [{
+                "content": {"parts": [{"text": "hi"}]},
+                "finishReason": "STOP",
+            }],
         }
         result = _translate_gemini_response(resp, model="gemini-2.5-flash")
         assert result.choices[0].message.content == "hi"
@@ -961,9 +853,7 @@ class TestTranslateGeminiResponse:
     def test_empty_candidates(self):
         from agent.gemini_cloudcode_adapter import _translate_gemini_response
 
-        result = _translate_gemini_response(
-            {"response": {"candidates": []}}, model="gemini-2.5-flash"
-        )
+        result = _translate_gemini_response({"response": {"candidates": []}}, model="gemini-2.5-flash")
         assert result.choices[0].message.content == ""
         assert result.choices[0].finish_reason == "stop"
 
@@ -986,38 +876,18 @@ class TestTranslateStreamEvent:
 
         event = {
             "response": {
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {
-                                    "functionCall": {
-                                        "name": "read_file",
-                                        "args": {"path": "a"},
-                                    }
-                                },
-                                {
-                                    "functionCall": {
-                                        "name": "read_file",
-                                        "args": {"path": "b"},
-                                    }
-                                },
-                                {
-                                    "functionCall": {
-                                        "name": "read_file",
-                                        "args": {"path": "c"},
-                                    }
-                                },
-                            ]
-                        },
-                    }
-                ],
+                "candidates": [{
+                    "content": {"parts": [
+                        {"functionCall": {"name": "read_file", "args": {"path": "a"}}},
+                        {"functionCall": {"name": "read_file", "args": {"path": "b"}}},
+                        {"functionCall": {"name": "read_file", "args": {"path": "c"}}},
+                    ]},
+                }],
             }
         }
         counter = [0]
-        chunks = _translate_stream_event(
-            event, model="gemini-2.5-flash", tool_call_counter=counter
-        )
+        chunks = _translate_stream_event(event, model="gemini-2.5-flash",
+                                         tool_call_counter=counter)
         indices = [c.choices[0].delta.tool_calls[0].index for c in chunks]
         assert indices == [0, 1, 2]
         assert counter[0] == 3
@@ -1027,28 +897,14 @@ class TestTranslateStreamEvent:
         from agent.gemini_cloudcode_adapter import _translate_stream_event
 
         def _event(name):
-            return {
-                "response": {
-                    "candidates": [
-                        {
-                            "content": {
-                                "parts": [{"functionCall": {"name": name, "args": {}}}]
-                            },
-                        }
-                    ]
-                }
-            }
+            return {"response": {"candidates": [{
+                "content": {"parts": [{"functionCall": {"name": name, "args": {}}}]},
+            }]}}
 
         counter = [0]
-        chunks_a = _translate_stream_event(
-            _event("foo"), model="m", tool_call_counter=counter
-        )
-        chunks_b = _translate_stream_event(
-            _event("bar"), model="m", tool_call_counter=counter
-        )
-        chunks_c = _translate_stream_event(
-            _event("foo"), model="m", tool_call_counter=counter
-        )
+        chunks_a = _translate_stream_event(_event("foo"), model="m", tool_call_counter=counter)
+        chunks_b = _translate_stream_event(_event("bar"), model="m", tool_call_counter=counter)
+        chunks_c = _translate_stream_event(_event("foo"), model="m", tool_call_counter=counter)
 
         assert chunks_a[0].choices[0].delta.tool_calls[0].index == 0
         assert chunks_b[0].choices[0].delta.tool_calls[0].index == 1
@@ -1060,25 +916,15 @@ class TestTranslateStreamEvent:
         counter = [0]
         # First event emits one tool call.
         _translate_stream_event(
-            {
-                "response": {
-                    "candidates": [
-                        {
-                            "content": {
-                                "parts": [{"functionCall": {"name": "x", "args": {}}}]
-                            },
-                        }
-                    ]
-                }
-            },
-            model="m",
-            tool_call_counter=counter,
+            {"response": {"candidates": [{
+                "content": {"parts": [{"functionCall": {"name": "x", "args": {}}}]},
+            }]}},
+            model="m", tool_call_counter=counter,
         )
         # Second event carries only the terminal finishReason.
         chunks = _translate_stream_event(
             {"response": {"candidates": [{"finishReason": "STOP"}]}},
-            model="m",
-            tool_call_counter=counter,
+            model="m", tool_call_counter=counter,
         )
         assert chunks[-1].choices[0].finish_reason == "tool_calls"
 
@@ -1108,7 +954,6 @@ class TestGeminiHttpErrorParsing:
     @staticmethod
     def _fake_response(status: int, body: dict | str = "", headers=None):
         """Minimal httpx.Response stand-in (duck-typed for _gemini_http_error)."""
-
         class _FakeResponse:
             def __init__(self):
                 self.status_code = status
@@ -1117,7 +962,6 @@ class TestGeminiHttpErrorParsing:
                 else:
                     self.text = body
                 self.headers = headers or {}
-
         return _FakeResponse()
 
     def test_model_capacity_exhausted_produces_friendly_message(self):
@@ -1191,18 +1035,9 @@ class TestGeminiHttpErrorParsing:
     def test_unauthorized_preserves_status_code(self):
         from agent.gemini_cloudcode_adapter import _gemini_http_error
 
-        err = _gemini_http_error(
-            self._fake_response(
-                401,
-                {
-                    "error": {
-                        "code": 401,
-                        "message": "Invalid token",
-                        "status": "UNAUTHENTICATED",
-                    }
-                },
-            )
-        )
+        err = _gemini_http_error(self._fake_response(
+            401, {"error": {"code": 401, "message": "Invalid token", "status": "UNAUTHENTICATED"}},
+        ))
         assert err.status_code == 401
         assert err.code == "code_assist_unauthorized"
 
@@ -1212,13 +1047,7 @@ class TestGeminiHttpErrorParsing:
 
         resp = self._fake_response(
             429,
-            {
-                "error": {
-                    "code": 429,
-                    "message": "Rate limited",
-                    "status": "RESOURCE_EXHAUSTED",
-                }
-            },
+            {"error": {"code": 429, "message": "Rate limited", "status": "RESOURCE_EXHAUSTED"}},
             headers={"Retry-After": "45"},
         )
         err = _gemini_http_error(resp)
@@ -1228,9 +1057,7 @@ class TestGeminiHttpErrorParsing:
         """Non-JSON body must not swallow status_code — we still want the classifier path."""
         from agent.gemini_cloudcode_adapter import _gemini_http_error
 
-        err = _gemini_http_error(
-            self._fake_response(500, "<html>internal error</html>")
-        )
+        err = _gemini_http_error(self._fake_response(500, "<html>internal error</html>"))
         assert err.status_code == 500
         # Raw body snippet must still be there for debugging.
         assert "500" in str(err)
@@ -1262,9 +1089,7 @@ class TestGeminiHttpErrorParsing:
         err = _gemini_http_error(self._fake_response(429, body))
 
         classified = classify_api_error(
-            err,
-            provider="google-gemini-cli",
-            model="gemini-2.5-pro",
+            err, provider="google-gemini-cli", model="gemini-2.5-pro",
         )
         assert classified.status_code == 429
         assert classified.reason == FailoverReason.rate_limit
@@ -1273,7 +1098,6 @@ class TestGeminiHttpErrorParsing:
 # =============================================================================
 # Provider registration
 # =============================================================================
-
 
 class TestProviderRegistration:
     def test_registry_entry(self):
@@ -1300,15 +1124,13 @@ class TestProviderRegistration:
         from agent.google_oauth import GoogleCredentials, save_credentials
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        save_credentials(
-            GoogleCredentials(
-                access_token="live-tok",
-                refresh_token="rt",
-                expires_ms=int((time.time() + 3600) * 1000),
-                project_id="my-proj",
-                email="t@e.com",
-            )
-        )
+        save_credentials(GoogleCredentials(
+            access_token="live-tok",
+            refresh_token="rt",
+            expires_ms=int((time.time() + 3600) * 1000),
+            project_id="my-proj",
+            email="t@e.com",
+        ))
 
         result = resolve_runtime_provider(requested="google-gemini-cli")
         assert result["provider"] == "google-gemini-cli"
@@ -1321,21 +1143,12 @@ class TestProviderRegistration:
     def test_determine_api_mode(self):
         from hermes_cli.providers import determine_api_mode
 
-        assert (
-            determine_api_mode("google-gemini-cli", "cloudcode-pa://google")
-            == "chat_completions"
-        )
+        assert determine_api_mode("google-gemini-cli", "cloudcode-pa://google") == "chat_completions"
 
     def test_oauth_capable_set_preserves_existing(self):
         from hermes_cli.auth_commands import _OAUTH_CAPABLE_PROVIDERS
 
-        for required in (
-            "anthropic",
-            "nous",
-            "openai-codex",
-            "qwen-oauth",
-            "google-gemini-cli",
-        ):
+        for required in ("anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"):
             assert required in _OAUTH_CAPABLE_PROVIDERS
 
     def test_config_env_vars_registered(self):
@@ -1360,15 +1173,12 @@ class TestAuthStatus:
         from agent.google_oauth import GoogleCredentials, save_credentials
         from hermes_cli.auth import get_auth_status
 
-        save_credentials(
-            GoogleCredentials(
-                access_token="tok",
-                refresh_token="rt",
-                expires_ms=int((time.time() + 3600) * 1000),
-                email="tek@nous.ai",
-                project_id="tek-proj",
-            )
-        )
+        save_credentials(GoogleCredentials(
+            access_token="tok", refresh_token="rt",
+            expires_ms=int((time.time() + 3600) * 1000),
+            email="tek@nous.ai",
+            project_id="tek-proj",
+        ))
 
         s = get_auth_status("google-gemini-cli")
         assert s["logged_in"] is True
@@ -1389,11 +1199,9 @@ class TestRunGeminiOauthLoginPure:
 
         def fake_start(**kw):
             return google_oauth.GoogleCredentials(
-                access_token="at",
-                refresh_token="rt",
+                access_token="at", refresh_token="rt",
                 expires_ms=int((time.time() + 3600) * 1000),
-                email="u@e.com",
-                project_id="p",
+                email="u@e.com", project_id="p",
             )
 
         monkeypatch.setattr(google_oauth, "start_oauth_flow", fake_start)

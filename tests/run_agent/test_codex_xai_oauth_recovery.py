@@ -914,3 +914,171 @@ def test_grok_4_still_resolves_to_256k():
         # must be "grok-4" (or a more specific variant family if one is
         # ever added).  The 256k contract must hold.
         assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 256_000
+
+
+# ---------------------------------------------------------------------------
+# Cross-issuer reasoning replay guard
+#
+# When a session switches model providers mid-conversation (e.g. user runs
+# /model gpt-5.5 after several turns on grok-4.3), the persisted reasoning
+# items carry encrypted_content that only the issuing endpoint can decrypt.
+# Replaying them against the new endpoint deterministically returns HTTP 400
+# invalid_encrypted_content and breaks every subsequent turn. The cross-issuer
+# guard stamps each reasoning item with its issuer on normalize and drops
+# foreign-issuer items on replay.
+# ---------------------------------------------------------------------------
+
+
+def _stamped_assistant_msg(issuer_kind, *, text="hi", encrypted="enc_blob", rs_id="rs_001"):
+    return {
+        "role": "assistant",
+        "content": text,
+        "codex_reasoning_items": [
+            {
+                "type": "reasoning",
+                "id": rs_id,
+                "encrypted_content": encrypted,
+                "summary": [],
+                "_issuer_kind": issuer_kind,
+            }
+        ],
+    }
+
+
+def test_cross_issuer_reasoning_is_dropped_on_replay():
+    """Reasoning minted by one Responses endpoint must not be replayed to
+    another. This is the regression for the chatgpt-backend vs xAI-OAuth
+    swap that returned invalid_encrypted_content on every turn after the
+    user changed model mid-session.
+    """
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    msgs = [
+        {"role": "user", "content": "hi"},
+        _stamped_assistant_msg("xai_responses", encrypted="grok_blob"),
+        {"role": "user", "content": "next"},
+    ]
+
+    # Calling against codex_backend — the grok-issued blob must be dropped.
+    items = _chat_messages_to_responses_input(
+        msgs, current_issuer_kind="codex_backend"
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert reasoning == [], (
+        "Reasoning items stamped with a foreign _issuer_kind must be dropped "
+        "before the API rejects the whole request with invalid_encrypted_content."
+    )
+
+
+def test_same_issuer_reasoning_is_still_replayed():
+    """Same-endpoint reasoning replay is the documented happy path (May 2026
+    reversal). The cross-issuer guard must not regress it.
+    """
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    msgs = [
+        {"role": "user", "content": "hi"},
+        _stamped_assistant_msg("xai_responses", encrypted="grok_blob"),
+        {"role": "user", "content": "next"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        msgs, current_issuer_kind="xai_responses"
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert len(reasoning) == 1
+    assert reasoning[0]["encrypted_content"] == "grok_blob"
+    # The internal stamp must not leak to the API payload.
+    assert "_issuer_kind" not in reasoning[0]
+
+
+def test_unstamped_reasoning_is_replayed_for_backwards_compat():
+    """Reasoning items persisted before this patch don't carry _issuer_kind.
+    They must still be replayed (legacy-compatible behaviour).
+    """
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "hello",
+            "codex_reasoning_items": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_legacy",
+                    "encrypted_content": "legacy_blob",
+                    "summary": [],
+                }
+            ],
+        },
+        {"role": "user", "content": "next"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        msgs, current_issuer_kind="codex_backend"
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert len(reasoning) == 1
+    assert reasoning[0]["encrypted_content"] == "legacy_blob"
+
+
+def test_normalize_codex_response_stamps_issuer_on_reasoning():
+    """Reasoning captured from a response must be stamped with the issuer so
+    a later replay against a different endpoint can drop it.
+    """
+    from types import SimpleNamespace
+
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        id="rs_new",
+        encrypted_content="fresh_blob",
+        summary=[],
+    )
+    message_item = SimpleNamespace(
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="ok")],
+        id="msg_1",
+    )
+    response = SimpleNamespace(output=[reasoning_item, message_item], status="completed")
+
+    msg, _ = _normalize_codex_response(response, issuer_kind="xai_responses")
+    assert msg.codex_reasoning_items and len(msg.codex_reasoning_items) == 1
+    assert msg.codex_reasoning_items[0]["_issuer_kind"] == "xai_responses"
+    assert msg.codex_reasoning_items[0]["encrypted_content"] == "fresh_blob"
+
+
+def test_transport_round_trip_drops_foreign_reasoning():
+    """Full transport flow: build_kwargs against codex_backend after grok turns
+    must produce an `input` array that contains zero foreign reasoning items.
+    """
+    from agent.transports.codex import ResponsesApiTransport
+
+    transport = ResponsesApiTransport()
+    messages = [
+        {"role": "system", "content": "you are hermes"},
+        {"role": "user", "content": "hi"},
+        _stamped_assistant_msg("xai_responses", encrypted="grok_blob"),
+        {"role": "user", "content": "엑스다임 프로젝트 파악, 스킬로 정리."},
+    ]
+
+    kwargs = transport.build_kwargs(
+        model="gpt-5.5",
+        messages=messages,
+        tools=None,
+        is_codex_backend=True,
+        is_xai_responses=False,
+        is_github_responses=False,
+        base_url="https://chatgpt.com/backend-api/codex",
+        instructions="you are hermes",
+    )
+
+    reasoning = [it for it in kwargs["input"] if it.get("type") == "reasoning"]
+    assert reasoning == [], (
+        "Cross-issuer reasoning leaked through build_kwargs — this is the "
+        "exact regression that broke session 40de1ae0 on 2026-05-25 01:09."
+    )

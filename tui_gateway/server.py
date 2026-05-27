@@ -305,14 +305,20 @@ def _dispatch_kanban_notification(sid: str, session: dict, data: dict) -> None:
                 if _sub["task_id"] != _task_id:
                     continue
 
-                # Skip delivery for tasks that are already done or archived.
-                # Workers can exit after a task was manually completed; their
-                # crash events are noise. Session-restart re-delivery (stale
-                # DB cursor) would otherwise flood the user with old events.
+                # Skip stale noise (crash/gave_up/timed_out) for tasks that
+                # are already terminal.  But ALWAYS deliver the actual
+                # "completed" event — by definition the task is "done" by
+                # the time we poll it, so the old check killed every
+                # completion notification before it could reach the user.
+                _ev_kind = data.get("kind", "")
                 _task_status = _conn.execute(
                     "SELECT status FROM tasks WHERE id = ?", (_task_id,)
                 ).fetchone()
-                if _task_status and _task_status["status"] in ("done", "archived"):
+                if (
+                    _task_status
+                    and _task_status["status"] in ("done", "archived")
+                    and _ev_kind not in ("completed",)
+                ):
                     continue
 
                 _cursors = session.setdefault("_kanban_cursors", {})

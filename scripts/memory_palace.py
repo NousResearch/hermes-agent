@@ -266,7 +266,15 @@ def auto_prune(max_db_kb: int = None) -> dict:
         (now,)
     ).rowcount
     conn.commit()
-    # 2. VACUUM WAL if it's bloated (WAL > 2x main DB is a red flag)
+    # 2. Aggressive compaction: wipe low-importance episodic entries older than 48h
+    #    regardless of size — keeps the DB lean for crash resilience
+    cutoff_48h = time.time() - (48 * 3600)
+    conn.execute(
+        "DELETE FROM episodic_memory WHERE importance < 3 AND timestamp < ?",
+        (cutoff_48h,)
+    )
+    conn.commit()
+    # 3. VACUUM WAL if it's bloated (WAL > 2x main DB is a red flag)
     wal_path = DB_PATH + "-wal"
     if os.path.exists(wal_path) and os.path.exists(DB_PATH):
         wal_size = os.path.getsize(wal_path)
@@ -274,7 +282,7 @@ def auto_prune(max_db_kb: int = None) -> dict:
         if wal_size > db_size * 2:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.commit()
-    # 3. Enforce hard size cap (includes VACUUM if needed)
+    # 4. Enforce hard size cap (includes VACUUM if needed)
     _enforce_size_limit()
     conn.close()
     return {"expired_episodes": expired_e, "expired_working": expired_w,

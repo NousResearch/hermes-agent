@@ -53,10 +53,10 @@ MEMORY_DB = HERMES_HOME / "memory-palace" / "palace.db"
 LOG_DIR = HERMES_HOME / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-# ── Context budget (fits within typical 8K–16K windows) ───────
-BUDGET_TOKENS = 12000          # hard ceiling before aggressive trim
-WARNING_TOKENS = 9000          # soft warning, start light trim
-TARGET_POST_TRIM = 6000        # target after heavy trim
+# Context budget (fits within typical 8K–16K windows)
+BUDGET_TOKENS = 14000         # hard ceiling before aggressive trim (raised from 12K)
+WARNING_TOKENS = 10000        # soft warning, start light trim
+TARGET_POST_TRIM = 5000       # target after heavy trim (lowered from 6K)
 EST_TOKENS_PER_CHAR = 0.25    # rough: 1 char ≈ 0.25 tokens
 
 logger = logging.getLogger("context_orchestrator")

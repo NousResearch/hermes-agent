@@ -116,8 +116,8 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/"
 TARGET_MODEL = os.environ.get("TRIM_MODEL", "qwen3:8b")
 
 # Token budget — the threshold that *triggers* trimming, and the *target* to reach
-TRIM_THRESHOLD_TOKENS = int(os.environ.get("TRIM_THRESHOLD", "100000"))
-TARGET_TOKENS = int(os.environ.get("TARGET_TOKENS", "60000"))
+TRIM_THRESHOLD_TOKENS = int(os.environ.get("TRIM_THRESHOLD", "80000"))
+TARGET_TOKENS = int(os.environ.get("TARGET_TOKENS", "40000"))
 
 # Safety floor — never delete below this many blocks regardless of budget
 MIN_BLOCKS_KEPT = 3

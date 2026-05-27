@@ -1042,6 +1042,25 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._transport_cache.clear()
         agent._fallback_activated = True
 
+        # Clear the credential pool when the fallback provider doesn't match
+        # the pool's provider.  The pool was seeded for the primary provider;
+        # leaving it attached means downstream recovery (rate_limit / billing /
+        # auth) calls ``_swap_credential`` with a primary entry which overwrites
+        # the agent's ``base_url`` back to the primary's endpoint — every
+        # fallback request then 404s against the wrong host.  See #33163.
+        # When the fallback shares the pool's provider (e.g. both openrouter
+        # entries with different routing) the pool is preserved.
+        _existing_pool = getattr(agent, "_credential_pool", None)
+        if _existing_pool is not None:
+            _pool_provider = (getattr(_existing_pool, "provider", "") or "").strip().lower()
+            if _pool_provider and _pool_provider != fb_provider:
+                logger.info(
+                    "Fallback to %s/%s: clearing primary credential pool "
+                    "(pool_provider=%s) to prevent cross-provider contamination",
+                    fb_provider, fb_model, _pool_provider,
+                )
+                agent._credential_pool = None
+
         # Honor per-provider / per-model request_timeout_seconds for the
         # fallback target (same knob the primary client uses).  None = use
         # SDK default.

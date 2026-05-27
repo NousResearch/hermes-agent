@@ -320,6 +320,101 @@ def test_max_retries_none_falls_through_to_dispatcher_limit(kanban_home, all_ass
         conn.close()
 
 
+def test_gave_up_auto_block_is_not_repromoted_by_recompute_ready_parentless(
+    kanban_home, all_assignees_spawnable
+):
+    """A protocol/crash circuit-breaker block must survive recompute_ready.
+
+    Parentless tasks are the sharp edge: ``all([])`` is true, so a blocked
+    task with no sticky signal used to be immediately promoted back to ready.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="auth-loop", assignee="oracle")
+        tripped = kb._record_task_failure(
+            conn, tid,
+            error="Primary auth failed; OpenRouter HTTP 402",
+            outcome="crashed",
+            failure_limit=1,
+            release_claim=False,
+            end_run=False,
+        )
+        assert tripped is True
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert [e.kind for e in kb.list_events(conn, tid)].count("gave_up") == 1
+
+        promoted = kb.recompute_ready(conn)
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert promoted == 0
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+        assert "promoted" not in [e.kind for e in kb.list_events(conn, tid)]
+    finally:
+        conn.close()
+
+
+def test_gave_up_auto_block_repromotes_only_after_explicit_unblock(
+    kanban_home, all_assignees_spawnable
+):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="needs-human", assignee="worker")
+        assert kb._record_task_failure(
+            conn, tid,
+            error="clean exit without kanban transition",
+            outcome="crashed",
+            failure_limit=1,
+            release_claim=False,
+            end_run=False,
+        ) is True
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+
+        assert kb.unblock_task(conn, tid) is True
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+        assert kb.recompute_ready(conn) == 0
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+    finally:
+        conn.close()
+
+
+def test_blocked_dependency_recovery_without_sticky_event_still_promotes(
+    kanban_home, all_assignees_spawnable
+):
+    """Preserve legacy auto-recovery for non-sticky dependency blocks."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        child = kb.create_task(conn, title="child", assignee="worker", parents=[parent])
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', consecutive_failures = 2, "
+                "last_failure_error = 'waiting for parent' WHERE id = ?",
+                (child,),
+            )
+
+        kb.complete_task(conn, parent, result="ok")
+        promoted = kb.recompute_ready(conn)
+
+        task = kb.get_task(conn, child)
+        assert task is not None
+        assert promoted in (0, 1)  # complete_task may already recompute.
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+    finally:
+        conn.close()
+
+
 def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spawnable):
     """`dir:` workspace with no path should fail workspace resolution AND
     count against the failure budget — not just crash the tick."""

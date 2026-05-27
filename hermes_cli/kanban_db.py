@@ -2196,10 +2196,9 @@ def _synthesize_ended_run(
 # ---------------------------------------------------------------------------
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return True when ``task_id`` is sticky-blocked by an explicit
-    worker/operator ``kanban_block`` call (#28712).
+    """Return True when ``task_id`` is blocked until explicit unblocking.
 
-    A ``blocked`` status can come from two very different sources:
+    A ``blocked`` status can come from three different sources:
 
     * **Worker- or operator-initiated** — a worker called
       ``kanban_block(reason="review-required: ...")`` (or somebody ran
@@ -2209,28 +2208,28 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 
     * **Circuit-breaker** — ``_record_task_failure`` tripped after
       repeated crashes / spawn failures / timeouts.  This emits
-      ``"gave_up"``, *not* ``"blocked"``, and is meant to recover
-      automatically once the underlying conditions change (e.g. parents
-      finish, transient infra error clears).
+      ``"gave_up"``, *not* ``"blocked"``.  Once the breaker trips, the
+      task must stay blocked until an operator explicitly intervenes;
+      otherwise ``recompute_ready`` can promote parentless tasks back to
+      ``ready`` immediately because ``all([])`` is true.
 
-    The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
+    * **Legacy dependency auto-block** — older/manual rows may have
+      ``status='blocked'`` without a sticky event.  Those preserve the
+      historical auto-recovery semantics and may be promoted when parent
+      dependencies are satisfied.
 
-    Returns ``False`` when there is no such event at all (e.g. the task
-    was set to ``status='blocked'`` by the circuit breaker or by direct
-    DB manipulation) — preserves the pre-#28712 auto-recover semantics
-    for that path.
+    The cheapest signal that distinguishes these cases is the most recent
+    sticky-state event for the task.  ``blocked`` and ``gave_up`` are
+    sticky; ``unblocked`` clears stickiness so an explicit human action can
+    release the task back into normal dependency recomputation.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "WHERE task_id = ? AND kind IN ('blocked', 'gave_up', 'unblocked') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    return bool(row) and row["kind"] in {"blocked", "gave_up"}
 
 
 def recompute_ready(conn: sqlite3.Connection) -> int:
@@ -2241,12 +2240,12 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
 
     ``blocked`` tasks are also considered for promotion (so a task
     blocked purely by a parent dependency unblocks itself when the
-    parent completes), *except* when the most recent block event was a
-    worker-initiated ``kanban_block`` — those stay blocked until an
-    explicit ``kanban_unblock`` (#28712).  Without that guard, a
-    ``review-required`` handoff would auto-respawn, the fresh worker
-    would find nothing to do, exit cleanly, get recorded as a protocol
-    violation, and the cycle would repeat indefinitely.
+    parent completes), *except* when the most recent sticky event was a
+    worker/operator ``blocked`` event or dispatcher ``gave_up`` event —
+    those stay blocked until an explicit ``kanban_unblock``.  Without
+    that guard, ``review-required`` handoffs and circuit-breaker blocks
+    could auto-respawn, the fresh worker would hit the same condition,
+    and the cycle would repeat indefinitely.
     """
     promoted = 0
     with write_txn(conn):

@@ -6988,7 +6988,25 @@ def _update_via_zip(args):
     import zipfile
     from urllib.request import urlretrieve
 
-    branch = "main"
+    # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
+    # static archive from GitHub, which is fine for the default "main"
+    # channel but would silently ignore --branch and update from main even
+    # if the user asked for something else — exactly the silent-divergence
+    # bug --branch was added to prevent. Refuse to proceed in that case
+    # rather than lie.
+    branch = _resolve_update_branch(args)
+    if branch != "main":
+        print(
+            f"✗ --branch={branch} is not supported on the Windows ZIP-fallback "
+            "update path."
+        )
+        print(
+            "  This path runs when git file I/O is broken on the system. "
+            "Either resolve the git-side breakage (typically an antivirus "
+            "or NTFS filter holding files open) and rerun `hermes update "
+            f"--branch {branch}`, or update against main with `hermes update`."
+        )
+        sys.exit(1)
     zip_url = (
         f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )
@@ -8395,13 +8413,36 @@ def _finalize_update_output(state):
             pass
 
 
-def _cmd_update_check():
-    """Implement ``hermes update --check``: fetch and report without installing."""
+def _resolve_update_branch(args) -> str:
+    """Normalize ``args.branch`` into a non-empty branch name.
+
+    Centralizes the "default to main, accept --branch override, treat empty
+    or whitespace-only values as the default" parsing so every consumer of
+    ``--branch`` (check path, git-update path, ZIP-fallback path) agrees on
+    the same answer.
+    """
+    return (getattr(args, "branch", None) or "main").strip() or "main"
+
+
+def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+    """Implement ``hermes update --check``: fetch and report without installing.
+
+    ``branch`` selects which branch the check compares against. Default is
+    "main"; callers can pass another branch to ask "are there new commits
+    on origin/<branch>?" without performing the update.
+
+    ``branch_explicit`` is True iff the caller passed --branch on the CLI.
+    PyPI installs can't honor non-default branches, so when this is True
+    on a PyPI install we surface a one-line notice instead of silently
+    dropping the flag.
+    """
     from hermes_cli.config import detect_install_method
     method = detect_install_method(PROJECT_ROOT)
     if method == "pip":
         from hermes_cli.config import recommended_update_command
         from hermes_cli.banner import check_via_pypi
+        if branch_explicit and branch != "main":
+            print(f"⚠ --branch is ignored for PyPI installs (would have checked '{branch}').")
         result = check_via_pypi()
         if result is None:
             print("✗ Could not reach PyPI to check for updates.")
@@ -8422,16 +8463,34 @@ def _cmd_update_check():
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Fetch both origin and upstream; prefer upstream as the canonical reference
-    print("→ Fetching from upstream...")
-    fetch_result = subprocess.run(
-        git_cmd + ["fetch", "upstream"],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if fetch_result.returncode != 0:
-        # Fallback to origin if upstream doesn't exist
+    # Fetch both origin and upstream; prefer upstream as the canonical reference.
+    # Note: upstream/<branch> may not exist for non-main branches (a fork's
+    # bb/gui has no upstream counterpart), so when the caller picks a
+    # non-default branch we skip the upstream probe and use origin directly.
+    if branch == "main":
+        print("→ Fetching from upstream...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "upstream"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if fetch_result.returncode != 0:
+            # Fallback to origin if upstream doesn't exist
+            print("→ Fetching from origin...")
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "origin"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            upstream_exists = False
+            compare_branch = f"origin/{branch}"
+        else:
+            upstream_exists = True
+            compare_branch = f"upstream/{branch}"
+    else:
+        # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch", "origin"],
@@ -8440,10 +8499,7 @@ def _cmd_update_check():
             text=True,
         )
         upstream_exists = False
-        compare_branch = "origin/main"
-    else:
-        upstream_exists = True
-        compare_branch = "upstream/main"
+        compare_branch = f"origin/{branch}"
 
     if fetch_result.returncode != 0:
         stderr = fetch_result.stderr.strip()
@@ -8455,6 +8511,20 @@ def _cmd_update_check():
             print("✗ Failed to fetch.")
             if stderr:
                 print(f"  {stderr.splitlines()[0]}")
+        sys.exit(1)
+
+    # Verify the compare ref actually exists before asking rev-list about it.
+    # Without this, `git rev-list HEAD..origin/<bogus> --count` exits 128 and
+    # (with check=True) raises CalledProcessError, surfacing a Python
+    # traceback. Friendlier to detect-and-report.
+    verify_result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if verify_result.returncode != 0:
+        print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
 
     rev_result = subprocess.run(
@@ -8675,7 +8745,13 @@ def cmd_update(args):
         return
 
     if getattr(args, "check", False):
-        _cmd_update_check()
+        # --check honors --branch so the "any new commits?" answer matches
+        # what a subsequent `hermes update --branch=<x>` would actually pull.
+        branch = _resolve_update_branch(args)
+        _cmd_update_check(
+            branch=branch,
+            branch_explicit=bool(getattr(args, "branch", None)),
+        )
         return
 
     gateway_mode = getattr(args, "gateway", False)
@@ -8835,26 +8911,57 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
-        # Always update against main
-        branch = "main"
+        # Determine the target branch. Default is "main" (the long-standing
+        # CLI behavior); --branch overrides for callers that want to update
+        # against a non-default channel.
+        branch = _resolve_update_branch(args)
 
-        # If user is on a non-main branch or detached HEAD, switch to main
-        if current_branch != "main":
+        # If user is on a different branch than the update target, switch
+        # to the target. When the target is "main" this is the historical
+        # "always update against main" behavior; for any other target it's
+        # the same thing — get HEAD onto the requested branch first, then
+        # fast-forward.
+        if current_branch != branch:
             label = (
                 "detached HEAD"
                 if current_branch == "HEAD"
                 else f"branch '{current_branch}'"
             )
-            print(f"  ⚠ Currently on {label} — switching to main for update...")
+            print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            subprocess.run(
-                git_cmd + ["checkout", "main"],
+            checkout_result = subprocess.run(
+                git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
-                check=True,
             )
+            if checkout_result.returncode != 0:
+                # Local checkout doesn't have this branch yet. Try to set
+                # it up as a tracking branch of origin/<branch>. This is
+                # the common case when the requested branch exists upstream
+                # but was never checked out locally.
+                track_result = subprocess.run(
+                    git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if track_result.returncode != 0:
+                    # Restore the user's prior branch + stash before bailing
+                    # so we don't leave them stranded in a weird state.
+                    if auto_stash_ref is not None:
+                        _restore_stashed_changes(
+                            git_cmd,
+                            PROJECT_ROOT,
+                            auto_stash_ref,
+                            prompt_user=False,
+                            input_fn=gw_input_fn,
+                        )
+                    print(f"✗ Branch '{branch}' does not exist locally or on origin.")
+                    if track_result.stderr.strip():
+                        print(f"  {track_result.stderr.strip().splitlines()[0]}")
+                    sys.exit(1)
         else:
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
@@ -8885,7 +8992,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in {"main", "HEAD"}:
+            if current_branch not in {branch, "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=PROJECT_ROOT,
@@ -8947,7 +9054,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
                     print(
-                        "  Try manually: git fetch origin && git reset --hard origin/main"
+                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
                     )
                     sys.exit(1)
 
@@ -13018,6 +13125,24 @@ Examples:
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
 
+    # ── Catalog (Nous-approved MCPs shipped with the repo) ─────────────────
+    mcp_sub.add_parser(
+        "picker",
+        help="Interactive catalog picker (also the default for `hermes mcp`)",
+    )
+    mcp_sub.add_parser(
+        "catalog",
+        help="List Nous-approved MCPs available for one-click install",
+    )
+    mcp_install_p = mcp_sub.add_parser(
+        "install",
+        help="Install a catalog MCP by name (e.g. `hermes mcp install n8n`)",
+    )
+    mcp_install_p.add_argument(
+        "identifier",
+        help="Catalog entry name (or `official/<name>`)",
+    )
+
     _add_accept_hooks_flag(mcp_parser)
 
     def cmd_mcp(args):
@@ -13430,6 +13555,17 @@ Examples:
         action="store_true",
         default=False,
         help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
+    )
+    update_parser.add_argument(
+        "--branch",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Update against this branch instead of the default (main). "
+            "If the local checkout is on a different branch, hermes will "
+            "switch to the requested branch first (auto-stashing any "
+            "uncommitted changes)."
+        ),
     )
     update_parser.add_argument(
         "--force",

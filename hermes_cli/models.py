@@ -37,7 +37,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-sonnet-4.6",            ""),
     ("moonshotai/kimi-k2.6",                   "recommended"),
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
-    ("qwen/qwen3.6-plus",                      ""),
+    ("qwen/qwen3.7-max",                       ""),
     ("anthropic/claude-haiku-4.5",             ""),
     ("openai/gpt-5.5",                         ""),
     ("openai/gpt-5.5-pro",                     ""),
@@ -166,7 +166,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
         "moonshotai/kimi-k2.6",
-        "qwen/qwen3.6-plus",
+        "qwen/qwen3.7-max",
         "anthropic/claude-haiku-4.5",
         "openai/gpt-5.5",
         "openai/gpt-5.5-pro",
@@ -399,6 +399,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-omni",
         "minimax-m2.7",
         "minimax-m2.5",
+        "qwen3.7-max",
         "qwen3.6-plus",
         "qwen3.5-plus",
     ],
@@ -3014,6 +3015,8 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
 
     if provider == "opencode-go":
         if normalized.startswith("minimax-"):
+            return "anthropic_messages"
+        if normalized.startswith("qwen3.7-max"):
             return "anthropic_messages"
         return "chat_completions"
 

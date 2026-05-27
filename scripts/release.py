@@ -46,6 +46,11 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
     "9592417+adam91holt@users.noreply.github.com": "adam91holt",
+    "45688690+fujinice@users.noreply.github.com": "fujinice",
+    "276689385+carltonawong@users.noreply.github.com": "carltonawong",
+    "wangpuv@hotmail.com": "wangpuv",
+    "202622897+ticketclosed-wontfix@users.noreply.github.com": "ticketclosed-wontfix",
+    "wuxuebin1993@gmail.com": "victorGPT",
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "kenyon1977@gmail.com": "kenyonxu",
@@ -1316,6 +1321,7 @@ AUTHOR_MAP = {
     "chenglunhu@gmail.com": "hclsys",  # PR #31985 (TUI /q alias regression test)
     "dearmayo@localhost": "ffr31mr",  # PR #32103 (SubdirectoryHintTracker workspace boundary)
     "TheOnlyMika@users.noreply.github.com": "TheOnlyMika",  # PR #32155 (dashboard XSS + defusedxml)
+    "krislidimo@gmail.com": "krislidimo",  # PR #29775 (tighten Telegram table row-group spacing; drop redundant first bullet)
 }
 
 

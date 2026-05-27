@@ -353,6 +353,8 @@ class TestCreateProfile:
         (legacy_dir / "config.json").write_text(json.dumps({
             "mode": "cloud",
             "bank_id": "hermes-legacy",
+            "llm_provider": "openrouter",
+            "llm_model": "openai/gpt-4o-mini",
         }))
 
         profile_dir = create_profile(
@@ -374,8 +376,8 @@ class TestCreateProfile:
             "source_system:hermes-agent",
         ]
         assert materialized["recall_budget"] == "high"
-        assert materialized["llm_provider"] == "openrouter"
-        assert materialized["llm_model"] == "openai/gpt-4o-mini"
+        assert "llm_provider" not in materialized
+        assert "llm_model" not in materialized
         assert materialized["banks"]["hermes"]["bankId"] == "hermes-target"
         assert materialized["banks"]["hermes"]["budget"] == "high"
         assert "llm_api_key" not in materialized
@@ -395,6 +397,10 @@ class TestCreateProfile:
             "retain_source": "hermes-faber",
             "retain_tags": "hermes-faber, source_system:hermes-agent, generic",
             "recall_budget": "low",
+            "llm_provider": "openai_compatible",
+            "llm_model": "shared-model",
+            "llm_base_url": "http://127.0.0.1:11434/v1",
+            "idle_timeout": 60,
             "apiKey": "do-not-copy",
             "llmApiKey": "do-not-copy",
         }))
@@ -402,8 +408,8 @@ class TestCreateProfile:
         profile_dir = create_profile("researcher", no_alias=True)
 
         materialized = json.loads((profile_dir / "hindsight" / "config.json").read_text())
-        assert materialized["mode"] == "local_external"
-        assert materialized["api_url"] == "http://127.0.0.1:8000"
+        assert "mode" not in materialized
+        assert "api_url" not in materialized
         assert materialized["profile"] == "hermes-researcher"
         assert materialized["bank_id"] == "hermes-researcher"
         assert materialized["bank_id_template"] == ""
@@ -413,7 +419,11 @@ class TestCreateProfile:
             "source_system:hermes-agent",
             "generic",
         ]
-        assert materialized["recall_budget"] == "low"
+        assert "recall_budget" not in materialized
+        assert "llm_provider" not in materialized
+        assert "llm_model" not in materialized
+        assert "llm_base_url" not in materialized
+        assert "idle_timeout" not in materialized
         assert "apiKey" not in materialized
         assert "llmApiKey" not in materialized
 

@@ -22,8 +22,9 @@ Config via environment variables:
   HINDSIGHT_RETAIN_USER_PREFIX     — label used before user turns in retained transcripts
   HINDSIGHT_RETAIN_ASSISTANT_PREFIX — label used before assistant turns in retained transcripts
 
-Or via $HERMES_HOME/hindsight/config.json (profile-scoped), falling back to
-~/.hindsight/config.json (legacy, shared) for backward compatibility.
+Or via ~/.hindsight/config.json (shared defaults) merged with
+$HERMES_HOME/hindsight/config.json (profile-scoped overrides). A single
+existing config file keeps the historical behavior.
 """
 
 from __future__ import annotations
@@ -294,31 +295,80 @@ REFLECT_SCHEMA = {
 # Config
 # ---------------------------------------------------------------------------
 
+def _read_json_config(path) -> dict | None:
+    """Read a JSON object config file, returning None when absent/invalid."""
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _deep_merge_config(defaults: dict, overrides: dict) -> dict:
+    """Return defaults recursively merged with profile-scoped overrides."""
+    merged = dict(defaults)
+    for key, value in overrides.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_config(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+_PROFILE_SCOPED_SHARED_KEYS = frozenset({
+    "profile",
+    "bank_id",
+    "bank_id_template",
+    "banks",
+    "bank_mission",
+    "bank_retain_mission",
+    "retain_source",
+    "retain_tags",
+})
+
+
+def _shared_defaults_for_profile_config(shared_config: dict) -> dict:
+    """Return shared defaults safe to merge into a profile-scoped config.
+
+    The legacy shared config may contain identity/bank/tag fields. Those are
+    not truly global once a profile config exists, so keep them out of the
+    defaults merge and let $HERMES_HOME/hindsight/config.json own them.
+    """
+    return {
+        key: value
+        for key, value in shared_config.items()
+        if key not in _PROFILE_SCOPED_SHARED_KEYS
+    }
+
+
 def _load_config() -> dict:
-    """Load config from profile-scoped path, legacy path, or env vars.
+    """Load config from shared defaults, profile overrides, or env vars.
 
     Resolution order:
-      1. $HERMES_HOME/hindsight/config.json  (profile-scoped)
-      2. ~/.hindsight/config.json             (legacy, shared)
-      3. Environment variables
+      1. ~/.hindsight/config.json             (shared defaults)
+      2. $HERMES_HOME/hindsight/config.json  (profile-scoped overrides)
+      3. Environment variables when no valid config file exists
+
+    If only one config file exists, return it unchanged for backward
+    compatibility. When both exist, profile values override shared defaults.
     """
     from pathlib import Path
 
-    # Profile-scoped path (preferred)
+    shared_path = Path.home() / ".hindsight" / "config.json"
     profile_path = get_hermes_home() / "hindsight" / "config.json"
-    if profile_path.exists():
-        try:
-            return json.loads(profile_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
 
-    # Legacy shared path (backward compat)
-    legacy_path = Path.home() / ".hindsight" / "config.json"
-    if legacy_path.exists():
-        try:
-            return json.loads(legacy_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    shared_config = _read_json_config(shared_path)
+    profile_config = _read_json_config(profile_path)
+
+    if shared_config is not None and profile_config is not None:
+        return _deep_merge_config(_shared_defaults_for_profile_config(shared_config), profile_config)
+    if profile_config is not None:
+        return profile_config
+    if shared_config is not None:
+        return shared_config
 
     return {
         "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),

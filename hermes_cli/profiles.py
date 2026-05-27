@@ -19,6 +19,7 @@ Usage::
     hermes profile delete coder          # remove profile + alias + service
 """
 
+import copy
 import json
 import os
 import re
@@ -71,6 +72,16 @@ _HINDSIGHT_SECRET_KEYS: frozenset[str] = frozenset({
     "apiKey",
     "llm_api_key",
     "llmApiKey",
+})
+_HINDSIGHT_PROFILE_SCOPED_KEYS: frozenset[str] = frozenset({
+    "profile",
+    "bank_id",
+    "bank_id_template",
+    "banks",
+    "bank_mission",
+    "bank_retain_mission",
+    "retain_source",
+    "retain_tags",
 })
 _HINDSIGHT_PROFILE_TAG_RE = re.compile(r"^hermes-[A-Za-z0-9_-]+$")
 
@@ -581,6 +592,21 @@ def write_profile_meta(
 # Hindsight profile config materialization
 # ---------------------------------------------------------------------------
 
+def _read_hindsight_json_config(path: Path) -> Optional[dict]:
+    """Read a Hindsight JSON object config, returning None when absent/invalid."""
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _hindsight_shared_config_path() -> Path:
+    return Path.home() / ".hindsight" / "config.json"
+
+
 def _find_hindsight_config_source(source_dir: Optional[Path]) -> Optional[Path]:
     """Return the Hindsight config to materialize for a new profile, if any."""
     if source_dir is not None:
@@ -588,7 +614,7 @@ def _find_hindsight_config_source(source_dir: Optional[Path]) -> Optional[Path]:
         if profile_config.exists():
             return profile_config
 
-    legacy_config = Path.home() / ".hindsight" / "config.json"
+    legacy_config = _hindsight_shared_config_path()
     if legacy_config.exists():
         return legacy_config
     return None
@@ -638,6 +664,22 @@ def _strip_hindsight_secret_settings(config: dict) -> None:
         config.pop(key, None)
 
 
+def _prune_hindsight_shared_defaults(config: dict, shared_config: Optional[dict]) -> None:
+    """Drop top-level values already supplied by the shared Hindsight config.
+
+    New profile configs should only contain profile-scoped identity/bank
+    overrides plus true per-profile differences. This avoids copying shared
+    LLM endpoint/model/timeout settings into every future profile.
+    """
+    if not isinstance(shared_config, dict):
+        return
+    for key in list(config.keys()):
+        if key in _HINDSIGHT_PROFILE_SCOPED_KEYS or key in _HINDSIGHT_SECRET_KEYS:
+            continue
+        if key in shared_config and config.get(key) == shared_config.get(key):
+            config.pop(key, None)
+
+
 def _materialize_hindsight_profile_config(
     profile_dir: Path,
     profile_name: str,
@@ -645,22 +687,21 @@ def _materialize_hindsight_profile_config(
 ) -> None:
     """Write profile-scoped Hindsight config with identity rewritten.
 
-    New profiles should not keep sharing ~/.hindsight/config.json or inherit a
-    cloned profile's bank/source identity.  Preserve ordinary config settings,
-    strip any accidentally stored secrets, and force a static per-profile bank.
+    New profiles should not inherit a cloned profile's bank/source identity.
+    Preserve per-profile config differences, strip any accidentally stored
+    secrets, force a static per-profile bank, and avoid duplicating values
+    already supplied by ~/.hindsight/config.json shared defaults.
     """
     source_config = _find_hindsight_config_source(source_dir)
     if source_config is None:
         return
 
-    try:
-        data = json.loads(source_config.read_text(encoding="utf-8"))
-    except Exception:
-        return
-    if not isinstance(data, dict):
+    data = _read_hindsight_json_config(source_config)
+    if data is None:
         return
 
-    materialized = dict(data)
+    shared_config = _read_hindsight_json_config(_hindsight_shared_config_path())
+    materialized = copy.deepcopy(data)
     _strip_hindsight_secret_settings(materialized)
 
     profile_identity = f"hermes-{profile_name}"
@@ -680,6 +721,8 @@ def _materialize_hindsight_profile_config(
         hermes_bank = banks.get("hermes")
         if isinstance(hermes_bank, dict):
             hermes_bank["bankId"] = profile_identity
+
+    _prune_hindsight_shared_defaults(materialized, shared_config)
 
     config_path = profile_dir / "hindsight" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)

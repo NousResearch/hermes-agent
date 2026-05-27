@@ -6,8 +6,10 @@ turn counting, tags), and schema completeness.
 """
 
 import json
+import os
 import re
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -32,16 +34,21 @@ from plugins.memory.hindsight import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
-    """Ensure no stale env vars leak between tests."""
+def _clean_env(tmp_path, monkeypatch):
+    """Ensure no stale env vars or real user Hindsight config leak between tests."""
     for key in (
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
         "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_TIMEOUT",
         "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "HINDSIGHT_API_LLM_BASE_URL", "HINDSIGHT_API_LLM_PROVIDER",
+        "HINDSIGHT_API_LLM_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
+    isolated_home = tmp_path / "isolated-user-home"
+    monkeypatch.setenv("HOME", str(isolated_home))
+    monkeypatch.setattr(Path, "home", lambda: Path(os.environ["HOME"]))
 
 
 def _make_mock_client():
@@ -253,6 +260,83 @@ class TestConfig:
         assert cfg["apiKey"] == "env-key"
         assert cfg["banks"]["hermes"]["bankId"] == "env-bank"
         assert cfg["banks"]["hermes"]["budget"] == "high"
+
+    def test_shared_config_defaults_merge_with_profile_overrides(self, tmp_path, monkeypatch):
+        user_home = tmp_path / "user-home"
+        hermes_home = tmp_path / "profile-home"
+        user_home.mkdir()
+        (user_home / ".hindsight").mkdir()
+        (hermes_home / "hindsight").mkdir(parents=True)
+
+        (user_home / ".hindsight" / "config.json").write_text(json.dumps({
+            "mode": "local_embedded",
+            "llm_provider": "openrouter",
+            "llm_model": "shared-model",
+            "llm_base_url": "https://openrouter.ai/api/v1",
+            "idle_timeout": 45,
+            "memory_mode": "hybrid",
+            "banks": {
+                "hermes": {
+                    "bankId": "shared-bank",
+                    "budget": "high",
+                    "enabled": True,
+                },
+            },
+        }))
+        (hermes_home / "hindsight" / "config.json").write_text(json.dumps({
+            "profile": "hermes-faber",
+            "bank_id": "hermes-faber",
+            "retain_source": "hermes-faber",
+            "llm_model": "profile-model",
+            "banks": {"hermes": {"bankId": "hermes-faber"}},
+        }))
+
+        monkeypatch.setattr(Path, "home", lambda: user_home)
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
+
+        cfg = _load_config()
+
+        assert cfg["mode"] == "local_embedded"
+        assert cfg["llm_provider"] == "openrouter"
+        assert cfg["llm_model"] == "profile-model"
+        assert cfg["llm_base_url"] == "https://openrouter.ai/api/v1"
+        assert cfg["idle_timeout"] == 45
+        assert cfg["profile"] == "hermes-faber"
+        assert cfg["bank_id"] == "hermes-faber"
+        assert cfg["retain_source"] == "hermes-faber"
+        assert cfg["banks"]["hermes"] == {"bankId": "hermes-faber"}
+
+    def test_single_profile_config_keeps_legacy_behavior(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "profile-home"
+        (hermes_home / "hindsight").mkdir(parents=True)
+        expected = {
+            "mode": "local_external",
+            "api_url": "http://127.0.0.1:8000",
+            "bank_id": "profile-bank",
+        }
+        (hermes_home / "hindsight" / "config.json").write_text(json.dumps(expected))
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "user-home")
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
+
+        assert _load_config() == expected
+
+    def test_single_shared_config_keeps_legacy_behavior(self, tmp_path, monkeypatch):
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        (user_home / ".hindsight").mkdir()
+        expected = {
+            "mode": "local_embedded",
+            "llm_provider": "openai_compatible",
+            "llm_model": "shared-model",
+            "idle_timeout": 0,
+        }
+        (user_home / ".hindsight" / "config.json").write_text(json.dumps(expected))
+
+        monkeypatch.setattr(Path, "home", lambda: user_home)
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path / "missing")
+
+        assert _load_config() == expected
 
     def test_embedded_profile_env_includes_idle_timeout_from_config(self):
         env = _build_embedded_profile_env({

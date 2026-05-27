@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
@@ -244,6 +246,14 @@ def test_resolve_billing_route_maps_gemini_provider_to_google():
 def test_resolve_billing_route_maps_google_gemini_cli_to_google():
     """OAuth provider `google-gemini-cli` shares the same per-token pricing."""
     route = resolve_billing_route("gemini-2.5-flash", provider="google-gemini-cli")
+    assert route.provider == "google"
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+@pytest.mark.parametrize("alias", ["google", "google-gemini", "google-ai-studio"])
+def test_resolve_billing_route_maps_gemini_aliases_to_google(alias):
+    """All gemini profile aliases must also resolve to the google pricing table."""
+    route = resolve_billing_route("gemini-2.5-flash", provider=alias)
     assert route.provider == "google"
     assert route.billing_mode == "official_docs_snapshot"
 

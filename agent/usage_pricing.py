@@ -456,6 +456,17 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-05",
     ),
+    (
+        "google",
+        "gemini-3.1-flash-lite-preview",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.25"),
+        output_cost_per_million=Decimal("1.50"),
+        cache_read_cost_per_million=Decimal("0.025"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-05",
+    ),
     # AWS Bedrock — pricing per the Bedrock pricing page.
     # Bedrock charges the same per-token rates as the model provider but
     # through AWS billing.  These are the on-demand prices (no commitment).
@@ -590,12 +601,12 @@ def resolve_billing_route(
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "openai":
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    if provider_name in {"gemini", "google-gemini-cli"}:
-        # Direct Google AI Studio and OAuth (`hermes login google`) both
-        # hit Google's published per-token pricing.  Normalize to
-        # provider="google" so the lookup in _OFFICIAL_DOCS_PRICING (keyed
-        # under "google") resolves.  Without this branch every native
-        # Gemini session lands billing_mode="unknown" and cost stays $0.
+    if provider_name in {"gemini", "google", "google-gemini", "google-ai-studio", "google-gemini-cli"}:
+        # Direct Google AI Studio (api-key), aliases, and OAuth (`hermes login google`)
+        # all hit Google's published per-token pricing.  Normalize to provider="google"
+        # so the lookup in _OFFICIAL_DOCS_PRICING (keyed under "google") resolves.
+        # Without this branch every native Gemini session lands billing_mode="unknown"
+        # and cost stays $0.
         return BillingRoute(provider="google", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")

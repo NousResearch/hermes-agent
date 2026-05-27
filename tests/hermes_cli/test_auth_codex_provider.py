@@ -144,6 +144,73 @@ def test_save_codex_tokens_roundtrip(tmp_path, monkeypatch):
     assert data["tokens"]["refresh_token"] == "rt456"
 
 
+def test_save_codex_tokens_syncs_credential_pool(tmp_path, monkeypatch):
+    """Re-auth must update the credential_pool device_code entry, not just providers.
+
+    Regression for #33000: the runtime selects from credential_pool, so a
+    re-auth that only refreshed providers.openai-codex.tokens left the pool
+    holding a consumed refresh token and stale error markers, causing an
+    immediate 401 token_invalidated on the next request.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
+                "last_refresh": "2026-01-01T00:00:00Z",
+                "auth_mode": "chatgpt",
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "abc123",
+                    "source": "device_code",
+                    "auth_type": "oauth",
+                    "access_token": "old-at",
+                    "refresh_token": "old-rt",
+                    "last_status": "exhausted",
+                    "last_error_code": 401,
+                    "last_error_reason": "token_invalidated",
+                    "last_error_reset_at": 9999999999,
+                },
+                {
+                    "id": "manual1",
+                    "source": "manual:codex",
+                    "auth_type": "oauth",
+                    "access_token": "manual-at",
+                    "refresh_token": "manual-rt",
+                },
+            ],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _save_codex_tokens({"access_token": "new-at", "refresh_token": "new-rt"},
+                       last_refresh="2026-05-27T00:00:00Z")
+
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    pool = auth["credential_pool"]["openai-codex"]
+    seeded = next(e for e in pool if e["source"] == "device_code")
+    assert seeded["access_token"] == "new-at"
+    assert seeded["refresh_token"] == "new-rt"
+    assert seeded["last_refresh"] == "2026-05-27T00:00:00Z"
+    assert seeded["last_status"] is None
+    assert seeded["last_error_code"] is None
+    assert seeded["last_error_reason"] is None
+    assert seeded["last_error_reset_at"] is None
+
+    # Manual entries are independent credentials and must not be overwritten.
+    manual = next(e for e in pool if e["source"] == "manual:codex")
+    assert manual["access_token"] == "manual-at"
+    assert manual["refresh_token"] == "manual-rt"
+
+    # Provider singleton is updated too.
+    assert auth["providers"]["openai-codex"]["tokens"]["access_token"] == "new-at"
+
+
 def test_import_codex_cli_tokens(tmp_path, monkeypatch):
     codex_home = tmp_path / "codex-cli"
     codex_home.mkdir(parents=True, exist_ok=True)

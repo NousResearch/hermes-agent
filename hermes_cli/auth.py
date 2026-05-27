@@ -3223,6 +3223,48 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
+def _sync_codex_pool_entries(
+    auth_store: Dict[str, Any],
+    tokens: Dict[str, str],
+    last_refresh: Optional[str],
+) -> None:
+    """Mirror a fresh Codex re-auth into the credential_pool singleton entries.
+
+    The runtime selects credentials from ``credential_pool.openai-codex``, not
+    from ``providers.openai-codex.tokens``.  A re-auth invalidates the prior
+    OAuth pair server-side, but the pool's ``device_code`` entry keeps holding
+    the now-consumed refresh token plus any stale error markers — so the next
+    request spends a dead token and gets a 401 ``token_invalidated``.  Update
+    the singleton-seeded entries in lockstep with the provider tokens and clear
+    the error state so the fresh credentials take effect immediately.  Manual
+    (``manual:*``) entries are independent credentials and are left untouched.
+    """
+    access_token = tokens.get("access_token")
+    if not access_token:
+        return
+    refresh_token = tokens.get("refresh_token")
+    pool = auth_store.get("credential_pool")
+    if not isinstance(pool, dict):
+        return
+    entries = pool.get("openai-codex")
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("source") != "device_code":
+            continue
+        entry["access_token"] = access_token
+        if refresh_token:
+            entry["refresh_token"] = refresh_token
+        if last_refresh:
+            entry["last_refresh"] = last_refresh
+        entry["last_status"] = None
+        entry["last_status_at"] = None
+        entry["last_error_code"] = None
+        entry["last_error_reason"] = None
+        entry["last_error_message"] = None
+        entry["last_error_reset_at"] = None
+
+
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
@@ -3234,6 +3276,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
         _save_provider_state(auth_store, "openai-codex", state)
+        _sync_codex_pool_entries(auth_store, tokens, last_refresh)
         _save_auth_store(auth_store)
 
 

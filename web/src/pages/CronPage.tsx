@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Clock, Pause, Play, Trash2, X, Zap } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { Clock, Pause, Play, RefreshCw, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -7,6 +7,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
 import { api } from "@/lib/api";
 import type { CronJob, ProfileInfo } from "@/lib/api";
+import { useLiveResource } from "@/hooks/useLiveResource";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
@@ -96,11 +97,19 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
   completed: "destructive",
 };
 
+function formatLastUpdated(value: Date | null): string {
+  if (!value) return "not refreshed yet";
+  const seconds = Math.max(0, Math.floor((Date.now() - value.getTime()) / 1000));
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return value.toLocaleTimeString();
+}
+
 export default function CronPage() {
-  const [jobs, setJobs] = useState<CronJob[]>([]);
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("all");
-  const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
@@ -119,13 +128,21 @@ export default function CronPage() {
   const [creating, setCreating] = useState(false);
   const createProfile = selectedProfile === "all" ? "default" : selectedProfile;
 
-  const loadJobs = useCallback(() => {
-    api
-      .getCronJobs(selectedProfile)
-      .then(setJobs)
-      .catch(() => showToast(t.common.loading, "error"))
-      .finally(() => setLoading(false));
-  }, [selectedProfile, showToast, t.common.loading]);
+  const loadJobs = useCallback(() => api.getCronJobs(selectedProfile), [selectedProfile]);
+  const {
+    data: liveJobs,
+    loading,
+    isRefreshing,
+    error: jobsError,
+    lastUpdated,
+    refresh: refreshJobs,
+  } = useLiveResource<CronJob[]>({
+    load: loadJobs,
+    intervalMs: 5_000,
+    refreshOnWindowFocus: true,
+    refreshWhenVisible: true,
+  });
+  const jobs = useMemo(() => liveJobs ?? [], [liveJobs]);
 
   useEffect(() => {
     api
@@ -133,10 +150,6 @@ export default function CronPage() {
       .then((res) => setProfiles(res.profiles))
       .catch(() => setProfiles([]));
   }, []);
-
-  useEffect(() => {
-    loadJobs();
-  }, [loadJobs]);
 
   const handleCreate = async () => {
     if (!prompt.trim() || !schedule.trim()) {
@@ -160,7 +173,7 @@ export default function CronPage() {
       setName("");
       setDeliver("local");
       setCreateModalOpen(false);
-      loadJobs();
+      void refreshJobs();
     } catch (e) {
       showToast(`${t.config.failedToSave}: ${e}`, "error");
     } finally {
@@ -185,7 +198,7 @@ export default function CronPage() {
           "success",
         );
       }
-      loadJobs();
+      void refreshJobs();
     } catch (e) {
       showToast(`${t.status.error}: ${e}`, "error");
     }
@@ -198,7 +211,7 @@ export default function CronPage() {
         `${t.cron.triggerNow}: "${truncateText(getJobTitle(job), 30)}"`,
         "success",
       );
-      loadJobs();
+      void refreshJobs();
     } catch (e) {
       showToast(`${t.status.error}: ${e}`, "error");
     }
@@ -215,13 +228,13 @@ export default function CronPage() {
             `${t.common.delete}: "${job ? truncateText(getJobTitle(job), 30) : id}"`,
             "success",
           );
-          loadJobs();
+          void refreshJobs();
         } catch (e) {
           showToast(`${t.status.error}: ${e}`, "error");
           throw e;
         }
       },
-      [jobs, loadJobs, showToast, t.common.delete, t.status.error],
+      [jobs, refreshJobs, showToast, t.common.delete, t.status.error],
     ),
   });
 
@@ -418,6 +431,26 @@ export default function CronPage() {
                 </SelectOption>
               ))}
             </Select>
+            <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+              <span>
+                Auto-refresh · updated {formatLastUpdated(lastUpdated)}
+              </span>
+              <Button
+                ghost
+                size="icon"
+                title="Refresh cron jobs"
+                aria-label="Refresh cron jobs"
+                onClick={() => void refreshJobs()}
+                className="h-6 w-6"
+              >
+                <RefreshCw className={cn("h-3 w-3", isRefreshing && "animate-spin")} />
+              </Button>
+            </div>
+            {jobsError && (
+              <p className="text-[11px] text-destructive">
+                Last refresh failed; showing last known state.
+              </p>
+            )}
           </div>
         </div>
 

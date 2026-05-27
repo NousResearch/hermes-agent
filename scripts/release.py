@@ -1287,6 +1287,10 @@ AUTHOR_MAP = {
     "172729123+felix-windsor@users.noreply.github.com": "felix-windsor",  # PR #28019 salvage (cron asterisks)
     "felixwindsor3344@gmail.com": "felix-windsor",
     "259054917+houenyang-momo@users.noreply.github.com": "houenyang-momo",  # PR #28205 salvage (charizard contrast)
+    "33547839+sir-ad@users.noreply.github.com": "sir-ad",  # PR #31941 salvage (compaction noise)
+    "adarsh.agrahari26@gmail.com": "sir-ad",
+    "269599864+rdasilva1016-ui@users.noreply.github.com": "rdasilva1016-ui",  # PR #31098 salvage (Telegram /start ping)
+    "rdasilva1016-ui@users.noreply.github.com": "rdasilva1016-ui",
     "35931201+iqdoctor@users.noreply.github.com": "iqdoctor",  # PR #28095 salvage (windows installer docs)
     "29513231+joe102084@users.noreply.github.com": "joe102084",  # PR #28151 salvage (whitespace cron responses)
     "joe102084@gmail.com": "joe102084",

@@ -554,14 +554,34 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
-    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
+    def test_launchd_restart_uses_launchctl_kickstart_without_pid_wait(self, monkeypatch):
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
-        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_pid_exit",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("launchd restart should not wait on a PID from an external CLI")
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_gateway_exit",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("launchd restart must wait for the old PID, not any gateway PID")
+            ),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "terminate_pid",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("launchd kickstart -k should own process replacement")
+            ),
+        )
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
@@ -576,7 +596,6 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_restart()
 
         assert calls == [
-            ("term", 321, False),
             ["launchctl", "kickstart", "-k", target],
         ]
 

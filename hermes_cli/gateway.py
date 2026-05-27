@@ -3051,7 +3051,6 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
-    drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
 
     try:
@@ -3059,15 +3058,6 @@ def launchd_restart():
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
             return
-        if pid is not None:
-            try:
-                terminate_pid(pid, force=False)
-            except (ProcessLookupError, PermissionError, OSError):
-                pid = None
-            if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
-                if not exited:
-                    print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:

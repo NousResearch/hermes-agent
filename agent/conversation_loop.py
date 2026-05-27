@@ -3283,6 +3283,12 @@ def run_conversation(
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
             
+            # Synthesize text-mode tool_calls for free-tier models (groq, cerebras,
+            # mistral, qwen, ollama) that emit JSON in message.content instead of
+            # native tool_calls structures. Must run before the tool_calls check.
+            from agent.text_mode_tool_calls import maybe_synthesize_tool_calls
+            maybe_synthesize_tool_calls(assistant_message, model=agent.model or "")
+
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:

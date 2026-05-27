@@ -116,12 +116,15 @@ def build_smart_mention_messages(
 ) -> list[dict[str, str]]:
     context_lines: list[str] = []
     if config.include_recent_context and config.recent_context_messages > 0:
-        for item in list(recent_context)[-config.recent_context_messages:]:
+        recent_items = []
+        for item in recent_context:
             sender = str(item.get("sender") or "user").strip() or "user"
             text = str(item.get("text") or "").strip()
             if not text:
                 continue
             media = str(item.get("media") or "").strip()
+            recent_items.append((sender, text, media))
+        for sender, text, media in recent_items[-config.recent_context_messages:]:
             suffix = f" [{media}]" if media else ""
             context_lines.append(f"- {sender}{suffix}: {text}")
 

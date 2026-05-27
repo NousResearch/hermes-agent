@@ -519,15 +519,44 @@ class OpenVikingMemoryProvider(MemoryProvider):
             )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return prefetched results from the background thread."""
+        """Search OpenViking synchronously with the CURRENT turn's query.
+
+        Also drains any stale background prefetch result (previous turn's
+        topic) — the synchronous search with *this* turn's query always
+        wins.  This fixes the architectural misunderstanding where the
+        agent was always getting context about the wrong topic.
+        """
+        if not self._client:
+            return ""
+
+        # Drain the stale background prefetch result (previous turn's topic)
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
-            result = self._prefetch_result
             self._prefetch_result = ""
-        if not result:
-            return ""
-        return f"## OpenViking Context\n{result}"
+
+        # Synchronous search with THIS turn's query — not last turn's
+        try:
+            resp = self._client.post("/api/v1/search/find", {
+                "query": query,
+                "top_k": 5,
+            })
+            result = resp.get("result", {})
+            parts = []
+            for ctx_type in ("memories", "resources"):
+                items = result.get(ctx_type, [])
+                for item in items[:3]:
+                    uri = item.get("uri", "")
+                    abstract = item.get("abstract", "")
+                    score = item.get("score", 0)
+                    if abstract and score >= 0.35:
+                        parts.append(f"- [{score:.2f}] {abstract} ({uri})")
+            if parts:
+                return "## OpenViking Context\n" + "\n".join(parts)
+        except Exception as e:
+            logger.debug("OpenViking synchronous prefetch failed: %s", e)
+
+        return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire a background search to pre-load relevant context."""

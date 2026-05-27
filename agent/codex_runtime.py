@@ -193,7 +193,24 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             raise InterruptedError("Agent interrupted before Codex stream retry")
         collected_output_items: list = []
         try:
-            with active_client.responses.stream(**api_kwargs) as stream:
+            stream_context = active_client.responses.stream(**api_kwargs)
+            if stream_context is None or not hasattr(stream_context, "__enter__"):
+                logger.warning(
+                    "Codex Responses stream returned %s; falling back to create(stream=True). %s",
+                    "None" if stream_context is None else "non-context-manager object",
+                    agent._client_log_context(),
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+
+            with stream_context as stream:
+                if stream is None or not hasattr(stream, "__iter__"):
+                    logger.warning(
+                        "Codex Responses stream yielded %s; falling back to create(stream=True). %s",
+                        "None" if stream is None else "non-iterable object",
+                        agent._client_log_context(),
+                    )
+                    return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+
                 for event in stream:
                     # Mark stream activity for the TTFB watchdog in
                     # interruptible_api_call. The Codex backend can accept the

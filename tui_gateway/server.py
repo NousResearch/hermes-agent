@@ -4109,6 +4109,38 @@ def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
     )
 
 
+def _notification_event_dedup_key(evt: dict) -> tuple:
+    """Return the UI-emission identity for a process notification event.
+
+    Completion events are terminal notifications for a background process, so
+    they remain one-shot per process session. Watch-match events are not
+    terminal: a single background process can legitimately match the same or
+    different patterns many times, so include event-specific content to avoid
+    suppressing later distinct matches from the same process.
+    """
+    evt_type = evt.get("type", "completion")
+    evt_sid = evt.get("session_id", "")
+    if evt_type == "watch_match":
+        return (
+            evt_sid,
+            evt_type,
+            evt.get("command", ""),
+            evt.get("pattern", ""),
+            evt.get("output", ""),
+            evt.get("suppressed", 0),
+            evt.get("message_id", ""),
+        )
+    if evt_type.startswith("watch_overflow_") or evt_type == "watch_disabled":
+        return (
+            evt_sid,
+            evt_type,
+            evt.get("command", ""),
+            evt.get("message", ""),
+            evt.get("suppressed", 0),
+        )
+    return (evt_sid, evt_type)
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -4125,6 +4157,7 @@ def _notification_poller_loop(
     """
     from tools.process_registry import process_registry, format_process_notification
 
+    _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
     while not stop_event.is_set() and not session.get("_finalized"):
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
@@ -4149,7 +4182,14 @@ def _notification_poller_loop(
         if not text:
             continue
 
-        _emit("status.update", sid, {"kind": "process", "text": text})
+        # Only emit the same notification identity to TUI once — re-queued
+        # completions get re-emitted every 0.5s otherwise when session is busy,
+        # while distinct watch_match events from the same process must remain
+        # visible independently.
+        _dedup_key = _notification_event_dedup_key(evt)
+        if _dedup_key not in _emitted:
+            _emit("status.update", sid, {"kind": "process", "text": text})
+            _emitted.add(_dedup_key)
 
         with session["history_lock"]:
             if session.get("running"):
@@ -4189,7 +4229,10 @@ def _notification_poller_loop(
         if not text:
             continue
 
-        _emit("status.update", sid, {"kind": "process", "text": text})
+        _dedup_key = _notification_event_dedup_key(evt)
+        if _dedup_key not in _emitted:
+            _emit("status.update", sid, {"kind": "process", "text": text})
+            _emitted.add(_dedup_key)
 
         with session["history_lock"]:
             if session.get("running"):

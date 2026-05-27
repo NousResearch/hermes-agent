@@ -41,6 +41,15 @@ from agent.web_search_provider import WebSearchProvider
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_tavily_error(exc: Exception) -> str:
+    """Return bounded, credential-safe Tavily diagnostics for tool users/logs."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    detail = f"HTTP {status}" if status else type(exc).__name__[:80]
+    if status in {401, 403}:
+        return f"Tavily request failed ({detail}); check TAVILY_API_KEY."
+    return f"Tavily request failed ({detail})."
+
+
 def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """POST to the Tavily API and return the parsed JSON response.
 
@@ -184,8 +193,9 @@ class TavilyWebSearchProvider(WebSearchProvider):
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001 — including httpx errors
-            logger.warning("Tavily search error: %s", exc)
-            return {"success": False, "error": f"Tavily search failed: {exc}"}
+            error = _sanitize_tavily_error(exc)
+            logger.warning("Tavily search error: %s", error)
+            return {"success": False, "error": error}
 
     def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
         """Extract content from one or more URLs via Tavily.
@@ -215,9 +225,10 @@ class TavilyWebSearchProvider(WebSearchProvider):
         except ValueError as exc:
             return [{"url": u, "title": "", "content": "", "error": str(exc)} for u in urls]
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Tavily extract error: %s", exc)
+            error = _sanitize_tavily_error(exc)
+            logger.warning("Tavily extract error: %s", error)
             return [
-                {"url": u, "title": "", "content": "", "error": f"Tavily extract failed: {exc}"}
+                {"url": u, "title": "", "content": "", "error": error}
                 for u in urls
             ]
 
@@ -258,14 +269,15 @@ class TavilyWebSearchProvider(WebSearchProvider):
         except ValueError as exc:
             return {"results": [{"url": url, "title": "", "content": "", "error": str(exc)}]}
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Tavily crawl error: %s", exc)
+            error = _sanitize_tavily_error(exc)
+            logger.warning("Tavily crawl error: %s", error)
             return {
                 "results": [
                     {
                         "url": url,
                         "title": "",
                         "content": "",
-                        "error": f"Tavily crawl failed: {exc}",
+                        "error": error,
                     }
                 ]
             }

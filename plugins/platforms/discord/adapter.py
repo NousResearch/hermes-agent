@@ -660,7 +660,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.warning("Opus codec not found — voice channel playback disabled")
 
         if not self.config.token:
-            logger.error("[%s] No bot token configured", self.name)
+            message = "Discord bot token is missing; set DISCORD_BOT_TOKEN and restart the gateway."
+            logger.error("[%s] %s", self.name, message)
+            self._set_fatal_error("discord_missing_token", message, retryable=False)
             return False
 
         try:
@@ -884,11 +886,42 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._slash_commands:
                 self._register_slash_commands()
 
-            # Start the bot in background
+            # Start the bot in background and race readiness against immediate
+            # startup failure. Invalid/revoked tokens fail inside the background
+            # task before on_ready fires; waiting only on _ready_event hid that
+            # root cause behind a generic timeout and retry loop.
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
+            ready_task = asyncio.create_task(self._ready_event.wait())
+            done, pending = await asyncio.wait(
+                {ready_task, self._bot_task},
+                timeout=30,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                if task is ready_task:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
 
-            # Wait for ready
-            await asyncio.wait_for(self._ready_event.wait(), timeout=30)
+            if self._bot_task in done:
+                exc = self._bot_task.exception()
+                if exc is not None:
+                    raise exc
+                if not self._ready_event.is_set():
+                    logger.error("[%s] Discord client stopped before becoming ready", self.name)
+                    self._release_platform_lock()
+                    return False
+
+            if ready_task not in done and not self._ready_event.is_set():
+                if self._bot_task and not self._bot_task.done():
+                    self._bot_task.cancel()
+                    try:
+                        await self._bot_task
+                    except asyncio.CancelledError:
+                        pass
+                raise asyncio.TimeoutError()
 
             self._running = True
             return True
@@ -898,7 +931,17 @@ class DiscordAdapter(BasePlatformAdapter):
             self._release_platform_lock()
             return False
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
+            login_failure_type = getattr(discord, "LoginFailure", None) if discord else None
+            privileged_intents_type = getattr(discord, "PrivilegedIntentsRequired", None) if discord else None
+            nonretryable_types = tuple(
+                t for t in (login_failure_type, privileged_intents_type) if isinstance(t, type)
+            )
+            if nonretryable_types and isinstance(e, nonretryable_types):
+                message = "Discord bot token was rejected; check DISCORD_BOT_TOKEN and restart the gateway."
+                logger.error("[%s] %s", self.name, message)
+                self._set_fatal_error("discord_auth_failed", message, retryable=False)
+            else:
+                logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
             self._release_platform_lock()
             return False
 

@@ -61,6 +61,52 @@ class TestTavilyRequest:
                 with pytest.raises(_httpx.HTTPStatusError):
                     _tavily_request("search", {"query": "test"})
 
+    def test_search_http_error_is_redacted_and_actionable(self, monkeypatch):
+        """Invalid Tavily credentials return bounded diagnostics without echoing the API key."""
+        import httpx as _httpx
+        from plugins.web.tavily.provider import TavilyWebSearchProvider
+
+        secret = "tvly-super-secret-key"
+        request = _httpx.Request("POST", "https://api.tavily.com/search")
+        response = _httpx.Response(401, request=request, text=f"bad key {secret}")
+        err = _httpx.HTTPStatusError(
+            f"401 Unauthorized for key {secret}", request=request, response=response
+        )
+
+        def fake_request(endpoint, payload):
+            raise err
+
+        monkeypatch.setattr("plugins.web.tavily.provider._tavily_request", fake_request)
+        monkeypatch.setenv("TAVILY_API_KEY", secret)
+
+        result = TavilyWebSearchProvider().search("test")
+
+        assert result["success"] is False
+        assert "TAVILY_API_KEY" in result["error"]
+        assert "401" in result["error"]
+        assert secret not in result["error"]
+        assert len(result["error"]) < 240
+
+    def test_non_http_error_uses_allowlisted_diagnostic(self, monkeypatch):
+        """Arbitrary exception strings may contain headers/bodies, so never echo them."""
+        from plugins.web.tavily.provider import TavilyWebSearchProvider
+
+        leaked = "Authorization: Bearer super-secret-token body={'api_key': 'tvly-super-secret-key'}"
+
+        def fake_request(endpoint, payload):
+            raise RuntimeError(leaked)
+
+        monkeypatch.setattr("plugins.web.tavily.provider._tavily_request", fake_request)
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-super-secret-key")
+
+        result = TavilyWebSearchProvider().search("test")
+
+        assert result["success"] is False
+        assert result["error"] == "Tavily request failed (RuntimeError)."
+        assert "super-secret-token" not in result["error"]
+        assert "tvly-super-secret-key" not in result["error"]
+        assert "Authorization" not in result["error"]
+
 
 # ─── _normalize_tavily_search_results ─────────────────────────────────────────
 

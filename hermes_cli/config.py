@@ -329,39 +329,31 @@ def stamp_install_method(method: str) -> None:
         pass
 
 
-def is_uv_tool_install(uv_path: Optional[str] = None) -> bool:
-    """Return True when Hermes is installed via ``uv tool install hermes-agent``.
+def is_uv_tool_install() -> bool:
+    """Return True when the *running* Hermes lives in a ``uv tool`` layout.
 
-    ``uv tool`` installs live outside any virtualenv, so ``uv pip install``
-    (the previous update path) fails with ``No virtual environment found``.
-    The fast path inspects ``sys.prefix`` for the standard uv tool layout
-    (``.../uv/tools/hermes-agent/...``); the authoritative fallback shells
-    out to ``uv tool list``. Returns False on any error so callers fall
-    back to the legacy pip path.
+    ``uv tool install hermes-agent`` places the install at
+    ``.../uv/tools/hermes-agent/...`` (default ``~/.local/share/uv/tools``,
+    or ``$UV_TOOL_DIR/...``). Such installs live outside any virtualenv, so
+    ``uv pip install`` fails with ``No virtual environment found`` and the
+    update path must use ``uv tool upgrade`` instead.
+
+    Detection is intentionally restricted to properties of the running
+    interpreter (``sys.prefix`` / ``sys.executable``). We deliberately do
+    NOT consult ``uv tool list``: it would also return True when
+    ``hermes-agent`` happens to be uv-tool-installed on the machine while
+    the *active* Hermes is a regular pip/venv install, causing
+    ``hermes update`` to upgrade the wrong copy. It would also block on a
+    subprocess call (~seconds) just to compute a recommendation string.
     """
-    prefix = os.path.normpath(sys.prefix).replace(os.sep, "/").lower()
-    if "/uv/tools/hermes-agent/" in prefix + "/":
+    def _has_uv_tool_marker(path: str) -> bool:
+        norm = os.path.normpath(path).replace(os.sep, "/").lower()
+        return "/uv/tools/hermes-agent/" in norm + "/"
+
+    if _has_uv_tool_marker(sys.prefix):
         return True
-    if uv_path is None:
-        import shutil
-        uv_path = shutil.which("uv")
-    if not uv_path:
-        return False
-    try:
-        result = subprocess.run(
-            [uv_path, "tool", "list"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    if result.returncode != 0:
-        return False
-    for line in result.stdout.splitlines():
-        tokens = line.strip().split()
-        if tokens and tokens[0] == "hermes-agent":
-            return True
+    if _has_uv_tool_marker(sys.executable or ""):
+        return True
     return False
 
 
@@ -374,11 +366,10 @@ def recommended_update_command_for_method(method: str) -> str:
     if method == "docker":
         return "docker pull nousresearch/hermes-agent:latest"
     if method == "pip":
+        if is_uv_tool_install():
+            return "uv tool upgrade hermes-agent"
         import shutil
-        uv = shutil.which("uv")
-        if uv:
-            if is_uv_tool_install(uv):
-                return "uv tool upgrade hermes-agent"
+        if shutil.which("uv"):
             return "uv pip install --upgrade hermes-agent"
         return "pip install --upgrade hermes-agent"
     return "hermes update"

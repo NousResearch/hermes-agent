@@ -188,6 +188,30 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     # returns empty output (e.g. chatgpt.com backend-api sends
     # response.incomplete instead of response.completed).
     agent._codex_streamed_text_parts: list = []
+
+    def _response_from_collected_stream(
+        output_items: list,
+        *,
+        status: str = "completed",
+    ):
+        output = list(output_items)
+        if not output and agent._codex_streamed_text_parts and not has_tool_calls:
+            assembled = "".join(agent._codex_streamed_text_parts)
+            output = [SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=assembled)],
+            )]
+        if not output:
+            return None
+        return SimpleNamespace(
+            output=output,
+            status=status,
+            model=api_kwargs.get("model"),
+            usage=None,
+        )
+
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
@@ -332,6 +356,25 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     "rejected before response.created" if prelude_error else "did not emit response.completed",
                     agent._client_log_context(),
                     err_text,
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            raise
+        except TypeError as exc:
+            if "'NoneType' object is not iterable" in str(exc):
+                recovered = _response_from_collected_stream(collected_output_items)
+                if recovered is not None:
+                    logger.debug(
+                        "Codex stream: recovered from SDK terminal response parse error "
+                        "using %d collected output items and %d text deltas",
+                        len(collected_output_items),
+                        len(agent._codex_streamed_text_parts),
+                    )
+                    return recovered
+                logger.debug(
+                    "Responses stream failed while parsing terminal response; "
+                    "falling back to create(stream=True). %s err=%s",
+                    agent._client_log_context(),
+                    exc,
                 )
                 return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise

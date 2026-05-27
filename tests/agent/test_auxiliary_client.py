@@ -2371,6 +2371,39 @@ class TestCodexAdapterReasoningTranslation:
         assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
         assert captured.get("include") == ["reasoning.encrypted_content"]
 
+    def test_recovers_when_terminal_completed_response_has_null_output(self):
+        """chatgpt.com Codex can stream output_item.done and then send a
+        terminal response.completed object whose response.output is null.
+        The SDK raises while parsing that final event; auxiliary callers
+        should still recover the already-streamed item."""
+        done_item = SimpleNamespace(
+            type="message",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text="aux title ok")],
+        )
+
+        class _Stream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_item.done", item=done_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):
+                raise AssertionError("terminal parse error should recover before final response")
+
+        real_client = MagicMock()
+        real_client.responses.stream = lambda **kwargs: _Stream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "title this"}])
+
+        assert response.choices[0].message.content == "aux title ok"
+
 
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto vision branch skips providers that have no vision on

@@ -1584,7 +1584,7 @@ class SlashCommandCompleter(Completer):
             for name, prompt in personalities.items():
                 if name.startswith(sub_lower) and name != sub_lower:
                     if isinstance(prompt, dict):
-                        meta = prompt.get("description") or prompt.get("system_prompt", "")[:50]
+                        meta = (prompt.get("description") or prompt.get("system_prompt", ""))[:50]
                     else:
                         meta = str(prompt)[:50]
                     yield Completion(

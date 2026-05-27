@@ -7897,7 +7897,7 @@ class HermesCLI:
             print(f"  {'none':<12} - (no personality overlay)")
             for name, prompt in self.personalities.items():
                 if isinstance(prompt, dict):
-                    preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
+                    preview = (prompt.get("description") or prompt.get("system_prompt", ""))[:50]
                 else:
                     preview = str(prompt)[:50]
                 print(f"  {name:<12} - {preview}")

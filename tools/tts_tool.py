@@ -1431,7 +1431,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         # Surface the API error message when present
         try:
             err = response.json().get("error", {})
-            detail = err.get("message") or response.text[:300]
+            detail = (err.get("message") or response.text)[:300]
         except Exception:
             detail = response.text[:300]
         raise RuntimeError(

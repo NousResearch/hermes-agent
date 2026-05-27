@@ -8,7 +8,7 @@ description: "Background maintenance for agent-created skills — usage tracking
 
 The curator is a background maintenance pass for **agent-created skills**. It tracks how often each skill is viewed, used, and patched, moves long-unused skills through `active → stale → archived` states, and periodically spawns a short auxiliary-model review that proposes consolidations or patches drift.
 
-It exists so that skills created via the [self-improvement loop](/docs/user-guide/features/skills#agent-managed-skills-skill_manage-tool) don't pile up forever. Every time the agent solves a novel problem and saves a skill, that skill lands in `~/.hermes/skills/`. Without maintenance, you end up with dozens of narrow near-duplicates that pollute the catalog and waste tokens.
+It exists so that skills created via the [self-improvement loop](/user-guide/features/skills#agent-managed-skills-skill_manage-tool) don't pile up forever. Every time the agent solves a novel problem and saves a skill, that skill lands in `~/.hermes/skills/`. Without maintenance, you end up with dozens of narrow near-duplicates that pollute the catalog and waste tokens.
 
 The curator **never touches** bundled skills (shipped with the repo) or hub-installed skills (from [agentskills.io](https://agentskills.io)). It only reviews skills the agent itself authored. It also **never auto-deletes** — the worst outcome is archival into `~/.hermes/skills/.archive/`, which is recoverable.
 
@@ -84,8 +84,8 @@ Earlier releases used a one-off `curator.auxiliary.{provider,model}` block. That
 
 ```bash
 hermes curator status         # last run, counts, pinned list, LRU top 5
-hermes curator run            # trigger a review now (background by default)
-hermes curator run --sync     # same, but block until the LLM pass finishes
+hermes curator run            # trigger a review now (blocks until the LLM pass finishes)
+hermes curator run --background  # fire-and-forget: start the LLM pass in a background thread
 hermes curator run --dry-run  # preview only — report without any mutations
 hermes curator backup         # take a manual snapshot of ~/.hermes/skills/
 hermes curator rollback       # restore from the newest snapshot
@@ -217,6 +217,10 @@ Every curator run writes a timestamped directory under `~/.hermes/logs/curator/`
 
 `REPORT.md` is a quick way to see what a given run did — which skills transitioned, what the LLM reviewer said, which skills it patched. Good for auditing without having to grep `agent.log`.
 
+### Rename map in the summary
+
+If a run consolidated multiple skills under an umbrella (or merged near-duplicates), the user-visible summary printed at the end of the run includes an explicit rename map showing every `old-name → new-name` pair the curator applied. This is in addition to per-skill transition lines, so when a wave of renames lands you can spot them at a glance without diffing the JSON report. The hint also surfaces under `hermes curator pin` so you can pin the umbrella name immediately if you want to lock the new label in.
+
 ## Restoring an archived skill
 
 If the curator archived something you still want:
@@ -238,7 +242,7 @@ The curator also refuses to run if `min_idle_hours` hasn't elapsed, so on an act
 
 ## See also
 
-- [Skills System](/docs/user-guide/features/skills) — how skills work in general and the self-improvement loop that creates them
-- [Memory](/docs/user-guide/features/memory) — a parallel background review that maintains long-term memory
-- [Bundled Skills Catalog](/docs/reference/skills-catalog)
+- [Skills System](/user-guide/features/skills) — how skills work in general and the self-improvement loop that creates them
+- [Memory](/user-guide/features/memory) — a parallel background review that maintains long-term memory
+- [Bundled Skills Catalog](/reference/skills-catalog)
 - [Issue #7816](https://github.com/NousResearch/hermes-agent/issues/7816) — original proposal and design discussion

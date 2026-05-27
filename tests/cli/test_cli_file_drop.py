@@ -68,6 +68,37 @@ class TestNonFileInputs:
         """A directory path should not be treated as a file drop."""
         assert _detect_file_drop(str(tmp_path)) is None
 
+    def test_long_slash_command_does_not_raise(self):
+        """Regression: long pasted slash commands like `/goal <long prose>`
+        used to raise OSError(ENAMETOOLONG, errno 63 macOS / 36 Linux)
+        from `Path.exists()` inside `_resolve_attachment_path`, which
+        propagated up to `process_loop`'s catch-all and silently lost
+        the user's input. The fix wraps the stat call in a try/except
+        OSError and returns None, letting the slash-command dispatch
+        path handle the input downstream.
+
+        Reproducer: paste a `/goal` followed by ~430 chars of prose.
+        Without the fix this triggers ENAMETOOLONG; with the fix it
+        cleanly returns None (file-drop = no), so `_looks_like_slash_command`
+        gets a chance to dispatch it.
+        """
+        # 430-char `/goal` payload — well above NAME_MAX (255 bytes) on
+        # all common filesystems.
+        long_goal = (
+            "/goal " + ("Drive the board: triage triage-status items, "
+                        "unblock spillover tasks where work is shipped, "
+                        "advance P1 items by decomposing where needed. ") * 4
+        )
+        assert len(long_goal) > 255  # confirms it would have triggered ENAMETOOLONG
+        assert _detect_file_drop(long_goal) is None
+
+    def test_path_longer_than_namemax_does_not_raise(self):
+        """Defensive: a single token longer than NAME_MAX should return
+        None, not raise. Could happen with absurdly long synthetic inputs
+        from prompt-injection attempts or fuzzers."""
+        very_long_path = "/" + ("a" * 300)
+        assert _detect_file_drop(very_long_path) is None
+
 
 # ---------------------------------------------------------------------------
 # Tests: image file detection

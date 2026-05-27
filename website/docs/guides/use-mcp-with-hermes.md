@@ -143,7 +143,7 @@ Use `chrome-devtools-mcp`.
 If your Windows Chrome already has live remote debugging enabled from `chrome://inspect/#remote-debugging`, add it like this from WSL:
 
 ```bash
-hermes mcp add chrome-devtools-win --command cmd.exe --args /c "npx -y chrome-devtools-mcp@latest --autoConnect --no-usage-statistics"
+hermes mcp add chrome-devtools-win --command cmd.exe --args /c npx -y chrome-devtools-mcp@latest --autoConnect --no-usage-statistics
 ```
 
 After saving the server:
@@ -485,6 +485,6 @@ Not-great first servers:
 
 ## Related docs
 
-- [MCP (Model Context Protocol)](/docs/user-guide/features/mcp)
-- [FAQ](/docs/reference/faq)
-- [Slash Commands](/docs/reference/slash-commands)
+- [MCP (Model Context Protocol)](/user-guide/features/mcp)
+- [FAQ](/reference/faq)
+- [Slash Commands](/reference/slash-commands)

@@ -451,6 +451,28 @@ class TestUrlQueryParamRedaction:
         result = redact_sensitive_text(text)
         assert "opaqueWsToken123" not in result
 
+    def test_http_access_log_relative_request_target_query(self):
+        text = (
+            'INFO aiohttp.access: 127.0.0.1 "POST '
+            '/bluebubbles-webhook?password=webhookSecret123&event=new-message '
+            'HTTP/1.1" 200 173 "-" "test-client"'
+        )
+        result = redact_sensitive_text(text)
+        assert "webhookSecret123" not in result
+        assert "password=***" in result
+        assert "event=new-message" in result
+
+    def test_http_access_log_absolute_request_target_query(self):
+        text = (
+            'INFO aiohttp.access: 127.0.0.1 "GET '
+            'https://example.com/callback?code=oauthCode123&state=csrf-ok '
+            'HTTP/1.1" 200 173 "-" "test-client"'
+        )
+        result = redact_sensitive_text(text)
+        assert "oauthCode123" not in result
+        assert "code=***" in result
+        assert "state=csrf-ok" in result
+
 
 class TestUrlUserinfoRedaction:
     """URL userinfo (`scheme://user:pass@host`) for non-DB schemes."""
@@ -511,3 +533,29 @@ class TestFormBodyRedaction:
         text = "first=1\nsecond=2"
         # Should pass through (still subject to other redactors)
         assert "first=1" in redact_sensitive_text(text)
+
+
+class TestXaiToken:
+    KEY = "xai-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstu"
+
+    def test_bare_token_masked(self):
+        result = redact_sensitive_text(f"using key {self.KEY}", force=True)
+        assert self.KEY not in result
+        assert "xai-AB" in result
+
+    def test_env_assignment_masked(self):
+        result = redact_sensitive_text(f"XAI_API_KEY={self.KEY}", force=True)
+        assert self.KEY not in result
+
+    def test_too_short_not_masked(self):
+        short = "xai-tooshort"
+        result = redact_sensitive_text(f"text {short} here", force=True)
+        assert short in result
+
+    def test_company_name_not_masked(self):
+        result = redact_sensitive_text("xai is a company", force=True)
+        assert result == "xai is a company"
+
+    def test_prefix_visible_in_masked_output(self):
+        result = redact_sensitive_text(self.KEY, force=True)
+        assert result.startswith("xai-AB")

@@ -1,6 +1,7 @@
 """Tests for agent/anthropic_adapter.py — Anthropic Messages API adapter."""
 
 import json
+import sys
 import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -9,11 +10,13 @@ import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
+    _is_azure_anthropic_endpoint,
     _is_oauth_token,
     _refresh_oauth_token,
     _to_plain_data,
     _write_claude_code_credentials,
     build_anthropic_client,
+    build_anthropic_bedrock_client,
     build_anthropic_kwargs,
     convert_messages_to_anthropic,
     convert_tools_to_anthropic,
@@ -66,11 +69,9 @@ class TestBuildAnthropicClient:
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
             assert "fine-grained-tool-streaming-2025-05-14" in betas
-            # Default: 1M-context beta stays IN for OAuth so 1M-capable
-            # subscriptions keep full context. The reactive recovery path
-            # in run_agent.py flips it off only after a subscription
-            # actually rejects the beta.
-            assert "context-1m-2025-08-07" in betas
+            # Native Anthropic does not get context-1m by default; accounts
+            # without that beta reject even short auxiliary requests.
+            assert "context-1m-2025-08-07" not in betas
             assert "api_key" not in kwargs
 
     def test_oauth_drop_context_1m_beta_strips_only_1m(self):
@@ -99,7 +100,7 @@ class TestBuildAnthropicClient:
             # API key auth should still get common betas
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "interleaved-thinking-2025-05-14" in betas
-            assert "context-1m-2025-08-07" in betas
+            assert "context-1m-2025-08-07" not in betas
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
@@ -109,8 +110,40 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-1m-2025-08-07"
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
             }
+
+    def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "azure-key",
+                base_url="https://example.services.ai.azure.com/models/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" in betas
+
+    def test_azure_anthropic_endpoint_detection_is_host_and_path_scoped(self):
+        assert _is_azure_anthropic_endpoint(
+            "https://example.services.ai.azure.com/models/anthropic"
+        ) is True
+        assert _is_azure_anthropic_endpoint(
+            "https://example.services.ai.azure.us/anthropic"
+        ) is True
+        assert _is_azure_anthropic_endpoint(
+            "https://example.openai.azure.com/openai/v1"
+        ) is False
+        assert _is_azure_anthropic_endpoint(
+            "https://management.azure.com/anthropic"
+        ) is False
+
+    def test_bedrock_client_keeps_context_1m_beta(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.AnthropicBedrock = MagicMock()
+            build_anthropic_bedrock_client("us-east-1")
+            kwargs = mock_sdk.AnthropicBedrock.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" in betas
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -138,8 +171,36 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
 
+    def test_azure_foundry_anthropic_endpoint_uses_bearer_auth(self):
+        """Azure AI Foundry's /anthropic endpoint requires Authorization: Bearer.
+
+        Regression test for #26970: without this, builds set api_key (x-api-key)
+        and the endpoint returns HTTP 401. Also verifies that Azure retains the
+        1M-context beta even though it now matches `_requires_bearer_auth`.
+        """
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "azure-foundry-secret-123",
+                base_url="https://my-resource.openai.azure.com/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "azure-foundry-secret-123"
+            assert "api_key" not in kwargs
+            # Azure endpoints still get the api-version query param plumbing.
+            assert kwargs.get("default_query") == {"api-version": "2025-04-15"}
+            # Azure keeps the 1M-context beta (it's not MiniMax).
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" in betas
+
 
 class TestReadClaudeCodeCredentials:
+    @pytest.fixture(autouse=True)
+    def no_keychain(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
+
     def test_reads_valid_credentials(self, tmp_path, monkeypatch):
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
@@ -359,6 +420,24 @@ class TestWriteClaudeCodeCredentials:
         data = json.loads(cred_file.read_text())
         assert data["otherField"] == "keep-me"
         assert data["claudeAiOauth"]["accessToken"] == "new-tok"
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    def test_credentials_file_created_with_0o600(self, tmp_path, monkeypatch):
+        """Refreshed Claude Code credentials must land on disk at 0o600.
+
+        Regression for the TOCTOU race where ``write_text`` + ``replace``
+        + post-write ``chmod`` left both the temp file and the destination
+        briefly readable at the process umask (commonly 0o644). Mirrors
+        the fix shipped in #19673 (google_oauth) and #21148 (mcp_oauth).
+        """
+        import stat as _stat
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        _write_claude_code_credentials("tok", "ref", 12345)
+
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        assert cred_file.exists()
+        mode = _stat.S_IMODE(cred_file.stat().st_mode)
+        assert mode == 0o600, f"creds file mode {oct(mode)} != 0o600 — TOCTOU race regressed"
 
 
 class TestResolveWithRefresh:
@@ -986,8 +1065,8 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["model"] == "claude-sonnet-4-20250514"
 
-    def test_fast_mode_oauth_default_keeps_context_1m_beta(self):
-        """Default OAuth fast-mode requests still carry context-1m-2025-08-07."""
+    def test_fast_mode_oauth_default_omits_context_1m_beta(self):
+        """Default OAuth fast-mode avoids context-1m for subscriptions without it."""
         kwargs = build_anthropic_kwargs(
             model="claude-opus-4-6",
             messages=[{"role": "user", "content": "Hi"}],
@@ -1000,7 +1079,7 @@ class TestBuildAnthropicKwargs:
         betas = kwargs["extra_headers"]["anthropic-beta"]
         assert "fast-mode-2026-02-01" in betas
         assert "oauth-2025-04-20" in betas
-        assert "context-1m-2025-08-07" in betas
+        assert "context-1m-2025-08-07" not in betas
 
     def test_fast_mode_oauth_drop_context_1m_beta_strips_only_1m(self):
         """drop_context_1m_beta=True strips context-1m from fast-mode
@@ -1634,7 +1713,7 @@ class TestThinkingBlockSignatureManagement:
         _, result = convert_messages_to_anthropic(messages)
         assistant = next(m for m in result if m["role"] == "assistant")
         for block in assistant["content"]:
-            if block.get("type") in ("thinking", "redacted_thinking"):
+            if block.get("type") in {"thinking", "redacted_thinking"}:
                 assert "cache_control" not in block
 
     def test_thinking_stripped_from_merged_consecutive_assistants(self):
@@ -1724,7 +1803,7 @@ class TestThinkingBlockSignatureManagement:
         # First two: no thinking blocks
         for a in assistants[:2]:
             assert not any(
-                b.get("type") in ("thinking", "redacted_thinking")
+                b.get("type") in {"thinking", "redacted_thinking"}
                 for b in a["content"]
                 if isinstance(b, dict)
             )

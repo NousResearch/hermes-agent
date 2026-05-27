@@ -83,6 +83,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 300
 ALLOWLIST_FILENAME = "shell-hooks-allowlist.json"
+_DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
 
 # (event, matcher, command) triples that have been wired to the plugin
 # manager in the current process.  Matcher is part of the key because
@@ -312,7 +313,7 @@ def _parse_single_entry(
         )
         matcher = None
 
-    if matcher is not None and event not in ("pre_tool_call", "post_tool_call"):
+    if matcher is not None and event not in {"pre_tool_call", "post_tool_call"}:
         logger.warning(
             "hooks.%s[%d].matcher=%r will be ignored at runtime — the "
             "matcher field is only honored for pre_tool_call / "
@@ -423,7 +424,7 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
 
     def _callback(**kwargs: Any) -> Optional[Dict[str, Any]]:
         # Matcher gate — only meaningful for tool-scoped events.
-        if spec.event in ("pre_tool_call", "post_tool_call"):
+        if spec.event in {"pre_tool_call", "post_tool_call"}:
             if not spec.matches_tool(kwargs.get("tool_name")):
                 return None
 
@@ -481,6 +482,17 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
+def _block_message(primary: Any, secondary: Any) -> str:
+    """Return a validated string block message, falling back to the default.
+
+    Accepts two candidate fields (primary wins over secondary) so callers
+    can express field-priority differences between the two hook wire formats
+    without duplicating the type-check logic.
+    """
+    raw = primary or secondary
+    return raw if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
+
+
 def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     """Translate stdout JSON into a Hermes wire-shape dict.
 
@@ -515,13 +527,9 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
 
     if event == "pre_tool_call":
         if data.get("action") == "block":
-            message = data.get("message") or data.get("reason") or ""
-            if isinstance(message, str) and message:
-                return {"action": "block", "message": message}
+            return {"action": "block", "message": _block_message(data.get("message"), data.get("reason"))}
         if data.get("decision") == "block":
-            message = data.get("reason") or data.get("message") or ""
-            if isinstance(message, str) and message:
-                return {"action": "block", "message": message}
+            return {"action": "block", "message": _block_message(data.get("reason"), data.get("message"))}
         return None
 
     context = data.get("context")
@@ -617,14 +625,17 @@ def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
             save_allowlist(data)
         return
 
-    with open(lock_path, "a+") as lock_fh:
+    with open(lock_path, "a+", encoding="utf-8") as lock_fh:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
         try:
             data = load_allowlist()
             yield data
             save_allowlist(data)
         finally:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            try:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
 
 
 def _prompt_and_record(
@@ -658,7 +669,7 @@ def _prompt_and_record(
         print()  # keep the terminal tidy after ^C
         return False
 
-    if answer in ("y", "yes"):
+    if answer in {"y", "yes"}:
         _record_approval(event, command)
         return True
 
@@ -752,13 +763,13 @@ def _resolve_effective_accept(
     if accept_hooks_arg:
         return True
     env = os.environ.get("HERMES_ACCEPT_HOOKS", "").strip().lower()
-    if env in ("1", "true", "yes", "on"):
+    if env in {"1", "true", "yes", "on"}:
         return True
     cfg_val = cfg.get("hooks_auto_accept", False)
     if isinstance(cfg_val, bool):
         return cfg_val
     if isinstance(cfg_val, str):
-        return cfg_val.strip().lower() in ("1", "true", "yes", "on")
+        return cfg_val.strip().lower() in {"1", "true", "yes", "on"}
     return False
 
 

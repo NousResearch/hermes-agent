@@ -286,7 +286,6 @@ def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_en
                 "trust_level": "trusted",
                 "metadata": {},
             })()
-
     q_path = tmp_path / "skills" / ".hub" / "quarantine" / "frontend-design"
     q_path.mkdir(parents=True)
     (q_path / "SKILL.md").write_text("# Frontend Design")
@@ -316,6 +315,60 @@ def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_en
     do_install("skils-sh/anthropics/skills/frontend-design", console=console, skip_confirm=True)
 
     assert scanned["source"] == canonical_identifier
+
+
+def test_do_install_scans_official_bundles_with_source_provenance(
+    monkeypatch, tmp_path, hub_env
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    class _OfficialSource:
+        def inspect(self, identifier):
+            return type("Meta", (), {
+                "extra": {},
+                "identifier": "official/agent/prunus-gaia",
+            })()
+
+        def fetch(self, identifier):
+            return type("Bundle", (), {
+                "name": "prunus-gaia",
+                "files": {"SKILL.md": "# Prunus Gaia"},
+                "source": "official",
+                "identifier": "official/agent/prunus-gaia",
+                "trust_level": "builtin",
+                "metadata": {},
+            })()
+
+    q_path = tmp_path / "skills" / ".hub" / "quarantine" / "prunus-gaia"
+    q_path.mkdir(parents=True)
+    (q_path / "SKILL.md").write_text("# Prunus Gaia")
+
+    scanned = {}
+
+    def _scan_skill(skill_path, source="community"):
+        scanned["source"] = source
+        return guard.ScanResult(
+            skill_name="prunus-gaia",
+            source=source,
+            trust_level="builtin",
+            verdict="safe",
+        )
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [_OfficialSource()])
+    monkeypatch.setattr(hub, "quarantine_bundle", lambda bundle: q_path)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: type("Lock", (), {"get_installed": lambda self, name: None})())
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
+    monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (False, "stop after scan"))
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_install("official/agent/prunus-gaia", console=console, skip_confirm=True)
+
+    assert scanned["source"] == "official"
 
 
 # ---------------------------------------------------------------------------
@@ -524,3 +577,44 @@ def test_existing_categories_returns_empty_when_skills_dir_missing(monkeypatch, 
 
     from hermes_cli.skills_hub import _existing_categories
     assert _existing_categories() == []
+
+
+# ---------------------------------------------------------------------------
+# browse_skills — dedup by identifier, not name
+# ---------------------------------------------------------------------------
+
+
+def test_browse_skills_dedup_uses_identifier_not_name(monkeypatch):
+    """browse_skills() must not collapse browse-sh skills that share a task name.
+
+    Airbnb and Booking.com both publish a 'search-listings' skill. Before the
+    fix, both were keyed by name so only one survived deduplication. After the
+    fix, each unique identifier produces a distinct result.
+    """
+    from tools.skills_hub import SkillMeta
+    from hermes_cli.skills_hub import browse_skills
+
+    airbnb = SkillMeta(
+        name="search-listings", description="Airbnb search", source="browse-sh",
+        identifier="browse-sh/airbnb.com/search-listings-ddgioa", trust_level="community",
+    )
+    booking = SkillMeta(
+        name="search-listings", description="Booking.com search", source="browse-sh",
+        identifier="browse-sh/booking.com/search-listings-xyzab", trust_level="community",
+    )
+
+    mock_src = type("S", (), {
+        "source_id": lambda self: "browse-sh",
+        "search": lambda self, q, limit=500: [airbnb, booking],
+    })()
+
+    # browse_skills() imports create_source_router locally from tools.skills_hub,
+    # so the patch must target the source module, not hermes_cli.skills_hub.
+    with patch("tools.skills_hub.create_source_router", return_value=[mock_src]):
+        result = browse_skills(page=1, page_size=50)
+
+    names = [item["name"] for item in result["items"]]
+    assert names.count("search-listings") == 2, (
+        "browse_skills() must not deduplicate browse-sh skills with the same name "
+        "but different identifiers"
+    )

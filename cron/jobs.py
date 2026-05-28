@@ -1,8 +1,15 @@
 """
 Cron job storage and management.
 
-Jobs are stored in ~/.hermes/cron/jobs.json
-Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
+Jobs are stored in the gateway-shared root ``~/.hermes/cron/jobs.json``
+regardless of the active profile.  The scheduler runs inside the gateway
+process and only reads that one file — any per-profile ``jobs.json`` written
+elsewhere is invisible to it (issue #32091).  Per-job profile context is
+preserved by stamping the job's ``profile`` field, which
+``cron.scheduler._job_profile_context`` honours at run time.
+
+Output is saved to ``~/.hermes/cron/output/{job_id}/{timestamp}.md`` under the
+same root.
 """
 
 import copy
@@ -16,7 +23,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -34,7 +41,14 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_hermes_home().resolve()
+# Resolve to the canonical gateway-shared Hermes root, never a profile-local
+# subdirectory.  When an agent session runs under ``hermes -p <profile>``,
+# ``HERMES_HOME`` is pointed at ``<root>/profiles/<name>``, so a naive
+# ``get_hermes_home()`` here would land cron jobs in a per-profile
+# ``cron/jobs.json`` that the gateway scheduler never reads (#32091).
+# ``get_default_hermes_root()`` returns ``<root>`` in both classic
+# (``~/.hermes``) and Docker (``$HERMES_HOME``) deployments.
+HERMES_DIR = get_default_hermes_root().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 
@@ -149,6 +163,9 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     if not state:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
+
+    profile = _coerce_job_text(normalized.get("profile")).strip()
+    normalized["profile"] = profile or None
 
     return normalized
 
@@ -520,6 +537,21 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _normalize_profile(profile: Optional[str]) -> Optional[str]:
+    """Normalize and validate an optional cron job profile name."""
+    if profile is None:
+        return None
+    raw = str(profile).strip()
+    if not raw:
+        return None
+
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+    normalized = normalize_profile_name(raw)
+    resolve_profile_env(normalized)
+    return normalized
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -536,6 +568,7 @@ def create_job(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    profile: Optional[str] = None,
     no_agent: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -577,6 +610,9 @@ def create_job(
                 With ``no_agent=True``, ``workdir`` is still applied as the
                 script's cwd so relative paths inside the script behave
                 predictably.
+        profile: Optional Hermes profile name. When set, the job runs with
+                that profile's HERMES_HOME. When omitted from a profile-scoped
+                session, the active non-default profile is inferred.
         no_agent: When True, skip the agent entirely — run ``script`` on schedule
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
@@ -614,6 +650,28 @@ def create_job(
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
+    normalized_profile = _normalize_profile(profile)
+    # If the caller is a profile-scoped agent session (HERMES_HOME points at a
+    # non-default profile) but no explicit profile was supplied, stamp the
+    # active profile name on the job so the scheduler runs it under the same
+    # context the user created it from.  Without this, jobs created from a
+    # profile session would silently execute under the gateway's default
+    # profile context (#32091 follow-on: the job is no longer orphaned, but
+    # the user's intent of "run under my profile" must still be preserved).
+    if normalized_profile is None:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            inferred = get_active_profile_name()
+        except Exception:
+            inferred = "default"
+        if inferred and inferred not in {"default", "custom"}:
+            try:
+                normalized_profile = _normalize_profile(inferred)
+            except (ValueError, FileNotFoundError):
+                # Profile lookup failed (e.g. profile dir was just renamed/removed
+                # mid-session).  Fall back to no profile stamp rather than blocking
+                # job creation — scheduler will run under its own default context.
+                normalized_profile = None
     normalized_no_agent = bool(no_agent)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
@@ -668,6 +726,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "profile": normalized_profile,
     }
 
     jobs = load_jobs()
@@ -756,6 +815,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["workdir"] = None
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
+
+        if "profile" in updates:
+            _profile = updates["profile"]
+            if _profile in {None, "", False}:
+                updates["profile"] = None
+            else:
+                updates["profile"] = _normalize_profile(_profile)
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates

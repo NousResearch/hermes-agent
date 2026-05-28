@@ -903,6 +903,21 @@ DEFAULT_CONFIG = {
         "max_line_length": 2000,
     },
 
+    # Tool-context compaction happens after a tool returns and before its
+    # result is appended back into the model conversation. It keeps TUI/log
+    # output intact while preventing large HTML, terminal, JSON, or file
+    # payloads from dominating the next prompt.
+    "tool_context": {
+        "enabled": True,
+        "default_max_chars": 12_000,
+        "terminal_max_chars": 12_000,
+        "file_max_chars": 16_000,
+        "web_max_chars": 8_000,
+        "json_max_chars": 12_000,
+        "head_chars": 3_000,
+        "tail_chars": 2_000,
+    },
+
     # Tool loop guardrails nudge models when they repeat failed or
     # non-progressing tool calls. Soft warnings are always-on by default;
     # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.
@@ -3546,7 +3561,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions",
+    "sessions", "tool_context",
 }
 
 # Valid fields inside a custom_providers list entry

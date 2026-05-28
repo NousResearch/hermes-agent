@@ -335,6 +335,23 @@ tool_loop_guardrails:
     idempotent_no_progress: 5
 
 # =============================================================================
+# Tool Context Compaction
+# =============================================================================
+# Keeps large tool results useful without letting raw HTML, logs, JSON payloads,
+# or file dumps dominate the next model prompt. Display/log output stays intact;
+# these limits apply to the tool-result message appended back into conversation
+# context for the next model call.
+tool_context:
+  enabled: true
+  default_max_chars: 12000
+  terminal_max_chars: 12000
+  file_max_chars: 16000
+  web_max_chars: 8000
+  json_max_chars: 12000
+  head_chars: 3000
+  tail_chars: 2000
+
+# =============================================================================
 # Context Compression (Auto-shrinks long conversations)
 # =============================================================================
 # When conversation approaches model's context limit, middle turns are

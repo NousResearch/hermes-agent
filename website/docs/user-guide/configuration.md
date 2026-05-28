@@ -516,6 +516,28 @@ tool_output:
   max_lines: 500
 ```
 
+## Tool Context Compaction
+
+Tool output truncation limits control what individual tools return. Tool context compaction runs one step later: after a tool returns, before the result is appended back into the model conversation. It keeps display/log output intact while giving the next model call a compact, deterministic view of large terminal, file, web/HTML, JSON, and generic outputs.
+
+```yaml
+tool_context:
+  enabled: true
+  default_max_chars: 12000
+  terminal_max_chars: 12000
+  file_max_chars: 16000
+  web_max_chars: 8000
+  json_max_chars: 12000
+  head_chars: 3000
+  tail_chars: 2000
+```
+
+- **`enabled`** — Turns insertion-time tool context compaction on or off. Default `true`.
+- **`*_max_chars`** — Maximum characters retained in the tool result that is sent back to the model, by output class. HTML outputs are reduced to page signals such as title, description, headings, and text preview.
+- **`head_chars` / `tail_chars`** — Generic head/tail budgets used when a large result cannot be summarized by a structured rule.
+
+This is separate from context compression. Compression summarizes older conversation turns when the prompt approaches the model limit; tool context compaction prevents recent tool outputs from bloating the prompt in the first place.
+
 ## Global Toolset Disable
 
 To suppress specific toolsets across the CLI and every gateway platform in one

@@ -30,6 +30,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.tool_context_policy import compact_tool_result
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -60,6 +61,38 @@ def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
     import run_agent
     return run_agent
+
+
+def _context_content_for_model(
+    agent,
+    *,
+    tool_name: str,
+    tool_args: dict,
+    tool_call_id: str,
+    function_result: Any,
+    effective_task_id: str,
+) -> Any:
+    """Prepare a tool result for model context without changing UI callbacks."""
+    if _is_multimodal_tool_result(function_result):
+        subdir_hints = agent._subdirectory_hints.check_tool_call(tool_name, tool_args)
+        if subdir_hints:
+            _append_subdir_hint_to_multimodal(function_result, subdir_hints)
+        return agent._tool_result_content_for_active_model(tool_name, function_result)
+
+    context_result = maybe_persist_tool_result(
+        content=function_result,
+        tool_name=tool_name,
+        tool_use_id=tool_call_id,
+        env=get_active_env(effective_task_id),
+    )
+
+    context_result = compact_tool_result(tool_name, tool_args, context_result)
+
+    subdir_hints = agent._subdirectory_hints.check_tool_call(tool_name, tool_args)
+    if subdir_hints:
+        context_result += subdir_hints
+
+    return agent._tool_result_content_for_active_model(tool_name, context_result)
 
 
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -419,31 +452,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
-        function_result = maybe_persist_tool_result(
-            content=function_result,
+        # Keep callbacks/display on the raw tool result above; only compact
+        # the content that is appended back into model context.
+        _tool_content = _context_content_for_model(
+            agent,
             tool_name=name,
-            tool_use_id=tc.id,
-            env=get_active_env(effective_task_id),
-        ) if not _is_multimodal_tool_result(function_result) else function_result
-
-        subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
-        if subdir_hints:
-            if _is_multimodal_tool_result(function_result):
-                # Append the hint to the text summary part so the model
-                # still sees it; don't touch the image blocks.
-                _append_subdir_hint_to_multimodal(function_result, subdir_hints)
-            else:
-                function_result += subdir_hints
-
-        # Unwrap _multimodal dicts to an OpenAI-style content list so any
-        # vision-capable provider receives [{type:text},{type:image_url}]
-        # rather than a raw Python dict.  The Anthropic adapter already
-        # accepts content lists; vision-capable OpenAI-compatible servers
-        # (mlx-vlm, GPT-4o, …) accept image_url in tool messages natively.
-        # Text-only servers get a string-safe fallback here so a rejected
-        # image tool result never poisons canonical session history.
-        # String results pass through unchanged.
-        _tool_content = agent._tool_result_content_for_active_model(name, function_result)
+            tool_args=args,
+            tool_call_id=tc.id,
+            function_result=function_result,
+            effective_task_id=effective_task_id,
+        )
         messages.append(make_tool_result_message(name, _tool_content, tc.id))
 
         # ── Per-tool /steer drain ───────────────────────────────────
@@ -842,24 +860,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
-        function_result = maybe_persist_tool_result(
-            content=function_result,
+        # Keep callbacks/display on the raw tool result above; only compact
+        # the content that is appended back into model context.
+        _tool_content = _context_content_for_model(
+            agent,
             tool_name=function_name,
-            tool_use_id=tool_call.id,
-            env=get_active_env(effective_task_id),
-        ) if not _is_multimodal_tool_result(function_result) else function_result
-
-        # Discover subdirectory context files from tool arguments
-        subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
-        if subdir_hints:
-            if _is_multimodal_tool_result(function_result):
-                _append_subdir_hint_to_multimodal(function_result, subdir_hints)
-            else:
-                function_result += subdir_hints
-
-        # Unwrap _multimodal dicts to an OpenAI-style content list
-        # (see parallel path for rationale). String results pass through.
-        _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
+            tool_args=function_args,
+            tool_call_id=tool_call.id,
+            function_result=function_result,
+            effective_task_id=effective_task_id,
+        )
         messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
 
         # ── Per-tool /steer drain ───────────────────────────────────

@@ -18,6 +18,8 @@ import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
+from gateway.approval_brief import format_exec_approval_brief_text
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -2431,11 +2433,16 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            # Keep room under Telegram's 4096-char message limit for the
+            # structured brief; command details remain visible in the code block.
+            cmd_preview = command[:2400] + "..." if len(command) > 2400 else command
+            approval_data = (metadata or {}).get("approval_data") if isinstance(metadata, dict) else None
+            brief = format_exec_approval_brief_text(command, description, approval_data)
             text = (
                 f"⚠️ <b>Command Approval Required</b>\n\n"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
+                f"{_html.escape(brief)}\n\n"
+                f"Detector reason: {_html.escape(description)}"
             )
 
             # Resolve thread context for thread replies

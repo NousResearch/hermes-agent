@@ -219,6 +219,59 @@ class TestTelegramExecApproval:
         assert "alpha\\_beta" in sent["text"]
 
     @pytest.mark.asyncio
+    async def test_includes_structured_human_approval_brief_for_detector_reason(self):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_exec_approval(
+            chat_id="12345",
+            command="python -c \"open('out.txt','w').write('hi')\"",
+            session_key="s",
+            description="script execution via -c flag",
+        )
+
+        text = adapter._bot.send_message.call_args[1]["text"]
+        assert "Goal:" in text
+        assert "Command category: Inline script execution" in text
+        assert "What it does:" in text
+        assert "Scope:" in text
+        assert "Risks:" in text
+        assert "Stop/rollback plan:" in text
+        assert "Detector reason: script execution via -c flag" in text
+        # Regression guard: the prompt must not be only a detector-label popup.
+        assert text.count("\n") >= 10
+
+    @pytest.mark.asyncio
+    async def test_uses_richer_approval_metadata_when_available(self):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_exec_approval(
+            chat_id="12345",
+            command="python -c \"print('x')\"",
+            session_key="s",
+            description="script execution via -c flag",
+            metadata={
+                "approval_data": {
+                    "goal": "Inspect generated report files",
+                    "command_category": "Report inspection script",
+                    "what_it_does": "Reads report files and prints a summary",
+                    "scope": "Current repository only",
+                    "risks": "Should be read-only unless the inline code is wrong",
+                    "rollback_plan": "Deny to stop; no changes expected",
+                }
+            },
+        )
+
+        text = adapter._bot.send_message.call_args[1]["text"]
+        assert "Goal: Inspect generated report files" in text
+        assert "Command category: Report inspection script" in text
+        assert "What it does: Reads report files and prints a summary" in text
+        assert "Scope: Current repository only" in text
+        assert "Risks: Should be read-only unless the inline code is wrong" in text
+        assert "Stop/rollback plan: Deny to stop; no changes expected" in text
+
+    @pytest.mark.asyncio
     async def test_truncates_long_command(self):
         adapter = _make_adapter()
         mock_msg = MagicMock()

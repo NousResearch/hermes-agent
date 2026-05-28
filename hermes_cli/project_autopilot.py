@@ -724,10 +724,15 @@ def sync_project_home(
         task_graph["nodes"],
         root_task_id=doc["root_task_id"],
     )
+    doc["invariant_failures"] = [
+        failure
+        for failure in doc.get("invariant_failures", [])
+        if failure.get("type") != "terminal_tasks_missing_reports"
+    ]
     blocker = None
     if missing_reports:
         doc["state"] = "BLOCKED_PROCESS"
-        doc.setdefault("invariant_failures", []).append(
+        doc["invariant_failures"].append(
             {
                 "type": "terminal_tasks_missing_reports",
                 "task_ids": missing_reports,
@@ -735,6 +740,8 @@ def sync_project_home(
         )
         task_list = ", ".join(f"`{task_id}`" for task_id in missing_reports)
         blocker = f"missing terminal task status reports: {task_list}"
+    elif doc["state"] == "BLOCKED_PROCESS" and not doc["invariant_failures"]:
+        doc["state"] = "PLANNED"
     validate_project_doc(doc)
 
     (project_home / "TASKS.md").write_text(

@@ -295,6 +295,62 @@ def test_sync_project_home_accepts_non_empty_terminal_task_report(tmp_path):
         conn.close()
 
 
+def test_sync_project_home_clears_stale_terminal_task_report_failure(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    conn = kanban_db.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO tasks (
+                id, title, body, assignee, status, priority, created_by,
+                created_at, workspace_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "t_root",
+                "Root project",
+                "Project root body",
+                "codexapp",
+                "done",
+                0,
+                "tester",
+                1,
+                "scratch",
+            ),
+        )
+        child_id = kanban_db.create_task(
+            conn,
+            title="Completed implementation",
+            body="Implementation body",
+            assignee="codexapp",
+            created_by="tester",
+            parents=["t_root"],
+        )
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (child_id,))
+
+        project_home = _bootstrap_demo_project(tmp_path)
+        first_doc = sync_project_home(project_home, db_path=db_path)
+        assert first_doc["state"] == "BLOCKED_PROCESS"
+        assert first_doc["invariant_failures"] == [
+            {"type": "terminal_tasks_missing_reports", "task_ids": [child_id]}
+        ]
+
+        (project_home / "status" / f"{child_id}.md").write_text(
+            "# Completed implementation\n\nVerified and pushed.\n",
+            encoding="utf-8",
+        )
+
+        repaired_doc = sync_project_home(project_home, db_path=db_path)
+
+        assert repaired_doc["state"] == "PLANNED"
+        assert repaired_doc["invariant_failures"] == []
+        assert "Blocker: none" in (project_home / "STATUS.md").read_text(
+            encoding="utf-8"
+        )
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("schema_version", [None, "legacy-project/v0"])
 def test_sync_project_home_upgrades_legacy_project_json_before_validation(
     tmp_path, schema_version

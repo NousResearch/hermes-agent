@@ -3004,7 +3004,6 @@ def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_provider_auth_state,
-        NOUS_INFERENCE_AUTH_MODE_LEGACY,
         _prompt_model_selection,
         _save_model_choice,
         _update_config_for_provider,
@@ -3107,13 +3106,13 @@ def _model_flow_nous(config, current_model="", args=None):
         try:
             refreshed_creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=5 * 60,
-                inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+                force_refresh=True,
             )
             if refreshed_creds:
                 creds = refreshed_creds
         except Exception:
             # Runtime inference has its own paid-entitlement recovery path; do
-            # not block model selection if this opportunistic remint fails.
+            # not block model selection if this opportunistic refresh fails.
             pass
 
     # Resolve portal URL early — needed both for upgrade links and for the

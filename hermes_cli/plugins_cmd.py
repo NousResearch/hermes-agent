@@ -864,12 +864,35 @@ def _discover_memory_providers() -> list[tuple[str, str]]:
 
 
 def _discover_context_engines() -> list[tuple[str, str]]:
-    """Return [(name, description), ...] for available context engines."""
+    """Return [(name, description), ...] for available context engines.
+
+    Includes repo-shipped engines from ``plugins/context_engine/`` AND
+    plugin-registered engines (third-party engines installed as Hermes
+    plugins via ``ctx.register_context_engine``). Repo-shipped descriptions
+    win when a plugin-registered engine collides on name.
+    """
+    engines: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
     try:
         from plugins.context_engine import discover_context_engines
-        return [(name, desc) for name, desc, _avail in discover_context_engines()]
+        for name, desc, _avail in discover_context_engines():
+            if name not in seen:
+                engines.append((name, desc))
+                seen.add(name)
     except Exception:
-        return []
+        pass
+
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_context_engine
+        discover_plugins()
+        plugin_engine = get_plugin_context_engine()
+        if plugin_engine and getattr(plugin_engine, "name", None) and plugin_engine.name not in seen:
+            engines.append((plugin_engine.name, "installed plugin"))
+    except Exception:
+        pass
+
+    return engines
 
 
 def _get_current_memory_provider() -> str:

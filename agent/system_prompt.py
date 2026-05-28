@@ -24,8 +24,9 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 from __future__ import annotations
 
 import json
+import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
@@ -40,6 +41,47 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _apply_stable_budget(sections: List[Tuple[int, str]], budget: int) -> str:
+    """Join stable-tier sections, dropping whole sections to fit ``budget``.
+
+    ``sections`` is a list of ``(drop_priority, text)`` in render order.
+    Higher ``drop_priority`` is dropped first; ``0`` is never dropped
+    (identity-critical: SOUL/identity, core tool guidance).  ``budget`` is
+    a token ceiling estimated with :func:`estimate_tokens_rough`; ``budget
+    <= 0`` disables truncation entirely.
+
+    Surviving sections keep their original render order.  The result is a
+    pure function of its inputs — it runs once per session at build time,
+    so it never invalidates the upstream prefix cache mid-conversation.
+    """
+    from agent.model_metadata import estimate_tokens_rough
+
+    def render(secs: List[Tuple[int, str]]) -> str:
+        return "\n\n".join(t.strip() for _, t in secs if t and t.strip())
+
+    if budget <= 0:
+        return render(sections)
+
+    kept = list(sections)
+    while estimate_tokens_rough(render(kept)) > budget:
+        # Drop the most-droppable section: highest priority, latest in order.
+        droppable = [(i, prio) for i, (prio, _) in enumerate(kept) if prio > 0]
+        if not droppable:
+            logger.warning(
+                "System prompt stable tier is %d tokens, over "
+                "max_system_prompt_tokens=%d, but only identity-critical "
+                "sections remain — keeping them un-truncated.",
+                estimate_tokens_rough(render(kept)), budget,
+            )
+            break
+        idx = max(droppable, key=lambda x: (x[1], x[0]))[0]
+        del kept[idx]
+
+    return render(kept)
 
 
 def _ra():
@@ -81,7 +123,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _r = _ra()
 
     # ── Stable tier ────────────────────────────────────────────────
-    stable_parts: List[str] = []
+    # Each entry is (drop_priority, text). Higher priority is dropped first
+    # when agent._max_system_prompt_tokens caps the tier; 0 = never dropped.
+    stable_parts: List[Tuple[int, str]] = []
+
+    def _add(text: str, drop_priority: int = 0) -> None:
+        if text and text.strip():
+            stable_parts.append((drop_priority, text))
 
     # Try SOUL.md as primary identity unless the caller explicitly skipped it.
     # Some execution modes (cron) still want HERMES_HOME persona while keeping
@@ -90,15 +138,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if agent.load_soul_identity or not agent.skip_context_files:
         _soul_content = _r.load_soul_md()
         if _soul_content:
-            stable_parts.append(_soul_content)
+            _add(_soul_content)
             _soul_loaded = True
 
     if not _soul_loaded:
         # Fallback to hardcoded identity
-        stable_parts.append(DEFAULT_AGENT_IDENTITY)
+        _add(DEFAULT_AGENT_IDENTITY)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    _add(HERMES_AGENT_HELP_GUIDANCE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
@@ -119,17 +167,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback for code paths that bypass agent_init (rare).
         tool_guidance.append(KANBAN_GUIDANCE)
     if tool_guidance:
-        stable_parts.append(" ".join(tool_guidance))
+        _add(" ".join(tool_guidance))
 
     # Computer-use (macOS) — goes in as its own block rather than being
     # merged into tool_guidance because the content is multi-paragraph.
     if "computer_use" in agent.valid_tool_names:
         from agent.prompt_builder import COMPUTER_USE_GUIDANCE
-        stable_parts.append(COMPUTER_USE_GUIDANCE)
+        _add(COMPUTER_USE_GUIDANCE)
 
     nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:
-        stable_parts.append(nous_subscription_prompt)
+        _add(nous_subscription_prompt)
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:
@@ -152,19 +200,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             model_lower = (agent.model or "").lower()
             _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
         if _inject:
-            stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+            _add(TOOL_USE_ENFORCEMENT_GUIDANCE, drop_priority=1)
             _model_lower = (agent.model or "").lower()
             # Google model operational guidance (conciseness, absolute
             # paths, parallel tool calls, verify-before-edit, etc.)
             if "gemini" in _model_lower or "gemma" in _model_lower:
-                stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+                _add(GOOGLE_MODEL_OPERATIONAL_GUIDANCE, drop_priority=1)
             # OpenAI GPT/Codex execution discipline (tool persistence,
             # prerequisite checks, verification, anti-hallucination).
             # Also applied to xAI Grok — same failure modes (claims completion
             # without tool calls, suggests workarounds instead of using
             # existing tools, replies with plans instead of executing).
             if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
-                stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+                _add(OPENAI_MODEL_EXECUTION_GUIDANCE, drop_priority=1)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:
@@ -182,7 +230,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     else:
         skills_prompt = ""
     if skills_prompt:
-        stable_parts.append(skills_prompt)
+        _add(skills_prompt, drop_priority=5)
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt
@@ -191,7 +239,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # at construction time.
     if agent.provider == "alibaba":
         _model_short = agent.model.split("/")[-1] if "/" in agent.model else agent.model
-        stable_parts.append(
+        _add(
             f"You are powered by the model named {_model_short}. "
             f"The exact model ID is {agent.model}. "
             f"When asked what model you are, always answer based on this information, "
@@ -203,7 +251,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Stable for the lifetime of the process.
     _env_hints = _r.build_environment_hints()
     if _env_hints:
-        stable_parts.append(_env_hints)
+        _add(_env_hints, drop_priority=4)
 
     # Active-profile hint — names the Hermes profile the agent is running
     # under so it doesn't conflate ~/.hermes/skills/ (default profile) with
@@ -218,16 +266,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     except Exception:
         active_profile = "default"
     if active_profile == "default":
-        stable_parts.append(
+        _add(
             "Active Hermes profile: default. Other profiles (if any) live "
             "under ~/.hermes/profiles/<name>/. Each profile has its own "
             "skills/, plugins/, cron/, and memories/ that affect a different "
             "session than this one. Do not modify another profile's "
             "skills/plugins/cron/memories unless the user explicitly directs "
-            "you to."
+            "you to.",
+            drop_priority=3,
         )
     else:
-        stable_parts.append(
+        _add(
             f"Active Hermes profile: {active_profile}. This session reads "
             f"and writes ~/.hermes/profiles/{active_profile}/. The default "
             f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
@@ -236,19 +285,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             f"another profile's skills/plugins/cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "
             f"refuse such writes by default; pass cross_profile=True only "
-            f"after explicit direction."
+            f"after explicit direction.",
+            drop_priority=3,
         )
 
     platform_key = (agent.platform or "").lower().strip()
     if platform_key in PLATFORM_HINTS:
-        stable_parts.append(PLATFORM_HINTS[platform_key])
+        _add(PLATFORM_HINTS[platform_key], drop_priority=2)
     elif platform_key:
         # Check plugin registry for platform-specific LLM guidance
         try:
             from gateway.platform_registry import platform_registry
             _entry = platform_registry.get(platform_key)
             if _entry and _entry.platform_hint:
-                stable_parts.append(_entry.platform_hint)
+                _add(_entry.platform_hint, drop_priority=2)
         except Exception:
             pass
 
@@ -312,7 +362,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts.append(timestamp_line)
 
     return {
-        "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
+        "stable":   _apply_stable_budget(stable_parts, getattr(agent, "_max_system_prompt_tokens", 0)),
         "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
         "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
     }

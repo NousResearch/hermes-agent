@@ -586,7 +586,17 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
-  
+
+  # Deterministic ceiling on the stable tier of the system prompt, in tokens
+  # (rough ~4-chars/token estimate). 0 = unlimited (default). When set, lower-
+  # priority stable sections are dropped whole — skills index first, then
+  # environment / profile / platform hints, then model-family guidance — until
+  # the stable tier fits the budget. Identity, core tool guidance, context
+  # files, and the volatile tier (memory / user profile / timestamp) are never
+  # truncated. Computed once per session, so it never invalidates the prompt
+  # cache. Useful for small-context models that need a predictable ceiling.
+  # max_system_prompt_tokens: 0
+
   # Enable verbose logging
   verbose: false
   

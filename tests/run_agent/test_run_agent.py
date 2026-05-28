@@ -5665,3 +5665,55 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+
+class TestMaxSystemPromptTokens:
+    """Tests for the agent.max_system_prompt_tokens budget ceiling.
+
+    Verifies the budget wired through config -> agent -> build_system_prompt_parts
+    truncates the droppable stable-tier sections (e.g. the skills index) while
+    preserving identity-critical content. The allocator itself is unit-tested in
+    tests/agent/test_system_prompt_budget.py; these tests cover the wiring.
+    """
+
+    # build_skills_system_prompt is patched and called at prompt-build time,
+    # so the prompt MUST be built while the patch context is still open
+    # (otherwise the real helper runs against the hermetic empty HERMES_HOME
+    # and returns ""). Hence this helper builds and returns the prompt itself.
+    _SKILLS_MARKER = "SKILLS_" + "X" * 4000
+
+    def _build_prompt(self, max_tokens):
+        tools = _make_tool_defs("skills_list", "skill_view", "skill_manage")
+        toolset_map = {"skills_list": "skills", "skill_view": "skills", "skill_manage": "skills"}
+        with (
+            patch("run_agent.get_tool_definitions", return_value=tools),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.get_toolset_for_tool", create=True, side_effect=toolset_map.get),
+            patch("run_agent.build_skills_system_prompt", return_value=self._SKILLS_MARKER),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"max_system_prompt_tokens": max_tokens}},
+            ),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+            return agent._build_system_prompt()
+
+    def test_default_zero_keeps_full_skills_index(self):
+        """Default (0 = unlimited) leaves the large skills block intact."""
+        prompt = self._build_prompt(0)
+        assert self._SKILLS_MARKER in prompt
+        assert DEFAULT_AGENT_IDENTITY in prompt
+
+    def test_tiny_budget_drops_skills_but_keeps_identity(self):
+        """A budget below the skills block forces it out; identity survives."""
+        prompt = self._build_prompt(50)
+        assert self._SKILLS_MARKER not in prompt
+        assert DEFAULT_AGENT_IDENTITY in prompt

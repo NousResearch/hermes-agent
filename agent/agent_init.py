@@ -1201,6 +1201,13 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # Deterministic system-prompt stable-tier ceiling (tokens). 0 = unlimited.
+    # Enforced in build_system_prompt_parts via _apply_stable_budget.
+    try:
+        agent._max_system_prompt_tokens = max(int(_agent_section.get("max_system_prompt_tokens", 0)), 0)
+    except (TypeError, ValueError):
+        agent._max_system_prompt_tokens = 0
+
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
     try:

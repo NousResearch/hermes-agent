@@ -669,6 +669,18 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Deterministic ceiling on the stable tier of the system prompt, in
+        # tokens (rough ~4-chars/token estimate).  0 = unlimited (default —
+        # byte-identical to prior behavior).  When set, lower-priority stable
+        # sections are dropped whole — skills index first, then environment /
+        # profile / platform hints, then model-family guidance — until the
+        # stable tier fits the budget.  Identity (SOUL.md / default identity),
+        # core tool guidance, context files, and the volatile tier (memory /
+        # user profile / timestamp) are never truncated.  Computed once per
+        # session at build time so it never invalidates the prompt cache.
+        # Useful for small-context models that need a predictable ceiling
+        # regardless of how many skills or context files accumulate.
+        "max_system_prompt_tokens": 0,
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.

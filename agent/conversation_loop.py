@@ -1769,10 +1769,19 @@ def run_conversation(
                     prompt_tokens = canonical_usage.prompt_tokens
                     completion_tokens = canonical_usage.output_tokens
                     total_tokens = canonical_usage.total_tokens
+                    # Forward canonical token + cache buckets so context engines
+                    # can make decisions on cache hit ratios / reasoning costs,
+                    # not just legacy aggregate tokens. Legacy keys stay for
+                    # back-compat with engines that only read prompt/completion/total.
                     usage_dict = {
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "total_tokens": total_tokens,
+                        "input_tokens": canonical_usage.input_tokens,
+                        "output_tokens": canonical_usage.output_tokens,
+                        "cache_read_tokens": canonical_usage.cache_read_tokens,
+                        "cache_write_tokens": canonical_usage.cache_write_tokens,
+                        "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
                     agent.context_compressor.update_from_response(usage_dict)
 

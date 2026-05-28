@@ -114,6 +114,62 @@ def _strip_yaml_frontmatter(content: str) -> str:
     return content
 
 
+# ---------------------------------------------------------------------------
+# Optional prompt-section overrides (opt-in via HERMES_PROMPT_OVERRIDES_JSON).
+#
+# External tooling (e.g. research / eval harnesses) can override the named
+# string-constant prompt sections defined below — without patching this file —
+# by pointing the env var at a JSON file of {SECTION_NAME: new_text}. When the
+# env var is unset there is no behavioral change.
+#
+# The applier is defined here but invoked once at the end of this module (after
+# every constant exists) by ``_apply_prompt_overrides(globals())``. Running it
+# last lets a single loop cover every str constant with no per-constant
+# boilerplate. A broken override file must never break Hermes startup, so every
+# failure path logs and falls back to the built-in defaults.
+# ---------------------------------------------------------------------------
+
+def _apply_prompt_overrides(namespace: dict) -> None:
+    """Override string-typed module constants from HERMES_PROMPT_OVERRIDES_JSON.
+
+    No-op unless the env var is set. Only constants that are currently strings
+    are overridable; dict-typed constants (e.g. PLATFORM_HINTS) and unknown
+    keys are ignored.
+    """
+    path = os.environ.get("HERMES_PROMPT_OVERRIDES_JSON")
+    if not path:
+        return
+    try:
+        # utf-8-sig tolerates a UTF-8 BOM from Windows GUI editors
+        # (CONTRIBUTING.md, Cross-Platform Compatibility rule 4).
+        with open(path, encoding="utf-8-sig") as f:
+            overrides = json.load(f)
+    except Exception:
+        logger.warning(
+            "Could not load prompt overrides from HERMES_PROMPT_OVERRIDES_JSON=%s; "
+            "using built-in defaults",
+            path,
+            exc_info=True,
+        )
+        return
+    if not isinstance(overrides, dict):
+        logger.warning(
+            "Prompt overrides at HERMES_PROMPT_OVERRIDES_JSON=%s must be a JSON object "
+            "of {section_name: text}; got %s. Using built-in defaults",
+            path,
+            type(overrides).__name__,
+        )
+        return
+    for name, value in overrides.items():
+        if isinstance(namespace.get(name), str) and isinstance(value, str):
+            namespace[name] = value
+        else:
+            logger.debug(
+                "Ignoring prompt override %r: not a known string-typed prompt section",
+                name,
+            )
+
+
 # =========================================================================
 # Constants
 # =========================================================================
@@ -1449,3 +1505,8 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     if not sections:
         return ""
     return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+
+
+# Apply HERMES_PROMPT_OVERRIDES_JSON now that every prompt-section constant
+# above is defined. No-op unless the env var is set (see top of module).
+_apply_prompt_overrides(globals())

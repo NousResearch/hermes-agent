@@ -1,0 +1,36 @@
+---
+description: "Karpathy-inspired LLM agent guidelines: think first, stay simple, surgical edits, verifiable goals"
+alwaysApply: true
+---
+# Karpathy's Four Rules
+
+Derived from Andrej Karpathy's Jan 2026 field notes on LLM coding agents ([multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills)). Biases toward caution over speed; use judgment on trivial tasks.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+- State assumptions; ask when uncertain. Present multiple interpretations — don't pick silently.
+- Push back when warranted. Stop and ask if something is unclear.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No unrequested features, abstractions, flexibility, or error handling for impossible cases.
+- If 200 lines could be 50, rewrite.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+- Don't improve adjacent code, comments, or formatting. Match existing style.
+- Remove orphans your changes created; don't delete pre-existing dead code unless asked.
+- Every changed line should trace to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+- Transform imperative tasks into verifiable goals (e.g. "fix the bug" → write reproducing test, then pass it).
+- For multi-step work, state a brief plan with verification at each step.

@@ -82,6 +82,13 @@ def test_runtime_config_uses_existing_teams_platform_settings():
     }
 
 
+def test_pipeline_config_rejects_local_durable_video_storage():
+    from plugins.teams_pipeline.pipeline import TeamsPipelineConfig
+
+    with pytest.raises(ValueError, match="video_storage.provider"):
+        TeamsPipelineConfig.from_dict({"video_storage": {"provider": "vps"}})
+
+
 def test_build_pipeline_runtime_reuses_existing_teams_adapter_surface(monkeypatch, tmp_path):
     from plugins.teams_pipeline import runtime as runtime_module
 

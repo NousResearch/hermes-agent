@@ -114,11 +114,21 @@ platforms:
         transcript_required: false
         transcription_fallback: true
         ffmpeg_extract_audio: true
+        video_storage:
+          provider: "onedrive" # onedrive, google_drive, or sharepoint
         notion:
           enabled: false
         linear:
           enabled: false
 ```
+
+## Video Storage Policy
+
+Meeting videos must use cloud storage as the durable source of truth. Use OneDrive, Google Drive, or SharePoint-backed Teams recordings for source and final video assets.
+
+The VPS or laptop may only hold temporary processing copies. When recording fallback is enabled, Hermes downloads the Teams recording into the pipeline temp directory for STT, derives audio if needed, then deletes that temporary directory after transcription. Do not configure the pipeline or downstream video jobs to keep final videos only on local disk.
+
+`hermes teams-pipeline validate` reports this policy and rejects local durable providers such as `vps`, `laptop`, or filesystem-only storage.
 
 ## Teams Delivery Modes
 

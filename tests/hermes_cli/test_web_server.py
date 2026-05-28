@@ -217,6 +217,7 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/ops/social-platform-status")
 
         assert resp.status_code == 200
+        assert resp.headers["cache-control"] == "no-store, no-cache, must-revalidate"
         data = resp.json()
         assert data["mode"] == "local_read_only"
         platforms = {item["platform"]: item for item in data["platforms"]}
@@ -267,6 +268,7 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/ops/social-platform-status/history?limit=3")
 
         assert resp.status_code == 200
+        assert resp.headers["cache-control"] == "no-store, no-cache, must-revalidate"
         data = resp.json()
         assert data["mode"] == "local_read_only"
         assert data["events"][0]["source"] == "history-route-test"

@@ -169,8 +169,10 @@ export const api = {
   getOpsApprovalSummary: () => fetchJSON<OpsApprovalSummary>("/api/ops/approvals/summary"),
   getOpsActionRegistryStatus: () => fetchJSON<OpsActionRegistryStatus>("/api/ops/actions"),
   getOpsMemoryStatus: () => fetchJSON<OpsMemoryStatus>("/api/ops/memory-status"),
-  getOpsSocialPlatformStatus: () => fetchJSON<OpsSocialPlatformStatus>("/api/ops/social-platform-status"),
-  getOpsSocialPlatformStatusHistory: (limit = 8) => fetchJSON<OpsSocialPlatformHistory>(`/api/ops/social-platform-status/history?limit=${encodeURIComponent(String(limit))}`),
+  getOpsSocialPlatformStatus: () =>
+    fetchJSON<OpsSocialPlatformStatus>("/api/ops/social-platform-status", { cache: "no-store" }),
+  getOpsSocialPlatformStatusHistory: (limit = 8) =>
+    fetchJSON<OpsSocialPlatformHistory>(`/api/ops/social-platform-status/history?limit=${encodeURIComponent(String(limit))}`, { cache: "no-store" }),
   updateOpsSocialPlatformStatus: (payload: OpsSocialPlatformStatusUpdate) =>
     fetchJSON<OpsSocialPlatformStatus>("/api/ops/social-platform-status", {
       method: "POST",

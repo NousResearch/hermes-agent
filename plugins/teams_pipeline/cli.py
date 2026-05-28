@@ -19,7 +19,7 @@ from plugins.teams_pipeline.meetings import (
     resolve_meeting_reference,
 )
 from plugins.teams_pipeline.models import GraphSubscription
-from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
+from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline, normalize_video_storage_config
 from plugins.teams_pipeline.store import TeamsPipelineStore, resolve_teams_pipeline_store_path
 from plugins.teams_pipeline.subscriptions import (
     build_graph_client,
@@ -214,6 +214,8 @@ def _validate_configuration_snapshot(store: TeamsPipelineStore) -> dict[str, Any
     teams_enabled = bool(teams_config and teams_config.enabled)
     teams_extra = dict((teams_config.extra or {}) if teams_config else {})
     teams_mode = str(teams_extra.get("delivery_mode") or "").strip() or None
+    meeting_pipeline = dict(teams_extra.get("meeting_pipeline") or {})
+    video_storage_policy = _video_storage_policy_snapshot(meeting_pipeline)
 
     if not all(graph.values()):
         issues.append("Microsoft Graph app-only credentials are incomplete.")
@@ -244,6 +246,9 @@ def _validate_configuration_snapshot(store: TeamsPipelineStore) -> dict[str, Any
     else:
         warnings.append("TEAMS_DELIVERY_MODE is not set.")
 
+    if video_storage_policy.get("error"):
+        issues.append(str(video_storage_policy["error"]))
+
     return {
         "ok": not issues,
         "issues": issues,
@@ -252,8 +257,28 @@ def _validate_configuration_snapshot(store: TeamsPipelineStore) -> dict[str, Any
         "webhook_enabled": webhook_enabled,
         "teams_enabled": teams_enabled,
         "teams_delivery_mode": teams_mode,
+        "video_storage_policy": {
+            key: value for key, value in video_storage_policy.items() if key != "error"
+        },
         "store_path": str(store.path),
         "store_stats": store.stats(),
+    }
+
+
+def _video_storage_policy_snapshot(meeting_pipeline: dict[str, Any]) -> dict[str, Any]:
+    try:
+        normalize_video_storage_config(
+            meeting_pipeline.get("video_storage") or meeting_pipeline.get("videoStorage")
+        )
+        error = None
+    except ValueError as exc:
+        error = str(exc)
+    return {
+        "durable_storage": "onedrive_or_google_drive",
+        "local_storage": "temporary_processing_only",
+        "tmp_dir": meeting_pipeline.get("tmp_dir") or meeting_pipeline.get("tmpDir"),
+        "retention": "deleted_after_transcription",
+        "error": error,
     }
 
 

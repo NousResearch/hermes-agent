@@ -2682,20 +2682,22 @@ async def get_ops_memory_status():
 
 
 @app.get("/api/ops/social-platform-status")
-async def get_ops_social_platform_status():
+async def get_ops_social_platform_status(response: Response):
     try:
         from hermes_cli.ops_social_status import read_social_platform_status
 
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         return read_social_platform_status()
     except Exception as exc:
         raise _approval_error(exc) from exc
 
 
 @app.get("/api/ops/social-platform-status/history")
-async def get_ops_social_platform_status_history(limit: int = 8):
+async def get_ops_social_platform_status_history(response: Response, limit: int = 8):
     try:
         from hermes_cli.ops_social_status import read_social_platform_history
 
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         return read_social_platform_history(limit=limit)
     except Exception as exc:
         raise _approval_error(exc) from exc

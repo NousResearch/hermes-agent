@@ -237,3 +237,46 @@ def test_validate_accepts_msgraph_credentials_for_graph_delivery(monkeypatch, ca
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     assert payload["issues"] == []
+    assert payload["video_storage_policy"] == {
+        "durable_storage": "onedrive_or_google_drive",
+        "local_storage": "temporary_processing_only",
+        "tmp_dir": None,
+        "retention": "deleted_after_transcription",
+    }
+
+
+def test_validate_rejects_local_durable_video_storage(monkeypatch, capsys, tmp_path):
+    from gateway.config import Platform, PlatformConfig
+
+    monkeypatch.setenv("MSGRAPH_TENANT_ID", "tenant")
+    monkeypatch.setenv("MSGRAPH_CLIENT_ID", "client")
+    monkeypatch.setenv("MSGRAPH_CLIENT_SECRET", "secret")
+
+    gateway_config = SimpleNamespace(
+        platforms={
+            Platform.MSGRAPH_WEBHOOK: PlatformConfig(enabled=True, extra={}),
+            Platform("teams"): PlatformConfig(
+                enabled=True,
+                extra={
+                    "delivery_mode": "graph",
+                    "team_id": "team-1",
+                    "channel_id": "channel-1",
+                    "meeting_pipeline": {"video_storage": {"provider": "laptop"}},
+                },
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        "plugins.teams_pipeline.cli.load_gateway_config",
+        lambda: gateway_config,
+    )
+
+    teams_pipeline_command(
+        _make_args(
+            teams_pipeline_action="validate",
+            store_path=str(tmp_path / "teams_pipeline_store.json"),
+        )
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "video_storage.provider must be onedrive, google_drive, or sharepoint." in payload["issues"]

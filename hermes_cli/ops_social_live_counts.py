@@ -17,12 +17,12 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from hermes_constants import get_env_path, get_hermes_home
-from hermes_cli.ops_social_status import write_manual_social_platform_status
+from hermes_cli.ops_social_status import read_social_platform_status, write_manual_social_platform_status
 
 HTTP_TIMEOUT_SECONDS = 12
 SOURCE_NAME = "live-read-only-probe"
@@ -31,8 +31,8 @@ CredentialMap = Dict[str, Sequence[str]]
 
 PLATFORM_CREDENTIALS: CredentialMap = {
     "youtube": ("YOUTUBE_API_KEY", "YOUTUBE_CHANNEL_ID", "YOUTUBE_ACCESS_TOKEN"),
-    "facebook": ("META_ACCESS_TOKEN", "FACEBOOK_PAGE_ACCESS_TOKEN", "FACEBOOK_PAGE_ID"),
-    "instagram": ("INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_BUSINESS_ACCOUNT_ID", "META_ACCESS_TOKEN"),
+    "facebook": ("META_ACCESS_TOKEN", "META_PAGE_ACCESS_TOKEN", "META_PAGE_ID", "FACEBOOK_PAGE_ACCESS_TOKEN", "FACEBOOK_PAGE_ID"),
+    "instagram": ("INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_BUSINESS_ACCOUNT_ID", "META_IG_USER_ID", "META_PAGE_ACCESS_TOKEN", "META_ACCESS_TOKEN"),
     "tiktok": ("TIKTOK_ACCESS_TOKEN",),
 }
 
@@ -46,6 +46,7 @@ PLATFORM_LABELS = {
 YOUTUBE_TOKEN_FILES = ("youtube_token_signalroom.json", "youtube_token.json")
 
 HttpGet = Callable[[str, Mapping[str, str], int], Dict[str, Any]]
+HttpPost = Callable[[str, Mapping[str, str], Mapping[str, str], int], Dict[str, Any]]
 
 
 def _load_env_file_values(path: Optional[Path] = None) -> Dict[str, str]:
@@ -75,6 +76,14 @@ def _load_env_file_values(path: Optional[Path] = None) -> Dict[str, str]:
 
 def _env_value(key: str, env_file_values: Mapping[str, str]) -> str:
     return os.environ.get(key) or env_file_values.get(key, "")
+
+
+def _first_env_value(keys: Sequence[str], env_file_values: Mapping[str, str]) -> str:
+    for key in keys:
+        value = _env_value(key, env_file_values)
+        if value:
+            return value
+    return ""
 
 
 def _load_json_file(path: Path) -> Dict[str, Any]:
@@ -181,9 +190,15 @@ def _can_attempt_platform(platform: str, env_file_values: Mapping[str, str]) -> 
             _env_value("YOUTUBE_API_KEY", env_file_values) and _env_value("YOUTUBE_CHANNEL_ID", env_file_values)
         )
     if platform == "facebook":
-        return bool((_env_value("FACEBOOK_PAGE_ACCESS_TOKEN", env_file_values) or _env_value("META_ACCESS_TOKEN", env_file_values)) and _env_value("FACEBOOK_PAGE_ID", env_file_values))
+        return bool(
+            _first_env_value(("FACEBOOK_PAGE_ACCESS_TOKEN", "META_PAGE_ACCESS_TOKEN", "META_ACCESS_TOKEN"), env_file_values)
+            and _first_env_value(("FACEBOOK_PAGE_ID", "META_PAGE_ID"), env_file_values)
+        )
     if platform == "instagram":
-        return bool((_env_value("INSTAGRAM_ACCESS_TOKEN", env_file_values) or _env_value("META_ACCESS_TOKEN", env_file_values)) and _env_value("INSTAGRAM_BUSINESS_ACCOUNT_ID", env_file_values))
+        return bool(
+            _first_env_value(("INSTAGRAM_ACCESS_TOKEN", "META_PAGE_ACCESS_TOKEN", "META_ACCESS_TOKEN"), env_file_values)
+            and _first_env_value(("INSTAGRAM_BUSINESS_ACCOUNT_ID", "META_IG_USER_ID"), env_file_values)
+        )
     if platform == "tiktok":
         return bool(_env_value("TIKTOK_ACCESS_TOKEN", env_file_values))
     return False
@@ -202,10 +217,40 @@ def _http_get_json(url: str, headers: Mapping[str, str], timeout: int = HTTP_TIM
         return {"ok": False, "status_code": None, "error": _sanitize_error(str(exc))}
 
 
+def _http_post_json(url: str, data: Mapping[str, str], headers: Mapping[str, str], timeout: int = HTTP_TIMEOUT_SECONDS) -> Dict[str, Any]:
+    encoded = urllib.parse.urlencode(data).encode("utf-8")
+    request = urllib.request.Request(url, data=encoded, headers=dict(headers), method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310 - OAuth token endpoint for existing user credential refresh
+            raw = response.read().decode("utf-8", errors="replace")
+            return {"ok": True, "status_code": response.status, "json": json.loads(raw)}
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:500]
+        return {"ok": False, "status_code": exc.code, "error": _sanitize_error(body or str(exc))}
+    except Exception as exc:
+        return {"ok": False, "status_code": None, "error": _sanitize_error(str(exc))}
+
+
+def _token_file_sensitive_values() -> List[str]:
+    path = _youtube_token_file()
+    if path is None:
+        return []
+    data = _load_json_file(path)
+    values: List[str] = []
+    for key, value in data.items():
+        if isinstance(value, str) and ("token" in key.lower() or "secret" in key.lower() or "client" in key.lower()):
+            values.append(value)
+    return values
+
+
 def _sanitize_error(text: str) -> str:
     cleaned = str(text or "").replace("\n", " ").replace("\r", " ")
+    sensitive_values = _token_file_sensitive_values()
     for key in {key for keys in PLATFORM_CREDENTIALS.values() for key in keys}:
         value = os.environ.get(key)
+        if value:
+            sensitive_values.append(value)
+    for value in sensitive_values:
         if value:
             cleaned = cleaned.replace(value, "[redacted]")
     return cleaned[:500]
@@ -228,12 +273,51 @@ def _row(platform: str, *, published: Any = "Needs sync", scheduled: Any = "Need
     }
 
 
-def _probe_youtube(env_values: Mapping[str, str], http_get: HttpGet) -> Dict[str, Any]:
+def _token_is_expired(token_data: Mapping[str, Any]) -> bool:
+    expiry = str(token_data.get("expiry") or "").strip()
+    if not expiry:
+        return False
+    try:
+        expires_at = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) >= expires_at - timedelta(seconds=60)
+
+
+def _refresh_youtube_access_token(token_data: Mapping[str, Any], http_post: HttpPost) -> Dict[str, Any]:
+    refresh_token = str(token_data.get("refresh_token") or "")
+    client_id = str(token_data.get("client_id") or "")
+    client_secret = str(token_data.get("client_secret") or "")
+    token_uri = str(token_data.get("token_uri") or "https://oauth2.googleapis.com/token")
+    if not (refresh_token and client_id and client_secret):
+        return {"ok": False, "error": "Token file cannot refresh because OAuth client fields are missing."}
+    return http_post(
+        token_uri,
+        {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        },
+        {"Content-Type": "application/x-www-form-urlencoded"},
+        HTTP_TIMEOUT_SECONDS,
+    )
+
+
+def _probe_youtube(env_values: Mapping[str, str], http_get: HttpGet, http_post: HttpPost = _http_post_json) -> Dict[str, Any]:
     token_path = _youtube_token_file()
     token_data = _load_json_file(token_path) if token_path else {}
     access_token = _env_value("YOUTUBE_ACCESS_TOKEN", env_values) or str(token_data.get("token") or "")
     api_key = _env_value("YOUTUBE_API_KEY", env_values)
     channel_id = _env_value("YOUTUBE_CHANNEL_ID", env_values) or str(token_data.get("channel_id") or "")
+    if access_token and token_data and _token_is_expired(token_data):
+        refresh_response = _refresh_youtube_access_token(token_data, http_post)
+        if refresh_response.get("ok"):
+            access_token = str(refresh_response.get("json", {}).get("access_token") or access_token)
+        else:
+            return _row("youtube", issues=f"Read-only YouTube token refresh failed: {refresh_response.get('status_code') or 'error'}", readiness=_response_error(refresh_response), status="needs_review")
     if access_token:
         params = urllib.parse.urlencode({"part": "statistics,snippet", "mine": "true"})
         response = http_get(f"https://www.googleapis.com/youtube/v3/channels?{params}", {"Authorization": f"Bearer {access_token}"}, HTTP_TIMEOUT_SECONDS)
@@ -250,8 +334,8 @@ def _probe_youtube(env_values: Mapping[str, str], http_get: HttpGet) -> Dict[str
 
 
 def _probe_facebook(env_values: Mapping[str, str], http_get: HttpGet) -> Dict[str, Any]:
-    token = _env_value("FACEBOOK_PAGE_ACCESS_TOKEN", env_values) or _env_value("META_ACCESS_TOKEN", env_values)
-    page_id = _env_value("FACEBOOK_PAGE_ID", env_values)
+    token = _first_env_value(("FACEBOOK_PAGE_ACCESS_TOKEN", "META_PAGE_ACCESS_TOKEN", "META_ACCESS_TOKEN"), env_values)
+    page_id = _first_env_value(("FACEBOOK_PAGE_ID", "META_PAGE_ID"), env_values)
     if not (token and page_id):
         return _row("facebook", issues="Missing existing Facebook page token/page id configuration.", readiness="Read-only live count probe not attempted.", status="not_connected")
     fields = "fan_count,followers_count,instagram_business_account{id,username,media_count,followers_count}"
@@ -264,8 +348,8 @@ def _probe_facebook(env_values: Mapping[str, str], http_get: HttpGet) -> Dict[st
 
 
 def _probe_instagram(env_values: Mapping[str, str], http_get: HttpGet) -> Dict[str, Any]:
-    token = _env_value("INSTAGRAM_ACCESS_TOKEN", env_values) or _env_value("META_ACCESS_TOKEN", env_values)
-    account_id = _env_value("INSTAGRAM_BUSINESS_ACCOUNT_ID", env_values)
+    token = _first_env_value(("INSTAGRAM_ACCESS_TOKEN", "META_PAGE_ACCESS_TOKEN", "META_ACCESS_TOKEN"), env_values)
+    account_id = _first_env_value(("INSTAGRAM_BUSINESS_ACCOUNT_ID", "META_IG_USER_ID"), env_values)
     if not (token and account_id):
         return _row("instagram", issues="Missing existing Instagram business token/account id configuration.", readiness="Read-only live count probe not attempted.", status="not_connected")
     params = urllib.parse.urlencode({"fields": "media_count,followers_count,username", "access_token": token})
@@ -301,6 +385,7 @@ def probe_social_counts(
     *,
     env_file: Optional[Path] = None,
     http_get: HttpGet = _http_get_json,
+    http_post: HttpPost = _http_post_json,
     write_snapshot: bool = False,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
@@ -313,7 +398,10 @@ def probe_social_counts(
             can_attempt = next((item.get("can_attempt_probe") for item in inventory["platforms"] if item.get("key") == platform), False)
             rows.append(_row(platform, issues="Dry run only; no platform API call performed.", readiness="Existing credentials look sufficient for a probe." if can_attempt else "Existing credentials missing for probe.", status="needs_sync" if can_attempt else "not_connected"))
             continue
-        rows.append(PROBERS[platform](env_values, http_get))
+        if platform == "youtube":
+            rows.append(_probe_youtube(env_values, http_get, http_post))
+        else:
+            rows.append(PROBERS[platform](env_values, http_get))
 
     result: Dict[str, Any] = {
         "ok": True,
@@ -328,7 +416,20 @@ def probe_social_counts(
         "forbidden_actions": ["post", "upload", "schedule", "delete", "privacy_change", "token_repair", "cron_create"],
     }
     if write_snapshot and not dry_run:
-        result["snapshot"] = write_manual_social_platform_status({"source": SOURCE_NAME, "platforms": rows})
+        existing_rows = read_social_platform_status().get("platforms", [])
+        by_platform = {
+            str(item.get("platform", "")).lower(): item
+            for item in existing_rows
+            if isinstance(item, dict) and item.get("platform")
+        }
+        for row in rows:
+            by_platform[str(row.get("platform", "")).lower()] = row
+        result["snapshot"] = write_manual_social_platform_status(
+            {
+                "source": SOURCE_NAME,
+                "platforms": list(by_platform.values()),
+            }
+        )
     return result
 
 
@@ -340,18 +441,20 @@ def cli_main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run redacted, read-only social platform count probes for Jenny Ops Center.")
     sub = parser.add_subparsers(dest="command", required=True)
     cred = sub.add_parser("credentials", help="Show redacted credential presence only")
-    cred.add_argument("--platform", action="append", default=["all"], help="Platform to inspect: youtube/facebook/instagram/tiktok/all")
+    cred.add_argument("--platform", action="append", help="Platform to inspect: youtube/facebook/instagram/tiktok/all")
+    cred.add_argument("--env-file", type=Path, help="Read credentials from this env file instead of the active Hermes .env")
     probe = sub.add_parser("probe", help="Run one-shot read-only platform count probe")
-    probe.add_argument("--platform", action="append", default=["all"], help="Platform to probe: youtube/facebook/instagram/tiktok/all")
+    probe.add_argument("--platform", action="append", help="Platform to probe: youtube/facebook/instagram/tiktok/all")
+    probe.add_argument("--env-file", type=Path, help="Read credentials from this env file instead of the active Hermes .env")
     probe.add_argument("--write-snapshot", action="store_true", help="Write successful probe rows to local Ops Center snapshot/history")
     probe.add_argument("--dry-run", action="store_true", help="Do not call platform APIs; report what would be attempted")
     args = parser.parse_args(argv)
 
     if args.command == "credentials":
-        _print_json(credential_inventory(args.platform))
+        _print_json(credential_inventory(args.platform or ["all"], env_file=args.env_file))
         return 0
     if args.command == "probe":
-        _print_json(probe_social_counts(args.platform, write_snapshot=args.write_snapshot, dry_run=args.dry_run))
+        _print_json(probe_social_counts(args.platform or ["all"], env_file=args.env_file, write_snapshot=args.write_snapshot, dry_run=args.dry_run))
         return 0
     parser.error("unknown command")
     return 2

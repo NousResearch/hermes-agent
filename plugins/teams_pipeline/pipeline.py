@@ -52,6 +52,8 @@ ACTIVE_PIPELINE_STATES = {
 }
 CLIENT_REVIEW_STATE = "awaiting_client_report_review"
 TERMINAL_PIPELINE_STATES.add(CLIENT_REVIEW_STATE)
+ALLOWED_VIDEO_STORAGE_PROVIDERS = {"onedrive", "google_drive", "sharepoint"}
+DEFAULT_VIDEO_STORAGE_PROVIDER = "onedrive"
 
 
 class TeamsPipelineError(RuntimeError):
@@ -78,6 +80,15 @@ SinkFn = Callable[
 ]
 
 
+def normalize_video_storage_config(payload: Any) -> dict[str, Any]:
+    config = dict(payload or {})
+    provider = str(config.get("provider") or DEFAULT_VIDEO_STORAGE_PROVIDER).strip().lower().replace("-", "_")
+    if provider not in ALLOWED_VIDEO_STORAGE_PROVIDERS:
+        raise ValueError("video_storage.provider must be onedrive, google_drive, or sharepoint.")
+    config["provider"] = provider
+    return config
+
+
 @dataclass
 class TeamsPipelineConfig:
     transcript_preferred: bool = True
@@ -90,11 +101,13 @@ class TeamsPipelineConfig:
     notion: dict[str, Any] | None = None
     linear: dict[str, Any] | None = None
     teams_delivery: dict[str, Any] | None = None
+    video_storage: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, payload: Optional[dict[str, Any]]) -> "TeamsPipelineConfig":
         data = dict(payload or {})
         tmp_dir = data.get("tmp_dir") or data.get("tmpDir")
+        video_storage = normalize_video_storage_config(data.get("video_storage") or data.get("videoStorage"))
         return cls(
             transcript_preferred=bool(data.get("transcript_preferred", True)),
             transcript_required=bool(data.get("transcript_required", False)),
@@ -106,6 +119,7 @@ class TeamsPipelineConfig:
             notion=data.get("notion"),
             linear=data.get("linear"),
             teams_delivery=data.get("teams_delivery") or data.get("teamsDelivery"),
+            video_storage=video_storage,
         )
 
 

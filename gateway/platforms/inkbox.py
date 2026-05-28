@@ -17,8 +17,12 @@ On ``connect()`` the adapter:
      the same tunnel. Data-plane auth uses the SDK client's ``x-api-key``
      directly. Production deployments can bypass tunneling entirely by
      setting ``INKBOX_PUBLIC_URL``.
-  2. PATCHes every mailbox + phone number on the configured identity
-     so their webhook URLs / call WebSocket URL point at the tunnel.
+  2. Registers webhook subscriptions for the configured identity's
+     mailbox (``message.*`` events) and phone number (``text.*``
+     events) pointing at the tunnel, and patches the phone number's
+     incoming-call webhook URL + WebSocket URL on the resource itself
+     (the call channel is a synchronous control-plane callback and is
+     not a fan-out subscription).
   3. Starts an aiohttp server with two routes:
         - ``POST /webhook`` — verifies the ``X-Inkbox-Signature`` HMAC
           via the SDK, parses the body into one of three event shapes
@@ -86,11 +90,13 @@ except ImportError:
 
 try:
     from inkbox import Inkbox, verify_webhook
+    from inkbox.exceptions import InkboxAPIError
 
     INKBOX_AVAILABLE = True
 except ImportError:
     Inkbox = None  # type: ignore[assignment]
     verify_webhook = None  # type: ignore[assignment]
+    InkboxAPIError = Exception  # type: ignore[assignment,misc]
     INKBOX_AVAILABLE = False
 
 try:
@@ -121,6 +127,203 @@ SMS_MAX_LENGTH = 1600  # Inkbox SMS hard cap
 SMS_TEXT_BATCH_DELAY_SECONDS = 0.0
 SMS_TEXT_BATCH_MAX_MESSAGES = 8
 SMS_TEXT_BATCH_MAX_CHARS = 4000
+
+# Mail: agent only acts on inbound; lifecycle events fire-and-forget at the
+# wire layer, so subscribing to them would pay signature cost for no behaviour.
+_DESIRED_MAIL_EVENTS: tuple[str, ...] = ("message.received",)
+
+# Text: inbound plus the four outbound lifecycle transitions are all consumed
+# by _on_text_received / _on_text_lifecycle.
+_DESIRED_TEXT_EVENTS: tuple[str, ...] = (
+    "text.received",
+    "text.sent",
+    "text.delivered",
+    "text.delivery_failed",
+    "text.delivery_unconfirmed",
+)
+
+
+def _inkbox_state_path():
+    """Return the on-disk path used for the Inkbox identity state file.
+
+    Single source of truth shared by the reader and the writer so the
+    path can never drift between them. Imports are local because the
+    hermes_cli package may not be importable in every consumer (tests).
+    """
+    from hermes_cli.config import get_hermes_home
+    return get_hermes_home() / "inkbox_identity_state.json"
+
+
+def _read_previous_webhook_url() -> Optional[str]:
+    """Read the prior webhook_url out of the identity state file.
+
+    Returns ``None`` on missing file, bad JSON, permission error, or any
+    other failure — callers treat ``None`` as "no prior URL recorded".
+    """
+    try:
+        path = _inkbox_state_path()
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text())
+    except Exception as exc:
+        logger.debug("[Inkbox] Could not read prior identity state: %s", exc)
+        return None
+
+    # State file might be from a future schema, hand-edited, or truncated
+    # to a non-object root — treat anything other than a dict as "no prior".
+    if not isinstance(data, dict):
+        return None
+
+    url = data.get("webhook_url")
+    return url if isinstance(url, str) and url else None
+
+
+def _reconcile_subscription(
+    client,
+    *,
+    owner_kwarg: str,
+    owner_id,
+    desired_url: str,
+    previous_webhook_url: Optional[str],
+    desired_events: tuple[str, ...],
+):
+    """Reconcile a single owner's webhook subscription against desired state.
+
+    ``owner_kwarg`` is ``"mailbox_id"`` or ``"phone_number_id"``. Returns the
+    active subscription's id for DEBUG logging at the call site.
+    """
+    desired_set = set(desired_events)
+    list_kwargs = {owner_kwarg: owner_id}
+    existing = client.webhooks.subscriptions.list(**list_kwargs)
+
+    # Same URL + same event set: adopt verbatim, no writes.
+    for row in existing:
+        if row.url == desired_url and set(row.event_types) == desired_set:
+            active_id = row.id
+            break
+    else:
+        # Same URL but drifted event set: patch in place, do not delete-recreate.
+        drifted = next(
+            (r for r in existing if r.url == desired_url), None,
+        )
+        if drifted is not None:
+            updated = client.webhooks.subscriptions.update(
+                drifted.id, event_types=list(desired_events),
+            )
+            active_id = updated.id
+        else:
+            active_id = _create_with_409_repair(
+                client,
+                owner_kwarg=owner_kwarg,
+                owner_id=owner_id,
+                desired_url=desired_url,
+                desired_events=desired_events,
+            )
+
+    # Previous-URL cleanup runs after the new row is in place so a failure
+    # mid-reconcile can never leave the owner with zero receivers.
+    if previous_webhook_url and previous_webhook_url != desired_url:
+        # Re-list rather than reusing ``existing`` because a create/update
+        # may have shifted the visible rows.
+        for row in client.webhooks.subscriptions.list(**list_kwargs):
+            if row.url == previous_webhook_url:
+                try:
+                    client.webhooks.subscriptions.delete(row.id)
+                except InkboxAPIError as exc:
+                    if exc.status_code == 404:
+                        pass  # already gone; fine
+                    else:
+                        raise
+                break
+
+    return active_id
+
+
+def _create_with_409_repair(
+    client,
+    *,
+    owner_kwarg: str,
+    owner_id,
+    desired_url: str,
+    desired_events: tuple[str, ...],
+):
+    """POST a new subscription; on a 409 race, adopt or repair the existing row.
+
+    Server uniqueness is ``(owner, url)`` only — event set is not part of it.
+    So a 409 may surface a row with a different event set; check and patch.
+    """
+    create_kwargs = {
+        owner_kwarg: owner_id,
+        "url": desired_url,
+        "event_types": list(desired_events),
+    }
+    try:
+        sub = client.webhooks.subscriptions.create(**create_kwargs)
+        return sub.id
+    except InkboxAPIError as exc:
+        if exc.status_code != 409:
+            raise
+
+    desired_set = set(desired_events)
+    list_kwargs = {owner_kwarg: owner_id}
+    for row in client.webhooks.subscriptions.list(**list_kwargs):
+        if row.url != desired_url:
+            continue
+
+        if set(row.event_types) == desired_set:
+            return row.id
+
+        repaired = client.webhooks.subscriptions.update(
+            row.id, event_types=list(desired_events),
+        )
+        return repaired.id
+
+    # Theoretically unreachable: 409 says the row exists, but the followup
+    # list didn't surface it. Re-raise the original collision shape so
+    # higher layers see a clear failure rather than a None.
+    raise InkboxAPIError(
+        status_code=409,
+        detail=(
+            f"Webhook subscription collision on {owner_kwarg}={owner_id} "
+            f"url={desired_url}, but follow-up list did not return the row."
+        ),
+    )
+
+
+def _reconcile_mail_subscription(
+    client,
+    mailbox_id,
+    desired_url: str,
+    previous_webhook_url: Optional[str],
+    desired_events: tuple[str, ...] = _DESIRED_MAIL_EVENTS,
+):
+    """Reconcile a mailbox's webhook subscription against the desired state."""
+    return _reconcile_subscription(
+        client,
+        owner_kwarg="mailbox_id",
+        owner_id=mailbox_id,
+        desired_url=desired_url,
+        previous_webhook_url=previous_webhook_url,
+        desired_events=desired_events,
+    )
+
+
+def _reconcile_text_subscription(
+    client,
+    phone_number_id,
+    desired_url: str,
+    previous_webhook_url: Optional[str],
+    desired_events: tuple[str, ...] = _DESIRED_TEXT_EVENTS,
+):
+    """Reconcile a phone number's text webhook subscription."""
+    return _reconcile_subscription(
+        client,
+        owner_kwarg="phone_number_id",
+        owner_id=phone_number_id,
+        desired_url=desired_url,
+        previous_webhook_url=previous_webhook_url,
+        desired_events=desired_events,
+    )
 
 SMS_CONTROL_WORDS = frozenset({
     "start",
@@ -832,7 +1035,7 @@ class InkboxAdapter(BasePlatformAdapter):
         try:
             await asyncio.to_thread(self._patch_identity_objects)
         except Exception:
-            logger.exception("[Inkbox] Failed to patch identity webhook URLs")
+            logger.exception("[Inkbox] Failed to register webhook receivers")
             await self._cleanup()
             self._release_platform_lock()
             return False
@@ -998,29 +1201,42 @@ class InkboxAdapter(BasePlatformAdapter):
         webhook_url = f"{self._public_url}{self._webhook_path}"
         ws_url = f"wss://{self._public_host}{self._ws_path}"
 
+        # Snapshot the prior webhook URL before we overwrite state so the
+        # reconcile helpers can delete exactly the row we installed last time.
+        previous_webhook_url = _read_previous_webhook_url()
+
         identity = self._inkbox.get_identity(self._identity_handle)
 
-        # Mailbox: webhook for inbound mail events.
+        # Mailbox: register the inbound-mail subscription.
         if identity.mailbox is not None:
-            self._inkbox.mailboxes.update(
-                identity.mailbox.email_address,
-                webhook_url=webhook_url,
+            _reconcile_mail_subscription(
+                self._inkbox,
+                identity.mailbox.id,
+                desired_url=webhook_url,
+                previous_webhook_url=previous_webhook_url,
+                desired_events=_DESIRED_MAIL_EVENTS,
             )
             logger.info(
                 "[Inkbox] Patched mailbox %s → %s",
                 identity.mailbox.email_address, webhook_url,
             )
 
-        # Phone number: text webhook + incoming-call action.
+        # Phone number: text subscription + call channel on the resource.
         # ``incoming_call_action="auto_accept"`` tells Inkbox to pick up the
         # call itself and immediately open a WS to ``client_websocket_url``,
         # without round-tripping a webhook first.  Lower setup latency than
         # ``webhook`` mode, and the call context arrives on the WS itself
         # via the ``x-call-context`` header (parsed in ``_handle_call_ws``).
         if identity.phone_number is not None:
+            _reconcile_text_subscription(
+                self._inkbox,
+                identity.phone_number.id,
+                desired_url=webhook_url,
+                previous_webhook_url=previous_webhook_url,
+                desired_events=_DESIRED_TEXT_EVENTS,
+            )
             self._inkbox.phone_numbers.update(
                 identity.phone_number.id,
-                incoming_text_webhook_url=webhook_url,
                 incoming_call_webhook_url=webhook_url,
                 incoming_call_action="auto_accept",
                 client_websocket_url=ws_url,
@@ -1042,8 +1258,7 @@ class InkboxAdapter(BasePlatformAdapter):
         # Matches the pattern used by feishu_comment_rules._save_pairing and
         # the google_chat adapter's thread-count store.
         try:
-            from hermes_cli.config import get_hermes_home
-            state_path = get_hermes_home() / "inkbox_identity_state.json"
+            state_path = _inkbox_state_path()
             state = {
                 "handle": self._identity_handle,
                 "email_address": (

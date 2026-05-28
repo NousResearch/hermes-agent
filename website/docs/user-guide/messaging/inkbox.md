@@ -20,6 +20,10 @@ Inkbox is a multi-channel platform adapter, not just an SMS adapter:
 
 Hermes uses the resolved Inkbox Contact as the primary `chat_id` when possible. That means email, SMS, and outbound voice can share one contact-scoped session. Unknown senders fall back to the raw email address or E.164 phone number.
 
+## Startup Registration
+
+On startup, Hermes registers a webhook receiver with your Inkbox organisation for the mailbox and phone number on the configured identity. Hermes refreshes the receiver when the public URL changes (e.g., on tunnel reconnect), and cleans up the previous URL it installed. Receivers you set up by other means are not touched.
+
 ## SMS Behavior
 
 Inbound SMS can be buffered per contact before Hermes starts an agent turn. The quiet window is disabled by default so upstream deployments keep immediate SMS behavior; set `sms_text_batch_delay_seconds` or `INKBOX_SMS_TEXT_BATCH_DELAY_SECONDS` to a positive number when a deployment wants rapid human fragments, corrections, and follow-ups to arrive as one prompt instead of several competing prompts. A multi-message turn uses an `inkbox:sms_burst` routing marker and includes relative timestamps for each fragment.

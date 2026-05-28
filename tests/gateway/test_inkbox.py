@@ -40,7 +40,10 @@ def _patch_sdk(monkeypatch, *, lookup_result=None):
     fake_client.contacts.get.return_value = lookup_result[0] if lookup_result else None
     fake_client.get_identity.return_value = SimpleNamespace(
         agent_handle="inkbox-on-call-agent",
-        mailbox=SimpleNamespace(email_address="agent@inkboxmail.com"),
+        mailbox=SimpleNamespace(
+            id="mailbox-uuid",
+            email_address="agent@inkboxmail.com",
+        ),
         phone_number=SimpleNamespace(id="phone-uuid", number="+18005550100"),
         send_email=MagicMock(return_value=SimpleNamespace(id="msg-1")),
         send_text=MagicMock(return_value=SimpleNamespace(id="sms-1")),
@@ -1438,3 +1441,481 @@ class TestInterimMessageCapability:
         assert adapter.supports_interim_messages("+15555550199") is True
         # Contact UUID → email — suppressed.
         assert adapter.supports_interim_messages("contact-uuid-unknown") is False
+
+
+# ---------------------------------------------------------------------------
+# Webhook subscription reconcile
+# ---------------------------------------------------------------------------
+
+class _FakeSub:
+    """Stand-in for ``WebhookSubscription`` returned by the SDK fake."""
+
+    def __init__(self, sub_id, url, event_types, *,
+                 mailbox_id=None, phone_number_id=None):
+        self.id = sub_id
+        self.url = url
+        self.event_types = list(event_types)
+        self.mailbox_id = mailbox_id
+        self.phone_number_id = phone_number_id
+
+
+class _FakeSubscriptions:
+    """In-memory ``client.webhooks.subscriptions`` fake.
+
+    Stores rows by ``sub_id`` and supports list/create/update/delete plus a
+    ``create_raises`` queue used to inject 409s and other errors. ``list()``
+    filters on the owner kwarg the real SDK / server require.
+    """
+
+    def __init__(self):
+        self.rows: dict[str, _FakeSub] = {}
+        self._next_id = 1
+        self.create_raises: list = []
+        self.list_calls = 0
+        self.create_calls: list[dict] = []
+        self.update_calls: list[tuple] = []
+        self.delete_calls: list[str] = []
+
+    def list(self, *, mailbox_id=None, phone_number_id=None, **_):
+        self.list_calls += 1
+        rows = []
+        for row in self.rows.values():
+            if mailbox_id is not None and row.mailbox_id != mailbox_id:
+                continue
+            if phone_number_id is not None and row.phone_number_id != phone_number_id:
+                continue
+            rows.append(row)
+        return rows
+
+    def create(self, *, url, event_types, mailbox_id=None, phone_number_id=None):
+        self.create_calls.append({
+            "url": url,
+            "event_types": list(event_types),
+            "mailbox_id": mailbox_id,
+            "phone_number_id": phone_number_id,
+        })
+        if self.create_raises:
+            exc = self.create_raises.pop(0)
+            raise exc
+        sub_id = f"sub-{self._next_id}"
+        self._next_id += 1
+        sub = _FakeSub(
+            sub_id, url, list(event_types),
+            mailbox_id=mailbox_id, phone_number_id=phone_number_id,
+        )
+        self.rows[sub_id] = sub
+        return sub
+
+    def update(self, sub_id, *, url=None, event_types=None):
+        self.update_calls.append((sub_id, url, event_types))
+        sub = self.rows[sub_id]
+        if url is not None:
+            sub.url = url
+        if event_types is not None:
+            sub.event_types = list(event_types)
+        return sub
+
+    def delete(self, sub_id):
+        self.delete_calls.append(sub_id)
+        self.rows.pop(sub_id, None)
+
+
+def _make_fake_client():
+    """Build a minimal SDK client carrying a fake ``webhooks.subscriptions``."""
+    fake_subs = _FakeSubscriptions()
+    client = SimpleNamespace(
+        webhooks=SimpleNamespace(subscriptions=fake_subs),
+    )
+    return client, fake_subs
+
+
+MAIL_EVENTS = ("message.received",)
+TEXT_EVENTS = (
+    "text.received",
+    "text.sent",
+    "text.delivered",
+    "text.delivery_failed",
+    "text.delivery_unconfirmed",
+)
+
+
+class TestReconcileMailSubscription:
+    def test_first_start_no_state_no_rows_creates_one(self):
+        from gateway.platforms.inkbox import _reconcile_mail_subscription
+
+        client, subs = _make_fake_client()
+        _reconcile_mail_subscription(
+            client, "mailbox-uuid",
+            desired_url="https://tunnel.test/webhook",
+            previous_webhook_url=None,
+            desired_events=MAIL_EVENTS,
+        )
+
+        assert len(subs.create_calls) == 1
+        assert subs.create_calls[0]["mailbox_id"] == "mailbox-uuid"
+        assert subs.create_calls[0]["url"] == "https://tunnel.test/webhook"
+        assert subs.create_calls[0]["event_types"] == list(MAIL_EVENTS)
+        assert subs.delete_calls == []
+
+    def test_first_start_with_hand_installed_row_does_not_delete_it(self):
+        from gateway.platforms.inkbox import _reconcile_mail_subscription
+
+        client, subs = _make_fake_client()
+        # User-installed receiver on the same mailbox at a different URL.
+        subs.rows["user-1"] = _FakeSub(
+            "user-1", "https://user.example/listener", ["message.received"],
+            mailbox_id="mailbox-uuid",
+        )
+
+        _reconcile_mail_subscription(
+            client, "mailbox-uuid",
+            desired_url="https://tunnel.test/webhook",
+            previous_webhook_url=None,
+            desired_events=MAIL_EVENTS,
+        )
+
+        assert len(subs.create_calls) == 1
+        assert subs.delete_calls == []
+        assert "user-1" in subs.rows
+
+    def test_restart_same_url_same_events_no_writes(self):
+        from gateway.platforms.inkbox import _reconcile_mail_subscription
+
+        client, subs = _make_fake_client()
+        subs.rows["sub-existing"] = _FakeSub(
+            "sub-existing", "https://tunnel.test/webhook", list(MAIL_EVENTS),
+            mailbox_id="mailbox-uuid",
+        )
+
+        _reconcile_mail_subscription(
+            client, "mailbox-uuid",
+            desired_url="https://tunnel.test/webhook",
+            previous_webhook_url="https://tunnel.test/webhook",
+            desired_events=MAIL_EVENTS,
+        )
+
+        assert subs.create_calls == []
+        assert subs.update_calls == []
+        assert subs.delete_calls == []
+        # list() is still expected
+        assert subs.list_calls >= 1
+
+    def test_restart_same_url_drifted_events_updates_in_place(self):
+        from gateway.platforms.inkbox import _reconcile_mail_subscription
+
+        client, subs = _make_fake_client()
+        subs.rows["sub-drift"] = _FakeSub(
+            "sub-drift",
+            "https://tunnel.test/webhook",
+            ["message.received", "message.sent"],
+            mailbox_id="mailbox-uuid",
+        )
+
+        _reconcile_mail_subscription(
+            client, "mailbox-uuid",
+            desired_url="https://tunnel.test/webhook",
+            previous_webhook_url="https://tunnel.test/webhook",
+            desired_events=MAIL_EVENTS,
+        )
+
+        assert subs.create_calls == []
+        assert subs.delete_calls == []
+        assert len(subs.update_calls) == 1
+        sub_id, _url, ev = subs.update_calls[0]
+        assert sub_id == "sub-drift"
+        assert ev == list(MAIL_EVENTS)
+
+    def test_url_changed_create_then_delete_previous_order(self):
+        from gateway.platforms.inkbox import _reconcile_mail_subscription
+
+        client, subs = _make_fake_client()
+        subs.rows["sub-old"] = _FakeSub(
+            "sub-old", "https://old-tunnel.test/webhook", list(MAIL_EVENTS),
+            mailbox_id="mailbox-uuid",
+        )
+
+        sequence: list[str] = []
+        original_create = subs.create
+        original_delete = subs.delete
+
+        def tracking_create(**kwargs):
+            sequence.append("create")
+            return original_create(**kwargs)
+
+        def tracking_delete(sub_id):
+            sequence.append("delete")
+            return original_delete(sub_id)
+
+        subs.create = tracking_create  # type: ignore[assignment]
+        subs.delete = tracking_delete  # type: ignore[assignment]
+
+        _reconcile_mail_subscription(
+            client, "mailbox-uuid",
+            desired_url="https://new-tunnel.test/webhook",
+            previous_webhook_url="https://old-tunnel.test/webhook",
+            desired_events=MAIL_EVENTS,
+        )
+
+        assert sequence == ["create", "delete"]
+        assert "sub-old" not in subs.rows
+
+    def test_url_changed_previous_row_already_gone_creates_only(self):
+        from gateway.platforms.inkbox import _reconcile_mail_subscription
+
+        client, subs = _make_fake_client()
+        # No existing rows at all.
+
+        _reconcile_mail_subscription(
+            client, "mailbox-uuid",
+            desired_url="https://new-tunnel.test/webhook",
+            previous_webhook_url="https://old-tunnel.test/webhook",
+            desired_events=MAIL_EVENTS,
+        )
+
+        assert len(subs.create_calls) == 1
+        assert subs.delete_calls == []
+
+    def test_409_existing_row_matches_events_adopts(self):
+        from gateway.platforms.inkbox import _reconcile_mail_subscription
+        from inkbox.exceptions import InkboxAPIError
+
+        client, subs = _make_fake_client()
+        # Row exists but list() is invoked after create raises 409.
+        subs.rows["sub-race"] = _FakeSub(
+            "sub-race", "https://tunnel.test/webhook", list(MAIL_EVENTS),
+            mailbox_id="mailbox-uuid",
+        )
+
+        # First list (pre-create) finds no match because we'll bypass it via
+        # an injected 409 — but the helper's initial list does see the row,
+        # so it would adopt without ever reaching create. To force the 409
+        # path, drop the row from the initial list and add it before create
+        # is called. Simpler: simulate the race by raising 409 on create
+        # while the row is already present.
+        subs.create_raises.append(
+            InkboxAPIError(status_code=409, detail="exists"),
+        )
+        # Make the initial list look empty so the helper proceeds to create.
+        original_rows = dict(subs.rows)
+        subs.rows = {}
+        subs._second_list = False  # type: ignore[attr-defined]
+
+        original_list = subs.list
+
+        def staged_list(**kwargs):
+            # First call: empty. Second call (post-409): populated.
+            if not getattr(subs, "_second_list", False):
+                subs._second_list = True  # type: ignore[attr-defined]
+                return []
+            subs.rows = original_rows
+            return original_list(**kwargs)
+
+        subs.list = staged_list  # type: ignore[assignment]
+
+        _reconcile_mail_subscription(
+            client, "mailbox-uuid",
+            desired_url="https://tunnel.test/webhook",
+            previous_webhook_url=None,
+            desired_events=MAIL_EVENTS,
+        )
+
+        # One failed create, no second create, no update (events matched).
+        assert len(subs.create_calls) == 1
+        assert subs.update_calls == []
+
+    def test_409_existing_row_event_drift_updates(self):
+        from gateway.platforms.inkbox import _reconcile_mail_subscription
+        from inkbox.exceptions import InkboxAPIError
+
+        client, subs = _make_fake_client()
+        subs.create_raises.append(
+            InkboxAPIError(status_code=409, detail="exists"),
+        )
+
+        # Initial list empty, follow-up list reveals a drifted row.
+        drifted = _FakeSub(
+            "sub-drift",
+            "https://tunnel.test/webhook",
+            ["message.received", "message.sent"],
+            mailbox_id="mailbox-uuid",
+        )
+
+        subs._step = 0  # type: ignore[attr-defined]
+        original_list = subs.list
+
+        def staged_list(**kwargs):
+            subs._step += 1  # type: ignore[attr-defined]
+            if subs._step == 1:
+                return []
+            subs.rows[drifted.id] = drifted
+            return original_list(**kwargs)
+
+        subs.list = staged_list  # type: ignore[assignment]
+
+        _reconcile_mail_subscription(
+            client, "mailbox-uuid",
+            desired_url="https://tunnel.test/webhook",
+            previous_webhook_url=None,
+            desired_events=MAIL_EVENTS,
+        )
+
+        assert len(subs.create_calls) == 1
+        assert len(subs.update_calls) == 1
+        sub_id, _url, ev = subs.update_calls[0]
+        assert sub_id == "sub-drift"
+        assert ev == list(MAIL_EVENTS)
+
+
+class TestReconcileTextSubscription:
+    def test_first_start_creates_with_full_event_set(self):
+        from gateway.platforms.inkbox import _reconcile_text_subscription
+
+        client, subs = _make_fake_client()
+        _reconcile_text_subscription(
+            client, "phone-uuid",
+            desired_url="https://tunnel.test/webhook",
+            previous_webhook_url=None,
+            desired_events=TEXT_EVENTS,
+        )
+
+        assert len(subs.create_calls) == 1
+        assert subs.create_calls[0]["phone_number_id"] == "phone-uuid"
+        assert set(subs.create_calls[0]["event_types"]) == set(TEXT_EVENTS)
+
+
+class TestReadPreviousWebhookUrl:
+    def test_missing_file_returns_none(self, tmp_path, monkeypatch):
+        import gateway.platforms.inkbox as inkbox_mod
+
+        monkeypatch.setattr(
+            inkbox_mod, "_inkbox_state_path",
+            lambda: tmp_path / "missing.json",
+        )
+
+        assert inkbox_mod._read_previous_webhook_url() is None
+
+    def test_bad_json_returns_none_without_raising(self, tmp_path, monkeypatch, caplog):
+        import gateway.platforms.inkbox as inkbox_mod
+
+        path = tmp_path / "state.json"
+        path.write_text("{not valid json")
+
+        monkeypatch.setattr(inkbox_mod, "_inkbox_state_path", lambda: path)
+
+        with caplog.at_level("DEBUG", logger=inkbox_mod.logger.name):
+            assert inkbox_mod._read_previous_webhook_url() is None
+
+    def test_returns_recorded_url(self, tmp_path, monkeypatch):
+        import gateway.platforms.inkbox as inkbox_mod
+        import json as _json
+
+        path = tmp_path / "state.json"
+        path.write_text(_json.dumps({"webhook_url": "https://prev.test/webhook"}))
+
+        monkeypatch.setattr(inkbox_mod, "_inkbox_state_path", lambda: path)
+
+        assert inkbox_mod._read_previous_webhook_url() == "https://prev.test/webhook"
+
+    def test_non_dict_root_returns_none(self, tmp_path, monkeypatch):
+        """File parses as valid JSON but to a non-object (list, scalar, null)."""
+        import gateway.platforms.inkbox as inkbox_mod
+
+        for body in ("[]", "42", "null", "\"a-string\""):
+            path = tmp_path / "state.json"
+            path.write_text(body)
+            monkeypatch.setattr(inkbox_mod, "_inkbox_state_path", lambda p=path: p)
+            assert inkbox_mod._read_previous_webhook_url() is None, body
+
+
+class TestPatchIdentityObjectsIntegration:
+    """End-to-end checks on ``_patch_identity_objects``.
+
+    Guards the integration surface the migration is most likely to regress:
+    no leftover ``mailboxes.update(webhook_url=...)`` call, ``subscriptions
+    .create`` invoked with the mailbox/phone IDs, and ``phone_numbers
+    .update`` narrowed to the call-channel kwargs.
+    """
+
+    def _prep(self, monkeypatch, tmp_path):
+        adapter = _make_adapter(monkeypatch)
+        # `_make_adapter` leaves `_public_url` as None; the method needs it.
+        adapter._public_url = "https://tunnel.test"
+        adapter._public_host = "tunnel.test"
+
+        # Swap the fake SDK's `webhooks.subscriptions` for our in-memory fake
+        # so we can inspect create/update/delete and the call-channel update.
+        fake_client = adapter._inkbox
+        _client, subs = _make_fake_client()
+        fake_client.webhooks = _client.webhooks
+
+        # Force a clean state-file lookup so no prior URL leaks in.
+        import gateway.platforms.inkbox as inkbox_mod
+        monkeypatch.setattr(
+            inkbox_mod, "_inkbox_state_path",
+            lambda: tmp_path / "absent.json",
+        )
+        return adapter, fake_client, subs
+
+    def test_registers_via_subscriptions_not_mailboxes_update(
+        self, monkeypatch, tmp_path,
+    ):
+        adapter, fake_client, subs = self._prep(monkeypatch, tmp_path)
+
+        adapter._patch_identity_objects()
+
+        # The legacy `mailboxes.update(webhook_url=...)` call must not happen.
+        # `MagicMock` accepts attribute access without raising, so the check is
+        # on `mock_calls` / `update.called`.
+        assert not fake_client.mailboxes.update.called, (
+            f"mailboxes.update was called: "
+            f"{fake_client.mailboxes.update.call_args_list}"
+        )
+
+    def test_subscriptions_create_uses_mailbox_id_and_phone_id(
+        self, monkeypatch, tmp_path,
+    ):
+        adapter, fake_client, subs = self._prep(monkeypatch, tmp_path)
+
+        adapter._patch_identity_objects()
+
+        # Identity fake assigns mailbox.id="mailbox-uuid" and phone.id="phone-uuid".
+        mailbox_calls = [c for c in subs.create_calls if c["mailbox_id"]]
+        phone_calls = [c for c in subs.create_calls if c["phone_number_id"]]
+        assert len(mailbox_calls) == 1
+        assert mailbox_calls[0]["mailbox_id"] == "mailbox-uuid"
+        assert mailbox_calls[0]["url"] == "https://tunnel.test/webhook"
+        assert mailbox_calls[0]["event_types"] == ["message.received"]
+        assert len(phone_calls) == 1
+        assert phone_calls[0]["phone_number_id"] == "phone-uuid"
+        assert phone_calls[0]["url"] == "https://tunnel.test/webhook"
+        assert set(phone_calls[0]["event_types"]) == {
+            "text.received",
+            "text.sent",
+            "text.delivered",
+            "text.delivery_failed",
+            "text.delivery_unconfirmed",
+        }
+
+    def test_phone_numbers_update_only_carries_call_channel_kwargs(
+        self, monkeypatch, tmp_path,
+    ):
+        adapter, fake_client, subs = self._prep(monkeypatch, tmp_path)
+
+        adapter._patch_identity_objects()
+
+        update_calls = fake_client.phone_numbers.update.call_args_list
+        assert len(update_calls) == 1
+        args, kwargs = update_calls[0]
+        # Positional: phone_number_id
+        assert args == ("phone-uuid",)
+        # The legacy `incoming_text_webhook_url` must not appear.
+        assert "incoming_text_webhook_url" not in kwargs
+        # Exactly the call-channel kwargs we now expect.
+        assert set(kwargs.keys()) == {
+            "incoming_call_webhook_url",
+            "incoming_call_action",
+            "client_websocket_url",
+        }
+        assert kwargs["incoming_call_webhook_url"] == "https://tunnel.test/webhook"
+        assert kwargs["incoming_call_action"] == "auto_accept"
+        assert kwargs["client_websocket_url"].startswith("wss://tunnel.test")

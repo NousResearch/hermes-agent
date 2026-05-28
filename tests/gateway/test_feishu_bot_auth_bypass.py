@@ -129,6 +129,13 @@ def test_feishu_group_allowed_chats_rejects_other_groups_even_for_allowed_user(m
     assert runner._is_user_authorized(other_group_source) is False
 
 
+def test_feishu_group_allowed_chats_makes_unauthorized_dms_silent(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("FEISHU_GROUP_ALLOWED_CHATS", "oc_allowed")
+
+    assert runner._get_unauthorized_dm_behavior(Platform.FEISHU) == "ignore"
+
+
 def test_feishu_bot_bypass_does_not_leak_to_other_platforms(monkeypatch):
     """FEISHU_ALLOW_BOTS=all must not authorize Telegram/Discord bot sources."""
     runner = _make_bare_runner()

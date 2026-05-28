@@ -101,6 +101,8 @@ AUTHOR_MAP = {
     "kronexoi13@gmail.com": "kronexoi",
     "hua.zhong@kingsmith.com": "vgocoder",
     "hermes@marian.local": "Schrotti77",
+    "david@memorilabs.ai": "devwdave",
+    "dave@devwdave.com": "devwdave",
     "1920071390@campus.ouj.ac.jp": "zapabob",
     "gaia@gaia.local": "jfuenmayor",
     "jiahuigu@users.noreply.github.com": "Jiahui-Gu",

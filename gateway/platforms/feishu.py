@@ -1778,7 +1778,16 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
+                card_title = self._metadata_card_title(metadata)
+                if card_title:
+                    msg_type = "interactive"
+                    payload = self._build_markdown_card_payload(
+                        title=card_title,
+                        content=chunk,
+                        template=self._metadata_card_template(metadata),
+                    )
+                else:
+                    msg_type, payload = self._build_outbound_payload(chunk)
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -4294,6 +4303,93 @@ class FeishuAdapter(BasePlatformAdapter):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
+
+    @staticmethod
+    def _metadata_card_title(metadata: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(metadata, dict):
+            return ""
+        title = metadata.get("feishu_card_title") or metadata.get("card_title")
+        return str(title or "").strip()
+
+    @staticmethod
+    def _metadata_card_template(metadata: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(metadata, dict):
+            return "blue"
+        template = str(
+            metadata.get("feishu_card_template")
+            or metadata.get("card_template")
+            or "blue"
+        ).strip()
+        return template or "blue"
+
+    @staticmethod
+    def _build_markdown_card_payload(*, title: str, content: str, template: str = "blue") -> str:
+        elements = [
+            {"tag": "markdown", "content": chunk}
+            for chunk in FeishuAdapter._split_markdown_card_content(content)
+        ]
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": str(title).strip()[:120] or "Hermes"},
+                "template": str(template).strip() or "blue",
+            },
+            "elements": elements,
+        }
+        return json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def _split_markdown_card_content(content: str, limit: int = 3000) -> List[str]:
+        """Split long card markdown into smaller elements for stable rendering."""
+        cleaned = str(content or "").strip()
+        if not cleaned:
+            return [" "]
+
+        chunks: List[str] = []
+        current = ""
+
+        def flush() -> None:
+            nonlocal current
+            if current.strip():
+                chunks.append(current.strip())
+            current = ""
+
+        for paragraph in re.split(r"\n{2,}", cleaned):
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
+            if len(paragraph) > limit:
+                flush()
+                lines = paragraph.splitlines() or [paragraph]
+                partial = ""
+                for line in lines:
+                    line = line.rstrip()
+                    if len(line) > limit:
+                        if partial:
+                            chunks.append(partial.strip())
+                            partial = ""
+                        for start in range(0, len(line), limit):
+                            chunks.append(line[start:start + limit])
+                        continue
+                    candidate = f"{partial}\n{line}".strip() if partial else line
+                    if len(candidate) > limit:
+                        chunks.append(partial.strip())
+                        partial = line
+                    else:
+                        partial = candidate
+                if partial:
+                    chunks.append(partial.strip())
+                continue
+
+            candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
+            if len(candidate) > limit:
+                flush()
+                current = paragraph
+            else:
+                current = candidate
+
+        flush()
+        return chunks or [" "]
 
     async def _send_uploaded_file_message(
         self,

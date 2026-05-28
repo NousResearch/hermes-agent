@@ -575,6 +575,71 @@ class TestDeliverResultWrapping:
         assert "Cronjob Response" not in sent_content
         assert "The agent cannot see" not in sent_content
 
+    def test_feishu_card_delivery_skips_wrapper_and_passes_card_metadata(self):
+        """Cron jobs with Feishu card metadata should render as cards, not wrapped text."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.FEISHU: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}):
+            job = {
+                "id": "ai-digest",
+                "name": "daily-ai-intel-briefing",
+                "deliver": "feishu:oc_123",
+                "feishu_card_title": "AI 情报雷达 · {date}",
+                "feishu_card_template": "blue",
+            }
+            _deliver_result(job, "**Body**")
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args[0][3]
+        metadata = send_mock.call_args.kwargs.get("metadata")
+        assert sent_content == "**Body**"
+        assert "Cronjob Response" not in sent_content
+        assert metadata["feishu_card_title"].startswith("AI 情报雷达 · ")
+        assert metadata["feishu_card_template"] == "blue"
+
+    def test_feishu_card_metadata_only_skips_wrapper_for_feishu_targets(self):
+        """Mixed delivery keeps cron context for non-Feishu targets."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {
+            Platform.FEISHU: pconfig,
+            Platform.TELEGRAM: pconfig,
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}):
+            job = {
+                "id": "mixed-card",
+                "name": "daily-ai-intel-briefing",
+                "deliver": "feishu:oc_123,telegram:tg_123",
+                "feishu_card_title": "AI 情报雷达 · {date}",
+                "feishu_card_template": "blue",
+            }
+            _deliver_result(job, "**Body**")
+
+        assert send_mock.await_count == 2
+        feishu_call, telegram_call = send_mock.await_args_list
+
+        assert feishu_call.args[0] == Platform.FEISHU
+        assert feishu_call.args[3] == "**Body**"
+        assert feishu_call.kwargs["metadata"]["feishu_card_template"] == "blue"
+
+        assert telegram_call.args[0] == Platform.TELEGRAM
+        assert "Cronjob Response: daily-ai-intel-briefing" in telegram_call.args[3]
+        assert "**Body**" in telegram_call.args[3]
+        assert telegram_call.kwargs.get("metadata") is None
+
     def test_delivery_extracts_media_tags_before_send(self, tmp_path, monkeypatch):
         """Cron delivery should pass MEDIA attachments separately to the send helper."""
         from gateway.config import Platform

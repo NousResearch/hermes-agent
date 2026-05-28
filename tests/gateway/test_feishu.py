@@ -160,6 +160,100 @@ class TestFeishuMessageNormalization(unittest.TestCase):
 
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
+    def test_send_uses_interactive_markdown_card_when_metadata_title_is_set(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import SendResult
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = object()
+        response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="om_card"),
+        )
+        adapter._feishu_send_with_retry = AsyncMock(return_value=response)
+
+        result = asyncio.run(
+            adapter.send(
+                "oc_123",
+                "**TL;DR**\n- first item",
+                metadata={
+                    "feishu_card_title": "AI 情报雷达 · 2026-05-27",
+                    "feishu_card_template": "blue",
+                },
+            )
+        )
+
+        self.assertIsInstance(result, SendResult)
+        self.assertTrue(result.success)
+        kwargs = adapter._feishu_send_with_retry.await_args.kwargs
+        self.assertEqual(kwargs["msg_type"], "interactive")
+        payload = json.loads(kwargs["payload"])
+        self.assertEqual(payload["header"]["title"]["content"], "AI 情报雷达 · 2026-05-27")
+        self.assertEqual(payload["header"]["template"], "blue")
+        self.assertEqual(payload["elements"][0]["tag"], "markdown")
+        self.assertIn("**TL;DR**", payload["elements"][0]["content"])
+
+    def test_standalone_send_to_platform_preserves_card_metadata(self):
+        from gateway.config import Platform
+        from tools.send_message_tool import _send_to_platform
+
+        calls = []
+
+        class FakeFeishuAdapter:
+            MAX_MESSAGE_LENGTH = 8000
+
+            def __init__(self, _config):
+                self._domain_name = "feishu"
+                self._client = None
+
+            def _build_lark_client(self, domain):
+                calls.append(("build_client", domain))
+                return object()
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message, metadata))
+                return SimpleNamespace(success=True, message_id="om_card")
+
+        with patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True), \
+             patch("gateway.platforms.feishu.FeishuAdapter", FakeFeishuAdapter):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    SimpleNamespace(enabled=True, token="", extra={}),
+                    "oc_123",
+                    "**Body**",
+                    metadata={
+                        "feishu_card_title": "AI 情报雷达",
+                        "feishu_card_template": "blue",
+                    },
+                )
+            )
+
+        self.assertTrue(result["success"])
+        send_call = next(call for call in calls if call[0] == "send")
+        self.assertEqual(send_call[1], "oc_123")
+        self.assertEqual(send_call[2], "**Body**")
+        self.assertEqual(send_call[3]["feishu_card_title"], "AI 情报雷达")
+        self.assertEqual(send_call[3]["feishu_card_template"], "blue")
+
+    def test_markdown_card_payload_splits_long_content(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        content = "\n\n".join([f"**Section {i}**\n" + ("line\n" * 250) for i in range(4)])
+
+        payload = json.loads(
+            FeishuAdapter._build_markdown_card_payload(
+                title="AI 情报雷达",
+                content=content,
+                template="blue",
+            )
+        )
+
+        self.assertGreater(len(payload["elements"]), 1)
+        self.assertTrue(all(element["tag"] == "markdown" for element in payload["elements"]))
+        self.assertTrue(all(len(element["content"]) <= 3000 for element in payload["elements"]))
+
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",

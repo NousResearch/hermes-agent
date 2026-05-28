@@ -489,6 +489,35 @@ def _normalize_deliver_value(deliver) -> str:
     return str(deliver)
 
 
+def _format_card_title_template(raw_title: str) -> str:
+    """Format a user-provided Feishu card title template.
+
+    Supports ``{date}`` and ``{datetime}`` placeholders. Invalid templates are
+    delivered literally so a bad title cannot break cron delivery.
+    """
+    title = str(raw_title or "").strip()
+    if not title:
+        return ""
+    try:
+        return title.format(
+            date=_hermes_now().strftime("%Y-%m-%d"),
+            datetime=_hermes_now().strftime("%Y-%m-%d %H:%M"),
+        )
+    except Exception:
+        return title
+
+
+def _resolve_feishu_card_metadata(job: dict) -> dict:
+    title = _format_card_title_template(job.get("feishu_card_title", ""))
+    if not title:
+        return {}
+    template = str(job.get("feishu_card_template") or "blue").strip() or "blue"
+    return {
+        "feishu_card_title": title,
+        "feishu_card_template": template,
+    }
+
+
 # Routing intent tokens — resolved at fire time, not create time, so a
 # job created before Telegram was wired up will pick up Telegram once it
 # comes online.  ``all`` expands into the set of connected platforms
@@ -647,10 +676,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     except Exception:
         pass
 
+    card_metadata = _resolve_feishu_card_metadata(job)
+
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
-        delivery_content = (
+        wrapped_delivery_content = (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
@@ -658,14 +689,24 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
         )
     else:
-        delivery_content = content
+        wrapped_delivery_content = content
 
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     try:
+        # Standalone cron ticks (especially no_agent script jobs) do not pass
+        # through the agent setup path that reloads ~/.hermes/.env. Load it here
+        # before resolving gateway platform config so direct delivery has the
+        # same credentials as gateway-hosted delivery.
+        try:
+            from hermes_cli.env_loader import load_hermes_dotenv
+            load_hermes_dotenv(
+                hermes_home=_get_hermes_home(),
+                project_env=Path(__file__).resolve().parents[1] / ".env",
+            )
+        except Exception as env_exc:
+            logger.debug("Job '%s': dotenv load before delivery failed: %s", job["id"], env_exc)
+
         config = load_gateway_config()
     except Exception as e:
         msg = f"failed to load gateway config: {e}"
@@ -704,6 +745,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
+        target_card_metadata = card_metadata if platform_name.lower() == "feishu" else {}
+        target_delivery_content = content if target_card_metadata else wrapped_delivery_content
+        # Extract MEDIA: tags so attachments are forwarded as files, not raw text.
+        media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(target_delivery_content)
+        media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+
         pconfig = config.platforms.get(platform)
         if not pconfig or not pconfig.enabled:
             msg = f"platform '{platform_name}' not configured/enabled"
@@ -723,6 +770,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 adapter_ok = True
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
+                    send_metadata = {"thread_id": thread_id} if thread_id else {}
+                    if target_card_metadata:
+                        send_metadata.update(target_card_metadata)
+                    send_metadata = send_metadata or None
                     future = safe_schedule_threadsafe(
                         runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
                         loop,
@@ -779,7 +830,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            send_metadata = {}
+            if target_card_metadata:
+                send_metadata.update(target_card_metadata)
+            coro = _send_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                cleaned_delivery_content,
+                thread_id=thread_id,
+                media_files=media_files,
+                metadata=send_metadata or None,
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError:
@@ -789,7 +851,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # fresh thread that has no running loop.
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                    future = pool.submit(
+                        asyncio.run,
+                        _send_to_platform(
+                            platform,
+                            pconfig,
+                            chat_id,
+                            cleaned_delivery_content,
+                            thread_id=thread_id,
+                            media_files=media_files,
+                            metadata=send_metadata or None,
+                        ),
+                    )
                     result = future.result(timeout=30)
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"

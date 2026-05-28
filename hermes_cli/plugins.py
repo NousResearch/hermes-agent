@@ -284,13 +284,118 @@ class LoadedPlugin:
 # PluginContext  – handed to each plugin's ``register()`` function
 # ---------------------------------------------------------------------------
 
-class PluginContext:
-    """Facade given to plugins so they can register tools and hooks."""
+class RestrictedPluginContext:
+    """Restricted facade handed to user-sourced plugins.
+
+    User plugins (those with ``manifest.source == "user"``) are untrusted
+    code dropped into ``~/.hermes/plugins/`` and therefore receive a
+    context that:
+
+    * Returns ``None`` from the ``llm`` property — no LLM facade access.
+    * Raises ``NotImplementedError`` on ``dispatch_tool`` — prevents
+      plugins from calling tools with arbitrary arguments through the
+      registry.
+    * Exposes only: ``register_tool``, ``inject_message``,
+      ``register_cli_command``, and ``register_command``.
+
+    All provider-registration methods (``register_context_engine``,
+    ``register_image_gen_provider``, etc.) are omitted from this class
+    so they cannot be called at all.
+    """
+
+    __slots__ = ("manifest", "_manager")
 
     def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
         self.manifest = manifest
         self._manager = manager
-        # Lazy-built host-owned LLM facade — see ctx.llm property below.
+
+    @property
+    def llm(self) -> None:
+        return None
+
+    def register_tool(
+        self,
+        name: str,
+        toolset: str,
+        schema: dict,
+        handler: Callable,
+        check_fn: Callable | None = None,
+        requires_env: list | None = None,
+        is_async: bool = False,
+        description: str = "",
+        emoji: str = "",
+        override: bool = False,
+    ) -> None:
+        from tools.registry import registry
+
+        registry.register(
+            name=name,
+            toolset=toolset,
+            schema=schema,
+            handler=handler,
+            check_fn=check_fn,
+            requires_env=requires_env,
+            is_async=is_async,
+            description=description,
+            emoji=emoji,
+            override=override,
+        )
+        self._manager._plugin_tool_names.add(name)
+
+    def inject_message(self, content: str, role: str = "user") -> bool:
+        cli = self._manager._cli_ref
+        if cli is None:
+            return False
+
+        msg = content if role == "user" else f"[{role}] {content}"
+
+        if getattr(cli, "_agent_running", False):
+            cli._interrupt_queue.put(msg)
+        else:
+            cli._pending_input.put(msg)
+        return True
+
+    def register_cli_command(
+        self,
+        name: str,
+        help: str,
+        setup_fn: Callable,
+        handler_fn: Callable | None = None,
+        description: str = "",
+    ) -> None:
+        self._manager._cli_commands[name] = {
+            "name": name,
+            "help": help,
+            "description": description,
+            "setup_fn": setup_fn,
+            "handler_fn": handler_fn,
+            "plugin": self.manifest.name,
+        }
+
+    def register_command(
+        self,
+        name: str,
+        handler: Callable,
+        description: str = "",
+        args_hint: str = "",
+    ) -> None:
+        clean = name.lower().strip().lstrip("/").replace(" ", "-")
+        if not clean:
+            return
+        self._manager._plugin_commands[clean] = {
+            "handler": handler,
+            "description": description or "Plugin command",
+            "plugin": self.manifest.name,
+            "args_hint": (args_hint or "").strip(),
+        }
+
+
+class PluginContext:
+    """Facade given to bundled plugins so they can register tools and hooks."""
+
+    def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
+        self.manifest = manifest
+        self._manager = manager
         self._llm: Any = None
 
     # -- host-owned LLM access ----------------------------------------------
@@ -1425,7 +1530,10 @@ class PluginManager:
                 loaded.error = "no register() function"
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
             else:
-                ctx = PluginContext(manifest, self)
+                if manifest.source == "user":
+                    ctx = RestrictedPluginContext(manifest, self)
+                else:
+                    ctx = PluginContext(manifest, self)
                 register_fn(ctx)
                 loaded.tools_registered = [
                     t for t in self._plugin_tool_names

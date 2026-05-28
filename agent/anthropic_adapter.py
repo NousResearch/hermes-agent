@@ -318,9 +318,10 @@ _MCP_TOOL_PREFIX = "mcp_"
 
 # OAuth surface budget constants.  The Anthropic OAuth billing classifier
 # routes requests to "extra usage" when the tool-schema JSON exceeds ~30 KB
-# or the system prompt exceeds ~4 KB.  The caps below are set conservatively
-# below the empirical thresholds to stay first-party.
-_OAUTH_TOOL_SCHEMA_BUDGET_BYTES = 30_000
+# or the system prompt exceeds ~4 KB.  Per-tool json.dumps doesn't include
+# array-level overhead (brackets, commas), so the tool budget is set below
+# the empirical threshold to provide margin.
+_OAUTH_TOOL_SCHEMA_BUDGET_BYTES = 25_000  # ~5 KB margin below ~30 KB threshold
 _OAUTH_SYSTEM_PROMPT_CAP_CHARS = 2_000  # well under the ~4 KB threshold
 
 
@@ -2096,7 +2097,9 @@ def build_anthropic_kwargs(
     (see parse_available_output_tokens_from_error + _ephemeral_max_output_tokens).
 
     When *is_oauth* is True, applies Claude Code compatibility transforms:
-    system prompt prefix, OAuth-safe tool-name rewriting, and prompt sanitization.
+    system prompt prefix, brand sanitization, delegate-only tool filtering,
+    mcp_ prefix stripping (outbound), message-history rewriting,
+    tool-schema budget enforcement, and system prompt capping.
 
     When *preserve_dots* is True, model name dots are not converted to hyphens
     (for Alibaba/DashScope anthropic-compatible endpoints: qwen3.5-plus).
@@ -2263,11 +2266,15 @@ def build_anthropic_kwargs(
                 if len(system) > 1 and isinstance(system[1], dict):
                     _original_text = system[1].get("text", "")
                     if len(_original_text) > _remaining:
+                        _is_full_tools = _delegate_only not in ("1", "true", "yes")
                         logger.warning(
                             "OAuth system prompt truncated from %d to %d chars "
-                            "(dropped %d chars of operator instructions)",
+                            "(dropped %d chars of operator instructions)%s",
                             len(_original_text), _remaining,
                             len(_original_text) - _remaining,
+                            " — WARNING: full tool set is exposed with "
+                            "truncated system prompt (HERMES_OAUTH_DELEGATE_ONLY"
+                            " is off)" if _is_full_tools else "",
                         )
                         system[1]["text"] = _original_text[:_remaining]
                 # Drop any blocks beyond the second

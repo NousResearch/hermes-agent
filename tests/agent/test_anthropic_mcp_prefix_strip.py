@@ -349,13 +349,22 @@ class TestAnthropicOAuthOutgoingPrefix:
             ],
         )
         assert "system" in kwargs
+        # Identity block must be preserved as first block
+        from agent.anthropic_adapter import (
+            _CLAUDE_CODE_SYSTEM_PREFIX,
+            _OAUTH_SYSTEM_PROMPT_CAP_CHARS,
+        )
+        assert kwargs["system"][0]["text"] == _CLAUDE_CODE_SYSTEM_PREFIX
+        # Total must be under cap
         total = sum(
             len(b.get("text", ""))
             for b in kwargs["system"]
             if isinstance(b, dict) and b.get("type") == "text"
         )
-        from agent.anthropic_adapter import _OAUTH_SYSTEM_PROMPT_CAP_CHARS
         assert total <= _OAUTH_SYSTEM_PROMPT_CAP_CHARS
+        # Second block should be truncated, not empty
+        assert len(kwargs["system"]) >= 2
+        assert len(kwargs["system"][1]["text"]) < len(long_system)
 
     # -- Message history sanitization ----------------------------------------
 

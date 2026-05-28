@@ -312,6 +312,105 @@ class GatewaySlashCommandsMixin:
         import shlex
         from hermes_cli.kanban import run_slash
 
+        def _bound_kanban_task_for_source(
+            source,
+            *,
+            board: str | None = None,
+        ) -> tuple[str | None, str] | None:
+            platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", ""))
+            platform_str = str(platform or "").lower()
+            chat_id = str(getattr(source, "chat_id", "") or "")
+            thread_id = str(getattr(source, "thread_id", "") or "")
+            # Lifecycle shorthand is intentionally thread-scoped. Whole-channel
+            # subscriptions can receive events, but inferring `/kanban block ...`
+            # there is too easy to trigger accidentally in a busy channel.
+            if not platform_str or not chat_id or not thread_id:
+                return None
+            try:
+                from hermes_cli import kanban_db as _kb
+
+                if board:
+                    if not _kb.board_exists(board):
+                        return None
+                    boards = [board]
+                else:
+                    boards = [
+                        str(meta.get("slug") or "")
+                        for meta in _kb.list_boards(include_archived=False)
+                        if meta.get("slug")
+                    ]
+                candidates: set[tuple[str | None, str]] = set()
+                for candidate_board in boards:
+                    conn = _kb.connect(board=candidate_board)
+                    try:
+                        matches = [
+                            row
+                            for row in _kb.list_notify_subs(conn)
+                            if str(row.get("platform") or "").lower() == platform_str
+                            and str(row.get("chat_id") or "") == chat_id
+                            and str(row.get("thread_id") or "") == thread_id
+                        ]
+                        candidates.update(
+                            (candidate_board, str(row.get("task_id") or ""))
+                            for row in matches
+                            if row.get("task_id")
+                        )
+                    finally:
+                        conn.close()
+                return sorted(candidates)[0] if len(candidates) == 1 else None
+            except Exception as exc:  # pragma: no cover - shorthand inference is best-effort
+                logger.debug("kanban bound-task lookup failed: %s", exc)
+                return None
+
+        def _inject_bound_task_for_lifecycle_shorthand(tokens: list[str], source, *, board: str | None = None) -> list[str]:
+            if not tokens:
+                return tokens
+            action_idx = None
+            idx = 0
+            while idx < len(tokens):
+                tok = tokens[idx]
+                if tok == "--board":
+                    idx += 2
+                    continue
+                if tok.startswith("--board="):
+                    idx += 1
+                    continue
+                action_idx = idx
+                break
+            if action_idx is None:
+                return tokens
+
+            action = tokens[action_idx]
+            if action not in {"block", "done", "complete"}:
+                return tokens
+            remainder = tokens[action_idx + 1:]
+            if any(tok.startswith("t_") for tok in remainder):
+                return tokens
+
+            bound = _bound_kanban_task_for_source(source, board=board)
+            if not bound:
+                return tokens
+            bound_board, task_id = bound
+
+            new_tokens = list(tokens)
+            if board is None and bound_board:
+                new_tokens[action_idx:action_idx] = ["--board", bound_board]
+                action_idx += 2
+            if action == "block":
+                new_tokens[action_idx + 1:action_idx + 1] = [task_id]
+                return new_tokens
+
+            # In chat, `/kanban done <words...>` means complete the bound task
+            # with those words as the result summary, not extra task ids. If the
+            # user supplied explicit `complete --result ...` style flags, insert
+            # only the task id and preserve the flags for argparse to handle.
+            new_tokens[action_idx] = "complete"
+            if not remainder or remainder[0].startswith("--"):
+                new_tokens[action_idx + 1:action_idx + 1] = [task_id]
+                return new_tokens
+            new_tokens[action_idx + 1:] = [task_id, "--result", " ".join(remainder)]
+            return new_tokens
+
         text = (event.text or "").strip()
         # Strip the leading "/kanban" (with or without slash), leaving args.
         if text.startswith("/"):
@@ -339,6 +438,16 @@ class GatewaySlashCommandsMixin:
             break
 
         is_create = action == "create"
+
+        if not is_create:
+            inferred_tokens = _inject_bound_task_for_lifecycle_shorthand(
+                tokens,
+                event.source,
+                board=requested_board,
+            )
+            if inferred_tokens != tokens:
+                text = shlex.join(inferred_tokens)
+                tokens = inferred_tokens
 
         try:
             output = await asyncio.to_thread(run_slash, text)

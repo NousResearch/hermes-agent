@@ -109,6 +109,94 @@ def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     assert "53 51 4c 69 74 17 03 03 00 13" in msg
 
 
+def test_connect_migrates_legacy_notify_sub_cursor_column(tmp_path):
+    """Legacy notification-subscription tables must gain last_event_id.
+
+    The gateway notifier relies on ``kanban_notify_subs.last_event_id`` as its
+    delivery cursor. Legacy board DBs that predate the cursor column should be
+    migrated on connect before any notifier/listing path tries to read or
+    advance it; otherwise a restored board can look healthy while notification
+    replay/repair crashes later with ``no such column: last_event_id``.
+    """
+    db_path = tmp_path / "legacy-notify.db"
+    conn = sqlite3.connect(str(db_path))
+    # Pre-notifier-cursor schema, but otherwise complete enough that the
+    # migration reaches kanban_notify_subs instead of failing on older task
+    # column/index assumptions first.
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE kanban_notify_subs (
+            task_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL DEFAULT '',
+            user_id TEXT,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (task_id, platform, chat_id, thread_id)
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) VALUES (?, ?, ?, ?)",
+        ("t_legacy", "legacy notify task", "ready", 123),
+    )
+    conn.execute(
+        "INSERT INTO kanban_notify_subs "
+        "(task_id, platform, chat_id, thread_id, user_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("t_legacy", "discord", "chat-1", "thread-1", "user-1", 124),
+    )
+    conn.commit()
+    conn.close()
+
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect(db_path=db_path) as migrated:
+        notify_cols = {
+            row["name"] for row in migrated.execute("PRAGMA table_info(kanban_notify_subs)")
+        }
+        assert "last_event_id" in notify_cols
+        assert "notifier_profile" in notify_cols
+        subs = kb.list_notify_subs(migrated, "t_legacy")
+
+    assert subs == [
+        {
+            "task_id": "t_legacy",
+            "platform": "discord",
+            "chat_id": "chat-1",
+            "thread_id": "thread-1",
+            "user_id": "user-1",
+            "notifier_profile": None,
+            "created_at": 124,
+            "last_event_id": 0,
+        }
+    ]
+
+
 def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     """Legacy DBs missing additive indexed columns must migrate cleanly.
 

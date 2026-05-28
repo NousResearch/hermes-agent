@@ -229,6 +229,60 @@ def _discord_tools_loaded() -> bool:
         return False
 
 
+def _bound_kanban_task_for_source(source: SessionSource):
+    """Return the single Kanban task subscribed to this gateway source, if any.
+
+    Kanban thread ownership is represented by ``kanban_notify_subs`` rows. The
+    session prompt only pins a task when the source maps unambiguously to exactly
+    one task; ambiguous or missing bindings are ignored.
+    """
+    platform = getattr(source.platform, "value", str(source.platform or "")).lower()
+    chat_id = str(source.chat_id or "")
+    thread_id = str(source.thread_id or "")
+    # Prompt pinning is intentionally thread-scoped. Whole-channel
+    # subscriptions can receive notifications, but a shared busy channel should
+    # not silently become owned by one task.
+    if not platform or not chat_id or not thread_id:
+        return None
+
+    try:
+        from hermes_cli import kanban_db as kb
+
+        candidates: list[tuple[str, str]] = []
+        for meta in kb.list_boards(include_archived=False):
+            board = str(meta.get("slug") or "")
+            if not board:
+                continue
+            conn = kb.connect(board=board)
+            try:
+                matches = [
+                    row
+                    for row in kb.list_notify_subs(conn)
+                    if str(row.get("platform") or "").lower() == platform
+                    and str(row.get("chat_id") or "") == chat_id
+                    and str(row.get("thread_id") or "") == thread_id
+                ]
+                candidates.extend(
+                    (board, str(row.get("task_id") or ""))
+                    for row in matches
+                    if row.get("task_id")
+                )
+            finally:
+                conn.close()
+        unique_candidates = sorted(set(candidates))
+        if len(unique_candidates) != 1:
+            return None
+        board, task_id = unique_candidates[0]
+        conn = kb.connect(board=board)
+        try:
+            return kb.get_task(conn, task_id)
+        finally:
+            conn.close()
+    except Exception as exc:  # pragma: no cover - prompt enrichment is best-effort
+        logger.debug("kanban bound-task lookup failed for session context: %s", exc)
+        return None
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -314,6 +368,15 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
+
+    bound_task = _bound_kanban_task_for_source(context.source)
+    if bound_task is not None:
+        lines.append("")
+        lines.append(f"Kanban task: `{bound_task.id}`")
+        lines.append(f"Title: {bound_task.title}")
+        if bound_task.assignee:
+            lines.append(f"Assignee: `{bound_task.assignee}`")
+        lines.append(f"Status: `{bound_task.status}`")
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:

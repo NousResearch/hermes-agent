@@ -1187,12 +1187,38 @@ def is_linux() -> bool:
 from hermes_constants import is_container, is_termux, is_wsl
 
 
+def _systemd_runtime_marker_present() -> bool:
+    """Return True when systemd's ``/run/systemd/system`` marker exists.
+
+    The systemd FAQ documents this directory as the canonical
+    "booted with systemd" signal — systemd creates it during early
+    boot, so its presence is sufficient evidence that systemd is
+    PID 1 on this machine.
+    """
+    return Path("/run/systemd/system").is_dir()
+
+
 def _wsl_systemd_operational() -> bool:
     """Check if systemd is actually running as PID 1 on WSL.
 
     WSL2 with ``systemd=true`` in wsl.conf has working systemd.
     WSL2 without it (or WSL1) does not — systemctl commands fail.
+
+    Primary signal: ``_systemd_runtime_marker_present()`` — the
+    canonical "booted with systemd" marker per the systemd FAQ.
+    Trusting it avoids false negatives when ``systemctl
+    is-system-running`` transiently reports an unhealthy state
+    (e.g. ``offline``/``unknown`` before D-Bus is fully wired, or
+    transient bus access failures during the early seconds of a
+    WSL session) on a system where systemd is in fact PID 1.
+    See issue #18032.
+
+    Fallback to the runtime ``is-system-running`` probe only when
+    the marker directory is absent — preserves the existing
+    "systemctl can't find systemd at all" detection.
     """
+    if _systemd_runtime_marker_present():
+        return True
     return _systemd_operational(system=True)
 
 

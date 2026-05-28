@@ -94,6 +94,36 @@ def test_install_npm_works_without_extras(tmp_path, monkeypatch):
     assert install_targets == ["pyright"]
 
 
+@pytest.mark.parametrize(
+    ("installer_name", "args", "which_map"),
+    [
+        ("_install_npm", ("pyright", "pyright-langserver"), {"npm": "/usr/bin/npm"}),
+        ("_install_go", ("golang.org/x/tools/gopls@latest", "gopls"), {"go": "/usr/bin/go"}),
+        ("_install_pip", ("python-lsp-server", "pylsp"), {}),
+    ],
+)
+def test_installers_do_not_inherit_gateway_stdin(
+    tmp_path, monkeypatch, installer_name, args, which_map
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return MagicMock(returncode=0, stderr="")
+
+    from agent.lsp import install as install_mod
+
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda name: which_map.get(name))
+
+    getattr(install_mod, installer_name)(*args)
+
+    assert captured["kwargs"]["stdin"] is install_mod.subprocess.DEVNULL
+
+
 # ---------------------------------------------------------------------------
 # Fix 2: ``hermes lsp status`` surfaces shellcheck-missing for bash
 # ---------------------------------------------------------------------------

@@ -158,6 +158,34 @@ async def test_registers_native_restart_slash_command(adapter):
     )
 
 
+@pytest.mark.asyncio
+async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter):
+    class UnknownInteraction(Exception):
+        status = 404
+        code = 10062
+
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        guild_id=456,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+        response=SimpleNamespace(defer=AsyncMock(side_effect=UnknownInteraction("Unknown interaction"))),
+        edit_original_response=AsyncMock(),
+        delete_original_response=AsyncMock(),
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._run_simple_slash(interaction, "/reset", "Session reset~")
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "/reset"
+    assert event.source.chat_id == "123"
+    interaction.edit_original_response.assert_not_awaited()
+    interaction.delete_original_response.assert_not_awaited()
+
+
 # ------------------------------------------------------------------
 # Auto-registration from COMMAND_REGISTRY
 # ------------------------------------------------------------------
@@ -1117,4 +1145,3 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
-

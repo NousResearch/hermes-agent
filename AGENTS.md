@@ -1130,3 +1130,18 @@ not the specific names.
 
 Reviewers should reject new change-detector tests; authors should convert
 them into invariants before re-requesting review.
+
+## Coding Agent Fallback Cascade (mandatory)
+
+When delegating coding work through an external agent CLI and it fails, follow
+this cascade — never retry the same broken tool:
+
+1. **OpenCode** fails (`Error: Invalid API key.`, dead credentials) → try Codex
+2. **Codex** fails (`stdin is not a terminal`, PTY timeout) → try Claude Code
+3. **Claude Code** fails (auth expired, rate limited, budget exceeded) → Hermes
+   direct (`read_file` + `write_file`/`patch` + `git` via terminal)
+4. **Hermes direct** → always works, no external CLI needed
+
+Auth-check before attempting: `opencode auth list`, `codex --version`,
+`claude auth status`. If credentials are dead, skip that tier entirely.
+Do not burn time or tokens retrying a guaranteed failure.

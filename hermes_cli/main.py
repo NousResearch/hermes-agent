@@ -11033,14 +11033,25 @@ def _try_termux_fast_cli_launch() -> bool:
         _prepare_agent_startup(args)
         from hermes_cli.oneshot import run_oneshot
 
-        sys.exit(
-            run_oneshot(
-                args.oneshot,
-                model=getattr(args, "model", None),
-                provider=getattr(args, "provider", None),
-                toolsets=getattr(args, "toolsets", None),
-            )
+        rc = run_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
         )
+        # Bypass Python interpreter finalizers. Native daemon threads from
+        # transitively-loaded extensions (aiohttp connectors, observability
+        # clients, etc.) can SIGABRT during finalize even after a clean
+        # run, surfacing to callers as exit code -6 / 134. That breaks any
+        # subprocess wrapper around `hermes -z` (MCP servers, cron jobs,
+        # CI). Oneshot has no interactive state to flush — SessionDB writes
+        # are synchronous — so os._exit() is safe and preserves rc.
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(rc if isinstance(rc, int) else 0)
 
     if (args.resume or args.continue_last) and args.command is None:
         args.command = "chat"
@@ -14055,14 +14066,25 @@ Examples:
     if getattr(args, "oneshot", None):
         from hermes_cli.oneshot import run_oneshot
 
-        sys.exit(
-            run_oneshot(
-                args.oneshot,
-                model=getattr(args, "model", None),
-                provider=getattr(args, "provider", None),
-                toolsets=getattr(args, "toolsets", None),
-            )
+        rc = run_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
         )
+        # Bypass Python interpreter finalizers. Native daemon threads from
+        # transitively-loaded extensions (aiohttp connectors, observability
+        # clients, etc.) can SIGABRT during finalize even after a clean
+        # run, surfacing to callers as exit code -6 / 134. That breaks any
+        # subprocess wrapper around `hermes -z` (MCP servers, cron jobs,
+        # CI). Oneshot has no interactive state to flush — SessionDB writes
+        # are synchronous — so os._exit() is safe and preserves rc.
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(rc if isinstance(rc, int) else 0)
 
     # Handle top-level --resume / --continue as shortcut to chat
     if (args.resume or args.continue_last) and args.command is None:

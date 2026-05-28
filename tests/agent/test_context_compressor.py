@@ -352,6 +352,33 @@ class TestSummaryFallbackToMainModel:
         assert c._last_aux_model_failure_error is not None
         assert "400" in c._last_aux_model_failure_error
 
+    def test_aux_model_fallback_error_is_redacted_before_storage(self):
+        """Stored aux fallback details feed user-visible gateway/CLI notices."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+        raw_token = "sk-abcdefghijklmnopqrstuvwxyz1234567890"
+        err = Exception(
+            f"400 Bad Request: Authorization: Bearer {raw_token}; api_key={raw_token}"
+        )
+        err.status_code = 400
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override=f"broken-aux-model-{raw_token}",
+                quiet_mode=True,
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, mock_ok]):
+            result = c._generate_summary(self._msgs())
+
+        assert result is not None
+        assert c._last_aux_model_failure_error is not None
+        assert raw_token not in c._last_aux_model_failure_error
+        assert raw_token not in c._last_aux_model_failure_model
+        assert "Authorization: Bearer" in c._last_aux_model_failure_error
+
     def test_no_fallback_when_summary_model_equals_main_model(self):
         """If the aux model IS the main model, there's nowhere to fall back
         to — go straight to cooldown, don't loop retrying the same call."""

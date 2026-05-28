@@ -1452,13 +1452,14 @@ class SessionDB:
 
     # Sentinel prefix used to distinguish JSON-encoded structured content
     # (multimodal messages: lists of parts like text + image_url) from plain
-    # string content. The NUL byte is not legal in normal text, so this
-    # cannot collide with real user content.
+    # string content. User-controlled strings can contain NUL bytes via JSON
+    # escapes, so strings beginning with the reserved prefix are escaped on
+    # write to keep the encoding injective.
     _CONTENT_JSON_PREFIX = "\x00json:"
 
     @classmethod
     def _encode_content(cls, content: Any) -> Any:
-        """Serialize structured (list/dict) message content for sqlite.
+        """Serialize message content for sqlite.
 
         sqlite3 can only bind ``str``, ``bytes``, ``int``, ``float``, and ``None``
         to query parameters. Multimodal messages have ``content`` as a list of
@@ -1466,11 +1467,16 @@ class SessionDB:
         raises ``ProgrammingError: Error binding parameter N: type 'list' is
         not supported`` when bound directly.
 
-        Returns the value unchanged when it's already a safe scalar, or a
-        sentinel-prefixed JSON string for lists/dicts. Paired with
-        :meth:`_decode_content` on read.
+        Returns the value unchanged when it's already a safe scalar, except for
+        strings that begin with the reserved sentinel. Sentinel-prefixed strings
+        are JSON-wrapped so they round-trip as strings instead of being
+        reinterpreted as structured multimodal content on replay. Lists/dicts
+        are stored as sentinel-prefixed JSON. Paired with :meth:`_decode_content`
+        on read.
         """
-        if content is None or isinstance(content, (str, bytes, int, float)):
+        if content is None or isinstance(content, (bytes, int, float)):
+            return content
+        if isinstance(content, str) and not content.startswith(cls._CONTENT_JSON_PREFIX):
             return content
         try:
             return cls._CONTENT_JSON_PREFIX + json.dumps(content)

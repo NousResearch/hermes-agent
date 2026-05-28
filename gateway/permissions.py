@@ -18,6 +18,20 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway
 from gateway.session import SessionSource
 
 
+_TELEGRAM_ENV_BACKED_EXTRA_KEYS = frozenset(
+    {
+        "allow_from",
+        "group_allow_from",
+        "allowed_chats",
+        "group_allowed_chats",
+        "allowed_topics",
+        "free_response_chats",
+        "mention_patterns",
+        "allow_all_users",
+    }
+)
+
+
 def _string_set(raw: Any) -> frozenset[str]:
     """Normalize list/tuple/set/CSV/single values to a frozenset of strings."""
     if raw is None:
@@ -55,6 +69,44 @@ def _extra_or_env_set(extra: Mapping[str, Any], key: str, env_name: str) -> froz
 def _extra_or_env_value(extra: Mapping[str, Any], key: str, env_name: str) -> Any:
     if key in extra:
         return extra.get(key)
+    return os.getenv(env_name)
+
+
+def _extra_or_env_set_for_reload(
+    extra: Mapping[str, Any],
+    previous_extra: Mapping[str, Any],
+    key: str,
+    env_name: str,
+    *,
+    ignore_env: bool = False,
+) -> frozenset[str]:
+    """Use YAML removal as removal, not as a stale bridged env fallback.
+
+    ``load_gateway_config`` bridges YAML values into ``os.environ`` for legacy
+    callers. If a previous snapshot saw a YAML key and the next snapshot no
+    longer sees it, the process env may still contain the old bridged value.
+    Treat that transition as an explicit removal. Genuine env-only deployments
+    keep working because previous snapshots also lacked the YAML key.
+    """
+    if key in extra:
+        return _string_set(extra.get(key))
+    if ignore_env or key in previous_extra:
+        return frozenset()
+    return _string_set(os.getenv(env_name))
+
+
+def _extra_or_env_value_for_reload(
+    extra: Mapping[str, Any],
+    previous_extra: Mapping[str, Any],
+    key: str,
+    env_name: str,
+    *,
+    ignore_env: bool = False,
+) -> Any:
+    if key in extra:
+        return extra.get(key)
+    if ignore_env or key in previous_extra:
+        return None
     return os.getenv(env_name)
 
 
@@ -161,6 +213,7 @@ class PermissionManager:
         self._config_loader = config_loader
         self._pairing_store = pairing_store
         self._snapshot: PermissionSnapshot | None = None
+        self._ignored_env_keys: set[tuple[Platform, str]] = set()
         self._version = 0
 
     @property
@@ -187,7 +240,22 @@ class PermissionManager:
 
     def commit(self, snapshot: PermissionSnapshot) -> None:
         """Make a previously validated snapshot active."""
+        self._update_ignored_env_keys(snapshot)
         self._snapshot = snapshot
+
+    def _update_ignored_env_keys(self, snapshot: PermissionSnapshot) -> None:
+        previous_platforms = self._snapshot.platforms if self._snapshot else {}
+        for platform, current in snapshot.platforms.items():
+            previous = previous_platforms.get(platform)
+            if platform != Platform.TELEGRAM:
+                continue
+            previous_extra = previous.extra if previous is not None else {}
+            for key in _TELEGRAM_ENV_BACKED_EXTRA_KEYS:
+                marker = (platform, key)
+                if key in current.extra:
+                    self._ignored_env_keys.discard(marker)
+                elif key in previous_extra:
+                    self._ignored_env_keys.add(marker)
 
     def authorize(self, source: SessionSource) -> AuthDecision:
         """Return an authorization decision for source using the active snapshot."""
@@ -216,6 +284,9 @@ class PermissionManager:
             return AuthDecision(True, "bot_allowed", platform, user_id, chat_id)
 
         if user_id in platform_snapshot.approved_users:
+            if self._is_approved_live(platform, user_id):
+                return AuthDecision(True, "approved_user", platform, user_id, chat_id)
+        elif self._is_approved_live(platform, user_id):
             return AuthDecision(True, "approved_user", platform, user_id, chat_id)
 
         if source.chat_type in {"group", "forum"}:
@@ -268,34 +339,105 @@ class PermissionManager:
             raise ValueError(f"failed to load approved users for {platform.value}: {exc}") from exc
         return frozenset(str(row.get("user_id", "")).strip() for row in rows if str(row.get("user_id", "")).strip())
 
+    def _is_approved_live(self, platform: Platform, user_id: str) -> bool:
+        """Check pairing approval live so approve/revoke does not go stale."""
+        if self._pairing_store is None:
+            return False
+        try:
+            return bool(self._pairing_store.is_approved(platform.value, user_id))
+        except AttributeError:
+            current = self._snapshot.platforms.get(platform) if self._snapshot else None
+            return bool(current and user_id in current.approved_users)
+        except Exception:
+            return False
+
+    def _previous_platform_extra(self, platform: Platform) -> Mapping[str, Any]:
+        if self._snapshot is None:
+            return {}
+        previous = self._snapshot.platforms.get(platform)
+        if previous is None:
+            return {}
+        return previous.extra
+
+    def _ignore_env_for_key(self, platform: Platform, key: str) -> bool:
+        return (platform, key) in self._ignored_env_keys
+
     def _telegram_snapshot(
         self,
         extra: dict[str, Any],
         approved_users: frozenset[str],
     ) -> PlatformPermissionSnapshot:
-        group_allowed_users = _extra_or_env_set(
-            extra, "group_allow_from", "TELEGRAM_GROUP_ALLOWED_USERS"
+        previous_extra = self._previous_platform_extra(Platform.TELEGRAM)
+        group_allowed_users = _extra_or_env_set_for_reload(
+            extra,
+            previous_extra,
+            "group_allow_from",
+            "TELEGRAM_GROUP_ALLOWED_USERS",
+            ignore_env=self._ignore_env_for_key(Platform.TELEGRAM, "group_allow_from"),
         )
         return PlatformPermissionSnapshot(
             platform=Platform.TELEGRAM,
             approved_users=approved_users,
             allowed_users=(
-                _extra_or_env_set(extra, "allow_from", "TELEGRAM_ALLOWED_USERS")
+                _extra_or_env_set_for_reload(
+                    extra,
+                    previous_extra,
+                    "allow_from",
+                    "TELEGRAM_ALLOWED_USERS",
+                    ignore_env=self._ignore_env_for_key(Platform.TELEGRAM, "allow_from"),
+                )
                 | _string_set(os.getenv("GATEWAY_ALLOWED_USERS"))
             ),
             group_allowed_users=group_allowed_users,
-            allowed_chats=_extra_or_env_set(extra, "allowed_chats", "TELEGRAM_ALLOWED_CHATS"),
+            allowed_chats=_extra_or_env_set_for_reload(
+                extra,
+                previous_extra,
+                "allowed_chats",
+                "TELEGRAM_ALLOWED_CHATS",
+                ignore_env=self._ignore_env_for_key(Platform.TELEGRAM, "allowed_chats"),
+            ),
             group_allowed_chats=(
-                _extra_or_env_set(extra, "group_allowed_chats", "TELEGRAM_GROUP_ALLOWED_CHATS")
+                _extra_or_env_set_for_reload(
+                    extra,
+                    previous_extra,
+                    "group_allowed_chats",
+                    "TELEGRAM_GROUP_ALLOWED_CHATS",
+                    ignore_env=self._ignore_env_for_key(Platform.TELEGRAM, "group_allowed_chats"),
+                )
                 | frozenset(value for value in group_allowed_users if value.startswith("-"))
             ),
-            allowed_topics=_extra_or_env_set(extra, "allowed_topics", "TELEGRAM_ALLOWED_TOPICS"),
-            free_response_chats=_extra_or_env_set(
-                extra, "free_response_chats", "TELEGRAM_FREE_RESPONSE_CHATS"
+            allowed_topics=_extra_or_env_set_for_reload(
+                extra,
+                previous_extra,
+                "allowed_topics",
+                "TELEGRAM_ALLOWED_TOPICS",
+                ignore_env=self._ignore_env_for_key(Platform.TELEGRAM, "allowed_topics"),
             ),
-            mention_patterns=_extra_or_env_value(extra, "mention_patterns", "TELEGRAM_MENTION_PATTERNS"),
+            free_response_chats=_extra_or_env_set_for_reload(
+                extra,
+                previous_extra,
+                "free_response_chats",
+                "TELEGRAM_FREE_RESPONSE_CHATS",
+                ignore_env=self._ignore_env_for_key(Platform.TELEGRAM, "free_response_chats"),
+            ),
+            mention_patterns=_extra_or_env_value_for_reload(
+                extra,
+                previous_extra,
+                "mention_patterns",
+                "TELEGRAM_MENTION_PATTERNS",
+                ignore_env=self._ignore_env_for_key(Platform.TELEGRAM, "mention_patterns"),
+            ),
             allow_all=(
-                _bool_value(_extra_or_env_value(extra, "allow_all_users", "TELEGRAM_ALLOW_ALL_USERS"), False)
+                _bool_value(
+                    _extra_or_env_value_for_reload(
+                        extra,
+                        previous_extra,
+                        "allow_all_users",
+                        "TELEGRAM_ALLOW_ALL_USERS",
+                        ignore_env=self._ignore_env_for_key(Platform.TELEGRAM, "allow_all_users"),
+                    ),
+                    False,
+                )
                 or _bool_value(os.getenv("GATEWAY_ALLOW_ALL_USERS"), False)
             ),
             allow_bots=_bool_value(extra.get("allow_bots"), False),

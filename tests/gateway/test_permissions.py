@@ -24,6 +24,8 @@ def _clear_telegram_permission_env(monkeypatch):
         "TELEGRAM_FREE_RESPONSE_CHATS",
         "TELEGRAM_MENTION_PATTERNS",
         "TELEGRAM_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -42,6 +44,11 @@ class _PairingStore:
                 for user_id, info in self.approved.get(platform, {}).items()
             ]
         return []
+
+    def is_approved(self, platform, user_id):
+        if self.fail:
+            raise ValueError("invalid approved users json")
+        return str(user_id) in self.approved.get(platform, {})
 
 
 def _config(extra=None):
@@ -154,6 +161,60 @@ def test_permission_manager_uses_explicit_empty_config_over_stale_env(monkeypatc
     assert manager.reload().ok is True
     telegram = manager.snapshot.platforms[Platform.TELEGRAM]
     assert "42" not in telegram.allowed_users
+
+
+def test_permission_reload_treats_removed_yaml_key_as_revocation(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
+    configs = iter([_config({"allow_from": ["42"]}), _config({}), _config({})])
+    manager = PermissionManager(config_loader=lambda: next(configs), pairing_store=_PairingStore())
+
+    assert manager.reload().ok is True
+    assert "42" in manager.snapshot.platforms[Platform.TELEGRAM].allowed_users
+
+    assert manager.reload().ok is True
+    assert "42" not in manager.snapshot.platforms[Platform.TELEGRAM].allowed_users
+
+    assert manager.reload().ok is True
+    telegram = manager.snapshot.platforms[Platform.TELEGRAM]
+    assert "42" not in telegram.allowed_users
+
+
+def test_permission_reload_allows_readding_removed_yaml_key(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
+    configs = iter([_config({"allow_from": ["42"]}), _config({}), _config({"allow_from": ["99"]})])
+    manager = PermissionManager(config_loader=lambda: next(configs), pairing_store=_PairingStore())
+
+    assert manager.reload().ok is True
+    assert manager.reload().ok is True
+    assert manager.reload().ok is True
+    telegram = manager.snapshot.platforms[Platform.TELEGRAM]
+    assert telegram.allowed_users == frozenset({"99"})
+
+
+def test_permission_manager_keeps_env_only_allowlist_on_reload(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
+    manager = PermissionManager(config_loader=lambda: _config({}), pairing_store=_PairingStore())
+
+    assert manager.reload().ok is True
+    assert manager.reload().ok is True
+    telegram = manager.snapshot.platforms[Platform.TELEGRAM]
+    assert "42" in telegram.allowed_users
+
+
+def test_permission_manager_uses_live_pairing_for_grant_and_revoke():
+    pairing = _PairingStore({"telegram": {"42": {}}})
+    manager = PermissionManager(config_loader=lambda: _config(), pairing_store=pairing)
+    manager.reload()
+
+    source = SessionSource(platform=Platform.TELEGRAM, user_id="42", chat_id="42", chat_type="dm")
+    assert manager.authorize(source).allowed is True
+
+    pairing.approved["telegram"].pop("42")
+    assert manager.authorize(source).allowed is False
+
+    pairing.approved["telegram"]["99"] = {}
+    new_source = SessionSource(platform=Platform.TELEGRAM, user_id="99", chat_id="99", chat_type="dm")
+    assert manager.authorize(new_source).allowed is True
 
 
 def test_permission_manager_rejects_invalid_mention_regex_and_keeps_old_snapshot():

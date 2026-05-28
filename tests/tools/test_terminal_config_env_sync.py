@@ -224,3 +224,23 @@ def test_docker_env_is_bridged_everywhere():
     assert "docker_env" in _gateway_env_map_keys()
     assert "docker_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()
+
+
+def test_docker_persist_across_processes_is_bridged_everywhere():
+    """Regression pin for the cross-process container reuse toggle.
+
+    ``terminal.docker_persist_across_processes`` (issue #20561) controls
+    whether ``DockerEnvironment.__init__`` probes for and reuses an existing
+    labeled container at startup, and whether ``cleanup()`` removes the
+    container on Hermes exit or just stops it (keeping it for the next
+    process).  Same four-bridge invariant as docker_run_as_host_user /
+    docker_env / docker_mount_cwd_to_workspace — drift between any of the
+    four sites means ``terminal.docker_persist_across_processes: false`` in
+    config.yaml silently does nothing for that entry point, leaving the
+    user unable to opt out of the documented "ONE long-lived container
+    shared across sessions" behavior.
+    """
+    assert "docker_persist_across_processes" in _cli_env_map_keys()
+    assert "docker_persist_across_processes" in _gateway_env_map_keys()
+    assert "docker_persist_across_processes" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES" in _terminal_tool_env_var_names()

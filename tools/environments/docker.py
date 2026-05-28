@@ -339,11 +339,13 @@ class DockerEnvironment(BaseEnvironment):
         auto_mount_cwd: bool = False,
         run_as_host_user: bool = False,
         extra_args: list = None,
+        persist_across_processes: bool = True,
     ):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = persistent_filesystem
+        self._persist_across_processes = persist_across_processes
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
@@ -561,26 +563,69 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
         }
-        run_cmd = [
-            self._docker_exe, "run", "-d",
-            "--init",           # tini/catatonit as PID 1 — reaps zombie children
-            "--name", container_name,
-            *label_args,
-            "-w", cwd,
-            *all_run_args,
-            image,
-            "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
-        ]
-        logger.debug(f"Starting container: {' '.join(run_cmd)}")
-        result = subprocess.run(
-            run_cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,  # image pull may take a while
-            check=True,
-        )
-        self._container_id = result.stdout.strip()
-        logger.info(f"Started container {container_name} ({self._container_id[:12]})")
+
+        # Cross-process reuse (issue #20561 — docs claim "ONE long-lived
+        # container shared across sessions").  If a prior Hermes process
+        # already started a container for this (task_id, profile) and it
+        # still exists, attach to it instead of starting a fresh one.  This
+        # restores the documented contract; opt out via
+        # ``terminal.docker_persist_across_processes: false``.
+        #
+        # Reuse matches on labels only — we deliberately do NOT compare image
+        # / mounts / resources.  Operators who need a fresh container after
+        # changing those settings should set ``docker_persist_across_processes:
+        # false`` (or run ``docker rm -f`` against the labeled container) to
+        # force a clean start.
+        reused = False
+        if persist_across_processes:
+            existing = self._find_reusable_container(task_label, profile_name)
+            if existing is not None:
+                container_id, state = existing
+                self._container_id = container_id
+                if state != "running":
+                    try:
+                        subprocess.run(
+                            [self._docker_exe, "start", container_id],
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                            check=True,
+                        )
+                    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                        logger.warning(
+                            "Failed to start existing container %s (state=%s): "
+                            "%s — falling back to a fresh container.",
+                            container_id[:12], state, e,
+                        )
+                        self._container_id = None
+                if self._container_id:
+                    logger.info(
+                        "Reusing container %s (task=%s, profile=%s, prior state=%s)",
+                        container_id[:12], task_label, profile_name, state,
+                    )
+                    reused = True
+
+        if not reused:
+            run_cmd = [
+                self._docker_exe, "run", "-d",
+                "--init",           # tini/catatonit as PID 1 — reaps zombie children
+                "--name", container_name,
+                *label_args,
+                "-w", cwd,
+                *all_run_args,
+                image,
+                "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
+            ]
+            logger.debug(f"Starting container: {' '.join(run_cmd)}")
+            result = subprocess.run(
+                run_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,  # image pull may take a while
+                check=True,
+            )
+            self._container_id = result.stdout.strip()
+            logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 
         # Build the init-time env forwarding args (used only by init_session
         # to inject host env vars into the snapshot; subsequent commands get
@@ -685,31 +730,143 @@ class DockerEnvironment(BaseEnvironment):
         logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
         return _storage_opt_ok
 
-    def cleanup(self):
-        """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
-        if self._container_id:
-            try:
-                # Stop in background so cleanup doesn't block
-                stop_cmd = (
-                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
-                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
-                )
-                subprocess.Popen(stop_cmd, shell=True)
-            except Exception as e:
-                logger.warning("Failed to stop container %s: %s", self._container_id, e)
+    def _find_reusable_container(self, task_label: str, profile_label: str) -> Optional[tuple[str, str]]:
+        """Look for an existing container labeled for this (task, profile).
 
+        Returns ``(container_id, state)`` on hit, ``None`` on miss / on any
+        failure (including ``docker ps`` itself failing). State is one of the
+        values Docker reports via ``{{.State}}`` — e.g. ``running``, ``exited``,
+        ``created``, ``paused``, ``restarting``, ``dead``. The caller decides
+        whether the state warrants ``docker start`` before reuse.
+
+        Restricted to the docker-stored label set this class creates; never
+        matches containers that happened to be named ``hermes-*`` but were
+        started by some other tool.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    self._docker_exe, "ps", "-a",
+                    "--filter", "label=hermes-agent=1",
+                    "--filter", f"label=hermes-task-id={task_label}",
+                    "--filter", f"label=hermes-profile={profile_label}",
+                    "--format", "{{.ID}}\t{{.State}}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("docker ps probe failed: %s — will start a fresh container", e)
+            return None
+        if result.returncode != 0:
+            logger.debug(
+                "docker ps probe returned %d: %s — will start a fresh container",
+                result.returncode, result.stderr.strip(),
+            )
+            return None
+        lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+        if not lines:
+            return None
+        # Multiple matches are unusual (one (task, profile) should produce one
+        # container) but can happen if a previous Hermes process crashed
+        # mid-cleanup. Prefer a running one if present; otherwise pick the
+        # first listed. Stale duplicates get reaped by the orphan-reaper in a
+        # follow-up commit; we don't try to be heroic about them here.
+        running = None
+        first = None
+        for ln in lines:
+            parts = ln.split("\t", 1)
+            if len(parts) != 2:
+                continue
+            cid, state = parts[0], parts[1].lower()
+            if first is None:
+                first = (cid, state)
+            if state == "running" and running is None:
+                running = (cid, state)
+        return running or first
+
+    def cleanup(self):
+        """Stop (and optionally remove) the container.
+
+        Behavior depends on ``persist_across_processes`` (init kwarg):
+
+        * **True** (default) — only ``docker stop`` so the container is
+          available for reuse by the next Hermes process. The orphan-reaper
+          eventually removes it if no subsequent process picks it up.
+        * **False** — ``docker stop`` followed by ``docker rm -f``, regardless
+          of ``persistent_filesystem``. The previous ``rm`` path was gated on
+          ``not self._persistent`` which meant ``container_persistent: true``
+          users (the default) leaked Exited containers forever (issue #20561).
+
+        Cleanup runs on a daemon thread with bounded ``subprocess.run`` calls,
+        not the previous fire-and-forget ``Popen(... &)`` shell construct.
+        That pattern raced with parent-process exit and silently dropped
+        cleanup work when the parent didn't outlive the detached shell — the
+        primary mechanism behind Exited-container accumulation under SIGTERM
+        / ``hermes /quit`` / dead terminals.
+        """
+        container_id = self._container_id
+        if not container_id:
+            # Still drop the bind-mount dirs if any were allocated.
             if not self._persistent:
-                # Also schedule removal (stop only leaves it as stopped)
+                for d in (self._workspace_dir, self._home_dir):
+                    if d:
+                        shutil.rmtree(d, ignore_errors=True)
+            return
+
+        # Capture state needed by the worker before we null out the attrs —
+        # the worker thread can outlive ``self``.
+        docker_exe = self._docker_exe
+        should_remove = not self._persist_across_processes
+        log_id = container_id[:12]
+
+        def _do_cleanup() -> None:
+            try:
+                subprocess.run(
+                    [docker_exe, "stop", "-t", "10", container_id],
+                    capture_output=True, timeout=30,
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                logger.warning("docker stop %s timed out / failed: %s", log_id, e)
+            if should_remove:
                 try:
-                    subprocess.Popen(
-                        f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
-                        shell=True,
+                    subprocess.run(
+                        [docker_exe, "rm", "-f", container_id],
+                        capture_output=True, timeout=30,
                     )
-                except Exception:
-                    pass
-            self._container_id = None
+                except (subprocess.TimeoutExpired, OSError) as e:
+                    logger.warning("docker rm -f %s failed: %s", log_id, e)
+
+        # Daemon thread: doesn't block interpreter exit (atexit returns
+        # promptly), but unlike the old ``Popen(... &)`` shell trick the
+        # Python-level join semantics let the thread actually run to
+        # completion if the interpreter is still alive. atexit registers
+        # ``_atexit_cleanup`` in terminal_tool.py which waits up to ~60s for
+        # outstanding cleanups, so most exits complete the work cleanly.
+        import threading
+        t = threading.Thread(target=_do_cleanup, daemon=True, name=f"hermes-cleanup-{log_id}")
+        t.start()
+        self._cleanup_thread = t
+        self._container_id = None
 
         if not self._persistent:
             for d in (self._workspace_dir, self._home_dir):
                 if d:
                     shutil.rmtree(d, ignore_errors=True)
+
+    def wait_for_cleanup(self, timeout: float = 30.0) -> bool:
+        """Block up to *timeout* seconds for the cleanup worker thread.
+
+        Returns ``True`` if the thread finished (or no thread was started),
+        ``False`` on timeout. The atexit hook in terminal_tool.py calls this
+        on every active environment so docker stop/rm actually completes
+        before the Python process exits — without this, ``hermes /quit``
+        races the interpreter shutdown and leaves stopped containers behind.
+        """
+        thread = getattr(self, "_cleanup_thread", None)
+        if thread is None or not thread.is_alive():
+            return True
+        thread.join(timeout=timeout)
+        return not thread.is_alive()

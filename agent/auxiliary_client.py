@@ -4810,6 +4810,16 @@ def call_llm(
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
+    # Reset the stale auxiliary_is_nous global for non-auto resolution paths.
+    # _resolve_auto() resets this flag at the start of its chain, but when the
+    # resolved provider is explicit (not "auto"), _resolve_auto() is never
+    # called and a True value from a previous call leaks Nous Portal tags into
+    # requests for non-Nous providers (e.g. opencode-zen, openrouter).
+    # See: fix-aux-tags-leak
+    if resolved_provider != "auto":
+        global auxiliary_is_nous
+        auxiliary_is_nous = (resolved_provider == "nous")
+
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
@@ -5267,6 +5277,16 @@ async def async_call_llm(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
+
+    # Reset the stale auxiliary_is_nous global for non-auto resolution paths.
+    # _resolve_auto() resets this flag at the start of its chain, but when the
+    # resolved provider is explicit (not "auto"), _resolve_auto() is never
+    # called and a True value from a previous call leaks Nous Portal tags into
+    # requests for non-Nous providers (e.g. opencode-zen, openrouter).
+    # See: fix-aux-tags-leak
+    if resolved_provider != "auto":
+        global auxiliary_is_nous
+        auxiliary_is_nous = (resolved_provider == "nous")
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(

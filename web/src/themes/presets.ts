@@ -17,7 +17,7 @@ import type { DashboardTheme, ThemeTypography, ThemeLayout } from "./types";
 
 /** Default system stack — neutral, safe fallback for every platform. */
 const SYSTEM_SANS =
-  'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+  '-apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Arial, sans-serif';
 const SYSTEM_MONO =
   'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace';
 
@@ -40,17 +40,73 @@ const DEFAULT_LAYOUT: ThemeLayout = {
 
 export const defaultTheme: DashboardTheme = {
   name: "default",
-  label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  label: "Feishu Blue",
+  description: "Clean white workspace with Feishu-style blue actions",
   palette: {
-    background: { hex: "#041c1c", alpha: 1 },
-    midground: { hex: "#ffe6cb", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(255, 189, 56, 0.35)",
-    noiseOpacity: 1,
+    background: { hex: "#f7f8fa", alpha: 1 },
+    midground: { hex: "#3370ff", alpha: 1 },
+    foreground: { hex: "#1f2329", alpha: 1 },
+    warmGlow: "rgba(51, 112, 255, 0.08)",
+    noiseOpacity: 0,
   },
-  typography: DEFAULT_TYPOGRAPHY,
-  layout: DEFAULT_LAYOUT,
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: SYSTEM_SANS,
+    fontDisplay: SYSTEM_SANS,
+    baseSize: "14.5px",
+    lineHeight: "1.58",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.75rem",
+  },
+  colorOverrides: {
+    card: "#ffffff",
+    cardForeground: "#1f2329",
+    popover: "rgba(255, 255, 255, 0.98)",
+    popoverForeground: "#1f2329",
+    primary: "#3370ff",
+    primaryForeground: "#ffffff",
+    secondary: "#f5f6f7",
+    secondaryForeground: "#1f2329",
+    muted: "#f5f6f7",
+    mutedForeground: "#4e5969",
+    accent: "#eef3ff",
+    accentForeground: "#3370ff",
+    destructive: "#f54a45",
+    destructiveForeground: "#ffffff",
+    success: "#00b578",
+    warning: "#ff8800",
+    border: "#dee0e3",
+    input: "#ffffff",
+    ring: "#3370ff",
+  },
+  componentStyles: {
+    card: {
+      background:
+        "#ffffff",
+      boxShadow:
+        "0 1px 2px rgba(31, 35, 41, 0.04)",
+    },
+    header: {
+      background:
+        "rgba(255,255,255,0.96)",
+      borderImage:
+        "linear-gradient(90deg, rgba(222,224,227,1), rgba(222,224,227,1)) 1",
+    },
+    sidebar: {
+      background:
+        "#ffffff",
+      borderImage:
+        "linear-gradient(180deg, rgba(222,224,227,1), rgba(222,224,227,1)) 1",
+    },
+    backdrop: {
+      fillerOpacity: "1",
+      fillerBlendMode: "normal",
+      backgroundSize: "cover",
+      backgroundPosition: "center",
+    },
+  },
 };
 
 export const midnightTheme: DashboardTheme = {
@@ -190,8 +246,8 @@ export const roseTheme: DashboardTheme = {
  */
 export const defaultLargeTheme: DashboardTheme = {
   name: "default-large",
-  label: "Hermes Teal (Large)",
-  description: "Hermes Teal with bigger fonts and roomier spacing",
+  label: "Feishu Blue (Large)",
+  description: "Feishu Blue with bigger fonts and roomier spacing",
   palette: defaultTheme.palette,
   typography: {
     ...DEFAULT_TYPOGRAPHY,

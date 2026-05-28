@@ -24,7 +24,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Switch } from "@nous-research/ui/ui/components/switch";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/i18n";
@@ -203,9 +203,9 @@ export default function SkillsPage() {
     );
     setEnd(
       <div className="relative w-full min-w-0 sm:max-w-xs">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
-          className="h-8 rounded-none pl-8 pr-7 text-xs"
+          className="h-8 rounded-lg pl-8 pr-8 text-sm shadow-none"
           placeholder={t.common.search}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -214,11 +214,11 @@ export default function SkillsPage() {
           <Button
             ghost
             size="xs"
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            className="absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 rounded-md border border-transparent bg-transparent p-0 text-muted-foreground shadow-none hover:border-border hover:bg-muted/70 hover:text-foreground"
             onClick={() => setSearch("")}
             aria-label={t.common.clear}
           >
-            <X />
+            <X className="h-3.5 w-3.5" />
           </Button>
         )}
       </div>,

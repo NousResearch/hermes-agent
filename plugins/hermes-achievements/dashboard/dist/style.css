@@ -16,9 +16,10 @@
 .ha-stat-value { margin-top: .35rem; font-size: 1.4rem; font-weight: 750; letter-spacing: -0.035em; }
 .ha-stat-hint { margin-top: .2rem; color: var(--color-muted-foreground); font-size: .75rem; }
 .ha-toolbar { display: flex; justify-content: space-between; gap: .75rem; align-items: center; flex-wrap: wrap; }
-.ha-pills { display: flex; gap: .35rem; flex-wrap: wrap; }
-.ha-pills button { border: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-card) 72%, transparent); color: var(--color-muted-foreground); padding: .35rem .6rem; font-size: .78rem; cursor: pointer; }
-.ha-pills button.active, .ha-pills button:hover { color: var(--color-foreground); border-color: var(--ha-tier, var(--color-ring)); background: color-mix(in srgb, var(--color-primary) 16%, var(--color-card)); }
+.ha-pills { display: flex; gap: .4rem; flex-wrap: wrap; }
+.ha-pills button { min-height: 1.9rem; border: 1px solid #dee0e3; border-radius: .42rem; background: #ffffff; color: #4e5969; padding: .3rem .66rem; font-size: .76rem; line-height: 1.15; cursor: pointer; box-shadow: 0 1px 2px rgba(31,35,41,.03); transition: color .14s ease, border-color .14s ease, background .14s ease, box-shadow .14s ease; }
+.ha-pills button:hover { color: #1f2329; border-color: #bbbfc4; background: #f7f8fa; box-shadow: 0 2px 4px rgba(31,35,41,.05); }
+.ha-pills button.active { color: #245bdb; border-color: #3370ff; background: #f0f5ff; box-shadow: 0 0 0 2px rgba(51,112,255,.08); }
 .ha-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: .9rem; }
 .ha-card { --ha-tier: var(--color-border); position: relative; overflow: hidden; min-height: 214px; border: 1px solid color-mix(in srgb, var(--ha-tier) 46%, var(--color-border)); background: radial-gradient(circle at 2.6rem 2.2rem, color-mix(in srgb, var(--ha-tier) 16%, transparent), transparent 34%), linear-gradient(180deg, rgba(255,255,255,.04), transparent), color-mix(in srgb, var(--color-card) 92%, #000); transition: transform .16s ease, border-color .16s ease, opacity .16s ease, box-shadow .16s ease; }
 .ha-card:hover { transform: translateY(-2px); border-color: var(--ha-tier); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ha-tier) 16%, transparent); }
@@ -29,14 +30,14 @@
 .ha-card-title { font-weight: 780; line-height: 1.05; letter-spacing: -0.025em; }
 .ha-card-category { margin-top: .28rem; color: var(--color-muted-foreground); font-size: .76rem; }
 .ha-badges { display: flex; flex-direction: column; align-items: flex-end; gap: .25rem; }
-.ha-tier-badge, .ha-state-badge { border: 1px solid var(--ha-tier); color: var(--ha-tier); background: color-mix(in srgb, var(--ha-tier) 10%, transparent); padding: .16rem .38rem; font-size: .67rem; text-transform: uppercase; letter-spacing: .08em; font-family: var(--font-mono, ui-monospace, monospace); }
+.ha-tier-badge, .ha-state-badge { border: 1px solid color-mix(in srgb, var(--ha-tier) 42%, var(--color-border)); border-radius: .35rem; color: var(--ha-tier); background: color-mix(in srgb, var(--ha-tier) 8%, var(--color-card)); padding: .16rem .42rem; font-size: .67rem; text-transform: uppercase; letter-spacing: .04em; font-family: var(--theme-font-sans, ui-sans-serif, system-ui, sans-serif); }
 .ha-description { margin: 0; color: var(--color-muted-foreground); font-size: .86rem; line-height: 1.45; min-height: 2.4em; }
-.ha-criteria { border: 1px solid color-mix(in srgb, var(--ha-tier) 28%, var(--color-border)); background: color-mix(in srgb, var(--ha-tier) 5%, transparent); }
-.ha-criteria summary { cursor: pointer; padding: .5rem .65rem; color: var(--ha-tier); text-transform: uppercase; letter-spacing: .1em; font-size: .66rem; font-family: var(--font-mono, ui-monospace, monospace); user-select: none; }
+.ha-criteria { border: 1px solid color-mix(in srgb, var(--ha-tier) 24%, var(--color-border)); border-radius: .5rem; background: color-mix(in srgb, var(--ha-tier) 4%, var(--color-card)); overflow: hidden; }
+.ha-criteria summary { cursor: pointer; padding: .5rem .65rem; color: var(--ha-tier); text-transform: uppercase; letter-spacing: .04em; font-size: .66rem; font-family: var(--theme-font-sans, ui-sans-serif, system-ui, sans-serif); user-select: none; }
 .ha-criteria summary:hover { background: color-mix(in srgb, var(--ha-tier) 8%, transparent); }
 .ha-criteria p { margin: 0; border-top: 1px solid color-mix(in srgb, var(--ha-tier) 18%, var(--color-border)); padding: .55rem .65rem .65rem; color: color-mix(in srgb, var(--color-foreground) 78%, var(--color-muted-foreground)); font-size: .76rem; line-height: 1.38; }
 .ha-progress-row { display: flex; align-items: center; gap: .55rem; margin-top: 0; }
-.ha-progress-track { flex: 1; height: .48rem; border: 1px solid color-mix(in srgb, var(--ha-tier) 34%, var(--color-border)); background: rgba(0,0,0,.22); overflow: hidden; }
+.ha-progress-track { flex: 1; height: .48rem; border: 1px solid color-mix(in srgb, var(--ha-tier) 22%, var(--color-border)); border-radius: 999px; background: color-mix(in srgb, var(--color-muted-foreground) 10%, transparent); overflow: hidden; }
 .ha-progress-fill { height: 100%; background: linear-gradient(90deg, var(--ha-tier), color-mix(in srgb, var(--ha-tier) 48%, white)); }
 .ha-progress-text { min-width: 5.4rem; text-align: right; font-family: var(--font-mono, ui-monospace, monospace); color: var(--color-muted-foreground); font-size: .72rem; }
 .ha-evidence-slot { min-height: 1.65rem; margin-top: auto; display: flex; align-items: flex-end; }
@@ -46,7 +47,7 @@
 .ha-evidence-empty { visibility: hidden; }
 .ha-latest h2 { margin: 0 0 .5rem; font-size: 1rem; }
 .ha-latest-row { display: flex; gap: .5rem; flex-wrap: wrap; }
-.ha-chip { display: inline-flex; align-items: center; gap: .35rem; border: 1px solid var(--ha-tier); color: var(--ha-tier); background: color-mix(in srgb, var(--ha-tier) 10%, transparent); padding: .35rem .55rem; font-size: .8rem; }
+.ha-chip { display: inline-flex; align-items: center; gap: .35rem; border: 1px solid color-mix(in srgb, var(--ha-tier) 38%, var(--color-border)); border-radius: .5rem; color: var(--ha-tier); background: color-mix(in srgb, var(--ha-tier) 8%, var(--color-card)); padding: .35rem .6rem; font-size: .8rem; }
 .ha-chip-icon .ha-lucide { width: .95rem; height: .95rem; }
 .ha-slot { border-style: dashed; }
 .ha-slot-content { display: flex; gap: .6rem; align-items: center; padding: .65rem .8rem !important; font-size: .82rem; }
@@ -55,13 +56,13 @@
 .ha-error { border-color: #ef4444; color: #fecaca; }
 .ha-loading { color: var(--color-muted-foreground); font-family: var(--font-mono, ui-monospace, monospace); padding: 2rem; border: 1px dashed var(--color-border); }
 .ha-guide { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: .75rem; }
-.ha-guide > div { border: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-card) 82%, transparent); padding: .85rem 1rem; }
-.ha-guide strong { display: block; margin-bottom: .45rem; font-size: .78rem; text-transform: uppercase; letter-spacing: .12em; font-family: var(--font-mono, ui-monospace, monospace); }
+.ha-guide > div { border: 1px solid var(--color-border); border-radius: .65rem; background: color-mix(in srgb, var(--color-card) 94%, transparent); padding: .9rem 1rem; box-shadow: 0 1px 2px rgba(31,35,41,.03); }
+.ha-guide strong { display: block; margin-bottom: .55rem; color: var(--color-foreground); font-size: .84rem; font-weight: 600; text-transform: none; letter-spacing: 0; font-family: var(--theme-font-sans, ui-sans-serif, system-ui, sans-serif); }
 .ha-guide p { margin: 0; color: var(--color-muted-foreground); font-size: .84rem; line-height: 1.45; }
-.ha-tier-legend { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; }
-.ha-tier-step { --ha-tier: var(--color-border); display: inline-flex; align-items: center; gap: .32rem; color: var(--ha-tier); border: 1px solid color-mix(in srgb, var(--ha-tier) 52%, var(--color-border)); background: color-mix(in srgb, var(--ha-tier) 8%, transparent); padding: .28rem .45rem; font-size: .72rem; font-family: var(--font-mono, ui-monospace, monospace); text-transform: uppercase; letter-spacing: .06em; }
-.ha-tier-step i { width: .55rem; height: .55rem; background: var(--ha-tier); display: inline-block; }
-.ha-tier-arrow { color: var(--color-muted-foreground); }
+.ha-tier-legend { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+.ha-tier-step { --ha-tier: var(--color-border); display: inline-flex; align-items: center; gap: .36rem; min-height: 1.72rem; color: color-mix(in srgb, var(--ha-tier) 86%, var(--color-foreground)); border: 1px solid color-mix(in srgb, var(--ha-tier) 28%, var(--color-border)); border-radius: .45rem; background: color-mix(in srgb, var(--ha-tier) 7%, var(--color-card)); padding: .25rem .55rem; font-size: .74rem; font-family: var(--theme-font-sans, ui-sans-serif, system-ui, sans-serif); text-transform: none; letter-spacing: 0; box-shadow: 0 1px 1px rgba(31,35,41,.02); }
+.ha-tier-step i { width: .5rem; height: .5rem; border-radius: 999px; background: var(--ha-tier); display: inline-block; box-shadow: 0 0 0 2px color-mix(in srgb, var(--ha-tier) 13%, transparent); }
+.ha-tier-arrow { color: color-mix(in srgb, var(--color-muted-foreground) 72%, transparent); font-size: .78rem; }
 .ha-state-discovered { opacity: .92; }
 .ha-state-discovered .ha-card-title { color: color-mix(in srgb, var(--color-foreground) 82%, var(--ha-tier)); }
 .ha-state-secret { opacity: .5; filter: grayscale(.55); }

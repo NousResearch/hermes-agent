@@ -421,7 +421,7 @@ export default function App() {
   return (
     <div
       data-layout-variant={layoutVariant}
-      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased"
+      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background text-text-primary antialiased"
     >
       <SelectionSwitcher />
       <Backdrop />
@@ -431,8 +431,8 @@ export default function App() {
         className={cn(
           "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
           "flex items-center gap-2 px-4 py-2",
-          "border-b border-current/20",
-          "bg-background-base/90 backdrop-blur-sm",
+          "border-b border-border/70",
+          "bg-white/88 shadow-[0_8px_28px_rgba(31,35,41,0.06)] backdrop-blur-xl",
         )}
         style={{
           background: "var(--component-header-background)",
@@ -447,14 +447,13 @@ export default function App() {
           aria-label={t.app.openNavigation}
           aria-expanded={mobileOpen}
           aria-controls="app-sidebar"
-          className="text-text-secondary hover:text-midground"
+          className="rounded-md text-text-secondary hover:bg-primary/10 hover:text-primary"
         >
           <Menu />
         </Button>
 
         <Typography
-          className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
-          style={{ mixBlendMode: "plus-lighter" }}
+          className="font-semibold text-[0.95rem] leading-none tracking-normal text-foreground"
         >
           {t.app.brand}
         </Typography>
@@ -467,7 +466,7 @@ export default function App() {
           onClick={closeMobile}
           className={cn(
             "lg:hidden fixed inset-0 z-40 p-0 block",
-            "bg-black/60 backdrop-blur-sm",
+            "bg-slate-950/30 backdrop-blur-sm",
           )}
         />
       )}
@@ -481,8 +480,8 @@ export default function App() {
             aria-label={t.app.navigation}
             className={cn(
               "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
-              "border-r border-current/20",
-              "bg-background-base/95 backdrop-blur-sm",
+              "border-r border-border",
+              "bg-white shadow-none",
               "transition-transform duration-200 ease-out",
               mobileOpen ? "translate-x-0" : "-translate-x-full",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0",
@@ -496,15 +495,14 @@ export default function App() {
             <div
               className={cn(
                 "flex h-14 shrink-0 items-center justify-between gap-2 px-4",
-                "border-b border-current/20",
+                "border-b border-border",
               )}
             >
               <div className="flex items-center gap-2">
                 <PluginSlot name="header-left" />
 
                 <Typography
-                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
-                  style={{ mixBlendMode: "plus-lighter" }}
+                  className="font-semibold text-[1.05rem] leading-tight tracking-normal text-foreground"
                 >
                   Hermes
                   <br />
@@ -517,14 +515,14 @@ export default function App() {
                 size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className="lg:hidden text-text-secondary hover:text-midground"
+                className="lg:hidden rounded-md text-text-secondary hover:bg-primary/10 hover:text-primary"
               >
                 <X />
               </Button>
             </div>
 
             <nav
-              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
+              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden py-2"
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
@@ -541,13 +539,13 @@ export default function App() {
               {sidebarNav.pluginItems.length > 0 && (
                 <div
                   aria-labelledby="hermes-sidebar-plugin-nav-heading"
-                  className="flex flex-col border-t border-current/10 pb-2"
+                  className="flex flex-col border-t border-border/60 pb-2"
                   role="group"
                 >
                   <span
                     className={cn(
                       "px-5 pt-2.5 pb-1",
-                      "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+                      "font-sans text-xs font-medium tracking-normal text-text-tertiary",
                     )}
                     id="hermes-sidebar-plugin-nav-heading"
                   >
@@ -574,7 +572,7 @@ export default function App() {
               className={cn(
                 "flex shrink-0 items-center justify-between gap-2",
                 "px-3 py-2",
-                "border-t border-current/20",
+                "border-t border-border",
               )}
             >
               <div className="flex min-w-0 items-center gap-2">
@@ -677,12 +675,13 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
           cn(
             "group relative flex items-center gap-3",
             "px-5 py-2.5",
-            "font-mondwest text-display uppercase text-sm tracking-[0.12em]",
+            "mx-2 rounded-lg px-3 py-2.5",
+            "font-sans text-sm font-medium tracking-normal",
             "whitespace-nowrap transition-colors cursor-pointer",
-            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20",
             isActive
-              ? "text-midground"
-              : "text-text-secondary hover:text-midground",
+              ? "bg-primary/10 text-primary shadow-[inset_0_0_0_1px_rgba(51,112,255,0.08)]"
+              : "text-text-secondary hover:bg-muted hover:text-text-primary",
           )
         }
         style={{
@@ -694,16 +693,10 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
             <Icon className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">{navLabel}</span>
 
-            <span
-              aria-hidden
-              className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
-            />
-
             {isActive && (
               <span
                 aria-hidden
-                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                style={{ mixBlendMode: "plus-lighter" }}
+                className="absolute bottom-2 left-1.5 top-2 w-0.5 rounded-full bg-primary"
               />
             )}
           </>
@@ -747,14 +740,14 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
     <div
       className={cn(
         "shrink-0 flex flex-col",
-        "border-t border-current/10",
+        "border-t border-border/70",
         "py-1",
       )}
     >
       <span
         className={cn(
           "px-5 pt-0.5 pb-0.5",
-          "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+          "font-sans text-xs font-medium tracking-normal text-text-tertiary",
         )}
       >
         {t.app.system}
@@ -780,11 +773,11 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                 active={busy}
                 className={cn(
                   "gap-3 px-5 py-1.5 whitespace-nowrap",
-                  "font-mondwest text-display text-xs tracking-[0.1em]",
+                  "font-sans text-xs font-medium tracking-normal",
                   "transition-colors",
                   busy
-                    ? "text-midground"
-                    : "text-text-secondary hover:text-midground",
+                    ? "text-primary"
+                    : "text-text-secondary hover:bg-muted hover:text-text-primary",
                   "disabled:text-text-disabled",
                 )}
               >
@@ -805,14 +798,13 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
 
                 <span
                   aria-hidden
-                  className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
+                  className="absolute inset-y-0.5 left-1.5 right-1.5 rounded-md bg-muted opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-100"
                 />
 
                 {busy && (
                   <span
                     aria-hidden
-                    className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                    style={{ mixBlendMode: "plus-lighter" }}
+                    className="absolute bottom-1.5 left-1.5 top-1.5 w-0.5 rounded-full bg-primary"
                   />
                 )}
               </ListItem>

@@ -74,7 +74,7 @@ export function LanguageSwitcher({ dropUp = false }: LanguageSwitcherProps) {
         <span className="inline-flex items-center gap-1.5">
           <Typography
             mondwest
-            className="hidden sm:inline text-display tracking-wide text-xs"
+            className="hidden sm:inline text-xs font-medium tracking-normal"
           >
             {locale === "en" ? "EN" : current.name}
           </Typography>
@@ -103,7 +103,7 @@ export function LanguageSwitcher({ dropUp = false }: LanguageSwitcherProps) {
         <div
           aria-label={sheetTitle}
           className={cn(
-            "absolute right-0 z-50 min-w-[10rem] rounded-md border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto",
+            "absolute right-0 z-50 min-w-[11rem] rounded-lg border border-border bg-popover p-1 shadow-[0_8px_24px_rgba(31,35,41,0.1),0_1px_2px_rgba(31,35,41,0.06)] max-h-80 overflow-y-auto",
             dropUp ? "bottom-full mb-1" : "top-full mt-1",
           )}
           role="listbox"
@@ -135,8 +135,8 @@ function LanguageSwitcherOptions({
           <button
             aria-selected={selected}
             className={
-              "w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-accent hover:text-accent-foreground transition-colors " +
-              (selected ? "font-semibold text-foreground" : "text-muted-foreground")
+              "w-full min-h-8 rounded-md text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-muted hover:text-foreground transition-colors " +
+              (selected ? "font-medium bg-primary/5 text-primary" : "font-normal text-text-secondary")
             }
             key={code}
             onClick={() => {

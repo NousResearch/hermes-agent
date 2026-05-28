@@ -169,9 +169,9 @@ export function BottomPickSheet({
         ref={sheetRef}
         className={cn(
           themedBody,
-          "relative flex max-h-[85dvh] min-h-0 flex-col rounded-t-xl border border-current/20",
-          "bg-background-base/98 pb-[max(1rem,env(safe-area-inset-bottom))]",
-          "shadow-[0_-12px_40px_-8px_rgba(0,0,0,0.55)] backdrop-blur-md",
+          "relative flex max-h-[85dvh] min-h-0 flex-col rounded-t-xl border border-border",
+          "bg-white pb-[max(1rem,env(safe-area-inset-bottom))]",
+          "shadow-[0_-12px_32px_rgba(31,35,41,0.12)]",
           "ease-out motion-reduce:transition-none transform-gpu",
           draggingVisual ? "transition-none" : cn("transition-transform", durationClass),
           entered ? "translate-y-0" : "translate-y-full",
@@ -185,7 +185,7 @@ export function BottomPickSheet({
       >
         <div
           className={cn(
-            "flex shrink-0 flex-col gap-2 border-b border-current/15 px-4 pb-3 pt-2",
+            "flex shrink-0 flex-col gap-2 border-b border-border px-4 pb-3 pt-2",
             "touch-none select-none",
             reducedMotion ? "cursor-default" : "cursor-grab active:cursor-grabbing",
           )}
@@ -196,12 +196,12 @@ export function BottomPickSheet({
         >
           <div
             aria-hidden
-            className="mx-auto h-1 w-10 shrink-0 rounded-full bg-current/20"
+            className="mx-auto h-1 w-10 shrink-0 rounded-full bg-border"
           />
 
           <Typography
             mondwest
-            className="text-display text-xs tracking-[0.12em] text-text-tertiary"
+            className="text-xs font-medium tracking-normal text-text-secondary"
           >
             {title}
           </Typography>

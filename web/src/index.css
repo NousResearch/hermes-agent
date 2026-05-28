@@ -43,44 +43,65 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* Hermes Agent — Nous DS with the LENS_0 (Hermes teal) lens applied   */
-/* statically. Mirrors nousnet-web/(hermes-agent)/layout.tsx so the    */
-/* canonical Hermes palette is the default — teal canvas + cream      */
-/* accent — without relying on leva/gsap at runtime.                  */
+/* Hermes Agent — default Feishu-inspired skin.                         */
+/* Clean white workspace, Feishu-blue actions, neutral content surfaces, */
+/* and crisp enterprise text are applied through CSS variables so custom */
+/* dashboard themes can still repaint the shell at runtime.              */
 /* ------------------------------------------------------------------ */
 
 :root {
-  /* LENS_0 — from design-language/src/ui/components/overlays/index.tsx.
-     These are the defaults for the `default` (Hermes Teal) dashboard theme;
-     ThemeProvider rewrites them as inline styles when a user switches themes. */
-  --foreground: color-mix(in srgb, #ffffff 0%, transparent);
-  --foreground-base: #ffffff;
-  --foreground-alpha: 0;
-  --midground: color-mix(in srgb, #ffe6cb 100%, transparent);
-  --midground-base: #ffe6cb;
+  --foreground: color-mix(in srgb, #1f2329 100%, transparent);
+  --foreground-base: #1f2329;
+  --foreground-alpha: 1;
+  --midground: color-mix(in srgb, #3370ff 100%, transparent);
+  --midground-base: #3370ff;
   --midground-alpha: 1;
-  --background: color-mix(in srgb, #041c1c 100%, transparent);
-  --background-base: #041c1c;
+  --background: color-mix(in srgb, #f7f8fa 100%, transparent);
+  --background-base: #f7f8fa;
   --background-alpha: 1;
 
   /* Consumed by <Backdrop />; also theme-switchable. */
-  --warm-glow: rgba(255, 189, 56, 0.35);
-  --noise-opacity-mul: 1;
+  --warm-glow: rgba(51, 112, 255, 0.08);
+  --noise-opacity-mul: 0;
+
+  /* Nous UI semantic text tokens. Keep blue for actions only; ordinary
+     content should read like a clean Feishu workspace, not a tinted theme. */
+  --text-primary: #1f2329;
+  --text-secondary: #4e5969;
+  --text-tertiary: #86909c;
+  --text-disabled: #c9cdd4;
+  --text-display: #1f2329;
+  --text-on-accent: #ffffff;
+
+  /* Feishu-style control details. */
+  --control-primary: #3370ff;
+  --control-primary-hover: #245bdb;
+  --control-primary-active: #1c4ecf;
+  --control-primary-soft: #f0f5ff;
+  --control-primary-softer: #f5f8ff;
+  --control-border: #dee0e3;
+  --control-border-hover: #c9cdd4;
+  --control-bg: #ffffff;
+  --control-bg-hover: #f5f6f7;
+  --control-disabled-bg: #f2f3f5;
+  --control-disabled-text: #c9cdd4;
+  --control-danger: #f54a45;
 
   /* Typography tokens — rewritten by ThemeProvider. Defaults match the
      system stack so themes that don't override look native. */
-  --theme-font-sans: system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  --theme-font-sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI",
+    Arial, sans-serif;
   --theme-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
     Consolas, monospace;
   --theme-font-display: var(--theme-font-sans);
-  --theme-base-size: 15px;
-  --theme-line-height: 1.55;
+  --theme-base-size: 14.5px;
+  --theme-line-height: 1.58;
   --theme-letter-spacing: 0;
 
   /* Layout tokens. */
-  --radius: 0.5rem;
-  --theme-radius: 0.5rem;
+  --radius: 0.75rem;
+  --theme-radius: 0.75rem;
   --theme-spacing-mul: 1;
   --theme-density: comfortable;
 }
@@ -99,6 +120,10 @@ html {
 
 body {
   font-family: var(--theme-font-sans);
+  background: var(--background-base);
+  color: var(--foreground-base);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   min-height: 0;
   height: 100%;
   margin: 0;
@@ -109,12 +134,37 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   font-family: var(--theme-font-mono);
 }
 
+/* Feishu-style product typography. The original Hermes skin used the Nous
+   display families heavily; keep the classes working but route them to a
+   clear Chinese-first SaaS stack so existing pages do not retain the old
+   decorative voice. */
+.font-sans,
+.font-mondwest,
+.font-compressed,
+.font-expanded,
+.text-display {
+  font-family: var(--theme-font-sans) !important;
+  font-feature-settings: normal;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+
+.font-courier {
+  font-family: var(--theme-font-mono) !important;
+}
+
 /* Density: scale the shadcn spacing utilities via a multiplier. The DS
    components use `p-N` / `gap-N` / `space-*` classes which resolve against
    Tailwind's spacing scale; multiplying `--spacing` at :root scales them
    all proportionally in Tailwind v4. */
 @theme inline {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
+  --font-sans: var(--theme-font-sans);
+  --font-display: var(--theme-font-sans);
+  --font-mondwest: var(--theme-font-sans);
+  --font-compressed: var(--theme-font-sans);
+  --font-expanded: var(--theme-font-sans);
+  --font-courier: var(--theme-font-mono);
 }
 
 #root {
@@ -137,31 +187,37 @@ code { font-size: 0.875rem; }
 @theme inline {
   /* Remap foreground to midground so `text-foreground` / `bg-foreground`
      stay visible — in LENS_0, `--foreground` itself has alpha 0. */
-  --color-foreground: var(--midground);
+  --color-foreground: var(--foreground-base);
 
-  --color-card: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
-  --color-card-foreground: var(--midground);
-  --color-primary: var(--midground);
-  --color-primary-foreground: var(--background-base);
-  --color-secondary: color-mix(in srgb, var(--midground-base) 6%, var(--background-base));
-  --color-secondary-foreground: var(--midground);
-  --color-muted: color-mix(in srgb, var(--midground-base) 8%, var(--background-base));
+  --color-card: #ffffff;
+  --color-card-foreground: #1f2329;
+  --color-primary: #3370ff;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f5f6f7;
+  --color-secondary-foreground: #1f2329;
+  --color-muted: #f5f6f7;
   /* Routes the shadcn `muted-foreground` slot through the DS semantic
      text-secondary token (defaults to midground 80%) so legacy call
      sites that use `text-muted-foreground` get a readable color
      instead of the old 55%-transparent default. */
-  --color-muted-foreground: var(--color-text-secondary);
-  --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
-  --color-accent-foreground: var(--midground);
-  --color-destructive: #fb2c36;
+  --color-muted-foreground: #4e5969;
+  --color-accent: #eef3ff;
+  --color-accent-foreground: #3370ff;
+  --color-destructive: #f54a45;
   --color-destructive-foreground: #ffffff;
-  --color-success: #4ade80;
-  --color-warning: #ffbd38;
-  --color-border: color-mix(in srgb, var(--midground-base) 15%, transparent);
-  --color-input: color-mix(in srgb, var(--midground-base) 15%, transparent);
-  --color-ring: var(--midground);
-  --color-popover: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
-  --color-popover-foreground: var(--midground);
+  --color-success: #00b578;
+  --color-warning: #ff8800;
+  --color-border: #dee0e3;
+  --color-input: #ffffff;
+  --color-ring: #3370ff;
+  --color-popover: rgba(255, 255, 255, 0.98);
+  --color-popover-foreground: #1f2329;
+  --color-text-primary: #1f2329;
+  --color-text-secondary: #4e5969;
+  --color-text-tertiary: #86909c;
+  --color-text-disabled: #c9cdd4;
+  --color-text-display: #1f2329;
+  --color-text-on-accent: #ffffff;
 
   --radius-sm: calc(var(--theme-radius) - 4px);
   --radius-md: calc(var(--theme-radius) - 2px);
@@ -201,7 +257,381 @@ code { font-size: 0.875rem; }
 
 /* Plus-lighter blend used by logos/titles for a subtle glow. */
 .blend-lighter {
-  mix-blend-mode: plus-lighter;
+  mix-blend-mode: normal;
+}
+
+button,
+[role="button"],
+a,
+input,
+textarea,
+select {
+  letter-spacing: 0;
+}
+
+button:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid rgba(51, 112, 255, 0.18);
+  outline-offset: 2px;
+}
+
+/* Header search fields live in page-provided header slots. A few pages pass
+   compact utility overrides, so keep the final shape here to prevent sharp
+   stitched input / clear-button controls. */
+header input[class*="pl-8"][placeholder] {
+  height: 32px !important;
+  border-radius: 8px !important;
+  border-color: #dee0e3 !important;
+  background: #ffffff !important;
+  padding-left: 32px !important;
+  padding-right: 34px !important;
+  font-size: 13px !important;
+  line-height: 20px !important;
+  box-shadow: none !important;
+}
+
+header input[class*="pl-8"][placeholder]:hover {
+  border-color: #c9cdd4 !important;
+}
+
+header input[class*="pl-8"][placeholder]:focus-visible {
+  border-color: #3370ff !important;
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(51, 112, 255, 0.12) !important;
+}
+
+header input[class*="pl-8"][placeholder] ~ button[aria-label] {
+  right: 4px !important;
+  width: 24px !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  border: 1px solid transparent !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  padding: 0 !important;
+  color: #86909c !important;
+  box-shadow: none !important;
+}
+
+header input[class*="pl-8"][placeholder] ~ button[aria-label]:hover {
+  border-color: #dee0e3 !important;
+  background: #f2f3f5 !important;
+  color: #1f2329 !important;
+}
+
+header input[class*="pl-8"][placeholder] ~ button[aria-label] svg {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+/* Feishu-style Nous controls. Nous' default component skin is deliberately
+   expressive; the dashboard needs quieter enterprise controls. */
+button.grid.cursor-pointer:not([role="switch"]):not([role="checkbox"]) {
+  min-height: 32px;
+  border-radius: 6px !important;
+  font-family: var(--theme-font-sans) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  line-height: 1.2 !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+  box-shadow: none !important;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease,
+    transform 80ms ease;
+}
+
+button.grid.cursor-pointer:not([role="switch"]):not([role="checkbox"]) svg {
+  color: currentColor;
+  stroke-width: 1.9;
+}
+
+button.grid.cursor-pointer.aspect-square,
+button.grid.cursor-pointer[class*="aspect-square"] {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 !important;
+  place-items: center;
+}
+
+button.grid.cursor-pointer:not([role="switch"]):not([role="checkbox"]):active {
+  transform: translateY(1px);
+}
+
+button.grid.cursor-pointer[class*="bg-midground"]:not([class*="bg-transparent"]):not([class*="bg-destructive"]) {
+  border: 1px solid var(--control-primary) !important;
+  background: var(--control-primary) !important;
+  color: #ffffff !important;
+  box-shadow: 0 1px 2px rgba(31, 35, 41, 0.08) !important;
+}
+
+button.grid.cursor-pointer[class*="bg-midground"]:not([class*="bg-transparent"]):not([class*="bg-destructive"]):hover {
+  border-color: var(--control-primary-hover) !important;
+  background: var(--control-primary-hover) !important;
+  box-shadow: 0 2px 6px rgba(31, 35, 41, 0.1) !important;
+}
+
+button.grid.cursor-pointer[class*="bg-midground"]:not([class*="bg-transparent"]):not([class*="bg-destructive"]):active {
+  border-color: var(--control-primary-active) !important;
+  background: var(--control-primary-active) !important;
+  box-shadow: none !important;
+}
+
+button.grid.cursor-pointer[class*="bg-transparent"]:not([class*="text-destructive"]) {
+  border: 1px solid var(--control-border) !important;
+  background: var(--control-bg) !important;
+  color: var(--text-primary) !important;
+  box-shadow: 0 1px 1px rgba(31, 35, 41, 0.02) !important;
+}
+
+button.grid.cursor-pointer[class*="bg-transparent"]:not([class*="text-destructive"]):hover {
+  border-color: var(--control-border-hover) !important;
+  background: var(--control-bg-hover) !important;
+  color: var(--text-primary) !important;
+  box-shadow: none !important;
+}
+
+header input[class*="pl-8"][placeholder] ~ button.grid.cursor-pointer[aria-label] {
+  right: 4px !important;
+  width: 24px !important;
+  min-width: 24px !important;
+  max-width: 24px !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  max-height: 24px !important;
+  aspect-ratio: auto !important;
+  border-color: transparent !important;
+  background: transparent !important;
+  color: #86909c !important;
+  box-shadow: none !important;
+}
+
+header input[class*="pl-8"][placeholder] ~ button.grid.cursor-pointer[aria-label]:hover {
+  border-color: #dee0e3 !important;
+  background: #f2f3f5 !important;
+  color: #1f2329 !important;
+}
+
+button.grid.cursor-pointer[class*="text-destructive"] {
+  border: 1px solid rgba(245, 74, 69, 0.28) !important;
+  background: #ffffff !important;
+  color: var(--control-danger) !important;
+}
+
+button.grid.cursor-pointer[class*="text-destructive"]:hover {
+  border-color: rgba(245, 74, 69, 0.44) !important;
+  background: rgba(245, 74, 69, 0.06) !important;
+}
+
+button.grid.cursor-pointer:disabled,
+button.grid.cursor-pointer[aria-disabled="true"] {
+  border-color: var(--control-border) !important;
+  background: var(--control-disabled-bg) !important;
+  color: var(--control-disabled-text) !important;
+  transform: none !important;
+}
+
+button.grid.cursor-pointer .arc-border {
+  display: none !important;
+}
+
+button.group.relative.flex.w-full.items-center.gap-2:not([role="switch"]):not([role="checkbox"]) {
+  border-radius: 6px !important;
+  font-family: var(--theme-font-sans) !important;
+  font-weight: 500 !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+
+button.group.relative.flex.w-full.items-center.gap-2:not([role="switch"]):not([role="checkbox"]):hover {
+  background: var(--control-bg-hover) !important;
+  color: var(--text-primary) !important;
+}
+
+button.group.relative.flex.w-full.items-center.gap-2[data-active] {
+  background: var(--control-primary-softer) !important;
+  color: var(--control-primary) !important;
+}
+
+button[role="checkbox"] {
+  width: 16px !important;
+  height: 16px !important;
+  border: 1px solid var(--control-border-hover) !important;
+  border-radius: 4px !important;
+  background: #ffffff !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+button[role="checkbox"]:hover {
+  border-color: var(--control-primary) !important;
+  background: var(--control-primary-softer) !important;
+}
+
+button[role="checkbox"][data-state="checked"],
+button[role="checkbox"][data-state="indeterminate"] {
+  border-color: var(--control-primary) !important;
+  background: var(--control-primary) !important;
+}
+
+button[role="checkbox"] svg {
+  color: #ffffff !important;
+}
+
+button[data-hermes-switch] {
+  position: relative !important;
+  width: 34px !important;
+  height: 18px !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: #c9cdd4 !important;
+  box-shadow: inset 0 0 0 1px rgba(31, 35, 41, 0.04) !important;
+  padding: 0 !important;
+  transition:
+    background-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+button[data-hermes-switch]:hover {
+  background: #bfc3cb !important;
+}
+
+button[data-hermes-switch][aria-checked="true"] {
+  background: var(--control-primary) !important;
+}
+
+button[data-hermes-switch][aria-checked="true"]:hover {
+  background: var(--control-primary-hover) !important;
+}
+
+button[data-hermes-switch] > span {
+  position: absolute !important;
+  top: 2px !important;
+  left: 2px !important;
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 999px !important;
+  background: #ffffff !important;
+  box-shadow: 0 1px 3px rgba(31, 35, 41, 0.2) !important;
+  transform: none !important;
+  transition:
+    left 160ms ease,
+    box-shadow 160ms ease;
+}
+
+button[data-hermes-switch][aria-checked="true"] > span {
+  left: 18px !important;
+  transform: none !important;
+}
+
+button[data-hermes-switch] + span {
+  letter-spacing: 0 !important;
+}
+
+/* Selects, dropdowns, and popover menus. */
+select,
+button[role="combobox"] {
+  min-height: 32px !important;
+  border: 1px solid var(--control-border) !important;
+  border-radius: 6px !important;
+  background: #ffffff !important;
+  color: var(--text-primary) !important;
+  font-family: var(--theme-font-sans) !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+  box-shadow: 0 1px 1px rgba(31, 35, 41, 0.02) !important;
+}
+
+select:hover,
+button[role="combobox"]:hover {
+  border-color: var(--control-border-hover) !important;
+  background: #ffffff !important;
+}
+
+select:focus-visible,
+button[role="combobox"]:focus-visible {
+  border-color: var(--control-primary) !important;
+  box-shadow: 0 0 0 3px rgba(51, 112, 255, 0.12) !important;
+  outline: none !important;
+}
+
+button[role="combobox"] span,
+button[role="combobox"] svg {
+  color: inherit !important;
+}
+
+div[role="listbox"] {
+  border-color: var(--control-border) !important;
+  border-radius: 8px !important;
+  background: #ffffff !important;
+  color: var(--text-primary) !important;
+  box-shadow:
+    0 8px 24px rgba(31, 35, 41, 0.1),
+    0 1px 2px rgba(31, 35, 41, 0.06) !important;
+}
+
+div[role="listbox"]:has(> [role="option"]) {
+  padding: 4px !important;
+}
+
+div[role="listbox"] [role="option"] {
+  min-height: 32px;
+  border-radius: 6px !important;
+  padding-left: 10px !important;
+  padding-right: 10px !important;
+  color: var(--text-secondary) !important;
+  font-family: var(--theme-font-sans) !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+
+div[role="listbox"] [role="option"] > span,
+div[role="listbox"] [role="option"] > div:not([aria-hidden]) {
+  min-width: 0;
+}
+
+div[role="listbox"] [role="option"] > svg:first-child {
+  order: 2;
+  margin-left: auto;
+}
+
+div[role="listbox"] [role="option"]:hover {
+  background: var(--control-bg-hover) !important;
+  color: var(--text-primary) !important;
+}
+
+div[role="listbox"] [role="option"][aria-selected="true"] {
+  background: var(--control-primary-softer) !important;
+  color: var(--control-primary) !important;
+  font-weight: 500 !important;
+}
+
+div[role="listbox"] [role="option"] svg,
+div[role="listbox"] [role="option"] [class*="text-midground"],
+div[role="listbox"] [role="option"] [class*="text-primary"] {
+  color: var(--control-primary) !important;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--control-primary);
+}
+
+::selection {
+  background: rgba(51, 112, 255, 0.18);
+  color: #1f2329;
 }
 
 /* System UI-monospace stack — distinct from `font-courier` (Courier

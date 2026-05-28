@@ -26,11 +26,10 @@ export function SidebarFooter() {
         target="_blank"
         rel="noopener noreferrer"
         className={cn(
-          "font-mondwest text-display text-xs tracking-[0.12em] text-midground",
+          "font-sans text-xs font-medium tracking-normal text-text-tertiary",
           "transition-opacity hover:opacity-90",
-          "focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40",
+          "focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/30",
         )}
-        style={{ mixBlendMode: "plus-lighter" }}
       >
         {t.app.footer.org}
       </a>

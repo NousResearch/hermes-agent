@@ -28,12 +28,12 @@ export function SidebarStatusStrip() {
         "block text-left",
         "px-5 pb-2 pt-0.5",
         "text-text-secondary",
-        "transition-colors hover:text-midground",
-        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40",
+        "transition-colors hover:text-primary",
+        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/30",
         "focus-visible:ring-inset",
       )}
     >
-      <div className="flex flex-col gap-1 font-mondwest text-xs leading-snug tracking-[0.08em]">
+      <div className="flex flex-col gap-1 font-sans text-xs leading-snug tracking-normal">
         <p className="break-words">
           <span className="text-text-tertiary">{gatewayStatusLabel}</span>{" "}
           <span className={cn("font-medium", gw.tone)}>{gw.label}</span>

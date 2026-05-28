@@ -116,11 +116,14 @@ try:
 except ImportError:
     FEISHU_AVAILABLE = False
     lark = None  # type: ignore[assignment]
+    AccessTokenType = None  # type: ignore[assignment]
+    BaseRequest = None  # type: ignore[assignment]
     CallBackCard = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
     FeishuWSClient = None  # type: ignore[assignment]
     FEISHU_DOMAIN = None  # type: ignore[assignment]
+    HttpMethod = None  # type: ignore[assignment]
     LARK_DOMAIN = None  # type: ignore[assignment]
 
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
@@ -162,6 +165,7 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_FEISHU_STREAMING_ELEMENT_ID = "streaming_content"
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -1408,6 +1412,7 @@ class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
     MAX_MESSAGE_LENGTH = 8000
+    SUPPORTS_STREAMING_CARDS = True
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.
@@ -1450,6 +1455,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: Dict[str, Optional[str]] = {}
+        self._cardkit_streams: Dict[str, Dict[str, Any]] = {}
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -1852,6 +1858,315 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _build_cardkit_streaming_card(
+        *,
+        content: str = "",
+        reasoning_text: Optional[str] = None,
+        streaming: bool = True,
+    ) -> Dict[str, Any]:
+        elements: List[Dict[str, Any]] = []
+        if reasoning_text:
+            elements.append(
+                {
+                    "tag": "collapsible_panel",
+                    "expanded": not content.strip(),
+                    "header": {
+                        "title": {
+                            "tag": "markdown",
+                            "content": "Thinking",
+                            "i18n_content": {"zh_cn": "思考过程", "en_us": "Thinking"},
+                        },
+                        "vertical_align": "center",
+                        "icon": {
+                            "tag": "standard_icon",
+                            "token": "down-small-ccm_outlined",
+                            "size": "16px 16px",
+                        },
+                        "icon_position": "follow_text",
+                        "icon_expanded_angle": -180,
+                    },
+                    "border": {"color": "grey", "corner_radius": "5px"},
+                    "vertical_spacing": "8px",
+                    "padding": "8px 8px 8px 8px",
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": reasoning_text,
+                            "text_size": "notation",
+                        }
+                    ],
+                }
+            )
+
+        elements.append(
+            {
+                "tag": "markdown",
+                "content": content,
+                "text_align": "left",
+                "text_size": "normal_v2" if streaming else "normal",
+                "margin": "0px 0px 0px 0px",
+                "element_id": _FEISHU_STREAMING_ELEMENT_ID,
+            }
+        )
+        if streaming:
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": " ",
+                    "element_id": "loading_icon",
+                }
+            )
+
+        summary = (content or "Processing...").replace("\n", " ").strip()[:120] or "Processing..."
+        return {
+            "schema": "2.0",
+            "config": {
+                "streaming_mode": streaming,
+                "wide_screen_mode": True,
+                "update_multi": True,
+                "locales": ["zh_cn", "en_us"],
+                "summary": {
+                    "content": summary,
+                    "i18n_content": {"zh_cn": "处理中..." if streaming else summary, "en_us": summary},
+                },
+            },
+            "body": {"elements": elements},
+        }
+
+    async def send_streaming_message(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        reasoning_text: Optional[str] = None,
+    ) -> SendResult:
+        """Send a CardKit-backed interactive card for streaming replies."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            card = self._build_cardkit_streaming_card(reasoning_text=reasoning_text, streaming=True)
+            card_id = await self._create_cardkit_card(card)
+            if not card_id:
+                raise RuntimeError("CardKit card.create returned empty card_id")
+            result = await self._send_cardkit_card_reference(
+                chat_id=chat_id,
+                card_id=card_id,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            if not result.success or not result.message_id:
+                return result
+            self._cardkit_streams[str(result.message_id)] = {"card_id": card_id, "sequence": 1}
+            if content.strip() or reasoning_text:
+                await self._stream_cardkit_content(
+                    message_id=str(result.message_id),
+                    content=content,
+                    reasoning_text=reasoning_text,
+                )
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] CardKit streaming send failed; falling back to message send: %s", exc)
+            if 'result' in locals() and getattr(result, "message_id", None):
+                self._cardkit_streams.pop(str(result.message_id), None)
+            return await self.send(chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata)
+
+    async def edit_streaming_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+        reasoning_text: Optional[str] = None,
+    ) -> SendResult:
+        """Update a CardKit streaming card, closing it on the final edit."""
+        stream = self._cardkit_streams.get(str(message_id))
+        if not stream:
+            return await self.edit_message(chat_id=chat_id, message_id=message_id, content=content, finalize=finalize)
+
+        card_id = str(stream["card_id"])
+        try:
+            if finalize:
+                stream["sequence"] = int(stream.get("sequence", 1)) + 1
+                await self._set_cardkit_streaming_mode(
+                    card_id=card_id,
+                    streaming_mode=False,
+                    sequence=stream["sequence"],
+                )
+                final_card = self._build_cardkit_streaming_card(
+                    content=content,
+                    reasoning_text=reasoning_text,
+                    streaming=False,
+                )
+                stream["sequence"] += 1
+                await self._update_cardkit_card(
+                    card_id=card_id,
+                    card=final_card,
+                    sequence=stream["sequence"],
+                )
+                self._cardkit_streams.pop(str(message_id), None)
+            else:
+                await self._stream_cardkit_content(
+                    message_id=str(message_id),
+                    content=content,
+                    reasoning_text=reasoning_text,
+                )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as exc:
+            logger.warning("[Feishu] CardKit streaming edit failed; falling back to message edit: %s", exc)
+            self._cardkit_streams.pop(str(message_id), None)
+            return await self.edit_message(chat_id=chat_id, message_id=message_id, content=content, finalize=finalize)
+
+    async def _create_cardkit_card(self, card: Dict[str, Any]) -> Optional[str]:
+        card_json = json.dumps(card, ensure_ascii=False)
+        try:
+            from lark_oapi.api.cardkit.v1 import CreateCardRequest, CreateCardRequestBody
+
+            body = CreateCardRequestBody.builder().type("card_json").data(card_json).build()
+            request = CreateCardRequest.builder().request_body(body).build()
+            response = await asyncio.to_thread(self._client.cardkit.v1.card.create, request)
+            payload = self._parse_cardkit_response(response)
+            self._raise_for_cardkit_error(payload)
+        except (ImportError, AttributeError):
+            payload = await self._cardkit_request(
+                HttpMethod.POST,
+                "/open-apis/cardkit/v1/cards",
+                {"type": "card_json", "data": card_json},
+            )
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        data_obj = payload.get("data")
+        card_id = data.get("card_id") or getattr(data_obj, "card_id", None) or payload.get("card_id")
+        return str(card_id) if card_id else None
+
+    async def _send_cardkit_card_reference(
+        self,
+        *,
+        chat_id: str,
+        card_id: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> SendResult:
+        payload = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
+        response = await self._feishu_send_with_retry(
+            chat_id=chat_id,
+            msg_type="interactive",
+            payload=payload,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        return self._finalize_send_result(response, "send CardKit card failed")
+
+    async def _stream_cardkit_content(
+        self,
+        *,
+        message_id: str,
+        content: str,
+        reasoning_text: Optional[str] = None,
+    ) -> None:
+        stream = self._cardkit_streams.get(str(message_id))
+        if not stream:
+            return
+        stream["sequence"] = int(stream.get("sequence", 1)) + 1
+        try:
+            from lark_oapi.api.cardkit.v1 import ContentCardElementRequest, ContentCardElementRequestBody
+
+            body = ContentCardElementRequestBody.builder().content(content).sequence(stream["sequence"]).build()
+            request = (
+                ContentCardElementRequest.builder()
+                .card_id(str(stream["card_id"]))
+                .element_id(_FEISHU_STREAMING_ELEMENT_ID)
+                .request_body(body)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.cardkit.v1.card_element.content, request)
+            self._raise_for_cardkit_error(self._parse_cardkit_response(response))
+        except (ImportError, AttributeError):
+            await self._cardkit_request(
+                HttpMethod.PUT,
+                f"/open-apis/cardkit/v1/cards/{stream['card_id']}/elements/{_FEISHU_STREAMING_ELEMENT_ID}/content",
+                {"content": content, "sequence": stream["sequence"]},
+            )
+
+    async def _update_cardkit_card(self, *, card_id: str, card: Dict[str, Any], sequence: int) -> None:
+        card_json = json.dumps(card, ensure_ascii=False)
+        try:
+            from lark_oapi.api.cardkit.v1 import Card, UpdateCardRequest, UpdateCardRequestBody
+
+            card_body = Card.builder().type("card_json").data(card_json).build()
+            body = UpdateCardRequestBody.builder().card(card_body).sequence(sequence).build()
+            request = UpdateCardRequest.builder().card_id(card_id).request_body(body).build()
+            response = await asyncio.to_thread(self._client.cardkit.v1.card.update, request)
+            self._raise_for_cardkit_error(self._parse_cardkit_response(response))
+        except (ImportError, AttributeError):
+            await self._cardkit_request(
+                HttpMethod.PUT,
+                f"/open-apis/cardkit/v1/cards/{card_id}",
+                {
+                    "card": {"type": "card_json", "data": card_json},
+                    "sequence": sequence,
+                },
+            )
+
+    async def _set_cardkit_streaming_mode(self, *, card_id: str, streaming_mode: bool, sequence: int) -> None:
+        settings = json.dumps({"streaming_mode": streaming_mode}, ensure_ascii=False)
+        try:
+            from lark_oapi.api.cardkit.v1 import SettingsCardRequest, SettingsCardRequestBody
+
+            body = SettingsCardRequestBody.builder().settings(settings).sequence(sequence).build()
+            request = SettingsCardRequest.builder().card_id(card_id).request_body(body).build()
+            response = await asyncio.to_thread(self._client.cardkit.v1.card.settings, request)
+            self._raise_for_cardkit_error(self._parse_cardkit_response(response))
+        except (ImportError, AttributeError):
+            await self._cardkit_request(
+                HttpMethod.PUT,
+                f"/open-apis/cardkit/v1/cards/{card_id}/settings",
+                {
+                    "settings": settings,
+                    "sequence": sequence,
+                },
+            )
+
+    async def _cardkit_request(self, method: Any, uri: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        if BaseRequest is None or HttpMethod is None or AccessTokenType is None:
+            raise RuntimeError("lark-oapi BaseRequest is unavailable")
+        req = (
+            BaseRequest.builder()
+            .http_method(method)
+            .uri(uri)
+            .headers({"Content-Type": "application/json; charset=utf-8"})
+            .body(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+            .token_types({AccessTokenType.TENANT})
+            .build()
+        )
+        response = await asyncio.to_thread(self._client.request, req)
+        payload = self._parse_cardkit_response(response)
+        code = payload.get("code")
+        self._raise_for_cardkit_error(payload)
+        return payload
+
+    @staticmethod
+    def _raise_for_cardkit_error(payload: Dict[str, Any]) -> None:
+        code = payload.get("code")
+        if code not in (None, 0):
+            raise RuntimeError(f"CardKit API failed ({code}): {payload.get('msg') or payload}")
+
+    @staticmethod
+    def _parse_cardkit_response(response: Any) -> Dict[str, Any]:
+        raw_content = getattr(getattr(response, "raw", None), "content", None)
+        if raw_content:
+            if isinstance(raw_content, bytes):
+                raw_content = raw_content.decode("utf-8")
+            return json.loads(raw_content)
+        payload: Dict[str, Any] = {}
+        for key in ("code", "msg", "data", "card_id"):
+            if hasattr(response, key):
+                payload[key] = getattr(response, key)
+        return payload
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,

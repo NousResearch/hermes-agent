@@ -7,7 +7,7 @@ import type { HubAgentPluginRow, PluginsHubResponse } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
-import { Switch } from "@nous-research/ui/ui/components/switch";
+import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { CommandBlock } from "@nous-research/ui/ui/components/command-block";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";

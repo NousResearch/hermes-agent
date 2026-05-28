@@ -67,11 +67,11 @@ function generateChannelId(): string {
 // theme, because the TUI's skin engine already paints the content; the
 // terminal chrome just needs to sit quietly inside the dashboard.
 const TERMINAL_THEME = {
-  background: "#0d2626",
-  foreground: "#f0e6d2",
-  cursor: "#f0e6d2",
-  cursorAccent: "#0d2626",
-  selectionBackground: "#f0e6d244",
+  background: "#0e2338",
+  foreground: "#d9efff",
+  cursor: "#7dd9ff",
+  cursorAccent: "#0e2338",
+  selectionBackground: "#55b7ff44",
 };
 
 /**
@@ -741,7 +741,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             onClick={closeMobilePanel}
             className={cn(
               "fixed inset-0 z-[55] p-0 block",
-              "bg-black/60 backdrop-blur-sm",
+              "bg-slate-950/30 backdrop-blur-sm",
             )}
           />
         )}
@@ -751,9 +751,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           role="complementary"
           aria-label={modelToolsLabel}
           className={cn(
-            "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
-            "border-l border-current/20 text-midground",
-            "bg-background-base/95 backdrop-blur-sm",
+            "font-sans fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
+            "border-l border-border/70 text-text-primary",
+            "bg-background-base/80 shadow-[-12px_0_40px_rgba(43,112,191,0.08)] backdrop-blur-xl",
             "transition-transform duration-200 ease-out",
             "[background:var(--component-sidebar-background)]",
             "[clip-path:var(--component-sidebar-clip-path)]",
@@ -765,13 +765,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         >
           <div
             className={cn(
-              "flex h-14 shrink-0 items-center justify-between gap-2 border-b border-current/20 px-5",
+              "flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border/70 px-5",
             )}
           >
             <Typography
               mondwest
-              className="text-display font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-              style={{ mixBlendMode: "plus-lighter" }}
+              className="font-semibold text-[1.05rem] leading-tight tracking-normal text-primary"
             >
               {t.app.modelToolsSheetTitle}
               <br />
@@ -783,7 +782,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               size="icon"
               onClick={closeMobilePanel}
               aria-label={t.app.closeModelTools}
-              className="text-text-secondary hover:text-midground"
+              className="rounded-md text-text-secondary hover:bg-primary/10 hover:text-primary"
             >
               <X />
             </Button>
@@ -792,7 +791,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           <div
             className={cn(
               "min-h-0 flex-1 overflow-y-auto overflow-x-hidden",
-              "border-t border-current/10",
+              "border-t border-border/60",
             )}
           >
             <ChatSidebar channel={channel} />
@@ -816,12 +815,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
         <div
           className={cn(
-            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
+            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-white/50",
             "p-2 sm:p-3",
           )}
           style={{
-            backgroundColor: TERMINAL_THEME.background,
-            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
+            background:
+              "linear-gradient(145deg, rgba(14,35,56,0.96), rgba(13,49,79,0.94))",
+            boxShadow:
+              "0 20px 54px rgba(31, 101, 180, 0.18), inset 0 1px 0 rgba(255,255,255,0.16)",
           }}
         >
           <div
@@ -837,9 +838,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className={cn(
               "absolute z-10",
               "normal-case tracking-normal font-normal",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-70 hover:opacity-100 hover:border-current/60",
+              "rounded-md border border-sky-200/30",
+              "bg-sky-950/40 backdrop-blur-sm",
+              "opacity-80 hover:opacity-100 hover:border-sky-100/60",
               "transition-opacity duration-150",
               "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
               "lg:bottom-4 lg:right-4",

@@ -355,12 +355,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
         if (resp.themes?.length) {
           setAvailableThemes(
-            resp.themes.map((t) => ({
-              name: t.name,
-              label: t.label,
-              description: t.description,
-              definition: t.definition,
-            })),
+            resp.themes.map((t) => {
+              const builtin = BUILTIN_THEMES[t.name];
+              return {
+                name: t.name,
+                label: builtin?.label ?? t.label,
+                description: builtin?.description ?? t.description,
+                definition: t.definition,
+              };
+            }),
           );
           // Index any definitions the server shipped (user themes).
           const defs: Record<string, DashboardTheme> = {};

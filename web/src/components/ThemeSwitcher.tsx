@@ -57,7 +57,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
   }, [open, close, useMobileSheet]);
 
   const current = availableThemes.find((th) => th.name === themeName);
-  const label = current?.label ?? themeName;
+  const label = BUILTIN_THEMES[themeName]?.label ?? current?.label ?? themeName;
   const sheetTitle = t.theme?.title ?? "Theme";
 
   return (
@@ -75,8 +75,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
           <Palette className="h-3.5 w-3.5" />
 
           <Typography
-            mondwest
-            className="hidden sm:inline text-display tracking-wide text-xs"
+            className="hidden text-xs font-medium tracking-normal sm:inline"
           >
             {label}
           </Typography>
@@ -107,15 +106,14 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
           className={cn(
             "absolute z-50 min-w-[240px] max-h-[70dvh] overflow-y-auto",
             dropUp ? "left-0 bottom-full mb-1" : "right-0 top-full mt-1",
-            "border border-current/20 bg-background-base/95 backdrop-blur-sm",
-            "shadow-[0_12px_32px_-8px_rgba(0,0,0,0.6)]",
+            "rounded-lg border border-border bg-popover p-1",
+            "shadow-[0_8px_24px_rgba(31,35,41,0.1),0_1px_2px_rgba(31,35,41,0.06)]",
           )}
           role="listbox"
         >
-          <div className="border-b border-current/20 px-3 py-2">
+          <div className="border-b border-border px-3 py-2">
             <Typography
-              mondwest
-              className="text-display text-xs tracking-[0.12em] text-text-tertiary"
+              className="text-xs font-medium tracking-normal text-text-tertiary"
             >
               {sheetTitle}
             </Typography>
@@ -143,13 +141,16 @@ function ThemeSwitcherOptions({
     <>
       {availableThemes.map((th) => {
         const isActive = th.name === themeName;
-        const paletteTheme = BUILTIN_THEMES[th.name] ?? th.definition;
+        const builtinTheme = BUILTIN_THEMES[th.name];
+        const paletteTheme = builtinTheme ?? th.definition;
+        const label = builtinTheme?.label ?? th.label;
+        const description = builtinTheme?.description ?? th.description;
 
         return (
           <ListItem
             active={isActive}
             aria-selected={isActive}
-            className="gap-3"
+            className="gap-3 rounded-md px-2.5 py-2"
             key={th.name}
             onClick={() => {
               setTheme(th.name);
@@ -165,21 +166,20 @@ function ThemeSwitcherOptions({
 
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <Typography
-                mondwest
-                className="truncate text-display text-xs tracking-wide"
+                className="truncate text-xs font-medium tracking-normal"
               >
-                {th.label}
+                {label}
               </Typography>
-              {th.description && (
+              {description && (
                 <Typography className="truncate text-xs tracking-normal text-text-tertiary">
-                  {th.description}
+                  {description}
                 </Typography>
               )}
             </div>
 
             <Check
               className={cn(
-                "h-3 w-3 shrink-0 text-midground",
+                "h-3 w-3 shrink-0 text-primary",
                 isActive ? "opacity-100" : "opacity-0",
               )}
             />
@@ -195,7 +195,7 @@ function ThemeSwatch({ theme }: { theme: DashboardTheme }) {
   return (
     <div
       aria-hidden
-      className="flex h-4 w-9 shrink-0 overflow-hidden border border-current/20"
+      className="flex h-4 w-9 shrink-0 overflow-hidden rounded border border-border"
     >
       <span className="flex-1" style={{ background: background.hex }} />
       <span className="flex-1" style={{ background: midground.hex }} />
@@ -208,7 +208,7 @@ function PlaceholderSwatch() {
   return (
     <div
       aria-hidden
-      className="h-4 w-9 shrink-0 border border-dashed border-current/20"
+      className="h-4 w-9 shrink-0 rounded border border-dashed border-border"
     />
   );
 }

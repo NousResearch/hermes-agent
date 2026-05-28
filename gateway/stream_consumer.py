@@ -45,6 +45,11 @@ _NEW_SEGMENT = object()
 # API/tool iterations (for example: "I'll inspect the repo first.").
 _COMMENTARY = object()
 
+# Queue marker for structured provider reasoning deltas. These are separate
+# from inline <think> tags and are only routed by callers that opted into
+# showing reasoning.
+_REASONING = object()
+
 
 @dataclass
 class StreamConsumerConfig:
@@ -167,6 +172,7 @@ class GatewayStreamConsumer:
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
+        self._reasoning_accumulated = ""
 
         # Native draft-streaming state.  Resolved at the start of run() based
         # on cfg.transport, cfg.chat_type, and the adapter's
@@ -240,6 +246,11 @@ class GatewayStreamConsumer:
         """Queue a completed interim assistant commentary message."""
         if text:
             self._queue.put((_COMMENTARY, text))
+
+    def on_reasoning_delta(self, text: str) -> None:
+        """Queue a structured reasoning/thinking delta for card display."""
+        if text:
+            self._queue.put((_REASONING, text))
 
     def _notify_new_message(self) -> None:
         """Fire the on_new_message callback, swallowing any errors."""
@@ -319,13 +330,18 @@ class GatewayStreamConsumer:
 
                 if best_len:
                     # Found closing tag — discard block, process remainder
+                    self._reasoning_accumulated += buf[:best_idx]
                     self._in_think_block = False
                     buf = buf[best_idx + best_len:]
                 else:
                     # No closing tag yet — hold tail that could be a
                     # partial closing tag prefix, discard the rest.
                     max_tag = max(len(t) for t in self._CLOSE_THINK_TAGS)
-                    self._think_buffer = buf[-max_tag:] if len(buf) > max_tag else buf
+                    if len(buf) > max_tag:
+                        self._reasoning_accumulated += buf[:-max_tag]
+                        self._think_buffer = buf[-max_tag:]
+                    else:
+                        self._think_buffer = buf
                     return
             else:
                 # Look for earliest opening tag at a block boundary
@@ -393,6 +409,12 @@ class GatewayStreamConsumer:
             self._accumulated += self._think_buffer
             self._think_buffer = ""
 
+    def _has_streaming_card_reasoning(self) -> bool:
+        return bool(
+            self._reasoning_accumulated.strip()
+            and self._streaming_card_method("send_streaming_message") is not None
+        )
+
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
         # Platform message length limit — leave room for cursor + formatting.
@@ -440,6 +462,9 @@ class GatewayStreamConsumer:
                         if isinstance(item, tuple) and len(item) == 2 and item[0] is _COMMENTARY:
                             commentary_text = item[1]
                             break
+                        if isinstance(item, tuple) and len(item) == 2 and item[0] is _REASONING:
+                            self._reasoning_accumulated += str(item[1])
+                            continue
                         self._filter_and_accumulate(item)
                     except queue.Empty:
                         break
@@ -453,6 +478,7 @@ class GatewayStreamConsumer:
                 # Decide whether to flush an edit
                 now = time.monotonic()
                 elapsed = now - self._last_edit_time
+                has_card_reasoning = self._has_streaming_card_reasoning()
                 should_edit = (
                     got_done
                     or got_segment_break
@@ -461,7 +487,7 @@ class GatewayStreamConsumer:
                 if not self.cfg.buffer_only:
                     should_edit = should_edit or (
                         (elapsed >= self._current_edit_interval
-                            and self._accumulated)
+                            and (self._accumulated or has_card_reasoning))
                         # buffer_threshold is intentionally codepoint-based:
                         # it's a debounce heuristic ("send updates roughly
                         # every N visible characters"), not a platform-limit
@@ -470,7 +496,7 @@ class GatewayStreamConsumer:
                     )
 
                 current_update_visible = False
-                if should_edit and self._accumulated:
+                if should_edit and (self._accumulated or has_card_reasoning):
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
                     if (
@@ -561,7 +587,8 @@ class GatewayStreamConsumer:
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
                     # full response again.
-                    if self._accumulated:
+                    has_final_card_reasoning = bool(self._message_id and self._has_streaming_card_reasoning())
+                    if self._accumulated or has_final_card_reasoning:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
                         elif (
@@ -948,6 +975,13 @@ class GatewayStreamConsumer:
         self._last_sent_text = text
         return True
 
+    def _streaming_card_method(self, name: str):
+        """Return an adapter CardKit streaming method when explicitly supported."""
+        if getattr(self.adapter, "SUPPORTS_STREAMING_CARDS", False) is not True:
+            return None
+        method = getattr(self.adapter, name, None)
+        return method if callable(method) else None
+
     async def _flush_segment_tail_on_edit_failure(self) -> None:
         """Deliver un-sent tail content before a segment-break reset.
 
@@ -1122,9 +1156,10 @@ class GatewayStreamConsumer:
         if self.cfg.cursor:
             visible_without_cursor = visible_without_cursor.replace(self.cfg.cursor, "")
         _visible_stripped = visible_without_cursor.strip()
-        if not _visible_stripped:
+        has_card_reasoning = self._has_streaming_card_reasoning()
+        if not _visible_stripped and not has_card_reasoning:
             return True  # cursor-only / whitespace-only update
-        if not text.strip():
+        if not text.strip() and not has_card_reasoning:
             return True  # nothing to send is "success"
         # Guard: do not create a brand-new standalone message when the only
         # visible content is a handful of characters alongside the streaming
@@ -1139,7 +1174,8 @@ class GatewayStreamConsumer:
         if (self._message_id is None
                 and self.cfg.cursor
                 and self.cfg.cursor in text
-                and len(_visible_stripped) < _MIN_NEW_MSG_CHARS):
+            and len(_visible_stripped) < _MIN_NEW_MSG_CHARS
+            and not has_card_reasoning):
             return True  # too short for a standalone message — accumulate more
 
         # Native draft streaming: route mid-stream frames through send_draft.
@@ -1199,12 +1235,25 @@ class GatewayStreamConsumer:
                         and await self._try_fresh_final(text)
                     ):
                         return True
-                    # Edit existing message
-                    result = await self._edit_message(
-                        message_id=self._message_id,
-                        content=text,
-                        finalize=finalize,
-                    )
+                    # Edit existing message. Platforms that explicitly opt in
+                    # can keep an interactive CardKit card open while text
+                    # streams and close it on the final edit.
+                    edit_streaming = self._streaming_card_method("edit_streaming_message")
+                    if edit_streaming is not None:
+                        result = await edit_streaming(
+                            chat_id=self.chat_id,
+                            message_id=self._message_id,
+                            content="" if has_card_reasoning and not _visible_stripped else text,
+                            finalize=finalize,
+                            metadata=self.metadata,
+                            reasoning_text=self._reasoning_accumulated.strip() or None,
+                        )
+                    else:
+                        result = await self._edit_message(
+                            message_id=self._message_id,
+                            content=text,
+                            finalize=finalize,
+                        )
                     if result.success:
                         self._already_sent = True
                         # Adapter may have split-and-delivered an oversized
@@ -1279,12 +1328,22 @@ class GatewayStreamConsumer:
             else:
                 # First message — send new, threaded to the original user message
                 # so it lands in the correct topic/thread.
-                result = await self.adapter.send(
-                    chat_id=self.chat_id,
-                    content=text,
-                    reply_to=self._initial_reply_to_id,
-                    metadata=self.metadata,
-                )
+                send_streaming = self._streaming_card_method("send_streaming_message")
+                if send_streaming is not None and not finalize:
+                    result = await send_streaming(
+                        chat_id=self.chat_id,
+                        content="" if has_card_reasoning and not _visible_stripped else text,
+                        reply_to=self._initial_reply_to_id,
+                        metadata=self.metadata,
+                        reasoning_text=self._reasoning_accumulated.strip() or None,
+                    )
+                else:
+                    result = await self.adapter.send(
+                        chat_id=self.chat_id,
+                        content=text,
+                        reply_to=self._initial_reply_to_id,
+                        metadata=self.metadata,
+                    )
                 if result.success:
                     if result.message_id:
                         self._message_id = result.message_id

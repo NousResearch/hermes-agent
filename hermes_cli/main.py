@@ -13390,6 +13390,11 @@ Examples:
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )
 
+    sessions_subparsers.add_parser(
+        "optimize",
+        help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
+    )
+
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
     sessions_rename = sessions_subparsers.add_parser(
@@ -13561,6 +13566,39 @@ Examples:
 
             relaunch(["--resume", selected_id])
             return  # won't reach here after execvp
+
+        elif action == "optimize":
+            db_path = db.db_path
+            before_mb = (
+                os.path.getsize(db_path) / (1024 * 1024)
+                if db_path.exists()
+                else 0.0
+            )
+            print("Optimizing session store (FTS merge + VACUUM)…")
+            try:
+                # vacuum() merges FTS5 segments (optimize_fts) then VACUUMs.
+                # Probe the index count first for the summary line.
+                n = sum(
+                    1
+                    for t in db._FTS_TABLES
+                    if db._fts_table_exists(t)
+                )
+                db.vacuum()
+            except Exception as e:
+                print(f"Error: optimization failed: {e}")
+                db.close()
+                return
+            after_mb = (
+                os.path.getsize(db_path) / (1024 * 1024)
+                if db_path.exists()
+                else 0.0
+            )
+            saved = before_mb - after_mb
+            print(f"Optimized {n} FTS index(es).")
+            print(
+                f"Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
+                f"(reclaimed {saved:.1f} MB)"
+            )
 
         elif action == "stats":
             total = db.session_count()

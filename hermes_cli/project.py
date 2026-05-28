@@ -3,14 +3,18 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from hermes_cli.project_autopilot import bootstrap_project_home, verify_project_home
+from hermes_cli.project_autopilot import (
+    bootstrap_project_home,
+    sync_project_home,
+    verify_project_home,
+)
 
 
 def build_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     parser = subparsers.add_parser(
         "project",
         help="Filesystem-backed Project Autopilot projects",
-        description="Create and verify deterministic Project Autopilot homes.",
+        description="Create, sync, and verify deterministic Project Autopilot homes.",
     )
     sub = parser.add_subparsers(dest="project_action")
 
@@ -29,6 +33,9 @@ def build_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentPar
 
     verify = sub.add_parser("verify", help="Verify project-home invariants")
     verify.add_argument("project_home")
+    sync = sub.add_parser("sync", help="Sync a Project Autopilot home from kanban")
+    sync.add_argument("project_home")
+    sync.add_argument("--kanban-db")
     parser.set_defaults(func=project_command)
     return parser
 
@@ -57,5 +64,12 @@ def project_command(args: argparse.Namespace) -> int:
         doc = verify_project_home(Path(args.project_home).expanduser())
         print(f"OK {doc['slug']} state={doc['state']}")
         return 0
-    print("usage: hermes project <init|verify>")
+    if action == "sync":
+        doc = sync_project_home(
+            Path(args.project_home).expanduser(),
+            db_path=Path(args.kanban_db).expanduser() if args.kanban_db else None,
+        )
+        print(f"SYNCED {doc['slug']} from board {doc['board_slug']}")
+        return 0
+    print("usage: hermes project <init|sync|verify>")
     return 1

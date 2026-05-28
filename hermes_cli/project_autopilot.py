@@ -249,14 +249,51 @@ Final worktree: `{doc["final_worktree_path"]}`
 """
 
 
+def _status_counts(task_graph: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for node in task_graph.get("nodes", []):
+        status = str(node.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _find_next_executable(task_graph: dict[str, Any]) -> dict[str, Any] | None:
+    nodes = list(task_graph.get("nodes", []))
+    for desired_status in ("running", "ready"):
+        for node in nodes:
+            if node.get("status") == desired_status:
+                return node
+    return None
+
+
 def render_status_md(
     doc: dict[str, Any],
     *,
     next_action: str | None = None,
     blocker: str | None = None,
+    task_graph: dict[str, Any] | None = None,
 ) -> str:
-    action = next_action or "Plan the first executable task graph."
+    graph = task_graph or doc.get("task_graph") or {"nodes": [], "edges": []}
+    next_task = _find_next_executable(graph)
+    if next_action:
+        action = next_action
+    elif next_task:
+        action = (
+            f"Next executable task: `{next_task['id']}` {next_task['title']} "
+            f"({next_task['status']})."
+        )
+    else:
+        action = "No ready or running task found; inspect the board for blockers."
     blocker_text = blocker or "none"
+    counts = _status_counts(graph)
+    count_bits = ", ".join(
+        f"{status}: {count}" for status, count in sorted(counts.items())
+    )
+    total_tasks = len(graph.get("nodes", []))
+    task_summary = (
+        f"Tasks: {total_tasks} total"
+        + (f" ({count_bits})" if count_bits else "")
+    )
     return f"""# Status: {doc["title"]}
 
 State: {doc["state"]}
@@ -265,6 +302,7 @@ Board: `{doc["board_slug"]}`
 Root task: `{doc["root_task_id"]}`
 PR: {doc.get("pr_url") or "not open"}
 Blocker: {blocker_text}
+{task_summary}
 
 ## Next action
 
@@ -272,7 +310,22 @@ Blocker: {blocker_text}
 """
 
 
-def render_handoff_md(doc: dict[str, Any]) -> str:
+def render_handoff_md(
+    doc: dict[str, Any],
+    task_graph: dict[str, Any] | None = None,
+) -> str:
+    graph = task_graph or doc.get("task_graph") or {"nodes": [], "edges": []}
+    next_task = _find_next_executable(graph)
+    next_line = (
+        f"- Next executable task: `{next_task['id']}` {next_task['title']}"
+        if next_task
+        else "- Next executable task: none"
+    )
+    task_lines = [
+        f"- `{node['id']}` [{node['status']}] {node['title']}"
+        for node in graph.get("nodes", [])
+    ]
+    task_snapshot = "\n".join(task_lines) if task_lines else "- no tasks cached"
     return f"""# Session Handoff: {doc["title"]}
 
 State: {doc["state"]}
@@ -281,7 +334,145 @@ Restart checklist:
 1. Verify this project home exists and `project.json` validates.
 2. Inspect board `{doc["board_slug"]}` and root task `{doc["root_task_id"]}`.
 3. Reconcile `TASKS.md` and `STATUS.md` from board truth before dispatching work.
+
+## Task graph snapshot
+
+{next_line}
+
+{task_snapshot}
 """
+
+
+def _task_to_node(task: Any, parents: list[str], children: list[str]) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "title": task.title,
+        "body": task.body,
+        "assignee": task.assignee,
+        "status": task.status,
+        "priority": task.priority,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "workspace_kind": task.workspace_kind,
+        "workspace_path": task.workspace_path,
+        "branch_name": task.branch_name,
+        "parents": parents,
+        "children": children,
+    }
+
+
+def derive_task_graph(conn: Any, root_task_id: str) -> dict[str, Any]:
+    from hermes_cli import kanban_db
+
+    root = kanban_db.get_task(conn, root_task_id)
+    if root is None:
+        raise InvariantError(f"root task not found on kanban board: {root_task_id}")
+
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    queue = [root_task_id]
+    while queue:
+        task_id = queue.pop(0)
+        if task_id in seen:
+            continue
+        seen.add(task_id)
+        ordered_ids.append(task_id)
+        queue.extend(
+            child_id
+            for child_id in kanban_db.child_ids(conn, task_id)
+            if child_id not in seen
+        )
+
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, str]] = []
+    workspace_contracts: dict[str, dict[str, str | None]] = {}
+    for task_id in ordered_ids:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            continue
+        parents = [pid for pid in kanban_db.parent_ids(conn, task_id) if pid in seen]
+        children = [cid for cid in kanban_db.child_ids(conn, task_id) if cid in seen]
+        nodes.append(_task_to_node(task, parents, children))
+        edges.extend({"parent": pid, "child": task_id} for pid in parents)
+        if task.workspace_kind == "worktree":
+            workspace_contracts[task_id] = {
+                "workspace_kind": task.workspace_kind,
+                "workspace_path": task.workspace_path,
+                "branch_name": task.branch_name,
+            }
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "workspace_contracts": workspace_contracts,
+    }
+
+
+def render_tasks_md(doc: dict[str, Any], task_graph: dict[str, Any]) -> str:
+    lines = [
+        f"# Tasks: {doc['title']}",
+        "",
+        f"Root task: `{doc['root_task_id']}`",
+        "",
+        "| Task | Status | Assignee | Workspace |",
+        "| --- | --- | --- | --- |",
+    ]
+    for node in task_graph.get("nodes", []):
+        workspace = node.get("workspace_path") or node.get("workspace_kind") or ""
+        lines.append(
+            "| "
+            f"`{node['id']}` {node['title']} | "
+            f"{node['status']} | "
+            f"{node.get('assignee') or ''} | "
+            f"{workspace} |"
+        )
+    if task_graph.get("edges"):
+        lines.extend(["", "## Dependencies", ""])
+        for edge in task_graph["edges"]:
+            lines.append(f"- `{edge['parent']}` blocks `{edge['child']}`")
+    return "\n".join(lines) + "\n"
+
+
+def sync_project_home(
+    project_home: Path,
+    *,
+    db_path: Path | None = None,
+    board: str | None = None,
+) -> dict[str, Any]:
+    from hermes_cli import kanban_db
+
+    doc = load_project_doc(project_home)
+    conn = kanban_db.connect(db_path, board=board or doc["board_slug"])
+    try:
+        graph_with_contracts = derive_task_graph(conn, doc["root_task_id"])
+    finally:
+        conn.close()
+
+    task_graph = {
+        "nodes": graph_with_contracts["nodes"],
+        "edges": graph_with_contracts["edges"],
+    }
+    doc["task_graph"] = task_graph
+    doc["workspace_contracts"] = graph_with_contracts["workspace_contracts"]
+    doc["updated_at"] = now_ts()
+    validate_project_doc(doc)
+
+    (project_home / "TASKS.md").write_text(
+        render_tasks_md(doc, task_graph),
+        encoding="utf-8",
+    )
+    (project_home / "STATUS.md").write_text(
+        render_status_md(doc, task_graph=task_graph),
+        encoding="utf-8",
+    )
+    (project_home / "SESSION-HANDOFF.md").write_text(
+        render_handoff_md(doc, task_graph),
+        encoding="utf-8",
+    )
+    write_json(project_home / "project.json", doc)
+    verify_project_home(project_home)
+    return doc
 
 
 def bootstrap_project_home(

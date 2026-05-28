@@ -853,6 +853,78 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return tool_error(error_msg)
 
 
+# ─── Browser Fallback for Search-Only Backends ──────────────────────────────
+
+async def _browser_extract_urls(
+    urls: List[str],
+) -> Optional[List[Dict[str, Any]]]:
+    """Attempt to extract page content via the browser tool.
+
+    Returns a list of result dicts (same shape as provider extract output)
+    when a browser is available and extraction succeeds for at least one URL.
+    Returns ``None`` when no browser is configured or all URLs fail —
+    callers should treat ``None`` as "fallback unavailable".
+    """
+    try:
+        from tools.browser_tool import check_browser_requirements, browser_navigate, browser_snapshot
+    except ImportError:
+        return None
+
+    if not check_browser_requirements():
+        return None
+
+    logger.info("Search-only backend; falling back to browser for URL extraction")
+
+    import uuid
+    task_id = f"web_extract_fallback_{uuid.uuid4().hex[:8]}"
+    results: List[Dict[str, Any]] = []
+
+    for url in urls:
+        try:
+            # browser_navigate and browser_snapshot are synchronous
+            nav_raw = await asyncio.to_thread(browser_navigate, url, task_id)
+            nav_result = json.loads(nav_raw) if isinstance(nav_raw, str) else nav_raw
+            if not nav_result.get("success", False):
+                results.append({
+                    "url": url, "title": "", "content": "",
+                    "error": nav_result.get("error", "Browser navigation failed"),
+                })
+                continue
+
+            snap_raw = await asyncio.to_thread(
+                browser_snapshot, True, task_id, None
+            )
+            snap_result = json.loads(snap_raw) if isinstance(snap_raw, str) else snap_raw
+            if not snap_result.get("success", False):
+                results.append({
+                    "url": url, "title": "", "content": "",
+                    "error": snap_result.get("error", "Browser snapshot failed"),
+                })
+                continue
+
+            snapshot_text = snap_result.get("snapshot", "")
+            title = nav_result.get("title", "")
+            results.append({
+                "url": url,
+                "title": title,
+                "content": snapshot_text,
+                "raw_content": snapshot_text,
+            })
+        except Exception as exc:
+            logger.debug("Browser fallback failed for %s: %s", url, exc)
+            results.append({
+                "url": url, "title": "", "content": "",
+                "error": f"Browser extraction failed: {exc}",
+            })
+
+    # If every single URL failed, signal that fallback didn't work so the
+    # caller can return the original search-only error message.
+    if all(r.get("error") for r in results):
+        return None
+
+    return results
+
+
 async def web_extract_tool(
     urls: List[str],
     format: str = None,
@@ -945,55 +1017,83 @@ async def web_extract_tool(
             )
 
             provider = _wsp_get_provider(backend) if backend else None
+            _used_browser_fallback = False
             if provider is None or not provider.supports_extract():
                 # When the configured name IS registered but doesn't support
                 # extract (search-only providers like brave-free / ddgs /
-                # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
+                # searxng), try browser fallback before erroring out.
+                # When the name isn't registered at all (typo / uninstalled
+                # plugin), fall through to the active-provider walk.
                 if provider is not None and not provider.supports_extract():
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                f"{provider.display_name} is a search-only "
-                                "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
+                    # ── Browser fallback for search-only backends ──
+                    # If a browser (Camofox or local Playwright) is available,
+                    # use browser_navigate + browser_snapshot to extract page
+                    # content instead of returning an error.
+                    browser_fallback_enabled = _load_web_config().get(
+                        "browser_fallback", True
                     )
-                provider = get_active_extract_provider()
-                if provider is None:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
+                    if browser_fallback_enabled:
+                        browser_results = await _browser_extract_urls(safe_urls)
+                        if browser_results is not None:
+                            results = browser_results
+                            _used_browser_fallback = True
+                        else:
+                            return json.dumps(
+                                {
+                                    "success": False,
+                                    "error": (
+                                        f"{provider.display_name} is a search-only "
+                                        "backend and cannot extract URL content. "
+                                        "Set web.extract_backend to firecrawl, "
+                                        "tavily, exa, or parallel."
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            )
+                    else:
+                        return json.dumps(
+                            {
+                                "success": False,
+                                "error": (
+                                    f"{provider.display_name} is a search-only "
+                                    "backend and cannot extract URL content. "
+                                    "Set web.extract_backend to firecrawl, "
+                                    "tavily, exa, or parallel."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                if not _used_browser_fallback:
+                    provider = get_active_extract_provider()
+                    if provider is None:
+                        return json.dumps(
+                            {
+                                "success": False,
+                                "error": (
+                                    "No web extract provider configured. "
+                                    "Set web.extract_backend to firecrawl, "
+                                    "tavily, exa, or parallel."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
 
-            logger.info(
-                "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
-            )
-
-            # Async-or-sync dispatch: parallel + firecrawl have async
-            # extract(); exa + tavily are sync.
-            import inspect
-            if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
-            else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
+            if not _used_browser_fallback:
+                logger.info(
+                    "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
                 )
+
+                # Async-or-sync dispatch: parallel + firecrawl have async
+                # extract(); exa + tavily are sync.
+                import inspect
+                if inspect.iscoroutinefunction(provider.extract):
+                    results = await provider.extract(safe_urls, format=format)
+                else:
+                    # Run sync extract() in a thread so we don't block the
+                    # event loop on network I/O.
+                    results = await asyncio.to_thread(
+                        provider.extract, safe_urls, format=format
+                    )
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:

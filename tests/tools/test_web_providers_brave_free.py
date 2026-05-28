@@ -253,10 +253,58 @@ class TestBraveFreeSearchOnlyErrors:
         _reset_for_tests()
 
     def test_web_extract_returns_search_only_error(self, monkeypatch):
+        """When browser fallback is unavailable, search-only error is returned."""
         import asyncio
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free"})
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+        # Mock browser fallback as unavailable
+        async def _no_browser(urls):
+            return None
+        monkeypatch.setattr(web_tools, "_browser_extract_urls", _no_browser)
+
+        result_str = asyncio.get_event_loop().run_until_complete(
+            web_tools.web_extract_tool(["https://example.com"])
+        )
+        result = json.loads(result_str)
+        assert result["success"] is False
+        assert "search-only" in result["error"].lower()
+        assert "brave" in result["error"].lower()
+
+    def test_web_extract_uses_browser_fallback(self, monkeypatch):
+        """When browser is available, search-only backend falls back to browser."""
+        import asyncio
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free"})
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+        monkeypatch.setattr(web_tools, "check_auxiliary_model", lambda: False)
+
+        # Mock browser fallback returning content
+        async def _mock_browser(urls):
+            return [{"url": urls[0], "title": "Example", "content": "Hello world", "raw_content": "Hello world"}]
+        monkeypatch.setattr(web_tools, "_browser_extract_urls", _mock_browser)
+
+        result_str = asyncio.get_event_loop().run_until_complete(
+            web_tools.web_extract_tool(["https://example.com"])
+        )
+        result = json.loads(result_str)
+        assert "results" in result
+        assert result["results"][0]["content"] == "Hello world"
+
+    def test_web_extract_browser_fallback_disabled(self, monkeypatch):
+        """When browser_fallback is disabled in config, search-only error is returned."""
+        import asyncio
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free", "browser_fallback": False})
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
@@ -268,7 +316,6 @@ class TestBraveFreeSearchOnlyErrors:
         result = json.loads(result_str)
         assert result["success"] is False
         assert "search-only" in result["error"].lower()
-        assert "brave" in result["error"].lower()
 
     def test_web_crawl_returns_search_only_error(self, monkeypatch):
         import asyncio

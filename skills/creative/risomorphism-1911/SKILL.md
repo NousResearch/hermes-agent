@@ -1,6 +1,6 @@
 ---
-name: ascii-art-pipeline
-description: "Use when building high-fidelity ASCII outputs from images or video, especially when you need named presets, glyph diagnostics, preview rendering, or Herm eikon generation."
+name: risomorphism-1911
+description: "Use when building high-fidelity ASCII outputs from images or video, especially when you need named presets, glyph diagnostics, preview rendering, or Herm eikon generation. Risomorphism 1911 — Ousia Research aesthetic pipeline."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
@@ -11,7 +11,7 @@ metadata:
     related_skills: [ascii-art, ascii-video, herm-tui-skin-development]
 ---
 
-# ASCII Art Pipeline
+# Risomorphism 1911
 
 ## Overview
 
@@ -108,7 +108,7 @@ Use `scripts/diagnose-glyph-quality.py` for a fast inspection pass.
 - `/Users/johann/projects/ascii-art-pipeline/`
 
 ### Hermes in-repo skill target
-- `skills/creative/ascii-art-pipeline/`
+- `skills/creative/risomorphism-1911/`
 
 ### Docs generation
 After changing this skill, regenerate docs from the Hermes repo root:

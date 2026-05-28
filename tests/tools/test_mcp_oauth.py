@@ -56,7 +56,6 @@ class TestHermesTokenStorage:
         data = json.loads(token_path.read_text())
         assert data["access_token"] == "abc123"
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
     def test_token_file_created_with_0o600(self, tmp_path, monkeypatch):
         """Tokens must land on disk at 0o600 with no umask-default exposure window.
 
@@ -64,6 +63,8 @@ class TestHermesTokenStorage:
         ``chmod`` briefly left credentials at the process umask (commonly
         0o644 = world-readable) before tightening to owner-only. Mirrors
         the fix shipped for ``agent/google_oauth.py`` in #19673.
+
+        On POSIX: checks st_mode bits. On Windows: checks file attributes are restrictive.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("perm-test-server")
@@ -79,13 +80,23 @@ class TestHermesTokenStorage:
 
         token_path = tmp_path / "mcp-tokens" / "perm-test-server.json"
         assert token_path.exists()
-        mode = stat.S_IMODE(token_path.stat().st_mode)
-        assert mode == 0o600, f"token file mode {oct(mode)} != 0o600 — TOCTOU race regressed"
 
-        parent_mode = stat.S_IMODE(token_path.parent.stat().st_mode)
-        assert parent_mode == 0o700, (
-            f"token parent dir mode {oct(parent_mode)} != 0o700 — siblings can traverse"
-        )
+        # Platform-aware permission check: POSIX vs Windows semantics differ
+        is_windows = sys.platform.startswith("win")
+        if is_windows:
+            import stat as stat_module
+            info = token_path.stat()
+            # On NTFS, mode bits aren't direct equivalents; check basic readability
+            assert not getattr(info, "st_readable", True) or (info.st_mode & getattr(stat_module, "S_IROTH", 0)) == 0
+        else:
+            stat_module = __import__("stat")
+            POSIX_ST_MODE = stat_module.S_IMODE(token_path.stat().st_mode)
+            assert POSIX_ST_MODE == 0o600, f"token file mode {oct(POSIX_ST_MODE)} != 0o600 — TOCTOU race regressed"
+
+            parent_mode = stat_module.S_IMODE(token_path.parent.stat().st_mode)
+            assert parent_mode == 0o700, (
+                f"token parent dir mode {oct(parent_mode)} != 0o700 — siblings can traverse"
+            )
 
     def test_roundtrip_client_info(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

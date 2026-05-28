@@ -928,6 +928,32 @@ class TestInit:
             )
             assert a._cache_ttl == "5m"
 
+    @pytest.mark.parametrize(
+        "falsy_value", [False, None, "off", "false", "disabled", "no", "none"],
+    )
+    def test_prompt_caching_disabled_by_falsy_cache_ttl(self, falsy_value):
+        """Falsy cache_ttl values should fully disable prompt caching."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"prompt_caching": {"cache_ttl": falsy_value}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="anthropic/claude-sonnet-4-20250514",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._use_prompt_caching is False
+            assert a._use_native_cache_layout is False
+            assert a._cache_ttl is None
+
     def test_valid_tool_names_populated(self):
         """valid_tool_names should contain names from loaded tools."""
         tools = _make_tool_defs("web_search", "terminal")

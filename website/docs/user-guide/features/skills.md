@@ -358,14 +358,12 @@ The agent can create, update, and delete its own skills via the `skill_manage` t
 
 ### Actions
 
-| Action | Use for | Key params |
-|--------|---------|------------|
-| `create` | New skill from scratch | `name`, `content` (full SKILL.md), optional `category` |
-| `patch` | Targeted fixes (preferred) | `name`, `old_string`, `new_string` |
-| `edit` | Major structural rewrites | `name`, `content` (full SKILL.md replacement) |
-| `delete` | Remove a skill entirely | `name` |
-| `write_file` | Add/update supporting files | `name`, `file_path`, `file_content` |
-| `remove_file` | Remove a supporting file | `name`, `file_path` |
+- `create`: New skill from scratch. Key params: `name`, `content` (full SKILL.md), optional `category`.
+- `patch`: Targeted fixes (preferred). Key params: `name`, `old_string`, `new_string`.
+- `edit`: Major structural rewrites. Key params: `name`, `content` (full SKILL.md replacement).
+- `delete`: Remove a skill entirely. Key param: `name`.
+- `write_file`: Add or update supporting files. Key params: `name`, `file_path`, `file_content`.
+- `remove_file`: Remove a supporting file. Key params: `name`, `file_path`.
 
 :::tip
 The `patch` action is preferred for updates — it's more token-efficient than `edit` because only the changed text appears in the tool call.

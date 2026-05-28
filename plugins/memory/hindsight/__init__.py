@@ -59,6 +59,9 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_VALID_RECALL_METHODS = {"recall", "list", "entity"}
+_VALID_RECALL_TYPES = {"world", "experience", "observation"}
+_VALID_TAG_MATCH_MODES = {"any", "all", "any_strict", "all_strict"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -269,6 +272,65 @@ RECALL_SCHEMA = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
+            "method": {
+                "type": "string",
+                "enum": ["recall", "list", "entity"],
+                "description": (
+                    "Retrieval strategy: semantic recall, keyword/list search, "
+                    "or recall with entity observations."
+                ),
+            },
+            "budget": {
+                "type": "string",
+                "enum": ["low", "mid", "high"],
+                "description": "Optional per-call recall thoroughness override.",
+            },
+            "max_tokens": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional per-call maximum token budget for recall results.",
+            },
+            "types": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["world", "experience", "observation"]},
+                "description": "Optional per-call fact type filter.",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional per-call tag filter. Falls back to configured recall_tags.",
+            },
+            "tags_match": {
+                "type": "string",
+                "enum": ["any", "all", "any_strict", "all_strict"],
+                "description": "Tag matching mode for tags.",
+            },
+            "tag_groups": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Advanced Hindsight tag-group filter passed through to recall.",
+            },
+            "metadata": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "Exact metadata key/value post-filter applied to returned memories.",
+            },
+            "max_entity_tokens": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Maximum token budget for entity observations when method='entity'.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "description": "Maximum items to fetch when method='list'.",
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Pagination offset when method='list'.",
+            },
         },
         "required": ["query"],
     },
@@ -374,6 +436,215 @@ def _normalize_retain_tags(value: Any) -> List[str]:
         seen.add(tag)
         normalized.append(tag)
     return normalized
+
+
+def _get_value(obj: Any, key: str, default: Any = None) -> Any:
+    """Return a field from dict-like, pydantic, or attribute-style objects."""
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    value = getattr(obj, key, default)
+    if value is not default:
+        return value
+    model_dump = getattr(obj, "model_dump", None)
+    if callable(model_dump):
+        try:
+            data = model_dump()
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            return data.get(key, default)
+    to_dict = getattr(obj, "to_dict", None)
+    if callable(to_dict):
+        try:
+            data = to_dict()
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            return data.get(key, default)
+    return default
+
+
+def _normalize_recall_types(value: Any) -> list[str] | None:
+    """Normalize and validate Hindsight recall result type filters."""
+    result = [item for item in _normalize_retain_tags(value) if item in _VALID_RECALL_TYPES]
+    return result or None
+
+
+def _normalize_tag_match(value: Any, default: str = "any") -> str:
+    mode = str(value or default).strip()
+    return mode if mode in _VALID_TAG_MATCH_MODES else default
+
+
+def _normalize_metadata_filter(value: Any) -> dict[str, str] | None:
+    """Normalize an exact-match metadata filter from dict or JSON object string."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return None
+    if not isinstance(value, dict):
+        return None
+    result = {
+        str(key).strip(): str(val)
+        for key, val in value.items()
+        if str(key).strip() and val is not None
+    }
+    return result or None
+
+
+def _extract_memory_text(item: Any) -> str:
+    """Best-effort extraction of display text from recall/list result objects."""
+    for key in ("text", "content", "observation", "summary"):
+        value = _get_value(item, key)
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def _item_tags(item: Any) -> list[str]:
+    return _normalize_retain_tags(_get_value(item, "tags"))
+
+
+def _item_type(item: Any) -> str:
+    return str(
+        _get_value(item, "type", None)
+        or _get_value(item, "fact_type", None)
+        or _get_value(item, "factType", "")
+        or ""
+    ).strip()
+
+
+def _item_metadata(item: Any) -> dict[str, Any]:
+    metadata = _get_value(item, "metadata", {})
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _matches_type_filter(item: Any, types: list[str] | None) -> bool:
+    if not types:
+        return True
+    item_type = _item_type(item)
+    return bool(item_type and item_type in types)
+
+
+def _matches_tag_filter(item: Any, tags: list[str] | None, tags_match: str) -> bool:
+    if not tags:
+        return True
+    item_tags = _item_tags(item)
+    if not item_tags:
+        return False
+    if tags_match in {"all", "all_strict"}:
+        return all(tag in item_tags for tag in tags)
+    return any(tag in item_tags for tag in tags)
+
+
+def _matches_metadata_filter(item: Any, metadata_filter: dict[str, str] | None) -> bool:
+    if not metadata_filter:
+        return True
+    metadata = _item_metadata(item)
+    return all(key in metadata and str(metadata[key]) == expected for key, expected in metadata_filter.items())
+
+
+def _filter_memory_items(
+    items: list[Any],
+    *,
+    types: list[str] | None = None,
+    tags: list[str] | None = None,
+    tags_match: str = "any",
+    metadata: dict[str, str] | None = None,
+) -> list[Any]:
+    return [
+        item
+        for item in items
+        if _matches_type_filter(item, types)
+        and _matches_tag_filter(item, tags, tags_match)
+        and _matches_metadata_filter(item, metadata)
+    ]
+
+
+def _format_memory_lines(items: list[Any]) -> list[str]:
+    lines = []
+    for index, item in enumerate(items, 1):
+        text = _extract_memory_text(item)
+        if text:
+            lines.append(f"{index}. {text}")
+    return lines
+
+
+def _entity_items(entities: Any) -> list[tuple[str | None, Any]]:
+    if not entities:
+        return []
+    if isinstance(entities, dict):
+        return [(str(key), value) for key, value in entities.items()]
+    return [(None, entity) for entity in entities]
+
+
+def _format_entity_lines(entities: Any) -> list[str]:
+    lines: list[str] = []
+    for index, (entity_key, entity) in enumerate(_entity_items(entities), 1):
+        name = (
+            _get_value(entity, "canonical_name")
+            or _get_value(entity, "label")
+            or _get_value(entity, "name")
+            or _get_value(entity, "entity_id")
+            or entity_key
+            or "unknown"
+        )
+        entity_type = _get_value(entity, "type") or _get_value(entity, "kind") or ""
+        prefix = f"[{entity_type}] " if entity_type else ""
+        lines.append(f"{index}. {prefix}{name}")
+        observations = _get_value(entity, "observations", None)
+        if observations is None:
+            observation = _get_value(entity, "observation", None)
+            observations = [observation] if observation else []
+        for observation in observations or []:
+            text = _extract_memory_text(observation)
+            if text:
+                lines.append(f"   - {text}")
+    return lines
+
+
+def _result_entity_ids(items: list[Any]) -> set[str]:
+    """Return entity ids referenced by recall results."""
+    entity_ids: set[str] = set()
+    for item in items:
+        raw_entities = _get_value(item, "entities", None)
+        if isinstance(raw_entities, str):
+            raw_entities = [raw_entities]
+        if isinstance(raw_entities, (list, tuple, set)):
+            entity_ids.update(str(entity_id) for entity_id in raw_entities if entity_id)
+    return entity_ids
+
+
+def _filter_entities_by_ids(entities: Any, allowed_ids: set[str]) -> Any:
+    """Restrict entity payloads to ids referenced by already-filtered memories."""
+    if not entities or not allowed_ids:
+        return None
+    if isinstance(entities, dict):
+        filtered: dict[str, Any] = {}
+        for key, entity in entities.items():
+            entity_id = str(_get_value(entity, "entity_id", key) or key)
+            key_id = str(key)
+            if key_id in allowed_ids or entity_id in allowed_ids:
+                filtered[key] = entity
+        return filtered or None
+
+    filtered_entities = []
+    for entity in entities:
+        entity_id = str(_get_value(entity, "entity_id", "") or "")
+        if entity_id in allowed_ids:
+            filtered_entities.append(entity)
+    return filtered_entities or None
+
+
+def _bounded_int(value: Any, default: int, *, minimum: int = 1, maximum: int | None = None) -> int:
+    parsed = _parse_int_setting(value, default)
+    if parsed < minimum:
+        return default
+    if maximum is not None and parsed > maximum:
+        return maximum
+    return parsed
 
 
 def _utc_timestamp() -> str:
@@ -1167,8 +1438,8 @@ class HindsightMemoryProvider(MemoryProvider):
             or os.environ.get("HINDSIGHT_RETAIN_TAGS", "")
         )
         self._tags = self._retain_tags or None
-        self._recall_tags = self._config.get("recall_tags") or None
-        self._recall_tags_match = self._config.get("recall_tags_match", "any")
+        self._recall_tags = _normalize_retain_tags(self._config.get("recall_tags")) or None
+        self._recall_tags_match = _normalize_tag_match(self._config.get("recall_tags_match"), "any")
         self._retain_source = str(
             self._config.get("retain_source") or os.environ.get("HINDSIGHT_RETAIN_SOURCE", "")
         ).strip()
@@ -1186,8 +1457,8 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # Recall controls
         self._auto_recall = self._config.get("auto_recall", True)
-        self._recall_max_tokens = int(self._config.get("recall_max_tokens", 4096))
-        self._recall_types = self._config.get("recall_types") or None
+        self._recall_max_tokens = _bounded_int(self._config.get("recall_max_tokens", 4096), 4096)
+        self._recall_types = _normalize_recall_types(self._config.get("recall_types"))
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
         self._retain_async = self._config.get("retain_async", True)
@@ -1495,6 +1766,124 @@ class HindsightMemoryProvider(MemoryProvider):
             return []
         return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
 
+    def _build_tool_recall_kwargs(
+        self,
+        args: dict[str, Any],
+        query: str,
+        *,
+        default_types: list[str] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, str] | None, list[str] | None, str]:
+        """Build validated kwargs for Hindsight recall-like tool calls."""
+        budget = args.get("budget") if args.get("budget") in _VALID_BUDGETS else self._budget
+        max_tokens = _bounded_int(args.get("max_tokens"), self._recall_max_tokens)
+        types = _normalize_recall_types(args.get("types")) if "types" in args else None
+        if not types:
+            types = self._recall_types or default_types
+
+        raw_tags = args.get("tags") if isinstance(args.get("tags"), list) else None
+        tags = _normalize_retain_tags(raw_tags) if raw_tags is not None else None
+        if not tags:
+            tags = self._recall_tags
+        tags_match = _normalize_tag_match(args.get("tags_match"), self._recall_tags_match)
+
+        recall_kwargs: dict[str, Any] = {
+            "bank_id": self._bank_id,
+            "query": query,
+            "budget": budget,
+            "max_tokens": max_tokens,
+        }
+        if types:
+            recall_kwargs["types"] = types
+        if tags:
+            recall_kwargs["tags"] = tags
+            recall_kwargs["tags_match"] = tags_match
+        if isinstance(args.get("tag_groups"), list):
+            recall_kwargs["tag_groups"] = args["tag_groups"]
+
+        metadata_filter = _normalize_metadata_filter(args.get("metadata"))
+        return recall_kwargs, metadata_filter, tags, tags_match
+
+    def _handle_recall_search(self, args: dict[str, Any], query: str) -> str:
+        recall_kwargs, metadata_filter, _, _ = self._build_tool_recall_kwargs(args, query)
+        logger.debug(
+            "Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
+            self._bank_id,
+            len(query),
+            recall_kwargs["budget"],
+        )
+        resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+        results = list(getattr(resp, "results", None) or [])
+        results = _filter_memory_items(results, metadata=metadata_filter)
+        logger.debug("Tool hindsight_recall: %d results", len(results))
+        lines = _format_memory_lines(results)
+        if not lines:
+            return json.dumps({"result": "No relevant memories found."})
+        return json.dumps({"result": "\n".join(lines)})
+
+    def _handle_recall_list(self, args: dict[str, Any], query: str) -> str:
+        recall_kwargs, metadata_filter, tags, tags_match = self._build_tool_recall_kwargs(args, query)
+        types = recall_kwargs.get("types")
+        limit = _bounded_int(args.get("limit"), 50, minimum=1, maximum=200)
+        offset = _bounded_int(args.get("offset"), 0, minimum=0)
+        server_type = types[0] if types and len(types) == 1 else None
+        list_kwargs = {
+            "bank_id": self._bank_id,
+            "type": server_type,
+            "q": query,
+            "limit": limit,
+            "offset": offset,
+            "_request_timeout": self._timeout,
+        }
+        resp = self._run_hindsight_operation(
+            lambda client: client.memory.list_memories(**list_kwargs)
+        )
+        items = list(getattr(resp, "items", None) or [])
+        items = _filter_memory_items(
+            items,
+            types=types,
+            tags=tags,
+            tags_match=tags_match,
+            metadata=metadata_filter,
+        )
+        lines = _format_memory_lines(items)
+        if not lines:
+            return json.dumps({"result": "No matching memories found.", "total": getattr(resp, "total", 0), "returned": 0})
+        return json.dumps(
+            {
+                "result": "\n".join(lines),
+                "total": getattr(resp, "total", len(items)),
+                "returned": len(lines),
+                "limit": getattr(resp, "limit", limit),
+                "offset": getattr(resp, "offset", offset),
+            }
+        )
+
+    def _handle_recall_entity(self, args: dict[str, Any], query: str) -> str:
+        recall_kwargs, metadata_filter, _, _ = self._build_tool_recall_kwargs(
+            args,
+            query,
+            default_types=["world"],
+        )
+        recall_kwargs["include_entities"] = True
+        recall_kwargs["max_entity_tokens"] = _bounded_int(args.get("max_entity_tokens"), 2000)
+        resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+        results = list(getattr(resp, "results", None) or [])
+        results = _filter_memory_items(results, metadata=metadata_filter)
+        entities = getattr(resp, "entities", None)
+        if metadata_filter:
+            entities = _filter_entities_by_ids(entities, _result_entity_ids(results))
+
+        sections: list[str] = []
+        memory_lines = _format_memory_lines(results)
+        if memory_lines:
+            sections.append("Memories:\n" + "\n".join(memory_lines))
+        entity_lines = _format_entity_lines(entities)
+        if entity_lines:
+            sections.append("Entities:\n" + "\n".join(entity_lines))
+        if not sections:
+            return json.dumps({"result": "No relevant memories found."})
+        return json.dumps({"result": "\n\n".join(sections)})
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if tool_name == "hindsight_retain":
             content = args.get("content", "")
@@ -1520,25 +1909,17 @@ class HindsightMemoryProvider(MemoryProvider):
             query = args.get("query", "")
             if not query:
                 return tool_error("Missing required parameter: query")
+            method = str(args.get("method") or "recall").strip()
+            if method not in _VALID_RECALL_METHODS:
+                return tool_error(
+                    "Invalid recall method. Expected one of: recall, list, entity"
+                )
             try:
-                recall_kwargs: dict = {
-                    "bank_id": self._bank_id, "query": query, "budget": self._budget,
-                    "max_tokens": self._recall_max_tokens,
-                }
-                if self._recall_tags:
-                    recall_kwargs["tags"] = self._recall_tags
-                    recall_kwargs["tags_match"] = self._recall_tags_match
-                if self._recall_types:
-                    recall_kwargs["types"] = self._recall_types
-                logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
-                resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                num_results = len(resp.results) if resp.results else 0
-                logger.debug("Tool hindsight_recall: %d results", num_results)
-                if not resp.results:
-                    return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
-                return json.dumps({"result": "\n".join(lines)})
+                if method == "list":
+                    return self._handle_recall_list(args, query)
+                if method == "entity":
+                    return self._handle_recall_entity(args, query)
+                return self._handle_recall_search(args, query)
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to search memory: {e}")

@@ -416,6 +416,16 @@ def _isolate_hermes_home(_hermetic_environment):
 # approvals from one test's session into another's.
 
 
+@pytest.fixture(autouse=True)
+def _reset_i18n_cache_between_tests():
+    """Clear i18n's process-global cache for tests that monkeypatch locales."""
+    try:
+        from agent import i18n as _i18n_mod
+        _i18n_mod.reset_language_cache()
+    except Exception:
+        pass
+
+
 @pytest.fixture()
 def tmp_dir(tmp_path):
     """Provide a temporary directory that is cleaned up automatically."""

@@ -334,7 +334,7 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 | **Data storage** | Hindsight Cloud or local embedded PostgreSQL |
 | **Cost** | Hindsight pricing (cloud) or free (local) |
 
-**Tools:** `hindsight_retain` (store with entity extraction), `hindsight_recall` (multi-strategy search), `hindsight_reflect` (cross-memory synthesis)
+**Tools:** `hindsight_retain` (store with entity extraction), `hindsight_recall` (default semantic/entity-graph recall, plus optional `method="list"` for raw memory listing and `method="entity"` for entity context), `hindsight_reflect` (cross-memory synthesis)
 
 **Setup:**
 ```bash
@@ -365,6 +365,10 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
+| `recall_tags_match` | `any` | Tag matching mode: `any`, `all`, `any_strict`, or `all_strict` |
+| `recall_max_tokens` | `4096` | Default token cap for recall results |
+
+`hindsight_recall` also accepts per-call `budget`, `max_tokens`, `types`, `tags`, `tags_match`, `metadata`, and `tag_groups` controls. `method="list"` uses Hindsight's public memory-list API and supports `limit`/`offset`; because that list API does not accept tag groups, `tag_groups` only applies to the default recall/entity paths.
 
 See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
 

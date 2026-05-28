@@ -257,11 +257,9 @@ Adds a **Steam-style achievements tab to the dashboard** — 60+ collectible, ti
 
 **State files** — live under `$HERMES_HOME/plugins/hermes-achievements/`:
 
-| File | Contents |
-|---|---|
-| `state.json` | Unlock history: which badges you've earned and when. Stable across Hermes updates. |
-| `scan_snapshot.json` | Last completed scan payload (served immediately on dashboard load) |
-| `scan_checkpoint.json` | Per-session stats cache keyed by fingerprint (makes warm rescans fast) |
+- `state.json`: Unlock history: which badges you've earned and when. Stable across Hermes updates.
+- `scan_snapshot.json`: Last completed scan payload, served immediately on dashboard load.
+- `scan_checkpoint.json`: Per-session stats cache keyed by fingerprint, which makes warm rescans fast.
 
 **Performance notes:**
 

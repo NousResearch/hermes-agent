@@ -1035,6 +1035,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     _reply_anchor_for_event,
+    _thread_metadata_for_source,
     merge_pending_message_event,
 )
 from gateway.restart import (
@@ -11547,7 +11548,10 @@ class GatewayRunner:
             local_files, _ = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            if hasattr(self, "_thread_metadata_for_source") and hasattr(self, "_reply_anchor_for_event"):
+                _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            else:
+                _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -13815,6 +13819,7 @@ class GatewayRunner:
         if (
             getattr(source, "platform", None) == Platform.TELEGRAM
             and getattr(source, "chat_type", None) == "dm"
+            and str(thread_id).isdigit()
         ):
             metadata["telegram_dm_topic_reply_fallback"] = True
             # Telegram DM topic lanes need direct_messages_topic_id in metadata

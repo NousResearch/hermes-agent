@@ -412,6 +412,7 @@ AUTHOR_MAP = {
     "web3blind@users.noreply.github.com": "web3blind",
     "julia@alexland.us": "alexg0bot",
     "christian@scheid.tech": "scheidti",
+    "akhater@users.noreply.github.com": "akhater",
     # Moonshot schema anyOf+enum salvage (May 2026)
     "git@local.invalid": "hendrixfreire",
     "1060770+benjaminsehl@users.noreply.github.com": "benjaminsehl",
@@ -429,6 +430,7 @@ AUTHOR_MAP = {
     "yoimexex@gmail.com": "Yoimex",
     "6548898+romanornr@users.noreply.github.com": "romanornr",
     "foxion37@gmail.com": "foxion37",
+    "thomasmarcelis@gmail.com": "ThomasMarcelis",
     "bloodcarter@gmail.com": "bloodcarter",
     "scott@scotttrinh.com": "scotttrinh",
     "quocanh261997@gmail.com": "quocanh261997",

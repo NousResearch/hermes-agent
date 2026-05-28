@@ -1454,10 +1454,11 @@ def get_model_context_length(
        d. GMI /models endpoint
        e. Ollama native /api/show probe (any base_url, provider-agnostic)
        f. models.dev registry lookup (with :cloud/-cloud suffix fallback)
-    6. OpenRouter live API metadata (Kimi-family 32k guard)
-    7. Hardcoded defaults (broad family patterns, longest-key-first)
-    8. Local server query (last resort)
-    9. Default fallback (256K)"""
+    6. Exact curated defaults
+    7. OpenRouter live API metadata (Kimi-family 32k guard)
+    8. Fuzzy hardcoded defaults (broad family patterns, longest-key-first)
+    9. Local server query (last resort)
+    10. Default fallback (256K)"""
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
@@ -1672,7 +1673,14 @@ def get_model_context_length(
         if ctx:
             return ctx
 
-    # 6. OpenRouter live API metadata — provider-unaware fallback.
+    # 6. Exact curated defaults. Provider-aware branches above still win, but
+    # an exact local entry is more specific than provider-unaware OpenRouter
+    # metadata for bare model IDs like "hy3-preview".
+    exact_default = DEFAULT_CONTEXT_LENGTHS.get(model.lower())
+    if exact_default:
+        return exact_default
+
+    # 7. OpenRouter live API metadata — provider-unaware fallback.
     # Only consulted when the provider is unknown (no effective_provider),
     # because OpenRouter data is community-maintained and can be incorrect
     # for models that belong to known providers with curated defaults.
@@ -1680,7 +1688,6 @@ def get_model_context_length(
         metadata = fetch_model_metadata()
         if model in metadata:
             or_ctx = metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
-            # Guard against stale OpenRouter metadata for Kimi-family models.
             if or_ctx == 32768 and _model_name_suggests_kimi(model):
                 logger.info(
                     "Rejecting OpenRouter metadata context=%s for %r "
@@ -1690,9 +1697,7 @@ def get_model_context_length(
             else:
                 return or_ctx
 
-    # 7. (reserved)
-
-    # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
+    # 8. Fuzzy hardcoded defaults (longest key first for specificity)
     # Only check `default_model in model` (is the key a substring of the input).
     # The reverse (`model in default_model`) causes shorter names like
     # "claude-sonnet-4" to incorrectly match "claude-sonnet-4-6" and return 1M.

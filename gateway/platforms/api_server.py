@@ -3791,7 +3791,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_progress_callback=event_cb,
                         gateway_session_key=gateway_session_key,
                     )
-                self._active_run_agents[run_id] = agent
+                    # Register the agent while the profile context is still active
+                    # so any post-construction lazy property access on the asyncio
+                    # thread sees the correct per-agent paths.  The executor thread
+                    # re-binds the profile independently in _run_sync below.
+                    self._active_run_agents[run_id] = agent
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})

@@ -92,3 +92,9 @@ docs/superpowers/*
 # also created in-repo when an agent operates in this checkout). Plans, audit
 # logs, and per-session caches are never artifacts of the codebase.
 .hermes/
+
+# Local-only running notes for the cursor-provider fork. Kept on disk for
+# personal reference; not part of the upstream contract.
+/STATUS.md
+/docs/cursor_self_review.md
+/docs/plans/2026-05-25-cursor-provider-integration.md

@@ -132,6 +132,8 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    paused: bool = False                          # True if process is waiting for interactive input
+    prompt_text: str = ""                         # The detected prompt text when paused
 
 
 class ProcessRegistry:
@@ -179,6 +181,69 @@ class ProcessRegistry:
         self._global_watch_window_hits: int = 0
         self._global_watch_tripped_until: float = 0.0
         self._global_watch_suppressed_during_trip: int = 0
+
+    def register_paused_process(
+        self,
+        command: str,
+        cwd: str,
+        task_id: str,
+        session_key: str,
+        proc_handle,
+        prompt_text: str = "",
+    ) -> "ProcessSession":
+        """Register an existing process that was paused due to interactive prompt detection.
+
+        The process is already running and waiting for stdin input. We wrap it in a
+        ProcessSession so the agent can interact with it via process(action='submit').
+
+        Args:
+            command: Original command string
+            cwd: Working directory
+            task_id: Task isolation key
+            session_key: Gateway session key
+            proc_handle: Existing subprocess.Popen handle
+            prompt_text: The detected prompt text
+
+        Returns:
+            ProcessSession wrapping the paused process
+        """
+        from pathlib import Path as _Path
+
+        session = ProcessSession(
+            id=f"proc_{uuid.uuid4().hex[:12]}",
+            command=command,
+            task_id=task_id,
+            session_key=session_key,
+            cwd=str(_Path(cwd).resolve()) if cwd else os.getcwd(),
+            started_at=time.time(),
+        )
+        session.pid = proc_handle.pid
+        session.process = proc_handle  # Store the Popen handle for stdin writes
+        session.paused = True
+        session.prompt_text = prompt_text
+
+        # Start output reader thread to capture new output after agent responds
+        try:
+            reader = threading.Thread(
+                target=self._reader_loop,
+                args=(session,),
+                daemon=True,
+                name=f"proc-reader-{session.id}",
+            )
+            session._reader_thread = reader
+            reader.start()
+        except Exception as e:
+            logger.warning("Failed to start reader thread for paused process %s: %s", session.id, e)
+
+        with self._lock:
+            self._prune_if_needed()
+            self._running[session.id] = session
+
+        logger.info(
+            "Registered paused process %s (pid=%d) waiting for input: '%s'",
+            session.id, session.pid, prompt_text[:80],
+        )
+        return session
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:

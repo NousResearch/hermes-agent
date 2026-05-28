@@ -10,6 +10,7 @@ import codecs
 import json
 import logging
 import os
+import re
 import select
 import shlex
 import subprocess
@@ -30,6 +31,23 @@ logger = logging.getLogger(__name__)
 # every is_interrupted() state change from _wait_for_process.  Off by default
 # to avoid flooding production gateway logs.
 _DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
+
+# Dynamic prompt detection: patterns that indicate an interactive program
+# is waiting for user input. When detected, the foreground command pauses
+# and hands control to the agent via process_registry so it can respond.
+_PROMPT_PATTERNS = [
+    r'^\s*(?:password|passwd)\s*[:]\s*$',           # Password prompts
+    r'^\s*(?:yes|no)\s*\?',                          # Yes/no confirmation
+    r'^\s*(?:continue|proceed)\s*\[y/n\]',          # Continue prompts
+    r'^\s*are\s+you\s+sure',                        # "Are you sure?"
+    r'^\s*(?:do\s+you\s+want|would\s+you\s+like)',  # Preference prompts
+    r'^\s*\[y/n\]\s*',                              # [y/n] choice
+    r'^\s*>\s*$',                                   # REPL/interactive > prompt
+    r'^\s*(?:>>>|\.+)\s*$',                         # Python/shell REPL prompts
+    r'^\s*(?:enter|type)\s+\w+',                    # "Enter <something>"
+]
+_PROMPT_RE = re.compile('|'.join(_PROMPT_PATTERNS), re.IGNORECASE | re.MULTILINE)
+
 
 if _DEBUG_INTERRUPT:
     # AIAgent's quiet_mode path (run_agent.py) forces the `tools` logger to
@@ -644,6 +662,21 @@ class BaseEnvironment(ABC):
                     }
                 # Periodic activity touch so the gateway knows we're alive
                 touch_activity_if_due(_activity_state, "terminal command running")
+
+                # Dynamic prompt detection: check if output contains an interactive
+                # prompt that needs user input. If detected, pause and hand control
+                # to the agent via process_registry so it can respond.
+                current_output = "".join(output_chunks)
+                _prompt_match = _PROMPT_RE.search(current_output)
+                if _prompt_match is not None:
+                    drain_thread.join(timeout=1)
+                    return {
+                        "output": current_output,
+                        "returncode": 0,
+                        "paused": True,
+                        "prompt_detected": _prompt_match.group(0).strip(),
+                        "proc_handle": proc,
+                    }
 
                 # Heartbeat every ~30s: proves the loop is alive and reports
                 # the activity-callback state (thread-local, can get clobbered

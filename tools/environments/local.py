@@ -526,7 +526,7 @@ class LocalEnvironment(BaseEnvironment):
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            stdin=subprocess.PIPE,  # Always use PIPE so agent can respond to interactive prompts
             preexec_fn=None if _IS_WINDOWS else os.setsid,
             cwd=_popen_cwd,
             **_popen_kwargs,

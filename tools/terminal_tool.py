@@ -2103,6 +2103,41 @@ def terminal_tool(
             output = result.get("output", "")
             returncode = result.get("returncode", 0)
 
+            # Handle interactive prompt detection - register with process_registry
+            if result.get("paused"):
+                from tools.approval import get_current_session_key
+                from tools.process_registry import process_registry
+
+                session_key = get_current_session_key(default="")
+                proc_handle = result.get("proc_handle")
+                prompt_text = result.get("prompt_detected", "")
+
+                # Register the paused process so agent can interact with it
+                if proc_handle:
+                    proc_session = process_registry.register_paused_process(
+                        command=command,
+                        cwd=workdir or cwd,
+                        task_id=effective_task_id,
+                        session_key=session_key,
+                        proc_handle=proc_handle,
+                        prompt_text=prompt_text,
+                    )
+                    result_data = {
+                        "output": output,
+                        "exit_code": 0,
+                        "error": None,
+                        "paused": True,
+                        "prompt_detected": prompt_text,
+                        "session_id": proc_session.id,
+                        "pid": proc_session.pid,
+                        "hint": (
+                            f"Command is waiting for input: '{prompt_text}'. "
+                            "Use process(action='submit', data='<your_response>') to respond. "
+                            "Or process(action='close') to cancel."
+                        ),
+                    }
+                    return json.dumps(result_data, ensure_ascii=False)
+
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
 

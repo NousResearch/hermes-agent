@@ -118,7 +118,17 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
-    "feishu":          _TIER_MEDIUM,
+    "feishu":          {
+        **_TIER_MEDIUM,
+        # Feishu/Lark workspace chats make permanent progress/status bubbles
+        # look noisy, especially in group lanes. Prefer a TUI-like single
+        # assistant bubble that is progressively edited, and keep tool detail
+        # in logs/sessions unless explicitly enabled by config.
+        "tool_progress": "off",
+        "interim_assistant_messages": False,
+        "busy_ack_detail": False,
+        "cleanup_progress": True,
+    },
 
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,

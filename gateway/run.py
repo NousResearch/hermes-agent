@@ -15723,14 +15723,21 @@ class GatewayRunner:
                         if source.platform == Platform.TELEGRAM
                         else 0.0
                     )
+                    _feishu_tui_like = (
+                        source.platform == Platform.FEISHU
+                        and (getattr(source, "chat_type", "") or "") in {"group", "supergroup", "channel", ""}
+                        and not (_thread_metadata or {}).get("thread_id")
+                    )
                     _consumer_cfg = StreamConsumerConfig(
-                        edit_interval=_scfg.edit_interval,
-                        buffer_threshold=_scfg.buffer_threshold,
+                        edit_interval=1.8 if _feishu_tui_like else _scfg.edit_interval,
+                        buffer_threshold=96 if _feishu_tui_like else _scfg.buffer_threshold,
                         cursor=_effective_cursor,
                         buffer_only=_buffer_only,
                         fresh_final_after_seconds=_fresh_final_secs,
                         transport=_scfg.transport or "edit",
                         chat_type=getattr(source, "chat_type", "") or "",
+                        preserve_message_across_segments=_feishu_tui_like,
+                        min_initial_preview_chars=24 if _feishu_tui_like else 4,
                     )
                     _stream_consumer = GatewayStreamConsumer(
                         adapter=_adapter,

@@ -640,6 +640,11 @@ def build_session_key(
         return f"agent:main:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
+    feishu_plain_group_lane = (
+        source.platform == Platform.FEISHU
+        and source.chat_type in {"group", "supergroup", "channel"}
+        and not source.thread_id
+    )
     if participant_id and source.platform == Platform.WHATSAPP:
         # Same JID/LID-flip bug as the DM case: without canonicalisation, a
         # single group member gets two isolated per-user sessions when the
@@ -656,6 +661,11 @@ def build_session_key(
     # conversation).  Per-user isolation only applies when explicitly enabled
     # via thread_sessions_per_user, or when there is no thread (regular group).
     isolate_user = group_sessions_per_user
+    if feishu_plain_group_lane:
+        # Feishu/Lark workspace groups behave like project/lane rooms. Make
+        # the default UX match a long-lived TUI session for that lane instead
+        # of splitting the same group by sender.
+        isolate_user = False
     if source.thread_id and not thread_sessions_per_user:
         isolate_user = False
 

@@ -73,6 +73,15 @@ class StreamConsumerConfig:
     # "group", "supergroup", "forum").  Used to gate native draft streaming,
     # which is platform-specific (Telegram drafts are DM-only).
     chat_type: str = ""
+    # Keep one visible bubble across tool/commentary segment breaks instead of
+    # finalizing each segment and starting a fresh platform message. This is
+    # useful for workspace chat surfaces (notably Feishu/Lark groups) where a
+    # TUI-like single progressively edited message is less noisy than permanent
+    # per-tool bubbles.
+    preserve_message_across_segments: bool = False
+    # Minimum visible codepoints before creating the first streaming preview.
+    # Helps platforms with visible edits avoid tiny "O ▉" style first bubbles.
+    min_initial_preview_chars: int = 4
 
 
 class GatewayStreamConsumer:
@@ -462,6 +471,9 @@ class GatewayStreamConsumer:
                 # tag is not lost.
                 if got_done:
                     self._flush_think_buffer()
+
+                if got_segment_break and self.cfg.preserve_message_across_segments:
+                    got_segment_break = False
 
                 # Decide whether to flush an edit
                 now = time.monotonic()
@@ -1148,7 +1160,7 @@ class GatewayStreamConsumer:
         # This was reported on Telegram, Matrix, and other clients where the
         # ▉ block character renders as a visible white box ("tofu").
         # Existing messages (edits) are unaffected — only first sends gated.
-        _MIN_NEW_MSG_CHARS = 4
+        _MIN_NEW_MSG_CHARS = max(0, int(getattr(self.cfg, "min_initial_preview_chars", 4) or 0))
         if (self._message_id is None
                 and self.cfg.cursor
                 and self.cfg.cursor in text

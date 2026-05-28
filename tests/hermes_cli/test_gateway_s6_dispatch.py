@@ -333,3 +333,194 @@ def test_dispatch_renders_s6_command_error_friendly(
     assert "rc=111" in out
     assert "Permission denied" in out
     assert "Traceback" not in out
+
+
+# =============================================================================
+# `_maybe_redirect_run_to_s6_supervision`: the "upgrade old `gateway run`
+# invocation to supervised semantics inside an s6 container" helper.
+# =============================================================================
+
+
+class _Args:
+    """Lightweight argparse-like namespace for the helper."""
+
+    def __init__(self, no_supervise: bool = False) -> None:
+        self.no_supervise = no_supervise
+
+
+def _stub_s6(monkeypatch: pytest.MonkeyPatch, *, on_s6: bool) -> _CallRecorder:
+    """Wire up service-manager stubs so the underlying dispatcher will
+    fire (on_s6=True) or return False (on_s6=False)."""
+    rec = _CallRecorder()
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager",
+        lambda: "s6" if on_s6 else "systemd",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: rec,
+    )
+    return rec
+
+
+class _ExecvpCalled(BaseException):
+    """Sentinel raised by the os.execvp stub so tests can assert on it
+    without actually replacing the test runner process. Inherits from
+    BaseException so it bypasses generic ``except Exception`` blocks in
+    the code under test (just like a real exec would)."""
+
+    def __init__(self, argv: list[str]) -> None:
+        self.argv = argv
+
+
+def _stub_execvp(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Replace os.execvp with a recorder that raises _ExecvpCalled."""
+    calls: list[list[str]] = []
+
+    def fake_execvp(file: str, args: list[str]) -> None:  # noqa: ANN401
+        calls.append([file, *args])
+        raise _ExecvpCalled([file, *args])
+
+    monkeypatch.setattr("hermes_cli.gateway.os.execvp", fake_execvp)
+    return calls
+
+
+def test_redirect_noop_on_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Host runs (non-s6) must not redirect. Returns False; caller
+    continues to the foreground gateway code path unchanged."""
+    from hermes_cli import gateway as gw
+
+    _stub_s6(monkeypatch, on_s6=False)
+    # If execvp got called we'd raise — keep it bound so test fails loudly.
+    monkeypatch.setattr(
+        "hermes_cli.gateway.os.execvp",
+        lambda *a, **kw: pytest.fail("execvp should not be called on host"),
+    )
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+
+    assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is False
+
+
+def test_redirect_fires_inside_s6_container(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Inside an s6 container, `gateway run` should:
+
+    1. Dispatch `start` to the service manager.
+    2. Print the loud breadcrumb to stderr.
+    3. exec `sleep infinity` to keep the CMD alive without binding
+       container lifetime to gateway PID lifetime.
+    """
+    from hermes_cli import gateway as gw
+
+    rec = _stub_s6(monkeypatch, on_s6=True)
+    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+    execvp_calls = _stub_execvp(monkeypatch)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+
+    with pytest.raises(_ExecvpCalled) as excinfo:
+        gw._maybe_redirect_run_to_s6_supervision(_Args())
+
+    # 1. Dispatcher fired.
+    assert rec.calls == [("start", "gateway-default")]
+    # 2. Breadcrumb went to stderr and mentions the opt-out path.
+    err = capsys.readouterr().err
+    assert "s6 supervision" in err
+    assert "--no-supervise" in err
+    assert "HERMES_GATEWAY_NO_SUPERVISE" in err
+    # 3. exec'd `sleep infinity`.
+    assert execvp_calls == [["sleep", "sleep", "infinity"]]
+    assert excinfo.value.argv == ["sleep", "sleep", "infinity"]
+
+
+def test_redirect_short_circuits_supervised_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The recursion guard: when the supervised gateway s6-supervise is
+    running execs `hermes gateway run --replace`, the
+    HERMES_S6_SUPERVISED_CHILD sentinel must short-circuit the redirect
+    so the gateway actually starts foreground. Without this guard the
+    supervised process would re-dispatch `start` → re-exec `run` → ...
+    in an infinite loop.
+    """
+    from hermes_cli import gateway as gw
+
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager",
+        lambda: pytest.fail("dispatcher should not run when sentinel is set"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.os.execvp",
+        lambda *a, **kw: pytest.fail("execvp should not run when sentinel is set"),
+    )
+    monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
+    monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+
+    assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is False
+
+
+def test_redirect_respects_no_supervise_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--no-supervise` (CLI flag) must skip the redirect even inside
+    an s6 container, restoring pre-s6 foreground semantics."""
+    from hermes_cli import gateway as gw
+
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager",
+        lambda: pytest.fail("dispatcher should not run when --no-supervise is set"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.os.execvp",
+        lambda *a, **kw: pytest.fail("execvp should not run when --no-supervise is set"),
+    )
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+
+    assert gw._maybe_redirect_run_to_s6_supervision(_Args(no_supervise=True)) is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "Yes"])
+def test_redirect_respects_no_supervise_env(
+    monkeypatch: pytest.MonkeyPatch, value: str,
+) -> None:
+    """`HERMES_GATEWAY_NO_SUPERVISE=1` (env var) must skip the redirect.
+
+    Truthiness mirrors the dashboard service's own env var parsing —
+    1/true/yes are all accepted, case-insensitively.
+    """
+    from hermes_cli import gateway as gw
+
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager",
+        lambda: pytest.fail("dispatcher should not run when env opt-out is set"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.os.execvp",
+        lambda *a, **kw: pytest.fail("execvp should not run when env opt-out is set"),
+    )
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.setenv("HERMES_GATEWAY_NO_SUPERVISE", value)
+
+    assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is False
+
+
+def test_redirect_no_supervise_env_falsy_values_dont_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Falsy / unrecognized values of HERMES_GATEWAY_NO_SUPERVISE must
+    NOT opt out. We're strict about what counts as "yes" so a typo
+    like `HERMES_GATEWAY_NO_SUPERVISE=0` doesn't silently enable the
+    historical foreground behavior."""
+    from hermes_cli import gateway as gw
+
+    _stub_s6(monkeypatch, on_s6=True)
+    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+    _stub_execvp(monkeypatch)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+
+    for falsy in ("", "0", "false", "no", "off", "garbage"):
+        monkeypatch.setenv("HERMES_GATEWAY_NO_SUPERVISE", falsy)
+        with pytest.raises(_ExecvpCalled):
+            gw._maybe_redirect_run_to_s6_supervision(_Args())

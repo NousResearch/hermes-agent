@@ -11326,6 +11326,19 @@ def main():
         action="store_true",
         help="Replace any existing gateway instance (useful for systemd)",
     )
+    gateway_run.add_argument(
+        "--no-supervise",
+        action="store_true",
+        help=(
+            "Inside the s6-overlay Docker image, normally `gateway run` is "
+            "automatically redirected to the supervised s6 service (so the "
+            "gateway gets auto-restart on crash, plus a supervised dashboard "
+            "if HERMES_DASHBOARD is set). Pass --no-supervise to opt out and "
+            "get the historical pre-s6 foreground behavior: the gateway is "
+            "the container's main process and the container exits with the "
+            "gateway's exit code. No effect outside an s6 container."
+        ),
+    )
     _add_accept_hooks_flag(gateway_run)
     _add_accept_hooks_flag(gateway_parser)
 

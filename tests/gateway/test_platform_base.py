@@ -414,12 +414,54 @@ class TestMediaDeliveryPathValidation:
         unsafe.write_bytes(b"OggS")
         self._patch_roots(monkeypatch, root)
 
-        filtered = BasePlatformAdapter.filter_media_delivery_paths([
+        accepted, rejected = BasePlatformAdapter.filter_media_delivery_paths([
             (str(unsafe), False),
             (str(safe), True),
         ])
 
-        assert filtered == [(str(safe.resolve()), True)]
+        assert accepted == [(str(safe.resolve()), True)]
+        assert rejected == ["outside.ogg"]
+
+    def test_filter_media_rejected_basename_strips_quotes(self, tmp_path, monkeypatch):
+        """Quoted paths emitted by some models should report a clean basename."""
+        root = tmp_path / "media-cache"
+        root.mkdir()
+        self._patch_roots(monkeypatch, root)
+
+        _, rejected = BasePlatformAdapter.filter_media_delivery_paths([
+            ("'/tmp/quoted.png'", False),
+        ])
+
+        assert rejected == ["quoted.png"]
+
+    def test_filter_local_returns_rejected_basenames(self, tmp_path, monkeypatch):
+        root = tmp_path / "media-cache"
+        safe = root / "doc.pdf"
+        unsafe = tmp_path / "secret.pdf"
+        safe.parent.mkdir(parents=True)
+        safe.write_bytes(b"%PDF-1.4")
+        unsafe.write_bytes(b"%PDF-1.4")
+        self._patch_roots(monkeypatch, root)
+
+        accepted, rejected = BasePlatformAdapter.filter_local_delivery_paths([
+            str(safe), str(unsafe),
+        ])
+
+        assert accepted == [str(safe.resolve())]
+        assert rejected == ["secret.pdf"]
+
+    def test_filter_empty_input_returns_empty_pair(self):
+        assert BasePlatformAdapter.filter_media_delivery_paths(None) == ([], [])
+        assert BasePlatformAdapter.filter_local_delivery_paths([]) == ([], [])
+
+    def test_rejection_notice_empty_when_nothing_rejected(self):
+        assert BasePlatformAdapter.format_media_rejection_notice([]) == ""
+
+    def test_rejection_notice_lists_basenames(self):
+        notice = BasePlatformAdapter.format_media_rejection_notice(["a.png", "b.pdf"])
+        assert "a.png" in notice
+        assert "b.pdf" in notice
+        assert "outside allowed roots" in notice
 
     def test_allows_operator_configured_extra_root(self, tmp_path, monkeypatch):
         extra_root = tmp_path / "operator-media"
@@ -430,6 +472,23 @@ class TestMediaDeliveryPathValidation:
         monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(extra_root))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
+
+    def test_extract_filter_notice_composition(self, tmp_path, monkeypatch):
+        """End-to-end: model emits a MEDIA tag outside roots → the user sees
+        a rejection notice instead of silently losing the attachment."""
+        root = tmp_path / "cache"
+        root.mkdir()
+        self._patch_roots(monkeypatch, root)
+
+        response = "Here is your file: MEDIA:/tmp/bad.png"
+        media, cleaned = BasePlatformAdapter.extract_media(response)
+        accepted, rejected = BasePlatformAdapter.filter_media_delivery_paths(media)
+        final_text = cleaned + BasePlatformAdapter.format_media_rejection_notice(rejected)
+
+        assert accepted == []
+        assert "Here is your file" in final_text
+        assert "bad.png" in final_text
+        assert "outside allowed roots" in final_text
 
     def test_recency_trust_allows_freshly_produced_file(self, tmp_path, monkeypatch):
         """A PDF the agent just wrote to /tmp should be deliverable.
@@ -532,8 +591,9 @@ class TestMediaDeliveryPathValidation:
         fresh = tmp_path / "report.pdf"
         fresh.write_bytes(b"%PDF-1.4")
 
-        out = BasePlatformAdapter.filter_local_delivery_paths([str(fresh)])
-        assert out == [str(fresh.resolve())]
+        accepted, rejected = BasePlatformAdapter.filter_local_delivery_paths([str(fresh)])
+        assert accepted == [str(fresh.resolve())]
+        assert rejected == []
 
 
 # ---------------------------------------------------------------------------

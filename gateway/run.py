@@ -5258,7 +5258,13 @@ class GatewayRunner:
             return
 
         from gateway.platforms.base import BasePlatformAdapter
-        candidates = BasePlatformAdapter.filter_local_delivery_paths(candidates)
+        candidates, rejected = BasePlatformAdapter.filter_local_delivery_paths(candidates)
+        if rejected:
+            notice = BasePlatformAdapter.format_media_rejection_notice(rejected)
+            try:
+                await adapter.send(chat_id=chat_id, content=notice.lstrip(), metadata=metadata)
+            except Exception as exc:
+                logger.warning("kanban notifier: failed to send rejection notice: %s", exc)
         if not candidates:
             return
 
@@ -11543,12 +11549,27 @@ class GatewayRunner:
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
             media_files, _ = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            media_files, _rejected_media = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
-            local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
+            local_files, _rejected_local = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+
+            # Text was already streamed by the time we get here, so a rejection
+            # notice has to ship as its own follow-up send.
+            _rejection_notice = BasePlatformAdapter.format_media_rejection_notice(
+                _rejected_media + _rejected_local
+            )
+            if _rejection_notice:
+                try:
+                    await adapter.send(
+                        chat_id=event.source.chat_id,
+                        content=_rejection_notice.lstrip(),
+                        metadata=_thread_meta,
+                    )
+                except Exception as e:
+                    logger.warning("[%s] Post-stream rejection notice failed: %s", adapter.name, e)
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -11843,22 +11864,29 @@ class GatewayRunner:
             if response:
                 media_files, response = adapter.extract_media(response)
                 from gateway.platforms.base import BasePlatformAdapter
-                media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+                media_files, _rejected_media = BasePlatformAdapter.filter_media_delivery_paths(media_files)
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
+                _rejection_notice = BasePlatformAdapter.format_media_rejection_notice(_rejected_media)
 
                 if text_content:
                     await adapter.send(
                         chat_id=source.chat_id,
-                        content=header + text_content,
+                        content=header + text_content + _rejection_notice,
                         metadata=_thread_metadata,
                     )
                 elif not images and not media_files:
                     await adapter.send(
                         chat_id=source.chat_id,
-                        content=header + "(No response generated)",
+                        content=header + "(No response generated)" + _rejection_notice,
+                        metadata=_thread_metadata,
+                    )
+                elif _rejection_notice:
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content=header.rstrip() + _rejection_notice,
                         metadata=_thread_metadata,
                     )
 

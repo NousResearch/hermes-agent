@@ -378,6 +378,8 @@ class TestSendMessageTool:
         )
 
     def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path, monkeypatch):
+        """The unsafe MEDIA path is dropped (no attachment), and the user gets
+        a visible rejection notice appended to the outgoing text."""
         # This test exercises the strict-allowlist path; disable recency trust
         # so the freshly-written tmp_path file is not auto-accepted by the
         # trust window. (Recency trust is covered in test_platform_base.py.)
@@ -402,15 +404,18 @@ class TestSendMessageTool:
             )
 
         assert result["success"] is True
-        send_mock.assert_awaited_once_with(
-            Platform.TELEGRAM,
-            telegram_cfg,
-            "12345",
-            "hello",
-            thread_id=None,
-            media_files=[],
-            force_document=False,
-        )
+        send_mock.assert_awaited_once()
+        sent_args, sent_kwargs = send_mock.await_args
+        assert sent_args[:3] == (Platform.TELEGRAM, telegram_cfg, "12345")
+        sent_message = sent_args[3]
+        assert sent_message.startswith("hello")
+        assert "secret.pdf" in sent_message
+        assert "outside allowed roots" in sent_message
+        assert sent_kwargs == {
+            "thread_id": None,
+            "media_files": [],
+            "force_document": False,
+        }
 
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()

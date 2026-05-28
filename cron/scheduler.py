@@ -578,7 +578,17 @@ def _send_media_via_adapter(
 
     from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_files, _rejected = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # Normally empty here — _deliver_result already filtered. Defensive: if a
+    # caller passes raw paths, surface the rejection instead of dropping it.
+    if _rejected:
+        notice = BasePlatformAdapter.format_media_rejection_notice(_rejected)
+        try:
+            from agent.async_utils import safe_schedule_threadsafe
+            coro = adapter.send(chat_id=chat_id, content=notice.lstrip(), metadata=metadata)
+            safe_schedule_threadsafe(coro, loop)
+        except Exception as exc:
+            logger.warning("Job '%s': failed to send rejection notice: %s", job.get("id", "?"), exc)
 
     for media_path, _is_voice in media_files:
         try:
@@ -663,7 +673,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_files, _rejected_media = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    cleaned_delivery_content = (
+        cleaned_delivery_content
+        + BasePlatformAdapter.format_media_rejection_notice(_rejected_media)
+    )
 
     try:
         config = load_gateway_config()

@@ -2350,28 +2350,59 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+    def filter_media_delivery_paths(
+        media_files,
+    ) -> Tuple[List[Tuple[str, bool]], List[str]]:
+        """Drop unsafe MEDIA paths and normalize accepted paths.
+
+        Returns ``(accepted, rejected_basenames)``. ``rejected_basenames`` lets
+        callers surface a user-visible notice when paths are dropped — without
+        it, a model that emits ``MEDIA:/tmp/foo.png`` (outside the allowed
+        roots) gets silent failure: the text streams, the attachment vanishes,
+        and the only trace is a WARNING in the gateway log.
+        """
         safe_media: List[Tuple[str, bool]] = []
+        rejected: List[str] = []
         for media_path, is_voice in media_files or []:
-            safe_path = validate_media_delivery_path(str(media_path))
+            raw = str(media_path)
+            safe_path = validate_media_delivery_path(raw)
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
                 logger.warning("Skipping unsafe MEDIA directive path outside allowed roots")
-        return safe_media
+                rejected.append(os.path.basename(raw.strip().strip("`\"'")) or raw)
+        return safe_media, rejected
 
     @staticmethod
-    def filter_local_delivery_paths(file_paths) -> List[str]:
-        """Drop unsafe bare local file paths and normalize accepted paths."""
+    def filter_local_delivery_paths(file_paths) -> Tuple[List[str], List[str]]:
+        """Drop unsafe bare local file paths and normalize accepted paths.
+
+        Returns ``(accepted, rejected_basenames)``; see
+        :meth:`filter_media_delivery_paths` for why the rejected list exists.
+        """
         safe_paths: List[str] = []
+        rejected: List[str] = []
         for file_path in file_paths or []:
-            safe_path = validate_media_delivery_path(str(file_path))
+            raw = str(file_path)
+            safe_path = validate_media_delivery_path(raw)
             if safe_path:
                 safe_paths.append(safe_path)
             else:
                 logger.warning("Skipping unsafe local file path outside allowed roots")
-        return safe_paths
+                rejected.append(os.path.basename(raw.strip().strip("`\"'")) or raw)
+        return safe_paths, rejected
+
+    @staticmethod
+    def format_media_rejection_notice(rejected_basenames: List[str]) -> str:
+        """Build the user-visible notice for paths the allowlist dropped.
+
+        Returns ``""`` when nothing was rejected so callers can unconditionally
+        concatenate the result onto outgoing text.
+        """
+        if not rejected_basenames:
+            return ""
+        names = ", ".join(rejected_basenames)
+        return f"\n\n⚠️ Couldn't attach: {names} (path outside allowed roots)"
 
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
@@ -3581,7 +3612,7 @@ class BasePlatformAdapter(ABC):
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
-                media_files = self.filter_media_delivery_paths(media_files)
+                media_files, _rejected_media = self.filter_media_delivery_paths(media_files)
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
@@ -3595,7 +3626,15 @@ class BasePlatformAdapter(ABC):
                 # Auto-detect bare local file paths for native media delivery
                 # (helps small models that don't use MEDIA: syntax)
                 local_files, text_content = self.extract_local_files(text_content)
-                local_files = self.filter_local_delivery_paths(local_files)
+                local_files, _rejected_local = self.filter_local_delivery_paths(local_files)
+
+                # Append a notice for any paths the allowlist dropped so the
+                # user knows a file didn't make it instead of silently missing.
+                _rejection_notice = self.format_media_rejection_notice(
+                    _rejected_media + _rejected_local
+                )
+                if _rejection_notice:
+                    text_content = (text_content + _rejection_notice).strip()
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 

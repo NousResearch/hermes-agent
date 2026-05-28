@@ -975,3 +975,254 @@ def test_cleanup_on_env_with_no_container_id_does_not_raise(monkeypatch):
     env._home_dir = None
     # No exception expected.
     env.cleanup()
+
+
+# ── Orphan reaper (issue #20561) ──────────────────────────────────
+
+
+def _now_iso(offset_seconds: int = 0) -> str:
+    """Return an RFC3339 timestamp ``offset_seconds`` in the past."""
+    import datetime
+    t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=offset_seconds)
+    # Format like Docker emits — with nanoseconds-style trailing digits.
+    return t.isoformat().replace("+00:00", ".123456789Z")
+
+
+def _reaper_run_mock(monkeypatch, ps_ids: list[str], inspect_responses: dict[str, str],
+                      rm_succeeds: bool = True):
+    """Build a subprocess.run mock for reaper tests.
+
+    * ``ps_ids`` — what ``docker ps -a --filter ... --format '{{.ID}}'`` returns
+    * ``inspect_responses[cid]`` — what ``docker inspect ... FinishedAt`` returns
+      for each cid; ``""`` means "field unset".
+    * ``rm_succeeds`` — whether ``docker rm -f`` returns 0.
+
+    Captures every call so tests can assert which containers were rm'd.
+    """
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if not isinstance(cmd, list) or len(cmd) < 2:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        sub = cmd[1]
+        if sub == "ps":
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="\n".join(ps_ids) + ("\n" if ps_ids else ""), stderr="",
+            )
+        if sub == "inspect":
+            # cmd is [docker, inspect, --format, '{{.State.FinishedAt}}', cid]
+            cid = cmd[-1]
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=inspect_responses.get(cid, "") + "\n", stderr="",
+            )
+        if sub == "rm":
+            return subprocess.CompletedProcess(
+                cmd, 0 if rm_succeeds else 1,
+                stdout="", stderr="" if rm_succeeds else "no such container",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    return calls
+
+
+def test_reap_orphan_returns_zero_when_no_matches(monkeypatch):
+    """No labeled containers → no rm calls, returns 0. Establishes the
+    happy-path baseline for the orphan reaper (issue #20561)."""
+    calls = _reaper_run_mock(monkeypatch, ps_ids=[], inspect_responses={})
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 0
+    rms = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["rm"]]
+    assert not rms, "no rm calls expected when ps returns empty"
+
+
+def test_reap_orphan_removes_stale_exited_container(monkeypatch):
+    """An Exited container older than max_age_seconds must be removed.
+    This is the core repair path for issue #20561 — without the reaper,
+    SIGKILL'd Hermes processes leak containers permanently."""
+    old = _now_iso(offset_seconds=900)  # 15 minutes ago
+    calls = _reaper_run_mock(
+        monkeypatch, ps_ids=["old-cid"], inspect_responses={"old-cid": old},
+    )
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 1
+    rms = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["rm"]]
+    assert len(rms) == 1
+    assert "old-cid" in rms[0][0], f"expected rm of old-cid, got {rms[0][0]}"
+
+
+def test_reap_orphan_spares_recently_exited_container(monkeypatch):
+    """A container exited within max_age_seconds must NOT be reaped — that
+    container belongs to a Hermes process that just finished and may be
+    about to be replaced. Conservative window prevents racing sibling
+    processes."""
+    recent = _now_iso(offset_seconds=60)  # 1 minute ago
+    calls = _reaper_run_mock(
+        monkeypatch, ps_ids=["recent-cid"], inspect_responses={"recent-cid": recent},
+    )
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 0
+    rms = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["rm"]]
+    assert not rms, f"recent container must not be reaped, got rm calls: {rms}"
+
+
+def test_reap_orphan_scopes_to_profile_filter_via_label(monkeypatch):
+    """The reaper must pass ``--filter label=hermes-profile=<profile>`` to
+    docker ps so it never sweeps another profile's containers. A research
+    profile must not tear down the default profile's stragglers."""
+    calls = _reaper_run_mock(monkeypatch, ps_ids=[], inspect_responses={})
+
+    docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="research-bot", docker_exe="/usr/bin/docker",
+    )
+
+    ps_calls = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["ps"]]
+    assert ps_calls, "expected at least one docker ps call"
+    flat = " ".join(ps_calls[0][0])
+    assert "label=hermes-profile=research-bot" in flat, (
+        f"profile filter not applied to docker ps; got args: {ps_calls[0][0]}"
+    )
+    assert "label=hermes-agent=1" in flat, (
+        f"hermes-agent label filter must also be applied; got: {ps_calls[0][0]}"
+    )
+    assert "status=exited" in flat, (
+        "must filter to exited containers only — running containers may "
+        "belong to a sibling Hermes process and must NEVER be reaped"
+    )
+
+
+def test_reap_orphan_skips_container_with_unparseable_finished_at(monkeypatch):
+    """If docker inspect returns the zero-value ``0001-01-01T00:00:00Z`` (no
+    FinishedAt yet) or an unparseable timestamp, the reaper must leave the
+    container alone. Defensive — never reap a container whose age we can't
+    determine."""
+    calls = _reaper_run_mock(
+        monkeypatch,
+        ps_ids=["never-finished", "garbage-ts"],
+        inspect_responses={
+            "never-finished": "0001-01-01T00:00:00Z",
+            "garbage-ts": "not-a-timestamp",
+        },
+    )
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 0
+    rms = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["rm"]]
+    assert not rms, (
+        f"reaper must NOT remove containers with unparseable FinishedAt; got: {rms}"
+    )
+
+
+def test_reap_orphan_handles_docker_ps_failure_gracefully(monkeypatch):
+    """If docker ps itself fails (daemon down, permission denied), the
+    reaper returns 0 without crashing. The reaper is best-effort plumbing,
+    not a critical path — it must never block container creation."""
+    def _failing_ps(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "ps":
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Cannot connect to daemon")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _failing_ps)
+
+    # Must not raise
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+    assert removed == 0
+
+
+def test_reap_orphan_continues_after_individual_rm_failure(monkeypatch):
+    """If ``docker rm -f`` fails on one container (already removed by a
+    concurrent process, container locked, etc.), the reaper must log and
+    continue to the next candidate rather than aborting the whole sweep."""
+    old = _now_iso(offset_seconds=900)
+    rm_calls = []
+
+    def _run(cmd, **kwargs):
+        if not isinstance(cmd, list) or len(cmd) < 2:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        sub = cmd[1]
+        if sub == "ps":
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="cid-a\ncid-b\ncid-c\n", stderr="",
+            )
+        if sub == "inspect":
+            return subprocess.CompletedProcess(cmd, 0, stdout=old + "\n", stderr="")
+        if sub == "rm":
+            rm_calls.append(cmd[-1])
+            # cid-b fails; cid-a and cid-c succeed.
+            if cmd[-1] == "cid-b":
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no such container")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    # All three were attempted, two succeeded.
+    assert removed == 2
+    assert set(rm_calls) == {"cid-a", "cid-b", "cid-c"}, (
+        f"reaper must attempt all candidates even when one fails; got: {rm_calls}"
+    )
+
+
+def test_container_finished_at_parses_nanosecond_timestamp(monkeypatch):
+    """Docker emits FinishedAt with nanosecond precision (RFC3339 with up to
+    9 fractional digits), but Python's fromisoformat caps at microseconds.
+    The helper must trim the extra digits without raising — otherwise every
+    candidate gets skipped and the reaper does nothing."""
+
+    def _run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 0,
+            stdout="2026-05-28T13:45:00.123456789Z\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    result = docker_env._container_finished_at("/usr/bin/docker", "test-cid")
+    assert result is not None, "must parse RFC3339 with nanoseconds"
+    import datetime
+    assert result.tzinfo == datetime.timezone.utc
+    assert result.year == 2026 and result.month == 5 and result.day == 28
+
+
+def test_container_finished_at_returns_none_on_zero_value():
+    """Docker's zero-value ``0001-01-01T00:00:00Z`` (never finished) must
+    map to None so the reaper treats the container as unreapable."""
+    # Direct test of the parsing helper — no subprocess needed since the
+    # check happens after the inspect call returns.
+    import subprocess as _subprocess
+
+    class _MockRun:
+        def __init__(self, stdout):
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = ""
+
+    import unittest.mock
+    with unittest.mock.patch.object(
+        docker_env.subprocess, "run", return_value=_MockRun("0001-01-01T00:00:00Z\n"),
+    ):
+        result = docker_env._container_finished_at("/usr/bin/docker", "never-finished")
+    assert result is None

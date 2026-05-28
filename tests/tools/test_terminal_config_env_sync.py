@@ -244,3 +244,19 @@ def test_docker_persist_across_processes_is_bridged_everywhere():
     assert "docker_persist_across_processes" in _gateway_env_map_keys()
     assert "docker_persist_across_processes" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES" in _terminal_tool_env_var_names()
+
+
+def test_docker_orphan_reaper_is_bridged_everywhere():
+    """Regression pin for the startup orphan reaper toggle (issue #20561).
+
+    ``terminal.docker_orphan_reaper`` controls whether Hermes sweeps stale
+    Exited containers from prior SIGKILL'd processes at startup.  Same
+    four-site bridge invariant — drift means
+    ``terminal.docker_orphan_reaper: false`` silently does nothing for one
+    entry point, and the reaper either runs when the operator disabled it
+    or fails to run when they enabled it.
+    """
+    assert "docker_orphan_reaper" in _cli_env_map_keys()
+    assert "docker_orphan_reaper" in _gateway_env_map_keys()
+    assert "docker_orphan_reaper" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_ORPHAN_REAPER" in _terminal_tool_env_var_names()

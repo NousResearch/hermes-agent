@@ -346,6 +346,31 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
 
+    # ── 503/529 with upstream capacity patterns → fast-fail ──
+    # Provider-side capacity exhaustion should not retry with exponential
+    # backoff (wastes 2+ minutes). Mark non-retryable so conversation_loop
+    # immediately falls back to next provider in chain.
+
+    def test_503_upstream_capacity_limits_non_retryable(self):
+        e = MockAPIError("upstream capacity limits", status_code=503)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_529_upstream_capacity_non_retryable(self):
+        e = MockAPIError("upstream capacity limits", status_code=529)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is False
+
+    def test_503_no_capacity_pattern_still_retryable(self):
+        """503 without capacity-pattern keywords should still retry (transient)."""
+        e = MockAPIError("Service Unavailable", status_code=503)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+
     # ── 5xx that are actually request-validation errors ──
     # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
     # request-validation failures with a 5xx status. These are

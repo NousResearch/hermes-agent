@@ -2669,6 +2669,23 @@ def run_conversation(
                             primary_recovery_attempted = False
                             continue
 
+                # ── Eager fallback for non-retryable server errors ─────
+                # When a server error (503/529) is classified as non-retryable
+                # (e.g., "upstream capacity limits"), fast-fail and try cloud
+                # fallbacks immediately instead of wasting time with exponential
+                # backoff retries that will all fail the same way.
+                if (
+                    classified.reason == FailoverReason.overloaded
+                    and not classified.retryable
+                    and agent._fallback_index < len(agent._fallback_chain)
+                ):
+                    agent._emit_status("⚠️ Provider overloaded — switching to fallback provider...")
+                    if agent._try_activate_fallback(reason=classified.reason):
+                        retry_count = 0
+                        compression_attempts = 0
+                        primary_recovery_attempted = False
+                        continue
+
                 # ── Nous Portal: record rate limit & skip retries ─────
                 # When Nous returns a 429 that is a genuine account-
                 # level rate limit, record the reset time to a shared

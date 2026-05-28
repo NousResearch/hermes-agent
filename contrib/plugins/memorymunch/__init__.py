@@ -7,7 +7,8 @@ vault atoms + PostgreSQL/pgvector graph/index rows + weighted activation state.
 Phase status:
 - Recall: original MemoryMunch smart_search bridge when explicitly enabled; this preserves vault + DB keyword + vector + activation behavior and may update activation metadata by upstream MemoryMunch design.
 - Active session: local JSONL ledger adapter for Hermes runtime continuity.
-- Capture/vault/DB writes: guarded by rollback/approval gates; broad automatic writes remain disabled by default.
+- Capture/vault/DB writes: hardwired live for this plugin; ordinary env/config gates must not turn Capture off.
+- Janitor writes: hardwired live for this plugin; ordinary env/config gates must not turn Janitor off.
 - Obsidian lane: original vault filesystem first; MCP is not required.
 """
 from __future__ import annotations
@@ -69,7 +70,7 @@ MEMORYMUNCH_GATEWAY_BRIEFING_CONTRACT = """MEMORYMUNCH_GATEWAY_BRIEFING_CONTRACT
 - Gateway normal mode receives only recall_safe=true atoms. Recall-unsafe atoms are suppressed before briefing assembly.
 - Janitor alone owns mutation_safe decisions; Gateway may display mutation status but must not authorize mutation or convert unknown into yes.
 - active_session_id is mandatory in every briefing header, and each current-session atom must carry source_session_id.
-- Older/non-current atoms must be labeled current_session=no and must yield to current-session/live-user proof.
+- current_session=yes|no; current_intent only from live_user_msg in active_session_id; no=history_only, never live intent/task/state.
 - Capture and Janitor are operationally required write lanes; do not physically disable them unless the whole plugin is intentionally disabled by user command.
 - Per-event live_db_write=false/live_vault_write=false on prompt/worker/turn ledger rows means that specific row is non-writing; it is not the system write state. Write truth comes from latest live_capture_completed and janitor_cycle_completed rows plus hardwire telemetry.
 - Normal briefing is token-efficient: compact header + ATOM_MIN packets. Full edge IDs, wiki-links, activation/decay history, and source-document details are audit/debug only unless explicitly requested.
@@ -1020,7 +1021,7 @@ def format_memorymunch_briefing(
         f"presented_atoms={len(prepared)}",
         f"suppressed_atoms={suppressed}",
         "contract=gateway_5ws_v1; hard_gates=recall_safe_filter,on; mutation_safe_owner=janitor; 5ws=edge_enrichment; full_metrics=audit_only",
-        "truth_policy=memory_is_background_evidence; current_session_beats_old_memory; missing_fields_are_gaps",
+        "truth_policy=memory_is_background_evidence; current_intent=live_user_msg@active_session_id_only; current_session_no=history_only_never_intent_task_state",
     ]
     grouped: Dict[str, list[dict[str, Any]]] = {}
     for label, row in prepared:
@@ -1070,8 +1071,8 @@ def format_memorymunch_briefing(
             )
             packet = (
                 f"- ATOM_MIN atom_id={atom}; source={source}; source_session_id={source_session_id or 'unknown'}; "
-                f"current_session={'yes' if current_session else 'no'}; source_document={source_document}; "
-                f"recall_safe=true; mutation_safe={mutation_safe}; 5w={five_w}; "
+                f"current_session={'yes' if current_session else 'no'}; intent_scope={'active_session_context' if current_session else 'history_only_never_live_intent_task_state'}; "
+                f"source_document={source_document}; recall_safe=true; mutation_safe={mutation_safe}; 5w={five_w}; "
                 f"edges={edge_count}; key_edges={key_edges}; audit_ref={atom}"
             )
             if label == "GRAPH_LINKED_OUTWARD":
@@ -1907,16 +1908,28 @@ class MemoryMunchProvider(MemoryProvider):
         }, timeout=180)
         search_result = self._bridge_result(search_payload) or {}
         results = list(search_result.get("results") or []) if isinstance(search_result, dict) else []
-        deep_reads: list[Any] = []
+        deep_read_atoms = []
         for atom in results[:max(0, min(int(deep_read_count), 3))]:
             atom_id = str(atom.get("id") or atom.get("atom_id") or "")
-            if not atom_id:
-                continue
+            if atom_id:
+                deep_read_atoms.append(atom_id)
+
+        def _deep_read(atom_id: str) -> Any:
             try:
-                deep_reads.append(self._bridge_result(self._run_original_bridge("get_memory", {"memory_id": atom_id}, timeout=120)))
+                return self._bridge_result(self._run_original_bridge("get_memory", {"memory_id": atom_id}, timeout=120))
             except Exception as exc:
-                deep_reads.append({"id": atom_id, "error": str(exc)[:160]})
-        return {"search_results": results, "deep_reads": deep_reads, "_meta": search_result.get("_meta") if isinstance(search_result, dict) else {}}
+                return {"id": atom_id, "error": str(exc)[:160]}
+
+        deep_reads: list[Any] = []
+        if deep_read_atoms:
+            # OpenClaw parity: smart_search already fans out vault/db/vector/activation;
+            # bounded top-atom deep reads should not become the next serial bottleneck.
+            with ThreadPoolExecutor(max_workers=min(3, len(deep_read_atoms))) as pool:
+                futures = [pool.submit(_deep_read, atom_id) for atom_id in deep_read_atoms]
+                deep_reads = [future.result() for future in futures]
+        meta = dict(search_result.get("_meta") or {}) if isinstance(search_result, dict) else {}
+        meta.update({"deep_read_mode": "parallel", "deep_read_count": len(deep_reads)})
+        return {"search_results": results, "deep_reads": deep_reads, "_meta": meta}
 
     def _load_openclaw_models_config(self) -> dict[str, Any]:
         path = Path(os.environ.get(
@@ -2088,7 +2101,7 @@ class MemoryMunchProvider(MemoryProvider):
             + MEMORYMUNCH_GATEWAY_BRIEFING_CONTRACT +
             "\nReturn a compact Gateway briefing. Include MEMORY_HEADER with active_session_id, scope_entity, "
             "live_db_write, live_vault_write, capture_mode, janitor_mode, recalled_atoms, presented_atoms, and suppressed_atoms. "
-            "Include only recall_safe=true ATOM_MIN packets in normal output. Label current_session and source_session_id per atom. "
+            "Include only recall_safe=true ATOM_MIN packets in normal output. Label source_session_id, current_session, and intent_scope per atom. current_session=no is history_only, never live intent/task/state. "
             "Do not dump full internals unless audit/debug is explicitly requested."
         )
         user_prompt = "\n".join([
@@ -2114,18 +2127,31 @@ class MemoryMunchProvider(MemoryProvider):
         stale = list(cleanup.get("stale") or []) if isinstance(cleanup, dict) else []
         edge_heavy = list(cleanup.get("edge_heavy") or []) if isinstance(cleanup, dict) else []
         prescan_ids = [str(x.get("id") or x.get("atom_id") or "") for x in (dupes + stale)[:2] if isinstance(x, dict)]
-        prescans = []
-        for atom_id in prescan_ids:
+
+        def _janitor_prescan(atom_id: str) -> Any:
             if not atom_id:
-                continue
+                return None
             try:
-                prescans.append(self._bridge_result(self._run_original_bridge("get_memory", {"memory_id": atom_id}, timeout=120)))
+                return self._bridge_result(self._run_original_bridge("get_memory", {"memory_id": atom_id}, timeout=120))
             except Exception as exc:
-                prescans.append({"id": atom_id, "error": str(exc)[:160]})
-        try:
-            search_context = self._bridge_result(self._run_original_bridge("smart_search", {"query": exchange_text, "scope_entity": self._scope_entity, "max_results": max(1, 3 - len(prescans))}, timeout=180))
-        except Exception:
-            search_context = {"results": []}
+                return {"id": atom_id, "error": str(exc)[:160]}
+
+        def _janitor_context_search() -> Any:
+            try:
+                return self._bridge_result(self._run_original_bridge("smart_search", {"query": exchange_text, "scope_entity": self._scope_entity, "max_results": max(1, 3 - len(prescan_ids))}, timeout=180))
+            except Exception:
+                return {"results": []}
+
+        # OpenClaw parity: Janitor prefetch gathers candidate deep-reads and
+        # context search concurrently, mirroring the Promise.all sweep shape.
+        prescans: list[Any] = []
+        search_context: Any = {"results": []}
+        with ThreadPoolExecutor(max_workers=max(1, min(3, len(prescan_ids) + 1))) as pool:
+            prescan_futures = [pool.submit(_janitor_prescan, atom_id) for atom_id in prescan_ids if atom_id]
+            search_future = pool.submit(_janitor_context_search)
+            prescans = [future.result() for future in prescan_futures]
+            search_context = search_future.result()
+        prescans = [item for item in prescans if item]
         system_prompt = self._load_prompt_atom_text(
             self._janitor_prompt_path,
             "You are the Memory Janitor — the brain's immune system and graph maintainer.",
@@ -2331,7 +2357,7 @@ class MemoryMunchProvider(MemoryProvider):
         self._maybe_janitor_cycle(sid, clean_user, clean_assistant)
 
     def _maybe_janitor_cycle(self, session_id: str, user_content: str, assistant_content: str) -> None:
-        if not self._truthy_env("HERMES_MEMORYMUNCH_JANITOR_ENABLE", default=True):
+        if not MEMORYMUNCH_HARDWIRE_JANITOR_LIVE and not self._truthy_env("HERMES_MEMORYMUNCH_JANITOR_ENABLE", default=True):
             self._append_session_event(session_id, "janitor_cycle_skipped", reason="env_gate_disabled", live_db_write=False, live_vault_write=False)
             return
         exchange_text = f"User: {redact_for_shadow_seed(user_content)}\nBot: {redact_for_shadow_seed(assistant_content)}"

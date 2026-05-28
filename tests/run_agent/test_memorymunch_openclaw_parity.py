@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import threading
+import time
 from pathlib import Path
 
 
@@ -95,33 +97,81 @@ def test_pasted_memory_context_is_stripped_before_prefetch_query(monkeypatch):
     assert any(event == "prefetch_query_sanitized" for event, _ in events)
 
 
+def test_briefing_marks_old_session_atoms_history_only_never_live_intent():
+    mm = load_plugin()
+
+    briefing = mm.format_memorymunch_briefing(
+        [
+            {
+                "id": "active::sid-current::1",
+                "source_session_id": "sid-current",
+                "provenance_class": "ACTIVE_SESSION_LEDGER_CURRENT",
+                "content_preview": "Current live user asked for MemoryMunch build.",
+            },
+            {
+                "id": "ledger::sid-old::1",
+                "source_session_id": "sid-old",
+                "provenance_class": "ACTIVE_SESSION_LINEAGE",
+                "content_preview": "Old session user wanted a different task.",
+            },
+        ],
+        active_session_id="sid-current",
+        scope_entity="tg-test",
+    )
+
+    assert "current_intent=live_user_msg@active_session_id_only" in briefing
+    assert "current_session_yes" not in briefing
+    assert "source_session_id=sid-current; current_session=yes; intent_scope=active_session_context" in briefing
+    assert "source_session_id=sid-old; current_session=no; intent_scope=history_only_never_live_intent_task_state" in briefing
+
+
 def test_janitor_runs_every_turn_review_mode(monkeypatch):
     mm = load_plugin()
     provider = mm.MemoryMunchProvider()
     provider._session_id = "sid-janitor-every-turn"
     events = []
+    calls = []
 
+    monkeypatch.setenv("HERMES_MEMORYMUNCH_JANITOR_ENABLE", "0")
     monkeypatch.delenv("HERMES_MEMORYMUNCH_JANITOR_APPLY_ENABLE", raising=False)
     monkeypatch.setattr(provider, "_append_jsonl", lambda session_id, row: None)
     monkeypatch.setattr(provider, "_append_session_event", lambda session_id, event, **kwargs: events.append((event, kwargs)))
     monkeypatch.setattr(provider, "_maybe_live_capture_exchange", lambda session_id, user, assistant: None)
-    monkeypatch.setattr(
-        provider,
-        "run_janitor_cycle",
-        lambda exchange_text, **kwargs: {
-            "hermes_mode": "openclaw_janitor_model_review",
+
+    def fake_janitor(exchange_text, **kwargs):
+        calls.append(kwargs)
+        return {
+            "hermes_mode": "approved_openclaw_janitor_apply",
             "proposed_actions": {"archive": []},
-            "live_db_write": False,
-            "live_vault_write": False,
-        },
-    )
+            "status": "APPLIED",
+            "live_db_write": True,
+            "live_vault_write": True,
+        }
+
+    monkeypatch.setattr(provider, "run_janitor_cycle", fake_janitor)
 
     provider.sync_turn("User request", "Assistant answer", session_id="sid-janitor-every-turn")
 
     janitor_events = [(event, payload) for event, payload in events if event == "janitor_cycle_completed"]
     assert janitor_events
-    assert janitor_events[-1][1]["live_db_write"] is False
-    assert janitor_events[-1][1]["status"] == "REVIEWED"
+    assert not any(event == "janitor_cycle_skipped" for event, _ in events)
+    assert calls[-1]["apply"] is True
+    assert calls[-1]["approval_phrase"] == "AL_DIRECT_APPROVAL"
+    assert janitor_events[-1][1]["live_db_write"] is True
+    assert janitor_events[-1][1]["live_vault_write"] is True
+    assert janitor_events[-1][1]["status"] == "APPLIED"
+
+
+def test_capture_live_write_ignores_env_disable(monkeypatch):
+    mm = load_plugin()
+    provider = mm.MemoryMunchProvider()
+
+    monkeypatch.setenv("HERMES_MEMORYMUNCH_LIVE_WRITE_ENABLE", "0")
+    monkeypatch.setenv("HERMES_MEMORYMUNCH_AUTO_CAPTURE_ENABLE", "0")
+
+    assert provider._live_capture_enabled() is True
+    assert provider._capture_mode() == "live"
+    assert provider._janitor_mode() == "live"
 
 
 def test_curator_model_parity_uses_search_and_deep_read_before_injection(monkeypatch):
@@ -161,6 +211,90 @@ def test_curator_model_parity_uses_search_and_deep_read_before_injection(monkeyp
     assert any(call[0] == "smart_search" for call in bridge_calls)
     assert any(call[0] == "get_memory" for call in bridge_calls)
     assert "curator_mode=model" in context
+
+
+def test_search_and_deep_read_fetches_top_atoms_in_parallel(monkeypatch):
+    mm = load_plugin()
+    provider = mm.MemoryMunchProvider()
+    provider._scope_entity = "scope-a"
+
+    started = []
+    lock = threading.Lock()
+    all_started = threading.Event()
+
+    def fake_bridge(tool, args, timeout=180):
+        if tool == "smart_search":
+            return {
+                "result": {
+                    "results": [
+                        {"id": "atom-1", "content": "one", "search_score": 0.99},
+                        {"id": "atom-2", "content": "two", "search_score": 0.98},
+                        {"id": "atom-3", "content": "three", "search_score": 0.97},
+                    ],
+                    "_meta": {"timing_ms": 10},
+                }
+            }
+        if tool == "get_memory":
+            with lock:
+                started.append(args["memory_id"])
+                if len(started) == 3:
+                    all_started.set()
+            assert all_started.wait(0.5), "deep reads did not overlap like original bounded parallel fanout"
+            return {"result": {"memory": {"id": args["memory_id"], "content": f"full {args['memory_id']}"}}}
+        raise AssertionError(tool)
+
+    monkeypatch.setattr(provider, "_run_original_bridge", fake_bridge)
+
+    result = provider._search_and_deep_read("parallel curator parity", max_results=15, deep_read_count=3)
+
+    assert sorted(started) == ["atom-1", "atom-2", "atom-3"]
+    assert len(result["deep_reads"]) == 3
+    assert result["_meta"]["deep_read_mode"] == "parallel"
+
+
+def test_janitor_prefetch_fetches_prescans_and_context_in_parallel(monkeypatch):
+    mm = load_plugin()
+    provider = mm.MemoryMunchProvider()
+    provider._session_id = "sid-janitor-parallel"
+    provider._scope_entity = "scope-a"
+
+    events = []
+    lock = threading.Lock()
+    get_started = threading.Event()
+    search_started = threading.Event()
+
+    def fake_bridge(tool, args, timeout=180):
+        if tool == "smart_cleanup":
+            return {"result": {"duplicates": [{"id": "dup-1", "similar_to": "dup-2", "content_preview": "duplicate"}], "stale": [{"id": "stale-1", "content_preview": "stale"}], "correction_events": [], "edge_heavy": [], "orphan_edges": 0}}
+        if tool == "get_memory":
+            with lock:
+                events.append((tool, args["memory_id"], time.perf_counter()))
+            get_started.set()
+            assert search_started.wait(0.5), "janitor prescan get_memory did not overlap with context smart_search"
+            return {"result": {"memory": {"id": args["memory_id"], "content": "full candidate"}}}
+        if tool == "smart_search":
+            with lock:
+                events.append((tool, "context", time.perf_counter()))
+            search_started.set()
+            assert get_started.wait(0.5), "janitor context smart_search did not overlap with prescan get_memory"
+            return {"result": {"results": [{"id": "context-1", "content": "context atom"}]}}
+        raise AssertionError(tool)
+
+    def fake_model(role, system_prompt, user_prompt, timeout=180):
+        assert role == "janitor"
+        assert "full candidate" in user_prompt
+        assert "context atom" in user_prompt
+        return json.dumps({"archive": [], "edge_cleanup": False, "edge_prune": []})
+
+    monkeypatch.setenv("HERMES_MEMORYMUNCH_JANITOR_MODEL_ENABLE", "1")
+    monkeypatch.setattr(provider, "_run_original_bridge", fake_bridge)
+    monkeypatch.setattr(provider, "_call_memorymunch_worker_model", fake_model)
+
+    result = provider.run_janitor_cycle("User: parallel janitor\nBot: ok", apply=False)
+
+    assert result["hermes_mode"] == "openclaw_janitor_model_review"
+    assert any(event[0] == "get_memory" for event in events)
+    assert any(event[0] == "smart_search" for event in events)
 
 
 def test_janitor_model_cycle_builds_review_plan_without_mutation(monkeypatch):

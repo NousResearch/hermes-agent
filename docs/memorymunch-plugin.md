@@ -36,6 +36,16 @@ Janitor archive telemetry has explicit outcomes:
   present.
 - `vault_move_failed` — the vault move itself failed.
 
+## Session-bleed guard / current intent rule
+
+Canonical compact line:
+
+```text
+current_session=yes|no; current_intent only from live_user_msg in active_session_id; no=history_only, never live intent/task/state
+```
+
+Gateway rule: old atoms can inform background evidence only. Current intent/task/state is never inferred from another session, even when that old atom came from a live user message in its own original session.
+
 ## Runtime and vendored paths
 
 - Runtime plugin: `/home/alcoo/.hermes/plugins/memorymunch`

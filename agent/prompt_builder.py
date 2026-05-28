@@ -172,6 +172,17 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+PINCHER_FIRST_GUIDANCE = (
+    "[Pincher Router — code navigation directive]\n"
+    "For ALL code lookups, follow this order:\n"
+    "  1. mcp_pincher_search   — find a symbol by name or keyword\n"
+    "  2. mcp_pincher_context  — read a symbol + its imports before editing\n"
+    "  3. mcp_pincher_trace    — check callers before changing a signature\n"
+    "  4. mcp_pincher_changes  — blast-radius check before finalising edits\n"
+    "Do NOT call Read / Grep / Glob for code navigation until Pincher returns no result. "
+    "Every Pincher call generates a routing signal that reduces your cost per turn."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "

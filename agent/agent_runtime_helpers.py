@@ -1632,20 +1632,38 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     if block_message is not None:
         return json.dumps({"error": block_message}, ensure_ascii=False)
 
+    def _finalize_agent_loop_result(result: str) -> str:
+        from agent.agent_loop_observer import (
+            append_observer_metadata,
+            notify_agent_loop_tool,
+        )
+
+        annotations = notify_agent_loop_tool(
+            agent,
+            function_name,
+            function_args,
+            result,
+            task_id=effective_task_id or "",
+            tool_call_id=tool_call_id or "",
+        )
+        return append_observer_metadata(result, annotations)
+
     if function_name == "todo":
         from tools.todo_tool import todo_tool as _todo_tool
-        return _todo_tool(
+        result = _todo_tool(
             todos=function_args.get("todos"),
             merge=function_args.get("merge", False),
             store=agent._todo_store,
         )
+        return _finalize_agent_loop_result(result)
     elif function_name == "session_search":
         session_db = agent._get_session_db_for_recall()
         if not session_db:
             from hermes_state import format_session_db_unavailable
-            return json.dumps({"success": False, "error": format_session_db_unavailable()})
+            result = json.dumps({"success": False, "error": format_session_db_unavailable()})
+            return _finalize_agent_loop_result(result)
         from tools.session_search_tool import session_search as _session_search
-        return _session_search(
+        result = _session_search(
             query=function_args.get("query", ""),
             role_filter=function_args.get("role_filter"),
             limit=function_args.get("limit", 3),
@@ -1656,6 +1674,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             db=session_db,
             current_session_id=agent.session_id,
         )
+        return _finalize_agent_loop_result(result)
     elif function_name == "memory":
         target = function_args.get("target", "memory")
         from tools.memory_tool import memory_tool as _memory_tool
@@ -1666,21 +1685,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             old_text=function_args.get("old_text"),
             store=agent._memory_store,
         )
-        # Bridge: notify external memory provider of built-in memory writes
-        if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
-            try:
-                agent._memory_manager.on_memory_write(
-                    function_args.get("action", ""),
-                    target,
-                    function_args.get("content", ""),
-                    metadata=agent._build_memory_write_metadata(
-                        task_id=effective_task_id,
-                        tool_call_id=tool_call_id,
-                    ),
-                )
-            except Exception:
-                pass
-        return result
+        return _finalize_agent_loop_result(result)
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         return agent._memory_manager.handle_tool_call(function_name, function_args)
     elif function_name == "clarify":
@@ -1691,7 +1696,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             callback=agent.clarify_callback,
         )
     elif function_name == "delegate_task":
-        return agent._dispatch_delegate_task(function_args)
+        result = agent._dispatch_delegate_task(function_args)
+        return _finalize_agent_loop_result(result)
     else:
         return _ra().handle_function_call(
             function_name, function_args, effective_task_id,

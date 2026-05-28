@@ -313,6 +313,25 @@ class MemoryManager:
                 return p
         return None
 
+    def has_authoritative_provider(self) -> bool:
+        """Return True when a provider owns the prompt memory substrate."""
+        for provider in self._providers:
+            try:
+                checker = getattr(provider, "is_authoritative_context", None)
+                if callable(checker):
+                    if checker():
+                        return True
+                    continue
+                if bool(getattr(provider, "authoritative_context", False)):
+                    return True
+            except Exception:
+                logger.debug(
+                    "Memory provider '%s' authoritative check failed",
+                    getattr(provider, "name", "unknown"),
+                    exc_info=True,
+                )
+        return False
+
     # -- System prompt -------------------------------------------------------
 
     def build_system_prompt(self) -> str:
@@ -594,6 +613,38 @@ class MemoryManager:
                     "Memory provider '%s' on_memory_write failed: %s",
                     provider.name, e,
                 )
+
+    def on_tool_observed(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Notify external providers after an agent-loop tool completes.
+
+        Returns provider metadata annotations that the caller may append to the
+        tool result. Failures stay non-fatal so local tool UX remains intact.
+        """
+        annotations: List[Dict[str, Any]] = []
+        for provider in self._providers:
+            if provider.name == "builtin":
+                continue
+            try:
+                annotation = provider.on_tool_observed(
+                    tool_name,
+                    dict(args or {}),
+                    result,
+                    metadata=dict(metadata or {}),
+                )
+                if isinstance(annotation, dict):
+                    annotations.append(annotation)
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' on_tool_observed failed: %s",
+                    provider.name, e,
+                )
+        return annotations
 
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:

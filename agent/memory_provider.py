@@ -27,6 +27,7 @@ Optional hooks (override to opt in):
   on_session_switch(new_session_id, **kwargs) — mid-process session_id rotation
   on_pre_compress(messages) -> str       — extract before context compression
   on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
+  on_tool_observed(tool_name, args, result, metadata=None) — observe agent-loop tools
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
 """
 
@@ -289,3 +290,32 @@ class MemoryProvider(ABC):
 
         Use to mirror built-in memory writes to your backend.
         """
+
+    def on_tool_observed(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Observe a completed agent-loop tool call.
+
+        Agent-loop tools such as ``todo``, ``memory``, ``delegate_task``, and
+        ``session_search`` are intercepted before the normal registry dispatch
+        path, so generic ``post_tool_call`` hooks cannot reliably see them.
+        Providers can use this hook to mirror control-plane state without
+        adding provider-specific logic to the built-in tools.
+
+        Return a small JSON-serializable metadata dict to annotate the tool
+        result. Return ``None`` for observer-only behavior.
+        """
+        if tool_name == "memory" and isinstance(args, dict):
+            action = str(args.get("action") or "")
+            if action in {"add", "replace"}:
+                self.on_memory_write(
+                    action,
+                    str(args.get("target") or "memory"),
+                    str(args.get("content") or ""),
+                    metadata=metadata,
+                )
+        return None

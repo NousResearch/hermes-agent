@@ -57,6 +57,14 @@ class TestExtractMediaImages:
         assert "/audio.ogg" in paths
         assert "/screenshot.png" in paths
 
+    def test_markdown_document_extracted(self):
+        content = "MD 对照附件\nMEDIA:/home/user/document_output/telegram_compare_test.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/home/user/document_output/telegram_compare_test.md"
+        assert "MEDIA:" not in cleaned
+        assert "MD 对照附件" in cleaned
+
 
 # ---------------------------------------------------------------------------
 # Telegram send_image_file tests

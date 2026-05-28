@@ -54,6 +54,8 @@ export const hu: Translations = {
     brandShort: "HA",
     closeNavigation: "Navigáció bezárása",
     closeModelTools: "Modell és eszközök bezárása",
+    hideSidebar: "Oldalsáv elrejtése",
+    showSidebar: "Oldalsáv megjelenítése",
     footer: {
       org: "Nous Research",
     },

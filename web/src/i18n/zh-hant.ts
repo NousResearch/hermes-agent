@@ -54,6 +54,8 @@ export const zhHant: Translations = {
     brandShort: "HA",
     closeNavigation: "關閉導覽",
     closeModelTools: "關閉模型與工具",
+    hideSidebar: "隱藏側邊欄",
+    showSidebar: "顯示側邊欄",
     footer: {
       org: "Nous Research",
     },

@@ -54,6 +54,8 @@ export const ko: Translations = {
     brandShort: "HA",
     closeNavigation: "내비게이션 닫기",
     closeModelTools: "모델 및 도구 닫기",
+    hideSidebar: "사이드바 숨기기",
+    showSidebar: "사이드바 보기",
     footer: {
       org: "Nous Research",
     },

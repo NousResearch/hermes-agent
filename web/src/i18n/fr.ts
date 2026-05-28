@@ -54,6 +54,8 @@ export const fr: Translations = {
     brandShort: "HA",
     closeNavigation: "Fermer la navigation",
     closeModelTools: "Fermer modèle et outils",
+    hideSidebar: "Masquer la barre latérale",
+    showSidebar: "Afficher la barre latérale",
     footer: {
       org: "Nous Research",
     },

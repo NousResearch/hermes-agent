@@ -54,6 +54,8 @@ export const tr: Translations = {
     brandShort: "HA",
     closeNavigation: "Gezintiyi kapat",
     closeModelTools: "Modeli ve araçları kapat",
+    hideSidebar: "Kenar çubuğunu gizle",
+    showSidebar: "Kenar çubuğunu göster",
     footer: {
       org: "Nous Research",
     },

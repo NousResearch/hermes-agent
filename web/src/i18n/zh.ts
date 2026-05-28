@@ -53,6 +53,8 @@ export const zh: Translations = {
     brandShort: "HA",
     closeNavigation: "关闭导航",
     closeModelTools: "关闭模型与工具",
+    hideSidebar: "隐藏侧栏",
+    showSidebar: "显示侧栏",
     footer: {
       org: "Nous Research",
     },

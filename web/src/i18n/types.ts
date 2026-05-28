@@ -70,6 +70,8 @@ export interface Translations {
     brandShort: string;
     closeNavigation: string;
     closeModelTools: string;
+    hideSidebar: string;
+    showSidebar: string;
     footer: {
       org: string;
     };

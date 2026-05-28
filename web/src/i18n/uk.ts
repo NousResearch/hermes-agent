@@ -54,6 +54,8 @@ export const uk: Translations = {
     brandShort: "HA",
     closeNavigation: "Закрити навігацію",
     closeModelTools: "Закрити модель та інструменти",
+    hideSidebar: "Приховати бічну панель",
+    showSidebar: "Показати бічну панель",
     footer: {
       org: "Nous Research",
     },

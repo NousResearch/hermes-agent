@@ -54,6 +54,8 @@ export const ja: Translations = {
     brandShort: "HA",
     closeNavigation: "ナビゲーションを閉じる",
     closeModelTools: "モデルとツールを閉じる",
+    hideSidebar: "サイドバーを隠す",
+    showSidebar: "サイドバーを表示",
     footer: {
       org: "Nous Research",
     },

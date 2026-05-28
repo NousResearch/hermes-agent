@@ -54,6 +54,8 @@ export const ga: Translations = {
     brandShort: "HA",
     closeNavigation: "Dún an nascleanúint",
     closeModelTools: "Dún an samhail agus na huirlisí",
+    hideSidebar: "Folaigh painéal taoibh",
+    showSidebar: "Taispeáin painéal taoibh",
     footer: {
       org: "Nous Research",
     },

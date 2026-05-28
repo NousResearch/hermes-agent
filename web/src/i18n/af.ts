@@ -54,6 +54,8 @@ export const af: Translations = {
     brandShort: "HA",
     closeNavigation: "Maak navigasie toe",
     closeModelTools: "Maak model en gereedskap toe",
+    hideSidebar: "Steek sybalk weg",
+    showSidebar: "Wys sybalk",
     footer: {
       org: "Nous Research",
     },

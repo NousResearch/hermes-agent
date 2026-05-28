@@ -41,7 +41,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Tuple, Union, overload
 from urllib.parse import urlparse
 
 try:
@@ -1678,6 +1678,24 @@ class QQAdapter(BasePlatformAdapter):
             return {"Authorization": f"QQBot {self._access_token}"}
         return {}
 
+    @overload
+    async def _download_limited_bytes(
+            self,
+            url: str,
+            headers: Optional[Dict[str, str]] = None,
+            context: str = "attachment",
+            return_content_type: Literal[False] = False,
+    ) -> Optional[bytes]: ...
+
+    @overload
+    async def _download_limited_bytes(
+            self,
+            url: str,
+            headers: Optional[Dict[str, str]] = None,
+            context: str = "attachment",
+            return_content_type: Literal[True] = True,
+    ) -> Optional[Tuple[bytes, str]]: ...
+
     async def _download_limited_bytes(
             self,
             url: str,
@@ -1716,7 +1734,12 @@ class QQAdapter(BasePlatformAdapter):
                         )
                         return None
                 except ValueError:
-                    pass
+                    logger.debug(
+                        "[%s] Ignoring invalid content-length header for %s: %r",
+                        self._log_tag,
+                        context,
+                        content_length,
+                    )
 
             chunks = bytearray()
             async for chunk in resp.aiter_bytes():

@@ -1188,16 +1188,27 @@ class TestBuildAnthropicKwargs:
         # params through its signature, we exercise the strip behavior by
         # calling the internal predicate directly.
         from agent.anthropic_adapter import _forbids_sampling_params
+        assert _forbids_sampling_params("claude-opus-4-8") is True
+        assert _forbids_sampling_params("claude-opus-4-8-fast") is True
         assert _forbids_sampling_params("claude-opus-4-7") is True
         assert _forbids_sampling_params("claude-opus-4-6") is False
         assert _forbids_sampling_params("claude-sonnet-4-5") is False
 
     def test_supports_fast_mode_predicate(self):
-        """Fast mode is Opus 4.6 only — Opus 4.7 and others must be excluded."""
+        """Fast mode is Opus 4.6 only — Opus 4.7 and others must be excluded.
+
+        For Opus 4.8 the fast variant is a separate model ID
+        (anthropic/claude-opus-4.8-fast) routed through the normal model
+        field, NOT via the ``speed: "fast"`` request parameter. So
+        ``_supports_fast_mode`` (which gates the parameter) must stay
+        False for both opus-4-8 and opus-4-8-fast.
+        """
         from agent.anthropic_adapter import _supports_fast_mode
         assert _supports_fast_mode("claude-opus-4-6") is True
         assert _supports_fast_mode("anthropic/claude-opus-4-6") is True
         assert _supports_fast_mode("claude-opus-4-7") is False
+        assert _supports_fast_mode("claude-opus-4-8") is False
+        assert _supports_fast_mode("claude-opus-4-8-fast") is False
         assert _supports_fast_mode("claude-sonnet-4-6") is False
         assert _supports_fast_mode("claude-haiku-4-5") is False
         assert _supports_fast_mode("") is False

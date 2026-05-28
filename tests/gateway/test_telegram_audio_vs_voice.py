@@ -12,7 +12,7 @@ These tests confirm that:
   3. Mixed media lists (voice + audio) split correctly.
 """
 
-from unittest.mock import patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -74,9 +74,31 @@ async def test_voice_message_still_transcribed():
             history=[],
         )
 
-    mock_transcribe.assert_called_once_with("/tmp/voice.ogg")
+    mock_transcribe.assert_called_once_with("/tmp/voice.ogg", initial_prompt=ANY)
     assert "hello world" in result
     assert "voice message" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_voice_message_empty_transcript_reports_transcription_failure():
+    """An empty successful STT result should not be presented as a valid transcript."""
+    runner = _make_runner(stt_enabled=True)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
+    event = _voice_event("/tmp/too-short.ogg")
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "", "provider": "local"},
+    ):
+        result = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+    assert "trouble transcribing" in result.lower()
+    assert "empty transcript" in result.lower()
+    assert 'what they said: ""' not in result
 
 
 # ---------------------------------------------------------------------------

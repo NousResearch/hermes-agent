@@ -120,10 +120,10 @@
             "ncurses",
             "pcre2"
           ],
-          "filename": "pool/main/l/less/less_692_aarch64.deb",
+          "filename": "pool/main/l/less/less_702_aarch64.deb",
           "name": "less",
-          "sha256": "b974b37261e650a7c6181f0cd899db56f1f8968fe2c25f41cfccefa3321bf726",
-          "version": "692"
+          "sha256": "98eee6cf06b0a0c9a347405d1ae683af64924e64b06eca3dd7b5e26325b4e576",
+          "version": "702"
         },
         {
           "depends": [
@@ -131,10 +131,10 @@
             "libc++",
             "libcurl"
           ],
-          "filename": "pool/main/l/llama-cpp/llama-cpp_0.0.0-b9131-0_aarch64.deb",
+          "filename": "pool/main/l/llama-cpp/llama-cpp_0.0.0-b9360-0_aarch64.deb",
           "name": "llama-cpp",
-          "sha256": "712f0e4115dec7674dad88f3c5525c250fd3160b72c3b934ffa0b8a7072393d6",
-          "version": "0.0.0-b9131-0"
+          "sha256": "0f7ef362080d6c6e93c5fb86b4434a9438771980c7791b8855d37c6fc5350166",
+          "version": "0.0.0-b9360-0"
         },
         {
           "depends": [
@@ -173,10 +173,10 @@
             "ncurses",
             "zlib"
           ],
-          "filename": "pool/main/u/util-linux/util-linux_2.41.3_aarch64.deb",
+          "filename": "pool/main/u/util-linux/util-linux_2.42.1_aarch64.deb",
           "name": "util-linux",
-          "sha256": "47bc311f6bf020c2af076e578c8130ae0e753f4600d84d6b6e36e10c16eda024",
-          "version": "2.41.3"
+          "sha256": "fbfb9c8230a91f7d9d44118e8e106238bfaa9b6def1036803a7bd18de199ef31",
+          "version": "2.42.1"
         },
         {
           "depends": [
@@ -345,10 +345,10 @@
           "depends": [
             "libandroid-posix-semaphore"
           ],
-          "filename": "pool/main/libs/libsmartcols/libsmartcols_2.41.3_aarch64.deb",
+          "filename": "pool/main/libs/libsmartcols/libsmartcols_2.42.1_aarch64.deb",
           "name": "libsmartcols",
-          "sha256": "d134b295a1e3fb0b2be7d85020d41fcec4ab1292ef93f8ddcdf90e3379e444ca",
-          "version": "2.41.3"
+          "sha256": "eb56cc8d467bf32b0e85903916ba4dbb86bb19d3f6d417d68f1262e46c33dc40",
+          "version": "2.42.1"
         },
         {
           "depends": [],
@@ -527,10 +527,10 @@
             "ncurses",
             "pcre2"
           ],
-          "filename": "pool/main/l/less/less_692_x86_64.deb",
+          "filename": "pool/main/l/less/less_702_x86_64.deb",
           "name": "less",
-          "sha256": "64ca16c883a18e8f9ecc1d29e2e2fc2a6c006bc142aeeed4788e90b178075034",
-          "version": "692"
+          "sha256": "d948c865e18d28a55c7b5e965e42142d8d198e6de48ecd8ba49025a2960f6fc7",
+          "version": "702"
         },
         {
           "depends": [
@@ -538,10 +538,10 @@
             "libc++",
             "libcurl"
           ],
-          "filename": "pool/main/l/llama-cpp/llama-cpp_0.0.0-b9131-0_x86_64.deb",
+          "filename": "pool/main/l/llama-cpp/llama-cpp_0.0.0-b9360-0_x86_64.deb",
           "name": "llama-cpp",
-          "sha256": "f69205c3e0d40bb909dacc68919c0713eca9a5f873eefa71211b5a629d13573e",
-          "version": "0.0.0-b9131-0"
+          "sha256": "adb185c0454adab868c4c5e1667b37d9d474a1dd4100f98d49f59958cc6722d9",
+          "version": "0.0.0-b9360-0"
         },
         {
           "depends": [
@@ -580,10 +580,10 @@
             "ncurses",
             "zlib"
           ],
-          "filename": "pool/main/u/util-linux/util-linux_2.41.3_x86_64.deb",
+          "filename": "pool/main/u/util-linux/util-linux_2.42.1_x86_64.deb",
           "name": "util-linux",
-          "sha256": "dffc26e7faedbf84437d3a847c3c0f037fc9b02467964980ef4accb4d498c675",
-          "version": "2.41.3"
+          "sha256": "b679e1a08dd4133658f0e2697ff8ecfd16eaec53f76529cee6b87458b9d56de4",
+          "version": "2.42.1"
         },
         {
           "depends": [
@@ -752,10 +752,10 @@
           "depends": [
             "libandroid-posix-semaphore"
           ],
-          "filename": "pool/main/libs/libsmartcols/libsmartcols_2.41.3_x86_64.deb",
+          "filename": "pool/main/libs/libsmartcols/libsmartcols_2.42.1_x86_64.deb",
           "name": "libsmartcols",
-          "sha256": "494d8abbf7932905512196be3908f0a134fc51ecf811bcf10be57a255d5fbc76",
-          "version": "2.41.3"
+          "sha256": "d4cfb8083e644a93aef71eb87951b6a52a3a8dbe978291c9cbfec07c66012eab",
+          "version": "2.42.1"
         },
         {
           "depends": [],

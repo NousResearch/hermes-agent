@@ -53,8 +53,10 @@ def test_chat_view_model_persists_history_and_supports_native_command_feedback()
     assert 'Voice input captured' in chat_view_model
     assert 'endpoint.streamingStatus(attachments.isNotEmpty())' in chat_view_model
     assert 'fun ChatEndpoint.failureMessage(message: String)' in chat_view_model
-    assert 'If this is a custom endpoint, verify the Base URL includes /v1' in chat_view_model
-    assert 'keeps SSE streams open until [DONE]' in chat_view_model
+    assert 'Hermes normalizes raw hosts, /v1 URLs, and /v1/chat/completions URLs' in chat_view_model
+    assert 'streaming endpoints must stay open until [DONE]' in chat_view_model
+    assert 'buildChatRequestMessages(' in chat_view_model
+    assert 'User-configured agent persona/system instructions' in chat_view_model
     assert 'isEndpointStatusText(displayText)' in (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
     assert 'Speaking the latest Hermes reply' not in chat_view_model  # UI handles TTS feedback
 
@@ -82,7 +84,7 @@ def test_empty_chat_layout_scrolls_welcome_state_on_small_or_large_font_screens(
 
     assert 'LazyColumn(' in chat_screen
     assert 'EmptyChatHint(' in chat_screen
-    assert 'contentPadding = PaddingValues(vertical = 8.dp)' in chat_screen
+    assert 'contentPadding = PaddingValues(top = 24.dp, bottom = 8.dp)' in chat_screen
 
 
 def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():

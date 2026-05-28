@@ -40,7 +40,10 @@ def test_android_boot_and_chat_paths_guard_local_backend_failures_instead_of_cra
     assert 'client.streamChatCompletion(' in chat_view_model
     assert 'error.message ?: error.javaClass.simpleName' in chat_view_model
 
-    assert "toolSpecs = initialToolSpecs" in native_tool_client
+    assert "postChatCompletionWithContextRecovery(" in native_tool_client
+    assert "toolSpecs = activeToolSpecs" in native_tool_client
+    assert "recoverMessagesAfterContextOverflow(messages)" in native_tool_client
+    assert "recoverToolSpecsAfterContextOverflow(toolSpecs)" in native_tool_client
     assert "followUp.content.ifBlank { toolCompletionReply(latestToolResult) }" in native_tool_client
 
     assert 'internal fun parseStream(' in sse_client
@@ -80,7 +83,8 @@ def test_android_chat_ui_and_native_tool_prompt_stay_compact_on_large_font_phone
     assert 'compactToolSpecsFor(userText)' in native_tool_client
     assert '.ifEmpty { inferredToolNames(userText) }' in native_tool_client
     assert 'return JSONArray()' in native_tool_client
-    assert 'systemMessage(toolsEnabled = initialToolSpecs.length() > 0)' in native_tool_client
+    assert 'systemMessage(toolsEnabled = activeToolSpecs.length() > 0)' in native_tool_client
+    assert 'compactCustomSystemPrompt' in native_tool_client
     assert 'Keep replies brief and direct.' in native_tool_client
     assert 'inferredToolNames(userText: String)' in native_tool_client
     assert '"launch browser"' in native_tool_client

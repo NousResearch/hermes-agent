@@ -547,13 +547,18 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(
+    *, skip_disabled: bool = False, category: str | None = None
+) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.hermes/skills/ and external dirs.
 
     Args:
         skip_disabled: If True, return ALL skills regardless of disabled
             state (used by ``hermes skills`` config UI). Default False
             filters out disabled skills.
+        category: Optional category filter. When set, filter by category before
+            de-duplicating names so same-name skills in other categories do not
+            hide the requested category's entry.
 
     Returns:
         List of skill metadata dicts (name, description, category).
@@ -578,6 +583,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 continue
 
             skill_dir = skill_md.parent
+            skill_category = _get_category_from_path(skill_md)
+            if category and skill_category != category:
+                continue
 
             try:
                 content = skill_md.read_text(encoding="utf-8")[:4000]
@@ -603,13 +611,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if len(description) > MAX_DESCRIPTION_LENGTH:
                     description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
 
-                category = _get_category_from_path(skill_md)
-
                 seen_names.add(name)
                 skills.append({
                     "name": name,
                     "description": description,
-                    "category": category,
+                    "category": skill_category,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -699,10 +705,11 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # Find all skills
-        all_skills = _find_all_skills()
+        # Find all skills. When category is specified, filter during discovery
+        # before same-name de-duplication so another category cannot shadow it.
+        all_skills = _find_all_skills(category=category)
 
-        if not all_skills:
+        if not all_skills and not category:
             return json.dumps(
                 {
                     "success": True,
@@ -712,10 +719,6 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 },
                 ensure_ascii=False,
             )
-
-        # Filter by category if specified
-        if category:
-            all_skills = [s for s in all_skills if s.get("category") == category]
 
         # Sort by category then name
         all_skills = _sort_skills(all_skills)

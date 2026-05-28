@@ -852,6 +852,82 @@ class TestFindAllSkillsSecureSetup:
         assert {skill["name"] for skill in skills} == {"skill-a", "skill-b"}
 
 
+class TestSkillsListCategoryFiltering:
+    def test_category_filter_includes_same_name_skill_from_requested_category(
+        self, tmp_path
+    ):
+        _make_skill(
+            tmp_path,
+            "writing-plans",
+            category="harmes-house",
+            body="HARMES HOUSE VERSION",
+        )
+        _make_skill(
+            tmp_path,
+            "writing-plans",
+            category="superpowers-zh",
+            body="SUPERPOWERS ZH VERSION",
+        )
+        _make_skill(tmp_path, "unique-superpower", category="superpowers-zh")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            raw = skills_list(category="superpowers-zh")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["count"] == 2
+        assert {skill["name"] for skill in result["skills"]} == {
+            "unique-superpower",
+            "writing-plans",
+        }
+        assert all(skill["category"] == "superpowers-zh" for skill in result["skills"])
+
+    def test_default_list_still_deduplicates_same_name_skills(self, tmp_path):
+        _make_skill(tmp_path, "writing-plans", category="harmes-house")
+        _make_skill(tmp_path, "writing-plans", category="superpowers-zh")
+        _make_skill(tmp_path, "unique-superpower", category="superpowers-zh")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            raw = skills_list()
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["count"] == 2
+        assert [skill["name"] for skill in result["skills"]].count("writing-plans") == 1
+
+    def test_qualified_skill_view_loads_requested_category_despite_duplicate_name(
+        self, tmp_path
+    ):
+        _make_skill(
+            tmp_path,
+            "writing-plans",
+            category="harmes-house",
+            body="HARMES HOUSE VERSION",
+        )
+        _make_skill(
+            tmp_path,
+            "writing-plans",
+            category="superpowers-zh",
+            body="SUPERPOWERS ZH VERSION",
+        )
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            raw = skill_view("superpowers-zh/writing-plans")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "SUPERPOWERS ZH VERSION" in result["content"]
+
+
 class TestSkillViewPrerequisites:
     def test_legacy_prerequisites_expose_required_env_setup_metadata(
         self, tmp_path, monkeypatch

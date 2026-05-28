@@ -1,4 +1,5 @@
 from argparse import Namespace
+import os
 from pathlib import Path
 import sys
 import types
@@ -312,6 +313,37 @@ def test_termux_fast_cli_launch_chat_uses_light_parser(monkeypatch, main_mod):
     }
 
 
+def test_termux_fast_cli_launch_bare_defers_agent_startup(monkeypatch, main_mod):
+    captured = {}
+    prepared = []
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.delenv("HERMES_DEFER_AGENT_STARTUP", raising=False)
+    monkeypatch.delenv("HERMES_FAST_STARTUP_BANNER", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes"])
+    monkeypatch.setattr(
+        main_mod, "_prepare_agent_startup", lambda args: prepared.append(args.command)
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "cmd_chat",
+        lambda args: captured.update(
+            {
+                "query": args.query,
+                "command": args.command,
+                "compact": getattr(args, "compact", False),
+            }
+        ),
+    )
+
+    assert main_mod._try_termux_fast_cli_launch() is True
+    assert prepared == []
+    assert captured == {"query": None, "command": None, "compact": True}
+    assert os.environ["HERMES_DEFER_AGENT_STARTUP"] == "1"
+    assert os.environ["HERMES_FAST_STARTUP_BANNER"] == "1"
+
+
 def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod):
     captured = {}
     prepared = []
@@ -362,6 +394,34 @@ def test_termux_fast_cli_launch_version_skips_update_check(monkeypatch, main_mod
 
     assert main_mod._try_termux_fast_cli_launch() is True
     assert captured == [False]
+
+
+def test_termux_ultrafast_version_runs_before_heavy_startup(
+    monkeypatch, capsys, main_mod
+):
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TERMUX_DISABLE_FAST_CLI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "--version"])
+
+    assert main_mod._try_termux_ultrafast_version() is True
+
+    out = capsys.readouterr().out
+    assert "Hermes Agent v" in out
+    assert "Project:" in out
+    assert "Python:" in out
+    assert "OpenAI SDK:" in out
+
+
+def test_read_openai_version_fast(monkeypatch, tmp_path, main_mod):
+    package_dir = tmp_path / "openai"
+    package_dir.mkdir()
+    (package_dir / "_version.py").write_text(
+        '__version__ = "9.8.7"  # x-release-please-version\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "path", [str(tmp_path)])
+
+    assert main_mod._read_openai_version_fast() == "9.8.7"
 
 
 def test_termux_fast_cli_launch_skips_help(monkeypatch, main_mod):

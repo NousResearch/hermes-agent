@@ -10,6 +10,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def _non_wsl_proc_version(real_open):
+    """Return an open() shim that makes host WSL detection deterministic."""
+    def _fake_open(file, *args, **kwargs):
+        if file == "/proc/version":
+            from io import StringIO
+
+            return StringIO("Linux test-kernel")
+        return real_open(file, *args, **kwargs)
+
+    return _fake_open
+
+
 # ============================================================================
 # Fixtures
 # ============================================================================
@@ -68,6 +80,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
@@ -225,6 +238,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.setattr("tools.voice_mode.shutil.which", lambda cmd: "/data/data/com.termux/files/usr/bin/termux-microphone-record" if cmd == "termux-microphone-record" else None)
         monkeypatch.setattr("tools.voice_mode._termux_api_app_installed", lambda: True)
         monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (_ for _ in ()).throw(ImportError("no audio libs")))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()

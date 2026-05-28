@@ -68,9 +68,9 @@ Hermes Kanban은 모든 Hermes 프로필이 함께 쓰는 **지속형 작업 보
 - **Link** — 부모 → 자식 의존성을 기록하는 `task_links` row. 부모가 모두 `done`이면 dispatcher가 `todo → ready`로 승격시킵니다.
 - **Comment** — 에이전트 간 프로토콜. agent와 사람이 comment를 붙이고, worker가 (재)실행될 때 전체 thread를 컨텍스트로 읽습니다.
 - **Workspace** — worker가 실제 작업을 수행하는 디렉터리.
-  - `scratch` (기본값) — `~/.hermes/kanban/workspaces/<id>/` 아래의 새 tmp 디렉터리 (non-default board는 board 경로 아래)
-  - `dir:<path>` — 기존 공유 디렉터리. **절대경로만 허용**됩니다.
-  - `worktree` — 코딩 task를 위한 git worktree (`.worktrees/<id>/`)
+  - `scratch` (기본값) — `~/.hermes/kanban/workspaces/<id>/` 아래의 새 tmp 디렉터리 (non-default board는 board 경로 아래). **task가 완료되면 삭제됩니다** — scratch는 설계상 일회용이라 worker(또는 `hermes kanban complete <id>`)가 task를 done 처리하는 순간 디렉터리가 비워집니다. worker 결과물을 보존하려면 `worktree:` 또는 `dir:<path>`를 사용하세요. 설치 후 처음으로 scratch workspace가 생성될 때 dispatcher가 경고를 로그에 남기고 해당 task에 `tip_scratch_workspace` 이벤트를 추가합니다(`hermes kanban show <id>`로 확인 가능).
+  - `dir:<path>` — 기존 공유 디렉터리. **절대경로만 허용**됩니다. **완료 시 보존됩니다.**
+  - `worktree` — 코딩 task를 위한 git worktree (`.worktrees/<id>/`). **완료 시 보존됩니다.**
 - **Dispatcher** — 주기적으로 stale claim 회수, crashed worker 정리, ready task 승격, atomic claim, assigned profile spawn을 수행하는 장기 실행 루프. 기본적으로 gateway 내부(`kanban.dispatch_in_gateway: true`)에서 동작합니다.
 - **Tenant** — board 내부의 선택적 namespace. 예를 들어 하나의 specialist fleet가 여러 고객사를 처리할 때 `--tenant business-a`처럼 사용합니다. tenant는 soft filter이고, board가 hard isolation boundary입니다.
 

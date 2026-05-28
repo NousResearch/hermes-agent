@@ -82,6 +82,10 @@ Top-to-bottom, in order:
 9. **Adds `%LOCALAPPDATA%\hermes\bin` to User PATH** — exposes the `hermes` command after you open a new terminal.
 10. **Runs `hermes setup`** — the normal first-run wizard (model, provider, toolsets). Skip with `-SkipSetup`.
 
+:::tip Skip provider hunting on Windows
+Native Windows is still early beta, and per-tool API key setup (Firecrawl, FAL, Browser Use, OpenAI TTS) is the highest-friction part of getting a useful agent. A [Nous Portal](/docs/user-guide/features/tool-gateway) subscription covers the model **and** all of those tools through one OAuth login. After the installer finishes, run `hermes setup --portal` to wire everything up.
+:::
+
 ## Feature matrix
 
 Everything except the dashboard's embedded terminal pane runs natively on Windows.

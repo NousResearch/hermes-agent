@@ -2981,3 +2981,210 @@ def test_detect_stale_does_not_tick_failure_counter(kanban_home, monkeypatch):
         assert "stale" in kinds, (
             f"Expected 'stale' event in task_events; got {kinds!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Corruption guard (issue #30687)
+# ---------------------------------------------------------------------------
+
+def _write_corrupt_db(path: Path) -> bytes:
+    """Write a kanban DB with a VALID SQLite header but malformed page content.
+
+    This is the corruption shape the integrity guard specifically targets
+    (e.g. issue #29507 follow-up reports where the file's first 16 bytes
+    pass the header byte check but ``PRAGMA integrity_check`` then fails
+    because the internal pages are damaged). It's what main's header-only
+    validator was letting through, and what this PR adds the full guard
+    for.
+    """
+    # 100-byte SQLite header (magic + minimal valid-looking fields) so the
+    # cheap header check passes, then deliberate garbage so sqlite refuses
+    # to read the file past the header.
+    header = b"SQLite format 3\x00" + b"\x10\x00\x02\x02\x00\x40\x20\x20"
+    header += b"\x00\x00\x00\x0c\x00\x00\x23\x46\x00\x00\x00\x00"
+    header = header.ljust(100, b"\x00")
+    payload = b"definitely not a valid sqlite page \x00\x01\x02\x03" * 64
+    blob = header + payload
+    path.write_bytes(blob)
+    return blob
+
+
+def test_init_db_refuses_corrupt_existing_file(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    original = _write_corrupt_db(db_path)
+    # Ensure the cache doesn't mask the guard.
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+        kb.init_db(db_path=db_path)
+
+    err = excinfo.value
+    assert err.db_path == db_path
+    assert err.backup_path is not None
+    assert err.backup_path.exists()
+    assert err.backup_path.read_bytes() == original
+    # Original bytes untouched — no schema was written on top.
+    assert db_path.read_bytes() == original
+    assert str(db_path) in str(err)
+    assert str(err.backup_path) in str(err)
+
+
+def test_connect_refuses_corrupt_existing_file(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    _write_corrupt_db(db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError):
+        kb.connect(db_path=db_path)
+
+
+def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
+    """A transient lock during the probe must not produce a .corrupt backup
+    and must not be reported as :class:`KanbanDbCorruptError`. Raw sqlite
+    ``OperationalError`` (lock/busy) is acceptable and expected."""
+    db_path = tmp_path / "kanban.db"
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    real_connect = sqlite3.connect
+
+    def flaky_connect(*args, **kwargs):
+        # First call is the integrity probe — simulate a lock.
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(kb.sqlite3, "connect", flaky_connect)
+
+    with pytest.raises(sqlite3.OperationalError):
+        kb.connect(db_path=db_path)
+
+    # No .corrupt backup may be produced for a healthy-but-locked DB.
+    backups = list(tmp_path.glob("*.corrupt.*"))
+    assert backups == [], f"unexpected corrupt backups: {backups}"
+
+    # And once the lock clears, normal access still works.
+    monkeypatch.setattr(kb.sqlite3, "connect", real_connect)
+    with kb.connect(db_path=db_path) as conn:
+        kb.create_task(conn, title="still here")
+        titles = [t.title for t in kb.list_tasks(conn)]
+    assert "still here" in titles
+
+
+def test_init_db_allows_missing_then_healthy(tmp_path):
+    db_path = tmp_path / "fresh.db"
+    assert not db_path.exists()
+    kb.init_db(db_path=db_path)
+    assert db_path.exists() and db_path.stat().st_size > 0
+
+    # Idempotent on a healthy DB: data survives a second init.
+    with kb.connect(db_path=db_path) as conn:
+        kb.create_task(conn, title="keeps")
+    kb.init_db(db_path=db_path)
+    with kb.connect(db_path=db_path) as conn:
+        tasks = kb.list_tasks(conn)
+    assert [t.title for t in tasks] == ["keeps"]
+
+
+# ---------------------------------------------------------------------------
+# First-use tip for scratch workspaces
+# ---------------------------------------------------------------------------
+
+def test_maybe_emit_scratch_tip_fires_once_per_install(kanban_home, caplog):
+    """First scratch workspace materialization warns + emits an event.
+
+    Subsequent scratch workspaces on the SAME install stay silent — the
+    sentinel file under kanban_home() flips after the first emit.
+    """
+    import logging
+
+    with kb.connect() as conn:
+        t1 = kb.create_task(conn, title="first scratch")
+        t2 = kb.create_task(conn, title="second scratch")
+
+    # Sentinel must not exist yet on a fresh install.
+    assert not kb._scratch_tip_shown()
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        with kb.connect() as conn:
+            kb._maybe_emit_scratch_tip(conn, t1, "scratch")
+
+    # Sentinel is now set.
+    assert kb._scratch_tip_shown()
+    assert kb._scratch_tip_sentinel_path().exists()
+
+    # Warning was logged exactly once.
+    tip_records = [
+        r for r in caplog.records
+        if "scratch workspaces are ephemeral" in r.getMessage()
+    ]
+    assert len(tip_records) == 1, (
+        f"Expected exactly one tip warning, got {len(tip_records)}: "
+        f"{[r.getMessage() for r in tip_records]!r}"
+    )
+
+    # An event row was appended on the first task.
+    with kb.connect() as conn:
+        events = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+            (t1,),
+        ).fetchall()
+    kinds = [e["kind"] for e in events]
+    assert "tip_scratch_workspace" in kinds, (
+        f"Expected tip_scratch_workspace event on first scratch task; "
+        f"got {kinds!r}"
+    )
+
+    # Second scratch materialization on the same install stays silent.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        with kb.connect() as conn:
+            kb._maybe_emit_scratch_tip(conn, t2, "scratch")
+    tip_records2 = [
+        r for r in caplog.records
+        if "scratch workspaces are ephemeral" in r.getMessage()
+    ]
+    assert tip_records2 == [], (
+        f"Tip should not re-fire after sentinel is set; got "
+        f"{[r.getMessage() for r in tip_records2]!r}"
+    )
+    with kb.connect() as conn:
+        events2 = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+            (t2,),
+        ).fetchall()
+    assert "tip_scratch_workspace" not in [e["kind"] for e in events2], (
+        "Tip event should not be appended for subsequent scratch tasks."
+    )
+
+
+def test_maybe_emit_scratch_tip_skips_non_scratch_workspaces(kanban_home, caplog):
+    """worktree/dir workspaces are preserved on completion and must not
+    trigger the scratch-cleanup tip."""
+    import logging
+
+    with kb.connect() as conn:
+        t_wt = kb.create_task(conn, title="worktree task")
+        t_dir = kb.create_task(conn, title="dir task")
+
+    assert not kb._scratch_tip_shown()
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        with kb.connect() as conn:
+            kb._maybe_emit_scratch_tip(conn, t_wt, "worktree")
+            kb._maybe_emit_scratch_tip(conn, t_dir, "dir")
+
+    # Sentinel stays unset — these workspaces are preserved by design,
+    # so the warning is irrelevant for them and we save the one-shot
+    # for a real scratch user.
+    assert not kb._scratch_tip_shown()
+    tip_records = [
+        r for r in caplog.records
+        if "scratch workspaces are ephemeral" in r.getMessage()
+    ]
+    assert tip_records == []
+    with kb.connect() as conn:
+        for tid in (t_wt, t_dir):
+            events = conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (tid,),
+            ).fetchall()
+            assert "tip_scratch_workspace" not in [e["kind"] for e in events]
+

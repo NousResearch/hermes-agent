@@ -60,6 +60,86 @@ class TestIsWriteDenied:
     def test_tilde_expansion(self):
         assert _is_write_denied("~/.ssh/authorized_keys") is True
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "auth.json",
+            "config.yaml",
+            "webhook_subscriptions.json",
+            "mcp-tokens/token1.json",
+            "mcp-tokens/subdir/token2.json",
+        ],
+    )
+    def test_hermes_control_files_and_mcp_tokens_denied(self, path):
+        """Hermes control files and mcp-tokens entries must be write-denied."""
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+        full_path = str(hermes_home / path)
+        assert _is_write_denied(full_path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "dummy/../config.yaml",
+            "./auth.json",
+            "mcp-tokens/../config.yaml",
+        ],
+    )
+    def test_hermes_control_files_traversal_denied(self, path):
+        """Path traversal attempts to control files must be blocked by realpath."""
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+        full_path = str(hermes_home / path)
+        assert _is_write_denied(full_path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/tmp/standard_file.txt",
+            "~/projects/myapp/main.py",
+            "/var/log/app.log",
+        ],
+    )
+    def test_standard_paths_allowed(self, path):
+        """Unrelated paths must still be allowed."""
+        assert _is_write_denied(path) is False
+
+    @pytest.mark.parametrize(
+        "name",
+        ["auth.json", "config.yaml", "webhook_subscriptions.json"],
+    )
+    def test_control_files_protected_in_profile_mode(self, tmp_path, monkeypatch, name):
+        """Under a profile, BOTH <profile>/X and <root>/X must be denied (#15981 shape).
+
+        Without the root-level pass, a profile-mode session leaves the
+        global ~/.hermes/{auth.json,config.yaml,webhook_subscriptions.json}
+        writable — the same gap PR #15981 fixed for .env.
+        """
+        # Simulate a profile-mode HERMES_HOME layout:
+        #   <root>/profiles/coder/{auth.json,config.yaml,...}
+        #   <root>/{auth.json,config.yaml,...}        ← must also be denied
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        # Profile copy
+        assert _is_write_denied(str(profile / name)) is True
+        # Root copy — the gap this widening closes
+        assert _is_write_denied(str(root / name)) is True
+
+    def test_mcp_tokens_dir_protected_in_profile_mode(self, tmp_path, monkeypatch):
+        """mcp-tokens/ under profile AND under root must both be denied."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        assert _is_write_denied(str(profile / "mcp-tokens" / "tok.json")) is True
+        assert _is_write_denied(str(root / "mcp-tokens" / "tok.json")) is True
+        # The directory itself must also be denied (not just files inside)
+        assert _is_write_denied(str(root / "mcp-tokens")) is True
+
 
 
 # =========================================================================

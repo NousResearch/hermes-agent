@@ -65,11 +65,11 @@ class TestCompress:
         assert result == msgs
 
     def test_truncation_fallback_no_client(self, compressor):
-        # compressor has client=None and abort_on_summary_failure=False (default),
-        # so the LEGACY fallback path inserts a static "summary unavailable"
-        # placeholder and the middle window is dropped.
+        # Simulate "no summarizer available" explicitly. call_llm can otherwise
+        # discover the developer's real auxiliary credentials from auth state.
         msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(10)
-        result = compressor.compress(msgs)
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+            result = compressor.compress(msgs)
         assert len(result) < len(msgs)
         # Should keep system message and last N
         assert result[0]["role"] == "system"

@@ -27,9 +27,9 @@ on:
 permissions:
   contents: read
 
-# Concurrency: push/release runs are NEVER cancelled so every merge gets its
-# own SHA-tagged image; :main and :latest are guarded separately by the
-# move-main and move-latest jobs.  PR runs reuse a PR-scoped group with
+# Concurrency: push/release runs are NEVER cancelled so every merge gets
+# its own :main or release-tagged image.  :latest is guarded separately
+# by the move-latest job.  PR runs reuse a PR-scoped group with
 # cancel-in-progress: true so rapid pushes to the same PR collapse to the
 # latest commit.
 concurrency:
@@ -92,10 +92,10 @@ jobs:
       # pattern for multi-runner multi-platform builds.
       #
       # We apply the OCI revision label here (and again on arm64) because
-      # the move-main / move-latest jobs read it off the linux/amd64
-      # sub-manifest config of the floating tag to decide whether it's safe
-      # to advance.  The label must be on each per-arch image — manifest
-      # lists themselves don't carry image config labels.
+      # the move-latest job reads it off the linux/amd64 sub-manifest
+      # config of the floating tag to decide whether it's safe to advance.
+      # The label must be on each per-arch image — manifest lists themselves
+      # don't carry image config labels.
       - name: Push amd64 by digest
         id: push
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
@@ -208,8 +208,14 @@ jobs:
   # ---------------------------------------------------------------------------
   # Stitch both per-arch digests into a single tagged multi-arch manifest.
   # This is a registry-side operation — no building, no layer re-push —
-  # so it runs in ~30 seconds.  On main pushes it produces :sha-<sha>.
-  # On releases it produces :<release_tag_name>.
+  # so it runs in ~30 seconds.  On main pushes it produces :main; on
+  # releases it produces :<release_tag_name>.
+  #
+  # For main pushes the ancestor check runs BEFORE the manifest push so
+  # we never overwrite :main with an older commit.  The top-level
+  # concurrency group (`docker-${{ github.ref }}` with
+  # `cancel-in-progress: false`) already serialises runs per ref; the
+  # ancestor check is defense-in-depth.
   # ---------------------------------------------------------------------------
   merge:
     if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
@@ -217,10 +223,15 @@ jobs:
     needs: [build-amd64, build-arm64]
     timeout-minutes: 10
     outputs:
-      pushed_sha_tag: ${{ steps.mark_pushed.outputs.pushed }}
       pushed_release_tag: ${{ steps.mark_release_pushed.outputs.pushed }}
       release_tag: ${{ steps.tag.outputs.tag }}
     steps:
+      - name: Checkout code
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1000
+
       - name: Download digests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
@@ -237,120 +248,19 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Compute the tag for this run.  Main pushes use sha-<sha> (so every
-      # commit gets its own immutable tag); releases use the release tag name.
-      - name: Compute tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create manifest list and push
-        working-directory: /tmp/digests
-        run: |
-          set -euo pipefail
-          # Build the arg array from each digest file (filename = the digest
-          # hex, with no sha256: prefix; empty file content, only the name
-          # matters).  Using an array avoids shellcheck SC2046 and keeps
-          # every digest a single argv token even under pathological names.
-          args=()
-          for digest_file in *; do
-            args+=("${IMAGE_NAME}@sha256:${digest_file}")
-          done
-          docker buildx imagetools create \
-            -t "${IMAGE_NAME}:${TAG}" \
-            "${args[@]}"
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          TAG: ${{ steps.tag.outputs.tag }}
-
-      - name: Inspect image
-        run: |
-          docker buildx imagetools inspect "${IMAGE_NAME}:${TAG}"
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          TAG: ${{ steps.tag.outputs.tag }}
-
-      # Signal to move-main that the SHA tag is live.  Only on main pushes;
-      # releases set pushed_release_tag instead.
-      - name: Mark SHA tag pushed
-        id: mark_pushed
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: echo "pushed=true" >> "$GITHUB_OUTPUT"
-
-      # Signal to move-latest that the release tag is live.
-      - name: Mark release tag pushed
-        id: mark_release_pushed
-        if: github.event_name == 'release'
-        run: echo "pushed=true" >> "$GITHUB_OUTPUT"
-
-  # ---------------------------------------------------------------------------
-  # Move :main to point at the SHA tag the merge job pushed.
-  #
-  # :main is the floating tag that tracks the tip of the main branch.  Every
-  # merge to main retags :main forward.  Users who want "latest dev build"
-  # pull :main; users who want stable releases pull :latest.
-  #
-  # The real serialization guarantee comes from the top-level concurrency
-  # group (`docker-${{ github.ref }}` with `cancel-in-progress: false`),
-  # which ensures at most one workflow run for this ref executes at a time.
-  # That means two move-main steps for the same ref cannot overlap.
-  #
-  # This job has its own concurrency group as defense-in-depth: if the
-  # top-level group is ever loosened, queued move-mains will run serially
-  # in arrival order, each one running the ancestor check below and either
-  # advancing :main or skipping.  `cancel-in-progress: false` matches the
-  # top-level setting — we don't want rapid pushes to cancel a queued
-  # move-main, because the ancestor check is the real safety mechanism
-  # and queueing is cheap (move-main is a ~30s registry op).
-  #
-  # Combined with the ancestor check, this means :main only ever moves
-  # forward in git history.
-  # ---------------------------------------------------------------------------
-  move-main:
-    if: |
-      github.repository == 'NousResearch/hermes-agent'
-      && github.event_name == 'push'
-      && github.ref == 'refs/heads/main'
-      && needs.merge.outputs.pushed_sha_tag == 'true'
-    needs: merge
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    concurrency:
-      group: docker-move-main-${{ github.ref }}
-      cancel-in-progress: false
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          fetch-depth: 1000
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       # Read the git revision label off the current :main manifest, then
-      # use `git merge-base --is-ancestor` to check whether our commit is a
-      # descendant of it.  If :main doesn't exist yet, or its label is
-      # missing, we treat that as "safe to publish".  If another run already
-      # advanced :main past us (or diverged), we skip and leave it alone.
+      # use `git merge-base --is-ancestor` to check whether our commit is
+      # a descendant of it.  If :main doesn't exist yet, or its label is
+      # missing, we treat that as "safe to publish".  If another run
+      # already advanced :main past us (or diverged), we skip and leave
+      # it alone.
       - name: Decide whether to move :main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: main_check
         run: |
           set -euo pipefail
           image=nousresearch/hermes-agent
 
-          # Pull the JSON for the linux/amd64 sub-manifest's config and extract
-          # the OCI revision label with jq — Go template field access can't
-          # handle dots in map keys, so using json+jq is the robust route.
           image_json=$(
             docker buildx imagetools inspect "${image}:main" \
               --format '{{ json (index .Image "linux/amd64") }}' \
@@ -383,7 +293,6 @@ jobs:
             exit 0
           fi
 
-          # Make sure we have the :main commit locally for merge-base.
           if ! git cat-file -e "${current_sha}^{commit}" 2>/dev/null; then
             git fetch --no-tags --prune origin \
               "+refs/heads/main:refs/remotes/origin/main" \
@@ -396,7 +305,6 @@ jobs:
             exit 0
           fi
 
-          # Our SHA must be a descendant of the current :main to be safe.
           if git merge-base --is-ancestor "${current_sha}" "${GITHUB_SHA}"; then
             echo "Our commit is a descendant of :main — safe to advance."
             echo "push_main=true" >> "$GITHUB_OUTPUT"
@@ -405,19 +313,48 @@ jobs:
             echo "push_main=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Retag the already-pushed SHA manifest as :main.  This is a registry-
-      # side operation — no rebuild, no layer re-push — so it's quick and
-      # atomic per-tag.  The ancestor check above plus the cancel-in-progress
-      # concurrency on this job together guarantee we only ever move :main
-      # forward in git history.
-      - name: Move :main to this SHA
-        if: steps.main_check.outputs.push_main == 'true'
+      # Compute the tag for this run.  Main pushes tag directly as :main
+      # (no per-commit SHA tags); releases use the release tag name.
+      - name: Compute tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=main" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Gate the manifest push on the ancestor check for main pushes.
+      # For releases there is no gate — the check doesn't even run.
+      - name: Create manifest list and push
+        if: github.event_name != 'push' || steps.main_check.outputs.push_main == 'true'
+        working-directory: /tmp/digests
         run: |
           set -euo pipefail
-          image=nousresearch/hermes-agent
+          args=()
+          for digest_file in *; do
+            args+=("${IMAGE_NAME}@sha256:${digest_file}")
+          done
           docker buildx imagetools create \
-            --tag "${image}:main" \
-            "${image}:sha-${GITHUB_SHA}"
+            -t "${IMAGE_NAME}:${TAG}" \
+            "${args[@]}"
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          TAG: ${{ steps.tag.outputs.tag }}
+
+      - name: Inspect image
+        if: github.event_name != 'push' || steps.main_check.outputs.push_main == 'true'
+        run: |
+          docker buildx imagetools inspect "${IMAGE_NAME}:${TAG}"
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          TAG: ${{ steps.tag.outputs.tag }}
+
+      # Signal to move-latest that the release tag is live.
+      - name: Mark release tag pushed
+        id: mark_release_pushed
+        if: github.event_name == 'release'
+        run: echo "pushed=true" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
   # Move :latest to point at the release tag the merge job pushed.
@@ -427,10 +364,10 @@ jobs:
   #
   # We still run an ancestor check against the existing :latest so that a
   # backport release on an older branch (e.g. patching v1.1.5 after v1.2.3
-  # is out) doesn't drag :latest backwards.  The check is the same shape as
-  # move-main: read the OCI revision label off the current :latest, look up
-  # that commit in git, and only advance if our release commit is a strict
-  # descendant.
+  # is out) doesn't drag :latest backwards.  The check is the same shape
+  # as the ancestor check in the merge job for :main: read the OCI
+  # revision label off the current :latest, look up that commit in git,
+  # and only advance if our release commit is a strict descendant.
   # ---------------------------------------------------------------------------
   move-latest:
     if: |

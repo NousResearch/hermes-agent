@@ -42,6 +42,9 @@ def sample_ogg(tmp_path):
     return str(ogg_path)
 
 
+pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
+
+
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     """Ensure no real API keys leak into tests."""

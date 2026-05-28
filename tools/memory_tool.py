@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -102,6 +103,36 @@ def _scan_memory_content(content: str) -> Optional[str]:
             return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
 
     return None
+
+
+def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
+    """Build the error dict returned when external drift is detected.
+
+    The on-disk memory file contains content that wouldn't round-trip
+    through the tool's parser/serializer — flushing would discard the
+    appended/edited content from a patch tool, shell append, manual edit,
+    or sister-session write. We refuse the mutation, point the operator at
+    the .bak.<ts> snapshot we took, and tell them what to do next.
+    """
+    return {
+        "success": False,
+        "error": (
+            f"Refusing to write {path.name}: file on disk has content that "
+            f"wouldn't round-trip through the memory tool (likely added by "
+            f"the patch tool, a shell append, a manual edit, or a "
+            f"concurrent session). A snapshot was saved to {bak_path}. "
+            f"Resolve the drift first — either rewrite the file as a clean "
+            f"§-delimited list of entries, or move the extra content out — "
+            f"then retry. This guard exists to prevent silent data loss "
+            f"(issue #26045)."
+        ),
+        "drift_backup": bak_path,
+        "remediation": (
+            "Open the .bak file, integrate the missing entries into the "
+            "memory tool one at a time via memory(action=add, content=...), "
+            "then remove or rewrite the original file to a clean state."
+        ),
+    }
 
 
 class MemoryStore:
@@ -185,14 +216,23 @@ class MemoryStore:
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
-    def _reload_target(self, target: str):
+    def _reload_target(self, target: str) -> Optional[str]:
         """Re-read entries from disk into in-memory state.
 
         Called under file lock to get the latest state before mutating.
+        Returns the backup path if external drift was detected (the on-disk
+        file contains content that wouldn't round-trip through our
+        parser/serializer, OR an entry larger than the store's char limit).
+        When drift is detected the caller must abort the mutation —
+        flushing would discard the un-roundtrippable content.
+        Returns None on clean reload.
         """
-        fresh = self._read_file(self._path_for(target))
+        path = self._path_for(target)
+        bak = self._detect_external_drift(target)
+        fresh = self._read_file(path)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
+        return bak
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
@@ -233,8 +273,13 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
-            # Re-read from disk under lock to pick up writes from other sessions
-            self._reload_target(target)
+            # Re-read from disk under lock to pick up writes from other sessions.
+            # If external drift was detected, the file was backed up to .bak.<ts>
+            # — refuse the mutation so we don't clobber the un-roundtrippable
+            # content the patch tool / shell append / sister session wrote.
+            bak = self._reload_target(target)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)
@@ -281,7 +326,9 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+            bak = self._reload_target(target)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
@@ -331,7 +378,9 @@ class MemoryStore:
             return {"success": False, "error": "old_text cannot be empty."}
 
         with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+            bak = self._reload_target(target)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
@@ -429,6 +478,61 @@ class MemoryStore:
         # alone would incorrectly split entries that contain "§" in their content.
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
+
+    def _detect_external_drift(self, target: str) -> Optional[str]:
+        """Return a backup-path string if on-disk content shows external drift.
+
+        The memory file is supposed to be a list of small entries the tool
+        wrote, joined by §. Detect drift via two signals:
+
+        1. Round-trip mismatch — re-parsing and re-serializing the file
+           doesn't produce identical bytes (rare; would catch oddly-encoded
+           delimiters).
+        2. Entry-size overflow — any single parsed entry exceeds the
+           store's whole-file char limit. The tool budgets the ENTIRE store
+           against that limit; no single tool-written entry can exceed it.
+           When we see one entry larger than the limit, an external writer
+           (patch tool, shell append, manual edit, sister session) appended
+           free-form content into what the tool will treat as one entry.
+           Flushing would then truncate that entry to the model's new
+           content, discarding the appended bytes — issue #26045.
+
+        Returns the absolute path of the .bak file when drift was found and
+        backed up; returns None when the file looks tool-shaped.
+
+        Note: this is an INSTANCE method (not static) because we need the
+        per-target char_limit for signal #2.
+        """
+        path = self._path_for(target)
+        if not path.exists():
+            return None
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, IOError):
+            return None
+        if not raw.strip():
+            return None
+
+        parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
+        roundtrip = ENTRY_DELIMITER.join(parsed)
+
+        char_limit = self._char_limit(target)
+        max_entry_len = max((len(e) for e in parsed), default=0)
+
+        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
+        if not drift_detected:
+            return None
+
+        # Drift confirmed — snapshot the file so the operator can recover
+        # whatever the external writer added, then return the .bak path so
+        # the caller can refuse the mutation.
+        ts = int(time.time())
+        bak_path = path.with_suffix(path.suffix + f".bak.{ts}")
+        try:
+            bak_path.write_text(raw, encoding="utf-8")
+        except (OSError, IOError):
+            return str(bak_path) + " (BACKUP FAILED — file unchanged on disk)"
+        return str(bak_path)
 
     @staticmethod
     def _write_file(path: Path, entries: List[str]):

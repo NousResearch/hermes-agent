@@ -534,9 +534,30 @@ class QQAdapter(BasePlatformAdapter):
                 self._mark_transport_disconnected()
                 self._fail_pending("Connection closed")
 
-                # Stop reconnecting for fatal codes
-                if code in {4914, 4915}:
-                    desc = "offline/sandbox-only" if code == 4914 else "banned"
+                # Stop reconnecting for fatal codes (unrecoverable errors)
+                if code in {
+                        4001,  # Invalid opcode
+                        4002,  # Invalid payload
+                        4010,  # Invalid shard
+                        4011,  # Sharding required
+                        4012,  # Invalid API version
+                        4013,  # Invalid intent
+                        4014,  # Intent not authorized
+                        4914,  # Offline/sandbox-only
+                        4915,  # Banned
+                }:
+                    fatal_descriptions = {
+                        4001: "invalid opcode",
+                        4002: "invalid payload",
+                        4010: "invalid shard",
+                        4011: "sharding required",
+                        4012: "invalid API version",
+                        4013: "invalid intent",
+                        4014: "intent not authorized",
+                        4914: "offline/sandbox-only",
+                        4915: "banned",
+                    }
+                    desc = fatal_descriptions.get(code, f"fatal error (code={code})")
                     logger.error(
                         "[%s] Bot is %s. Check QQ Open Platform.", self._log_tag, desc
                     )
@@ -573,10 +594,11 @@ class QQAdapter(BasePlatformAdapter):
                     self._token_expires_at = 0.0
 
                 # Session invalid → clear session, will re-identify on next Hello
+                # Note: 4009 (connection timeout) is NOT included here — it is
+                # resumable per the QQ protocol and should preserve session state.
                 if code in {
                         4006,
                         4007,
-                        4009,
                         4900,
                         4901,
                         4902,
@@ -705,9 +727,8 @@ class QQAdapter(BasePlatformAdapter):
                 "token": f"QQBot {token}",
                 "intents": (1 << 25)
                            | (1 << 30)
-                           | (
-                                   1 << 12
-                           ),  # C2C_GROUP_AT_MESSAGES + PUBLIC_GUILD_MESSAGES + DIRECT_MESSAGE
+                           | (1 << 12)
+                           | (1 << 26),  # C2C_GROUP_AT_MESSAGES + PUBLIC_GUILD_MESSAGES + DIRECT_MESSAGE + INTERACTION
                 "shard": [0, 1],
                 "properties": {
                     "$os": "macOS",
@@ -824,6 +845,32 @@ class QQAdapter(BasePlatformAdapter):
 
         # op 11 = Heartbeat ACK
         if op == 11:
+            return
+
+        # op 7 = Server Reconnect — server asks client to reconnect (e.g.
+        # load-balancing, maintenance).  Close the WS so _read_events raises
+        # and the outer loop triggers a reconnect with Resume.
+        if op == 7:
+            logger.info("[%s] Server requested reconnect (op 7)", self._log_tag)
+            if self._ws and not self._ws.closed:
+                self._create_task(self._ws.close())
+            return
+
+        # op 9 = Invalid Session — d=True means session is resumable,
+        # d=False means we must re-identify from scratch.
+        if op == 9:
+            resumable = bool(d) if d is not None else False
+            if not resumable:
+                logger.info(
+                    "[%s] Invalid session (op 9, not resumable), clearing session",
+                    self._log_tag,
+                )
+                self._session_id = None
+                self._last_seq = None
+            else:
+                logger.info("[%s] Invalid session (op 9, resumable)", self._log_tag)
+            if self._ws and not self._ws.closed:
+                self._create_task(self._ws.close())
             return
 
         logger.debug("[%s] Unknown op: %s", self._log_tag, op)
@@ -1607,7 +1654,7 @@ class QQAdapter(BasePlatformAdapter):
             elif ct.startswith("image/"):
                 # Image: download and cache locally.
                 try:
-                    cached_path = await self._download_and_cache(url, ct)
+                    cached_path = await self._download_and_cache(url, ct, filename)
                     if cached_path and os.path.isfile(cached_path):
                         image_urls.append(cached_path)
                         image_media_types.append(ct or "image/jpeg")
@@ -1620,11 +1667,15 @@ class QQAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache image: %s", self._log_tag, exc)
             else:
-                # Other attachments (video, file, etc.): record as text.
+                # Other attachments (video, file, etc.): download and record with path.
                 try:
-                    cached_path = await self._download_and_cache(url, ct)
+                    cached_path = await self._download_and_cache(url, ct, filename)
                     if cached_path:
-                        other_attachments.append(f"[Attachment: {filename or ct}]")
+                        name = filename or ct
+                        if ct.startswith("video/"):
+                            other_attachments.append(f"[video: {name} ({cached_path})]")
+                        else:
+                            other_attachments.append(f"[file: {name} ({cached_path})]")
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache attachment: %s", self._log_tag, exc)
 
@@ -1636,8 +1687,14 @@ class QQAdapter(BasePlatformAdapter):
             "attachment_info": attachment_info,
         }
 
-    async def _download_and_cache(self, url: str, content_type: str) -> Optional[str]:
-        """Download a URL and cache it locally."""
+    async def _download_and_cache(
+            self, url: str, content_type: str, original_name: str = "",
+    ) -> Optional[str]:
+        """Download a URL and cache it locally.
+
+        :param original_name: Preferred filename from attachment metadata.
+            Falls back to the URL path basename if empty.
+        """
         from tools.url_safety import is_safe_url
 
         if not is_safe_url(url):
@@ -1668,7 +1725,11 @@ class QQAdapter(BasePlatformAdapter):
             # Convert to .wav using ffmpeg so STT engines can process it.
             return await self._convert_audio_to_wav(data, url)
         else:
-            filename = Path(urlparse(url).path).name or "qq_attachment"
+            filename = (
+                original_name
+                or Path(urlparse(url).path).name
+                or "qq_attachment"
+            )
             return cache_document_from_bytes(data, filename)
 
     @staticmethod
@@ -1881,7 +1942,7 @@ class QQAdapter(BasePlatformAdapter):
     @staticmethod
     def _guess_ext_from_data(data: bytes) -> str:
         """Guess file extension from magic bytes."""
-        if data[:9] == b"#!SILK_V3" or data[:5] == b"#!SILK":
+        if data[:9] == b"#!SILK_V3" or data[:6] == b"#!SILK":
             return ".silk"
         if data[:2] == b"\x02!":
             return ".silk"
@@ -1901,7 +1962,7 @@ class QQAdapter(BasePlatformAdapter):
     @staticmethod
     def _looks_like_silk(data: bytes) -> bool:
         """Check if bytes look like a SILK audio file."""
-        return data[:4] == b"#!SILK" or data[:2] == b"\x02!" or data[:9] == b"#!SILK_V3"
+        return data[:6] == b"#!SILK" or data[:2] == b"\x02!" or data[:9] == b"#!SILK_V3"
 
     async def _convert_silk_to_wav(self, src_path: str, wav_path: str) -> Optional[str]:
         """Convert audio file to WAV using the pilk library.

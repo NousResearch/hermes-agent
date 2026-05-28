@@ -203,7 +203,7 @@ def test_emit_stream_drop_ui_includes_elapsed_when_available():
     diag = AIAgent._stream_diag_init()
     diag["started_at"] = time.time() - 8.0  # 8s on the wire before drop
 
-    with patch.object(agent, "_emit_status") as mock_emit:
+    with patch.object(agent, "_buffer_status") as mock_emit:
         agent._emit_stream_drop(
             error=ConnectionError("x"),
             attempt=2,
@@ -223,7 +223,7 @@ def test_emit_stream_drop_ui_omits_suffix_without_diag():
     agent = _make_agent()
     agent.provider = "openrouter"
 
-    with patch.object(agent, "_emit_status") as mock_emit:
+    with patch.object(agent, "_buffer_status") as mock_emit:
         agent._emit_stream_drop(
             error=ConnectionError("x"),
             attempt=2,

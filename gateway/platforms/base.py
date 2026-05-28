@@ -84,6 +84,11 @@ def _reply_anchor_for_event(event) -> str | None:
     topic lanes prefer replying to the triggering user message so the answer
     stays attached to the active lane; synthetic/resumed sends fall back to
     ``direct_messages_topic_id`` metadata when no message id is available.
+
+    Feishu group chats hide ordinary ``message.reply`` responses behind the
+    triggering message's inline reply affordance, so a visible group response
+    should be a normal chat message unless the inbound event is already inside a
+    Feishu thread/topic.
     """
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
@@ -94,8 +99,11 @@ def _reply_anchor_for_event(event) -> str | None:
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "telegram" and thread_id:
         return None
-    if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
-        return getattr(event, "reply_to_message_id", None)
+    if platform == "feishu":
+        if thread_id:
+            return getattr(event, "reply_to_message_id", None)
+        if getattr(source, "chat_type", None) in {"group", "supergroup", "channel", None, ""}:
+            return None
     return getattr(event, "message_id", None)
 
 

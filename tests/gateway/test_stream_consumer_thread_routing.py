@@ -27,6 +27,7 @@ def _make_adapter(send_result=None, edit_result=None, max_length=4096):
         return_value=edit_result or SimpleNamespace(success=True)
     )
     adapter.MAX_MESSAGE_LENGTH = max_length
+    adapter.name = "test"
     return adapter
 
 
@@ -227,3 +228,42 @@ class TestFeishuFallbackThreadRouting:
         )
 
         mock_client.im.v1.message.create.assert_called_once()
+
+
+
+class TestFeishuPlainGroupVisibility:
+    """Feishu plain group replies should be top-level visible messages."""
+
+    @pytest.mark.asyncio
+    async def test_plain_feishu_group_ignores_initial_reply_anchor(self):
+        adapter = _make_adapter()
+        adapter.name = "feishu"
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "oc_group",
+            config=StreamConsumerConfig(chat_type="group"),
+            metadata=None,
+            initial_reply_to_id="om_user_msg",
+        )
+
+        await consumer._send_or_edit("Visible answer")
+
+        call_kwargs = adapter.send.call_args[1]
+        assert call_kwargs["reply_to"] is None
+
+    @pytest.mark.asyncio
+    async def test_feishu_topic_keeps_initial_reply_anchor(self):
+        adapter = _make_adapter()
+        adapter.name = "feishu"
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "oc_group",
+            config=StreamConsumerConfig(chat_type="group"),
+            metadata={"thread_id": "omt_topic"},
+            initial_reply_to_id="om_root_msg",
+        )
+
+        await consumer._send_or_edit("Threaded answer")
+
+        call_kwargs = adapter.send.call_args[1]
+        assert call_kwargs["reply_to"] == "om_root_msg"

@@ -1329,3 +1329,35 @@ async def test_send_retries_retry_after_errors():
     assert result.success is True
     assert result.message_id == "300"
     assert attempt[0] == 2
+
+
+
+def test_reply_anchor_for_feishu_plain_group_is_top_level():
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        message_id="om_user_msg",
+        source=SimpleNamespace(
+            platform=Platform.FEISHU,
+            chat_type="group",
+            thread_id=None,
+        ),
+    )
+
+    assert _reply_anchor_for_event(event) is None
+
+
+def test_reply_anchor_for_feishu_thread_preserves_parent_anchor():
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        message_id="om_reply_msg",
+        reply_to_message_id="om_root_msg",
+        source=SimpleNamespace(
+            platform=Platform.FEISHU,
+            chat_type="group",
+            thread_id="omt_topic",
+        ),
+    )
+
+    assert _reply_anchor_for_event(event) == "om_root_msg"

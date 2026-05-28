@@ -132,7 +132,7 @@ class GatewayStreamConsumer:
         # the content, not edit the old bubble above it.
         # Called with no arguments. Exceptions are swallowed.
         self._on_new_message = on_new_message
-        self._initial_reply_to_id = initial_reply_to_id
+        self._initial_reply_to_id = None if self._should_send_plain_first_message() else initial_reply_to_id
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
@@ -181,6 +181,19 @@ class GatewayStreamConsumer:
         # first failure we permanently disable drafts for the remainder of
         # this response and route through edit-based for graceful degradation.
         self._draft_failures = 0
+
+    def _should_send_plain_first_message(self) -> bool:
+        """Return True when the first streaming bubble must not be a reply.
+
+        Feishu renders message.reply output as an inline nested reply that is
+        easy to miss in ordinary group chats. Topic/thread chats still need the
+        reply anchor for routing, but plain group chats should create a normal
+        top-level bot message.
+        """
+        platform_name = getattr(getattr(self.adapter, "name", None), "value", None) or getattr(self.adapter, "name", "")
+        platform_name = str(platform_name or "").lower()
+        chat_type = str(getattr(self.cfg, "chat_type", "") or "").lower()
+        return platform_name == "feishu" and chat_type in {"group", "supergroup", "channel", ""} and not (self.metadata or {}).get("thread_id")
 
     @property
     def already_sent(self) -> bool:

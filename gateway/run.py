@@ -16266,14 +16266,18 @@ class GatewayRunner:
         # Accumulates tool lines into a single message that gets edited.
         #
         # Threading metadata is platform-specific:
-        # - Slack DM threading needs event_message_id fallback (reply thread)
+        # - Slack is top-level-by-default. Ambient Slack thread_ts/source.thread_id
+        #   is session context only; progress/status messages enter a Slack thread
+        #   only when the adapter config explicitly opts in with reply_in_thread.
         # - Telegram forum topics use message_thread_id; Hermes-created private
         #   DM topic lanes require both thread metadata and a reply anchor
         # - Feishu only honors reply_in_thread when sending a reply, so topic
         #   progress uses the triggering event message as the reply target
         # - Other platforms should use explicit source.thread_id only
         if source.platform == Platform.SLACK:
-            _progress_thread_id = source.thread_id or event_message_id
+            _slack_adapter = self.adapters.get(source.platform)
+            _slack_extra = getattr(getattr(_slack_adapter, "config", None), "extra", {}) or {}
+            _progress_thread_id = source.thread_id if _slack_extra.get("reply_in_thread") else None
         else:
             _progress_thread_id = source.thread_id
         _progress_metadata = (

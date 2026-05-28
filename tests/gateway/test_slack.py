@@ -564,6 +564,7 @@ class TestSendDocument:
             chat_id="C123",
             file_path=str(test_file),
             reply_to="1234567890.123456",
+            metadata={"reply_in_thread": True},
         )
 
         assert result.success
@@ -580,7 +581,7 @@ class TestSendDocument:
         await adapter.send_document(
             chat_id="C123",
             file_path=str(test_file),
-            metadata={"thread_id": "1234567890.123456"},
+            metadata={"thread_id": "1234567890.123456", "reply_in_thread": True},
         )
 
         assert "1234567890.123456" in adapter._bot_message_ts
@@ -614,7 +615,7 @@ class TestSendPrivateNotice:
             chat_id="C123",
             user_id="U123",
             content="private hello",
-            metadata={"thread_id": "1234567890.123456"},
+            metadata={"thread_id": "1234567890.123456", "reply_in_thread": True},
         )
 
         assert result.success
@@ -1257,7 +1258,7 @@ class TestSendTyping:
     @pytest.mark.asyncio
     async def test_sets_status_in_thread(self, adapter):
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
-        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts", "reply_in_thread": True})
         adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
@@ -1276,12 +1277,12 @@ class TestSendTyping:
             side_effect=Exception("missing_scope")
         )
         # Should not raise
-        await adapter.send_typing("C123", metadata={"thread_id": "ts1"})
+        await adapter.send_typing("C123", metadata={"thread_id": "ts1", "reply_in_thread": True})
 
     @pytest.mark.asyncio
     async def test_uses_thread_ts_fallback(self, adapter):
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
-        await adapter.send_typing("C123", metadata={"thread_ts": "fallback_ts"})
+        await adapter.send_typing("C123", metadata={"thread_ts": "fallback_ts", "reply_in_thread": True})
         adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="fallback_ts",
@@ -1291,9 +1292,9 @@ class TestSendTyping:
     @pytest.mark.asyncio
     async def test_stop_typing_clears_tracked_thread(self, adapter):
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
-        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts", "reply_in_thread": True})
 
-        await adapter.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+        await adapter.stop_typing("C123", metadata={"thread_id": "parent_ts", "reply_in_thread": True})
 
         assert adapter._app.client.assistant_threads_setStatus.call_args_list[1] == call(
             channel_id="C123",
@@ -1332,7 +1333,7 @@ class TestSendTyping:
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
         adapter._active_status_threads["C123"] = "parent_ts"
 
-        result = await adapter.send("C123", "done", metadata={"thread_id": "parent_ts"})
+        result = await adapter.send("C123", "done", metadata={"thread_id": "parent_ts", "reply_in_thread": True})
 
         assert result.success
         adapter._app.client.chat_postMessage.assert_called_once()
@@ -2484,7 +2485,11 @@ class TestReplyBroadcast:
         adapter._app.client.chat_postMessage = AsyncMock(
             return_value={"ts": "ts1"}
         )
-        await adapter.send("C123", "hi", metadata={"thread_id": "parent_ts"})
+        await adapter.send(
+            "C123",
+            "hi",
+            metadata={"thread_id": "parent_ts", "reply_in_thread": True},
+        )
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert "reply_broadcast" not in kwargs
 
@@ -2494,9 +2499,50 @@ class TestReplyBroadcast:
         adapter._app.client.chat_postMessage = AsyncMock(
             return_value={"ts": "ts1"}
         )
-        await adapter.send("C123", "hi", metadata={"thread_id": "parent_ts"})
+        await adapter.send(
+            "C123",
+            "hi",
+            metadata={"thread_id": "parent_ts", "reply_in_thread": True},
+        )
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert kwargs.get("reply_broadcast") is True
+
+
+# ---------------------------------------------------------------------------
+# TestSlackTopLevelReplyDefault
+# ---------------------------------------------------------------------------
+
+
+class TestSlackTopLevelReplyDefault:
+    """Slack final/main replies should not inherit thread routing implicitly."""
+
+    @pytest.mark.asyncio
+    async def test_thread_origin_posts_top_level_by_default(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send(
+            "C123",
+            "final reply",
+            reply_to="child_ts",
+            metadata={"thread_id": "parent_ts"},
+        )
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "thread_ts" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_explicit_threaded_reply_still_uses_thread(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send(
+            "C123",
+            "thread reply",
+            reply_to="child_ts",
+            metadata={"thread_id": "parent_ts", "reply_in_thread": True},
+        )
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs.get("thread_ts") == "parent_ts"
 
 
 # ---------------------------------------------------------------------------
@@ -2520,7 +2566,7 @@ class TestFallbackPreservesThreadContext:
             return_value={"ts": "msg_ts"}
         )
 
-        metadata = {"thread_id": "parent_ts_123"}
+        metadata = {"thread_id": "parent_ts_123", "reply_in_thread": True}
         await adapter.send_image_file(
             chat_id="C123",
             image_path=str(test_file),
@@ -2543,7 +2589,7 @@ class TestFallbackPreservesThreadContext:
             return_value={"ts": "msg_ts"}
         )
 
-        metadata = {"thread_id": "parent_ts_456"}
+        metadata = {"thread_id": "parent_ts_456", "reply_in_thread": True}
         await adapter.send_video(
             chat_id="C123",
             video_path=str(test_file),
@@ -2565,7 +2611,7 @@ class TestFallbackPreservesThreadContext:
             return_value={"ts": "msg_ts"}
         )
 
-        metadata = {"thread_id": "parent_ts_789"}
+        metadata = {"thread_id": "parent_ts_789", "reply_in_thread": True}
         await adapter.send_document(
             chat_id="C123",
             file_path=str(test_file),
@@ -2688,7 +2734,7 @@ class TestSendImageSSRFGuards:
                 chat_id="C123",
                 image_url="https://public.example/image.png",
                 caption="see this",
-                metadata={"thread_id": "parent_ts_789"},
+                metadata={"thread_id": "parent_ts_789", "reply_in_thread": True},
             )
 
         call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
@@ -2752,7 +2798,7 @@ class TestProgressMessageThread:
         result = await adapter.send(
             chat_id="D_DM",
             content="⚙️ working...",
-            metadata={"thread_id": msg_event.message_id},
+            metadata={"thread_id": msg_event.message_id, "reply_in_thread": True},
         )
         assert result.success
         call_kwargs = adapter._app.client.chat_postMessage.call_args[1]

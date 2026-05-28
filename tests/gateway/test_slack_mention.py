@@ -8,6 +8,8 @@ import sys
 from unittest.mock import MagicMock
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import _thread_metadata_for_source
+from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -487,12 +489,78 @@ def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
         metadata={"thread_id": "171.000"},
     ) is None
 
-    # Real thread replies (reply_to differs from thread parent) must still
-    # resolve to the parent thread so conversation context is preserved.
+    # Real thread replies should also stay top-level when reply_in_thread=false;
+    # the Slack thread timestamp is ambient routing context, not an opt-in.
+    assert adapter._resolve_thread_ts(
+        reply_to="171.500",
+        metadata={"thread_id": "171.000"},
+    ) is None
+
+
+def test_slack_thread_message_replies_top_level_by_default():
+    adapter = _make_adapter()
+
+    assert adapter._resolve_thread_ts(
+        reply_to="171.500",
+        metadata={"thread_id": "171.000"},
+    ) is None
+
+
+def test_slack_explicit_thread_metadata_still_replies_in_thread():
+    adapter = _make_adapter()
+
+    assert adapter._resolve_thread_ts(
+        reply_to="171.500",
+        metadata={"thread_id": "171.000", "slack_thread_explicit": True},
+    ) == "171.000"
+
+
+def test_slack_reply_in_thread_config_is_explicit_thread_opt_in():
+    adapter = _make_adapter()
+    adapter.config.extra["reply_in_thread"] = True
+
     assert adapter._resolve_thread_ts(
         reply_to="171.500",
         metadata={"thread_id": "171.000"},
     ) == "171.000"
+
+
+def test_non_slack_thread_metadata_unchanged():
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="123456789012345678",
+        chat_type="channel",
+        thread_id="987654321098765432",
+    )
+
+    assert _thread_metadata_for_source(source) == {"thread_id": "987654321098765432"}
+
+
+def test_config_bridges_slack_force_top_level_replies(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  force_top_level_replies: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+
+    config = load_gateway_config()
+
+    assert config is not None
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.extra.get("force_top_level_replies") is True
+
+    adapter = SlackAdapter(slack_config)
+    assert adapter._resolve_thread_ts(
+        reply_to="171.500",
+        metadata={"thread_id": "171.000"},
+    ) is None
 
 
 def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):

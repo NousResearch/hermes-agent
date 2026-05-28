@@ -909,12 +909,10 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return
 
-        thread_ts = None
-        if metadata:
-            thread_ts = metadata.get("thread_id") or metadata.get("thread_ts")
+        thread_ts = self._resolve_thread_ts(None, metadata)
 
         if not thread_ts:
-            return  # Can only set status in a thread context
+            return  # Can only set status in an explicitly threaded context
 
         self._active_status_threads[chat_id] = thread_ts
         try:
@@ -965,35 +963,41 @@ class SlackAdapter(BasePlatformAdapter):
     ) -> Optional[str]:
         """Resolve the correct thread_ts for a Slack API call.
 
-        Prefers metadata thread_id (the thread parent's ts, set by the
-        gateway) over reply_to (which may be a child message's ts).
+        Slack is top-level-by-default: ambient gateway routing fields such as
+        ``source.thread_id``, ``metadata.thread_id`` and ``reply_to`` are used
+        for session context, but they must not automatically make a visible
+        Slack thread reply. Threaded Slack delivery is opt-in via metadata
+        (``reply_in_thread``/``slack_reply_in_thread``) or an explicit platform
+        config override (``reply_in_thread: true``).
 
-        When ``reply_in_thread`` is ``false`` in the platform extra config,
-        top-level channel messages receive direct channel replies instead of
-        thread replies.  Messages that originate inside an existing thread are
-        always replied to in-thread to preserve conversation context.
+        When threading is explicitly enabled, prefer metadata thread_id (the
+        thread parent's ts, set by the gateway) over reply_to (which may be a
+        child message's ts).
         """
-        # When reply_in_thread is disabled (default: True for backward compat),
-        # only thread messages that are already part of an existing thread.
-        # For top-level channel messages, the inbound handler sets
-        # metadata.thread_id to the message's own ts as a session-keying
-        # fallback (see the `thread_ts = event.get("thread_ts") or ts` branch),
-        # so metadata alone can't distinguish a real thread reply from a
-        # top-level message. reply_to is the incoming message's own id, so
-        # when thread_id == reply_to the "thread" is synthetic and we reply
-        # directly in the channel instead.
-        if not self.config.extra.get("reply_in_thread", True):
-            md = metadata or {}
-            existing_thread = md.get("thread_id") or md.get("thread_ts")
-            if existing_thread and reply_to and existing_thread == reply_to:
-                existing_thread = None
-            return existing_thread or None
+        if self.config.extra.get("force_top_level_replies"):
+            return None
 
-        if metadata:
-            if metadata.get("thread_id"):
-                return metadata["thread_id"]
-            if metadata.get("thread_ts"):
-                return metadata["thread_ts"]
+        md = metadata or {}
+
+        def _truthy(value: Any) -> bool:
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(value)
+
+        explicit_thread_reply = (
+            _truthy(md.get("reply_in_thread"))
+            or _truthy(md.get("slack_reply_in_thread"))
+            or _truthy(md.get("slack_thread_explicit"))
+            or _truthy(md.get("threaded_reply"))
+            or _truthy(self.config.extra.get("reply_in_thread"))
+        )
+        if not explicit_thread_reply:
+            return None
+
+        if md.get("thread_id"):
+            return md["thread_id"]
+        if md.get("thread_ts"):
+            return md["thread_ts"]
         return reply_to
 
     async def _upload_file(

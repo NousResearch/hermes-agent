@@ -501,6 +501,8 @@ async def _send_via_adapter(
         if adapter is not None:
             try:
                 metadata = {"thread_id": thread_id} if thread_id else None
+                if metadata and platform_name == "slack":
+                    metadata["slack_thread_explicit"] = True
                 result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
             except asyncio.CancelledError:
                 raise

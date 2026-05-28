@@ -339,6 +339,8 @@ class DeliveryRouter:
                 send_metadata["telegram_dm_topic_reply_fallback"] = True
             elif "thread_id" not in send_metadata and "message_thread_id" not in send_metadata and not has_explicit_direct_topic:
                 send_metadata["thread_id"] = target_thread_id
+            if target.platform == Platform.SLACK and target.is_explicit:
+                send_metadata["reply_in_thread"] = True
         result = await adapter.send(target.chat_id, content, metadata=send_metadata or None)
         if _send_result_failed(result):
             if (

@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -1138,14 +1139,21 @@ class KanbanDbCorruptError(RuntimeError):
 
 
 def _backup_corrupt_db(path: Path) -> Optional[Path]:
-    """Copy a corrupt DB (and its WAL/SHM sidecars) to a timestamped backup.
+    """Copy a corrupt DB (and its WAL/SHM sidecars) to a content-addressed backup.
+
+    The backup filename is deterministic in the main DB's sha256, so repeated
+    quarantines of the same corrupt bytes (gateway restarts, dispatcher retries,
+    multi-profile fleets all hitting the same shared DB) reuse one backup
+    instead of amplifying disk usage by N. If the corrupt bytes actually
+    change between attempts — e.g. a partial repair or further damage — the
+    fingerprint changes and a separate backup is preserved.
 
     Returns the backup path of the main DB file, or ``None`` if the copy
     itself failed (the caller still raises loudly in that case).
 
-    Writes are confined to the original DB's parent directory. The
-    backup basename is derived purely from ``path.name``, never from
-    caller-supplied directory segments — no traversal is possible.
+    Writes are confined to the original DB's parent directory. The backup
+    basename is derived purely from ``path.name`` and a content hash, never
+    from caller-supplied directory segments — no traversal is possible.
     """
     # Resolve once and pin the parent so subsequent path operations cannot
     # escape it. ``Path.resolve()`` collapses any ``..`` segments and
@@ -1153,32 +1161,31 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     resolved = path.resolve()
     parent = resolved.parent
     base_name = resolved.name  # basename only
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    candidate = parent / f"{base_name}.corrupt.{stamp}.bak"
-    # Defensive: candidate must still be inside parent after construction.
-    # f-string interpolation of ``base_name`` cannot escape ``parent``
-    # because ``base_name`` is itself a resolved basename, but assert it
-    # anyway so static analyzers can see the containment guarantee.
-    if candidate.parent != parent:
-        return None
-    counter = 0
-    while candidate.exists():
-        counter += 1
-        candidate = parent / f"{base_name}.corrupt.{stamp}.{counter}.bak"
-        if candidate.parent != parent:
-            return None
+    digest = hashlib.sha256()
     try:
-        shutil.copy2(resolved, candidate)
+        with resolved.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
     except OSError:
         return None
+    token = digest.hexdigest()[:16]
+    candidate = parent / f"{base_name}.corrupt.{token}.bak"
+    # Defensive: candidate must still be inside parent after construction.
+    if candidate.parent != parent:
+        return None
+    if not candidate.exists():
+        try:
+            shutil.copy2(resolved, candidate)
+        except OSError:
+            return None
     for suffix in ("-wal", "-shm"):
         sidecar = parent / (base_name + suffix)
         if sidecar.parent != parent or not sidecar.exists():
             continue
+        sidecar_backup = parent / (candidate.name + suffix)
+        if sidecar_backup.parent != parent or sidecar_backup.exists():
+            continue
         try:
-            sidecar_backup = parent / (candidate.name + suffix)
-            if sidecar_backup.parent != parent:
-                continue
             shutil.copy2(sidecar, sidecar_backup)
         except OSError:
             pass

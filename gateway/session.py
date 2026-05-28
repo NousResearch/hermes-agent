@@ -618,10 +618,15 @@ def build_session_key(
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     platform = source.platform.value
+    team_scope = ""
+    if source.platform == Platform.SLACK and source.guild_id:
+        team_scope = str(source.guild_id).strip()
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
         if source.platform == Platform.WHATSAPP:
             dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
+        if team_scope and dm_chat_id:
+            dm_chat_id = f"{team_scope}:{dm_chat_id}"
 
         if dm_chat_id:
             if source.thread_id:
@@ -640,7 +645,10 @@ def build_session_key(
     key_parts = ["agent:main", platform, source.chat_type]
 
     if source.chat_id:
-        key_parts.append(source.chat_id)
+        chat_id = source.chat_id
+        if team_scope:
+            chat_id = f"{team_scope}:{chat_id}"
+        key_parts.append(chat_id)
     if source.thread_id:
         key_parts.append(source.thread_id)
 

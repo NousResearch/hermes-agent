@@ -120,6 +120,36 @@ def test_star_wildcard_in_allowlist_authorizes_any_user(monkeypatch):
     assert runner._is_user_authorized(source) is True
 
 
+def test_slack_allowlist_is_workspace_scoped_when_team_present(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "T_ALPHA:U123")
+
+    runner, _adapter = _make_runner(
+        Platform.SLACK,
+        GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True)}),
+    )
+
+    source_allowed = SessionSource(
+        platform=Platform.SLACK,
+        user_id="U123",
+        guild_id="T_ALPHA",
+        chat_id="D123",
+        user_name="alpha-user",
+        chat_type="dm",
+    )
+    source_denied = SessionSource(
+        platform=Platform.SLACK,
+        user_id="U123",
+        guild_id="T_BETA",
+        chat_id="D123",
+        user_name="beta-user",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source_allowed) is True
+    assert runner._is_user_authorized(source_denied) is False
+
+
 def test_star_wildcard_works_for_any_platform(monkeypatch):
     """The * wildcard should work generically, not just for WhatsApp."""
     _clear_auth_env(monkeypatch)

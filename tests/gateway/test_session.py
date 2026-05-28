@@ -831,6 +831,44 @@ class TestWhatsAppSessionKeyConsistency:
         assert build_session_key(second) == "agent:main:telegram:dm:100"
         assert build_session_key(first) != build_session_key(second)
 
+    def test_slack_dm_session_key_is_scoped_by_workspace(self):
+        first = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="D123",
+            chat_type="dm",
+            guild_id="T_ALPHA",
+        )
+        second = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="D123",
+            chat_type="dm",
+            guild_id="T_BETA",
+        )
+
+        assert build_session_key(first) == "agent:main:slack:dm:T_ALPHA:D123"
+        assert build_session_key(second) == "agent:main:slack:dm:T_BETA:D123"
+        assert build_session_key(first) != build_session_key(second)
+
+    def test_slack_group_session_key_is_scoped_by_workspace(self):
+        first = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            guild_id="T_ALPHA",
+            user_id="U123",
+        )
+        second = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            guild_id="T_BETA",
+            user_id="U123",
+        )
+
+        assert build_session_key(first) == "agent:main:slack:group:T_ALPHA:C123:U123"
+        assert build_session_key(second) == "agent:main:slack:group:T_BETA:C123:U123"
+        assert build_session_key(first) != build_session_key(second)
+
     def test_discord_group_includes_chat_id(self):
         """Group/channel keys include chat_type and chat_id."""
         source = SessionSource(

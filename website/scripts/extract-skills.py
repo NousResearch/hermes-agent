@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract skill metadata into website/src/data/skills.json for the Skills Hub page.
+"""Extract skill metadata into website/static/api/skills.json for the Skills Hub page.
 
 Two data sources:
 
@@ -32,8 +32,12 @@ LOCAL_SKILL_DIRS = [
 ]
 UNIFIED_INDEX_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "skills-index.json")
 LEGACY_INDEX_CACHE_DIR = os.path.join(REPO_ROOT, "skills", "index-cache")
-OUTPUT = os.path.join(REPO_ROOT, "website", "src", "data", "skills.json")
-META_OUTPUT = os.path.join(REPO_ROOT, "website", "src", "data", "skills-meta.json")
+# Output to static/api/ so the file is CDN-served at /api/skills.json
+# rather than bundled into the page's JS chunk. At 50k+ skills the
+# bundled payload was ~26 MB; lazy-fetch keeps the initial page load
+# fast and shrinks the JS chunk back to a few hundred KB.
+OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills.json")
+META_OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills-meta.json")
 
 CATEGORY_LABELS = {
     "apple": "Apple",
@@ -531,7 +535,9 @@ def main():
 
     os.makedirs(os.path.dirname(OUTPUT), exist_ok=True)
     with open(OUTPUT, "w", encoding="utf-8") as f:
-        json.dump(all_skills, f, indent=2)
+        # Minified — file is served over the wire, not read by humans.
+        # At 50k+ skills the indented version was ~30% larger.
+        json.dump(all_skills, f, separators=(",", ":"), ensure_ascii=False)
 
     # Sidecar meta file so the page can render a "Last refreshed" badge
     # without changing the shape of skills.json.
@@ -547,7 +553,7 @@ def main():
     if index_meta:
         meta.update(index_meta)
     with open(META_OUTPUT, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+        json.dump(meta, f, separators=(",", ":"), ensure_ascii=False)
 
     print(f"Extracted {len(all_skills)} skills to {OUTPUT}")
     print(f"  {len(local)} local ({sum(1 for s in local if s['source'] == 'built-in')} built-in, "

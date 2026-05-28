@@ -73,13 +73,12 @@ def _check_ws_token(provided: Optional[str]) -> bool:
     try:
         from hermes_cli import web_server as _ws
     except Exception:
-        # No dashboard context (tests). Accept so the tail loop is still
-        # testable; in production the dashboard module always imports
-        # cleanly because it's the caller.
-        return True
+        log.warning("hermes_cli.web_server unavailable; rejecting WS auth token")
+        return False
     expected = getattr(_ws, "_SESSION_TOKEN", None)
     if not expected:
-        return True
+        log.warning("no _SESSION_TOKEN in web_server; rejecting WS auth token")
+        return False
     return hmac.compare_digest(str(provided), str(expected))
 
 

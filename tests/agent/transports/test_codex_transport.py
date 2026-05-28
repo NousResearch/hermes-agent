@@ -53,6 +53,32 @@ class TestCodexBuildKwargs:
         assert kw["instructions"] == "You are helpful."
         assert "input" in kw
         assert kw["store"] is False
+        assert "tools" not in kw
+        assert "tool_choice" not in kw
+        assert "parallel_tool_calls" not in kw
+
+    def test_tool_kwargs_only_included_when_tools_present(self, transport):
+        messages = [{"role": "user", "content": "Run ls"}]
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+            },
+        }]
+        kw = transport.build_kwargs(model="gpt-5.4", messages=messages, tools=tools)
+        assert kw["tools"] == [
+            {
+                "type": "function",
+                "name": "terminal",
+                "description": "Run a command",
+                "strict": False,
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+            }
+        ]
+        assert kw["tool_choice"] == "auto"
+        assert kw["parallel_tool_calls"] is True
 
     def test_system_extracted_from_messages(self, transport):
         messages = [

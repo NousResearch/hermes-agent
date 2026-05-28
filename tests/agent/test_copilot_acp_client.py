@@ -390,3 +390,94 @@ def test_handle_server_message_tool_use_accepts_string_arguments():
     assert cleaned == ""
     assert len(tool_calls) == 1
     assert tool_calls[0].function.arguments == '{"command": "pwd"}'
+
+
+def test_handle_server_message_tool_result_is_not_reinvoked():
+    """tool_result updates preserve narration without becoming a second tool call."""
+    from unittest.mock import MagicMock
+
+    from agent.copilot_acp_client import CopilotACPClient, _extract_tool_calls_from_text
+
+    client = CopilotACPClient()
+    process = MagicMock()
+    process.stdin = MagicMock()
+    text_parts = ["I will inspect the file first.\n"]
+
+    for update in (
+        {
+            "sessionUpdate": "tool_use",
+            "content": {
+                "name": "read_file",
+                "id": "call_once",
+                "input": {"path": "README.md"},
+            },
+        },
+        {
+            "sessionUpdate": "tool_result",
+            "content": {
+                "name": "read_file",
+                "id": "call_once",
+                "output": "README contents preserved",
+            },
+        },
+    ):
+        handled = client._handle_server_message(
+            {
+                "method": "session/update",
+                "params": {"update": update},
+            },
+            process=process,
+            cwd="/tmp",
+            text_parts=text_parts,
+            reasoning_parts=[],
+        )
+        assert handled is True
+
+    tool_calls, cleaned = _extract_tool_calls_from_text("".join(text_parts))
+    assert len(tool_calls) == 1
+    assert tool_calls[0].id == "call_once"
+    assert tool_calls[0].function.name == "read_file"
+    assert "I will inspect the file first." in cleaned
+    assert "README contents preserved" in cleaned
+
+
+class _FakeContentBlock:
+    """Typed block object that Copilot ACP may emit instead of a plain dict."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+def test_session_update_agent_message_chunk_preserves_block_text():
+    """Typed content blocks (non-dict) preserve their text for agent_message_chunk.
+
+    Regression from jdell64 (#33668): Copilot ACP can surface content as
+    objects with .text attributes rather than plain dicts.
+    """
+    from unittest.mock import MagicMock
+
+    from agent.copilot_acp_client import CopilotACPClient
+
+    client = CopilotACPClient()
+    process = MagicMock()
+    process.stdin = MagicMock()
+    text_parts: list[str] = []
+    handled = client._handle_server_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": _FakeContentBlock("Removing both keys now"),
+                }
+            },
+        },
+        process=process,
+        cwd="/tmp",
+        text_parts=text_parts,
+        reasoning_parts=[],
+    )
+
+    assert handled is True
+    assert text_parts == ["Removing both keys now"]

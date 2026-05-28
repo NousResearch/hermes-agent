@@ -152,19 +152,28 @@ def test_run_agent_concurrent_executor_wraps_submit_with_copy_context():
     import inspect
 
     import run_agent
+    from agent import tool_executor as tool_executor_module
 
-    src_path = inspect.getsourcefile(run_agent)
-    assert src_path is not None
-    tree = ast.parse(open(src_path, encoding="utf-8").read())
+    # Source for both modules — the concurrent-executor body lives in
+    # ``agent/tool_executor.py`` after the run_agent.py refactor (PR
+    # following #16660).  Search both so this guard keeps firing
+    # regardless of where the call site lives.
+    sources = []
+    for mod in (run_agent, tool_executor_module):
+        src_path = inspect.getsourcefile(mod)
+        assert src_path is not None
+        sources.append((src_path, open(src_path, encoding="utf-8").read()))
 
     submit_calls_in_agent: list[ast.Call] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        # Match executor.submit(...) style calls.
-        if isinstance(func, ast.Attribute) and func.attr == "submit":
-            submit_calls_in_agent.append(node)
+    for _src_path, src_text in sources:
+        tree = ast.parse(src_text)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            # Match executor.submit(...) style calls.
+            if isinstance(func, ast.Attribute) and func.attr == "submit":
+                submit_calls_in_agent.append(node)
 
     # Filter to the submit call inside the concurrent tool executor —
     # identifiable by passing `_run_tool` as its target. Other submit()

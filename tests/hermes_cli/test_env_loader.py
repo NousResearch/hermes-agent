@@ -37,7 +37,7 @@ def test_project_env_is_sanitized_before_loading(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     project_env = tmp_path / ".env"
     project_env.write_text(
-        "TELEGRAM_BOT_TOKEN=8356550917:AAGGEkzg06Hrc3Hjb3Sa1jkGVDOdU_lYy2Q"
+        "TELEGRAM_BOT_TOKEN=0123456789:test"
         "ANTHROPIC_API_KEY=sk-ant-test123\n",
         encoding="utf-8",
     )
@@ -48,7 +48,7 @@ def test_project_env_is_sanitized_before_loading(tmp_path, monkeypatch):
     loaded = load_hermes_dotenv(hermes_home=home, project_env=project_env)
 
     assert loaded == [project_env]
-    assert os.getenv("TELEGRAM_BOT_TOKEN") == "8356550917:AAGGEkzg06Hrc3Hjb3Sa1jkGVDOdU_lYy2Q"
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "0123456789:test"
     assert os.getenv("ANTHROPIC_API_KEY") == "sk-ant-test123"
 
 
@@ -68,6 +68,23 @@ def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):
     assert loaded == [user_env, project_env]
     assert os.getenv("OPENAI_BASE_URL") == "https://user.example/v1"
     assert os.getenv("OPENAI_API_KEY") == "project-key"
+
+
+def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    # Null bytes can be introduced when copy-pasting API keys.
+    env_file.write_text("GLM_API_KEY=abc\x00\x00\nOPENAI_API_KEY=sk-123\n", encoding="utf-8")
+
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("GLM_API_KEY") == "abc"
+    assert os.getenv("OPENAI_API_KEY") == "sk-123"
 
 
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):

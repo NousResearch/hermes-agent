@@ -17,7 +17,6 @@ Model / provider selection mirrors `hermes chat`:
 
 Env var fallbacks (used when the corresponding arg is not passed):
     - HERMES_INFERENCE_MODEL
-    - HERMES_INFERENCE_PROVIDER  (already read by resolve_runtime_provider)
 """
 
 from __future__ import annotations
@@ -27,6 +26,8 @@ import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
+
+from hermes_cli.fallback_config import get_fallback_chain
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -133,9 +134,8 @@ def run_oneshot(
         prompt: The user message to send.
         model: Optional model override. Falls back to HERMES_INFERENCE_MODEL
             env var, then config.yaml's model.default / model.model.
-        provider: Optional provider override. Falls back to
-            HERMES_INFERENCE_PROVIDER env var, then config.yaml's model.provider,
-            then "auto".
+        provider: Optional provider override. Falls back to config.yaml's
+            model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
 
     Returns the exit code.  Caller should sys.exit() with the return.
@@ -174,7 +174,7 @@ def run_oneshot(
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.
     real_stdout = sys.stdout
-    devnull = open(os.devnull, "w")
+    devnull = open(os.devnull, "w", encoding="utf-8")
 
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
@@ -197,6 +197,22 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
     return 0
+
+
+def _create_session_db_for_oneshot():
+    """Best-effort SessionDB for ``hermes -z`` / oneshot mode.
+
+    Oneshot bypasses ``HermesCLI._init_agent()``, so it must wire the SQLite
+    session store itself. Without this, the ``session_search``/recall tool is
+    advertised but every call returns "Session database not available.".
+    """
+    try:
+        from hermes_state import SessionDB
+
+        return SessionDB()
+    except Exception as exc:
+        logging.debug("SQLite session store not available for oneshot mode: %s", exc)
+        return None
 
 
 def _run_agent(
@@ -284,6 +300,11 @@ def _run_agent(
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
+    session_db = _create_session_db_for_oneshot()
+    # Read the effective fallback chain from profile config so oneshot workers
+    # honour the same merge semantics as interactive CLI and gateway sessions.
+    _fb = get_fallback_chain(cfg)
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -293,7 +314,9 @@ def _run_agent(
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
+        session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
+        fallback_model=_fb or None,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

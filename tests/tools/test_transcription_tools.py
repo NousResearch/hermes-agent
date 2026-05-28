@@ -6,12 +6,24 @@ end-to-end dispatch.  All external dependencies are mocked.
 """
 
 import os
+import sys
 import struct
 import subprocess
+import types
 import wave
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+if "faster_whisper" not in sys.modules:
+    faster_whisper_stub = types.ModuleType("faster_whisper")
+    faster_whisper_stub.WhisperModel = MagicMock(name="WhisperModel")
+    # Set ``__spec__`` so ``importlib.util.find_spec("faster_whisper")``
+    # doesn't raise ``ValueError: faster_whisper.__spec__ is None`` during
+    # collection (used by skipif markers further down in this file).
+    from importlib.machinery import ModuleSpec
+    faster_whisper_stub.__spec__ = ModuleSpec("faster_whisper", loader=None)
+    sys.modules["faster_whisper"] = faster_whisper_stub
 
 
 # ============================================================================
@@ -40,6 +52,9 @@ def sample_ogg(tmp_path):
     ogg_path = tmp_path / "test.ogg"
     ogg_path.write_bytes(b"fake audio data")
     return str(ogg_path)
+
+
+pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
 
 
 @pytest.fixture(autouse=True)
@@ -414,6 +429,10 @@ class TestTranscribeLocalCommand:
 # _transcribe_local — additional tests
 # ============================================================================
 
+@pytest.mark.skipif(
+    not __import__("importlib").util.find_spec("faster_whisper"),
+    reason="faster_whisper not installed",
+)
 class TestTranscribeLocalExtended:
     def test_model_reuse_on_second_call(self, tmp_path):
         """Second call with same model should NOT reload the model."""
@@ -754,6 +773,23 @@ class TestValidateAudioFileEdgeCases:
         assert result is not None
         assert "not a file" in result["error"]
 
+    def test_symlink_with_supported_extension_is_rejected(self, tmp_path):
+        if not hasattr(os, "symlink"):
+            pytest.skip("symlinks are not supported on this platform")
+
+        target = tmp_path / "target.txt"
+        target.write_bytes(b"not audio")
+        link = tmp_path / "linked.wav"
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+
+        from tools.transcription_tools import _validate_audio_file
+        result = _validate_audio_file(str(link))
+        assert result is not None
+        assert "symbolic link" in result["error"]
+
     def test_stat_oserror(self, tmp_path):
         f = tmp_path / "test.ogg"
         f.write_bytes(b"data")
@@ -974,16 +1010,23 @@ class TestTranscribeMistral:
 # ============================================================================
 
 class TestGetProviderMistral:
-    """Mistral-specific provider selection tests."""
+    """Mistral-specific provider selection tests.
+
+    Mistral STT is intentionally disabled in 2026-05-12+ while the
+    `mistralai` PyPI package is quarantined. These tests document that
+    explicit `provider: mistral` always returns "none" with a warning, and
+    that auto-detect skips mistral entirely.
+    """
 
     def test_mistral_when_key_and_sdk_available(self, monkeypatch):
+        """Even with key + SDK, explicit mistral returns 'none' (disabled)."""
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
         with patch("tools.transcription_tools._HAS_MISTRAL", True):
             from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "mistral"}) == "mistral"
+            assert _get_provider({"provider": "mistral"}) == "none"
 
     def test_mistral_explicit_no_key_returns_none(self, monkeypatch):
-        """Explicit mistral with no key returns none — no cross-provider fallback."""
+        """Explicit mistral with no key returns none."""
         monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_MISTRAL", True):
             from tools.transcription_tools import _get_provider
@@ -996,18 +1039,23 @@ class TestGetProviderMistral:
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "mistral"}) == "none"
 
-    def test_auto_detect_mistral_after_openai(self, monkeypatch):
-        """Auto-detect: mistral is tried after openai when both are unavailable."""
+    def test_auto_detect_skips_mistral(self, monkeypatch):
+        """Auto-detect intentionally skips mistral (quarantine workaround).
+
+        With no other provider available but MISTRAL_API_KEY set, the result
+        must be 'none' — mistral is no longer in the auto-detect chain.
+        """
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._has_local_command", return_value=False), \
              patch("tools.transcription_tools._HAS_OPENAI", False), \
              patch("tools.transcription_tools._HAS_MISTRAL", True):
             from tools.transcription_tools import _get_provider
-            assert _get_provider({}) == "mistral"
+            assert _get_provider({}) == "none"
 
     def test_auto_detect_openai_preferred_over_mistral(self, monkeypatch):
         """Auto-detect: openai is preferred over mistral (both paid, openai more common)."""
@@ -1281,8 +1329,13 @@ class TestGetProviderXAI:
             from tools.transcription_tools import _get_provider
             assert _get_provider({}) == "xai"
 
-    def test_auto_detect_mistral_preferred_over_xai(self, monkeypatch):
-        """Auto-detect: mistral is preferred over xai."""
+    def test_auto_detect_mistral_skipped_xai_wins(self, monkeypatch):
+        """Auto-detect skips mistral entirely (quarantine) — xai wins.
+
+        Even with MISTRAL_API_KEY set, mistral is no longer in the
+        auto-detect chain. xai is the next-best fallback when the
+        local/groq/openai chain is unavailable.
+        """
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
         monkeypatch.setenv("XAI_API_KEY", "xai-test")
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
@@ -1293,7 +1346,7 @@ class TestGetProviderXAI:
              patch("tools.transcription_tools._HAS_OPENAI", False), \
              patch("tools.transcription_tools._HAS_MISTRAL", True):
             from tools.transcription_tools import _get_provider
-            assert _get_provider({}) == "mistral"
+            assert _get_provider({}) == "xai"
 
     def test_auto_detect_no_key_returns_none(self, monkeypatch):
         """Auto-detect: xai skipped when no key is set."""
@@ -1342,3 +1395,45 @@ class TestTranscribeAudioXAIDispatch:
             transcribe_audio(sample_ogg, model="custom-stt")
 
         assert mock_xai.call_args[0][1] == "custom-stt"
+
+
+# ============================================================================
+# Shell safety — shlex.split on auto-detected templates
+# ============================================================================
+class TestShellSafety:
+    def test_auto_detected_template_is_shlex_safe(self, monkeypatch):
+        """Auto-detected whisper command should be safely splittable."""
+        import shlex
+        monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+        monkeypatch.setattr(
+            "tools.transcription_tools._find_whisper_binary",
+            lambda: "/usr/bin/whisper",
+        )
+        from tools.transcription_tools import _get_local_command_template
+        template = _get_local_command_template()
+        assert template is not None
+        cmd = template.format(
+            input_path=shlex.quote("/tmp/test.wav"),
+            output_dir=shlex.quote("/tmp/out"),
+            language=shlex.quote("en"),
+            model=shlex.quote("base"),
+        )
+        parts = shlex.split(cmd)
+        assert parts[0] == "/usr/bin/whisper"
+        assert "/tmp/test.wav" in parts
+
+    def test_env_var_template_uses_shell_path(self, monkeypatch):
+        """When HERMES_LOCAL_STT_COMMAND is set, use_shell should be True."""
+        import os
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV
+        monkeypatch.setenv(LOCAL_STT_COMMAND_ENV, "whisper {input_path} | tee log.txt")
+        use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+        assert use_shell is True
+
+    def test_no_env_var_uses_list_mode(self, monkeypatch):
+        """When no env var is set, use_shell should be False."""
+        import os
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV
+        monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
+        use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+        assert use_shell is False

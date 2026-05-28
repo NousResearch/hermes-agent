@@ -20,8 +20,12 @@ Primary implementation:
 - `hermes_cli/auth.py` — provider registry, `resolve_provider()`
 - `hermes_cli/model_switch.py` — shared `/model` switch pipeline (CLI + gateway)
 - `agent/auxiliary_client.py` — auxiliary model routing
+- `providers/` — ABC + registry entry points (`ProviderProfile`, `register_provider`, `get_provider_profile`, `list_providers`)
+- `plugins/model-providers/<name>/` — per-provider plugins (bundled) that declare `api_mode`, `base_url`, `env_vars`, `fallback_models` and register themselves into the registry on first access. User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override bundled ones of the same name.
 
-If you are trying to add a new first-class inference provider, read [Adding Providers](./adding-providers.md) alongside this page.
+`get_provider_profile()` in `providers/` returns a `ProviderProfile` for a given provider id. `runtime_provider.py` calls this at resolution time to get the canonical `base_url`, `env_vars` priority list, `api_mode`, and `fallback_models` without needing to duplicate that data in multiple files. Adding a new plugin under `plugins/model-providers/<your-provider>/` (or `$HERMES_HOME/plugins/model-providers/<your-provider>/`) that calls `register_provider()` is enough for `runtime_provider.py` to pick it up — no branch needed in the resolver itself.
+
+If you are trying to add a new first-class inference provider, read [Adding Providers](./adding-providers.md) and the [Model Provider Plugin guide](./model-provider-plugin.md) alongside this page.
 
 ## Resolution precedence
 
@@ -36,24 +40,34 @@ That ordering matters because Hermes treats the saved model/provider choice as t
 
 ## Providers
 
-Current provider families include:
+Current provider families include (see `plugins/model-providers/` for the complete bundled set):
 
-- AI Gateway (Vercel)
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
 - Copilot / Copilot ACP
 - Anthropic (native)
-- Google / Gemini
-- Alibaba / DashScope
+- Google / Gemini (`gemini`, `google-gemini-cli`)
+- Alibaba / DashScope (`alibaba`, `alibaba-coding-plan`)
 - DeepSeek
 - Z.AI
-- Kimi / Moonshot
-- MiniMax
-- MiniMax China
+- Kimi / Moonshot (`kimi-coding`, `kimi-coding-cn`)
+- MiniMax (`minimax`, `minimax-cn`, `minimax-oauth`)
 - Kilo Code
 - Hugging Face
 - OpenCode Zen / OpenCode Go
+- AWS Bedrock
+- Azure Foundry
+- NVIDIA NIM
+- xAI (Grok)
+- Arcee
+- GMI Cloud
+- StepFun
+- Qwen OAuth
+- Xiaomi
+- Ollama Cloud
+- LM Studio
+- Tencent TokenHub
 - Custom (`provider: custom`) — first-class provider for any OpenAI-compatible endpoint
 - Named custom providers (`custom_providers` list in config.yaml)
 
@@ -78,18 +92,13 @@ This resolver is the main reason Hermes can share auth/runtime logic between:
 - ACP editor sessions
 - auxiliary model tasks
 
-## AI Gateway
+## OpenRouter and custom OpenAI-compatible base URLs
 
-Set `AI_GATEWAY_API_KEY` in `~/.hermes/.env` and run with `--provider ai-gateway`. Hermes fetches available models from the gateway's `/models` endpoint, filtering to language models with tool-use support.
-
-## OpenRouter, AI Gateway, and custom OpenAI-compatible base URLs
-
-Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when multiple provider keys exist (e.g. `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`, and `OPENAI_API_KEY`).
+Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when multiple provider keys exist (e.g. `OPENROUTER_API_KEY` and `OPENAI_API_KEY`).
 
 Each provider's API key is scoped to its own base URL:
 
 - `OPENROUTER_API_KEY` is only sent to `openrouter.ai` endpoints
-- `AI_GATEWAY_API_KEY` is only sent to `ai-gateway.vercel.sh` endpoints
 - `OPENAI_API_KEY` is used for custom endpoints and as a fallback
 
 Hermes also distinguishes between:
@@ -100,7 +109,7 @@ Hermes also distinguishes between:
 That distinction is especially important for:
 
 - local model servers
-- non-OpenRouter/non-AI Gateway OpenAI-compatible APIs
+- non-OpenRouter OpenAI-compatible APIs
 - switching providers without re-running setup
 - config-saved custom endpoints that should keep working even when `OPENAI_BASE_URL` is not exported in the current shell
 
@@ -135,7 +144,6 @@ Auxiliary tasks such as:
 - vision
 - web extraction summarization
 - context compression summaries
-- session search summarization
 - skills hub operations
 - MCP helper operations
 - memory flushes
@@ -150,7 +158,7 @@ When an auxiliary task is configured with provider `main`, Hermes resolves that 
 
 ## Fallback models
 
-Hermes supports a configured fallback model/provider pair, allowing runtime failover when the primary model encounters errors.
+Hermes supports a configured fallback provider chain — a list of `(provider, model)` entries tried in order when the primary model encounters errors. The legacy single-pair `fallback_model` dict is still accepted for back-compat (and migrated on first write).
 
 ### How it works internally
 
@@ -185,7 +193,11 @@ Cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or le
 
 ### Test coverage
 
-See `tests/test_fallback_model.py` for comprehensive tests covering all supported providers, one-shot semantics, and edge cases.
+Fallback behavior is exercised across several suites:
+
+- `tests/run_agent/test_fallback_credential_isolation.py` — credential isolation between primary and fallback
+- `tests/hermes_cli/test_fallback_cmd.py` — the `/fallback` CLI command
+- `tests/gateway/test_fallback_eviction.py` — gateway eviction of failed providers
 
 ## Related docs
 

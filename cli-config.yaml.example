@@ -29,7 +29,7 @@ model:
   #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
-  #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
+  #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
   #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
   #
   # Local servers (LM Studio, Ollama, vLLM, llama.cpp):
@@ -38,12 +38,20 @@ model:
   #   LM Studio is first-class and uses provider: "lmstudio".
   #   It works with both no-auth and auth-enabled server modes.
   #
-  # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
+  # Can also be overridden for a single invocation with the --provider flag.
   provider: "auto"
   
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
+
+  # Azure Foundry keyless auth example:
+  # provider: "azure-foundry"
+  # base_url: "https://<resource>.openai.azure.com/openai/v1"
+  # auth_mode: "entra_id"      # DefaultAzureCredential: az login, managed identity, workload identity, etc.
+  # default: "gpt-4o"          # Deployment/model name
+  # entra:
+  #   scope: "https://ai.azure.com/.default"  # Optional; this is the default.
 
   # ── Token limits — two settings, easy to confuse ──────────────────────────
   #
@@ -122,6 +130,18 @@ model:
 #   # data_collection: "deny"
 
 # =============================================================================
+# OpenRouter Response Caching (only applies when using OpenRouter)
+# =============================================================================
+# Cache identical API responses at the OpenRouter edge for free instant replays.
+# When enabled, identical requests (same model, messages, parameters) return
+# cached responses with zero billing. Separate from Anthropic prompt caching.
+# See: https://openrouter.ai/docs/guides/features/response-caching
+#
+# openrouter:
+#   response_cache: true         # Enable response caching (default: true)
+#   response_cache_ttl: 300      # Cache TTL in seconds, 1-86400 (default: 300)
+
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple
@@ -191,6 +211,12 @@ terminal:
 #   docker_forward_env:
 #     - "GITHUB_TOKEN"
 #     - "NPM_TOKEN"
+#   # Optional: extra flags passed verbatim to docker run (appended after security defaults).
+#   # Useful for adding capabilities (e.g. apt installs needing SETUID) or custom options.
+#   # Example: add a Linux capability not included by default
+#   # docker_extra_args:
+#   #   - "--cap-add"
+#   #   - "SETUID"
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container
@@ -346,6 +372,18 @@ compression:
   # compression of older turns.
   protect_last_n: 20
 
+  # Number of non-system messages to protect at the head of the transcript, in
+  # ADDITION to the system prompt (which is always implicitly protected).
+  # Head messages are NEVER summarized — they survive every compression
+  # indefinitely. This gives stable early context for short/medium sessions,
+  # but in long-running sessions that rely on rolling compaction the pinned
+  # opening turns may not match how you want the session framed over time.
+  # Set to 0 to preserve ONLY the system prompt (plus the rolling summary
+  # and recent tail) — the cleanest configuration for long-running sessions.
+  # Default 3 preserves the system prompt plus the first three non-system
+  # head messages, matching the pre-feature behaviour.
+  protect_first_n: 3
+
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 
@@ -427,7 +465,7 @@ prompt_caching:
 # Two stores: MEMORY.md (agent's notes) and USER.md (user profile).
 # Character limits keep the memory small and focused. The agent manages
 # pruning -- when at the limit, it must consolidate or replace entries.
-# Disabled by default in batch_runner and RL environments.
+# Disabled by default in batch_runner.
 #
 memory:
   # Agent's personal notes: environment facts, conventions, things learned
@@ -488,6 +526,7 @@ group_sessions_per_user: true
 # Stream tokens to messaging platforms in real-time. The bot sends a message
 # on first token, then progressively edits it as more tokens arrive.
 # Disabled by default — enable to try the streaming UX on Telegram/Discord/Slack.
+# For Telegram, partial edits are sent as plain text and only the final edit uses MarkdownV2.
 streaming:
   enabled: false
   # transport: edit           # "edit" = progressive editMessageText
@@ -589,7 +628,7 @@ agent:
 #   - A preset like "hermes-cli" or "hermes-telegram" (curated tool set)
 #   - A list of individual toolsets to compose your own (see list below)
 #
-# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot, teams
+# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot, teams, google_chat
 #
 # Examples:
 #
@@ -620,6 +659,7 @@ agent:
 #   homeassistant: hermes-homeassistant  (same as telegram)
 #   qqbot:            hermes-qqbot            (same as telegram)
 #   teams:            hermes-teams            (same as telegram)
+#   google_chat:      hermes-google_chat      (same as telegram)
 #
 platform_toolsets:
   cli: [hermes-cli]
@@ -632,6 +672,7 @@ platform_toolsets:
   qqbot: [hermes-qqbot]
   yuanbao: [hermes-yuanbao]
   teams: [hermes-teams]
+  google_chat: [hermes-google_chat]
 
 # =============================================================================
 # Gateway Platform Settings
@@ -642,8 +683,22 @@ platform_toolsets:
 # platforms:
 #   telegram:
 #     reply_to_mode: "first"  # off | first | all
+#     # guest_mode lets explicit @mentions from non-allowlisted groups through.
+#     # Default false; ordinary messages, replies, and regex wake words stay blocked.
+#     guest_mode: false
+#     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#
+# Discord-specific settings (config.yaml top-level, not under platforms:):
+#
+# discord:
+#   require_mention: true            # Require @mention in server channels (default: true)
+#   auto_thread: true                # Auto-create thread on @mention (default: true)
+#   free_response_channels: ""       # Channel IDs where no mention is needed
+#   reactions: true                  # Show processing reactions (default: true)
+#   history_backfill: true           # Recover missed channel messages on mention (default: true)
+#   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
@@ -668,10 +723,9 @@ platform_toolsets:
 #   todo         - todo (in-memory task planning, no deps)
 #   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL key)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
-#   rl           - rl_list_environments, rl_start_training, etc. (requires TINKER_API_KEY)
 #
 # PRESETS (curated bundles):
-#   hermes-cli       - All of the above except rl + send_message
+#   hermes-cli       - All of the above except send_message
 #   hermes-telegram  - terminal, file, web, vision, image_gen, tts, browser,
 #                      skills, todo, cronjob, send_message
 #   hermes-discord   - Same as hermes-telegram
@@ -697,7 +751,6 @@ platform_toolsets:
 #   session_search - Search and recall past conversations (FTS5 + Gemini Flash summarization)
 #   tts          - Text-to-speech (Edge TTS free, ElevenLabs, OpenAI, MiniMax, Mistral)
 #   cronjob      - Schedule and manage automated tasks (CLI-only)
-#   rl           - RL training tools (Tinker-Atropos)
 #
 # Composite toolsets:
 #   debugging    - terminal + web + file (for troubleshooting)
@@ -863,12 +916,53 @@ display:
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
+  # Per-platform defaults can be quieter than the global setting. Telegram
+  # tunes for mobile: tool_progress and busy_ack_detail default off (no
+  # per-tool breadcrumb stream, no "iteration 21/60" debug detail in busy
+  # acks or heartbeats), but interim_assistant_messages and
+  # long_running_notifications STAY ON so the user has real signal between
+  # turn start and final answer (mid-turn assistant commentary + a single
+  # edit-in-place "⏳ Working — N min" heartbeat). Override under
+  # display.platforms.telegram.
+
+  # Auto-cleanup of temporary progress bubbles after the final response lands.
+  # On platforms that support message deletion (currently Telegram), this
+  # removes the tool-progress bubble, "⏳ Still working..." notices, and
+  # context-pressure status messages once the final reply has been delivered —
+  # keeping long-running turns visible live, then tidy afterward. Failed runs
+  # leave the bubbles in place as breadcrumbs. Off by default.
+  # Per-platform override: display.platforms.telegram.cleanup_progress
+  #   true:  Delete tracked progress/status bubbles on successful turn
+  #   false: Leave everything in place (default)
+  # Example:
+  #   display:
+  #     platforms:
+  #       telegram:
+  #         cleanup_progress: true
+  cleanup_progress: false
+
   # Gateway-only natural mid-turn assistant updates.
   # When true, completed assistant status messages are sent as separate chat
   # messages. This is independent of tool_progress and gateway streaming.
   #   true:  Send mid-turn assistant updates as separate messages (default)
   #   false: Only send the final response
   interim_assistant_messages: true
+
+  # Gateway-only long-running status heartbeats.
+  # When false, the platform does not receive periodic "⏳ Working — N min"
+  # notifications even if agent.gateway_notify_interval is non-zero. The
+  # heartbeat edits a single message in place (where the adapter supports
+  # editing) instead of posting a new bubble each interval.
+  # Default: true everywhere, including Telegram (silent agents are worse
+  # than a single edit-in-place heartbeat).
+  long_running_notifications: true
+
+  # Include detailed iteration/tool/status context in busy acknowledgments
+  # and long-running heartbeats. When true, busy acks show "iteration 21/60,
+  # terminal, 10 min" and the heartbeat shows "⏳ Working — 12 min,
+  # iteration 21/60, terminal". When false (Telegram default), both stay
+  # terse: "Interrupting current task" and "⏳ Working — 12 min, terminal".
+  busy_ack_detail: true
 
   # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)
@@ -911,6 +1005,9 @@ display:
   #   true:  Stream tokens as they arrive (default)
   #   false: Wait for the full response before rendering
   streaming: true
+
+  # Show [HH:MM] timestamps on user input and assistant response labels.
+  # timestamps: false
 
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme
@@ -1025,3 +1122,46 @@ display:
 #     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
 #
 # hooks_auto_accept: false
+
+
+# =============================================================================
+# Web Dashboard
+# =============================================================================
+# OAuth gate configuration for `hermes dashboard --host <non-loopback>`.
+# The bundled Nous Portal plugin reads these on startup; settings here are
+# the canonical surface. Each can be overridden by an environment variable:
+#
+#   dashboard.oauth.client_id   <-  HERMES_DASHBOARD_OAUTH_CLIENT_ID
+#   dashboard.oauth.portal_url  <-  HERMES_DASHBOARD_PORTAL_URL
+#   dashboard.public_url        <-  HERMES_DASHBOARD_PUBLIC_URL
+#
+# Env wins when set to a non-empty value. This is what Fly.io's platform-
+# secret injection uses to push per-deploy client_ids without needing to
+# bake a config.yaml into the image. Empty env values are treated as unset
+# so a provisioned-but-not-populated secret can't shadow a valid entry here.
+#
+# Local dev / on-prem deploys should typically set these via config.yaml
+# (the ~/.hermes/.env file is reserved for API keys and secrets).
+#
+# dashboard:
+#   oauth:
+#     client_id: ""    # agent:{instance_id}; Portal provisions this at deploy
+#     portal_url: ""   # blank → default https://portal.nousresearch.com
+#
+#   # Force the absolute base URL the OAuth callback (and any other public
+#   # URL the dashboard hands to external systems) is built from. Set this
+#   # for deploys behind reverse proxies that don't reliably forward
+#   # X-Forwarded-Host / X-Forwarded-Proto / X-Forwarded-Prefix (manual
+#   # nginx setups, on-prem ingresses, custom-domain Fly deploys without
+#   # full proxy header chains).
+#   #
+#   # When set, the value is the complete authority: scheme + host +
+#   # optional path prefix (e.g. "https://example.com/hermes"). The OAuth
+#   # callback URL becomes "<public_url>/auth/callback" — X-Forwarded-Prefix
+#   # is IGNORED on this code path because the operator has explicitly
+#   # declared the public URL and we no longer need to guess.
+#   #
+#   # Leave empty to use the existing proxy-header reconstruction (the
+#   # default — works on Fly.io out of the box).
+#   #
+#   #   public_url: "https://example.com/hermes"

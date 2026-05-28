@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli.profiles import _get_default_hermes_home
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -46,7 +47,7 @@ def resolve_active_host() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
-        if profile and profile not in ("default", "custom"):
+        if profile and profile not in {"default", "custom"}:
             return f"{HOST}.{profile}"
     except Exception:
         pass
@@ -73,7 +74,7 @@ def resolve_config_path() -> Path:
         return local_path
 
     # Default profile's config — host blocks accumulate here via setup/clone
-    default_path = Path.home() / ".hermes" / "honcho.json"
+    default_path = _get_default_hermes_home() / "honcho.json"
     if default_path != local_path and default_path.exists():
         return default_path
 
@@ -90,12 +91,17 @@ def _normalize_recall_mode(val: str) -> str:
     return val if val in _VALID_RECALL_MODES else "hybrid"
 
 
-def _resolve_bool(host_val, root_val, *, default: bool) -> bool:
-    """Resolve a bool config field: host wins, then root, then default."""
-    if host_val is not None:
-        return bool(host_val)
-    if root_val is not None:
-        return bool(root_val)
+def _resolve_bool(*vals, default: bool) -> bool:
+    """Resolve a bool config field: first non-None wins, else default.
+
+    Variadic to support aliased keys (e.g. ``pinUserPeer`` shadowing
+    ``pinPeerName`` for backwards compatibility).  Pass values in
+    precedence order: caller's preferred alias first, then fallback
+    aliases, in (host, root) interleaving as needed.
+    """
+    for val in vals:
+        if val is not None:
+            return bool(val)
     return default
 
 
@@ -119,6 +125,34 @@ def _parse_int_config(host_val, root_val, default: int) -> int:
             except (ValueError, TypeError):
                 pass
     return default
+
+
+def _parse_string_map(host_obj: dict, root_obj: dict, key: str) -> dict[str, str]:
+    """Parse a string-to-string map with host-level whole-map override."""
+    source = host_obj[key] if key in host_obj else root_obj.get(key)
+    if not isinstance(source, dict):
+        return {}
+
+    result: dict[str, str] = {}
+    for raw_key, raw_value in source.items():
+        alias_key = str(raw_key).strip()
+        alias_value = str(raw_value).strip() if raw_value is not None else ""
+        if alias_key and alias_value:
+            result[alias_key] = alias_value
+    return result
+
+
+def _parse_optional_string(
+    host_obj: dict, root_obj: dict, key: str, default: str = ""
+) -> str:
+    """Parse a string field where host-level empty string can override root."""
+    if key in host_obj:
+        value = host_obj.get(key)
+    else:
+        value = root_obj.get(key, default)
+    if value is None:
+        return default
+    return str(value).strip()
 
 
 def _parse_dialectic_depth(host_val, root_val) -> int:
@@ -258,6 +292,12 @@ class HonchoClientConfig:
     # each platform would fork memory into its own peer (#14984).  Default
     # ``False`` preserves existing multi-user behaviour.
     pin_peer_name: bool = False
+    # Map gateway runtime user IDs to stable Honcho user peers. Host-level
+    # config replaces the root map as a whole so profiles can intentionally
+    # own their identity mappings.
+    user_peer_aliases: dict[str, str] = field(default_factory=dict)
+    # Optional prefix for unknown gateway runtime user IDs, e.g. "telegram_".
+    runtime_peer_prefix: str = ""
     # Toggles
     enabled: bool = False
     save_messages: bool = True
@@ -453,9 +493,27 @@ class HonchoClientConfig:
             peer_name=host_block.get("peerName") or raw.get("peerName"),
             ai_peer=ai_peer,
             pin_peer_name=_resolve_bool(
+                # ``pinUserPeer`` is the clearer name (the resolver pins
+                # the user-side peer to ``peerName``, ignoring runtime
+                # identity).  ``pinPeerName`` is the original key from
+                # #14984 and stays accepted for backward compatibility.
+                # Host-level keys win over root-level; among same-level
+                # keys, ``pinUserPeer`` wins over ``pinPeerName``.
+                host_block.get("pinUserPeer"),
                 host_block.get("pinPeerName"),
+                raw.get("pinUserPeer"),
                 raw.get("pinPeerName"),
                 default=False,
+            ),
+            user_peer_aliases=_parse_string_map(
+                host_block,
+                raw,
+                "userPeerAliases",
+            ),
+            runtime_peer_prefix=_parse_optional_string(
+                host_block,
+                raw,
+                "runtimePeerPrefix",
             ),
             enabled=enabled,
             save_messages=save_messages,
@@ -652,7 +710,7 @@ class HonchoClientConfig:
             return base
 
         # per-directory: one Honcho session per working directory (default)
-        if self.session_strategy in ("per-directory", "per-session"):
+        if self.session_strategy in {"per-directory", "per-session"}:
             base = Path(cwd).name
             if self.session_peer_prefix and self.peer_name:
                 return f"{self.peer_name}-{base}"
@@ -687,12 +745,28 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             "For local instances, set HONCHO_BASE_URL instead."
         )
 
+    # Lazy-install the honcho SDK on demand. ensure() honors
+    # security.allow_lazy_installs (default true). On failure we surface
+    # the original ImportError-shape message so existing callers still get
+    # the "go run hermes honcho setup" hint they used to.
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
+        _lazy_ensure("memory.honcho", prompt=False)
+    except ImportError:
+        # lazy_deps module missing — fall through to the raw import below.
+        pass
+    except Exception:
+        # FeatureUnavailable or unexpected error. Don't crash here; let the
+        # actual import attempt produce the canonical error message.
+        pass
+
     try:
         from honcho import Honcho
     except ImportError:
         raise ImportError(
             "honcho-ai is required for Honcho integration. "
-            "Install it with: pip install honcho-ai"
+            "Install it with: pip install honcho-ai  "
+            "(or run `hermes honcho setup` to configure)."
         )
 
     # Allow config.yaml honcho.base_url to override the SDK's environment

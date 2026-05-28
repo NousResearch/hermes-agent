@@ -9,6 +9,7 @@ pairing code to the chat.
 
 import asyncio
 import os
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -467,3 +468,89 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
     assert adapter.send.await_count == 1
     sent_text = adapter.send.await_args.args[1]
     assert "don't recognize you" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_notify_on_complete_error_mode_suppresses_success_agent_wakeup(
+    monkeypatch, tmp_path
+):
+    """Notification mode 'error' must not inject successful process output."""
+    import tools.process_registry as pr_module
+
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  background_process_notifications: error\n",
+        encoding="utf-8",
+    )
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+        ),
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner = _gateway_runner_cls()(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.DISCORD] = adapter
+
+    await runner._run_process_watcher(_watcher_dict_with_notify())
+
+    assert adapter.handle_message.await_count == 0
+    assert adapter.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_schedules_trusted_internal_event(monkeypatch, tmp_path):
+    """Restart auto-resume events must keep trusted internal metadata."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+
+    runner = _gateway_runner_cls()(GatewayConfig())
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner.adapters[Platform.DISCORD] = adapter
+    source = SessionSource(platform=Platform.DISCORD, chat_id="123", chat_type="dm")
+    entry = runner.session_store.get_or_create_session(source)
+    entry.resume_pending = True
+    entry.suspended = False
+    entry.origin = source
+    entry.resume_reason = "restart_timeout"
+    entry.last_resume_marked_at = datetime.now()
+    entry.updated_at = datetime.now()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    assert adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.internal is True
+    assert event.internal_event_kind == InternalEventKind.AUTO_RESUME.value
+    assert event.internal_event_source == "gateway"
+    assert event.is_trusted_internal()
+
+
+def test_msgraph_webhook_events_are_trusted_platform_internal():
+    """MS Graph webhook adapter-owned synthetic events need typed metadata."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.msgraph_webhook import MSGraphWebhookAdapter
+
+    adapter = MSGraphWebhookAdapter(PlatformConfig(enabled=True))
+    event = adapter._build_message_event(
+        {"subscriptionId": "sub-1", "resource": "users/1", "changeType": "updated"},
+        receipt_key="id:abc",
+    )
+
+    assert event.internal is True
+    assert event.internal_event_kind == InternalEventKind.WEBHOOK_NOTIFICATION.value
+    assert event.internal_event_source == "platform_adapter"
+    assert event.is_trusted_internal()

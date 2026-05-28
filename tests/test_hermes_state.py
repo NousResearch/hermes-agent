@@ -35,6 +35,7 @@ class TestSessionLifecycle:
         assert session["model"] == "test-model"
         assert session["ended_at"] is None
 
+
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
@@ -160,6 +161,28 @@ class TestMessageStorage:
         session = db.get_session("s1")
         assert session["message_count"] == 2
 
+    def test_observed_flag_round_trips_for_gateway_replay(self, db):
+        db.create_session(session_id="s1", source="telegram:-100")
+        db.append_message(
+            "s1",
+            role="user",
+            content="[Alice|111]\nside chatter",
+            observed=True,
+        )
+        db.append_message("s1", role="assistant", content="ack")
+
+        messages = db.get_messages("s1")
+        assert messages[0]["observed"] == 1
+        assert messages[1]["observed"] == 0
+
+        conversation = db.get_messages_as_conversation("s1")
+        assert conversation[0] == {
+            "role": "user",
+            "content": "[Alice|111]\nside chatter",
+            "observed": True,
+        }
+        assert "observed" not in conversation[1]
+
     def test_tool_response_does_not_increment_tool_count(self, db):
         """Tool responses (role=tool) should not increment tool_call_count.
 
@@ -266,6 +289,23 @@ class TestMessageStorage:
             ).fetchone()
         assert row["content"] == "plain text"
 
+    def test_replace_messages_persists_tool_name(self, db):
+        """`replace_messages` (used by /retry, /undo, /compress) must write
+        tool_name to the DB for messages built by make_tool_result_message."""
+        from agent.tool_dispatch_helpers import make_tool_result_message
+        db.create_session(session_id="s1", source="cli")
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": "do something"},
+                make_tool_result_message("web_search", "some results", "c1"),
+            ],
+        )
+
+        msgs = db.get_messages("s1")
+        tool_msg = next(m for m in msgs if m["role"] == "tool")
+        assert tool_msg["tool_name"] == "web_search"
+
     def test_replace_messages_handles_multimodal_content(self, db):
         """`replace_messages` (used by /retry, /undo, /compress) must also
         handle list content without crashing."""
@@ -297,6 +337,42 @@ class TestMessageStorage:
         assert len(conv) == 2
         assert conv[0] == {"role": "user", "content": "Hello"}
         assert conv[1] == {"role": "assistant", "content": "Hi!"}
+
+    def test_platform_message_id_round_trips(self, db):
+        """Platform-side message ids (yuanbao msg_id, telegram update_id, …)
+        survive append → get_messages_as_conversation under the
+        ``message_id`` key so platform recall flows can match by exact id."""
+        db.create_session(session_id="s_pmi", source="yuanbao")
+        db.append_message(
+            "s_pmi",
+            role="user",
+            content="hi",
+            platform_message_id="abc-123",
+        )
+        db.append_message("s_pmi", role="assistant", content="hello")
+
+        conv = db.get_messages_as_conversation("s_pmi")
+        user_msg = next(m for m in conv if m["role"] == "user")
+        assistant_msg = next(m for m in conv if m["role"] == "assistant")
+        assert user_msg.get("message_id") == "abc-123"
+        # Assistant row had no platform id — must not gain one spuriously.
+        assert "message_id" not in assistant_msg
+
+    def test_replace_messages_preserves_platform_message_id(self, db):
+        """``rewrite_transcript`` (which goes through replace_messages) must
+        keep the platform_message_id round-trip working for /retry, /undo,
+        /compress and yuanbao's recall rewrite path."""
+        db.create_session(session_id="s_rep", source="yuanbao")
+        db.replace_messages(
+            "s_rep",
+            [
+                {"role": "user", "content": "x", "message_id": "ext-1"},
+                {"role": "assistant", "content": "y"},
+            ],
+        )
+        conv = db.get_messages_as_conversation("s_rep")
+        assert next(m for m in conv if m["role"] == "user").get("message_id") == "ext-1"
+        assert "message_id" not in next(m for m in conv if m["role"] == "assistant")
 
     def test_get_messages_as_conversation_includes_ancestor_chain(self, db):
         db.create_session("root", "tui")
@@ -956,6 +1032,39 @@ class TestCJKSearchFallback:
         session_ids = {r["session_id"] for r in results}
         assert session_ids == {"s1", "s2"}
 
+    def test_cjk_or_combined_short_tokens_returns_results(self, db):
+        """Regression test for #20494.
+
+        OR-combined 2-char CJK tokens (e.g. "广西 OR 桂林 OR 漓江 OR 旅游")
+        previously returned 0 results because _count_cjk of the whole query
+        was >=3 (8 chars here), selecting the trigram path, but each individual
+        token is only 2 CJK chars and trigram requires >=3 chars per token.
+        The per-token check must route such queries to the LIKE fallback.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.create_session(session_id="s3", source="cli")
+        db.append_message("s1", role="user", content="广西是个好地方，去过桂林")
+        db.append_message("s2", role="user", content="漓江风景很美，值得旅游")
+        db.append_message("s3", role="user", content="unrelated English content")
+
+        results = db.search_messages("广西 OR 桂林 OR 漓江 OR 旅游")
+        session_ids = {r["session_id"] for r in results}
+        assert "s1" in session_ids, "广西/桂林 terms not matched"
+        assert "s2" in session_ids, "漓江/旅游 terms not matched"
+        assert "s3" not in session_ids, "unrelated message must not match"
+
+    def test_cjk_short_token_or_query_preserves_filters(self, db):
+        """Source filter applies correctly in the short-token LIKE path (#20494)."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.append_message("s1", role="user", content="广西旅游攻略cli")
+        db.append_message("s2", role="user", content="广西旅游攻略telegram")
+
+        results = db.search_messages("广西 OR 旅游", source_filter=["telegram"])
+        assert len(results) == 1
+        assert results[0]["source"] == "telegram"
+
 
 # =========================================================================
 # Session search and listing
@@ -1411,15 +1520,252 @@ class TestSchemaInit:
         assert "schema_version" in tables
 
     def test_schema_version(self, db):
+        from hermes_state import SCHEMA_VERSION
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 11
+        assert version == SCHEMA_VERSION
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
         cursor = db._conn.execute("PRAGMA table_info(sessions)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "title" in columns
+
+    def test_topic_mode_schema_is_not_auto_migrated_on_open(self, tmp_path):
+        """Opening an old DB should not add topic-mode columns until /topic opts in.
+
+        The gateway must remain rollback-safe: simply upgrading Hermes and starting
+        the old bot should not eagerly mutate the state DB for this feature.
+        """
+        old_db = tmp_path / "old.db"
+        import sqlite3
+
+        conn = sqlite3.connect(old_db)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (11);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0,
+                FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT
+            );
+            """
+        )
+        conn.close()
+
+        db = SessionDB(db_path=old_db)
+        cursor = db._conn.execute("PRAGMA table_info(sessions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert {"chat_id", "chat_type", "thread_id", "session_key"}.isdisjoint(columns)
+        db.close()
+
+    def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):
+        """The /topic opt-in path owns the DB migration for Telegram topic mode."""
+        old_db = tmp_path / "old.db"
+        import sqlite3
+
+        conn = sqlite3.connect(old_db)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (11);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0,
+                FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT
+            );
+            """
+        )
+        conn.close()
+
+        db = SessionDB(db_path=old_db)
+        db.apply_telegram_topic_migration()
+
+        tables = {
+            row[0]
+            for row in db._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "telegram_dm_topic_mode" in tables
+        assert "telegram_dm_topic_bindings" in tables
+        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        db.close()
+
+    def test_telegram_topic_binding_roundtrip_requires_explicit_schema(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="topic-session",
+            source="telegram",
+            user_id="208214988",
+        )
+
+        assert db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585") is None
+
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="17585",
+            user_id="208214988",
+            session_key="telegram:dm:208214988:thread:17585",
+            session_id="topic-session",
+        )
+
+        binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+        assert binding is not None
+        assert binding["chat_id"] == "208214988"
+        assert binding["thread_id"] == "17585"
+        assert binding["user_id"] == "208214988"
+        assert binding["session_key"] == "telegram:dm:208214988:thread:17585"
+        assert binding["session_id"] == "topic-session"
+        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        db.close()
+
+    def test_telegram_topic_binding_refuses_to_relink_session_to_another_topic(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="topic-session",
+            source="telegram",
+            user_id="208214988",
+        )
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="17585",
+            user_id="208214988",
+            session_key="key-17585",
+            session_id="topic-session",
+        )
+
+        with pytest.raises(ValueError, match="already linked"):
+            db.bind_telegram_topic(
+                chat_id="208214988",
+                thread_id="99999",
+                user_id="208214988",
+                session_key="key-99999",
+                session_id="topic-session",
+            )
+        db.close()
+
+    def test_list_unlinked_telegram_sessions_for_user_excludes_bound_and_other_users(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="old-unlinked",
+            source="telegram",
+            user_id="208214988",
+        )
+        db.set_session_title("old-unlinked", "Old research")
+        db.append_message("old-unlinked", "user", "first prompt")
+        db.create_session(
+            session_id="already-linked",
+            source="telegram",
+            user_id="208214988",
+        )
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="17585",
+            user_id="208214988",
+            session_key="key-17585",
+            session_id="already-linked",
+        )
+        db.create_session(
+            session_id="other-user",
+            source="telegram",
+            user_id="someone-else",
+        )
+
+        sessions = db.list_unlinked_telegram_sessions_for_user(
+            chat_id="208214988",
+            user_id="208214988",
+        )
+
+        assert [s["id"] for s in sessions] == ["old-unlinked"]
+        assert sessions[0]["title"] == "Old research"
+        assert sessions[0]["preview"] == "first prompt"
+        db.close()
 
     def test_migration_from_v2(self, tmp_path):
         """Simulate a v2 database and verify migration adds title column."""
@@ -1473,8 +1819,9 @@ class TestSchemaInit:
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
+        from hermes_state import SCHEMA_VERSION
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == SCHEMA_VERSION
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -2665,11 +3012,232 @@ class TestFTS5ToolCallMigration:
             assert len(session_db.search_messages("LEGACYARG")) == 1, \
                 "v11 migration must backfill tool_calls JSON into FTS"
             # schema_version bumped
+            from hermes_state import SCHEMA_VERSION
             row = session_db._conn.execute(
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 11
+            assert version == SCHEMA_VERSION
         finally:
             session_db.close()
 
+
+# ---------------------------------------------------------------------------
+# apply_wal_with_fallback — read-only probe tests
+# ---------------------------------------------------------------------------
+
+
+class TestApplyWalProbe:
+    """Unit tests for the journal_mode probe in apply_wal_with_fallback."""
+
+    def test_skips_set_pragma_when_already_wal(self, tmp_path):
+        """Already-WAL connection must not trigger the set-pragma."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "wal.db"
+        # Prime the file into WAL mode first.
+        with sqlite3.connect(str(db_path)) as seed:
+            seed.execute("PRAGMA journal_mode=WAL")
+
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        # Only the probe should have fired; the set-pragma must NOT appear.
+        assert any("PRAGMA journal_mode" == sql.strip() for sql in conn.executed), (
+            "probe PRAGMA should have run"
+        )
+        assert not any("journal_mode=WAL" in sql for sql in conn.executed), (
+            "set-pragma must not run when already in WAL mode"
+        )
+
+    def test_sets_wal_on_fresh_connection(self, tmp_path):
+        """Probe sees 'delete', then set-pragma runs and returns 'wal'."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "fresh.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("journal_mode=WAL" in sql for sql in conn.executed), (
+            "set-pragma must fire on a fresh (non-WAL) connection"
+        )
+
+    def test_apply_wal_concurrent_connects_no_eio(self, tmp_path):
+        """20 threads calling connect() on the same DB must not see disk I/O error."""
+        import sys
+        import threading
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        db_path = tmp_path / "concurrent.db"
+        errors = []
+
+        def _connect_cycle():
+            for _ in range(5):
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    apply_wal_with_fallback(conn)
+                    conn.close()
+                except sqlite3.OperationalError as exc:
+                    if "disk i/o error" in str(exc).lower():
+                        errors.append(exc)
+
+        threads = [threading.Thread(target=_connect_cycle) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"disk I/O errors from concurrent connects: {errors}"
+
+        # Linux-only: no (deleted) WAL/SHM FDs should accumulate.
+        if sys.platform == "linux":
+            import os
+
+            fd_dir = f"/proc/{os.getpid()}/fd"
+            deleted_fds = []
+            for fd_name in os.listdir(fd_dir):
+                try:
+                    target = os.readlink(os.path.join(fd_dir, fd_name))
+                    if "(deleted)" in target and (
+                        "wal" in target.lower() or "shm" in target.lower()
+                    ):
+                        deleted_fds.append(target)
+                except OSError:
+                    pass
+            assert not deleted_fds, f"stale deleted WAL/SHM FDs: {deleted_fds}"
+
+    def test_fallback_to_delete_still_works(self, tmp_path):
+        """When set-pragma raises a WAL-incompat error, falls back to DELETE."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _IncompatConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self._call_count = 0
+
+            def execute(self, sql, params=()):
+                self._call_count += 1
+                # First call is the read probe; let it return "delete".
+                # Second call is the set-pragma; raise a WAL-incompat error.
+                if "journal_mode=WAL" in sql:
+                    raise sqlite3.OperationalError("locking protocol")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "incompat.db"
+        conn = _IncompatConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn, db_label="test.db")
+        finally:
+            conn.close()
+
+        assert result == "delete"
+
+    def test_probe_failure_falls_through_to_set_pragma(self, tmp_path):
+        """When the read probe raises OperationalError, fall through to set-pragma."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _ProbeFails(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self._first = True
+
+            def execute(self, sql, params=()):
+                if self._first and "journal_mode" in sql and "WAL" not in sql:
+                    self._first = False
+                    raise sqlite3.OperationalError("simulated probe failure")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "probe_fail.db"
+        conn = _ProbeFails(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        # Despite probe failure, set-pragma must still run and succeed.
+        assert result == "wal"
+
+    def test_no_downgrade_from_wal_to_delete_on_eio(self, tmp_path):
+        """OperationalError NOT in _WAL_INCOMPAT_MARKERS must propagate, not downgrade."""
+        import sqlite3
+        import pytest
+        from hermes_state import apply_wal_with_fallback
+
+        class _EIOConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self._first = True
+
+            def execute(self, sql, params=()):
+                # Let the probe succeed (returns "delete" for fresh DB).
+                if "journal_mode=WAL" in sql:
+                    raise sqlite3.OperationalError("some unexpected hardware failure")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "eio.db"
+        conn = _EIOConn(str(db_path))
+        try:
+            with pytest.raises(
+                sqlite3.OperationalError, match="some unexpected hardware failure"
+            ):
+                apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+    def test_returns_wal_not_delete_from_probe(self, tmp_path):
+        """Early-return only on 'wal'; 'delete' or 'memory' must fall through to set-pragma."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        # Fresh DB is in "delete" mode — probe returns "delete", must NOT early-return.
+        db_path = tmp_path / "delete_mode.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("journal_mode=WAL" in sql for sql in conn.executed), (
+            "set-pragma must fire when probe returns 'delete'"
+        )

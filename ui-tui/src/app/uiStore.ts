@@ -1,4 +1,4 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
@@ -15,8 +15,11 @@ const buildUiState = (): UiState => ({
   detailsModeCommandOverride: false,
   indicatorStyle: DEFAULT_INDICATOR_STYLE,
   info: null,
+  liveSessionCount: 0,
   inlineDiffs: true,
   mouseTracking: MOUSE_TRACKING,
+  pasteCollapseLines: 5,
+  pasteCollapseChars: 2000,
   sections: {},
   showCost: false,
   showReasoning: false,
@@ -29,6 +32,9 @@ const buildUiState = (): UiState => ({
 })
 
 export const $uiState = atom<UiState>(buildUiState())
+
+export const $uiTheme = computed($uiState, state => state.theme)
+export const $uiSessionId = computed($uiState, state => state.sid)
 
 export const getUiState = () => $uiState.get()
 

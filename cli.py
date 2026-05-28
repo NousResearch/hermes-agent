@@ -14702,6 +14702,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
                         app.invalidate()  # Refresh status line
 
+                        # Post-turn terminal recovery (#33271): after an
+                        # interrupt the prompt_toolkit renderer may have
+                        # drifted from the physical terminal state — CSI 6n
+                        # cursor position reports can leak as literal text
+                        # (^[[19;1R), and the VT100 input parser can stall in
+                        # a partial-escape state, accepting no further
+                        # keystrokes.  Drain stray escape bytes from the OS
+                        # input buffer and force a clean renderer redraw.
+                        if self._last_turn_interrupted:
+                            try:
+                                from hermes_cli.curses_ui import flush_stdin
+                                flush_stdin()
+                            except Exception:
+                                pass
+                            self._force_full_redraw()
+
                         # Goal continuation: if a standing goal is active, ask
                         # the judge whether the turn satisfied it. If not, and
                         # there's no real user message already queued, push the

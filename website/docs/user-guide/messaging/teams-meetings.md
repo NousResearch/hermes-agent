@@ -8,6 +8,10 @@ description: "Set up the Microsoft Teams meeting summary pipeline with Microsoft
 
 Use the Teams meeting pipeline when you want Hermes to ingest Microsoft Graph meeting events, fetch transcripts first, fall back to recordings plus STT when needed, and deliver a structured summary to downstream sinks.
 
+Prerequisites: see [Microsoft Teams](./teams.md) for the underlying bot/credential setup.
+
+> Run `hermes gateway setup` and pick **Teams Meetings** for a guided walk-through.
+
 This page focuses on setup and enablement:
 - Graph credentials
 - webhook listener configuration

@@ -203,15 +203,13 @@ def _print_billing_or_entitlement_guidance(
 def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
     """Refresh Nous runtime credentials after a fresh paid-entitlement check."""
     try:
-        from hermes_cli.auth import NOUS_INFERENCE_AUTH_MODE_LEGACY
         from hermes_cli.nous_account import get_nous_portal_account_info
 
         account_info = get_nous_portal_account_info(force_fresh=True)
         if account_info.paid_service_access is not True:
             return False
         return agent._try_refresh_nous_client_credentials(
-            force=False,
-            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+            force=True,
         )
     except Exception:
         return False

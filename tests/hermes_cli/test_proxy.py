@@ -144,7 +144,7 @@ def test_nous_adapter_get_credential_uses_runtime_resolver(tmp_path, monkeypatch
     assert cred.token_type == "Bearer"
 
 
-def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch):
+def test_nous_adapter_retry_credential_does_not_fallback_on_jwt_401(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "jwt-access",
@@ -155,15 +155,8 @@ def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch)
         "agent_key": "jwt-access",
     })
 
-    refreshed_state = {
-        "api_key": "legacy-bearer",
-        "base_url": "https://inference-api.nousresearch.com/v1",
-        "expires_at": "2099-01-01T00:00:00Z",
-    }
-
     with patch(
         "hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials",
-        return_value=refreshed_state,
     ) as mock_resolve:
         adapter = NousPortalAdapter()
         cred = adapter.get_retry_credential(
@@ -174,9 +167,8 @@ def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch)
             status_code=401,
         )
 
-    assert cred is not None
-    assert cred.bearer == "legacy-bearer"
-    assert mock_resolve.call_args.kwargs["inference_auth_mode"] == "legacy"
+    assert cred is None
+    mock_resolve.assert_not_called()
 
 
 def test_nous_adapter_retry_credential_skips_opaque_bearer(tmp_path, monkeypatch):

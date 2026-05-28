@@ -1243,8 +1243,30 @@ def _read_nous_auth() -> Optional[dict]:
 
 
 def _nous_api_key(provider: dict) -> str:
-    """Extract the Nous runtime credential from the compatibility field."""
-    return provider.get("agent_key") or provider.get("access_token", "")
+    """Extract a usable Nous inference JWT from stored auth state."""
+    try:
+        from hermes_cli.auth import _nous_invoke_jwt_is_usable
+    except Exception:
+        _nous_invoke_jwt_is_usable = None
+
+    for token_key, expiry_key in (
+        ("agent_key", "agent_key_expires_at"),
+        ("access_token", "expires_at"),
+    ):
+        token = provider.get(token_key)
+        if not isinstance(token, str) or not token.strip():
+            continue
+        if _nous_invoke_jwt_is_usable is None:
+            if token.count(".") == 2:
+                return token
+            continue
+        if _nous_invoke_jwt_is_usable(
+            token,
+            scope=provider.get("scope"),
+            expires_at=provider.get(expiry_key),
+        ):
+            return token
+    return ""
 
 
 def _nous_base_url() -> str:
@@ -1256,25 +1278,21 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
     """Return fresh Nous runtime credentials when available.
 
     This mirrors the main agent's 401 recovery path and keeps auxiliary
-    clients aligned with the singleton auth store + JWT/mint flow instead of
+    clients aligned with the singleton auth store + JWT refresh flow instead of
     relying only on whatever raw tokens happen to be sitting in auth.json
     or the credential pool.
     """
     try:
         from hermes_cli.auth import (
             NOUS_INFERENCE_AUTH_MODE_AUTO,
-            NOUS_INFERENCE_AUTH_MODE_LEGACY,
             resolve_nous_runtime_credentials,
         )
 
         creds = resolve_nous_runtime_credentials(
             min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
             timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-            inference_auth_mode=(
-                NOUS_INFERENCE_AUTH_MODE_LEGACY
-                if force_refresh
-                else NOUS_INFERENCE_AUTH_MODE_AUTO
-            ),
+            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_AUTO,
+            force_refresh=force_refresh,
         )
     except Exception as exc:
         logger.debug("Auxiliary Nous runtime credential resolution failed: %s", exc)
@@ -1558,13 +1576,9 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         _mark_provider_unhealthy("nous", ttl=60)
         return None, None
     if runtime is None and nous:
-        # Runtime credential mint failed but stored Nous auth is still present.
-        # Falls back to the raw stored token below; surface a debug line so
-        # operators investigating expired/invalid sessions have a breadcrumb,
-        # without blocking the fallback path the rest of this function relies on.
         logger.debug(
-            "Auxiliary Nous: runtime credential mint failed; falling back to "
-            "stored auth.json token."
+            "Auxiliary Nous: runtime JWT refresh failed; checking stored "
+            "auth.json token."
         )
     global auxiliary_is_nous
     auxiliary_is_nous = True
@@ -1602,6 +1616,13 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         api_key, base_url = runtime
     else:
         api_key = _nous_api_key(nous or {})
+        if not api_key:
+            logger.warning(
+                "Auxiliary Nous client unavailable: no usable inference JWT found "
+                "(run: hermes auth add nous)."
+            )
+            _mark_provider_unhealthy("nous", ttl=60)
+            return None, None
         base_url = str((nous or {}).get("inference_base_url") or _nous_base_url()).rstrip("/")
     return (
         OpenAI(
@@ -2725,15 +2746,12 @@ def _refresh_provider_credentials(provider: str) -> bool:
             _evict_cached_clients(normalized)
             return True
         if normalized == "nous":
-            from hermes_cli.auth import (
-                NOUS_INFERENCE_AUTH_MODE_LEGACY,
-                resolve_nous_runtime_credentials,
-            )
+            from hermes_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-                inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+                force_refresh=True,
             )
             if not str(creds.get("api_key", "") or "").strip():
                 return False

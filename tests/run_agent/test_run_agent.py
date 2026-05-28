@@ -4063,7 +4063,8 @@ class TestNousCredentialRefresh:
 
         assert ok is True
         assert closed["value"] is True
-        assert captured["inference_auth_mode"] == "legacy"
+        assert captured["inference_auth_mode"] == "auto"
+        assert captured["force_refresh"] is True
         assert rebuilt["kwargs"]["api_key"] == "new-nous-key"
         assert (
             rebuilt["kwargs"]["base_url"] == "https://inference-api.nousresearch.com/v1"
@@ -4092,11 +4093,12 @@ class TestNousCredentialRefresh:
         with patch("run_agent.OpenAI", return_value=MagicMock()):
             ok = agent._try_refresh_nous_client_credentials(
                 force=False,
-                inference_auth_mode="legacy",
+                inference_auth_mode="fresh",
             )
 
         assert ok is True
-        assert captured["inference_auth_mode"] == "legacy"
+        assert captured["inference_auth_mode"] == "fresh"
+        assert captured["force_refresh"] is False
 
 
 class TestCredentialPoolRecovery:

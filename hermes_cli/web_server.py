@@ -1898,8 +1898,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
     """
     if provider_id == "nous":
         from hermes_cli.auth import (
-            _nous_device_scope_with_env_override,
-            _request_nous_device_code_with_scope_fallback,
+            _request_device_code,
             PROVIDER_REGISTRY,
         )
         import httpx
@@ -1910,22 +1909,21 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             or pconfig.portal_base_url
         ).rstrip("/")
         client_id = pconfig.client_id
-        scope, explicit_scope = _nous_device_scope_with_env_override(
-            None,
-            default_scope=pconfig.scope,
-        )
+        scope = pconfig.scope
 
         def _do_nous_device_request():
             with httpx.Client(
                 timeout=httpx.Timeout(15.0),
                 headers={"Accept": "application/json"},
             ) as client:
-                return _request_nous_device_code_with_scope_fallback(
-                    client=client,
-                    portal_base_url=portal_base_url,
-                    client_id=client_id,
-                    scope=scope,
-                    allow_legacy_fallback=not explicit_scope,
+                return (
+                    _request_device_code(
+                        client=client,
+                        portal_base_url=portal_base_url,
+                        client_id=client_id,
+                        scope=scope,
+                    ),
+                    scope,
                 )
 
         device_data, effective_scope = await asyncio.get_running_loop().run_in_executor(
@@ -2093,7 +2091,7 @@ def _nous_poller(session_id: str) -> None:
                 expires_in=expires_in,
                 poll_interval=interval,
             )
-        # Same post-processing as _nous_device_code_login (mint agent key)
+        # Same post-processing as _nous_device_code_login (validate/refresh JWT)
         now = datetime.now(timezone.utc)
         token_ttl = int(token_data.get("expires_in") or 0)
         auth_state = {

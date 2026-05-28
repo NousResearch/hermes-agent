@@ -482,6 +482,112 @@ class SessionDB:
         except Exception:
             pass  # Best effort — never fatal.
 
+    @staticmethod
+    def _drop_fts(cursor) -> None:
+        """Drop messages_fts virtual table and its triggers."""
+        for trig in ("messages_fts_insert", "messages_fts_delete", "messages_fts_update"):
+            try:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trig}")
+            except sqlite3.OperationalError:
+                pass
+        try:
+            cursor.execute("DROP TABLE IF EXISTS messages_fts")
+        except sqlite3.OperationalError:
+            pass
+
+    @staticmethod
+    def _drop_fts_trigram(cursor) -> None:
+        """Drop messages_fts_trigram virtual table and its triggers."""
+        for trig in ("messages_fts_trigram_insert", "messages_fts_trigram_delete", "messages_fts_trigram_update"):
+            try:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trig}")
+            except sqlite3.OperationalError:
+                pass
+        try:
+            cursor.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+        except sqlite3.OperationalError:
+            pass
+
+    def rebuild_fts(self) -> Tuple[int, int]:
+        """Drop and recreate FTS indexes, backfilling from messages.
+
+        Returns (fts_count, trigram_count) after rebuild.
+        Use when FTS tables are corrupt (database disk image is malformed)
+        or when FTS rowcount diverges from messages table.
+        """
+        def _do(conn):
+            cursor = conn.cursor()
+            self._drop_fts(cursor)
+            self._drop_fts_trigram(cursor)
+            cursor.executescript(FTS_SQL)
+            cursor.executescript(FTS_TRIGRAM_SQL)
+            cursor.execute(
+                "INSERT INTO messages_fts(rowid, content) "
+                "SELECT id, "
+                "COALESCE(content, '') || ' ' || "
+                "COALESCE(tool_name, '') || ' ' || "
+                "COALESCE(tool_calls, '') "
+                "FROM messages"
+            )
+            cursor.execute(
+                "INSERT INTO messages_fts_trigram(rowid, content) "
+                "SELECT id, "
+                "COALESCE(content, '') || ' ' || "
+                "COALESCE(tool_name, '') || ' ' || "
+                "COALESCE(tool_calls, '') "
+                "FROM messages"
+            )
+            fts_count = cursor.execute("SELECT count(*) FROM messages_fts").fetchone()[0]
+            tri_count = cursor.execute("SELECT count(*) FROM messages_fts_trigram").fetchone()[0]
+            return (fts_count, tri_count)
+        return self._execute_write(_do)
+
+    def fts_integrity_check(self) -> dict:
+        """Check FTS health. Returns dict with status details.
+
+        Keys: fts_ok (bool), trigram_ok (bool), message_count (int),
+              fts_count (int), trigram_count (int), error (str or None).
+        """
+        result = {
+            "fts_ok": False,
+            "trigram_ok": False,
+            "message_count": 0,
+            "fts_count": 0,
+            "trigram_count": 0,
+            "error": None,
+        }
+        try:
+            msg_count = self._conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+            result["message_count"] = msg_count
+        except sqlite3.DatabaseError as exc:
+            result["error"] = f"messages table corrupt: {exc}"
+            return result
+
+        try:
+            fts_count = self._conn.execute("SELECT count(*) FROM messages_fts").fetchone()[0]
+            result["fts_count"] = fts_count
+            result["fts_ok"] = (fts_count == msg_count)
+        except sqlite3.DatabaseError as exc:
+            result["error"] = f"messages_fts corrupt: {exc}"
+
+        try:
+            tri_count = self._conn.execute("SELECT count(*) FROM messages_fts_trigram").fetchone()[0]
+            result["trigram_count"] = tri_count
+            result["trigram_ok"] = (tri_count == msg_count)
+        except sqlite3.DatabaseError as exc:
+            result["error"] = (result["error"] or "") + f" messages_fts_trigram corrupt: {exc}"
+
+        return result
+
+    def integrity_check(self) -> List[str]:
+        """Run PRAGMA integrity_check. Returns list of issues (empty = ok)."""
+        try:
+            rows = self._conn.execute("PRAGMA integrity_check").fetchall()
+            issues = [r[0] for r in rows if r[0] != "ok"]
+            return issues
+        except sqlite3.DatabaseError as exc:
+            return [f"integrity_check failed: {exc}"]
+
     def close(self):
         """Close the database connection.
 
@@ -714,16 +820,46 @@ class SessionDB:
             pass  # Index already exists
 
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
+        _fts_rebuilt = False
         try:
             cursor.execute("SELECT * FROM messages_fts LIMIT 0")
-        except sqlite3.OperationalError:
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            # OperationalError: table doesn't exist.  DatabaseError: table
+            # exists but is corrupt (malformed FTS index).  Either way,
+            # drop and recreate.
+            self._drop_fts(cursor)
             cursor.executescript(FTS_SQL)
+            _fts_rebuilt = True
 
         # Trigram FTS5 for CJK/substring search
         try:
             cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
-        except sqlite3.OperationalError:
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            self._drop_fts_trigram(cursor)
             cursor.executescript(FTS_TRIGRAM_SQL)
+            _fts_rebuilt = True
+
+        # Backfill existing messages into FTS after a drop+recreate.
+        # On a fresh DB (no messages) this is a no-op.  On an existing DB
+        # with corrupt FTS, this reindexes everything.
+        if _fts_rebuilt:
+            logger.warning("FTS tables recreated — backfilling from messages")
+            cursor.execute(
+                "INSERT INTO messages_fts(rowid, content) "
+                "SELECT id, "
+                "COALESCE(content, '') || ' ' || "
+                "COALESCE(tool_name, '') || ' ' || "
+                "COALESCE(tool_calls, '') "
+                "FROM messages"
+            )
+            cursor.execute(
+                "INSERT INTO messages_fts_trigram(rowid, content) "
+                "SELECT id, "
+                "COALESCE(content, '') || ' ' || "
+                "COALESCE(tool_name, '') || ' ' || "
+                "COALESCE(tool_calls, '') "
+                "FROM messages"
+            )
 
         self._conn.commit()
 

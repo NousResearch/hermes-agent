@@ -1022,16 +1022,47 @@ def run_doctor(args):
     state_db_path = hermes_home / "state.db"
     if state_db_path.exists():
         try:
-            import sqlite3
-            conn = sqlite3.connect(str(state_db_path))
-            cursor = conn.execute("SELECT COUNT(*) FROM sessions")
-            count = cursor.fetchone()[0]
-            conn.close()
-            check_ok(f"{_DHH}/state.db exists ({count} sessions)")
+            from hermes_state import SessionDB
+            db = SessionDB()
+            session_count = db.session_count()
+
+            # PRAGMA integrity_check
+            integrity_issues = db.integrity_check()
+            if integrity_issues:
+                detail = integrity_issues[0] if len(integrity_issues) == 1 else f"{len(integrity_issues)} issues"
+                check_fail(f"state.db integrity check failed: {detail}")
+                issues.append(f"state.db integrity compromised — run 'hermes sessions repair'")
+                if should_fix:
+                    # Cannot auto-fix integrity issues — needs manual rebuild
+                    check_warn("Cannot auto-fix integrity issues", "(rebuild with 'hermes sessions repair')")
+            else:
+                check_ok(f"state.db integrity OK ({session_count} sessions)")
+
+            # FTS index health
+            fts_status = db.fts_integrity_check()
+            if fts_status["error"]:
+                check_fail(f"FTS indexes corrupt: {fts_status['error']}")
+                issues.append("FTS indexes corrupt — run 'hermes sessions repair' to rebuild")
+                if should_fix:
+                    fts_count, tri_count = db.rebuild_fts()
+                    check_ok(f"FTS rebuilt: {fts_count} messages indexed")
+                    fixed_count += 1
+            elif not fts_status["fts_ok"] or not fts_status["trigram_ok"]:
+                msg = f"FTS index mismatch: messages={fts_status['message_count']} fts={fts_status['fts_count']} trigram={fts_status['trigram_count']}"
+                check_warn(msg)
+                issues.append("FTS index out of sync — run 'hermes sessions repair' to rebuild")
+                if should_fix:
+                    fts_count, tri_count = db.rebuild_fts()
+                    check_ok(f"FTS rebuilt: {fts_count} messages indexed")
+                    fixed_count += 1
+            else:
+                check_ok(f"FTS indexes healthy ({fts_status['fts_count']} messages indexed)")
+
+            db.close()
         except Exception as e:
-            check_warn(f"{_DHH}/state.db exists but has issues: {e}")
+            check_warn(f"state.db exists but has issues: {e}")
     else:
-        check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
+        check_info(f"state.db not created yet (will be created on first session)")
 
     # Check WAL file size (unbounded growth indicates missed checkpoints)
     wal_path = hermes_home / "state.db-wal"

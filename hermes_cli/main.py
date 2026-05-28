@@ -13332,7 +13332,7 @@ Examples:
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, rename, export, prune, delete)",
+        help="Manage session history (list, rename, export, prune, delete, repair)",
         description="View and manage the SQLite session store",
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
@@ -13375,6 +13375,16 @@ Examples:
     )
 
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
+
+    sessions_repair = sessions_subparsers.add_parser(
+        "repair",
+        help="Detect and repair corrupt FTS indexes or DB integrity issues",
+    )
+    sessions_repair.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Check integrity without making changes",
+    )
 
     sessions_rename = sessions_subparsers.add_parser(
         "rename", help="Set or change a session's title"
@@ -13559,6 +13569,52 @@ Examples:
             if db_path.exists():
                 size_mb = os.path.getsize(db_path) / (1024 * 1024)
                 print(f"Database size: {size_mb:.1f} MB")
+
+        elif action == "repair":
+            check_only = getattr(args, "check_only", False)
+
+            # 1. Integrity check
+            print("Checking database integrity...")
+            integrity_issues = db.integrity_check()
+            if integrity_issues:
+                print(f"  ✗ integrity_check found {len(integrity_issues)} issue(s):")
+                for issue in integrity_issues[:5]:
+                    print(f"    {issue}")
+                if len(integrity_issues) > 5:
+                    print(f"    ... and {len(integrity_issues) - 5} more")
+                if not check_only:
+                    print("  ⚠ Integrity issues cannot be auto-repaired.")
+                    print("    Consider: export sessions → fresh DB → reimport.")
+            else:
+                print("  ✓ integrity_check passed")
+
+            # 2. FTS health
+            print("Checking FTS indexes...")
+            fts_status = db.fts_integrity_check()
+            if fts_status["error"]:
+                print(f"  ✗ FTS corrupt: {fts_status['error']}")
+                if not check_only:
+                    print("  Rebuilding FTS indexes...")
+                    fts_count, tri_count = db.rebuild_fts()
+                    print(f"  ✓ FTS rebuilt: {fts_count} messages indexed")
+                    print(f"  ✓ Trigram rebuilt: {tri_count} messages indexed")
+            elif not fts_status["fts_ok"] or not fts_status["trigram_ok"]:
+                print(
+                    f"  ⚠ FTS mismatch: messages={fts_status['message_count']} "
+                    f"fts={fts_status['fts_count']} trigram={fts_status['trigram_count']}"
+                )
+                if not check_only:
+                    print("  Rebuilding FTS indexes...")
+                    fts_count, tri_count = db.rebuild_fts()
+                    print(f"  ✓ FTS rebuilt: {fts_count} messages indexed")
+                    print(f"  ✓ Trigram rebuilt: {tri_count} messages indexed")
+            else:
+                print(f"  ✓ FTS healthy ({fts_status['fts_count']} messages indexed)")
+
+            if check_only:
+                print("\nDone (check-only mode, no changes made).")
+            else:
+                print("\nRepair complete.")
 
         else:
             sessions_parser.print_help()

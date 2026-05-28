@@ -214,6 +214,8 @@ def build_hardware_bar_fragments(skin_colors: Dict[str, str] = None) -> List[Tup
         frags.append(("class:status-bar-dim", "│"))
         frags.append(("class:status-bar-strong", " GPU"))
         frags.append((gpu_style, f" {stats['gpu']}"))
+        if "gpu_mem" in stats:
+            frags.append(("class:status-bar-dim", f" {stats['gpu_mem']}"))
         if "gpu_temp" in stats:
             temp = float(stats["gpu_temp"].rstrip("°C"))
             temp_style = "class:status-bar-good" if temp < 70 else (

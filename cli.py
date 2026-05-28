@@ -3611,6 +3611,23 @@ class HermesCLI:
                     hw_parts.append(("class:status-bar-dim", "│"))
                     hw_parts.append(("class:status-bar-strong", " RAM"))
                     hw_parts.append((ram_style, f" {hw['ram']} "))
+                    # GPU
+                    if "gpu" in hw:
+                        gpu_pct = float(hw["gpu"].rstrip("%"))
+                        gpu_style = "class:status-bar-good" if gpu_pct < 60 else (
+                            "class:status-bar-warn" if gpu_pct < 85 else "class:status-bar-bad"
+                        )
+                        hw_parts.append(("class:status-bar-dim", "│"))
+                        hw_parts.append(("class:status-bar-strong", " GPU"))
+                        hw_parts.append((gpu_style, f" {hw['gpu']}"))
+                        if "gpu_mem" in hw:
+                            hw_parts.append(("class:status-bar-dim", f" {hw['gpu_mem']}"))
+                        if "gpu_temp" in hw:
+                            temp = float(hw["gpu_temp"].rstrip("°C"))
+                            temp_style = "class:status-bar-good" if temp < 70 else (
+                                "class:status-bar-warn" if temp < 85 else "class:status-bar-bad"
+                            )
+                            hw_parts.append((temp_style, f" {hw['gpu_temp']}"))
                     # Battery
                     if "bat" in hw:
                         bat_pct = float(hw["bat"].rstrip("%"))

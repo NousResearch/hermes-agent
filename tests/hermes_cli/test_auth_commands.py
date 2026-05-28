@@ -155,17 +155,17 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert not any(item["source"] == "manual:device_code" for item in entries)
     entry = device_code_entries[0]
     assert entry["source"] == "device_code"
-    assert entry["agent_key"] == "ak-test"
+    assert entry["agent_key"] == token
     assert entry["portal_base_url"] == "https://portal.example.com"
 
     # `hermes auth add nous` must also populate providers.nous so the
-    # 401-recovery path (resolve_nous_runtime_credentials) can mint a fresh
-    # agent_key when the 24h TTL expires. If this mirror is missing, recovery
+    # 401-recovery path (resolve_nous_runtime_credentials) can refresh an
+    # invoke JWT when the token expires. If this mirror is missing, recovery
     # raises "Hermes is not logged into Nous Portal" and the agent dies.
     singleton = payload["providers"]["nous"]
     assert singleton["access_token"] == token
     assert singleton["refresh_token"] == "refresh-token"
-    assert singleton["agent_key"] == "ak-test"
+    assert singleton["agent_key"] == token
     assert singleton["portal_base_url"] == "https://portal.example.com"
     assert singleton["inference_base_url"] == "https://inference.example.com/v1"
 

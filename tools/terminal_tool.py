@@ -1024,6 +1024,15 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"),
         "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
         "docker_extra_args": _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON"),
+        # Cross-process container reuse (issue #20561).  The docs claim
+        # "ONE long-lived container shared across sessions" — this toggle
+        # makes that real by probing for a labeled container at startup and
+        # attaching to it instead of always starting a fresh one.  Set to
+        # ``false`` for hard per-process isolation (no reuse, container is
+        # removed on exit).
+        "docker_persist_across_processes": os.getenv(
+            "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
+        ).lower() in {"true", "1", "yes"},
     }
 
 
@@ -1083,6 +1092,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             env=docker_env,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
             extra_args=docker_extra_args,
+            persist_across_processes=cc.get("docker_persist_across_processes", True),
         )
     
     elif env_type == "singularity":
@@ -1378,7 +1388,23 @@ def _atexit_cleanup():
     if _active_environments:
         count = len(_active_environments)
         logger.info("Shutting down %d remaining sandbox(es)...", count)
+        # Snapshot the env objects BEFORE cleanup_all_environments empties
+        # the dict; we need them to wait on docker cleanup threads after the
+        # registry has been cleared.
+        envs_to_wait = list(_active_environments.values())
         cleanup_all_environments()
+        # Block briefly so docker stop/rm actually completes before the
+        # interpreter exits. Issue #20561 — without this join, the daemon
+        # cleanup threads were getting torn down mid-`docker stop`, leaving
+        # Exited containers piled up on the host.
+        for env in envs_to_wait:
+            wait_fn = getattr(env, "wait_for_cleanup", None)
+            if wait_fn is None:
+                continue
+            try:
+                wait_fn(timeout=15.0)
+            except Exception as e:  # never block shutdown on a bad backend
+                logger.debug("wait_for_cleanup raised on exit: %s", e)
 
 atexit.register(_atexit_cleanup)
 
@@ -1746,6 +1772,7 @@ def terminal_tool(
                                 "docker_env": config.get("docker_env", {}),
                                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                                 "docker_extra_args": config.get("docker_extra_args", []),
+                                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
                             }
 
                         local_config = None

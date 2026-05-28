@@ -203,25 +203,43 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
 
 
 def test_non_persistent_cleanup_removes_container(monkeypatch):
-    """When persistent=false, cleanup() must schedule docker stop + rm."""
+    """When persist_across_processes=false, cleanup() must docker stop AND
+    docker rm so containers don't leak across hermes processes.
+
+    Updated for issue #20561: the previous implementation used fire-and-forget
+    ``subprocess.Popen("... &", shell=True)`` which raced with parent exit;
+    the new implementation uses ``subprocess.run`` on a daemon thread with
+    bounded timeouts. See test_cleanup_with_persist_disabled_stops_and_rms
+    for the full behavior contract.
+    """
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    calls = _mock_subprocess_run(monkeypatch)
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    # Run the worker thread synchronously so assertions can observe its work.
+    import threading
+    monkeypatch.setattr(threading, "Thread", _FakeThread)
 
-    popen_cmds = []
-    monkeypatch.setattr(
-        docker_env.subprocess, "Popen",
-        lambda cmd, **kw: (popen_cmds.append(cmd), type("P", (), {"poll": lambda s: 0, "wait": lambda s, **k: None, "returncode": 0, "stdout": iter([]), "stdin": None})())[1],
+    env = docker_env.DockerEnvironment(
+        image="python:3.11", cwd="/root", timeout=60,
+        task_id="ephemeral-task", persistent_filesystem=False,
+        persist_across_processes=False,
     )
-
-    env = _make_dummy_env(persistent_filesystem=False, task_id="ephemeral-task")
-    assert env._container_id
     container_id = env._container_id
+    assert container_id
 
+    # Capture cleanup-time docker calls (everything before this was init).
+    cleanup_calls = []
+    real_run = docker_env.subprocess.run
+
+    def _capture(cmd, **kw):
+        cleanup_calls.append((list(cmd) if isinstance(cmd, list) else cmd, kw))
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _capture)
     env.cleanup()
 
-    # Should have stop and rm calls via Popen
-    stop_cmds = [c for c in popen_cmds if container_id in str(c) and "stop" in str(c)]
-    assert len(stop_cmds) >= 1, f"cleanup() should schedule docker stop for {container_id}"
+    stops = [c for c in cleanup_calls if isinstance(c[0], list) and c[0][1:2] == ["stop"]]
+    assert stops, f"cleanup() should docker stop {container_id}; got {cleanup_calls}"
 
 
 class _FakePopen:
@@ -622,3 +640,338 @@ def test_labels_attribute_populated_after_init(monkeypatch):
         "hermes-task-id": "abc",
         "hermes-profile": "default",
     }
+
+
+# ── Cross-process container reuse (issue #20561) ──────────────────
+
+
+def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
+                                     start_succeeds: bool = True):
+    """Reuse-aware subprocess.run mock.
+
+    ``ps_state`` controls what ``docker ps -a --filter ...`` returns:
+      * ``None`` → no match (empty stdout). Forces a fresh ``docker run``.
+      * ``"running"`` / ``"exited"`` / ... → emit ``CID\\tSTATE`` so the reuse
+        path picks it up. ``"running"`` skips ``docker start``; other states
+        trigger ``docker start`` (which can be forced to fail via
+        ``start_succeeds=False``).
+
+    Returns the captured call list so the test can verify which docker
+    commands actually ran.
+    """
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "ps":
+                if ps_state is None:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"reused-cid\t{ps_state}\n", stderr="",
+                )
+            if sub == "start":
+                if not start_succeeds:
+                    # Real subprocess.run with check=True raises on non-zero exit;
+                    # mirror that so the production code's except clause fires.
+                    raise subprocess.CalledProcessError(1, cmd, output="", stderr="no such container")
+                return subprocess.CompletedProcess(cmd, 0, stdout="reused-cid\n", stderr="")
+            if sub == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    return calls
+
+
+def test_reuse_attaches_to_running_container_without_docker_run(monkeypatch):
+    """When a labeled container is already ``running``, the reuse probe
+    must pick it up and skip ``docker run`` entirely. Regression for the
+    issue #20561 root cause: every Hermes process spawning a new container
+    despite docs claiming "ONE long-lived container shared across sessions"."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run_with_reuse(monkeypatch, ps_state="running")
+
+    env = _make_dummy_env(task_id="reuse-test")
+
+    # The reuse path must populate _container_id from the ps probe output.
+    assert env._container_id == "reused-cid", (
+        f"expected reused container id, got {env._container_id!r}"
+    )
+    # And it must NOT have run `docker run`.
+    run_invocations = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert not run_invocations, (
+        f"docker run should be skipped on reuse, got: {run_invocations}"
+    )
+    # And it must have NOT issued a `docker start` for an already-running container.
+    start_invocations = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "start"]
+    assert not start_invocations, (
+        f"docker start should be skipped when container already running, got: {start_invocations}"
+    )
+
+
+def test_reuse_starts_stopped_container_before_attaching(monkeypatch):
+    """A labeled container in ``exited`` state must be restarted via
+    ``docker start`` before the new Hermes process uses it. Without this
+    step, ``docker exec`` against a stopped container errors out and the
+    first agent command fails opaquely."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run_with_reuse(monkeypatch, ps_state="exited")
+
+    env = _make_dummy_env(task_id="reuse-stopped")
+
+    assert env._container_id == "reused-cid"
+    start_invocations = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "start"]
+    assert start_invocations, "expected docker start for exited container"
+    run_invocations = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert not run_invocations, "should not docker run when reusing an exited container"
+
+
+def test_reuse_falls_back_to_fresh_run_when_start_fails(monkeypatch):
+    """If ``docker start`` on the matched container fails (container was
+    removed between probe and start, daemon paused, etc.), the code must
+    silently fall through to a fresh ``docker run`` rather than leaving the
+    user with a broken environment. Defensive recovery — the probe is best-
+    effort, not authoritative."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run_with_reuse(
+        monkeypatch, ps_state="exited", start_succeeds=False,
+    )
+
+    env = _make_dummy_env(task_id="reuse-broken-start")
+
+    # docker start should be attempted then fail; code falls through to run.
+    assert env._container_id == "fresh-cid", (
+        f"expected fresh container id after fallback, got {env._container_id!r}"
+    )
+    run_invocations = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_invocations, "fallback to fresh docker run must happen on start failure"
+
+
+def test_no_reuse_when_persist_across_processes_disabled(monkeypatch):
+    """Opt-out path: ``persist_across_processes=False`` skips the ps probe
+    entirely and always starts a fresh container, matching the pre-fix
+    behavior for users who want hard per-process isolation."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    # ps_state=running would trigger reuse if the probe ran — assert it doesn't.
+    calls = _mock_subprocess_run_with_reuse(monkeypatch, ps_state="running")
+
+    env = docker_env.DockerEnvironment(
+        image="python:3.11", cwd="/root", timeout=60,
+        task_id="no-reuse", persist_across_processes=False,
+    )
+
+    # Must NOT have issued docker ps (the probe is gated by the flag).
+    ps_invocations = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "ps"]
+    assert not ps_invocations, (
+        f"docker ps probe should be skipped when persist_across_processes=False, got: {ps_invocations}"
+    )
+    # Should have started a fresh container.
+    assert env._container_id == "fresh-cid"
+
+
+def test_find_reusable_container_prefers_running_over_stopped(monkeypatch):
+    """When the probe returns multiple matches (shouldn't normally happen,
+    but can after a crash leaves stale duplicates), a ``running`` container
+    is preferred over any stopped one. The duplicate gets reaped later by
+    the orphan reaper; we don't try to be heroic about it here."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+            if cmd[1] == "ps":
+                # Two matches: stopped first, running second.
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout="stopped-cid\texited\nrunning-cid\trunning\n",
+                    stderr="",
+                )
+        return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(task_id="dup-match")
+    assert env._container_id == "running-cid", (
+        f"running container should win over stopped duplicate, got {env._container_id!r}"
+    )
+
+
+# ── Cleanup correctness (issue #20561) ────────────────────────────
+
+
+class _FakeThread:
+    """Stand-in for threading.Thread that captures target/args and calls
+    target() synchronously when .start() runs, so cleanup behavior is
+    observable without actually backgrounding subprocess calls."""
+
+    def __init__(self, target=None, daemon=None, name=None):
+        self._target = target
+        self.daemon = daemon
+        self.name = name
+        self._done = False
+
+    def start(self):
+        if self._target is not None:
+            self._target()
+        self._done = True
+
+    def is_alive(self):
+        return not self._done
+
+    def join(self, timeout=None):
+        self._done = True
+
+
+def _install_fake_thread(monkeypatch):
+    import threading
+    monkeypatch.setattr(threading, "Thread", _FakeThread)
+
+
+def test_cleanup_with_persist_only_stops_no_rm(monkeypatch):
+    """``persist_across_processes=True`` (default) cleanup must docker stop
+    the container but NEVER docker rm — the container has to survive so the
+    next Hermes process can reuse it. Issue #20561 — the previous code
+    matched this on the `_persistent` flag instead of a dedicated
+    cross-process flag, which made reuse impossible."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    _install_fake_thread(monkeypatch)
+
+    env = _make_dummy_env(task_id="cleanup-persist", persistent_filesystem=False)
+    # Default persist_across_processes=True.
+    container_id = env._container_id
+    assert container_id
+
+    cleanup_calls = []
+    real_run = docker_env.subprocess.run
+
+    def _capturing_run(cmd, **kwargs):
+        cleanup_calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _capturing_run)
+
+    env.cleanup()
+
+    stops = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "stop"]
+    rms = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"]
+    assert stops, f"expected docker stop call, got cleanup_calls: {cleanup_calls}"
+    assert not rms, (
+        f"docker rm must NOT be called when persist_across_processes=True; "
+        f"reuse would be impossible. Got: {rms}"
+    )
+
+
+def test_cleanup_with_persist_disabled_stops_and_rms(monkeypatch):
+    """``persist_across_processes=False`` cleanup must docker stop AND docker
+    rm so containers don't leak. Crucially, this runs regardless of the
+    ``persistent_filesystem`` setting — the original code only rm'd when
+    ``not self._persistent``, which meant the default-on ``container_persistent:
+    true`` users (the documented happy path) leaked Exited containers forever.
+    Issue #20561 root-cause fix."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    _install_fake_thread(monkeypatch)
+
+    # Note: persistent_filesystem=True (the prior-leak scenario) + the new
+    # cross-process toggle OFF must still result in a clean rm.
+    env = docker_env.DockerEnvironment(
+        image="python:3.11", cwd="/root", timeout=60,
+        task_id="cleanup-no-persist", persistent_filesystem=True,
+        persist_across_processes=False,
+    )
+
+    cleanup_calls = []
+    real_run = docker_env.subprocess.run
+
+    def _capturing_run(cmd, **kwargs):
+        cleanup_calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _capturing_run)
+
+    env.cleanup()
+
+    stops = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "stop"]
+    rms = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"]
+    assert stops, "expected docker stop"
+    assert rms, (
+        "docker rm MUST run when persist_across_processes=False, even with "
+        "persistent_filesystem=True — that gating was the leak source in #20561."
+    )
+
+
+def test_cleanup_uses_subprocess_run_not_detached_shell(monkeypatch):
+    """The pre-fix code used ``subprocess.Popen(\"... &\", shell=True)`` which
+    raced with parent-process exit and silently dropped cleanup work. The
+    new code must use ``subprocess.run`` with bounded ``timeout=`` so the
+    work actually completes within the process lifetime.
+
+    Asserts cleanup never reaches into shell-mode Popen.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    _install_fake_thread(monkeypatch)
+
+    def _forbidden_popen(*args, **kwargs):
+        raise AssertionError(
+            f"cleanup must not use subprocess.Popen anymore (issue #20561); "
+            f"got args={args} kwargs={kwargs}"
+        )
+
+    monkeypatch.setattr(docker_env.subprocess, "Popen", _forbidden_popen)
+
+    env = _make_dummy_env(task_id="no-popen-cleanup")
+    env.cleanup()  # must not raise
+
+
+def test_wait_for_cleanup_returns_true_when_no_thread_started():
+    """``wait_for_cleanup`` must be a no-op when ``cleanup`` was never called
+    (or the env has no live cleanup thread) — atexit calls it unconditionally
+    across all active envs, so a False return would falsely flag healthy
+    shutdowns."""
+    env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
+    # No _cleanup_thread set — simulates an env that was never cleanup()'d.
+    assert env.wait_for_cleanup(timeout=1.0) is True
+
+
+def test_wait_for_cleanup_after_cleanup_returns_true(monkeypatch):
+    """End-to-end: cleanup() starts a thread, wait_for_cleanup() joins it
+    and reports completion. Atexit relies on this contract to ensure docker
+    stop/rm actually finishes before the Python interpreter exits."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    _install_fake_thread(monkeypatch)
+
+    env = _make_dummy_env(task_id="wait-test")
+    env.cleanup()
+    assert env.wait_for_cleanup(timeout=5.0) is True
+
+
+def test_cleanup_on_env_with_no_container_id_does_not_raise(monkeypatch):
+    """A DockerEnvironment whose ``__init__`` failed before the container_id
+    was set (image-pull error, docker daemon down) should still be safe to
+    cleanup() — the post-creation failure path in callers always tries.
+    Without this guard the daemon-down case used to NameError on the cleanup
+    branch."""
+    env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
+    env._container_id = None
+    env._persistent = False
+    env._workspace_dir = None
+    env._home_dir = None
+    # No exception expected.
+    env.cleanup()

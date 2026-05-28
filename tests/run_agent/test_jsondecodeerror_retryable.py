@@ -28,9 +28,20 @@ def _mirror_agent_predicate(err: BaseException) -> bool:
     or, better, refactor the check into a shared helper and have both
     sites import it.
     """
+    import ssl
+
     return (
         isinstance(err, (ValueError, TypeError))
         and not isinstance(err, (UnicodeEncodeError, json.JSONDecodeError))
+        and not isinstance(err, ssl.SSLError)
+        # NoneType-is-not-iterable shape errors come from upstream SDK /
+        # provider response mismatches, not local programming bugs. See
+        # the agent/conversation_loop.py inline comment for #33136.
+        and not (
+            isinstance(err, TypeError)
+            and "nonetype" in str(err).lower()
+            and "not iterable" in str(err).lower()
+        )
     )
 
 
@@ -89,4 +100,57 @@ class TestAgentLoopSourceStillHasCarveOut:
         assert "JSONDecodeError" in src, (
             "agent/conversation_loop.py must carve out json.JSONDecodeError "
             "from the is_local_validation_error classification — see #14782."
+        )
+
+
+
+class TestNoneTypeNotIterableIsRetryable:
+    """Regression for #33136 / closes lingering Telegram \"Non-retryable error (HTTP None)\".
+
+    The chatgpt.com Codex backend (and any other upstream SDK / provider shim)
+    can surface ``TypeError: 'NoneType' object is not iterable`` as a wire-shape
+    mismatch, not a local programming bug. Even after #33042 made our own
+    consumer immune, third-party paths and mocked clients can still produce
+    this shape. The classifier should treat it as retryable so the normal
+    retry/fallback chain runs.
+    """
+
+    def test_nonetype_not_iterable_is_retryable(self):
+        err = TypeError("'NoneType' object is not iterable")
+        assert not _mirror_agent_predicate(err), (
+            "TypeError('NoneType ... not iterable') must be excluded from "
+            "is_local_validation_error — it is a provider/SDK shape mismatch, "
+            "not a local bug. See #33136."
+        )
+
+    def test_nonetype_not_iterable_uppercase_variants_still_retryable(self):
+        # The carve-out is case-insensitive; SDK message phrasing can vary.
+        for msg in [
+            "'NoneType' object is not iterable",
+            "NoneType object is not iterable",
+            "argument of type 'NoneType' is not iterable",
+        ]:
+            err = TypeError(msg)
+            assert not _mirror_agent_predicate(err), (
+                f"Variant {msg!r} should be classified as retryable provider shape error."
+            )
+
+    def test_unrelated_type_error_remains_local_validation(self):
+        """TypeError without the NoneType-not-iterable pattern still aborts (programming bug)."""
+        assert _mirror_agent_predicate(TypeError("tools must be a list"))
+        assert _mirror_agent_predicate(TypeError("expected str, got int"))
+
+
+class TestAgentLoopSourceHasNoneTypeCarveOut:
+    """Belt-and-suspenders: the production source must include the carve-out."""
+
+    def test_conversation_loop_excludes_nonetype_not_iterable_from_local_validation(self):
+        import inspect
+        from agent import conversation_loop
+        src = inspect.getsource(conversation_loop)
+        assert "is_local_validation_error" in src
+        # The specific check must be present.
+        assert "nonetype" in src.lower() and "not iterable" in src.lower(), (
+            "agent/conversation_loop.py must carve out 'NoneType is not iterable' "
+            "TypeErrors from the is_local_validation_error classification — see #33136."
         )

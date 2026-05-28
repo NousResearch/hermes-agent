@@ -206,7 +206,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             return session_or_response
         session = session_or_response
 
-        if upstream_resp.status == 401:
+        if upstream_resp.status in {401, 429}:
             try:
                 retry_cred = adapter.get_retry_credential(
                     failed_credential=cred,

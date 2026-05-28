@@ -2,8 +2,8 @@
 
 Covers:
 
-- All seven bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl) instantiate and self-report the expected
+- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
+  tavily, firecrawl, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -47,6 +47,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIRECRAWL_GATEWAY_URL",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
+        "XAI_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -70,7 +71,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All seven bundled web plugins discover and register correctly."""
+    """All eight bundled web plugins discover and register correctly."""
 
     def test_all_seven_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
@@ -85,21 +86,21 @@ class TestBundledPluginsRegister:
             "parallel",
             "searxng",
             "tavily",
+            "xai",
         ]
 
     @pytest.mark.parametrize(
-        "plugin_name,expected_search,expected_extract,expected_crawl",
+        "plugin_name,expected_search,expected_extract",
         [
-            ("brave-free", True, False, False),
-            ("ddgs", True, False, False),
-            ("searxng", True, False, False),
-            ("exa", True, True, False),
-            ("parallel", True, True, False),
-            ("tavily", True, True, True),
-            # firecrawl: search + extract + crawl. Crawl was originally
-            # disabled in the migration (fell through to a legacy inline
-            # path); the follow-up commit enabled it natively.
-            ("firecrawl", True, True, True),
+            ("brave-free", True, False),
+            ("ddgs", True, False),
+            ("searxng", True, False),
+            ("exa", True, True),
+            ("parallel", True, True),
+            ("tavily", True, True),
+            ("firecrawl", True, True),
+            # xai: search-only via Grok's agentic web_search tool.
+            ("xai", True, False),
         ],
     )
     def test_capability_flags_match_spec(
@@ -107,7 +108,6 @@ class TestBundledPluginsRegister:
         plugin_name: str,
         expected_search: bool,
         expected_extract: bool,
-        expected_crawl: bool,
     ) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider
@@ -116,11 +116,10 @@ class TestBundledPluginsRegister:
         assert provider is not None, f"plugin {plugin_name!r} not registered"
         assert provider.supports_search() is expected_search
         assert provider.supports_extract() is expected_extract
-        assert provider.supports_crawl() is expected_crawl
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -133,7 +132,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -238,6 +237,17 @@ class TestIsAvailable:
         assert p is not None
         # Truthy or falsy, just must not raise.
         _ = bool(p.is_available())
+
+    def test_xai_requires_api_key_or_oauth(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """xAI needs XAI_API_KEY or OAuth tokens in auth.json."""
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("xai")
+        assert p is not None
+        assert p.is_available() is False  # no XAI_API_KEY, no auth.json
+        monkeypatch.setenv("XAI_API_KEY", "real")
+        assert p.is_available() is True
 
 
 # ---------------------------------------------------------------------------
@@ -442,34 +452,50 @@ class TestErrorResponseShapes:
         if result:  # if anything came back, it should be an error entry
             assert "error" in result[0]
 
-    def test_tavily_crawl_returns_error_dict_when_unconfigured(self) -> None:
+    def test_firecrawl_config_error_points_paid_users_to_nous_subscription(self, monkeypatch):
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        monkeypatch.setattr(
+            "tools.web_tools.managed_nous_tools_enabled",
+            lambda: True,
+            raising=False,
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            firecrawl_provider._raise_web_backend_configuration_error()
+
+        message = str(exc_info.value)
+        assert "With your Nous subscription you can also use the Tool Gateway" in message
+        assert "select Nous Subscription as the web provider" in message
+        assert "managed Firecrawl web tools is unavailable" not in message
+
+    def test_firecrawl_config_error_uses_entitlement_message_when_not_paid(self, monkeypatch):
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        monkeypatch.setattr(
+            "tools.web_tools.managed_nous_tools_enabled",
+            lambda: False,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "tools.web_tools.nous_tool_gateway_unavailable_message",
+            lambda capability: f"{capability} denied by test entitlement.",
+            raising=False,
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            firecrawl_provider._raise_web_backend_configuration_error()
+
+        assert "managed Firecrawl web tools denied by test entitlement" in str(exc_info.value)
+
+    def test_xai_search_returns_error_dict_when_unconfigured(self) -> None:
+        """xAI returns a typed error dict (no XAI_API_KEY)."""
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider
 
-        p = get_provider("tavily")
+        p = get_provider("xai")
         assert p is not None
-        result = p.crawl("https://example.com")
+        result = p.search("test", limit=5)
         assert isinstance(result, dict)
-        assert "results" in result
-        assert isinstance(result["results"], list)
-        if result["results"]:
-            assert "error" in result["results"][0]
-
-    def test_firecrawl_crawl_returns_error_dict_when_unconfigured(self) -> None:
-        """firecrawl crawl is async (wraps SDK in to_thread); error must be
-        surfaced via the per-page result shape, not raised."""
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        p = get_provider("firecrawl")
-        assert p is not None
-        assert inspect.iscoroutinefunction(p.crawl)
-        result = asyncio.run(p.crawl("https://example.com"))
-        assert isinstance(result, dict)
-        assert "results" in result
-        assert isinstance(result["results"], list)
-        # Without FIRECRAWL_API_KEY, the plugin's _get_firecrawl_client()
-        # raises ValueError which is caught and returned as a per-page error.
-        assert len(result["results"]) >= 1
-        assert "error" in result["results"][0]
-        assert result["results"][0]["url"] == "https://example.com"
+        assert result.get("success") is False
+        assert "error" in result

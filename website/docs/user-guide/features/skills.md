@@ -14,8 +14,8 @@ You can also point Hermes at **external skill directories** — additional folde
 
 See also:
 
-- [Bundled Skills Catalog](/docs/reference/skills-catalog)
-- [Official Optional Skills Catalog](/docs/reference/optional-skills-catalog)
+- [Bundled Skills Catalog](/reference/skills-catalog)
+- [Official Optional Skills Catalog](/reference/optional-skills-catalog)
 
 ## Using Skills
 
@@ -174,7 +174,7 @@ required_environment_variables:
 
 When a missing value is encountered, Hermes asks for it securely only when the skill is actually loaded in the local CLI. You can skip setup and keep using the skill. Messaging surfaces never ask for secrets in chat — they tell you to use `hermes setup` or `~/.hermes/.env` locally instead.
 
-Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](/docs/user-guide/security#environment-variable-passthrough) for details.
+Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](/user-guide/security#environment-variable-passthrough) for details.
 
 ### Skill Config Settings
 
@@ -192,7 +192,7 @@ metadata:
 
 Settings are stored under `skills.config` in your config.yaml. `hermes config migrate` prompts for unconfigured settings, and `hermes config show` displays them. When a skill loads, its resolved config values are injected into the context so the agent knows the configured values automatically.
 
-See [Skill Settings](/docs/user-guide/configuration#skill-settings) and [Creating Skills — Config Settings](/docs/developer-guide/creating-skills#config-settings-configyaml) for details.
+See [Skill Settings](/user-guide/configuration#skill-settings) and [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml) for details.
 
 ## Skill Directory Structure
 
@@ -236,7 +236,8 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### How it works
 
-- **Read-only**: External dirs are only scanned for skill discovery. When the agent creates or edits a skill, it always writes to `~/.hermes/skills/`.
+- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/`. Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
+- **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
 - **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
@@ -250,7 +251,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 └── mlops/axolotl/
     └── SKILL.md
 
-~/.agents/skills/               # External (read-only, shared)
+~/.agents/skills/               # External (shared, mutable if writable)
 ├── my-custom-workflow/
 │   └── SKILL.md
 └── team-conventions/
@@ -410,7 +411,7 @@ hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 | `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | Skills served directly from `/.well-known/skills/index.json` on a website. Search using the site or docs URL. |
 | `url` | `https://sharethis.chat/SKILL.md` | Direct HTTP(S) URL to a single-file `SKILL.md`. Name resolution: frontmatter → URL slug → interactive prompt → `--name` flag. |
 | `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |
-| `clawhub`, `lobehub`, `claude-marketplace` | Source-specific identifiers | Community or marketplace integrations. |
+| `clawhub`, `lobehub`, `browse-sh` | Source-specific identifiers | Community or marketplace integrations. |
 
 ### Integrated hubs and registries
 
@@ -466,7 +467,6 @@ Default taps (browsable without any setup):
 - [openai/skills](https://github.com/openai/skills)
 - [anthropics/skills](https://github.com/anthropics/skills)
 - [huggingface/skills](https://github.com/huggingface/skills)
-- [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills)
 - [garrytan/gstack](https://github.com/garrytan/gstack)
 
 - Example:
@@ -502,7 +502,24 @@ Hermes can search and convert agent entries from LobeHub's public catalog into i
 - Backing repo: [lobehub/lobe-chat-agents](https://github.com/lobehub/lobe-chat-agents)
 - Hermes source id: `lobehub`
 
-#### 8. Direct URL (`url`)
+#### 8. browse.sh (`browse-sh`)
+
+Hermes integrates with [browse.sh](https://browse.sh), Browserbase's catalog of 200+ site-specific browser-automation SKILL.md files (Airbnb, Amazon, arXiv, 12306.cn, Etsy, Xero, and many more). Each skill describes how to drive one website end-to-end and is suitable for use with Hermes' browser tools and any browser-automation skills you already have installed.
+
+- Site: [browse.sh](https://browse.sh/)
+- Catalog API: `https://browse.sh/api/skills`
+- Hermes source id: `browse-sh`
+- Trust level: `community`
+
+```bash
+hermes skills search airbnb --source browse-sh
+hermes skills inspect browse-sh/airbnb.com/search-listings-ddgioa
+hermes skills install browse-sh/airbnb.com/search-listings-ddgioa
+```
+
+Identifiers use the form `browse-sh/<hostname>/<task-id>` and match the slug exposed by the browse.sh catalog. Content is resolved through the per-skill detail endpoint (`/api/skills/<slug>` → `skillMdUrl`), not through the catalog's GitHub `sourceUrl`.
+
+#### 9. Direct URL (`url`)
 
 Install a single-file `SKILL.md` directly from any HTTP(S) URL — useful when an author hosts a skill on their own site (no hub listing, no GitHub path to type). Hermes fetches the URL, parses the YAML frontmatter, security-scans it, and installs.
 

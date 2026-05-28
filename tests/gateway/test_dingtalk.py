@@ -407,6 +407,36 @@ class TestConnect:
         assert len(adapter._dedup._seen) == 0
         assert adapter._http_client is None
 
+    @pytest.mark.asyncio
+    async def test_disconnect_finalizes_open_streaming_cards(self):
+        """Streaming cards must be finalized before HTTP client closes."""
+        from unittest.mock import AsyncMock, patch
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._stream_task = None
+        adapter._streaming_cards = {
+            "chat-1": {"track-a": "last content"},
+            "chat-2": {"track-b": "other"},
+        }
+
+        close_calls = []
+
+        async def fake_close_siblings(chat_id):
+            # HTTP client must still be alive at call time.
+            assert adapter._http_client is not None, (
+                "HTTP client was already closed before card finalization"
+            )
+            close_calls.append(chat_id)
+            adapter._streaming_cards.pop(chat_id, None)
+
+        with patch.object(adapter, "_close_streaming_siblings", side_effect=fake_close_siblings):
+            await adapter.disconnect()
+
+        assert set(close_calls) == {"chat-1", "chat-2"}
+        assert adapter._streaming_cards == {}
+        assert adapter._http_client is None
+
 
 # ---------------------------------------------------------------------------
 # Platform enum
@@ -540,6 +570,58 @@ class TestExtractText:
         msg.rich_text_content = None
         msg.rich_text = None
         assert DingTalkAdapter._extract_text(msg) == ""
+
+
+class TestExtractMedia:
+    """_extract_media must split native voice rich-text items (auto-STT)
+    from generic audio file uploads (kept as attachments, no STT)."""
+
+    def _msg_with_rich_text(self, items):
+        msg = MagicMock()
+        msg.text = None
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = items
+        return msg
+
+    def test_voice_rich_text_item_classified_as_voice(self):
+        """Native DingTalk voice notes (type=voice) must enter the auto-STT
+        path via MessageType.VOICE — the gateway skips STT for AUDIO."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = self._msg_with_rich_text(
+            [{"type": "voice", "downloadCode": "dl_voice_abc"}]
+        )
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+        assert msg_type == MessageType.VOICE
+        assert urls == ["dl_voice_abc"]
+        assert mtypes == ["audio"]
+
+    def test_audio_rich_text_item_stays_audio(self):
+        """Generic audio uploads (e.g. an mp3 the user attached) must NOT
+        be auto-transcribed — they stay MessageType.AUDIO."""
+        from gateway.platforms.dingtalk import DingTalkAdapter, DINGTALK_TYPE_MAPPING
+        from gateway.platforms.base import MessageType
+
+        # Simulate a future/non-voice audio rich-text item by extending the
+        # mapping so item_type != "voice" but still routes through the
+        # ``mapped == "audio"`` branch.
+        DINGTALK_TYPE_MAPPING["audio"] = "audio"
+        try:
+            msg = self._msg_with_rich_text(
+                [{"type": "audio", "downloadCode": "dl_audio_xyz"}]
+            )
+            msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+                DingTalkAdapter, msg
+            )
+            assert msg_type == MessageType.AUDIO
+            assert urls == ["dl_audio_xyz"]
+            assert mtypes == ["audio"]
+        finally:
+            del DINGTALK_TYPE_MAPPING["audio"]
 
 
 # ---------------------------------------------------------------------------

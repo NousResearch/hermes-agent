@@ -41,7 +41,7 @@ def _find_chrome() -> str:
 
 
 @pytest.fixture
-def chrome_cdp(worker_id):
+def chrome_cdp(request):
     """Start a headless Chrome with --remote-debugging-port, yield its WS URL.
 
     Uses a unique port per xdist worker to avoid cross-worker collisions.
@@ -51,6 +51,9 @@ def chrome_cdp(worker_id):
     import socket
 
     # xdist worker_id is "master" in single-process mode or "gw0".."gwN" otherwise.
+    # Under subprocess-per-file isolation there's no xdist, so we fall back
+    # to "master" via the session-scoped fixture below.
+    worker_id = request.getfixturevalue("worker_id") if "worker_id" in request.fixturenames else "master"
     if worker_id == "master":
         port_offset = 0
     else:
@@ -86,18 +89,45 @@ def chrome_cdp(worker_id):
         except Exception:
             time.sleep(0.25)
     if ws_url is None:
-        proc.terminate()
-        proc.wait(timeout=5)
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except (subprocess.TimeoutExpired, AssertionError, Exception):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=2)
+            except (AssertionError, Exception):
+                pass
         shutil.rmtree(profile, ignore_errors=True)
         pytest.skip("Chrome didn't expose CDP in time")
 
     yield ws_url, port
 
-    proc.terminate()
+    # Tear down Chrome. The stdlib `subprocess._wait()` POSIX implementation
+    # has a known race (https://bugs.python.org/issue38630): when SIGCHLD
+    # arrives concurrently with `proc.wait()`, `_try_wait(WNOHANG)` can
+    # return a foreign pid and the `assert pid == self.pid or pid == 0`
+    # fires. We saw this in CI on slice 1 after this fixture's teardown
+    # (PR #33661 follow-up). Swallow the stdlib race + force-kill if wait
+    # hangs, then always reap so we don't leak a zombie.
+    try:
+        proc.terminate()
+    except Exception:
+        pass
     try:
         proc.wait(timeout=3)
-    except Exception:
-        proc.kill()
+    except (subprocess.TimeoutExpired, AssertionError, Exception):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except (AssertionError, Exception):
+            pass
     shutil.rmtree(profile, ignore_errors=True)
 
 

@@ -7,7 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Typography } from "@/components/NouiTypography";
-import { cn } from "@/lib/utils";
+import { cn, themedBody } from "@/lib/utils";
 
 const CLOSE_DRAG_MIN_PX = 72;
 const CLOSE_DRAG_RATIO = 0.18;
@@ -168,6 +168,7 @@ export function BottomPickSheet({
         aria-modal="true"
         ref={sheetRef}
         className={cn(
+          themedBody,
           "relative flex max-h-[85dvh] min-h-0 flex-col rounded-t-xl border border-current/20",
           "bg-background-base/98 pb-[max(1rem,env(safe-area-inset-bottom))]",
           "shadow-[0_-12px_40px_-8px_rgba(0,0,0,0.55)] backdrop-blur-md",
@@ -200,7 +201,7 @@ export function BottomPickSheet({
 
           <Typography
             mondwest
-            className="text-[0.65rem] tracking-[0.15em] uppercase text-midground/70"
+            className="text-display text-xs tracking-[0.12em] text-text-tertiary"
           >
             {title}
           </Typography>

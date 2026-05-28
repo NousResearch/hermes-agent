@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -159,10 +160,6 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
-        "VERCEL_OIDC_TOKEN",
-        "VERCEL_TOKEN",
-        "VERCEL_PROJECT_ID",
-        "VERCEL_TEAM_ID",
     })
     return frozenset(blocked)
 
@@ -519,6 +516,8 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_cwd = self.cwd
 
+        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+
         proc = subprocess.Popen(
             args,
             text=True,
@@ -529,8 +528,8 @@ class LocalEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             cwd=_popen_cwd,
+            **_popen_kwargs,
         )
         if not _IS_WINDOWS:
             try:

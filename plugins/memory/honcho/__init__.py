@@ -579,7 +579,7 @@ class HonchoMemoryProvider(MemoryProvider):
             if self._base_context_cache is None:
                 # First call — synchronous fetch
                 try:
-                    ctx = self._manager.get_prefetch_context(self._session_key)
+                    ctx = self._manager.get_prefetch_context(self._session_key, scope="session")
                     self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
                     self._last_context_turn = self._turn_count
                 except Exception as e:
@@ -599,6 +599,27 @@ class HonchoMemoryProvider(MemoryProvider):
 
         if base_context:
             parts.append(base_context)
+
+        # ----- Layer 1b: Query-scoped raw search -----
+        # peer.context()/representations can be broad and stale in large workspaces.
+        # Add a cheap, non-LLM search layer keyed to the current user message so
+        # point facts that exist in Honcho reach the model deterministically.
+        try:
+            if not self._manager:
+                search_result = ""
+            else:
+                search_tokens = int(getattr(self._config, "search_injection_tokens", 800) or 800)
+                search_result = self._manager.search_context(
+                    self._session_key,
+                    query,
+                    max_tokens=search_tokens,
+                    peer="user",
+                    scope="session",
+                )
+            if search_result and search_result.strip():
+                parts.append(f"## Relevant Memory Search Results\n{search_result.strip()}")
+        except Exception as e:
+            logger.debug("Honcho query-scoped search injection failed: %s", e)
 
         # ----- Layer 2: Dialectic supplement -----
         # On the very first turn, no queue_prefetch() has run yet so the
@@ -1238,7 +1259,11 @@ class HonchoMemoryProvider(MemoryProvider):
                 max_tokens = min(int(args.get("max_tokens", 800)), 2000)
                 peer = args.get("peer", "user")
                 result = self._manager.search_context(
-                    self._session_key, query, max_tokens=max_tokens, peer=peer
+                    self._session_key,
+                    query,
+                    max_tokens=max_tokens,
+                    peer=peer,
+                    scope="global",
                 )
                 if not result:
                     return json.dumps({"result": "No relevant context found."})

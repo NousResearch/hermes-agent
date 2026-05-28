@@ -5107,8 +5107,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     msg_line += f"\n   {preview}"
                 lines.append(msg_line)
 
-                # Button label: number + title, truncated to fit mobile (~25 chars)
-                short_title = title[:18] + "..." if len(title) > 21 else title
+                # Button label: number + title, truncated to ~40 chars for mobile
+                short_title = title[:37] + "..." if len(title) > 40 else title
                 btn_label = f"{idx}. {short_title}"
                 buttons.append([InlineKeyboardButton(btn_label, callback_data=f"rs:{s['id']}")])
 
@@ -5119,6 +5119,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id=msg.chat_id,
                 text=text,
                 reply_markup=keyboard,
+                disable_web_page_preview=True,
             )
             if hasattr(msg, "message_thread_id") and msg.message_thread_id:
                 kwargs["message_thread_id"] = msg.message_thread_id

@@ -241,14 +241,79 @@ class HolographicMemoryProvider(MemoryProvider):
             return
         self._auto_extract_facts(messages)
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes as facts."""
-        if action == "add" and self._store and content:
-            try:
-                category = "user_pref" if target == "user" else "general"
-                self._store.add_fact(content, category=category)
-            except Exception as e:
-                logger.debug("Holographic memory_write mirror failed: %s", e)
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: dict | None = None,
+    ) -> None:
+        """Mirror built-in memory writes as complete structured facts.
+
+        The bridge calls this for successful flat-memory writes and for
+        capacity-fallback attempts.  Capacity fallback is intentionally
+        deterministic: store the attempted compact fact as a whole with source
+        anchors instead of relying on the model to re-summarize it in a later
+        fact_store call, where important subpoints can be dropped.
+        """
+        if action not in {"add", "replace"} or not self._store or not content:
+            return
+        try:
+            fact_content = self._format_memory_write_fact(content, metadata or {})
+            category = self._memory_write_category(target, fact_content, metadata or {})
+            tags = self._memory_write_tags(metadata or {})
+            self._store.add_fact(fact_content, category=category, tags=tags)
+        except Exception as e:
+            logger.debug("Holographic memory_write mirror failed: %s", e)
+
+    @staticmethod
+    def _format_memory_write_fact(content: str, metadata: dict) -> str:
+        compact = " ".join(str(content).split())
+        max_content_chars = 1200
+        if len(compact) > max_content_chars:
+            compact = compact[: max_content_chars - 1].rstrip() + "…"
+
+        anchors = []
+        session_id = metadata.get("session_id") or metadata.get("source_session")
+        task_id = metadata.get("task_id") or metadata.get("source_task")
+        tool_call_id = metadata.get("tool_call_id") or metadata.get("source_tool_call")
+        parent_session_id = metadata.get("parent_session_id")
+        if session_id:
+            anchors.append(f"source_session={session_id}")
+        if parent_session_id:
+            anchors.append(f"parent_session={parent_session_id}")
+        if task_id:
+            anchors.append(f"source_task={task_id}")
+        if tool_call_id:
+            anchors.append(f"source_tool_call={tool_call_id}")
+        if metadata.get("fallback_reason") == "flat_memory_capacity":
+            anchors.append("flat_memory_fallback=capacity")
+
+        if not anchors:
+            return compact
+        return f"{compact} [" + "; ".join(anchors) + "]"
+
+    @staticmethod
+    def _memory_write_category(target: str, content: str, metadata: dict) -> str:
+        if target == "user":
+            return "user_pref"
+        lower = content.lower()
+        if (
+            metadata.get("fallback_reason") == "flat_memory_capacity"
+            and any(marker in lower for marker in ("architecture decision", "project", "kanban"))
+        ):
+            return "project"
+        return "general"
+
+    @staticmethod
+    def _memory_write_tags(metadata: dict) -> str:
+        tags = ["memory-write"]
+        if metadata.get("fallback_reason") == "flat_memory_capacity":
+            tags.extend(["flat-memory-capacity", "fallback"])
+        origin = metadata.get("write_origin")
+        if origin:
+            tags.append(str(origin).replace(" ", "-"))
+        return ",".join(dict.fromkeys(tags))
 
     def shutdown(self) -> None:
         self._store = None

@@ -384,6 +384,19 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    if platform_name == "signal":
+        trimmed = target_ref.strip()
+        if trimmed.startswith("group:"):
+            group_id = trimmed[len("group:"):].strip()
+            if group_id:
+                return f"group:{group_id}", None, True
+        # Signal group IDs are base64-ish values. Treat a bare group
+        # ID as explicit too, normalizing it to the chat_id shape expected by
+        # _send_signal(), otherwise it falls through to channel-name
+        # resolution or, worse, the home DM. A very small parsing omission;
+        # a very large social faux pas.
+        if not trimmed.startswith("+") and re.fullmatch(r"[A-Za-z0-9+/]{16,}={0,2}", trimmed):
+            return f"group:{trimmed}", None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:

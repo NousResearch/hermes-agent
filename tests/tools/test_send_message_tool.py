@@ -1161,6 +1161,24 @@ class TestParseTargetRefE164:
         assert chat_id == "15551234567"
         assert is_explicit is True
 
+    def test_signal_group_prefixed_target_is_explicit(self):
+        """signal:group:<base64 group id> is explicit and preserved for signal-cli."""
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "signal", "group:AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD="
+        )
+        assert chat_id == "group:AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD="
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_signal_bare_group_id_is_normalized_to_group_target(self):
+        """signal:<base64 group id> is also treated as an explicit group target."""
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "signal", "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD="
+        )
+        assert chat_id == "group:AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD="
+        assert thread_id is None
+        assert is_explicit is True
+
     def test_signal_invalid_e164_rejected(self):
         """Too-short, too-long, and non-numeric E.164 strings are not explicit."""
         assert _parse_target_ref("signal", "+123")[2] is False

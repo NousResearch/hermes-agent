@@ -1912,11 +1912,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    logger.warning("[Feishu] Invalid post payload rejected by API; retrying as post")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        msg_type="post",
+                        payload=payload,
                         reply_to=reply_to,
                         metadata=metadata,
                     )
@@ -1925,11 +1925,11 @@ class FeishuAdapter(BasePlatformAdapter):
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    logger.warning("[Feishu] Post payload rejected by API response; retrying as post")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        msg_type="post",
+                        payload=payload,
                         reply_to=reply_to,
                         metadata=metadata,
                     )

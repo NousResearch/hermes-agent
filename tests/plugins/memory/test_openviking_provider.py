@@ -144,6 +144,7 @@ def test_tool_add_resource_rejects_local_directory_before_add(tmp_path):
     provider._client.post.assert_not_called()
 
 
+
 def test_tool_add_resource_rejects_local_directory_before_upload(tmp_path):
     docs = tmp_path / "docs"
     docs.mkdir()
@@ -164,6 +165,55 @@ def test_tool_add_resource_rejects_missing_local_path_with_generic_local_path_er
     result = json.loads(provider._tool_add_resource({"url": str(missing)}))
 
     assert result["error"] == EXPECTED_LOCAL_PATH_ERROR
+    provider._client.upload_temp_file.assert_not_called()
+    provider._client.post.assert_not_called()
+
+
+@pytest.mark.parametrize("url", [
+    "C:\\Windows\\System32\\config",
+    "C:/Users/test/secret.txt",
+    "D:\\data\\file.md",
+])
+def test_tool_add_resource_rejects_windows_absolute_paths(url):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+
+    result = json.loads(provider._tool_add_resource({"url": url}))
+
+    assert result["error"] == EXPECTED_LOCAL_PATH_ERROR
+    provider._client.upload_temp_file.assert_not_called()
+    provider._client.post.assert_not_called()
+
+
+@pytest.mark.parametrize("url", [
+    "./relative/path.md",
+    "../parent/path.md",
+    "~/home/file.txt",
+])
+def test_tool_add_resource_rejects_relative_and_tilde_paths(url):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+
+    result = json.loads(provider._tool_add_resource({"url": url}))
+
+    assert result["error"] == EXPECTED_LOCAL_PATH_ERROR
+    provider._client.upload_temp_file.assert_not_called()
+    provider._client.post.assert_not_called()
+
+
+@pytest.mark.parametrize("url", [
+    "ftp://example.com/file.txt",
+    "s3://my-bucket/key",
+    "smb://server/share/file",
+])
+def test_tool_add_resource_rejects_unsupported_url_schemes(url):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+
+    result = json.loads(provider._tool_add_resource({"url": url}))
+
+    assert "Unsupported URL scheme" in result["error"]
+    assert result["error"] != EXPECTED_LOCAL_PATH_ERROR
     provider._client.upload_temp_file.assert_not_called()
     provider._client.post.assert_not_called()
 

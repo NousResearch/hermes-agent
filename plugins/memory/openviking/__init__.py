@@ -873,12 +873,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 payload[key] = args[key]
 
         parsed_url = urlparse(url)
-        if parsed_url.scheme == "file":
-            return tool_error(local_path_error)
-        if parsed_url.scheme and not _is_windows_absolute_path(url) and not _is_remote_resource_source(url):
-            return tool_error(f"Unsupported resource URL scheme: {parsed_url.scheme}")
-        if _is_local_path_reference(url):
-            return tool_error(local_path_error)
+        if not _is_remote_resource_source(url):
+            if parsed_url.scheme == "file" or _is_windows_absolute_path(url) or not parsed_url.scheme:
+                return tool_error(
+                    "Local filesystem paths are not allowed for viking_add_resource; "
+                    "provide a remote URL instead."
+                )
+            return tool_error(
+                f"Unsupported URL scheme '{parsed_url.scheme}'; "
+                "provide a remote http(s), git, or ssh URL."
+            )
+
         payload["path"] = url
         resp = self._client.post("/api/v1/resources", payload)
         result = resp.get("result", {})

@@ -505,3 +505,88 @@ class TestToBoolHardening:
         )
 
 
+# =========================================================================
+# Bullet-shape content — bypass_procedural_check must honor the flag
+# even when content uses bullet-list style that could look procedural.
+# =========================================================================
+
+
+class TestBulletShapeBypass:
+    """Bullet-list content containing imperative verbs + bypass=True must land.
+
+    Regression guard for the reported case where orchestrator-class profiles
+    saved multi-bullet operational policy facts (e.g. "Always prefer X; run Y
+    via Z") and bypass_procedural_check=True was silently ignored on the first
+    two attempts because the content hit heuristic-4 (procedural signal near
+    imperative verb).  The bypass flag MUST be honored end-to-end: once
+    bypass=True is set, _detect_procedural_content is not called at all.
+    """
+
+    @pytest.fixture()
+    def store(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        s = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        s.load_from_disk()
+        return s
+
+    def test_bullet_shape_via_verb_blocked_without_bypass(self, store):
+        """Bullet content with 'via' near a verb is rejected without bypass."""
+        content = (
+            "Orchestrator judgment: prefer escalating via kanban_block; run sdlc-review"
+            " before shipping any prompt change"
+        )
+        result = store.add("memory", content, bypass_procedural_check=False)
+        assert result["success"] is False, (
+            "content with 'via' near imperative verb should be blocked by default"
+        )
+
+    def test_bullet_shape_via_verb_passes_with_bypass(self, store):
+        """The same bullet content passes when bypass_procedural_check=True."""
+        content = (
+            "Orchestrator judgment: prefer escalating via kanban_block; run sdlc-review"
+            " before shipping any prompt change"
+        )
+        result = store.add("memory", content, bypass_procedural_check=True)
+        assert result["success"] is True, (
+            "bypass_procedural_check=True must let content through end-to-end"
+        )
+        # Entry persists in the store
+        assert content in store._entries_for("memory"), (
+            "bypassed bullet-shape entry must be stored"
+        )
+
+    def test_bypass_end_to_end_via_memory_tool_dispatcher(self, store):
+        """memory_tool() dispatcher must honour bypass_procedural_check=True
+        for bullet-shape content that triggers heuristic-4 (signal near verb).
+        """
+        content = (
+            "braintrustorch policy: orchestrator judgment takes precedence over"
+            " escalation defaults; run approval flow via kanban_block for prod writes"
+        )
+        # Without bypass: rejected
+        rejected = json.loads(
+            memory_tool(
+                action="add",
+                target="memory",
+                content=content,
+                store=store,
+                bypass_procedural_check=False,
+            )
+        )
+        assert rejected["success"] is False
+
+        # With bypass: accepted
+        accepted = json.loads(
+            memory_tool(
+                action="add",
+                target="memory",
+                content=content,
+                store=store,
+                bypass_procedural_check=True,
+            )
+        )
+        assert accepted["success"] is True, (
+            "memory_tool() must honour bypass_procedural_check=True end-to-end; "
+            "the dispatcher must not re-check the gate after bypass=True is set"
+        )
+        assert content in store._entries_for("memory")

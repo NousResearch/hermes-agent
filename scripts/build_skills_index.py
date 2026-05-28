@@ -269,11 +269,28 @@ def main():
     # Crawl skills.sh
     all_skills.extend(crawl_skills_sh(skills_sh_source))
 
-    # Crawl other sources in parallel
+    # Crawl other sources in parallel.
+    # Per-source soft caps — sources stop returning when they run out, so these
+    # are ceilings, not targets.  ClawHub has 20k+ skills; bumping to 100k
+    # (well above current catalog size) lets the full catalog land in the
+    # index instead of being truncated at an arbitrary build-time limit.
+    SOURCE_LIMITS = {
+        # ClawHub had 49,698+ skills as of May 2026; 200k leaves headroom.
+        "clawhub": 200_000,
+        "lobehub": 100_000,
+        "browse-sh": 5_000,
+        "claude-marketplace": 5_000,
+        "github": 5_000,
+        "well-known": 5_000,
+        "official": 5_000,
+    }
+    DEFAULT_SOURCE_LIMIT = 500
+
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {}
         for name, source in sources.items():
-            futures[pool.submit(crawl_source, source, name, 500)] = name
+            limit = SOURCE_LIMITS.get(name, DEFAULT_SOURCE_LIMIT)
+            futures[pool.submit(crawl_source, source, name, limit)] = name
         for future in as_completed(futures):
             try:
                 all_skills.extend(future.result())
@@ -330,7 +347,11 @@ def main():
     EXPECTED_FLOORS = {
         "skills.sh": 100,
         "lobehub": 100,
-        "clawhub": 50,
+        # ClawHub had 49,698+ skills as of May 2026 — anything under 20k means
+        # pagination broke or the API surface changed.  Fail loudly rather
+        # than ship a degenerate index (we shipped 200/50000 silently for
+        # weeks because the floor was 50).
+        "clawhub": 20000,
         "official": 50,
         "github": 30,        # collapsed across all GitHub taps
         "browse-sh": 50,

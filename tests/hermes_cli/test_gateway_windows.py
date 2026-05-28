@@ -482,3 +482,220 @@ def test_uninstall_access_denied_declined_keeps_task_and_cleans_files(monkeypatc
     assert "Skipped elevation" in out
     assert "UAC is Windows' admin approval prompt" in out
     assert "Scheduled Task still registered" in out
+
+
+# ---------------------------------------------------------------------------
+# stop() drain semantics — issue #33778
+#
+# Background: on Windows, asyncio.add_signal_handler raises NotImplementedError,
+# so the gateway's SIGTERM handler (which drains in-flight agents and writes
+# resume_pending=True) never fires when `hermes gateway stop` kills the
+# process. The fix: stop() writes the planned_stop_marker first, waits for
+# the gateway's marker-watcher thread to drain + exit cleanly, then escalates
+# to taskkill if drain times out.
+# ---------------------------------------------------------------------------
+
+
+def test_stop_writes_planned_stop_marker_before_killing(monkeypatch):
+    """stop() must write the planned-stop marker BEFORE any kill signal.
+
+    Without this, the gateway's drain loop never runs on Windows and
+    sessions silently lose context across restarts.
+    """
+    pid = 99999
+    events = []
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+
+    # Stub the marker write so we can record the order of operations.
+    from gateway import status as status_mod
+
+    def fake_write_marker(target_pid):
+        events.append(("write_marker", target_pid))
+        return True
+
+    def fake_pid_exists(check_pid):
+        # Drain succeeds: pid "exits" right after the marker write.
+        return ("write_marker", pid) not in events
+
+    monkeypatch.setattr(status_mod, "write_planned_stop_marker", fake_write_marker)
+    monkeypatch.setattr(status_mod, "_pid_exists", fake_pid_exists)
+    monkeypatch.setattr(status_mod, "get_running_pid", lambda: pid)
+
+    def fake_kill(**kwargs):
+        events.append(("kill", kwargs.get("force", False)))
+        return 0
+
+    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", fake_kill)
+    monkeypatch.setattr("hermes_cli.gateway._get_restart_drain_timeout", lambda: 5.0)
+
+    gateway_windows.stop()
+
+    # Marker MUST be written before any kill.
+    kinds = [e[0] for e in events]
+    assert "write_marker" in kinds, "stop() never wrote the planned-stop marker"
+    marker_idx = kinds.index("write_marker")
+    kill_idx = kinds.index("kill") if "kill" in kinds else len(kinds)
+    assert marker_idx < kill_idx, (
+        f"stop() killed before writing the marker (events={events})"
+    )
+
+
+def test_stop_waits_for_graceful_drain_before_force_kill(monkeypatch):
+    """When drain succeeds, stop() should NOT force-kill the gateway.
+
+    drained=True means the gateway exited cleanly after seeing the
+    marker — escalating to taskkill /F afterwards would be wasted
+    work and may emit confusing "killed N processes" output.
+    """
+    pid = 88888
+    events = []
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+
+    from gateway import status as status_mod
+    monkeypatch.setattr(status_mod, "write_planned_stop_marker", lambda p: True)
+
+    # Simulate the gateway exiting cleanly after one poll tick.
+    poll_count = [0]
+    def fake_pid_exists(check_pid):
+        poll_count[0] += 1
+        return poll_count[0] < 2  # alive on first poll, gone on second
+    monkeypatch.setattr(status_mod, "_pid_exists", fake_pid_exists)
+    monkeypatch.setattr(status_mod, "get_running_pid", lambda: pid)
+
+    def fake_kill(**kwargs):
+        events.append(("kill", kwargs.get("force", False)))
+        return 0
+    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", fake_kill)
+    monkeypatch.setattr("hermes_cli.gateway._get_restart_drain_timeout", lambda: 5.0)
+
+    gateway_windows.stop()
+
+    # kill_gateway_processes is still called as the no-op sweep, but
+    # NOT with force=True — drain succeeded, gateway is already gone.
+    assert events == [("kill", False)], (
+        f"After clean drain, force kill should be disabled (events={events})"
+    )
+
+
+def test_stop_escalates_to_force_kill_when_drain_times_out(monkeypatch):
+    """When drain times out, stop() MUST escalate to force=True.
+
+    Drain timeout = gateway is stuck or unresponsive. Without the
+    taskkill /T /F escalation, the gateway stays alive and the next
+    `hermes gateway start` fails with "another instance is running".
+    """
+    pid = 77777
+    events = []
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+
+    from gateway import status as status_mod
+    monkeypatch.setattr(status_mod, "write_planned_stop_marker", lambda p: True)
+    # PID never exits — drain times out.
+    monkeypatch.setattr(status_mod, "_pid_exists", lambda check_pid: True)
+    monkeypatch.setattr(status_mod, "get_running_pid", lambda: pid)
+
+    def fake_kill(**kwargs):
+        events.append(("kill", kwargs.get("force", False)))
+        return 1
+    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", fake_kill)
+    # Tiny drain timeout to keep the test fast.
+    monkeypatch.setattr("hermes_cli.gateway._get_restart_drain_timeout", lambda: 1.0)
+
+    gateway_windows.stop()
+
+    # When drain times out, kill is invoked with force=True so taskkill /T /F
+    # walks the process tree.
+    assert events == [("kill", True)], (
+        f"After drain timeout, kill must use force=True (events={events})"
+    )
+
+
+def test_stop_no_running_gateway_skips_drain(monkeypatch):
+    """When no gateway is running, skip the drain wait entirely."""
+    events = []
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+
+    from gateway import status as status_mod
+    monkeypatch.setattr(status_mod, "get_running_pid", lambda: None)
+
+    def fake_write_marker(target_pid):
+        events.append(("write_marker", target_pid))
+        return True
+    monkeypatch.setattr(status_mod, "write_planned_stop_marker", fake_write_marker)
+    monkeypatch.setattr(status_mod, "_pid_exists", lambda check_pid: False)
+
+    def fake_kill(**kwargs):
+        events.append(("kill", kwargs.get("force", False)))
+        return 0
+    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", fake_kill)
+    monkeypatch.setattr("hermes_cli.gateway._get_restart_drain_timeout", lambda: 5.0)
+
+    gateway_windows.stop()
+
+    # With no PID to drain, no marker is written.  Kill sweep still runs
+    # (defensive — covers the case where a stray gateway is alive without
+    # a PID file).  force=True because drained=False.
+    assert ("write_marker", None) not in events
+    assert all(e[0] != "write_marker" for e in events), (
+        f"Should not write marker when no PID is running (events={events})"
+    )
+    assert events == [("kill", True)]
+
+
+def test_drain_helper_handles_invalid_pid(monkeypatch):
+    """_drain_gateway_pid returns False for invalid PIDs without crashing."""
+    assert gateway_windows._drain_gateway_pid(0, 5.0) is False
+    assert gateway_windows._drain_gateway_pid(-1, 5.0) is False
+
+
+def test_drain_helper_returns_true_when_pid_exits_quickly(monkeypatch):
+    """_drain_gateway_pid polls _pid_exists until it returns False."""
+    pid = 66666
+    poll_count = [0]
+
+    def fake_pid_exists(check_pid):
+        poll_count[0] += 1
+        return poll_count[0] < 3  # alive twice, then gone
+
+    from gateway import status as status_mod
+    monkeypatch.setattr(status_mod, "write_planned_stop_marker", lambda p: True)
+    monkeypatch.setattr(status_mod, "_pid_exists", fake_pid_exists)
+
+    assert gateway_windows._drain_gateway_pid(pid, drain_timeout=5.0) is True
+
+
+def test_drain_helper_returns_false_on_timeout(monkeypatch):
+    """_drain_gateway_pid returns False when the PID never exits."""
+    from gateway import status as status_mod
+    monkeypatch.setattr(status_mod, "write_planned_stop_marker", lambda p: True)
+    monkeypatch.setattr(status_mod, "_pid_exists", lambda check_pid: True)
+
+    assert gateway_windows._drain_gateway_pid(55555, drain_timeout=1.0) is False
+
+
+def test_drain_helper_still_waits_if_marker_write_fails(monkeypatch):
+    """Marker-write failures are swallowed; drain still polls for PID exit.
+
+    If the marker can't be written (disk full, permission error), the
+    gateway can't drain — but the wait still happens so a slow-shutdown
+    gateway from a different code path (e.g. SIGTERM working on this
+    platform after all) still gets observed cleanly.
+    """
+    pid = 44444
+    def fake_write(target_pid):
+        raise OSError("disk full")
+
+    from gateway import status as status_mod
+    monkeypatch.setattr(status_mod, "write_planned_stop_marker", fake_write)
+    monkeypatch.setattr(status_mod, "_pid_exists", lambda check_pid: False)
+
+    # Returns True because _pid_exists immediately says "gone".
+    assert gateway_windows._drain_gateway_pid(pid, drain_timeout=5.0) is True

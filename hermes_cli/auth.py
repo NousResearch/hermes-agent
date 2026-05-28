@@ -3181,6 +3181,9 @@ def _prompt_manual_callback_paste(redirect_uri: str) -> dict:
     print("not on your laptop) — that is expected.  Copy the FULL URL")
     print("from your browser's address bar of that failed page and paste")
     print("it below.  A bare '?code=...&state=...' fragment also works.")
+    print("If the consent page shows the authorization code in-page")
+    print("(xAI's current behavior) rather than redirecting, paste the")
+    print("bare code value on its own.")
     print("───────────────────────────────────────────────────────────────")
     try:
         raw = input("Callback URL: ")
@@ -3312,16 +3315,38 @@ def _sync_codex_pool_entries(
     tokens: Dict[str, str],
     last_refresh: Optional[str],
 ) -> None:
-    """Mirror a fresh Codex re-auth into the credential_pool singleton entries.
+    """Mirror a fresh Codex re-auth into the credential_pool OAuth entries.
 
     The runtime selects credentials from ``credential_pool.openai-codex``, not
     from ``providers.openai-codex.tokens``.  A re-auth invalidates the prior
-    OAuth pair server-side, but the pool's ``device_code`` entry keeps holding
-    the now-consumed refresh token plus any stale error markers — so the next
-    request spends a dead token and gets a 401 ``token_invalidated``.  Update
-    the singleton-seeded entries in lockstep with the provider tokens and clear
-    the error state so the fresh credentials take effect immediately.  Manual
-    (``manual:*``) entries are independent credentials and are left untouched.
+    OAuth pair server-side, but pool entries keep holding the now-consumed
+    refresh token plus any stale error markers — so the next request spends a
+    dead token and gets a 401 ``token_invalidated``.
+
+    What gets refreshed:
+
+    * ``device_code`` — the singleton-seeded entry written by the device-code
+      OAuth flow when the user logged in via ``hermes setup`` / the model
+      picker.  Always synced with the fresh tokens.
+    * ``manual:device_code`` — entries created by ``hermes auth add openai-codex``
+      that use the same device-code OAuth mechanism.  An interactive re-auth
+      proves the user owns the ChatGPT account, so it is safe (and expected)
+      to refresh these entries too.  Without this, a user who once ran the
+      ``hermes auth add`` workaround for #33000 would silently leave that
+      manual entry stale on every subsequent re-auth, recreating the issue
+      reported in #33538.
+
+    What does NOT get refreshed:
+
+    * ``manual:api_key`` and any other non-device-code manual sources — those
+      are independent credentials (an explicit API key, a different ChatGPT
+      account, etc.) and must not be overwritten by a single re-auth.
+
+    Error markers (``last_status``, ``last_error_*``) are also cleared on
+    every device-code-backed entry — even those whose tokens we did not
+    rewrite — so that an interactive re-auth gives every relevant pool entry
+    a fresh selection chance instead of leaving them marked unhealthy from a
+    pre-re-auth 401.
     """
     access_token = tokens.get("access_token")
     if not access_token:
@@ -3333,8 +3358,15 @@ def _sync_codex_pool_entries(
     entries = pool.get("openai-codex")
     if not isinstance(entries, list):
         return
+    # Sources whose tokens should be rewritten by a fresh Codex device-code
+    # OAuth re-auth.  ``manual:api_key`` and unknown sources are intentionally
+    # excluded — they represent independent credentials.
+    REFRESHABLE_SOURCES = {"device_code", "manual:device_code"}
     for entry in entries:
-        if not isinstance(entry, dict) or entry.get("source") != "device_code":
+        if not isinstance(entry, dict):
+            continue
+        source = entry.get("source")
+        if source not in REFRESHABLE_SOURCES:
             continue
         entry["access_token"] = access_token
         if refresh_token:
@@ -6936,7 +6968,21 @@ def _xai_oauth_loopback_login(
             provider="xai-oauth",
             code="xai_authorization_failed",
         )
-    if callback.get("state") != state:
+    callback_state = callback.get("state")
+    # Manual-paste bare-code path: when a user pastes only the opaque
+    # authorization code (no ``code=``/``state=`` query parameters),
+    # ``_parse_pasted_callback`` returns ``state=None``.  xAI's consent
+    # page renders the code in-page rather than redirecting through the
+    # 127.0.0.1 callback, so on many remote setups (Cloud Shell, headless
+    # VPS, container consoles) the bare code is the only thing the user
+    # can obtain.  PKCE (code_verifier) still binds the exchange to this
+    # client, so the local state-equality check is redundant on the
+    # bare-code path — we substitute the locally generated state to keep
+    # the rest of the validation chain (and the token exchange) unchanged.
+    # See #26923 (AccursedGalaxy comment, 2026-05-20).
+    if callback_state is None and manual_paste:
+        callback_state = state
+    if callback_state != state:
         raise AuthError(
             "xAI authorization failed: state mismatch.",
             provider="xai-oauth",

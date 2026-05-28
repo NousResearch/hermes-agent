@@ -244,8 +244,9 @@ def _prompt_for_category(c: Console, existing: List[str]) -> str:
 
 
 def do_search(query: str, source: str = "all", limit: int = 10,
-              console: Optional[Console] = None) -> None:
-    """Search registries and display results as a Rich table."""
+              console: Optional[Console] = None,
+              json_output: bool = False) -> None:
+    """Search registries and display results as a Rich table or JSON."""
     from tools.skills_hub import GitHubAuth, create_source_router, unified_search
 
     c = console or _console
@@ -265,7 +266,7 @@ def do_search(query: str, source: str = "all", limit: int = 10,
     table.add_column("Description", max_width=60)
     table.add_column("Source", style="dim")
     table.add_column("Trust", style="dim")
-    table.add_column("Identifier", style="dim")
+    table.add_column("Identifier", style="dim", no_wrap=True)
 
     for r in results:
         trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
@@ -277,6 +278,21 @@ def do_search(query: str, source: str = "all", limit: int = 10,
             f"[{trust_style}]{trust_label}[/]",
             r.identifier,
         )
+
+    if json_output:
+        import json as _json
+        out = [
+            {
+                "name": r.name,
+                "description": r.description,
+                "source": r.source,
+                "trust_level": r.trust_level,
+                "identifier": r.identifier,
+            }
+            for r in results
+        ]
+        c.print(_json.dumps(out, indent=2))
+        return
 
     c.print(table)
     c.print("[dim]Use: hermes skills inspect <identifier> to preview, "
@@ -1390,7 +1406,8 @@ def skills_command(args) -> None:
     if action == "browse":
         do_browse(page=args.page, page_size=args.size, source=args.source)
     elif action == "search":
-        do_search(args.query, source=args.source, limit=args.limit)
+        do_search(args.query, source=args.source, limit=args.limit,
+                  json_output=getattr(args, "json", False))
     elif action == "install":
         do_install(args.identifier, category=args.category, force=args.force,
                    skip_confirm=getattr(args, "yes", False),

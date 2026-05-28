@@ -25,7 +25,7 @@ import ssl
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
 from agent.anthropic_adapter import _is_oauth_token
 from agent.auxiliary_client import set_runtime_main
@@ -266,7 +266,7 @@ def run_conversation(
     system_message: str = None,
     conversation_history: List[Dict[str, Any]] = None,
     task_id: str = None,
-    stream_callback: Optional[callable] = None,
+    stream_callback: Optional[Callable[[str], None]] = None,
     persist_user_message: Optional[str] = None,
 ) -> Dict[str, Any]:
     """

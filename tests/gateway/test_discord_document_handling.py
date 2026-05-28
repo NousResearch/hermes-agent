@@ -7,6 +7,7 @@ to download, cache, and optionally inject text from non-image/audio files.
 
 import os
 import sys
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Optional
@@ -138,7 +139,12 @@ def make_message(attachments: list, content: str = "") -> SimpleNamespace:
 
 
 def _mock_aiohttp_download(raw_bytes: bytes):
-    """Return a patch context manager that makes aiohttp return raw_bytes."""
+    """Return a patch context manager that makes aiohttp return raw_bytes.
+
+    Also mocks ``is_safe_url`` to return ``True`` so tests don't depend on
+    real DNS resolution (CI may resolve cdn.discordapp.com to a private-range
+    IPv6 address, triggering the SSRF guard).
+    """
     resp = AsyncMock()
     resp.status = 200
     resp.read = AsyncMock(return_value=raw_bytes)
@@ -150,7 +156,13 @@ def _mock_aiohttp_download(raw_bytes: bytes):
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
 
-    return patch("aiohttp.ClientSession", return_value=session)
+    aiohttp_patch = patch("aiohttp.ClientSession", return_value=session)
+    safe_url_patch = patch("gateway.platforms.discord.is_safe_url", return_value=True)
+
+    stack = ExitStack()
+    stack.enter_context(aiohttp_patch)
+    stack.enter_context(safe_url_patch)
+    return stack
 
 
 # ---------------------------------------------------------------------------

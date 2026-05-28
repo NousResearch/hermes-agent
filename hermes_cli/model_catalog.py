@@ -287,6 +287,27 @@ def _get_provider_block(provider: str) -> dict[str, Any] | None:
     return block if isinstance(block, dict) else None
 
 
+def get_provider_allowlist(provider: str) -> list[str] | None:
+    """Return the model_allowlist for a provider, or None if not set.
+
+    Reads from ``model_catalog.providers.<provider>.model_allowlist`` in the
+    user config.  When set, the model picker should only show models whose
+    IDs (after normalisation) appear in this list.  When unset (default),
+    all discovered models are shown.
+    """
+    cfg = _load_catalog_config()
+    providers = cfg.get("providers", {})
+    block = providers.get(provider)
+    if not isinstance(block, dict):
+        return None
+    allowlist = block.get("model_allowlist")
+    if isinstance(allowlist, list):
+        if not allowlist:
+            return []  # explicit empty list = show nothing
+        return [str(m) for m in allowlist]
+    return None
+
+
 def get_curated_openrouter_models() -> list[tuple[str, str]] | None:
     """Return OpenRouter's curated ``[(id, description), ...]`` from the manifest.
 

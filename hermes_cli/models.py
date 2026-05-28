@@ -1993,8 +1993,27 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     return merged
 
 
-def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
-    """Return the best known model catalog for a provider.
+def _apply_model_allowlist(provider: str, models: list[str]) -> list[str]:
+    """Filter *models* by the user-configured allowlist for *provider*.
+
+    If ``model_catalog.providers.<provider>.model_allowlist`` is set in the
+    user config, return only models whose normalised ID appears in that list.
+    Otherwise return *models* unchanged.
+    """
+    try:
+        from hermes_cli.model_catalog import get_provider_allowlist
+        allowlist = get_provider_allowlist(provider)
+    except Exception:
+        return models
+    if not allowlist:
+        return models
+    # Normalise both sides for case-insensitive matching
+    allowed_set = {m.lower().strip() for m in allowlist}
+    return [m for m in models if m.lower().strip() in allowed_set]
+
+
+def _provider_model_ids_unfiltered(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
+    """Return the best known model catalog for a provider (unfiltered).
 
     Tries live API endpoints for providers that support them (Codex, Nous),
     falling back to static lists. For providers in ``_MODELS_DEV_PREFERRED``
@@ -2144,6 +2163,17 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized in _MODELS_DEV_PREFERRED:
         return _merge_with_models_dev(normalized, curated_static)
     return curated_static
+
+
+
+def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
+    """Return the best known model catalog for a provider, filtered by allowlist.
+
+    Delegates to :func:`_provider_model_ids_unfiltered` for discovery, then
+    applies the user-configured ``model_allowlist`` if one exists.
+    """
+    result = _provider_model_ids_unfiltered(provider, force_refresh=force_refresh)
+    return _apply_model_allowlist((provider or "").lower().strip(), result)
 
 
 def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:

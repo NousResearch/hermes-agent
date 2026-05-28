@@ -1786,10 +1786,18 @@ DEFAULT_CONFIG = {
         # next /model or `hermes model` invocation; network failures
         # silently fall back to the stale cache.
         "ttl_hours": 24,
-        # Optional per-provider override URLs for third parties that want
-        # to self-host their own curation list using the same schema.
+        # Optional per-provider overrides.  Each key is a normalised provider
+        # name; the value is a dict that can include:
+        #   url:             override the remote catalog URL
+        #   model_allowlist: list of model IDs to show in the picker (all others
+        #                    are hidden).  Useful for dynamic-discovery providers
+        #                    like ollama-cloud that surface hundreds of models.
         # Example:
         #   providers:
+        #     ollama-cloud:
+        #       model_allowlist:
+        #         - deepseek-v4-pro
+        #         - gemma4:31b
         #     openrouter:
         #       url: https://example.com/my-curation.json
         "providers": {},

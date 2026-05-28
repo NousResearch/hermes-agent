@@ -68,15 +68,13 @@ _yaml_load_fn = None
 
 
 def yaml_load(content: str):
-    """Parse YAML with lazy import and CSafeLoader preference."""
+    """Parse YAML with lazy import and safe loader."""
     global _yaml_load_fn
     if _yaml_load_fn is None:
         import yaml
 
-        loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
-
         def _load(value: str):
-            return yaml.load(value, Loader=loader)
+            return yaml.safe_load(value)
 
         _yaml_load_fn = _load
     return _yaml_load_fn(content)

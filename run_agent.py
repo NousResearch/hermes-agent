@@ -9852,19 +9852,15 @@ class AIAgent:
         if reasoning_text:
             reasoning_text = _sanitize_surrogates(reasoning_text)
 
-        # Strip inline reasoning tags (<think>…</think> etc.) from the stored
-        # assistant content.  Reasoning was already captured into
-        # ``reasoning_text`` above (either from structured fields or the
-        # inline-block fallback), so the raw tags in content are redundant.
-        # Leaving them in place caused reasoning to leak to messaging
-        # platforms (#8878, #9568), inflate context on subsequent turns
-        # (#9306 observed 16% content-size reduction on a real MiniMax
-        # session), and pollute generated session titles.  One strip at the
-        # storage boundary cleans content for every downstream consumer:
-        # API replay, session transcript, gateway delivery, CLI display,
-        # compression, title generation.
+        # Strip inline reasoning tags (<think>…</think> etc.) and internal
+        # memory-context wrappers from stored assistant content.  The final
+        # user-visible response is scrubbed separately, but this storage-boundary
+        # scrub is required so a model/provider echo of ephemeral recalled memory
+        # cannot become durable session history or Responses API replay state.
         if isinstance(_san_content, str) and _san_content:
-            _san_content = self._strip_think_blocks(_san_content).strip()
+            _san_content = sanitize_context(
+                self._strip_think_blocks(_san_content)
+            ).strip()
 
         msg = {
             "role": "assistant",

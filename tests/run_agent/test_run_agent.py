@@ -1787,11 +1787,14 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "stop")
         assert result["content"] == "No thinking here."
 
-    def test_memory_context_in_stored_content_is_preserved(self, agent):
-        """`_build_assistant_message` must not silently mutate model output
-        containing literal <memory-context> markers — that's legitimate text
-        (e.g. documentation, code) that the model may emit.  Streaming-path
-        leak prevention is handled by StreamingContextScrubber upstream."""
+    def test_memory_context_in_stored_content_is_scrubbed(self, agent):
+        """Persisted assistant content must not retain echoed ephemeral memory.
+
+        The API-facing current user message may contain recalled memory wrapped in
+        <memory-context> fences.  If a model/provider echoes that wrapper, the
+        storage-boundary assistant builder must scrub it so session persistence
+        and Responses API history replay cannot retain private memory.
+        """
         original = (
             "<memory-context>\n"
             "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
@@ -1802,8 +1805,9 @@ class TestBuildAssistantMessage:
         )
         msg = _mock_assistant_msg(content=original)
         result = agent._build_assistant_message(msg, "stop")
-        assert "<memory-context>" in result["content"]
-        assert "Visible answer" in result["content"]
+        assert "memory-context" not in result["content"].lower()
+        assert "stale memory" not in result["content"]
+        assert result["content"] == "Visible answer"
 
     def test_unterminated_think_block_stripped(self, agent):
         """Unterminated <think> block (MiniMax / NIM dropped close tag) is

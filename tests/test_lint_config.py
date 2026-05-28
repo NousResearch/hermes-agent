@@ -191,3 +191,20 @@ class TestToolsCodeExecutionToolF401:
             "tools/code_execution_tool.py has F401 violation(s):\n"
             f"{result.stdout}"
         )
+
+
+class TestToolsMemoryToolF401:
+    """tools/memory_tool.py must have zero F401 (unused-import) violations."""
+
+    def test_memory_tool_has_zero_f401_violations(self):
+        """tools/memory_tool.py must have zero unused-import violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", "tools/memory_tool.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/memory_tool.py has F401 violation(s):\n"
+            f"{result.stdout}"
+        )

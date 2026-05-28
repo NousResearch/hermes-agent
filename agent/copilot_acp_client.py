@@ -231,6 +231,38 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
+def _extract_session_chunk_text(content: Any) -> str:
+    """Best-effort extraction for ACP session-update content blocks.
+
+    Copilot ACP may surface assistant/user chunks as typed block objects rather
+    than plain dicts. Preserve their text so narration is not dropped when a
+    turn mixes tool calls and assistant text.
+    """
+
+    if content is None:
+        return ""
+    if isinstance(content, dict):
+        text = content.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        nested_content = content.get("content")
+        if isinstance(nested_content, str) and nested_content.strip():
+            return nested_content.strip()
+        return ""
+    if isinstance(content, list):
+        return _render_message_content(content)
+
+    text = getattr(content, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    nested_content = getattr(content, "content", None)
+    if isinstance(nested_content, str) and nested_content.strip():
+        return nested_content.strip()
+
+    return ""
+
+
 def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str]:
     if not isinstance(text, str) or not text.strip():
         return [], ""
@@ -613,9 +645,7 @@ class CopilotACPClient:
             update = params.get("update") or {}
             kind = str(update.get("sessionUpdate") or "").strip()
             content = update.get("content") or {}
-            chunk_text = ""
-            if isinstance(content, dict):
-                chunk_text = str(content.get("text") or "")
+            chunk_text = _extract_session_chunk_text(content)
             if kind == "agent_message_chunk" and chunk_text and text_parts is not None:
                 text_parts.append(chunk_text)
             elif kind == "agent_thought_chunk" and chunk_text and reasoning_parts is not None:

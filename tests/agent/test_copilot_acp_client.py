@@ -18,6 +18,11 @@ class _FakeProcess:
         self.stdin = io.StringIO()
 
 
+class _FakeContentBlock:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
 class CopilotACPClientSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = CopilotACPClient(acp_cwd="/tmp")
@@ -144,6 +149,30 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
 
         self.assertIn("error", response)
         self.assertFalse(outside.exists())
+
+    def test_session_update_agent_message_chunk_preserves_block_text(self) -> None:
+        process = _FakeProcess()
+        text_parts: list[str] = []
+        handled = self.client._handle_server_message(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": _FakeContentBlock("Removing both keys now"),
+                    }
+                },
+            },
+            process=process,
+            cwd="/tmp",
+            text_parts=text_parts,
+            reasoning_parts=[],
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(text_parts, ["Removing both keys now"])
+        self.assertEqual(process.stdin.getvalue(), "")
 
 
 if __name__ == "__main__":

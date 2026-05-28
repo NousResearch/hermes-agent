@@ -324,6 +324,30 @@ def _make_hermes_provider_class() -> Optional[type]:
             self.context.update_token_expiry(token_response)
             await self.context.storage.set_tokens(token_response)
 
+        async def _handle_refresh_response(self, response):  # type: ignore[override]
+            """Handle OAuth refresh responses, accepting Supabase's 201 Created.
+
+            The MCP SDK's refresh path has a separate handler from the initial
+            token exchange and treats non-200 responses as failed refreshes.
+            Supabase can return ``201 Created`` with a valid token JSON body for
+            refresh too, so persist that token instead of clearing credentials
+            and falling back to another browser authorization flow.
+            """
+            if response.status_code != 201:
+                return await super()._handle_refresh_response(response)
+
+            from mcp.client.auth.utils import handle_token_response_scopes
+            try:
+                token_response = await handle_token_response_scopes(response)
+                self.context.current_tokens = token_response
+                self.context.update_token_expiry(token_response)
+                await self.context.storage.set_tokens(token_response)
+                return True
+            except Exception:
+                logger.exception("Invalid refresh response")
+                self.context.clear_tokens()
+                return False
+
         async def async_auth_flow(self, request):  # type: ignore[override]
             # Pre-flow hook: ask the manager to refresh from disk if needed.
             # Any failure here is non-fatal — we just log and proceed with

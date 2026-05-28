@@ -242,3 +242,52 @@ async def test_hermes_provider_accepts_supabase_201_token_response(tmp_path, mon
     assert provider.context.current_tokens is not None
     assert provider.context.current_tokens.access_token == "access-123"
     assert (tmp_path / "mcp-tokens" / "supabase.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_hermes_provider_accepts_supabase_201_refresh_response(tmp_path, monkeypatch):
+    """Supabase refresh returns 201 Created with valid token JSON."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import httpx
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
+    from mcp.shared.auth import OAuthClientMetadata, OAuthToken
+
+    assert _HERMES_PROVIDER_CLS is not None
+    metadata = OAuthClientMetadata.model_validate({
+        "redirect_uris": ["http://127.0.0.1:58007/callback"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+    })
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="supabase",
+        server_url="https://mcp.supabase.com/mcp",
+        client_metadata=metadata,
+        storage=HermesTokenStorage("supabase"),
+        redirect_handler=None,
+        callback_handler=None,
+    )
+    provider.context.current_tokens = OAuthToken(
+        access_token="old-access",
+        token_type="Bearer",
+        expires_in=0,
+        refresh_token="old-refresh",
+    )
+    response = httpx.Response(
+        201,
+        json={
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 86400,
+            "token_type": "Bearer",
+        },
+        request=httpx.Request("POST", "https://api.supabase.com/oauth/token"),
+    )
+
+    assert await provider._handle_refresh_response(response) is True
+
+    assert provider.context.current_tokens is not None
+    assert provider.context.current_tokens.access_token == "new-access"
+    token_file = tmp_path / "mcp-tokens" / "supabase.json"
+    assert token_file.exists()
+    assert json.loads(token_file.read_text())["access_token"] == "new-access"

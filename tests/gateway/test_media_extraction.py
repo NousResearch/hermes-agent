@@ -221,6 +221,17 @@ class TestMediaExtraction:
         assert media_files == [(str(image), False)]
         assert text == ""
 
+    @pytest.mark.parametrize("suffix", [".md", ".markdown"])
+    def test_base_media_extraction_accepts_markdown_tags_for_document_delivery(self, tmp_path, suffix):
+        """Markdown artifacts emitted as explicit MEDIA tags should upload as documents."""
+        document = tmp_path / f"codex-dialogue{suffix}"
+        document.write_text("# Codex dialogue\n", encoding="utf-8")
+
+        media_files, text = BasePlatformAdapter.extract_media(f"MEDIA:{document}")
+
+        assert media_files == [(str(document), False)]
+        assert text == ""
+
     def test_background_delivery_appends_explicit_mcp_media_tags(self, tmp_path):
         """Background task delivery should not depend on the model echoing MCP MEDIA tags."""
         assert hasattr(gateway_run, "_append_trusted_tool_media_tags_to_response")
@@ -251,6 +262,65 @@ class TestMediaExtraction:
         )
 
         assert response == f"Background done\n{tag}"
+
+    @pytest.mark.parametrize("suffix", [".md", ".markdown"])
+    def test_background_delivery_appends_explicit_mcp_markdown_media_tags(self, tmp_path, suffix):
+        """Markdown MEDIA tags from explicit MCP metadata should also be delivered."""
+        document = tmp_path / f"codex-dialogue{suffix}"
+        document.write_text("# Codex dialogue\n", encoding="utf-8")
+        tag = f"MEDIA:{document}"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_mcp", "function": {"name": "mcp_filesystem_write_file"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_mcp",
+                "content": json.dumps(
+                    {"result": tag, "_hermes_media_tags": [tag]},
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+
+        response = gateway_run._append_trusted_tool_media_tags_to_response(
+            "Background done",
+            messages,
+            history_media_paths=set(),
+        )
+
+        assert response == f"Background done\n{tag}"
+
+    @pytest.mark.parametrize("suffix", [".md", ".markdown"])
+    def test_trusted_tool_markdown_media_tags_are_appended(self, tmp_path, suffix):
+        """Trusted current-turn media tool results should share the markdown allowlist."""
+        document = tmp_path / f"tool-report{suffix}"
+        document.write_text("# Tool report\n", encoding="utf-8")
+        tag = f"MEDIA:{document}"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_image", "function": {"name": "image_generate"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_image",
+                "content": tag,
+            },
+        ]
+
+        response = gateway_run._append_trusted_tool_media_tags_to_response(
+            "Tool done",
+            messages,
+            history_media_paths=set(),
+        )
+
+        assert response == f"Tool done\n{tag}"
 
     def test_mcp_plain_result_media_tags_are_not_extracted_without_metadata(self, tmp_path):
         """MCP text evidence mentioning MEDIA must not become an attachment directive."""

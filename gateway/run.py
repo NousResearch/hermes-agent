@@ -1372,7 +1372,7 @@ _GATEWAY_TOOL_MEDIA_RE = re.compile(
     r'MEDIA:\s*((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|bmp|'
     r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
     r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-    r'txt|csv|apk|ipa))',
+    r'txt|md|markdown|csv|apk|ipa))',
     re.IGNORECASE,
 )
 

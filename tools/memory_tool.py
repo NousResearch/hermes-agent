@@ -156,6 +156,17 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
+        self._warn_if_single_oversized_entry(
+            mem_dir / "MEMORY.md",
+            "memory",
+            self.memory_entries,
+        )
+        self._warn_if_single_oversized_entry(
+            mem_dir / "USER.md",
+            "user",
+            self.user_entries,
+        )
+
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
         # can see + remove poisoned entries via the memory tool.
@@ -296,6 +307,36 @@ class MemoryStore:
         if target == "user":
             return self.user_char_limit
         return self.memory_char_limit
+
+    def _warn_if_single_oversized_entry(
+        self,
+        path: Path,
+        target: str,
+        entries: List[str],
+    ) -> None:
+        """Warn when a raw markdown dump parses as one oversized entry.
+
+        A legitimate one-entry memory file also has no delimiter, so only warn
+        when that single parsed entry exceeds the target's whole-store budget.
+        """
+        if len(entries) != 1 or ENTRY_DELIMITER in entries[0]:
+            return
+
+        entry_len = len(entries[0])
+        limit = self._char_limit(target)
+        if entry_len <= limit:
+            return
+
+        logger.warning(
+            "%s contains one %s-character entry with no %r delimiters; "
+            "raw markdown imports can parse as a single oversized entry and "
+            "may be omitted from useful memory context. Split it into "
+            "smaller entries separated by %r.",
+            path.name,
+            f"{entry_len:,}",
+            ENTRY_DELIMITER,
+            ENTRY_DELIMITER.strip(),
+        )
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""

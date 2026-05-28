@@ -1,6 +1,7 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
 import json
+import logging
 import pytest
 from pathlib import Path
 
@@ -392,6 +393,45 @@ class TestMemoryStorePersistence:
         store = MemoryStore()
         store.load_from_disk()
         assert len(store.memory_entries) == 2
+
+    def test_load_warns_for_raw_markdown_over_limit(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        raw_markdown = (
+            "## Schedule\n"
+            "- Daily: website check\n\n"
+            "## Projects\n"
+            + ("FOAF network contact dossier. " * 30)
+        )
+        (tmp_path / "MEMORY.md").write_text(raw_markdown, encoding="utf-8")
+
+        store = MemoryStore(memory_char_limit=200)
+        with caplog.at_level(logging.WARNING, logger="tools.memory_tool"):
+            store.load_from_disk()
+
+        assert len(store.memory_entries) == 1
+        assert any(
+            "MEMORY.md contains one" in record.message
+            and "no '\\n§\\n' delimiters" in record.message
+            for record in caplog.records
+        )
+
+    def test_load_does_not_warn_for_normal_single_entry(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_text(
+            "User prefers concise answers.",
+            encoding="utf-8",
+        )
+
+        store = MemoryStore(memory_char_limit=200)
+        with caplog.at_level(logging.WARNING, logger="tools.memory_tool"):
+            store.load_from_disk()
+
+        assert store.memory_entries == ["User prefers concise answers."]
+        assert not caplog.records
 
 
 class TestMemoryStoreSnapshot:

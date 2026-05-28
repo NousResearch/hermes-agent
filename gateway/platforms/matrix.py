@@ -138,7 +138,8 @@ _OUTBOUND_MENTION_RE = re.compile(
 )
 
 _E2EE_INSTALL_HINT = (
-    "Install with: pip install 'mautrix[encryption]'  (requires libolm C library)"
+    "Install with: pip install 'mautrix[encryption]' asyncpg aiosqlite  "
+    "(requires libolm C library)"
 )
 
 _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
@@ -214,9 +215,22 @@ def _create_matrix_session(proxy_url: str | None):
 
 
 def _check_e2ee_deps() -> bool:
-    """Return True if mautrix E2EE dependencies (python-olm) are available."""
+    """Return True if mautrix E2EE dependencies are available.
+
+    Verifies python-olm (via mautrix.crypto.OlmMachine), the SQLite crypto
+    store backend (mautrix.crypto.store.asyncpg.PgCryptoStore — yes, the
+    PgCryptoStore class also drives the sqlite backend in mautrix 0.21),
+    and the database drivers actually used at connect time (``asyncpg`` for
+    the underlying upgrade_table machinery, ``aiosqlite`` for the
+    ``sqlite:///`` URL we pass to ``Database.create``).  Without all four,
+    encrypted rooms fail at connect time with a confusing
+    ``No module named 'asyncpg'`` (#31116).
+    """
     try:
         from mautrix.crypto import OlmMachine  # noqa: F401
+        from mautrix.crypto.store.asyncpg import PgCryptoStore  # noqa: F401
+        import asyncpg  # noqa: F401
+        import aiosqlite  # noqa: F401
 
         return True
     except (ImportError, AttributeError):
@@ -226,8 +240,13 @@ def _check_e2ee_deps() -> bool:
 def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used.
 
-    Lazy-installs mautrix via ``tools.lazy_deps.ensure("platform.matrix")``
-    on first call if not present. Rebinds all module-level type globals on success.
+    Lazy-installs the full ``platform.matrix`` feature group via
+    ``tools.lazy_deps.ensure_and_bind`` whenever any of the declared
+    packages (mautrix, Markdown, aiosqlite, asyncpg, aiohttp-socks) is
+    missing — not just mautrix itself.  Previously this short-circuited on
+    ``import mautrix``, which left the other four packages uninstalled
+    forever and broke E2EE connect with ``No module named 'asyncpg'``
+    (#31116).  Rebinds module-level type globals on success.
     """
     token = os.getenv("MATRIX_ACCESS_TOKEN", "")
     password = os.getenv("MATRIX_PASSWORD", "")
@@ -239,9 +258,20 @@ def check_matrix_requirements() -> bool:
     if not homeserver:
         logger.warning("Matrix: MATRIX_HOMESERVER not set")
         return False
+
+    # Check whether any package in the platform.matrix feature group is
+    # missing.  ``feature_missing`` is cheap (per-spec importlib.metadata
+    # lookups) and correctly handles ``mautrix[encryption]`` by stripping
+    # the extras marker before checking the bare package.
     try:
-        import mautrix  # noqa: F401
-    except ImportError:
+        from tools.lazy_deps import feature_missing, ensure_and_bind
+        missing = feature_missing("platform.matrix")
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("Matrix: lazy_deps lookup failed: %s", exc)
+        missing = ()
+        ensure_and_bind = None  # type: ignore[assignment]
+
+    if missing or ensure_and_bind is None:
         def _import():
             from mautrix.types import (
                 ContentURI, EventID, EventType, PaginationDirection,
@@ -261,10 +291,14 @@ def check_matrix_requirements() -> bool:
                 "UserID": UserID,
             }
 
-        from tools.lazy_deps import ensure_and_bind
+        if ensure_and_bind is None:
+            return False
         if not ensure_and_bind("platform.matrix", _import, globals(), prompt=False):
             logger.warning(
-                "Matrix: mautrix not installed. Run: pip install 'mautrix[encryption]'"
+                "Matrix: required packages not installed (%s). "
+                "Run: pip install 'mautrix[encryption]' asyncpg aiosqlite "
+                "Markdown aiohttp-socks",
+                ", ".join(missing) if missing else "platform.matrix",
             )
             return False
 

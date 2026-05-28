@@ -63,6 +63,8 @@ class CommandDef:
 
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
+    CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
+               gateway_only=True),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
@@ -164,7 +166,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
-               subcommands=("search", "browse", "inspect", "install")),
+               subcommands=("search", "browse", "inspect", "install", "audit")),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
                "Tools & Skills"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
@@ -449,7 +451,7 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     :func:`hermes_cli.plugins.PluginContext.register_command`. They behave
     like ``CommandDef`` entries for gateway surfacing: they appear in the
     Telegram command menu, in Slack's ``/hermes`` subcommand mapping, and
-    (via :func:`gateway.platforms.discord._register_slash_commands`) in
+    (via :func:`plugins.platforms.discord.adapter._register_slash_commands`) in
     Discord's native slash command picker.
 
     Lookup is lazy so importing this module never forces plugin discovery

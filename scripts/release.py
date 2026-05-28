@@ -45,32 +45,82 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "9592417+adam91holt@users.noreply.github.com": "adam91holt",
+    "45688690+fujinice@users.noreply.github.com": "fujinice",
+    "276689385+carltonawong@users.noreply.github.com": "carltonawong",
+    "195255660+EvilHumphrey@users.noreply.github.com": "EvilHumphrey",
+    "270604154+superearn-fisher@users.noreply.github.com": "superearn-fisher",
+    "3540493+kpadilha@users.noreply.github.com": "kpadilha",
+    "40378218+chaconne67@users.noreply.github.com": "chaconne67",
+    "Pluviobyte@users.noreply.github.com": "Pluviobyte",
+    "sanghyuk_seo@nexcubecorp.com": "sanghyuk-seo-nexcube",
+    "subrtt@gmail.com": "Brixyy",
+    "wangpuv@hotmail.com": "wangpuv",
+    "202622897+ticketclosed-wontfix@users.noreply.github.com": "ticketclosed-wontfix",
+    "wuxuebin1993@gmail.com": "victorGPT",
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
+    "kenyon1977@gmail.com": "kenyonxu",
+    "cipherframe@users.noreply.github.com": "CipherFrame",
+    "donovan-yohan@users.noreply.github.com": "donovan-yohan",
+    "121752779+jacevys@users.noreply.github.com": "jacevys",
     "me@promplate.dev": "CNSeniorious000",
     "yichengqiao21@gmail.com": "YarrowQiao",
     "erhanyasarx@gmail.com": "erhnysr",
     "30366221+WorldWriter@users.noreply.github.com": "WorldWriter",
     "dafeng@DafengdeMacBook-Pro.local": "WorldWriter",
+    "schepers.zander1@gmail.com": "Strontvod",
+    "ed@bebop.crew": "someaka",
     "anadi.jaggia@gmail.com": "Jaggia",
+    "steve@steveonjava.com": "steveonjava",
+    "steveonjava@gmail.com": "steveonjava",
+    "squiddy@2rook.ai": "MoonRay305",
     "32201324+simpolism@users.noreply.github.com": "simpolism",
     "simpolism@gmail.com": "simpolism",
     "jake@nousresearch.com": "simpolism",
     "mgongzai@gmail.com": "vKongv",
     "0x.badfriend@gmail.com": "discodirector",
     "altriatree@gmail.com": "TruaShamu",
+    "contact-me@stark-x.cn": "Stark-X",
+    "nat@nthrow.io": "nthrow",
     "m@mobrienv.dev": "mikeyobrien",
     "saeed919@pm.me": "falasi",
+    "chrisdlc119@outlook.com": "chdlc",
     "omar@techdeveloper.site": "nycomar",
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "mr.aashiz@gmail.com": "aashizpoudel",
+    "adityargadgil@gmail.com": "AdityaRajeshGadgil",
     "70629228+shaun0927@users.noreply.github.com": "shaun0927",
+    "soju06@users.noreply.github.com": "Soju06",
+    "34199905+Soju06@users.noreply.github.com": "Soju06",
     "98262967+Bihruze@users.noreply.github.com": "Bihruze",
+    "189280367+Lempkey@users.noreply.github.com": "Lempkey",
+    "34853915+m0n3r0@users.noreply.github.com": "m0n3r0",
+    "leeseoki@makestar.com": "leeseoki0",
+    "kronexoi13@gmail.com": "kronexoi",
+    "hua.zhong@kingsmith.com": "vgocoder",
+    "hermes@marian.local": "Schrotti77",
+    "1920071390@campus.ouj.ac.jp": "zapabob",
+    "gaia@gaia.local": "jfuenmayor",
+    "jiahuigu@users.noreply.github.com": "Jiahui-Gu",
+    "openhands@all-hands.dev": "YLChen-007",
+    "3153586+xzessmedia@users.noreply.github.com": "xzessmedia",
+    "AdamPlatin123@outlook.com": "AdamPlatin123",
+    "32711803+waefrebeorn@users.noreply.github.com": "waefrebeorn",
+    "32869278+dusterbloom@users.noreply.github.com": "dusterbloom",
+    "liuhao1024@users.noreply.github.com": "liuhao1024",
+    "kylekahraman@users.noreply.github.com": "kylekahraman",
+    "130975919+kylekahraman@users.noreply.github.com": "kylekahraman",
+    "dsr-restyn@users.noreply.github.com": "dsr-restyn",
+    "210765158+WuKongAI-CMU@users.noreply.github.com": "WuKongAI-CMU",
+    "lichriszhang@gmail.com": "codeblackhole1024",
+    "leovillalbajr@gmail.com": "Lempkey",
     "nidhi2894@gmail.com": "nidhi-singh02",
     "30312689+aashizpoudel@users.noreply.github.com": "aashizpoudel",
     "oleksii.lisikh@gmail.com": "olisikh",
     "jithendranaidunara@gmail.com": "JithendraNara",
     "jeremy@geocaching.com": "outdoorsea",
+    "54763683+thedavidmurray@users.noreply.github.com": "thedavidmurray",
     "leone.parise@gmail.com": "leoneparise",
     "mr@shu.io": "mrshu",
     "adam.manning@gmail.com": "am423",
@@ -79,7 +129,9 @@ AUTHOR_MAP = {
     "yanglongwei06@gmail.com": "Alex-yang00",
     "teknium@nousresearch.com": "teknium1",
     "markuscontasul@gmail.com": "Glucksberg",
+    "80581902+Glucksberg@users.noreply.github.com": "Glucksberg",
     "piyushvp1@gmail.com": "thelumiereguy",
+    "pnascimento9596@gmail.com": "pnascimento9596",
     "dskwelmcy@163.com": "dskwe",
     "421774554@qq.com": "wuli666",
     "twebefy@gmail.com": "tw2818",
@@ -183,6 +235,7 @@ AUTHOR_MAP = {
     "gonzes7@gmail.com": "aqilaziz",  # PR #26406 salvage (preserve native audio outside Telegram)
     "karthikeyann@users.noreply.github.com": "karthikeyann",  # PR #26609 salvage (DM-topic routing pin)
     "rino.alpin@gmail.com": "kunci115",  # PR #27098 salvage (thread-not-found retry)
+    "hayka-pacha@users.noreply.github.com": "hayka-pacha",  # PR #25270 salvage (registry-aware mcp_ prefix strip)
     "237601532+chromalinx@users.noreply.github.com": "chromalinx",  # PR #27014 salvage (commands for groups+DM)
     "booker1207@gmail.com": "booker1207",  # PR #25132 salvage (gate profile bots by allowed topics)
     "kiranvk2011@gmail.com": "kiranvk-2011",  # PR #24815 salvage (image documents → vision)
@@ -205,6 +258,8 @@ AUTHOR_MAP = {
     "jonathan.troyer@overmatch.com": "JTroyerOvermatch",
     "harryykyle1@gmail.com": "hharry11",
     "wysie@users.noreply.github.com": "wysie",
+    "ronhi@buildabear1.localdomain": "RonHillDev",  # PR #29523 salvage (machine-local commit email)
+    "hello@nami4d.tech": "Nami4D",  # PR #28490 salvage
     "jkausel@gmail.com": "jkausel-ai",
     "e.silacandmr@gmail.com": "Es1la",
     "51599529+stephen0110@users.noreply.github.com": "stephen0110",
@@ -214,10 +269,13 @@ AUTHOR_MAP = {
     "maciekczech@users.noreply.github.com": "maciekczech",
     "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "cine.dreamer.one@gmail.com": "LeonSGP43",
+    "david@nutricraft.ca": "cyb0rgk1tty",
+    "chris+dora@cmullins.io": "cmullins70",
     "zjtan1@gmail.com": "zeejaytan",
     "asslaenn5@gmail.com": "Aslaaen",
     "trae.anderson17@icloud.com": "Tkander1715",
     "beardthelion@users.noreply.github.com": "beardthelion",
+    "orkunozturk@gmail.com": "orcool",
     "tangyuanjc@JCdeAIfenshendeMac-mini.local": "tangyuanjc",
     "leon@agentlinker.ai": "agentlinker",
     "santoshhumagain1887@gmail.com": "npmisantosh",
@@ -566,6 +624,7 @@ AUTHOR_MAP = {
     "mgparkprint@gmail.com": "vlwkaos",
     "1317078257maroon@gmail.com": "Oxidane-bot",
     "tranquil_flow@protonmail.com": "Tranquil-Flow",
+    "66773372+Tranquil-Flow@users.noreply.github.com": "Tranquil-Flow",
     "LyleLengyel@gmail.com": "mcndjxlefnd",
     "wangshengyang2004@163.com": "Wangshengyang2004",
     "hasan.ali13381@gmail.com": "H-Ali13381",
@@ -640,7 +699,7 @@ AUTHOR_MAP = {
     "beibei1988@proton.me": "beibi9966",
     # ── bulk addition: 75 emails resolved via API, PR salvage bodies, noreply
     #    crossref, and GH contributor list matching (April 2026 audit) ──
-    "1115117931@qq.com": "aaronagent",
+    "1115117931@qq.com": "aaronlab",
     "1506751656@qq.com": "hqhq1025",
     "364939526@qq.com": "luyao618",
     "hgk324@gmail.com": "houziershi",
@@ -802,6 +861,7 @@ AUTHOR_MAP = {
     "xiayh17@gmail.com": "xiayh0107",
     "zhujianxyz@gmail.com": "opriz",
     "tuancanhnguyen706@gmail.com": "xxxigm",
+    "larcombe.n@gmail.com": "NickLarcombe",
     "54813621+xxxigm@users.noreply.github.com": "xxxigm",
     "asurla@nvidia.com": "anniesurla",
     "kchantharuan@nvidia.com": "nv-kasikritc",
@@ -929,6 +989,8 @@ AUTHOR_MAP = {
     "holynn@placeholder.local": "holynn-q",
     "agent@hermes.local": "jacdevos",
     "sunsky.lau@gmail.com": "liuhao1024",
+    "fabianoeq@gmail.com": "rodrigoeqnit",
+    "178342791+sgtworkman@users.noreply.github.com": "sgtworkman",
     "qiuqfang98@qq.com": "keepcalmqqf",
     "261867348+ai-ag2026@users.noreply.github.com": "ai-ag2026",
     "yanzh.su@gmail.com": "YanzhongSu",
@@ -1215,6 +1277,8 @@ AUTHOR_MAP = {
     "165905879+davidcampbelldc@users.noreply.github.com": "davidcampbelldc",
     "hoangv.pham0803@gmail.com": "hehehe0803",  # PR #26212 salvage (codex kanban writable root)
     "26063003+hehehe0803@users.noreply.github.com": "hehehe0803",
+    "kasunvinod@users.noreply.github.com": "kasunvinod",  # PR #24126 salvage (codex timeout propagation)
+    "15059870+kasunvinod@users.noreply.github.com": "kasunvinod",
     "38348871+vaddisrinivas@users.noreply.github.com": "vaddisrinivas",  # PR #26394 salvage (Docker messaging extra)
     # batch salvage (May 2026 LHF run, group 7)
     "198679067+02356abc@users.noreply.github.com": "02356abc",  # PR #28286 salvage (wecom CLOSING)
@@ -1226,6 +1290,8 @@ AUTHOR_MAP = {
     "rudi193@gmail.com": "rudi193-cmd",
     "86684667+sadiksaifi@users.noreply.github.com": "sadiksaifi",  # PR #27982 salvage (kanban horiz scroll)
     "mail@sadiksaifi.dev": "sadiksaifi",
+    "231588442+vynxevainglory-ai@users.noreply.github.com": "vynxevainglory-ai",  # PR #29233 salvage (kanban scrollbar + body overflow)
+    "vynxevainglory@gmail.com": "vynxevainglory-ai",
     # batch salvage (May 2026 LHF run, group 8)
     "266824395+AceWattGit@users.noreply.github.com": "AceWattGit",  # PR #28159 salvage (_pool_may_recover NameError)
     "57024493+YuanHanzhong@users.noreply.github.com": "YuanHanzhong",  # PR #28032 salvage (x.com status link-like)
@@ -1234,6 +1300,10 @@ AUTHOR_MAP = {
     "172729123+felix-windsor@users.noreply.github.com": "felix-windsor",  # PR #28019 salvage (cron asterisks)
     "felixwindsor3344@gmail.com": "felix-windsor",
     "259054917+houenyang-momo@users.noreply.github.com": "houenyang-momo",  # PR #28205 salvage (charizard contrast)
+    "33547839+sir-ad@users.noreply.github.com": "sir-ad",  # PR #31941 salvage (compaction noise)
+    "adarsh.agrahari26@gmail.com": "sir-ad",
+    "269599864+rdasilva1016-ui@users.noreply.github.com": "rdasilva1016-ui",  # PR #31098 salvage (Telegram /start ping)
+    "rdasilva1016-ui@users.noreply.github.com": "rdasilva1016-ui",
     "35931201+iqdoctor@users.noreply.github.com": "iqdoctor",  # PR #28095 salvage (windows installer docs)
     "29513231+joe102084@users.noreply.github.com": "joe102084",  # PR #28151 salvage (whitespace cron responses)
     "joe102084@gmail.com": "joe102084",
@@ -1262,6 +1332,22 @@ AUTHOR_MAP = {
     "120500656+oooindefatigable@users.noreply.github.com": "ooovenenoso",
     "vanthinh6886@gmail.com": "vanthinh6886",  # PR #28018 salvage (yaml/flock/atomic write guards)
     "erik.engervall@gmail.com": "erikengervall",  # PR #28774 (firecrawl integration tag)
+    "egilewski@egilewski.com": "egilewski",  # PR #30432 (MEDIA path traversal fix, GHSA-jmf9-9729-7pp8)
+    "edison@mcclean.codes": "McClean-Edison",  # PR #29817 (register_auxiliary_task plugin API)
+    "zhangsamuel12@gmail.com": "SamuelZ12",  # PR #7480 (show recap after in-session resume)
+    "490408354@qq.com": "daizhonggeng",  # PR #9020 (numbered /resume selection)
+    "claw@openclaw.ai": "wanwan2qq",  # PR #10215 (strip brackets/quotes from /resume; gateway session-ID lookup)
+    "simo.kiihamaki@gmail.com": "SimoKiihamaki",  # PR #30773 (Windows /reset+/new freeze; stdin fallback for modal)
+    "66773372+Tranquil-Flow@users.noreply.github.com": "Tranquil-Flow",  # PR #27518 (bracketed-paste timeout)
+    "8bit64k@pm.me": "8bit64k",  # PR #14681 (TUI /q alias from quit to queue)
+    "chenglunhu@gmail.com": "hclsys",  # PR #31985 (TUI /q alias regression test)
+    "dearmayo@localhost": "ffr31mr",  # PR #32103 (SubdirectoryHintTracker workspace boundary)
+    "TheOnlyMika@users.noreply.github.com": "TheOnlyMika",  # PR #32155 (dashboard XSS + defusedxml)
+    "krislidimo@gmail.com": "krislidimo",  # PR #29775 (tighten Telegram table row-group spacing; drop redundant first bullet)
+    "timothy.b.dixon@gmail.com": "Codename-11",  # PR #29302 (API server session controls — sessions/chat/fork/stream)
+    "jpschwartz2@uwalumni.com": "Schwartz10",  # PR #29302 sub-PR (multimodal media in session chat API)
+    "JohnC1009@users.noreply.github.com": "JohnC1009",  # PR #32020 salvage (auth: global auth.json fallback in _load_provider_state)
+    "biser@bisko.be": "bisko",  # PR #33784 salvage (re-pad reasoning_content on cross-provider fallback to require-side providers)
 }
 
 

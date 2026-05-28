@@ -56,6 +56,8 @@ class TestFailoverReason:
             "overloaded", "server_error", "timeout",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
+            "invalid_encrypted_content",
+            "multimodal_tool_content_unsupported",
             "provider_policy_blocked",
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
@@ -142,6 +144,19 @@ class TestExtractErrorCode:
     def test_from_top_level_code(self):
         body = {"code": "model_not_found"}
         assert _extract_error_code(body) == "model_not_found"
+
+    def test_from_wrapped_json_message(self):
+        body = {
+            "error": {
+                "message": (
+                    '{"error":{"message":"The encrypted content for item rs_001 could not be verified. '
+                    'Reason: Encrypted content could not be decrypted or parsed.",'
+                    '"type":"invalid_request_error","param":"","code":"invalid_encrypted_content"}}'
+                ),
+                "type": "400",
+            }
+        }
+        assert _extract_error_code(body) == "invalid_encrypted_content"
 
     def test_empty_when_no_code(self):
         assert _extract_error_code({}) == ""
@@ -239,11 +254,50 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
 
+    def test_402_out_of_funds_billing(self):
+        e = MockAPIError(
+            "Payment Required",
+            status_code=402,
+            body={
+                "status": 402,
+                "message": (
+                    "Your API key has run out of funds. Please go visit the "
+                    "portal to sort that out: https://portal.nousresearch.com"
+                ),
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
     def test_402_transient_usage_limit(self):
         e = MockAPIError("usage limit exceeded, try again later", status_code=402)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
+
+    def test_403_plan_entitlement_billing(self):
+        e = MockAPIError("This plan does not include the requested model", status_code=403)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_404_free_tier_model_block_is_billing(self):
+        e = MockAPIError(
+            "Not Found",
+            status_code=404,
+            body={
+                "status": 404,
+                "message": (
+                    "Model 'gpt-5' is not available on the Free Tier. "
+                    "Upgrade at https://portal.nousresearch.com or pick a free model."
+                ),
+            },
+        )
+        result = classify_api_error(e, provider="nous", model="gpt-5")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
 
     # ── Rate limit ──
 
@@ -291,6 +345,64 @@ class TestClassifyApiError:
         e = MockAPIError("Overloaded", status_code=529)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
+
+    # ── 5xx that are actually request-validation errors ──
+    # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
+    # request-validation failures with a 5xx status. These are
+    # deterministic, so they must NOT be retried — otherwise the retry
+    # loop hammers the identical bad request into a flood.
+
+    def test_502_with_unknown_parameter_is_non_retryable(self):
+        e = MockAPIError(
+            "Unknown parameter: 'input[617]._empty_recovery_synthetic'",
+            status_code=502,
+            body={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        "[ObjectParam] [input[617]._empty_recovery_synthetic] "
+                        "[unknown_parameter] Unknown parameter: "
+                        "'input[617]._empty_recovery_synthetic'."
+                    ),
+                }
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_502_with_unsupported_parameter_is_non_retryable(self):
+        e = MockAPIError(
+            "Unsupported parameter: logprobs",
+            status_code=502,
+            body={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Unsupported parameter: logprobs",
+                }
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_500_with_invalid_request_error_type_is_non_retryable(self):
+        e = MockAPIError(
+            "bad request",
+            status_code=500,
+            body={"error": {"type": "invalid_request_error", "message": "bad request"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_502_plain_bad_gateway_still_retryable(self):
+        """A genuine 502 with no request-validation signal stays retryable."""
+        e = MockAPIError("Bad Gateway", status_code=502)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
 
     # ── Model not found ──
 
@@ -476,6 +588,51 @@ class TestClassifyApiError:
         # Without "thinking" in the message, it shouldn't be thinking_signature
         assert result.reason != FailoverReason.thinking_signature
 
+    def test_invalid_encrypted_content_classified_as_retryable_replay_failure(self):
+        body = {
+            "error": {
+                "message": (
+                    '{"error":{"message":"The encrypted content for item rs_001 could not be verified. '
+                    'Reason: Encrypted content could not be decrypted or parsed.",'
+                    '"type":"invalid_request_error","param":"","code":"invalid_encrypted_content"}}'
+                ),
+                "type": "400",
+            }
+        }
+        e = MockAPIError(
+            "Error code: 400 - invalid_encrypted_content",
+            status_code=400,
+            body=body,
+        )
+        result = classify_api_error(e, provider="custom", model="gpt-5.4")
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+
+    def test_invalid_encrypted_content_broad_message_match_does_not_catch_generic_parse_error(self):
+        message = "Encrypted content could not be decrypted or parsed."
+        e = MockAPIError(
+            message,
+            status_code=400,
+            body={"error": {"message": message}},
+        )
+        result = classify_api_error(e, provider="custom", model="gpt-5.4")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    @pytest.mark.parametrize("error_code", ["Invalid_Encrypted_Content", "INVALID_ENCRYPTED_CONTENT"])
+    def test_invalid_encrypted_content_code_is_case_insensitive_for_400(self, error_code):
+        e = MockAPIError(
+            "Error code: 400 - bad request",
+            status_code=400,
+            body={"error": {"code": error_code, "message": "Bad request"}},
+        )
+        result = classify_api_error(e, provider="custom", model="gpt-5.4")
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+
     # ── Provider-specific: llama.cpp grammar-parse ──
 
     def test_llama_cpp_grammar_parse_error(self):
@@ -635,11 +792,29 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.context_overflow
 
+    def test_error_code_model_not_supported_on_free_tier_is_billing(self):
+        e = MockAPIError(
+            "Model unavailable",
+            body={
+                "error": {
+                    "code": "model_not_supported_on_free_tier",
+                    "message": "Model 'gpt-5' is not available on the Free Tier.",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="nous", model="gpt-5")
+        assert result.reason == FailoverReason.billing
+
     # ── Message-only patterns (no status code) ──
 
     def test_message_billing_pattern(self):
         e = Exception("insufficient credits to complete this request")
         result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+
+    def test_message_free_tier_model_block_is_billing(self):
+        e = Exception("Model 'gpt-5' is not available on the Free Tier.")
+        result = classify_api_error(e, provider="nous", model="gpt-5")
         assert result.reason == FailoverReason.billing
 
     def test_message_rate_limit_pattern(self):
@@ -1256,3 +1431,66 @@ class TestRateLimitErrorWithoutStatusCode:
         e.status_code = None
         result = classify_api_error(e, provider="copilot", model="gpt-4o")
         assert result.reason != FailoverReason.rate_limit
+
+
+
+# ── Test: multimodal_tool_content_unsupported pattern ───────────────────
+
+class TestMultimodalToolContentUnsupported:
+    """Issue #27344 — providers that reject list-type tool message content
+    should be classified as ``multimodal_tool_content_unsupported`` so the
+    retry loop can downgrade screenshots to text and try again.
+    """
+
+    def test_xiaomi_mimo_text_is_not_set_pattern(self):
+        """The actual Xiaomi MiMo 400 wording from the bug report."""
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'code': '400', 'message': 'Param Incorrect', 'param': 'text is not set', 'type': ''}}",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="xiaomi", model="mimo-v2.5")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
+    def test_generic_tool_message_must_be_string(self):
+        e = MockAPIError(
+            "tool message content must be a string",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="some-model")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_expected_string_got_list(self):
+        e = MockAPIError(
+            "Schema validation failed: expected string, got list",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="some-model")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_multimodal_tool_content_takes_priority_over_context_overflow(self):
+        """Some providers return a 400 whose message contains BOTH
+        'text is not set' and a length-shaped phrase; the tool-content
+        recovery is cheaper than compression so it must win the priority.
+        """
+        e = MockAPIError(
+            "text is not set; context length exceeded",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="xiaomi", model="mimo-v2.5")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_no_status_code_path_also_classifies(self):
+        """When the error reaches us without a status code (transport
+        layer ate it) the message-only classifier branch must also
+        recognise the pattern.
+        """
+        e = MockTransportError("tool_call.content must be string")
+        result = classify_api_error(e, provider="alibaba", model="qwen3.5-plus")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_unrelated_400_is_not_misclassified(self):
+        """Make sure the patterns don't false-positive on normal 400s."""
+        e = MockAPIError("bad request: missing field 'model'", status_code=400)
+        result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
+        assert result.reason != FailoverReason.multimodal_tool_content_unsupported

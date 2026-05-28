@@ -600,6 +600,76 @@ class TestSessionJsonSnapshotOptIn:
         assert hasattr(agent, "logs_dir")
 
 
+class TestSaveSessionLogRedactsSecrets:
+    """Regression: session_*.json must not contain plaintext credentials (#19798, #19845)."""
+
+    @pytest.fixture(autouse=True)
+    def _ensure_redaction_enabled(self, monkeypatch):
+        """Force redaction on regardless of host HERMES_REDACT_SECRETS state.
+        The hermetic conftest blanks the env var; the module-level
+        ``_REDACT_ENABLED`` constant is captured at import time, so we
+        flip it directly for the duration of these tests."""
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+
+    def test_redacts_api_key_in_tool_content(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "tool",
+                "content": "Response: Authorization: Bearer sk-proj-abc123def456ghi789jkl012mno",
+            },
+        ]
+        agent._save_session_log(messages)
+
+        snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "sk-proj-abc123def456ghi789jkl012mno" not in snapshot
+
+    def test_redacts_api_key_in_user_message(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [
+            {"role": "user", "content": "My key is sk-ant-api03-abc123def456ghi789jkl012mno please use it"},
+        ]
+        agent._save_session_log(messages)
+
+        snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "sk-ant-api03-abc123def456ghi789jkl012mno" not in snapshot
+
+    def test_redacts_system_prompt_credentials(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        agent._cached_system_prompt = "Use key sk-proj-realkey1234567890123456 for API calls"
+        agent._save_session_log([{"role": "user", "content": "test"}])
+
+        snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "sk-proj-realkey1234567890123456" not in snapshot
+
+    def test_redacts_list_type_multimodal_content(self, agent, tmp_path):
+        """OpenAI/Anthropic multimodal shape: content = list of {type, text|image_url} parts."""
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Key: gsk_abc123def456ghi789jkl012mno"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                ],
+            },
+        ]
+        agent._save_session_log(messages)
+
+        snapshot_text = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        snapshot = json.loads(snapshot_text)
+        parts = snapshot["messages"][0]["content"]
+        assert "gsk_abc123def456ghi789jkl012mno" not in parts[0]["text"]
+        # Image part preserved untouched
+        assert parts[1]["image_url"]["url"].startswith("data:image")
+
+
 class TestGetMessagesUpToLastAssistant:
     def test_empty_list(self, agent):
         assert agent._get_messages_up_to_last_assistant([]) == []
@@ -2636,6 +2706,31 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
+        self._setup_agent(agent)
+        agent.model = "qwen3.5:9b"
+        agent.provider = "custom"
+        agent.base_url = "http://host.docker.internal:11434/v1"
+        agent._ollama_num_ctx = 4096
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            caplog.at_level(logging.WARNING, logger="agent.conversation_loop"),
+        ):
+            result = agent.run_conversation("Call ps -aux")
+
+        assert result["failed"] is True
+        assert result["completed"] is False
+        assert result["api_calls"] == 0
+        assert result["turn_exit_reason"] == "ollama_runtime_context_too_small"
+        assert "Ollama loaded `qwen3.5:9b` with only 4,096 tokens" in result["final_response"]
+        assert "model.ollama_num_ctx: 65536" in result["final_response"]
+        assert not agent.client.chat.completions.create.called
+        assert "Ollama runtime context too small for Hermes tool use" in caplog.text
+        assert "runtime_context=4096" in caplog.text
+
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -3780,6 +3875,33 @@ class TestNousCredentialRefresh:
         assert "default_headers" not in rebuilt["kwargs"]
         assert isinstance(agent.client, _RebuiltClient)
 
+    def test_try_refresh_nous_client_credentials_accepts_explicit_auth_mode(
+        self, agent, monkeypatch
+    ):
+        agent.provider = "nous"
+        agent.api_mode = "chat_completions"
+        captured = {}
+
+        def _fake_resolve(**kwargs):
+            captured.update(kwargs)
+            return {
+                "api_key": "new-nous-key",
+                "base_url": "https://inference-api.nousresearch.com/v1",
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
+        )
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            ok = agent._try_refresh_nous_client_credentials(
+                force=False,
+                inference_auth_mode="legacy",
+            )
+
+        assert ok is True
+        assert captured["inference_auth_mode"] == "legacy"
+
 
 class TestCredentialPoolRecovery:
     def test_recover_with_pool_rotates_on_402(self, agent):
@@ -3993,6 +4115,25 @@ class TestCredentialPoolRecovery:
 
         assert context["reason"] == "usage_limit_reached"
         assert context["message"] == "The usage limit has been reached"
+
+    def test_extract_api_error_context_parses_resets_in_hours_and_minutes(self, agent, monkeypatch):
+        from agent import agent_runtime_helpers
+
+        monkeypatch.setattr(agent_runtime_helpers.time, "time", lambda: 1_000.0)
+        error = SimpleNamespace(
+            body={
+                "error": {
+                    "type": "GoUsageLimitError",
+                    "message": "Weekly usage limit reached. Resets in 6hr 29min.",
+                }
+            },
+            response=SimpleNamespace(headers={}),
+        )
+
+        context = agent._extract_api_error_context(error)
+
+        assert context["reason"] == "GoUsageLimitError"
+        assert context["reset_at"] == 1_000.0 + (6 * 60 * 60) + (29 * 60)
 
     def test_recover_with_pool_passes_error_context_on_rotated_429(self, agent):
         next_entry = SimpleNamespace(label="secondary")

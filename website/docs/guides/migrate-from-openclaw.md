@@ -8,6 +8,10 @@ description: "Complete guide to migrating your OpenClaw / Clawdbot setup to Herm
 
 `hermes claw migrate` imports your OpenClaw (or legacy Clawdbot/Moldbot) setup into Hermes. This guide covers exactly what gets migrated, the config key mappings, and what to verify after migration.
 
+:::tip
+If your OpenClaw setup was multi-provider, `hermes setup --portal` collapses it to one OAuth — 300+ models plus the Tool Gateway in a single login. See [Nous Portal](/integrations/nous-portal).
+:::
+
 ## Quick start
 
 ```bash
@@ -169,7 +173,7 @@ These are saved to `~/.hermes/migration/openclaw/<timestamp>/archive/` for manua
 | `HEARTBEAT.md` | `archive/workspace/HEARTBEAT.md` | Use cron jobs for periodic tasks |
 | `BOOTSTRAP.md` | `archive/workspace/BOOTSTRAP.md` | Use context files or skills |
 | Cron jobs | `archive/cron-config.json` | Recreate with `hermes cron create` |
-| Plugins | `archive/plugins-config.json` | See [plugins guide](/docs/user-guide/features/hooks) |
+| Plugins | `archive/plugins-config.json` | See [plugins guide](/user-guide/features/hooks) |
 | Hooks/webhooks | `archive/hooks-config.json` | Use `hermes webhook` or gateway hooks |
 | Memory backend | `archive/memory-backend-config.json` | Configure via `hermes honcho` |
 | Skills registry | `archive/skills-registry-config.json` | Use `hermes skills config` |

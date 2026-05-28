@@ -981,6 +981,18 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
     from hermes_constants import is_container
 
     if is_linux() and is_container():
+        # Phase 4: report s6 supervision when running under our /init.
+        # Other container runtimes (or containers built before Phase 2)
+        # still get the original "docker (foreground)" label.
+        try:
+            from hermes_cli.service_manager import detect_service_manager
+            if detect_service_manager() == "s6":
+                return GatewayRuntimeSnapshot(
+                    manager="s6 (container supervisor)",
+                    gateway_pids=gateway_pids,
+                )
+        except Exception:
+            pass  # Fall through to the legacy label on any detection error.
         return GatewayRuntimeSnapshot(
             manager="docker (foreground)",
             gateway_pids=gateway_pids,
@@ -1202,7 +1214,17 @@ def _systemd_operational(system: bool = False) -> bool:
 
 
 def _container_systemd_operational() -> bool:
-    """Return True when a container exposes working user or system systemd."""
+    """Return True when a container exposes working user or system systemd.
+
+    This is NOT our Hermes Docker image — that one runs s6-overlay as
+    PID 1 (since Phase 2 of the s6-overlay supervision plan) and is
+    detected via ``service_manager.detect_service_manager() == "s6"``.
+    This function handles the "container managed by something else"
+    case: systemd-nspawn, certain k8s pods, containers built FROM
+    systemd-bearing distros where the user has wired systemd as their
+    init. In those environments systemctl behaves identically to the
+    host case, so we fall through to the normal systemd code paths.
+    """
     if _systemd_operational(system=False):
         return True
     if _systemd_operational(system=True):
@@ -3327,34 +3349,9 @@ _PLATFORMS = [
              "help": "For DMs, this is your user ID. You can set it later by typing /set-home in chat."},
         ],
     },
-    {
-        "key": "discord",
-        "label": "Discord",
-        "emoji": "💬",
-        "token_var": "DISCORD_BOT_TOKEN",
-        "setup_instructions": [
-            "1. Go to https://discord.com/developers/applications → New Application",
-            "2. Go to Bot → Reset Token → copy the bot token",
-            "3. Enable: Bot → Privileged Gateway Intents → Message Content Intent",
-            "4. Invite the bot to your server:",
-            "   OAuth2 → URL Generator → check BOTH scopes:",
-            "     - bot",
-            "     - applications.commands  (required for slash commands!)",
-            "   Bot Permissions: Send Messages, Read Message History, Attach Files",
-            "   Copy the URL and open it in your browser to invite.",
-            "5. Get your user ID: enable Developer Mode in Discord settings,",
-            "   then right-click your name → Copy ID",
-        ],
-        "vars": [
-            {"name": "DISCORD_BOT_TOKEN", "prompt": "Bot token", "password": True,
-             "help": "Paste the token from step 2 above."},
-            {"name": "DISCORD_ALLOWED_USERS", "prompt": "Allowed user IDs or usernames (comma-separated)", "password": False,
-             "is_allowlist": True,
-             "help": "Paste your user ID from step 5 above."},
-            {"name": "DISCORD_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
-             "help": "Right-click a channel → Copy Channel ID (requires Developer Mode)."},
-        ],
-    },
+    # Discord moved to plugins/platforms/discord/ — its setup metadata is
+    # discovered dynamically via _all_platforms() from the platform registry
+    # entry registered by plugins/platforms/discord/adapter.py::register().
     {
         "key": "slack",
         "label": "Slack",
@@ -3762,7 +3759,12 @@ def _platform_status(platform: dict) -> str:
                 configured = bool(entry.is_connected(synthetic))
             except Exception:
                 configured = False
-        if not configured:
+        else:
+            # No is_connected hook — fall back to check_fn as a coarse
+            # "are deps present" gate. Don't fall back when is_connected
+            # is defined and returned False; that would let "SDK is
+            # installed" override "no token configured" and incorrectly
+            # report the platform as ready.
             try:
                 configured = bool(entry.check_fn())
             except Exception:
@@ -4018,15 +4020,11 @@ def _setup_dingtalk():
         client_id, client_secret = result
         save_env_value("DINGTALK_CLIENT_ID", client_id)
         save_env_value("DINGTALK_CLIENT_SECRET", client_secret)
-        save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
         print()
         print_success(f"{emoji} {label} configured via QR scan!")
     else:
         # ── Manual entry ──
         _setup_standard_platform(dingtalk_platform)
-        # Also enable allow-all by default for convenience
-        if get_env_value("DINGTALK_CLIENT_ID"):
-            save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
 
 
 def _setup_wecom():
@@ -4747,10 +4745,14 @@ def _builtin_setup_fn(key: str):
     from hermes_cli import setup as _s
     return {
         "telegram": _s._setup_telegram,
-        "discord": _s._setup_discord,
+        # discord moved into the plugin: setup_fn is registered by
+        # plugins/platforms/discord/adapter.py::register() and dispatched
+        # via the plugin path in _configure_platform().
         "slack": _s._setup_slack,
         "matrix": _s._setup_matrix,
-        "mattermost": _s._setup_mattermost,
+        # mattermost moved into the plugin: setup_fn is registered by
+        # plugins/platforms/mattermost/adapter.py::register() and dispatched
+        # via the plugin path in _configure_platform().
         "bluebubbles": _s._setup_bluebubbles,
         "webhooks": _s._setup_webhooks,
         "signal": _setup_signal,
@@ -5025,6 +5027,108 @@ def gateway_setup():
 # Main Command Handler
 # =============================================================================
 
+def _dispatch_via_service_manager_if_s6(
+    action: str, profile: str | None = None,
+) -> bool:
+    """If we're in a container with s6, dispatch gateway lifecycle via s6.
+
+    Returns True iff dispatched (caller should ``return``); False
+    otherwise — caller continues with the host-side code path.
+
+    ``action`` is one of ``start`` / ``stop`` / ``restart``. The
+    profile defaults to the current one (resolved via ``_profile_arg``).
+    The s6 service slot was created either by the Phase 4 profile-create
+    hook or by the container-boot reconciler (cont-init.d/02-…). If it
+    doesn't exist or s6 returns an error, the named errors from
+    :mod:`hermes_cli.service_manager` are caught and surfaced as
+    actionable CLI messages (no raw ``CalledProcessError`` traceback).
+    """
+    from hermes_cli.service_manager import (
+        GatewayNotRegisteredError,
+        S6CommandError,
+        detect_service_manager,
+        get_service_manager,
+    )
+
+    if detect_service_manager() != "s6":
+        return False
+    if profile is None:
+        # _profile_suffix() returns the bare profile name for
+        # HERMES_HOME=<root>/profiles/<name>, "" for the default root,
+        # or a hash for unrelated paths. Map "" → "default" so the
+        # default-profile gateway is reachable as gateway-default.
+        profile = _profile_suffix() or "default"
+    mgr = get_service_manager()
+    service_name = f"gateway-{profile}"
+    try:
+        if action == "start":
+            mgr.start(service_name)
+        elif action == "stop":
+            mgr.stop(service_name)
+        elif action == "restart":
+            mgr.restart(service_name)
+        else:
+            return False
+    except GatewayNotRegisteredError as exc:
+        print(f"✗ {exc}")
+        sys.exit(1)
+    except S6CommandError as exc:
+        print(f"✗ {exc}")
+        sys.exit(1)
+    return True
+
+
+def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
+    """Inside a container with s6, dispatch ``--all`` lifecycle to every
+    registered profile gateway.
+
+    Returns True iff dispatched (caller should ``return``); False
+    otherwise — caller continues with the host-side code path.
+
+    Without this, ``hermes gateway stop --all`` and ``... restart --all``
+    fall through to ``kill_gateway_processes(all_profiles=True)``, which
+    just ``pkill``s every gateway process. s6-supervise observes the
+    crash and restarts each one ~1s later — so ``--all`` ends up
+    *kicking* every gateway instead of *stopping* it. By iterating
+    ``list_profile_gateways()`` and sending the lifecycle command
+    through the service manager we get the intended semantics (s6's
+    ``want up``/``want down`` flips correctly so supervise stays down
+    after a stop).
+
+    ``action`` is one of ``stop`` / ``restart`` (``start --all`` isn't
+    a supported CLI surface).
+    """
+    from hermes_cli.service_manager import (
+        detect_service_manager,
+        get_service_manager,
+    )
+
+    if detect_service_manager() != "s6":
+        return False
+    if action not in ("stop", "restart"):
+        return False
+    mgr = get_service_manager()
+    profiles = mgr.list_profile_gateways()
+    if not profiles:
+        print("✗ No profile gateways registered under s6")
+        return True
+    fn = mgr.stop if action == "stop" else mgr.restart
+    errors: list[tuple[str, Exception]] = []
+    for profile in profiles:
+        service_name = f"gateway-{profile}"
+        try:
+            fn(service_name)
+        except Exception as exc:  # noqa: BLE001 — report and continue
+            errors.append((profile, exc))
+    succeeded = len(profiles) - len(errors)
+    verb = "stopped" if action == "stop" else "restarted"
+    if succeeded:
+        print(f"✓ {verb.capitalize()} {succeeded} profile gateway(s) under s6")
+    for profile, exc in errors:
+        print(f"✗ Could not {action} gateway-{profile}: {exc}")
+    return True
+
+
 def gateway_command(args):
     """Handle gateway subcommands."""
     try:
@@ -5046,11 +5150,83 @@ def gateway_command(args):
         sys.exit(1)
 
 
+def _maybe_redirect_run_to_s6_supervision(args) -> bool:
+    """Inside an s6 container, redirect bare ``gateway run`` to the
+    supervised path.
+
+    Background. Before the s6 image landed, ``docker run <image> gateway
+    run`` was the standard way to start a containerized gateway: the
+    gateway was the container's main process, tini reaped zombies, and
+    container exit code == gateway exit code. With s6-overlay as PID 1,
+    we'd much rather have the gateway run as a supervised s6 longrun
+    (auto-restart on crash, dashboard supervised alongside, multiple
+    profile gateways under the same /init). This redirect upgrades the
+    old invocation transparently — the user gets the new behavior
+    without changing their docker run command.
+
+    Three gates make this a no-op outside the intended scope:
+
+      1. ``_dispatch_via_service_manager_if_s6`` returns False unless
+         we're in a container with s6 as PID 1. Host runs of
+         ``hermes gateway run`` are unaffected.
+      2. ``HERMES_S6_SUPERVISED_CHILD`` is exported by
+         ``S6ServiceManager._render_run_script`` for the supervised
+         process itself — i.e. when s6-supervise execs ``hermes gateway
+         run --replace`` as a longrun, this guard short-circuits the
+         redirect so the supervised gateway actually runs in
+         foreground (otherwise we'd recurse: run → start → run → start
+         → ...).
+      3. ``--no-supervise`` (or ``HERMES_GATEWAY_NO_SUPERVISE=1``) opts
+         out for users who genuinely want pre-s6 semantics — CI smoke
+         tests, debugging the foreground startup path, etc.
+
+    Returns True iff dispatched (caller should ``return``).
+    """
+    no_supervise = getattr(args, "no_supervise", False) or \
+        os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes")
+    if no_supervise:
+        return False
+    if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+        # We ARE the supervised child s6-supervise is running. Fall
+        # through to the foreground code path so the gateway actually
+        # starts.
+        return False
+    if not _dispatch_via_service_manager_if_s6("start"):
+        return False
+    # Loud breadcrumb: explain the upgrade and how to opt out. Print to
+    # stderr so it doesn't pollute stdout-parsing scripts. The
+    # supervised gateway's own logs are routed by s6-log to both
+    # `docker logs` and ${HERMES_HOME}/logs/gateways/<profile>/current,
+    # so the user sees a clear sequence: this banner first, then the
+    # gateway's own stdout/stderr from the supervisor.
+    print(
+        "→ gateway is now running under s6 supervision (auto-restart on crash,\n"
+        "  dashboard supervised alongside if HERMES_DASHBOARD is set).\n"
+        "  This is the recommended setup for the s6 container image — the\n"
+        "  gateway will keep running even if it crashes.\n"
+        "  Use `--no-supervise` (or HERMES_GATEWAY_NO_SUPERVISE=1) to opt out\n"
+        "  and get the pre-s6 foreground behavior instead.",
+        file=sys.stderr,
+        flush=True,
+    )
+    # Block until the container is signalled. The supervised gateway's
+    # lifetime is independent of this process — s6-supervise restarts
+    # it on crash, and we don't want the container to exit when the
+    # gateway flaps. `sleep infinity` matches the static main-hermes
+    # service's pattern (see docker/s6-rc.d/main-hermes/run): the CMD
+    # process is a no-op heartbeat that keeps /init alive until
+    # `docker stop` sends SIGTERM, at which point /init runs stage 3
+    # shutdown (which tears down the supervised gateway cleanly).
+    os.execvp("sleep", ["sleep", "infinity"])
+
+
 def _gateway_command_inner(args):
     subcmd = getattr(args, 'gateway_command', None)
     
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
+        if _maybe_redirect_run_to_s6_supervision(args):
+            return  # unreachable; execvp doesn't return
         verbose = getattr(args, 'verbose', 0)
         quiet = getattr(args, 'quiet', False)
         replace = getattr(args, 'replace', False)
@@ -5109,6 +5285,21 @@ def _gateway_command_inner(args):
             print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
             sys.exit(1)
         elif is_container():
+            # Phase 4: inside a container with s6 the gateway service is
+            # auto-registered when the profile is created (and reconciled
+            # at every container boot). `install` is therefore informational.
+            from hermes_cli.service_manager import detect_service_manager
+            if detect_service_manager() == "s6":
+                print("Per-profile gateways are auto-registered when you create a profile.")
+                print()
+                print("  hermes profile create <name>     # creates the s6 service slot")
+                print("  hermes -p <name> gateway start   # bring it up via s6")
+                print("  hermes status                    # see currently-supervised gateways")
+                return
+            # Fallback for pre-s6 containers or other container runtimes
+            # we haven't taught about supervision (Podman without our
+            # /init, k8s plain runs, etc.) — the historical guidance still
+            # applies.
             print("Service installation is not needed inside a Docker container.")
             print("The container runtime is your service manager — use Docker restart policies instead:")
             print()
@@ -5139,6 +5330,13 @@ def _gateway_command_inner(args):
             from hermes_cli import gateway_windows
             gateway_windows.uninstall()
         elif is_container():
+            from hermes_cli.service_manager import detect_service_manager
+            if detect_service_manager() == "s6":
+                print("Per-profile gateways are auto-unregistered when you delete the profile.")
+                print()
+                print("  hermes profile delete <name>     # tears down the s6 service slot")
+                print("  hermes -p <name> gateway stop    # stop without deleting the profile")
+                return
             print("Service uninstall is not applicable inside a Docker container.")
             print("To stop the gateway, stop or remove the container:")
             print()
@@ -5152,6 +5350,14 @@ def _gateway_command_inner(args):
     elif subcmd == "start":
         system = getattr(args, 'system', False)
         start_all = getattr(args, 'all', False)
+
+        # Phase 4: inside a container with s6, dispatch via the service
+        # manager instead of falling through to systemd/launchd/windows.
+        # `--all` isn't meaningful here (each profile has its own service
+        # slot — start them individually via `hermes -p <name> gateway
+        # start`), so just bring up the current profile's slot.
+        if not start_all and _dispatch_via_service_manager_if_s6("start"):
+            return
 
         if start_all:
             # Kill all stale gateway processes across all profiles before starting
@@ -5182,6 +5388,11 @@ def _gateway_command_inner(args):
             print("To enable systemd: add systemd=true to /etc/wsl.conf and run 'wsl --shutdown' from PowerShell.")
             sys.exit(1)
         elif is_container():
+            # Reached only when s6 ISN'T running (the early dispatch
+            # above handles the s6 case). Pre-s6 containers or other
+            # container runtimes that don't ship our /init get the
+            # historical guidance: the gateway is the container's main
+            # process, so use docker lifecycle commands.
             print("Service start is not applicable inside a Docker container.")
             print("The gateway runs as the container's main process.")
             print()
@@ -5197,6 +5408,15 @@ def _gateway_command_inner(args):
     elif subcmd == "stop":
         stop_all = getattr(args, 'all', False)
         system = getattr(args, 'system', False)
+
+        # Phase 4: inside a container with s6, dispatch via the service
+        # manager. ``--all`` iterates every registered profile gateway
+        # through s6 (otherwise it would fall through to ``pkill``,
+        # which s6-supervise observes as a crash and immediately restarts).
+        if stop_all and _dispatch_all_via_service_manager_if_s6("stop"):
+            return
+        if not stop_all and _dispatch_via_service_manager_if_s6("stop"):
+            return
 
         if stop_all:
             # --all: kill every gateway process on the machine
@@ -5266,6 +5486,16 @@ def _gateway_command_inner(args):
         system = getattr(args, 'system', False)
         restart_all = getattr(args, 'all', False)
         service_configured = False
+
+        # Phase 4: inside a container with s6, dispatch via the service
+        # manager (s6-svc -t restarts the supervised process). ``--all``
+        # iterates every registered profile gateway through s6; without
+        # this it would fall through to ``pkill``, which s6-supervise
+        # would observe as a crash and immediately restart anyway.
+        if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
+            return
+        if not restart_all and _dispatch_via_service_manager_if_s6("restart"):
+            return
 
         if restart_all:
             # --all: stop every gateway process across all profiles, then start fresh

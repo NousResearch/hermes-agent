@@ -27,6 +27,7 @@ from hermes_cli.auth import (
     _quarantine_nous_oauth_state,
     _quarantine_nous_pool_entries,
     _save_auth_store,
+    _validate_nous_inference_url_from_network,
     _write_shared_nous_state,
     resolve_nous_runtime_credentials,
 )
@@ -103,7 +104,7 @@ class NousPortalAdapter(UpstreamAdapter):
             state = self._read_state()
             if state is None:
                 raise RuntimeError(
-                    "Not logged into Nous Portal. Run `hermes login nous` first."
+                    "Not logged into Nous Portal. Run `hermes auth add nous` first."
                 )
 
             try:
@@ -134,10 +135,13 @@ class NousPortalAdapter(UpstreamAdapter):
             if not agent_key:
                 raise RuntimeError(
                     "Nous Portal refresh did not return a usable agent_key. "
-                    "Try `hermes login nous` to re-authenticate."
+                    "Try `hermes auth add nous` to re-authenticate."
                 )
 
-            base_url = refreshed.get("base_url") or DEFAULT_NOUS_INFERENCE_URL
+            base_url = (
+                _validate_nous_inference_url_from_network(refreshed.get("base_url"))
+                or DEFAULT_NOUS_INFERENCE_URL
+            )
             base_url = base_url.rstrip("/")
 
             return UpstreamCredential(

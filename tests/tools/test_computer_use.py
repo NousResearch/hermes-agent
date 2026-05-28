@@ -76,6 +76,27 @@ class TestSchema:
         modes = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["mode"]["enum"])
         assert modes == {"som", "vision", "ax"}
 
+    def test_schema_exposes_max_elements_cap_for_capture(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+        assert "max_elements" in props
+        assert props["max_elements"]["type"] == "integer"
+        assert props["max_elements"].get("minimum", 1) >= 1
+
+    def test_schema_max_elements_documents_default_and_upper_bound(self):
+        """Schema description must agree with the runtime. The original PR
+        text said "Default 100" without a corresponding `default` field, and
+        had no upper bound — both Copilot findings.
+        """
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        from tools.computer_use.tool import (
+            _DEFAULT_MAX_ELEMENTS,
+            _MAX_ALLOWED_MAX_ELEMENTS,
+        )
+        prop = COMPUTER_USE_SCHEMA["parameters"]["properties"]["max_elements"]
+        assert prop.get("default") == _DEFAULT_MAX_ELEMENTS
+        assert prop.get("maximum") == _MAX_ALLOWED_MAX_ELEMENTS
+
 
 class TestRegistration:
     def test_tool_registers_with_registry(self):
@@ -204,6 +225,54 @@ class TestDispatch:
         out = handle_computer_use({"action": "drag"})
         parsed = json.loads(out)
         assert "error" in parsed
+
+    def test_set_value_routes_to_backend(self, noop_backend):
+        """set_value must reach the backend — regression for missing _NoopBackend stub."""
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "set_value", "value": "Option A", "element": 5})
+        parsed = json.loads(out)
+        assert parsed.get("ok") is True
+        assert parsed.get("action") == "set_value"
+        assert any(c[0] == "set_value" for c in noop_backend.calls)
+
+    def test_set_value_missing_value_returns_error(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "set_value"})
+        parsed = json.loads(out)
+        assert "error" in parsed
+    def test_capture_after_skipped_when_action_failed(self, noop_backend):
+        """capture_after must not fire when res.ok=False (regression guard).
+
+        A follow-up screenshot after a failed action shows the screen in a
+        normal state, misleading the model into thinking the action succeeded.
+        """
+        from unittest.mock import patch
+        from tools.computer_use.backend import ActionResult
+        from tools.computer_use.tool import handle_computer_use
+
+        # Make click() return a failure.
+        with patch.object(noop_backend, "click",
+                          return_value=ActionResult(ok=False, action="click",
+                                                    message="element not found")):
+            out = handle_computer_use({"action": "click", "element": 99,
+                                       "capture_after": True})
+
+        parsed = json.loads(out)
+        # Should return the error, not a multimodal capture.
+        assert parsed.get("ok") is False
+        assert parsed.get("action") == "click"
+        # No follow-up capture should have been issued.
+        capture_calls = [c for c in noop_backend.calls if c[0] == "capture"]
+        assert len(capture_calls) == 0, "capture must not be called after a failed action"
+
+    def test_capture_after_fires_when_action_succeeds(self, noop_backend):
+        """capture_after must trigger for successful actions."""
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "click", "element": 1,
+                                   "capture_after": True})
+        # Noop backend returns ok=True, so capture should have been called.
+        capture_calls = [c for c in noop_backend.calls if c[0] == "capture"]
+        assert len(capture_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +405,193 @@ class TestCaptureResponse:
         assert "#1" in text_part["text"]
         assert "AXButton" in text_part["text"]
         assert "AXTextField" in text_part["text"]
+
+    def _ax_backend_with(self, count: int):
+        """Construct a fake backend that yields ``count`` AX elements."""
+        from tools.computer_use.backend import CaptureResult, UIElement
+
+        elements = [
+            UIElement(index=i + 1, role="AXButton", label=f"el-{i}", bounds=(0, 0, 1, 1))
+            for i in range(count)
+        ]
+
+        class FakeBackend:
+            def start(self): pass
+            def stop(self): pass
+            def is_available(self): return True
+            def capture(self, mode="som", app=None):
+                return CaptureResult(
+                    mode=mode, width=800, height=600,
+                    png_b64="",
+                    elements=list(elements),
+                    app="Obsidian",
+                )
+            def click(self, **kw): ...
+            def drag(self, **kw): ...
+            def scroll(self, **kw): ...
+            def type_text(self, text): ...
+            def key(self, keys): ...
+            def list_apps(self): return []
+            def focus_app(self, app, raise_window=False): ...
+
+        return FakeBackend()
+
+    def test_capture_ax_caps_elements_at_default_for_dense_trees(self):
+        """Regression for #22865: an Electron-style 600-element AX tree must
+        not emit the entire array verbatim into the tool result.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(600)
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+            out = cu_tool.handle_computer_use({"action": "capture", "mode": "ax"})
+
+        parsed = json.loads(out)
+        assert parsed["mode"] == "ax"
+        assert parsed["total_elements"] == 600
+        assert len(parsed["elements"]) == cu_tool._DEFAULT_MAX_ELEMENTS
+        assert parsed["truncated_elements"] == 600 - cu_tool._DEFAULT_MAX_ELEMENTS
+        # Truncation must be visible in the human summary so the model knows
+        # the JSON view is partial and can re-issue with a tighter scope.
+        assert "truncated to" in parsed["summary"]
+
+    def test_capture_ax_honors_explicit_max_elements_override(self):
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(600)
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+            out = cu_tool.handle_computer_use(
+                {"action": "capture", "mode": "ax", "max_elements": 250}
+            )
+
+        parsed = json.loads(out)
+        assert len(parsed["elements"]) == 250
+        assert parsed["truncated_elements"] == 350
+
+    def test_capture_ax_below_cap_is_unchanged(self):
+        """Backwards-compat: small captures keep the full elements array and
+        do not surface a `truncated_elements` field.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(5)
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+            out = cu_tool.handle_computer_use({"action": "capture", "mode": "ax"})
+
+        parsed = json.loads(out)
+        assert len(parsed["elements"]) == 5
+        assert parsed["total_elements"] == 5
+        assert "truncated_elements" not in parsed
+        assert "truncated to" not in parsed["summary"]
+
+    def test_capture_ax_invalid_max_elements_falls_back_to_default(self):
+        """Malformed `max_elements` (string, negative, zero) must not silently
+        disable the cap and re-introduce the original unbounded behavior.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(600)
+        cu_tool.reset_backend_for_tests()
+        for bad in ("not-a-number", 0, -10):
+            with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+                out = cu_tool.handle_computer_use(
+                    {"action": "capture", "mode": "ax", "max_elements": bad}
+                )
+            parsed = json.loads(out)
+            assert len(parsed["elements"]) == cu_tool._DEFAULT_MAX_ELEMENTS, (
+                f"bad max_elements={bad!r} disabled the cap"
+            )
+
+    def test_capture_ax_clamps_oversized_max_elements_to_hard_cap(self):
+        """A caller passing a very large `max_elements` must not be able to
+        disable the safeguard. The cap is clamped to a hard upper bound so
+        the context-blow-up protection cannot be bypassed by argument.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(5000)
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+            out = cu_tool.handle_computer_use(
+                {"action": "capture", "mode": "ax", "max_elements": 10_000}
+            )
+        parsed = json.loads(out)
+        assert len(parsed["elements"]) == cu_tool._MAX_ALLOWED_MAX_ELEMENTS
+        assert parsed["total_elements"] == 5000
+        assert parsed["truncated_elements"] == 5000 - cu_tool._MAX_ALLOWED_MAX_ELEMENTS
+
+    def test_capture_ax_summary_indices_match_returned_elements(self):
+        """When `max_elements` is below the human-summary's own line cap, the
+        summary must not index elements that aren't in the returned array.
+        Otherwise the model sees `#15` in the summary and finds no matching
+        entry in `elements`.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(600)
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+            out = cu_tool.handle_computer_use(
+                {"action": "capture", "mode": "ax", "max_elements": 5}
+            )
+        parsed = json.loads(out)
+        returned_indices = {e["index"] for e in parsed["elements"]}
+        summary_lines = parsed["summary"].splitlines()
+        indexed_lines = [ln for ln in summary_lines if ln.lstrip().startswith("#")]
+        for ln in indexed_lines:
+            idx_token = ln.lstrip().split()[0].lstrip("#")
+            idx = int(idx_token)
+            assert idx in returned_indices, (
+                f"summary references #{idx} but it is absent from elements payload "
+                f"(returned: {sorted(returned_indices)})"
+            )
+
+    def test_capture_multimodal_summary_omits_truncation_note(self):
+        """The som/vision multimodal envelope returns a screenshot, not an
+        `elements` array — so a "response truncated to N of M elements"
+        claim in the summary would be inaccurate.
+        """
+        from tools.computer_use.backend import CaptureResult, UIElement
+        from tools.computer_use import tool as cu_tool
+
+        fake_png = "iVBORw0KGgo="
+        elements = [
+            UIElement(index=i + 1, role="AXButton", label=f"el-{i}", bounds=(0, 0, 1, 1))
+            for i in range(600)
+        ]
+
+        class FakeBackend:
+            def start(self): pass
+            def stop(self): pass
+            def is_available(self): return True
+            def capture(self, mode="som", app=None):
+                return CaptureResult(
+                    mode=mode, width=800, height=600,
+                    png_b64=fake_png, elements=list(elements),
+                    app="Obsidian",
+                )
+            def click(self, **kw): ...
+            def drag(self, **kw): ...
+            def scroll(self, **kw): ...
+            def type_text(self, text): ...
+            def key(self, keys): ...
+            def list_apps(self): return []
+            def focus_app(self, app, raise_window=False): ...
+
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()):
+            out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
+
+        assert isinstance(out, dict) and out["_multimodal"] is True
+        text_part = next(p for p in out["content"] if p.get("type") == "text")
+        assert "truncated to" not in text_part["text"], (
+            "multimodal response carries an image, not an elements array; "
+            "the truncation note describes a payload field that isn't present"
+        )
+        assert "truncated to" not in out["text_summary"]
 
 
 # ---------------------------------------------------------------------------
@@ -925,3 +1181,136 @@ class TestCaptureAfterAppContext:
         # No app context — should pass None so cua-driver picks the frontmost window
         assert len(captured_app_args) == 1
         assert captured_app_args[0] is None
+
+# ---------------------------------------------------------------------------
+# Regression tests for bug 1 from issue #24170:
+#   capture(app=...) and focus_app(app=...) must surface when the filter
+#   matches nothing instead of silently picking the frontmost window.
+# ---------------------------------------------------------------------------
+
+def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
+    """Construct a CuaDriverBackend with a mocked MCP session that returns
+    the supplied list_windows payload."""
+    from tools.computer_use.cua_backend import CuaDriverBackend
+
+    backend = CuaDriverBackend()
+    backend._session = MagicMock()
+    backend._session.call_tool.return_value = {
+        "data": "",
+        "images": [],
+        "structuredContent": {"windows": windows},
+        "isError": False,
+    }
+    return backend
+
+
+class TestCaptureAppFilterNoMatch:
+    """capture(app=X) must not silently fall back to the frontmost window
+    when X matches nothing — on a non-English macOS, list_windows returns
+    localized app names (e.g. "計算機"), so an English `app="Calculator"`
+    legitimately matches nothing and the caller needs to retry with the
+    localized name. The old code silently captured the frontmost window
+    (e.g. a menu-bar utility), giving the agent wrong UI elements.
+    """
+
+    def test_app_filter_no_match_returns_empty_capture_with_diagnostic(self):
+        # Simulates a localized macOS where Calculator's app_name is "計算機".
+        windows = [
+            {"app_name": "Fuwari", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "menu bar", "z_index": 0},
+            {"app_name": "計算機", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        cap = backend.capture(mode="som", app="Calculator")
+
+        # No window matched; capture must NOT pick the frontmost (Fuwari).
+        assert cap.app == "", (
+            f"app= filter no-match should not silently target a window; got {cap.app!r}"
+        )
+        assert cap.elements == []
+        assert "Calculator" in cap.window_title
+        assert "list_apps" in cap.window_title
+        # _active_pid must remain unset so a subsequent click doesn't hit Fuwari.
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+
+    def test_app_filter_match_still_works(self):
+        windows = [
+            {"app_name": "Fuwari", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "menu bar", "z_index": 0},
+            {"app_name": "計算機", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        # get_window_state for the matched window
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": '✅ 計算機 — 0 elements\n', "images": [], "isError": False,
+             "structuredContent": None},
+        ]
+
+        cap = backend.capture(mode="ax", app="計算機")
+
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2
+
+    def test_no_app_filter_still_picks_frontmost(self):
+        """When no app= is given, capture continues to pick the frontmost
+        window — the no-match early-return must not fire on the empty case."""
+        windows = [
+            {"app_name": "Fuwari", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "menu bar", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": '✅ Fuwari — 0 elements\n', "images": [], "isError": False,
+             "structuredContent": None},
+        ]
+
+        cap = backend.capture(mode="ax", app=None)
+
+        assert backend._active_pid == 100
+
+
+class TestFocusAppFilterNoMatch:
+    """focus_app(app=X) must return ok=False when X matches nothing —
+    not silently target the frontmost window and report ok=True with a
+    misleading 'Targeted Fuwari' message.
+    """
+
+    def test_focus_app_no_match_returns_not_ok(self):
+        windows = [
+            {"app_name": "Fuwari", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "menu bar", "z_index": 0},
+            {"app_name": "計算機", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        res = backend.focus_app("Calculator")
+
+        assert res.ok is False
+        assert res.action == "focus_app"
+        assert "Calculator" in res.message
+        # _active_pid must remain unset so a subsequent click doesn't hit Fuwari.
+        assert backend._active_pid is None
+
+    def test_focus_app_match_still_works(self):
+        windows = [
+            {"app_name": "Fuwari", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "menu bar", "z_index": 0},
+            {"app_name": "計算機", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        res = backend.focus_app("計算機")
+
+        assert res.ok is True
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2

@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
+from hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -76,14 +77,33 @@ def _plugins_dir() -> Path:
     return plugins
 
 
-def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
+def _sanitize_plugin_name(
+    name: str,
+    plugins_dir: Path,
+    *,
+    allow_subdir: bool = False,
+) -> Path:
     """Validate a plugin name and return the safe target path inside *plugins_dir*.
 
     Raises ``ValueError`` if the name contains path-traversal sequences or would
     resolve outside the plugins directory.
+
+    ``allow_subdir=True`` permits a single forward slash inside *name* so
+    category-namespaced plugin keys like ``observability/langfuse`` or
+    ``image_gen/openai`` (the registry keys emitted by ``_discover_all_plugins``)
+    can be looked up. ``..`` and backslash are still rejected, leading and
+    trailing slashes are stripped, and the resolved target must still live
+    inside *plugins_dir*. Install paths leave this at the default ``False``
+    because a freshly-cloned plugin always lands top-level under
+    ``~/.hermes/plugins/<name>/``.
     """
     if not name:
         raise ValueError("Plugin name must not be empty.")
+
+    if allow_subdir:
+        name = name.strip("/")
+        if not name:
+            raise ValueError("Plugin name must not be empty.")
 
     if name in {".", ".."}:
         raise ValueError(
@@ -91,7 +111,8 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
         )
 
     # Reject obvious traversal characters
-    for bad in ("/", "\\", ".."):
+    bad_chars = ("\\", "..") if allow_subdir else ("/", "\\", "..")
+    for bad in bad_chars:
         if bad in name:
             raise ValueError(f"Invalid plugin name '{name}': must not contain '{bad}'.")
 
@@ -267,8 +288,7 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
 
         try:
             if secret:
-                import getpass
-                value = getpass.getpass(f"  {name}: ").strip()
+                value = masked_secret_prompt(f"  {name}: ").strip()
             else:
                 value = input(f"  {name}: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -326,7 +346,7 @@ def _display_removed(name: str, plugins_dir: Path) -> None:
 
 def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     """Return the plugin path if it exists, or exit with an error listing installed plugins."""
-    target = _sanitize_plugin_name(name, plugins_dir)
+    target = _sanitize_plugin_name(name, plugins_dir, allow_subdir=True)
     if not target.exists():
         installed = ", ".join(d.name for d in plugins_dir.iterdir() if d.is_dir()) or "(none)"
         console.print(
@@ -844,12 +864,35 @@ def _discover_memory_providers() -> list[tuple[str, str]]:
 
 
 def _discover_context_engines() -> list[tuple[str, str]]:
-    """Return [(name, description), ...] for available context engines."""
+    """Return [(name, description), ...] for available context engines.
+
+    Includes repo-shipped engines from ``plugins/context_engine/`` AND
+    plugin-registered engines (third-party engines installed as Hermes
+    plugins via ``ctx.register_context_engine``). Repo-shipped descriptions
+    win when a plugin-registered engine collides on name.
+    """
+    engines: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
     try:
         from plugins.context_engine import discover_context_engines
-        return [(name, desc) for name, desc, _avail in discover_context_engines()]
+        for name, desc, _avail in discover_context_engines():
+            if name not in seen:
+                engines.append((name, desc))
+                seen.add(name)
     except Exception:
-        return []
+        pass
+
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_context_engine
+        discover_plugins()
+        plugin_engine = get_plugin_context_engine()
+        if plugin_engine and getattr(plugin_engine, "name", None) and plugin_engine.name not in seen:
+            engines.append((plugin_engine.name, "installed plugin"))
+    except Exception:
+        pass
+
+    return engines
 
 
 def _get_current_memory_provider() -> str:
@@ -1051,7 +1094,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
             curses.init_pair(1, curses.COLOR_GREEN, -1)
             curses.init_pair(2, curses.COLOR_YELLOW, -1)
             curses.init_pair(3, curses.COLOR_CYAN, -1)
-            curses.init_pair(4, 8, -1)  # dim gray
+            curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)  # dim gray
         cursor = 0
         scroll_offset = 0
 
@@ -1196,7 +1239,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                             curses.init_pair(1, curses.COLOR_GREEN, -1)
                             curses.init_pair(2, curses.COLOR_YELLOW, -1)
                             curses.init_pair(3, curses.COLOR_CYAN, -1)
-                            curses.init_pair(4, 8, -1)
+                            curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)
                         curses.curs_set(0)
             elif key in {curses.KEY_ENTER, 10, 13}:
                 if cursor < n_plugins:
@@ -1228,7 +1271,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                             curses.init_pair(1, curses.COLOR_GREEN, -1)
                             curses.init_pair(2, curses.COLOR_YELLOW, -1)
                             curses.init_pair(3, curses.COLOR_CYAN, -1)
-                            curses.init_pair(4, 8, -1)
+                            curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)
                         curses.curs_set(0)
             elif key in {27, ord("q")}:
                 # Save plugin changes on exit
@@ -1508,7 +1551,7 @@ def _user_installed_plugin_dir(name: str) -> Optional[Path]:
     """Resolved path under ``~/.hermes/plugins/<name>`` if it exists."""
     plugins_dir = _plugins_dir()
     try:
-        target = _sanitize_plugin_name(name, plugins_dir)
+        target = _sanitize_plugin_name(name, plugins_dir, allow_subdir=True)
     except ValueError:
         return None
     return target if target.is_dir() else None

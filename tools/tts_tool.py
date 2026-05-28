@@ -69,7 +69,12 @@ def get_env_value(name, default=None):
     value = _get_env_value(name)
     return default if value is None else value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway, resolve_openai_audio_api_key
+from tools.tool_backend_helpers import (
+    managed_nous_tools_enabled,
+    nous_tool_gateway_unavailable_message,
+    prefers_gateway,
+    resolve_openai_audio_api_key,
+)
 from tools.xai_http import hermes_xai_user_agent
 
 # ---------------------------------------------------------------------------
@@ -417,6 +422,123 @@ def _resolve_command_provider_config(
     if _is_command_provider_config(config):
         return config
     return None
+
+
+def _dispatch_to_plugin_provider(
+    text: str,
+    output_path: str,
+    provider: str,
+    tts_config: Dict[str, Any],
+) -> Optional[str]:
+    """Route the call to a plugin-registered TTS provider, or return None.
+
+    Returns the path to the written audio file on dispatch, or ``None``
+    to fall through to the next resolution layer (built-in dispatch or
+    Edge TTS default).
+
+    Resolution invariants enforced here (matches issue #30398):
+
+    1. Built-in provider names short-circuit — never reach the plugin
+       registry. The caller is responsible for the elif chain that
+       handles ``edge``/``openai``/etc.; this function explicitly
+       rejects those names defensively.
+    2. Command-type providers declared under
+       ``tts.providers.<name>: type: command`` (PR #17843) win over a
+       plugin with the same name. The caller passes us only when its
+       own command-provider check returned None — we re-verify here so
+       a refactor of the caller can't silently break the invariant.
+    3. Plugin dispatch fires only when ``provider`` matches a registered
+       :class:`TTSProvider` whose ``name`` equals the configured value.
+       Unknown names return None (caller falls through to Edge default).
+
+    Plugin exceptions are caught and re-raised — the outer
+    ``text_to_speech_tool`` try/except converts them to the standard
+    error envelope, matching how command-provider failures surface.
+    """
+    if not provider:
+        return None
+    key = provider.lower().strip()
+    if key in BUILTIN_TTS_PROVIDERS:
+        return None
+    # Defense in depth: command-provider check should already have
+    # short-circuited the caller. If a same-name command config exists,
+    # bail so the command path wins.
+    if _is_command_provider_config(_get_named_provider_config(tts_config, key)):
+        return None
+    try:
+        from agent.tts_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        plugin_provider = get_provider(key)
+        if plugin_provider is None:
+            # Long-lived sessions may have discovered plugins before the
+            # bundled backend was patched in or before config changed.
+            # Retry once with a forced refresh before surfacing fall-
+            # through. Mirrors the image_gen / browser dispatcher
+            # recovery pattern.
+            _ensure_plugins_discovered(force=True)
+            plugin_provider = get_provider(key)
+    except Exception as exc:  # noqa: BLE001 — discovery failure is non-fatal
+        logger.debug("tts plugin dispatch skipped (discovery failed): %s", exc)
+        return None
+    if plugin_provider is None:
+        return None
+
+    # Resolve voice / model / format from tts_config — providers should
+    # treat all of these as optional and fall back to their own defaults
+    # when None is passed (matches the ABC contract documented on
+    # ``TTSProvider.synthesize``).
+    voice = tts_config.get("voice") if isinstance(tts_config, dict) else None
+    model = tts_config.get("model") if isinstance(tts_config, dict) else None
+    speed = tts_config.get("speed") if isinstance(tts_config, dict) else None
+    fmt = (
+        tts_config.get("output_format", DEFAULT_COMMAND_TTS_OUTPUT_FORMAT)
+        if isinstance(tts_config, dict)
+        else DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
+    )
+
+    logger.info(
+        "Generating speech with plugin TTS provider '%s'...", key,
+    )
+    written = plugin_provider.synthesize(
+        text,
+        output_path,
+        voice=voice if isinstance(voice, str) and voice else None,
+        model=model if isinstance(model, str) and model else None,
+        speed=float(speed) if isinstance(speed, (int, float)) else None,
+        format=str(fmt).lower() if fmt else "mp3",
+    )
+    # Provider contract: returns the (possibly rewritten) output path.
+    # Defensive against a provider returning None or a non-string —
+    # fall back to the caller's expected output_path.
+    return written if isinstance(written, str) and written else output_path
+
+
+def _plugin_provider_is_voice_compatible(provider: str) -> bool:
+    """Return True when the registered plugin provider opts into voice
+    bubble delivery via its ``voice_compatible`` property.
+
+    Defensive: any registry or property access failure means False
+    (matches the safe default for the command-provider path).
+    """
+    if not provider:
+        return False
+    key = provider.lower().strip()
+    if key in BUILTIN_TTS_PROVIDERS:
+        return False
+    try:
+        from agent.tts_registry import get_provider
+
+        plugin_provider = get_provider(key)
+        if plugin_provider is None:
+            return False
+        return bool(plugin_provider.voice_compatible)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "tts plugin voice_compatible check failed for '%s': %s", key, exc,
+        )
+        return False
 
 
 def _iter_command_providers(tts_config: Dict[str, Any]):
@@ -961,7 +1083,8 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
 
     clean = re.sub(r"\n\s*\n+", " [pause] ", clean)
     clean = re.sub(r"\s*\n\s*", " ", clean)
-    clean = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", clean, count=1)
+    if not _XAI_SPEECH_TAG_RE.search(clean):
+        clean = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", clean, count=1)
     clean = re.sub(r"\s{2,}", " ", clean).strip()
     return clean
 
@@ -1751,6 +1874,24 @@ def text_to_speech_tool(
 
     # Determine output path
     if output_path:
+        # Reject '..' traversal components in the user-supplied path. An
+        # explicit absolute path is fine (the agent legitimately writes
+        # audio to user-specified locations), but a path that uses ``..``
+        # to escape its declared base is almost always either a bug or
+        # prompt-injection-controlled — e.g.
+        # ``output_path="audio/../../etc/cron.d/x"``. The terminal tool
+        # can still write anywhere with approval; this just keeps the
+        # unattended TTS surface from materializing files via traversal.
+        from tools.path_security import has_traversal_component
+        if has_traversal_component(output_path):
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"output_path contains '..' traversal component: "
+                    f"{output_path}. Use an absolute path or one relative "
+                    "to the current directory without '..'."
+                ),
+            }, ensure_ascii=False)
         file_path = Path(output_path).expanduser()
         if command_provider_config is not None:
             # Respect caller-supplied path but align the extension with the
@@ -1786,6 +1927,21 @@ def text_to_speech_tool(
             file_str = _generate_command_tts(
                 text, file_str, provider, command_provider_config, tts_config,
             )
+
+        # Plugin-registered TTS backend (issue #30398). Fires when the
+        # configured provider is neither a built-in nor a command-type
+        # entry, AND a plugin is registered under that name. The walrus
+        # binds `_plugin_path` only when the dispatcher returns a path
+        # (i.e. a plugin was actually found); a None return falls
+        # through to the built-in elif chain so unknown names hit the
+        # Edge TTS default at the bottom. The dispatcher itself enforces
+        # built-ins-always-win + command-wins-over-plugin defensively.
+        elif provider not in BUILTIN_TTS_PROVIDERS and (
+            _plugin_path := _dispatch_to_plugin_provider(
+                text, file_str, provider, tts_config,
+            )
+        ) is not None:
+            file_str = _plugin_path
 
         elif provider == "elevenlabs":
             try:
@@ -1925,6 +2081,18 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
+        elif provider not in BUILTIN_TTS_PROVIDERS:
+            # Plugin-registered provider (issue #30398). Voice-bubble
+            # delivery opts in via ``TTSProvider.voice_compatible``
+            # (mirrors the command-provider opt-in). Plugins that
+            # already write Opus skip the ffmpeg conversion.
+            plugin_voice_compatible = _plugin_provider_is_voice_compatible(provider)
+            if plugin_voice_compatible:
+                if not file_str.endswith(".ogg"):
+                    opus_path = _convert_to_opus(file_str)
+                    if opus_path:
+                        file_str = opus_path
+                voice_compatible = file_str.endswith(".ogg")
         elif (
             want_opus
             and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
@@ -2043,8 +2211,13 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
     managed_gateway = resolve_managed_tool_gateway("openai-audio")
     if managed_gateway is None:
         message = "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set"
-        if managed_nous_tools_enabled():
-            message += ", and the managed OpenAI audio gateway is unavailable"
+        if managed_nous_tools_enabled() or prefers_gateway("tts"):
+            message += (
+                ". "
+                + nous_tool_gateway_unavailable_message(
+                    "managed OpenAI audio for TTS",
+                )
+            )
         raise ValueError(message)
 
     return managed_gateway.nous_user_token, urljoin(

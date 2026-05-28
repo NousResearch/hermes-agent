@@ -124,6 +124,7 @@ from agent.memory_manager import StreamingContextScrubber, build_memory_context_
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
+from agent.redact import redact_sensitive_text
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -393,6 +394,7 @@ class AIAgent:
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         user_id: str = None,
+        user_id_alt: str = None,
         user_name: str = None,
         chat_id: str = None,
         chat_name: str = None,
@@ -470,6 +472,7 @@ class AIAgent:
             prefill_messages=prefill_messages,
             platform=platform,
             user_id=user_id,
+            user_id_alt=user_id_alt,
             user_name=user_name,
             chat_id=chat_id,
             chat_name=chat_name,
@@ -548,7 +551,81 @@ class AIAgent:
                 "Session DB creation failed (will retry next turn): %s", e
             )
 
-    def reset_session_state(self):
+    def _transition_context_engine_session(
+        self,
+        *,
+        old_session_id: Optional[str] = None,
+        new_session_id: Optional[str] = None,
+        previous_messages: Optional[list] = None,
+        carry_over_context: bool = False,
+        reset_engine: bool = True,
+        **extra_context,
+    ) -> None:
+        """Notify the active context engine about a host session transition.
+
+        Generic host-side lifecycle helper. The built-in compressor keeps its
+        existing reset behavior; plugin engines that implement richer hooks
+        (``on_session_end``, ``on_session_reset``, ``on_session_start``,
+        ``carry_over_new_session_context``) can flush old-session state,
+        reset runtime counters, bind to the new session, and optionally
+        carry retained context forward.
+        """
+        engine = getattr(self, "context_compressor", None)
+        if not engine:
+            return
+
+        if old_session_id and previous_messages is not None and hasattr(engine, "on_session_end"):
+            try:
+                engine.on_session_end(old_session_id, previous_messages)
+            except Exception as exc:
+                logger.debug("context engine on_session_end during transition: %s", exc)
+
+        if reset_engine and hasattr(engine, "on_session_reset"):
+            try:
+                engine.on_session_reset()
+            except Exception as exc:
+                logger.debug("context engine on_session_reset during transition: %s", exc)
+
+        should_start = bool(
+            old_session_id
+            or previous_messages is not None
+            or carry_over_context
+            or extra_context
+        )
+        target_session_id = new_session_id or getattr(self, "session_id", "") or ""
+        if should_start and target_session_id and hasattr(engine, "on_session_start"):
+            start_context = {
+                "old_session_id": old_session_id,
+                "carry_over_context": carry_over_context,
+                "platform": getattr(self, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                "model": getattr(self, "model", ""),
+                "context_length": getattr(engine, "context_length", None),
+                "conversation_id": getattr(self, "_gateway_session_key", None),
+            }
+            start_context.update(extra_context)
+            start_context = {k: v for k, v in start_context.items() if v not in (None, "")}
+            try:
+                engine.on_session_start(target_session_id, **start_context)
+            except Exception as exc:
+                logger.debug("context engine on_session_start during transition: %s", exc)
+
+        if (
+            carry_over_context
+            and old_session_id
+            and target_session_id
+            and hasattr(engine, "carry_over_new_session_context")
+        ):
+            try:
+                engine.carry_over_new_session_context(old_session_id, target_session_id)
+            except Exception as exc:
+                logger.debug("context engine carry_over_new_session_context during transition: %s", exc)
+
+    def reset_session_state(
+        self,
+        previous_messages: Optional[list] = None,
+        old_session_id: Optional[str] = None,
+        carry_over_context: bool = False,
+    ):
         """Reset all session-scoped token counters to 0 for a fresh session.
         
         This method encapsulates the reset logic for all session-level metrics
@@ -562,9 +639,12 @@ class AIAgent:
         
         The method safely handles optional attributes (e.g., context compressor)
         using ``hasattr`` checks.
-        
-        This keeps the counter reset logic DRY and maintainable in one place
-        rather than scattering it across multiple methods.
+
+        When ``previous_messages`` / ``old_session_id`` / ``carry_over_context``
+        are provided, the active context engine is notified through the
+        full transition lifecycle (``_transition_context_engine_session``)
+        instead of a bare reset. Default callers pass nothing and keep the
+        existing reset-only behavior.
         """
         # Token usage counters
         self.session_total_tokens = 0
@@ -583,9 +663,14 @@ class AIAgent:
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
-        # Context engine reset (works for both built-in compressor and plugins)
-        if hasattr(self, "context_compressor") and self.context_compressor:
-            self.context_compressor.on_session_reset()
+        # Context engine reset/transition (works for built-in compressor and plugins)
+        self._transition_context_engine_session(
+            old_session_id=old_session_id,
+            new_session_id=getattr(self, "session_id", None),
+            previous_messages=previous_messages,
+            carry_over_context=carry_over_context,
+            reset_engine=True,
+        )
 
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
@@ -739,6 +824,116 @@ class AIAgent:
                 self.status_callback("warn", message)
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
+
+    # ── Buffered retry/fallback status ────────────────────────────────────
+    # Retry and fallback chains were flooding the CLI/gateway with status
+    # noise that users found confusing: a single transient 429 could produce
+    # 10+ "Provider/Endpoint/Retrying in 5s..." lines before the request
+    # eventually succeeded.  The buffered helpers below capture these
+    # status messages instead of emitting them immediately.  They are
+    # flushed (shown to the user) ONLY when every retry and fallback has
+    # been exhausted; on success they are silently dropped.  Backend logs
+    # (agent.log) are unaffected — every individual emission site still
+    # writes to ``logger.warning`` / ``logger.info`` for diagnosis.
+
+    def _buffer_status(self, message: str) -> None:
+        """Buffer a retry/fallback status message.
+
+        Stored as a (kind, text) tuple where ``kind`` is one of:
+        - ``"status"``  -> replays via ``_emit_status``
+        - ``"vprint"``  -> replays via ``_vprint(force=True)``
+        - ``"warn"``    -> replays via ``_emit_warning``
+        Used to defer noisy retry chatter until we know whether the
+        turn ultimately recovered or failed.
+        """
+        try:
+            buf = getattr(self, "_retry_status_buffer", None)
+            if buf is None:
+                buf = []
+                self._retry_status_buffer = buf
+            buf.append(("status", message))
+        except Exception:
+            # Never break the retry loop on a buffer hiccup.
+            pass
+
+    def _buffer_vprint(self, message: str) -> None:
+        """Buffer a vprint(force=True) retry/fallback line."""
+        try:
+            buf = getattr(self, "_retry_status_buffer", None)
+            if buf is None:
+                buf = []
+                self._retry_status_buffer = buf
+            buf.append(("vprint", message))
+        except Exception:
+            pass
+
+    def _clear_status_buffer(self) -> None:
+        """Drop buffered retry messages — call on successful recovery."""
+        try:
+            buf = getattr(self, "_retry_status_buffer", None)
+            if buf:
+                buf.clear()
+        except Exception:
+            pass
+
+    def _flush_status_buffer(self) -> None:
+        """Emit buffered retry messages — call on terminal failure.
+
+        Surfaces the full retry/fallback trace so the user can see what
+        was tried before the turn gave up.
+        """
+        try:
+            buf = getattr(self, "_retry_status_buffer", None)
+            if not buf:
+                return
+            # Drain first so a callback exception doesn't double-emit.
+            messages = list(buf)
+            buf.clear()
+            for kind, msg in messages:
+                try:
+                    if kind == "status":
+                        self._emit_status(msg)
+                    elif kind == "warn":
+                        self._emit_warning(msg)
+                    else:
+                        self._vprint(f"{self.log_prefix}{msg}", force=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _disable_codex_reasoning_replay(
+        self,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, int]:
+        """Disable Responses encrypted reasoning replay and strip cached state.
+
+        Called from the conversation_loop retry path when the provider
+        rejects a replayed ``codex_reasoning_items`` blob with HTTP 400
+        ``invalid_encrypted_content``.  Sets ``self._codex_reasoning_replay_enabled``
+        to ``False`` (consumed by ``codex_responses_adapter._chat_messages_to_responses_input``
+        and ``transports/codex.py`` to drop ``reasoning.encrypted_content``
+        from subsequent requests) and pops ``codex_reasoning_items`` from
+        every assistant message in ``messages`` so they cannot be replayed
+        again later in the session.
+
+        Returns a small stats dict ``{"messages": int, "items": int}``
+        counting what was stripped — purely for diagnostic logging.
+        """
+        stripped_messages = 0
+        stripped_items = 0
+        target_messages = messages if isinstance(messages, list) else []
+
+        for msg in target_messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            items = msg.pop("codex_reasoning_items", None)
+            if isinstance(items, list) and items:
+                stripped_messages += 1
+                stripped_items += len(items)
+
+        self._codex_reasoning_replay_enabled = False
+        return {"messages": stripped_messages, "items": stripped_items}
 
     # Stream-diagnostic class header preserved for backward compat —
     # actual list lives in ``agent.stream_diag.STREAM_DIAG_HEADERS``.
@@ -908,7 +1103,11 @@ class AIAgent:
           1. ``providers.<id>.models.<model>.stale_timeout_seconds``
           2. ``providers.<id>.stale_timeout_seconds``
           3. ``HERMES_API_CALL_STALE_TIMEOUT`` env var
-          4. 300.0s default
+          4. 90.0s default (time-to-first-byte for non-streaming / Codex
+             internal-streaming requests; lowered from 300s in May 2026 so
+             fallback providers kick in faster when upstream providers
+             stall).  The detector still scales up for large contexts in
+             ``_compute_non_stream_stale_timeout``.
 
         Returns ``(timeout_seconds, uses_implicit_default)`` so the caller can
         preserve legacy behaviors that only apply when the user has *not*
@@ -923,21 +1122,80 @@ class AIAgent:
         if env_timeout is not None:
             return float(env_timeout), False
 
-        return 300.0, True
+        return 90.0, True
 
-    def _compute_non_stream_stale_timeout(self, messages: list[dict[str, Any]]) -> float:
-        """Compute the effective non-stream stale timeout for this request."""
+    def _compute_non_stream_stale_timeout(self, api_payload: Any) -> float:
+        """Compute the effective non-stream stale timeout for this request.
+
+        Accepts either the full ``api_kwargs`` dict (Chat Completions or
+        Responses API) or a legacy ``messages`` list.  Context-size scaling
+        applies the same way to both shapes via
+        :func:`agent.chat_completion_helpers.estimate_request_context_tokens`.
+        """
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        est_tokens = sum(len(str(v)) for v in messages) // 4
+        from agent.chat_completion_helpers import estimate_request_context_tokens
+        est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:
-            return max(stale_base, 600.0)
+            return max(stale_base, 240.0)
         if est_tokens > 50_000:
-            return max(stale_base, 450.0)
+            return max(stale_base, 150.0)
         return stale_base
+
+    def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:
+        """Return an actionable hint when this request matches a known
+        Codex silent-reject configuration, else ``None``.
+
+        The ChatGPT Codex backend (``chatgpt.com/backend-api/codex``) has
+        historically silently dropped certain model requests: the connection
+        is accepted but no stream events are emitted and no error is raised.
+        The stale-call detector ends the hang, but a generic "timed out"
+        message gives the user no path forward.
+
+        This helper substitutes an actionable hint into the stale-timeout
+        warning when the request matches a known silent-reject pattern.
+        Currently flagged: ``gpt-5.5`` family on the Codex backend.  See
+        hermes-agent #21444 for the symptom history.  The upstream backend
+        behavior has historically come and gone with ChatGPT entitlement
+        changes — the heuristic stays in place as future-proofing even when
+        the symptom is dormant.
+
+        Does NOT fix the backend issue.  Only converts an opaque stale-timeout
+        into actionable text so users learn the workaround in seconds rather
+        than digging through logs.
+        """
+        if self.api_mode != "codex_responses":
+            return None
+        is_codex_backend = (
+            self.provider == "openai-codex"
+            or (
+                getattr(self, "_base_url_hostname", "") == "chatgpt.com"
+                and "/backend-api/codex" in (getattr(self, "_base_url_lower", "") or "")
+            )
+        )
+        if not is_codex_backend:
+            return None
+        eff_model = (model if model is not None else self.model) or ""
+        model_lower = eff_model.lower()
+        # Match the gpt-5.5 family — bare ``gpt-5.5``, ``gpt-5.5-codex``,
+        # vendor-prefixed variants like ``openai/gpt-5.5``, and any future
+        # ``gpt-5.5-*`` SKU.  Anchor at a word boundary on either side so
+        # unrelated tokens like ``gpt-5.50`` do not match.
+        if not re.search(r"(?:^|[/\-_])gpt-5\.5(?:$|[\-_])", model_lower):
+            return None
+        return (
+            f"Codex backend appears to be silently rejecting {eff_model!r} "
+            "on chatgpt.com/backend-api/codex (no stream events, no error). "
+            "This is a known backend-side pattern that has affected ChatGPT "
+            "Plus accounts intermittently. "
+            "Workaround: try `gpt-5.4` on the same OAuth profile, or `gpt-5.3-codex`, "
+            "or switch to a different model/provider in your fallback chain. "
+            "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`. "
+            "See hermes-agent#21444 for symptom history."
+        )
 
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
@@ -1392,6 +1650,18 @@ class AIAgent:
           * xAI OAuth: "do not have an active Grok subscription" /
             "out of available resources" / "does not have permission" + "grok"
 
+        Disambiguator for xAI (#29344): the same ``code`` text ("The caller
+        does not have permission to execute the specified operation") is
+        returned for BOTH an unsubscribed account AND a stale OAuth access
+        token.  xAI ships an explicit signal in the ``error`` field that
+        tells the two apart: a ``[WKE=unauthenticated:...]`` suffix (and/or
+        the ``OAuth2 access token could not be validated`` phrasing) means
+        the credentials failed validation — that's recoverable by refreshing
+        the token, NOT by surfacing an entitlement message.  When either
+        signal is present we return False eagerly so the credential-pool
+        refresh path runs, letting long-running TUI sessions recover from
+        stale tokens without an exit/reopen cycle.
+
         Extend here for new providers as we discover them (Anthropic's
         Claude Max OAuth entitlement errors look distinct enough today that
         the existing 1M-context-beta branch handles them; revisit if other
@@ -1401,10 +1671,28 @@ class AIAgent:
             return False
         if not isinstance(error_context, dict):
             return False
+        # Build a single lowercase haystack covering every field shape the
+        # body might land in.  ``_extract_api_error_context`` normalises to
+        # ``message``/``reason``, but callers (and the test suite) may also
+        # hand us the raw body with ``code``/``error`` keys; cover both so
+        # the WKE disambiguator below fires regardless of entry point.
         message = str(error_context.get("message") or "").lower()
         reason = str(error_context.get("reason") or "").lower()
-        haystack = f"{message} {reason}"
+        code = str(error_context.get("code") or "").lower()
+        err = str(error_context.get("error") or "").lower()
+        haystack = f"{message} {reason} {code} {err}"
         if not haystack.strip():
+            return False
+        # xAI's authoritative disambiguator for "stale token" vs
+        # "unsubscribed account".  Both conditions share the same
+        # permission-denied ``code`` text; only one carries this suffix.
+        # Bail out before the entitlement keyword checks so a stale OAuth
+        # token routes through the credential-refresh path instead of the
+        # surface-error-as-entitlement path.  See #29344 for the long-
+        # running TUI failure mode this closes.
+        if "[wke=unauthenticated:" in haystack:
+            return False
+        if "oauth2 access token could not be validated" in haystack:
             return False
         if "do not have an active grok subscription" in haystack:
             return True
@@ -1540,6 +1828,36 @@ class AIAgent:
         content = re.sub(r'(</think>)\n+', r'\1\n', content)
         return content.strip()
 
+    @staticmethod
+    def _redact_message_content(content):
+        """Apply secret redaction to message content (str or list-of-parts).
+
+        Handles both plain-string content and the OpenAI/Anthropic multimodal
+        shape where ``content`` is a list of ``{"type": "text", "text": ...}``
+        / ``{"type": "image_url", ...}`` / ``{"type": "input_text", "content": ...}``
+        parts. Image / binary parts are left untouched; only text fields are
+        passed through ``redact_sensitive_text``.
+
+        Respects ``HERMES_REDACT_SECRETS`` via ``redact_sensitive_text`` —
+        when disabled the helper is effectively a no-op.
+        """
+        if content is None:
+            return content
+        if isinstance(content, str):
+            return redact_sensitive_text(content)
+        if isinstance(content, list):
+            redacted = []
+            for part in content:
+                if isinstance(part, dict):
+                    part = dict(part)
+                    if isinstance(part.get("text"), str):
+                        part["text"] = redact_sensitive_text(part["text"])
+                    if isinstance(part.get("content"), str):
+                        part["content"] = redact_sensitive_text(part["content"])
+                redacted.append(part)
+            return redacted
+        return content
+
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
         """Optional per-session JSON snapshot writer.
 
@@ -1575,6 +1893,14 @@ class AIAgent:
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])
+                # Defence-in-depth: redact credentials from every message
+                # content before persistence. Catches PATs / API keys / Bearer
+                # tokens that may have leaked into assistant responses, tool
+                # output, or user paste. Respects HERMES_REDACT_SECRETS via
+                # redact_sensitive_text — no-op when disabled. (#19798, #19845)
+                if "content" in msg:
+                    msg = dict(msg)
+                    msg["content"] = self._redact_message_content(msg.get("content"))
                 cleaned.append(msg)
 
             # Guard: never overwrite a larger session log with fewer messages.
@@ -1600,7 +1926,7 @@ class AIAgent:
                 "platform": self.platform,
                 "session_start": self.session_start.isoformat(),
                 "last_updated": datetime.now().isoformat(),
-                "system_prompt": self._cached_system_prompt or "",
+                "system_prompt": redact_sensitive_text(self._cached_system_prompt or ""),
                 "tools": self.tools or [],
                 "message_count": len(cleaned),
                 "messages": cleaned,
@@ -2587,6 +2913,39 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
+    def _abort_request_openai_client(self, client: Any, *, reason: str) -> None:
+        """Cross-thread abort: shut sockets down without releasing FDs.
+
+        Companion to :meth:`_close_request_openai_client` for stranger-thread
+        callers (interrupt-check loop, stale-call detector). Calling
+        ``client.close()`` from a thread that does not own the active httpx
+        connection raced the still-live SSL BIO and corrupted unrelated file
+        descriptors when the kernel recycled the just-freed TCP FD (#29507).
+
+        Here we only ``shutdown(SHUT_RDWR)`` the pool's sockets. That unblocks
+        the owning worker thread's pending ``recv``/``send`` with an EOF or
+        ``EPIPE`` so it can unwind and close ``client`` from its own context
+        — which is where the FD release belongs.
+        """
+        if client is None:
+            return
+        try:
+            shutdown_count = self._force_close_tcp_sockets(client)
+            logger.info(
+                "OpenAI client aborted (%s, shared=False, tcp_force_closed=%d, "
+                "deferred_close=stranger_thread) %s",
+                reason,
+                shutdown_count,
+                self._client_log_context(),
+            )
+        except Exception as exc:
+            logger.debug(
+                "OpenAI client abort failed (%s, shared=False) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Forwarder — see ``agent.codex_runtime.run_codex_stream``."""
         from agent.codex_runtime import run_codex_stream
@@ -2671,7 +3030,12 @@ class AIAgent:
 
         return True
 
-    def _try_refresh_nous_client_credentials(self, *, force: bool = True) -> bool:
+    def _try_refresh_nous_client_credentials(
+        self,
+        *,
+        force: bool = True,
+        inference_auth_mode: str | None = None,
+    ) -> bool:
         if self.api_mode != "chat_completions" or self.provider != "nous":
             return False
 
@@ -2682,14 +3046,15 @@ class AIAgent:
                 resolve_nous_runtime_credentials,
             )
 
+            selected_auth_mode = inference_auth_mode or (
+                NOUS_INFERENCE_AUTH_MODE_LEGACY
+                if force
+                else NOUS_INFERENCE_AUTH_MODE_AUTO
+            )
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-                inference_auth_mode=(
-                    NOUS_INFERENCE_AUTH_MODE_LEGACY
-                    if force
-                    else NOUS_INFERENCE_AUTH_MODE_AUTO
-                ),
+                inference_auth_mode=selected_auth_mode,
             )
         except Exception as exc:
             logger.debug("Nous credential refresh failed: %s", exc)
@@ -2802,15 +3167,12 @@ class AIAgent:
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
         from agent.auxiliary_client import (
-            _AI_GATEWAY_HEADERS,
             build_nvidia_nim_headers,
             build_or_headers,
         )
 
         if base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = build_or_headers()
-        elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
-            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             self._client_kwargs["default_headers"] = build_nvidia_nim_headers(base_url)
         elif base_url_host_matches(base_url, "api.routermint.com"):
@@ -3381,6 +3743,25 @@ class AIAgent:
             return content
 
         if self._model_supports_vision():
+            # Vision-capable on paper — but if we've already learned in this
+            # session that the active (provider, model) rejects list-type
+            # tool content (e.g. Xiaomi MiMo's 400 "text is not set"),
+            # short-circuit to a text summary so we don't burn another
+            # round-trip relearning the same lesson.  Cache populated by
+            # the 400 recovery path in agent.conversation_loop.  Transient
+            # per-session; next session retries.
+            key = (
+                (getattr(self, "provider", "") or "").strip().lower(),
+                (getattr(self, "model", "") or "").strip(),
+            )
+            no_list = getattr(self, "_no_list_tool_content_models", None)
+            if no_list and key in no_list:
+                logger.debug(
+                    "Tool %s: model %s/%s known to reject list-type tool "
+                    "content this session — sending text summary",
+                    tool_name, key[0], key[1],
+                )
+                return _multimodal_text_summary(result)
             return content
 
         summary = _multimodal_text_summary(result)
@@ -3408,6 +3789,80 @@ class AIAgent:
         """Forwarder — see ``agent.conversation_compression.try_shrink_image_parts_in_messages``."""
         from agent.conversation_compression import try_shrink_image_parts_in_messages
         return try_shrink_image_parts_in_messages(api_messages)
+
+    def _try_strip_image_parts_from_tool_messages(self, api_messages: list) -> bool:
+        """Downgrade list-type tool messages to text summaries in-place.
+
+        Recovery path for providers that reject list-type tool message content
+        (e.g. Xiaomi MiMo's 400 "text is not set"; see issue #27344).  Walks
+        ``api_messages`` for any ``role: "tool"`` message whose ``content`` is
+        a list containing image parts, replaces the content with the existing
+        text part(s) (or a minimal placeholder if none survive), and records
+        the active (provider, model) in ``self._no_list_tool_content_models``
+        so subsequent ``_tool_result_content_for_active_model`` calls in this
+        session preemptively downgrade screenshots without a round-trip.
+
+        Returns True when at least one tool message was downgraded — the
+        caller (the 400 recovery branch in ``agent.conversation_loop``) uses
+        this to decide whether to retry the API call with the modified
+        history or surface the original error.
+        """
+        if not isinstance(api_messages, list):
+            return False
+
+        # Record (provider, model) so we don't relearn this lesson.
+        key = (
+            (getattr(self, "provider", "") or "").strip().lower(),
+            (getattr(self, "model", "") or "").strip(),
+        )
+        if not hasattr(self, "_no_list_tool_content_models"):
+            self._no_list_tool_content_models = set()
+        if key[1]:  # only record when we actually have a model id
+            self._no_list_tool_content_models.add(key)
+
+        changed = False
+        for msg in api_messages:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+
+            # Salvage any text parts so the model still sees some signal.
+            text_parts: List[str] = []
+            had_image = False
+            for part in content:
+                if not isinstance(part, dict):
+                    if isinstance(part, str) and part.strip():
+                        text_parts.append(part.strip())
+                    continue
+                ptype = part.get("type")
+                if ptype == "image_url" or ptype == "input_image":
+                    had_image = True
+                    continue
+                if ptype in {"text", "input_text"}:
+                    text = str(part.get("text") or "").strip()
+                    if text:
+                        text_parts.append(text)
+
+            if not had_image:
+                # List-type content but no image parts — leave alone (some
+                # providers reject ANY list content, but stripping a
+                # text-only list doesn't reduce ambiguity; let the caller
+                # surface the original error if this turns out to be the
+                # case).
+                continue
+
+            if text_parts:
+                msg["content"] = "\n\n".join(text_parts)
+            else:
+                msg["content"] = (
+                    "[image content removed — provider does not accept "
+                    "list-type tool message content]"
+                )
+            changed = True
+
+        return changed
 
     def _anthropic_preserve_dots(self) -> bool:
         """True when using an anthropic-compatible endpoint that preserves dots in model names.
@@ -3521,8 +3976,6 @@ class AIAgent:
         known reasoning-capable model families and direct Nous Portal.
         """
         if base_url_host_matches(self._base_url_lower, "nousresearch.com"):
-            return True
-        if base_url_host_matches(self._base_url_lower, "ai-gateway.vercel.sh"):
             return True
         if (
             base_url_host_matches(self._base_url_lower, "models.github.ai")
@@ -3723,6 +4176,11 @@ class AIAgent:
         """Forwarder — see ``agent.agent_runtime_helpers.copy_reasoning_content_for_api``."""
         from agent.agent_runtime_helpers import copy_reasoning_content_for_api
         return copy_reasoning_content_for_api(self, source_msg, api_msg)
+
+    def _reapply_reasoning_echo_for_provider(self, api_messages: list) -> int:
+        """Forwarder — see ``agent.agent_runtime_helpers.reapply_reasoning_echo_for_provider``."""
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+        return reapply_reasoning_echo_for_provider(self, api_messages)
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:

@@ -3551,12 +3551,14 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""
-        configured = self.config.extra.get("require_mention")
+        configured = os.getenv("DISCORD_REQUIRE_MENTION")
+        if configured is None:
+            configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
+        return True
 
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
@@ -3565,9 +3567,9 @@ class DiscordAdapter(BasePlatformAdapter):
         string) is preserved in the returned set so callers can short-circuit
         on wildcard membership, consistent with ``allowed_channels``.
         """
-        raw = self.config.extra.get("free_response_channels")
+        raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS")
         if raw is None:
-            raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+            raw = self.config.extra.get("free_response_channels")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         # Coerce non-list scalars (str/int/float) to str before splitting.

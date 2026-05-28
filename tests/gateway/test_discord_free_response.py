@@ -220,6 +220,38 @@ async def test_discord_free_response_channel_can_come_from_config_extra(adapter,
     assert event.text == "allowed from config"
 
 
+@pytest.mark.asyncio
+async def test_discord_require_mention_env_overrides_config_extra(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["require_mention"] = False
+
+    message = make_message(channel=FakeTextChannel(channel_id=789), content="ignored by env override")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_channels_env_overrides_config_extra(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["free_response_channels"] = ["789", "999"]
+
+    blocked_message = make_message(channel=FakeTextChannel(channel_id=789), content="blocked by env override")
+    allowed_message = make_message(channel=FakeTextChannel(channel_id=123), content="allowed by env override")
+
+    await adapter._handle_message(blocked_message)
+    adapter.handle_message.assert_not_awaited()
+
+    await adapter._handle_message(allowed_message)
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "allowed by env override"
+
+
 def test_discord_free_response_channels_bare_int(adapter, monkeypatch):
     # YAML `discord.free_response_channels: 1491973769726791812` (single bare
     # integer) is loaded as an int and previously fell through the

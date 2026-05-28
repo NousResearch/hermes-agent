@@ -155,12 +155,21 @@ def _strip_legitimate_emoji_zwj(prompt: str) -> str:
 
 
 def _strip_cron_safe_constructs(prompt: str) -> str:
-    """Strip the GitHub `Authorization: token $GITHUB_TOKEN` auth-header
-    pattern so it doesn't trip the broader curl-auth-header exfil rule.
+    """Strip safe constructs that would otherwise false-positive the strict
+    scanner: triple-backtick code blocks (machine-generated script output)
+    and the GitHub `Authorization: token $GITHUB_TOKEN` auth-header pattern.
 
-    Allows the bundled GitHub skill fallback without opening a blanket
-    exemption for arbitrary Authorization-header exfiltration.
+    Script output blocks are machine-generated JSON/commit data and should
+    not be subject to the same strict patterns as user-authored prompts.
+    The GitHub auth-header exemption allows the bundled GitHub skill fallback
+    without opening a blanket exemption for arbitrary Authorization-header
+    exfiltration.
     """
+    # Strip triple-backtick code blocks (script output / machine-generated
+    # data) before pattern matching so machine JSON does not trigger
+    # command-shape rules like read_secrets.
+    prompt = re.sub(r'```[\s\S]*?```', '[script output redacted]', prompt)
+
     github_auth_header = re.search(
         rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
         r'\s+["\']?https://api\.github\.com(?:/|\b)',

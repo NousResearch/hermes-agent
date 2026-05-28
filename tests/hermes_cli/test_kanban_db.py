@@ -1509,16 +1509,34 @@ def test_respawn_guard_stale_success_not_guarded(kanban_home):
     assert reason is None
 
 
-def test_respawn_guard_active_pr_in_comment(kanban_home):
-    """A GitHub PR URL in a recent comment triggers active_pr."""
+def test_respawn_guard_active_pr_in_comment_after_worker_run(kanban_home):
+    """A GitHub PR URL in a recent comment triggers active_pr after a worker run."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'blocked', 'blocked', ?, ?)",
+            (t, now - 300, now - 60),
+        )
         kb.add_comment(
             conn, t, "worker",
             "PR created: https://github.com/totemx-AI/subsidysmart/pull/42",
         )
         reason = kb.check_respawn_guard(conn, t)
     assert reason == "active_pr"
+
+
+def test_respawn_guard_pr_comment_without_worker_run_not_guarded(kanban_home):
+    """A PR URL alone must not block fresh coordinator/readiness tasks."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="readiness-report", assignee="alice")
+        kb.add_comment(
+            conn, t, "coordinator",
+            "Related implementation PR: https://github.com/acme/project/pull/42",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
 
 
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
@@ -1618,6 +1636,12 @@ def test_dispatch_respawn_guard_skips_active_pr(
 
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'blocked', 'blocked', ?, ?)",
+            (t, now - 300, now - 60),
+        )
         kb.add_comment(
             conn, t, "worker",
             "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
@@ -1629,6 +1653,28 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in res.auto_blocked
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_respawn_guard_allows_pr_url_comment_without_worker_run(
+    kanban_home, all_assignees_spawnable
+):
+    """dispatch_once spawns fresh tasks even when comments mention PR URLs."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="readiness-report", assignee="alice")
+        kb.add_comment(
+            conn, t, "coordinator",
+            "Related PR for context: https://github.com/acme/project/pull/42",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert t in spawned_ids
+    assert not res.respawn_guarded
+    assert t not in res.auto_blocked
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

@@ -228,16 +228,54 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
             if not entry_id or entry_id in seen_ids:
                 continue
             seen_ids.add(entry_id)
-            entries.append({
+            entry = {
                 "id": entry_id,
                 "name": _session_entry_name(origin),
                 "type": session.get("chat_type", "dm"),
                 "thread_id": origin.get("thread_id"),
-            })
+            }
+            # Apply Slack aliases
+            if platform_name == "slack":
+                entry = _apply_alias(entry)
+            entries.append(entry)
     except Exception as e:
         logger.debug("Channel directory: failed to read sessions for %s: %s", platform_name, e)
 
     return entries
+
+
+def _load_channel_aliases() -> Dict[str, str]:
+    """Load channel ID → friendly name aliases from config.yaml."""
+    try:
+        from hermes_cli.config import get_config
+        config = get_config()
+        aliases = config.get("slack", {}).get("channel_aliases", {})
+        return {str(k): str(v) for k, v in aliases.items()}
+    except Exception:
+        return {}
+
+
+def _apply_alias(channel: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Apply friendly name alias if configured for this channel ID.
+
+    Alias keys are base channel IDs (e.g. ``C0AQP1RMLQL``). Entry IDs may
+    include a thread suffix (e.g. ``C0AQP1RMLQL:1775158818.305019``). Matching
+    uses the base part before the first ``:``.
+    """
+    aliases = _load_channel_aliases()
+    if not aliases:
+        return channel
+
+    entry_id = channel.get("id", "")
+    # Strip thread suffix to get the base channel ID
+    base_id = entry_id.split(":")[0] if ":" in entry_id else entry_id
+
+    channel = dict(channel)  # shallow copy to avoid mutating cached dict
+    if base_id in aliases:
+        thread_suffix = entry_id[len(base_id):]  # "", or ":thread_ts"
+        channel["name"] = f"{aliases[base_id]}{thread_suffix}" if thread_suffix else aliases[base_id]
+    return channel
 
 
 # ---------------------------------------------------------------------------

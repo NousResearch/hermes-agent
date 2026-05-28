@@ -144,7 +144,7 @@ def test_custom_provider_unknown_model_does_not_emit_reasoning_effort():
     assert top_level == {}
 
 
-def test_custom_provider_openai_semantic_model_passes_max_through():
+def test_custom_provider_openai_semantic_model_maps_max_to_xhigh():
     from providers import get_provider_profile
 
     profile = get_provider_profile("custom")
@@ -154,4 +154,4 @@ def test_custom_provider_openai_semantic_model_passes_max_through():
     )
 
     assert extra_body == {}
-    assert top_level == {"reasoning_effort": "max"}
+    assert top_level == {"reasoning_effort": "xhigh"}

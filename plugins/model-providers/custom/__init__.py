@@ -13,6 +13,26 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 
+_OPENAI_FAMILY_CUSTOM_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+_OPENAI_FAMILY_CUSTOM_EFFORT_ALIASES = {"max": "xhigh"}
+
+
+def _resolve_openai_family_custom_reasoning_effort(effort: str) -> str | None:
+    """Map Hermes' internal reasoning intent to a GPT/OpenAI-compatible value.
+
+    ``max`` is an internal "highest available" intent in Hermes.  GPT-family
+    OpenAI-compatible endpoints commonly accept ``xhigh`` as the highest wire
+    value, while many reject literal ``max``.  Keep provider-specific profiles
+    that genuinely support ``max`` free to send it; only clamp the custom
+    OpenAI-family fallback here.
+    """
+    effort = (effort or "").strip().lower()
+    effort = _OPENAI_FAMILY_CUSTOM_EFFORT_ALIASES.get(effort, effort)
+    if effort in _OPENAI_FAMILY_CUSTOM_REASONING_EFFORTS:
+        return effort
+    return None
+
+
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
@@ -43,7 +63,9 @@ class CustomProfile(ProviderProfile):
             elif _effort:
                 model = str(ctx.get("model") or "")
                 if infer_semantic_provider_for_model("custom", model) == "openai":
-                    top_level["reasoning_effort"] = _effort
+                    _wire_effort = _resolve_openai_family_custom_reasoning_effort(_effort)
+                    if _wire_effort:
+                        top_level["reasoning_effort"] = _wire_effort
 
         return extra_body, top_level
 

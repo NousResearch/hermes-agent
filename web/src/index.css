@@ -170,6 +170,12 @@ code { font-size: 0.875rem; }
 }
 
 
+/* Collapsed sidebar tooltip entrance — skipped when moving between items. */
+@keyframes sidebar-tooltip-in {
+  from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
+  to   { opacity: 1; transform: translateY(-50%) translateX(0); }
+}
+
 /* Toast animations used by `components/Toast.tsx`. */
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(16px); }

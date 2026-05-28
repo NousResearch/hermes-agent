@@ -778,7 +778,7 @@ export default function SessionsPage() {
                 onChange={setView}
                 options={[
                   { value: "overview", label: t.sessions.overview },
-                  { value: "list", label: t.sessions.title },
+                  { value: "list", label: t.sessions.history },
                 ]}
               />
             )}

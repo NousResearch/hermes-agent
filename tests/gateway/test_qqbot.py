@@ -197,6 +197,7 @@ class TestQQMediaHeaders:
         from gateway.platforms.qqbot import QQAdapter
         adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
         adapter._access_token = "token"
+        adapter._http_client = mock.AsyncMock()
         return adapter
 
     def test_trusted_media_host_gets_auth(self):

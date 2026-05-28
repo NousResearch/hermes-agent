@@ -290,7 +290,7 @@ def _looks_like_error_output(content: str) -> bool:
     head = content.lstrip()
     if head.startswith("{") or head.startswith("["):
         try:
-            parsed = json.loads(content)
+            parsed, _ = json.JSONDecoder().raw_decode(head)
             if isinstance(parsed, dict):
                 if parsed.get("error"):
                     return True

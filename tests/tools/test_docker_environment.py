@@ -837,12 +837,16 @@ def _install_fake_thread(monkeypatch):
     monkeypatch.setattr(threading, "Thread", _FakeThread)
 
 
-def test_cleanup_with_persist_only_stops_no_rm(monkeypatch):
-    """``persist_across_processes=True`` (default) cleanup must docker stop
-    the container but NEVER docker rm — the container has to survive so the
-    next Hermes process can reuse it. Issue #20561 — the previous code
-    matched this on the `_persistent` flag instead of a dedicated
-    cross-process flag, which made reuse impossible."""
+def test_cleanup_with_persist_is_noop_for_container(monkeypatch):
+    """``persist_across_processes=True`` (default) cleanup must NEITHER stop
+    NOR remove the container — the docs promise "ONE long-lived container
+    shared across sessions", and any docker stop would kill background
+    processes inside the container (npm watchers, pytest watchers, etc.).
+
+    Resource reclamation in this mode happens via the orphan reaper on next
+    Hermes startup, not on graceful exit. Issue #20561 — the first iteration
+    of this PR did docker stop here, which Ben caught as contradicting the
+    "ONE long-lived container" semantics."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
     _mock_subprocess_run(monkeypatch)
@@ -866,11 +870,55 @@ def test_cleanup_with_persist_only_stops_no_rm(monkeypatch):
 
     stops = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "stop"]
     rms = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"]
-    assert stops, f"expected docker stop call, got cleanup_calls: {cleanup_calls}"
+    assert not stops, (
+        f"docker stop must NOT be called when persist_across_processes=True; "
+        f"container has to stay running so background processes survive. "
+        f"Got: {stops}"
+    )
     assert not rms, (
         f"docker rm must NOT be called when persist_across_processes=True; "
         f"reuse would be impossible. Got: {rms}"
     )
+    # The in-process handle must still be cleared so the next __init__
+    # re-probes via labels (and reuses the still-running container).
+    assert env._container_id is None, (
+        "in-process container_id should be cleared even in no-op cleanup"
+    )
+
+
+def test_cleanup_force_remove_stops_and_rms_even_in_persist_mode(monkeypatch):
+    """``cleanup(force_remove=True)`` must stop AND rm the container even
+    when ``persist_across_processes=True``. This is the explicit-teardown
+    path for ``/reset``, ``cleanup_vm(task_id, force_remove=True)``, and any
+    future caller that wants a guaranteed fresh container.
+
+    Without this kwarg, callers in persist mode would have no way to force a
+    fresh container without also flipping the global config — too coarse for
+    a per-task reset.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    _install_fake_thread(monkeypatch)
+
+    env = _make_dummy_env(task_id="cleanup-force", persistent_filesystem=False)
+    assert env._container_id
+
+    cleanup_calls = []
+    real_run = docker_env.subprocess.run
+
+    def _capturing_run(cmd, **kwargs):
+        cleanup_calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _capturing_run)
+
+    env.cleanup(force_remove=True)
+
+    stops = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "stop"]
+    rms = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"]
+    assert stops, f"force_remove must docker stop; got: {cleanup_calls}"
+    assert rms, f"force_remove must docker rm; got: {cleanup_calls}"
 
 
 def test_cleanup_with_persist_disabled_stops_and_rms(monkeypatch):
@@ -914,12 +962,15 @@ def test_cleanup_with_persist_disabled_stops_and_rms(monkeypatch):
 
 
 def test_cleanup_uses_subprocess_run_not_detached_shell(monkeypatch):
-    """The pre-fix code used ``subprocess.Popen(\"... &\", shell=True)`` which
+    """The pre-fix code used ``subprocess.Popen("... &", shell=True)`` which
     raced with parent-process exit and silently dropped cleanup work. The
     new code must use ``subprocess.run`` with bounded ``timeout=`` so the
     work actually completes within the process lifetime.
 
-    Asserts cleanup never reaches into shell-mode Popen.
+    Asserts cleanup never reaches into shell-mode Popen. Uses
+    ``force_remove=True`` so cleanup actually issues docker calls — the
+    default persist-mode path is now a no-op (commit 4) and would trivially
+    pass this assertion without exercising the docker code at all.
     """
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
@@ -935,7 +986,7 @@ def test_cleanup_uses_subprocess_run_not_detached_shell(monkeypatch):
     monkeypatch.setattr(docker_env.subprocess, "Popen", _forbidden_popen)
 
     env = _make_dummy_env(task_id="no-popen-cleanup")
-    env.cleanup()  # must not raise
+    env.cleanup(force_remove=True)  # must not raise
 
 
 def test_wait_for_cleanup_returns_true_when_no_thread_started():
@@ -951,14 +1002,20 @@ def test_wait_for_cleanup_returns_true_when_no_thread_started():
 def test_wait_for_cleanup_after_cleanup_returns_true(monkeypatch):
     """End-to-end: cleanup() starts a thread, wait_for_cleanup() joins it
     and reports completion. Atexit relies on this contract to ensure docker
-    stop/rm actually finishes before the Python interpreter exits."""
+    stop/rm actually finishes before the Python interpreter exits.
+
+    Uses ``force_remove=True`` so cleanup actually starts a worker thread —
+    the default persist-mode cleanup is a no-op (commit 4) and never spawns
+    a thread, so the trivial "no thread" branch of wait_for_cleanup is
+    already covered by the previous test.
+    """
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
     _mock_subprocess_run(monkeypatch)
     _install_fake_thread(monkeypatch)
 
     env = _make_dummy_env(task_id="wait-test")
-    env.cleanup()
+    env.cleanup(force_remove=True)
     assert env.wait_for_cleanup(timeout=5.0) is True
 
 

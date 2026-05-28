@@ -109,23 +109,35 @@ def test_cmd_update_check_direct_in_docker(mock_run, _mock_method, capsys):
 
 @patch("hermes_cli.config.is_managed", return_value=False)
 @patch("hermes_cli.config.detect_install_method", return_value="git")
+@patch(
+    "subprocess.run",
+    return_value=SimpleNamespace(returncode=0, stdout="0\n", stderr=""),
+)
 def test_cmd_update_on_git_install_does_not_print_docker_message(
-    _mock_method, _mock_managed, capsys
+    _mock_run, _mock_method, _mock_managed, capsys
 ):
     """Source/git installs MUST NOT hit the Docker branch.
 
     Regression guard: an over-eager detection refactor could accidentally
-    route git users through the docker-pull message.  We swallow the
-    SystemExit / errors from the rest of the update flow — those don't
-    matter for this assertion; what matters is that the docker text is
-    absent.
+    route git users through the docker-pull message.  We swallow
+    SystemExit / unrelated errors from the rest of the update flow —
+    those don't matter for this assertion; what matters is that the
+    docker text is absent.
+
+    ``subprocess.run`` is mocked because the git path will otherwise shell
+    out to ``git fetch upstream`` / ``git fetch origin`` — on CI runners
+    with no ``upstream`` remote configured this can hang past the 30s
+    pytest-timeout depending on git's network behaviour.  The stub
+    returns a successful CompletedProcess-shaped object with ``"0\\n"``
+    stdout, which both keeps the flow shell-free AND parses cleanly as
+    the "0 commits behind" rev-list output the check path later parses
+    via ``int(rev_result.stdout.strip())``.
     """
     try:
         cmd_update(SimpleNamespace(check=True, branch=None))
-    except SystemExit:
-        # Update flow may exit for unrelated reasons in a test env (no
-        # network, no real .git) — that's fine; we only care about the
-        # banner not appearing.
+    except (SystemExit, Exception):
+        # Update flow may exit for unrelated reasons in a stubbed env —
+        # that's fine; we only care about the banner not appearing.
         pass
 
     assert "doesn't apply inside the Docker container" not in capsys.readouterr().out

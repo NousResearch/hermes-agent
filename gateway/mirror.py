@@ -11,10 +11,14 @@ the full SessionStore machinery.
 
 import json
 import logging
+import os
+import tempfile
+import uuid
 from datetime import datetime
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,13 @@ def mirror_to_session(
             thread_id=thread_id,
             user_id=user_id,
         )
+        if not session_id:
+            session_id = _get_or_create_session_id(
+                platform,
+                str(chat_id),
+                thread_id=thread_id,
+                user_id=user_id,
+            )
         if not session_id:
             logger.debug(
                 "Mirror: no session found for %s:%s:%s:%s",
@@ -148,6 +159,125 @@ def _find_session_id(
     best_entry = max(candidates, key=lambda entry: entry.get("updated_at", ""))
     return best_entry.get("session_id")
 
+
+def _get_or_create_session_id(
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Optional[str]:
+    """Create a minimal session entry in sessions.json for mirroring.
+
+    When no existing session matches the target platform + chat_id,
+    this creates a placeholder entry so mirror messages are stored
+    and available when the recipient next interacts via the gateway.
+    The gateway will pick up this session entry naturally through
+    its existing session resolution.
+    """
+    try:
+        _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+        session_id = uuid.uuid4().hex
+        now = datetime.now().isoformat()
+
+        # Build a session key compatible with gateway conventions.
+        key_parts = ["agent:main", platform.lower(), "group"]
+        if chat_id:
+            key_parts.append(str(chat_id))
+        if thread_id:
+            key_parts.append(str(thread_id))
+        session_key = ":".join(key_parts)
+
+        origin = {
+            "platform": platform.lower(),
+            "chat_id": str(chat_id),
+            "chat_name": None,
+            "chat_type": "group",
+            "user_id": str(user_id) if user_id else None,
+            "user_name": None,
+            "thread_id": str(thread_id) if thread_id else None,
+            "chat_topic": None,
+        }
+
+        entry = {
+            "session_key": session_key,
+            "session_id": session_id,
+            "created_at": now,
+            "updated_at": now,
+            "display_name": None,
+            "platform": platform.lower(),
+            "chat_type": "group",
+            "origin": origin,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "total_tokens": 0,
+            "estimated_cost_usd": 0.0,
+            "cost_status": "unknown",
+            "last_prompt_tokens": 0,
+        }
+
+        _write_session_entry(session_key, entry)
+        _create_sqlite_session(session_id, platform, user_id=user_id)
+
+        logger.debug(
+            "Mirror: created session %s for %s:%s:%s",
+            session_id, platform, chat_id, thread_id,
+        )
+        return session_id
+    except Exception as e:
+        logger.debug(
+            "Mirror: failed to create session for %s:%s: %s",
+            platform, chat_id, e,
+        )
+        return None
+
+
+def _write_session_entry(session_key: str, entry: dict) -> None:
+    """Atomically add or update a session entry in sessions.json."""
+    data: dict = {}
+    if _SESSIONS_INDEX.exists():
+        try:
+            with open(_SESSIONS_INDEX, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            pass
+
+    data[session_key] = entry
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(_SESSIONS_DIR), suffix=".tmp", prefix=".sessions_mirror_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, _SESSIONS_INDEX)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+
+def _create_sqlite_session(
+    session_id: str,
+    platform: str,
+    user_id: Optional[str] = None,
+) -> None:
+    """Create the SQLite session row needed before appending mirror messages."""
+    db = None
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        db.create_session(session_id=session_id, source=platform.lower(), user_id=user_id)
+    finally:
+        if db is not None:
+            db.close()
 
 
 def _append_to_sqlite(session_id: str, message: dict) -> None:

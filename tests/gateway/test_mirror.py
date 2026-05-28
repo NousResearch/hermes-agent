@@ -1,6 +1,8 @@
 """Tests for gateway/mirror.py — session mirroring."""
 
 import json
+import sqlite3
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import gateway.mirror as mirror_mod
@@ -230,20 +232,161 @@ class TestMirrorToSession:
         mock_sqlite.assert_called_once()
         assert mock_sqlite.call_args[0][0] == "sess_alice"
 
-    def test_no_matching_session(self, tmp_path):
+    def test_no_matching_session_creates_one(self, tmp_path):
+        """When no session exists, mirror_to_session creates a placeholder and succeeds."""
+        sessions_dir, index_file = _setup_sessions(tmp_path, {})
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
+            result = mirror_to_session("telegram", "99999", "Hello!")
+
+        assert result is True
+        mock_sqlite.assert_called_once()
+        # Verify the session was persisted to sessions.json
+        with open(index_file) as f:
+            saved = json.load(f)
+        assert len(saved) == 1
+        entry = list(saved.values())[0]
+        assert entry["origin"]["platform"] == "telegram"
+        assert entry["origin"]["chat_id"] == "99999"
+        assert entry["platform"] == "telegram"
+
+    def test_creates_session_even_with_empty_sessions_file(self, tmp_path):
+        """When sessions.json exists but has no matching entries, still creates one."""
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "other": {
+                "session_id": "sess_other",
+                "origin": {"platform": "discord", "chat_id": "888"},
+                "updated_at": "2026-01-01T00:00:00",
+            }
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
+            result = mirror_to_session("telegram", "99999", "Hello new channel!")
+
+        assert result is True
+        mock_sqlite.assert_called_once()
+        with open(index_file) as f:
+            saved = json.load(f)
+        assert len(saved) == 2  # original + new
+
+    def test_no_matching_session_persists_mirror_message(self, tmp_path, monkeypatch):
+        """New placeholder sessions must be backed by SQLite so the mirror is stored."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
         sessions_dir, index_file = _setup_sessions(tmp_path, {})
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
-            result = mirror_to_session("telegram", "99999", "Hello!")
+            result = mirror_to_session("telegram", "99999", "Hello persisted!")
 
-        assert result is False
+        assert result is True
+        with sqlite3.connect(tmp_path / "state.db") as conn:
+            sessions = conn.execute("SELECT id, source FROM sessions").fetchall()
+            messages = conn.execute(
+                "SELECT session_id, role, content FROM messages"
+            ).fetchall()
+
+        assert len(sessions) == 1
+        assert sessions[0][1] == "telegram"
+        assert messages == [(sessions[0][0], "assistant", "Hello persisted!")]
 
     def test_error_returns_false(self, tmp_path):
         with patch("gateway.mirror._find_session_id", side_effect=Exception("boom")):
             result = mirror_to_session("telegram", "123", "msg")
 
         assert result is False
+
+
+class TestGetOrCreateSessionId:
+    def test_creates_session_when_none_exists(self, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        index_file = sessions_dir / "sessions.json"
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+            from gateway.mirror import _get_or_create_session_id
+            session_id = _get_or_create_session_id("telegram", "12345")
+
+        assert session_id is not None
+        assert len(session_id) == 32  # uuid4 hex
+        assert index_file.exists()
+        with open(index_file) as f:
+            saved = json.load(f)
+        assert len(saved) == 1
+        entry = list(saved.values())[0]
+        assert entry["session_id"] == session_id
+        assert entry["origin"]["chat_id"] == "12345"
+
+    def test_creates_session_preserving_existing_entries(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "existing": {
+                "session_id": "sess_existing",
+                "origin": {"platform": "discord", "chat_id": "888"},
+                "updated_at": "2026-01-01T00:00:00",
+            }
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+            from gateway.mirror import _get_or_create_session_id
+            session_id = _get_or_create_session_id("telegram", "99999")
+
+        assert session_id is not None
+        with open(index_file) as f:
+            saved = json.load(f)
+        assert len(saved) == 2
+
+    def test_includes_thread_id_in_origin(self, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        index_file = sessions_dir / "sessions.json"
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+            from gateway.mirror import _get_or_create_session_id
+            session_id = _get_or_create_session_id(
+                "telegram", "-1001", thread_id="42"
+            )
+
+        with open(index_file) as f:
+            saved = json.load(f)
+        entry = list(saved.values())[0]
+        assert entry["origin"]["thread_id"] == "42"
+
+    def test_includes_user_id_in_origin(self, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        index_file = sessions_dir / "sessions.json"
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+            from gateway.mirror import _get_or_create_session_id
+            session_id = _get_or_create_session_id(
+                "telegram", "-1001", user_id="alice"
+            )
+
+        with open(index_file) as f:
+            saved = json.load(f)
+        entry = list(saved.values())[0]
+        assert entry["origin"]["user_id"] == "alice"
+
+    def test_first_mirror_when_no_sessions_dir(self, tmp_path):
+        """No sessions directory exists yet — mirror should create everything."""
+        sessions_dir = tmp_path / "sessions"
+        index_file = sessions_dir / "sessions.json"
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
+            result = mirror_to_session("discord", "12345", "First mirror!")
+
+        assert result is True
+        assert sessions_dir.exists()
+        assert index_file.exists()
+        mock_sqlite.assert_called_once()
 
 
 class TestAppendToSqlite:

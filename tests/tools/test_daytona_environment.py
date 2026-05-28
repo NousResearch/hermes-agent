@@ -161,8 +161,12 @@ class TestPersistence:
             task_id="mytask",
         )
         legacy.start.assert_called_once()
-        env._mock_client.list.assert_called_once_with(
-            labels={"hermes_task_id": "mytask"}, limit=1)
+        env._mock_client.list.assert_called_once()
+        labels = env._mock_client.list.call_args.kwargs["labels"]
+        assert labels["hermes_task_id"] == "mytask"
+        assert labels["hermes_backend"] == "daytona"
+        assert "hermes_profile_id" in labels
+        assert env._mock_client.list.call_args.kwargs["limit"] == 1
         env._mock_client.create.assert_not_called()
 
     def test_persistent_creates_new_when_none_found(self, make_env, daytona_sdk):
@@ -175,8 +179,12 @@ class TestPersistence:
         # Verify the name and labels were passed to CreateSandboxFromImageParams
         # by checking get() was called with the right sandbox name
         env._mock_client.get.assert_called_with("hermes-mytask")
-        env._mock_client.list.assert_called_with(
-            labels={"hermes_task_id": "mytask"}, limit=1)
+        env._mock_client.list.assert_called_once()
+        labels = env._mock_client.list.call_args.kwargs["labels"]
+        assert labels["hermes_task_id"] == "mytask"
+        assert labels["hermes_backend"] == "daytona"
+        assert "hermes_profile_id" in labels
+        assert env._mock_client.list.call_args.kwargs["limit"] == 1
 
     def test_non_persistent_skips_lookup(self, make_env):
         env = make_env(persistent=False)

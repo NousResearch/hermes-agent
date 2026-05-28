@@ -95,14 +95,17 @@ class DaytonaEnvironment(BaseEnvironment):
             pass
         except Exception as e:
             raise ImportError(str(e))
-        from daytona import (
-            Daytona,
-            CreateSandboxFromImageParams,
-            CreateSandboxFromSnapshotParams,
-            DaytonaError,
-            Resources,
-            SandboxState,
+        daytona_mod = importlib.import_module("daytona")
+        Daytona = getattr(daytona_mod, "Daytona")
+        CreateSandboxFromImageParams = getattr(daytona_mod, "CreateSandboxFromImageParams")
+        CreateSandboxFromSnapshotParams = getattr(
+            daytona_mod,
+            "CreateSandboxFromSnapshotParams",
+            None,
         )
+        DaytonaError = getattr(daytona_mod, "DaytonaError")
+        Resources = getattr(daytona_mod, "Resources")
+        SandboxState = getattr(daytona_mod, "SandboxState")
 
         # --- Validate create_mode BEFORE any SDK side effects ---
         valid_modes = ("image", "snapshot")
@@ -285,6 +288,12 @@ class DaytonaEnvironment(BaseEnvironment):
                     create_params_kwargs["volumes"] = volume_mounts
 
             if create_mode == "snapshot":
+                if CreateSandboxFromSnapshotParams is None:
+                    raise ImportError(
+                        "Installed Daytona SDK does not expose "
+                        "CreateSandboxFromSnapshotParams; upgrade the daytona "
+                        "package to use daytona_create_mode='snapshot'"
+                    )
                 # Snapshot mode: use CreateSandboxFromSnapshotParams.
                 # The Daytona SDK (>=0.155.0) does not expose a `resources`
                 # field on CreateSandboxFromSnapshotParams — snapshot-owned

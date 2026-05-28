@@ -8,6 +8,7 @@ endpoint.
 
 from __future__ import annotations
 
+import base64
 import importlib
 from pathlib import Path
 
@@ -129,11 +130,12 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality):
+        def _collect(token, *, prompt, size, quality, reference_images=None):
             captured.update(codex_plugin._build_responses_payload(
                 prompt=prompt,
                 size=size,
                 quality=quality,
+                reference_images=reference_images,
             ))
             return _b64_png()
 
@@ -159,6 +161,87 @@ class TestGenerate:
         assert tool["output_format"] == "png"
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
+        assert "action" not in tool
+
+    def test_reference_images_are_sent_as_edit_inputs(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        ref_path = tmp_path / "ref.png"
+        ref_path.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, reference_images=None):
+            captured.update(codex_plugin._build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                reference_images=reference_images,
+            ))
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("same person", reference_images=[str(ref_path)])
+        assert result["success"] is True
+
+        content = captured["input"][0]["content"]
+        assert content[0] == {"type": "input_text", "text": "same person"}
+        assert content[1]["type"] == "input_image"
+        assert content[1]["image_url"].startswith("data:image/png;base64,")
+        assert base64.b64decode(content[1]["image_url"].split(",", 1)[1]) == bytes.fromhex(_PNG_HEX)
+        assert captured["tools"][0]["action"] == "edit"
+
+    def test_reference_image_url_and_data_url_passthrough(self):
+        refs = [
+            "https://example.com/ref.png",
+            "data:image/png;base64,YWJj",
+        ]
+        payload = codex_plugin._build_responses_payload(
+            prompt="same object",
+            size="1024x1024",
+            quality="medium",
+            reference_images=refs,
+        )
+
+        content = payload["input"][0]["content"]
+        assert [item["image_url"] for item in content[1:]] == refs
+        assert payload["tools"][0]["action"] == "edit"
+
+    def test_reference_images_are_limited(self):
+        refs = ["https://example.com/ref.png"] * (codex_plugin._MAX_REFERENCE_IMAGES + 1)
+        with pytest.raises(ValueError, match="at most"):
+            codex_plugin._build_responses_payload(
+                prompt="same object",
+                size="1024x1024",
+                quality="medium",
+                reference_images=refs,
+            )
+
+    def test_invalid_data_url_rejected(self):
+        with pytest.raises(ValueError, match="invalid base64"):
+            codex_plugin._build_responses_payload(
+                prompt="same object",
+                size="1024x1024",
+                quality="medium",
+                reference_images=["data:image/png;base64,not valid"],
+            )
+
+    def test_invalid_local_reference_returns_invalid_argument(
+        self, provider, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def _collect(*args, **kwargs):  # pragma: no cover - should not be called
+            raise AssertionError("invalid refs should fail before API request")
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+        bad_ref = tmp_path / "not-image.txt"
+        bad_ref.write_text("not an image")
+
+        result = provider.generate("same person", reference_images=[str(bad_ref)])
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "Invalid reference_images" in result["error"]
 
     def test_partial_image_event_used_when_done_missing(self):
         """If output_item.done is missing, partial_image_b64 is accepted."""

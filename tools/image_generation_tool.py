@@ -906,6 +906,15 @@ IMAGE_GENERATE_SCHEMA = {
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
+            "reference_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional reference image paths, URLs, or data URLs for image-generation backends "
+                    "that support editing or identity/object preservation. Currently honored by "
+                    "the openai-codex provider; other backends may reject or ignore it."
+                ),
+            },
         },
         "required": ["prompt"],
     },
@@ -951,7 +960,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, **provider_kwargs):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -1006,6 +1015,7 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
 
     try:
         kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+        kwargs.update({k: v for k, v in provider_kwargs.items() if v is not None})
         if configured_model:
             kwargs["model"] = configured_model
         result = provider.generate(**kwargs)
@@ -1038,7 +1048,15 @@ def _handle_image_generate(args, **kw):
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    reference_images = args.get("reference_images")
+    if isinstance(reference_images, str):
+        reference_images = [reference_images]
+
+    dispatch_kwargs = {}
+    if reference_images:
+        dispatch_kwargs["reference_images"] = reference_images
+
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, **dispatch_kwargs)
     if dispatched is not None:
         return dispatched
 

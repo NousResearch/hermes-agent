@@ -19,9 +19,12 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+import mimetypes
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -79,6 +82,16 @@ _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation requests by "
     "using the image_generation tool when provided."
 )
+
+_MAX_REFERENCE_IMAGES = 8
+_MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024
+_MAX_DATA_IMAGE_URL_LENGTH = 30 * 1024 * 1024
+_SUPPORTED_IMAGE_MIMES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -143,8 +156,97 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
-def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[str, Any]:
+def _detect_image_mime(raw: bytes) -> Optional[str]:
+    """Detect common web image formats from magic bytes."""
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _reference_image_to_url(ref: str) -> str:
+    """Return a Responses-compatible image URL for a local path, URL, or data URL."""
+    value = str(ref).strip()
+    if not value:
+        raise ValueError("reference image path/URL must be non-empty")
+    if value.startswith(("http://", "https://")):
+        return value
+    if value.startswith("data:image/"):
+        if len(value) > _MAX_DATA_IMAGE_URL_LENGTH:
+            raise ValueError("reference image data URL is too large")
+        header, sep, data = value.partition(",")
+        if not sep or ";base64" not in header:
+            raise ValueError("reference image data URL must be base64-encoded")
+        mime = header.removeprefix("data:").split(";", 1)[0]
+        if mime not in _SUPPORTED_IMAGE_MIMES:
+            raise ValueError(f"unsupported reference image MIME type: {mime}")
+        try:
+            base64.b64decode(data, validate=True)
+        except Exception as exc:
+            raise ValueError("reference image data URL contains invalid base64") from exc
+        return value
+
+    path = Path(value).expanduser()
+    if not path.is_file():
+        raise ValueError(f"reference image not found: {path}")
+    try:
+        if path.stat().st_size > _MAX_REFERENCE_IMAGE_BYTES:
+            raise ValueError("local reference image is too large")
+        data = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"could not read reference image: {path}") from exc
+    mime = _detect_image_mime(data) or mimetypes.guess_type(str(path))[0]
+    if mime not in _SUPPORTED_IMAGE_MIMES:
+        raise ValueError(f"unsupported or invalid reference image: {path}")
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _normalize_reference_images(reference_images: Optional[Iterable[str]]) -> List[str]:
+    """Validate reference count and convert refs into Responses image URLs."""
+    if not reference_images:
+        return []
+    if isinstance(reference_images, str):
+        reference_images = [reference_images]
+    refs = [str(ref) for ref in reference_images if str(ref).strip()]
+    if len(refs) > _MAX_REFERENCE_IMAGES:
+        raise ValueError(f"at most {_MAX_REFERENCE_IMAGES} reference images are supported")
+    return [_reference_image_to_url(ref) for ref in refs]
+
+
+def _build_input_content(prompt: str, reference_images: Optional[Iterable[str]]) -> List[Dict[str, str]]:
+    """Build Responses message content with optional image references."""
+    content: List[Dict[str, str]] = [{"type": "input_text", "text": prompt}]
+    for image_url in _normalize_reference_images(reference_images):
+        content.append({"type": "input_image", "image_url": image_url})
+    return content
+
+
+def _build_responses_payload(
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    reference_images: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
     """Build the Codex Responses request body for an image_generation call."""
+    input_content = _build_input_content(prompt, reference_images)
+    tool_options = {
+        "type": "image_generation",
+        "model": API_MODEL,
+        "size": size,
+        "quality": quality,
+        "output_format": "png",
+        "background": "opaque",
+        "partial_images": 1,
+    }
+    if len(input_content) > 1:
+        tool_options["action"] = "edit"
+
     return {
         "model": _CODEX_CHAT_MODEL,
         "store": False,
@@ -152,17 +254,9 @@ def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[st
         "input": [{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": input_content,
         }],
-        "tools": [{
-            "type": "image_generation",
-            "model": API_MODEL,
-            "size": size,
-            "quality": quality,
-            "output_format": "png",
-            "background": "opaque",
-            "partial_images": 1,
-        }],
+        "tools": [tool_options],
         "tool_choice": {
             "type": "allowed_tools",
             "mode": "required",
@@ -242,7 +336,14 @@ def _iter_sse_json(response: Any):
         yield payload
 
 
-def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _collect_image_b64(
+    token: str,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    reference_images: Optional[Iterable[str]] = None,
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     import httpx
     from agent.auxiliary_client import _codex_cloudflare_headers
@@ -253,7 +354,12 @@ def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> O
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     })
-    payload = _build_responses_payload(prompt=prompt, size=size, quality=quality)
+    payload = _build_responses_payload(
+        prompt=prompt,
+        size=size,
+        quality=quality,
+        reference_images=reference_images,
+    )
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
 
     image_b64: Optional[str] = None
@@ -382,12 +488,28 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
+        reference_images = kwargs.get("reference_images")
+        if isinstance(reference_images, str):
+            reference_images = [reference_images]
+        try:
+            normalized_references = _normalize_reference_images(reference_images)
+        except (TypeError, ValueError) as exc:
+            return error_response(
+                error=f"Invalid reference_images: {exc}",
+                error_type="invalid_argument",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
         try:
             b64 = _collect_image_b64(
                 token,
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                reference_images=normalized_references,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)

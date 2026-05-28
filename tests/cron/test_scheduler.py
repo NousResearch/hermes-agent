@@ -1450,9 +1450,19 @@ class TestRunJobConfigLogging:
             "prompt": "hello",
         }
 
+        # Mock heavy post-yaml work so the test only exercises the warning
+        # path. Without these mocks, _run_job_impl continues into provider
+        # resolution and MCP discovery, both of which can spawn subprocesses
+        # / hit the network and have caused this test to time out on CI
+        # (>30s wall clock) under load. See PR #33661 follow-up.
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value={"provider": "openrouter", "api_key": "x",
+                                 "base_url": "https://example.invalid",
+                                 "api_mode": "chat_completions"}), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1482,6 +1492,11 @@ class TestRunJobConfigLogging:
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value={"provider": "openrouter", "api_key": "x",
+                                 "base_url": "https://example.invalid",
+                                 "api_mode": "chat_completions"}), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}

@@ -324,6 +324,90 @@ def test_managed_agent_strategy_skips_unhealthy_primary_model(tmp_path, monkeypa
     assert call["model_fallback_chain"] == []
 
 
+def test_managed_agent_strategy_sets_fallback_triggers_on_child(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek")
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-opencode")
+    _write_managed_agents_yaml(tmp_path)
+    _write_models_yaml(tmp_path)
+    parent = _make_parent()
+
+    fake_child = MagicMock()
+    fake_child._active_children = []
+    with (
+        patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_runtime,
+        patch("run_agent.AIAgent", return_value=fake_child),
+    ):
+        mock_runtime.side_effect = lambda requested, explicit_api_key=None, explicit_base_url=None, target_model=None: {
+            "provider": requested,
+            "base_url": explicit_base_url,
+            "api_key": explicit_api_key,
+            "api_mode": "chat_completions",
+        }
+        child = delegate_tool._build_child_agent(
+            task_index=0,
+            goal="test",
+            context=None,
+            toolsets=None,
+            model="deepseek-v4-pro",
+            max_iterations=1,
+            task_count=1,
+            parent_agent=parent,
+            override_provider="deepseek",
+            override_base_url="https://deepseek.test",
+            override_api_key="sk-deepseek",
+            override_api_mode="chat_completions",
+            role="leaf",
+            agent_id="deepseek-tui",
+            agent_config={},
+            profile={"model_ref": "deepseek_pro"},
+            model_fallback_chain=[],
+            model_strategy={
+                "mode": "fallback",
+                "primary": "deepseek_pro",
+                "chain": ["deepseek_pro", "opencode_go_deepseek_flash"],
+                "fallback_on": ["rate_limited", "timeout"],
+            },
+        )
+
+    assert child._subagent_model_fallback_on == ["rate_limited", "timeout"]
+
+
+def test_fallback_activation_history_preserves_model_refs():
+    child = MagicMock()
+    child._fallback_activation_history = [
+        {
+            "from_model": "deepseek-v4-pro",
+            "from_model_ref": "deepseek_pro",
+            "from_provider": "deepseek",
+            "to_model": "deepseek-v4-flash",
+            "model_ref": "opencode_go_deepseek_flash",
+            "reason": "rate_limit",
+            "api_key": "must-not-leak",
+        }
+    ]
+
+    history = delegate_tool._fallback_activation_history(child)
+
+    assert history == [
+        {
+            "from_model": "deepseek-v4-pro",
+            "from_model_ref": "deepseek_pro",
+            "from_provider": "deepseek",
+            "from_base_url": None,
+            "to_model": "deepseek-v4-flash",
+            "to_provider": None,
+            "to_base_url": None,
+            "to_api_mode": None,
+            "reason": "rate_limit",
+            "fallback_index": None,
+            "activated_at": None,
+            "model_ref": "opencode_go_deepseek_flash",
+        }
+    ]
+
+
 def test_claude_agent_uses_external_claude_code_cli_runtime(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

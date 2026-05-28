@@ -228,6 +228,49 @@ class TestFallbackChainAdvancement:
         assert activation["to_provider"] == "openai"
         assert activation["reason"] == "rate_limit"
 
+    def test_strategy_fallback_on_blocks_unlisted_reason(self):
+        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        agent = _make_agent(fallback_model=fbs)
+        agent._subagent_model_fallback_on = ["rate_limited"]
+
+        with patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc:
+            assert agent._try_activate_fallback(reason=FailoverReason.model_not_found) is False
+
+        mock_rpc.assert_not_called()
+        assert agent.model != "gpt-4o"
+        assert agent._fallback_index == 0
+
+    def test_strategy_fallback_on_normalizes_rate_limit_alias(self):
+        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        agent = _make_agent(fallback_model=fbs)
+        agent._subagent_model_fallback_on = ["rate_limited"]
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback(reason=FailoverReason.rate_limit) is True
+
+        assert agent.model == "gpt-4o"
+
+    def test_strategy_fallback_on_preserves_reason_when_skipping_invalid_entry(self):
+        fbs = [
+            {"provider": "", "model": "broken"},
+            {"provider": "openai", "model": "gpt-4o"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent._fallback_chain = fbs
+        agent._subagent_model_fallback_on = ["rate_limited"]
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback(reason=FailoverReason.rate_limit) is True
+
+        assert agent.model == "gpt-4o"
+        assert agent._fallback_index == 2
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

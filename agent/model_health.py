@@ -8,11 +8,15 @@ It is not a quota authority and should never block all models permanently.
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+
+_WRITE_LOCK = threading.Lock()
 
 
 def _health_path(path: Optional[Path] = None) -> Path:
@@ -44,9 +48,11 @@ def load_model_health(path: Optional[Path] = None) -> Dict[str, Any]:
 def save_model_health(data: Dict[str, Any], path: Optional[Path] = None) -> None:
     p = _health_path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(p)
+    tid = threading.get_ident()
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{tid}.tmp")
+    with _WRITE_LOCK:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(p)
 
 
 def mark_model_unhealthy(

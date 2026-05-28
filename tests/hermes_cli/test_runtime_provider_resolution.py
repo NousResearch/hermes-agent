@@ -1306,7 +1306,7 @@ def test_opencode_zen_claude_defaults_to_messages(monkeypatch):
     assert resolved["base_url"] == "https://opencode.ai/zen"
 
 
-def test_opencode_go_minimax_defaults_to_messages(monkeypatch):
+def test_opencode_go_minimax25_defaults_to_chat_completions(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "minimax-m2.5"})
     monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
@@ -1315,9 +1315,8 @@ def test_opencode_go_minimax_defaults_to_messages(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="opencode-go")
 
     assert resolved["provider"] == "opencode-go"
-    assert resolved["api_mode"] == "anthropic_messages"
-    # Trailing /v1 stripped — Anthropic SDK appends /v1/messages itself.
-    assert resolved["base_url"] == "https://opencode.ai/zen/go"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
 def test_opencode_go_glm_defaults_to_chat_completions(monkeypatch):

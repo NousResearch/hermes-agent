@@ -2482,6 +2482,7 @@ def _build_child_agent(
     child._subagent_isolation_error = _isolation_error
     child._subagent_model_strategy = model_strategy or {}
     child._subagent_model_fallback_chain = list(model_fallback_chain or [])
+    child._subagent_model_fallback_on = list((model_strategy or {}).get("fallback_on") or [])
     child._current_model_ref = (
         (model_strategy or {}).get("active_primary")
         or (model_strategy or {}).get("primary")
@@ -2771,6 +2772,7 @@ def _fallback_activation_history(child: Any) -> List[Dict[str, Any]]:
         cleaned: Dict[str, Any] = {}
         for key in (
             "from_model",
+            "from_model_ref",
             "from_provider",
             "from_base_url",
             "to_model",

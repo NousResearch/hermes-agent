@@ -647,6 +647,16 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     return msg
 
 
+def _normalized_fallback_reason(value: object) -> str:
+    raw = getattr(value, "value", None) or str(value or "unknown")
+    normalized = raw.strip().lower()
+    if normalized == "rate_limit":
+        return "rate_limited"
+    if normalized in {"billing", "quota", "quota_exhausted"}:
+        return "quota_exceeded"
+    return normalized
+
+
 
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
@@ -671,13 +681,26 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._rate_limited_until = time.monotonic() + 60
     if agent._fallback_index >= len(agent._fallback_chain):
         return False
+    allowed_reasons = getattr(agent, "_subagent_model_fallback_on", None) or getattr(agent, "_model_fallback_on", None)
+    if allowed_reasons:
+        allowed = {_normalized_fallback_reason(item) for item in allowed_reasons if str(item or "").strip()}
+        current_reason = _normalized_fallback_reason(reason)
+        if current_reason not in allowed:
+            logging.info(
+                "Fallback blocked by strategy: reason=%s allowed=%s model=%s provider=%s",
+                current_reason,
+                sorted(allowed),
+                getattr(agent, "model", None),
+                getattr(agent, "provider", None),
+            )
+            return False
 
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
-        return agent._try_activate_fallback()  # skip invalid, try next
+        return agent._try_activate_fallback(reason=reason)  # skip invalid, try next
 
     # Skip entries that resolve to the current (provider, model) — falling
     # back to the same backend that just failed loops the failure. Compare
@@ -692,7 +715,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry %s/%s matches current provider/model",
             fb_provider, fb_model,
         )
-        return agent._try_activate_fallback()
+        return agent._try_activate_fallback(reason=reason)
     if (
         fb_base_url_for_dedup
         and current_base_url
@@ -703,7 +726,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry base_url %s matches current backend",
             fb_base_url_for_dedup,
         )
-        return agent._try_activate_fallback()
+        return agent._try_activate_fallback(reason=reason)
 
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()
@@ -734,7 +757,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             logging.warning(
                 "Fallback to %s failed: provider not configured",
                 fb_provider)
-            return agent._try_activate_fallback()  # try next in chain
+            return agent._try_activate_fallback(reason=reason)  # try next in chain
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
 
@@ -926,7 +949,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return True
     except Exception as e:
         logging.error("Failed to activate fallback %s: %s", fb_model, e)
-        return agent._try_activate_fallback()  # try next in chain
+        return agent._try_activate_fallback(reason=reason)  # try next in chain
 
 
 

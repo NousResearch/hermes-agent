@@ -1034,7 +1034,7 @@ def run_conversation(
                             force=True,
                         )
                         agent._emit_status(f"⏳ {_nous_msg}")
-                        if agent._try_activate_fallback():
+                        if agent._try_activate_fallback(reason=FailoverReason.rate_limit):
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
@@ -1270,7 +1270,7 @@ def run_conversation(
                     # rather than retrying with extended backoff.
                     if agent._fallback_index < len(agent._fallback_chain):
                         agent._emit_status("⚠️ Empty/malformed response — switching to fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason="empty_final_content"):
                         retry_count = 0
                         compression_attempts = 0
                         primary_recovery_attempted = False
@@ -1340,7 +1340,7 @@ def run_conversation(
                     if retry_count >= max_retries:
                         # Try fallback before giving up
                         agent._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
-                        if agent._try_activate_fallback():
+                        if agent._try_activate_fallback(reason="empty_final_content"):
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
@@ -2763,7 +2763,7 @@ def run_conversation(
                     # Try fallback before aborting — a different provider
                     # may not have the same issue (rate limit, auth, etc.)
                     agent._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         retry_count = 0
                         compression_attempts = 0
                         primary_recovery_attempted = False
@@ -2834,7 +2834,7 @@ def run_conversation(
                         continue
                     # Try fallback before giving up entirely
                     agent._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         retry_count = 0
                         compression_attempts = 0
                         primary_recovery_attempted = False
@@ -3690,7 +3690,7 @@ def run_conversation(
                             "⚠️ Model returning empty responses — "
                             "switching to fallback provider..."
                         )
-                        if agent._try_activate_fallback():
+                        if agent._try_activate_fallback(reason="empty_final_content"):
                             agent._empty_content_retries = 0
                             agent._emit_status(
                                 f"↻ Switched to fallback: {agent.model} "

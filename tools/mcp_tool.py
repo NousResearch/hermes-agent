@@ -2457,6 +2457,48 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+def _current_hermes_session_meta() -> Dict[str, Any]:
+    """Build per-call Hermes session metadata for MCP tools.
+
+    Long-lived stdio MCP servers cannot read the active gateway session from
+    their process env. Pass it on every tools/call request as MCP _meta so
+    session-aware MCP tools can target the current chat/topic safely.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return {}
+
+    mapping = {
+        "platform": "HERMES_SESSION_PLATFORM",
+        "chat_id": "HERMES_SESSION_CHAT_ID",
+        "chat_name": "HERMES_SESSION_CHAT_NAME",
+        "thread_id": "HERMES_SESSION_THREAD_ID",
+        "user_id": "HERMES_SESSION_USER_ID",
+        "user_name": "HERMES_SESSION_USER_NAME",
+        "session_key": "HERMES_SESSION_KEY",
+        "session_id": "HERMES_SESSION_ID",
+        "message_id": "HERMES_SESSION_MESSAGE_ID",
+    }
+    meta = {key: get_session_env(env_name, "") for key, env_name in mapping.items()}
+    meta = {key: value for key, value in meta.items() if value}
+
+    # Conversation Input needs the gateway API endpoint/credential in addition
+    # to the session target. These are process/config scoped rather than
+    # per-chat, but including them here makes same-session MCP tools fully
+    # self-contained while still avoiding model-visible arguments.
+    for key, env_names in {
+        "api_base_url": ("HERMES_GATEWAY_API_BASE_URL", "HERMES_API_SERVER_BASE_URL"),
+        "api_key": ("HERMES_GATEWAY_API_KEY", "HERMES_API_SERVER_KEY", "API_SERVER_KEY"),
+    }.items():
+        for env_name in env_names:
+            value = os.getenv(env_name, "")
+            if value:
+                meta[key] = value
+                break
+    return meta
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -2500,8 +2542,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
+            hermes_session_meta = _current_hermes_session_meta()
+            call_kwargs = {"arguments": args}
+            if hermes_session_meta:
+                call_kwargs["meta"] = {"hermes_session": hermes_session_meta}
             async with server._rpc_lock:
-                result = await server.session.call_tool(tool_name, arguments=args)
+                result = await server.session.call_tool(tool_name, **call_kwargs)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""

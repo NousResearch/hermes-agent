@@ -78,12 +78,79 @@ export const pasteTokenLabel = (text: string, lineCount: number) => {
 }
 
 const THINKING_STATUS_RE = new RegExp(`^(?:${VERBS.join('|')})\\.{0,3}$`, 'i')
-const THINKING_STATUS_CHUNK_RE = new RegExp(`[^A-Za-z\n]+\\s*(?:${VERBS.join('|')})\\.{0,3}\\s*`, 'giu')
+const THINKING_STATUS_WORDS = VERBS.map(verb => verb.toLowerCase())
+
+const statusWordAt = (line: string, start: number) =>
+  THINKING_STATUS_WORDS.find(word => {
+    if (start + word.length > line.length) {
+      return false
+    }
+
+    for (let offset = 0; offset < word.length; offset++) {
+      if (line[start + offset]!.toLowerCase() !== word[offset]) {
+        return false
+      }
+    }
+
+    return true
+  })
+
+const isAsciiLetter = (char: string) => {
+  const code = char.charCodeAt(0)
+
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122)
+}
+
+const stripThinkingStatusChunks = (line: string) => {
+  const parts: string[] = []
+  let cursor = 0
+  let i = 0
+
+  while (i < line.length) {
+    if (isAsciiLetter(line[i]!)) {
+      i++
+
+      continue
+    }
+
+    let wordStart = i + 1
+
+    while (wordStart < line.length && !isAsciiLetter(line[wordStart]!)) {
+      wordStart++
+    }
+
+    const statusWord = statusWordAt(line, wordStart)
+
+    if (!statusWord) {
+      i = wordStart
+
+      continue
+    }
+
+    let end = wordStart + statusWord.length
+
+    for (let dots = 0; dots < 3 && line[end] === '.'; dots++) {
+      end++
+    }
+
+    while (end < line.length && /\s/.test(line[end]!)) {
+      end++
+    }
+
+    parts.push(line.slice(cursor, i))
+    cursor = end
+    i = end
+  }
+
+  parts.push(line.slice(cursor))
+
+  return parts.join('')
+}
 
 export const cleanThinkingText = (reasoning: string) =>
   reasoning
     .split('\n')
-    .map(line => line.replace(THINKING_STATUS_CHUNK_RE, '').trim())
+    .map(line => stripThinkingStatusChunks(line).trim())
     .filter(line => line && !THINKING_STATUS_RE.test(line.replace(/\.\.\.$/, '').trim()))
     .join('\n')
     .replace(/([^\n])(?=\*\*[^*\n][^\n]*?\*\*)/g, '$1\n\n')

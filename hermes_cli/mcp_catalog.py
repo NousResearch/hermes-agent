@@ -23,7 +23,6 @@ See references/mcp-catalog.md (this repo's skill) for the manifest schema.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
@@ -41,7 +40,7 @@ from hermes_cli.config import (
     get_env_value,
     save_env_value,
 )
-from hermes_cli.cli_output import prompt as _prompt_input, prompt_yes_no
+from hermes_cli.cli_output import prompt as _prompt_input
 
 _MANIFEST_VERSION = 1
 

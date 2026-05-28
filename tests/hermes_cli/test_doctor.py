@@ -792,7 +792,7 @@ class TestGitHubTokenCheck:
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
 
-        from hermes_cli.doctor import run_doctor, _DHH
+        from hermes_cli.doctor import run_doctor
         import io, contextlib
 
         buf = io.StringIO()

@@ -6,7 +6,6 @@ isinstance(model, dict)) to silently fail — leaving the provider unset and
 falling back to auto-detection.
 """
 
-import os
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -194,7 +193,6 @@ class TestProviderPersistsAfterModelSave:
         # Patch fetch_api_models so the named custom flow returns one model;
         # patch simple_term_menu to force the input() fallback; patch input to
         # auto-select the first model from the fallback prompt.
-        from unittest.mock import MagicMock
         fake_menu_module = MagicMock()
         fake_menu_module.TerminalMenu.side_effect = OSError("no tty in test")
         with patch("hermes_cli.auth._save_model_choice"), \

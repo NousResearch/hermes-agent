@@ -7,7 +7,7 @@ pyright/gopls/etc. are still alive on the host.
 from __future__ import annotations
 
 import atexit
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

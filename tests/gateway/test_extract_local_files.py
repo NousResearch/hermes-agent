@@ -8,7 +8,6 @@ deduplication, text cleanup, and extension routing.
 Based on PR #1636 by sudoingX (salvaged + hardened).
 """
 
-import os
 from unittest.mock import patch
 
 import pytest

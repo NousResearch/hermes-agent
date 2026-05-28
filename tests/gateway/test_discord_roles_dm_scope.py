@@ -18,7 +18,6 @@ opts into a single trusted guild.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
 from plugins.platforms.discord.adapter import DiscordAdapter
 

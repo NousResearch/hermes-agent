@@ -24,7 +24,6 @@ from plugins.teams_pipeline.store import TeamsPipelineStore, resolve_teams_pipel
 from plugins.teams_pipeline.subscriptions import (
     build_graph_client,
     maintain_graph_subscriptions,
-    sync_graph_subscription_record,
 )
 from tools.microsoft_graph_auth import MicrosoftGraphConfigError, MicrosoftGraphTokenProvider
 

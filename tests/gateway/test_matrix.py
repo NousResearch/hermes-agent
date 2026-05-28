@@ -1,9 +1,6 @@
 """Tests for Matrix platform adapter (mautrix-python backend)."""
 import asyncio
-import json
-import re
 import sys
-import time
 import types
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -974,7 +971,6 @@ class TestDeviceKeyReVerification:
         mock_olm.account.identity_keys = {"ed25519": "local_new_key"}
         mock_olm.share_keys = AsyncMock()
 
-        from gateway.platforms.matrix import MatrixAdapter
         result = await adapter._verify_device_keys_on_server(mock_client, mock_olm)
 
         assert result is False
@@ -986,7 +982,7 @@ class TestMatrixE2EEHardFail:
 
     @pytest.mark.asyncio
     async def test_connect_fails_when_encryption_true_but_no_e2ee_deps(self):
-        from gateway.platforms.matrix import MatrixAdapter, _check_e2ee_deps
+        from gateway.platforms.matrix import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -1208,7 +1204,6 @@ class TestMatrixPasswordLoginDeviceId:
 
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
 
-        from gateway.platforms import matrix as matrix_mod
         with patch.dict("sys.modules", fake_mautrix_mods):
             with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
                 with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):

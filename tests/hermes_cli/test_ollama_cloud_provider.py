@@ -1,6 +1,5 @@
 """Tests for Ollama Cloud provider integration."""
 
-import os
 import pytest
 from unittest.mock import patch, MagicMock
 

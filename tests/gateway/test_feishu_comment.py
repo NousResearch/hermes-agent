@@ -1,7 +1,6 @@
 """Tests for feishu_comment — event filtering, access control integration, wiki reverse lookup."""
 
 import asyncio
-import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch

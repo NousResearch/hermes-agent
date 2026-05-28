@@ -7,11 +7,9 @@ task wrapper is cancelled.
 """
 
 import asyncio
-import json
 import queue
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------

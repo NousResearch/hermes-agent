@@ -960,7 +960,6 @@ def test_lobby_reminder_is_debounced_per_chat(tmp_path):
 
 def test_binding_survives_session_deletion_via_cascade(tmp_path):
     """Deleting a session with a topic binding must not raise FK errors."""
-    import sqlite3
     db = SessionDB(db_path=tmp_path / "state.db")
     db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     db.create_session(session_id="sess-to-delete", source="telegram", user_id="208214988")
@@ -988,7 +987,6 @@ def test_binding_survives_session_deletion_via_cascade(tmp_path):
 
 def test_migration_rebuilds_v1_binding_table_with_cascade_fk(tmp_path):
     """v1 → v2 migration rebuilds the bindings table when FK lacks ON DELETE CASCADE."""
-    import sqlite3
     db_path = tmp_path / "state.db"
     db = SessionDB(db_path=db_path)
 

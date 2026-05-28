@@ -7,7 +7,6 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
-import threading
 import time
 from unittest.mock import patch
 from typing import Any, Optional
@@ -17,7 +16,6 @@ import pytest
 import agent.transports.codex_app_server_session as session_mod
 from agent.transports.codex_app_server_session import (
     CodexAppServerSession,
-    TurnResult,
     _ServerRequestRouting,
     _approval_choice_to_codex_decision,
     _coerce_turn_input_text,

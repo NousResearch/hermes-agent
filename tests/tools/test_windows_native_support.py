@@ -11,13 +11,11 @@ Windows runner.
 
 from __future__ import annotations
 
-import importlib
 import os
 import signal
-import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

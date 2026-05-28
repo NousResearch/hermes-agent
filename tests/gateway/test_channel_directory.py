@@ -3,7 +3,6 @@
 import asyncio
 import json
 import os
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +14,6 @@ from gateway.channel_directory import (
     load_directory,
     _build_from_sessions,
     _build_slack,
-    DIRECTORY_PATH,
 )
 
 

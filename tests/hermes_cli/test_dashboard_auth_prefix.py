@@ -177,7 +177,7 @@ class TestOAuthRedirectUriRespectsPrefix:
         # The stub IDP's redirect_url echoes the redirect_uri back. The
         # real IDP would consume it and later use it to redirect the
         # user, so the byte-exact value MUST include the prefix.
-        from urllib.parse import urlparse, parse_qs, unquote
+        from urllib.parse import urlparse
         # Stub returns ``{redirect_uri}?code=stub_code&state=...`` — so
         # we read up to the first ``?``.
         redirect_uri = location.split("?", 1)[0]

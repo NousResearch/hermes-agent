@@ -1,7 +1,6 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
 import logging
-import os
 
 import pytest
 

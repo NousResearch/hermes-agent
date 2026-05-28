@@ -495,7 +495,7 @@ async def test_status_command_bypasses_active_session_guard():
     import asyncio
     from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
     from gateway.session import build_session_key
-    from gateway.config import Platform, PlatformConfig, GatewayConfig
+    from gateway.config import Platform, PlatformConfig
 
     source = _make_source()
     session_key = build_session_key(source)

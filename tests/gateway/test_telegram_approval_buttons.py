@@ -1,6 +1,5 @@
 """Tests for Telegram inline keyboard approval buttons."""
 
-import asyncio
 import os
 import sys
 from pathlib import Path

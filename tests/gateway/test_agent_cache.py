@@ -9,12 +9,9 @@ Verifies that the agent cache correctly:
 - Preserves frozen system prompt across turns
 """
 
-import hashlib
-import json
 import threading
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 def _make_runner():

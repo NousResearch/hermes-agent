@@ -940,7 +940,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             ``sys.exc_info()`` tuple).
             """
             import stat as _stat
-            import sys as _sys
 
             # Normalise the two callback signatures:
             #   onexc(func, path, exc_instance)   — 3.12+

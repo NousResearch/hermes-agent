@@ -7,7 +7,6 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
-import re
 import threading
 from collections import OrderedDict
 from pathlib import Path

@@ -14,9 +14,8 @@ import argparse
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from rich.console import Console
 from rich.panel import Panel

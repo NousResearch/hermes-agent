@@ -11,7 +11,6 @@ import json
 import os
 import time
 import asyncio
-from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest

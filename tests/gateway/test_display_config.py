@@ -1,5 +1,4 @@
 """Tests for gateway.display_config — per-platform display/verbosity resolver."""
-import pytest
 
 
 # ---------------------------------------------------------------------------

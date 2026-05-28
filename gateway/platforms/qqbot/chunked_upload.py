@@ -37,7 +37,7 @@ import asyncio
 import functools
 import hashlib
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 

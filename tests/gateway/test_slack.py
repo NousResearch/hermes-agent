@@ -19,8 +19,6 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
-    SendResult,
-    SUPPORTED_DOCUMENT_TYPES,
     is_host_excluded_by_no_proxy,
 )
 
@@ -1834,8 +1832,7 @@ class TestReactions:
         assert "1234567890.000001" in adapter._reacting_message_ids
 
         # Simulate the base class calling on_processing_start
-        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
-        from gateway.config import Platform
+        from gateway.platforms.base import MessageType, SessionSource
         source = SessionSource(
             platform=Platform.SLACK,
             chat_id="C123",
@@ -1874,8 +1871,7 @@ class TestReactions:
         adapter._app.client.reactions_add = AsyncMock()
         adapter._app.client.reactions_remove = AsyncMock()
 
-        from gateway.platforms.base import MessageEvent, MessageType, SessionSource, ProcessingOutcome
-        from gateway.config import Platform
+        from gateway.platforms.base import MessageType, SessionSource, ProcessingOutcome
         source = SessionSource(
             platform=Platform.SLACK,
             chat_id="C123",
@@ -1944,8 +1940,7 @@ class TestReactions:
         assert "1234567890.000004" not in adapter._reacting_message_ids
 
         # Hooks should also be no-ops when disabled
-        from gateway.platforms.base import MessageEvent, MessageType, SessionSource, ProcessingOutcome
-        from gateway.config import Platform
+        from gateway.platforms.base import MessageType, SessionSource, ProcessingOutcome
         source = SessionSource(
             platform=Platform.SLACK,
             chat_id="C123",

@@ -4,13 +4,12 @@ Reproduces the CLI scenario: user sends a message while delegate_task is
 running, main thread calls parent.interrupt(), child should stop.
 """
 
-import json
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
 
-from tools.interrupt import set_interrupt, is_interrupted, _interrupt_event
+from tools.interrupt import set_interrupt, is_interrupted
 
 
 class TestInterruptPropagationToChild(unittest.TestCase):

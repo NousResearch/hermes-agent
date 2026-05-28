@@ -9,8 +9,6 @@ See issue #507 (Roo Code deep-dive, item 2c).
 """
 
 import json
-import os
-import tempfile
 
 import pytest
 

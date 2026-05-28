@@ -11,7 +11,6 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from hermes_cli.main import _web_ui_build_needed, _build_web_ui, _run_npm_install_deterministic
 

@@ -8,7 +8,6 @@ creative workflows that iterate on images across many turns.
 
 from __future__ import annotations
 
-import pytest
 
 from agent.context_compressor import (
     _CHARS_PER_TOKEN,

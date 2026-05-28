@@ -25,10 +25,8 @@ import os
 import platform
 import re
 import shutil
-import subprocess
 import sys
 import threading
-from concurrent.futures import Future
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import (

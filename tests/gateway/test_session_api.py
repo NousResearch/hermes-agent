@@ -1,6 +1,5 @@
 """Focused tests for API server session-control endpoints."""
 
-import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest

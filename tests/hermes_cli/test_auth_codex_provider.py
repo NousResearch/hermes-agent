@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 
 from hermes_cli.auth import (
     AuthError,
@@ -17,8 +16,6 @@ from hermes_cli.auth import (
     _save_codex_tokens,
     _import_codex_cli_tokens,
     _login_openai_codex,
-    get_codex_auth_status,
-    get_provider_auth_state,
     refresh_codex_oauth_pure,
     resolve_codex_runtime_credentials,
     resolve_provider,

@@ -22,7 +22,6 @@ These tests verify:
 from __future__ import annotations
 
 import logging
-import pytest
 
 from hermes_cli.auth import (
     DEFAULT_NOUS_INFERENCE_URL,

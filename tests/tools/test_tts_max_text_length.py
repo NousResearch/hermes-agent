@@ -6,12 +6,9 @@ MiniMax allows 10000, and ElevenLabs allows 5000-40000 depending on model.
 """
 
 import json
-from unittest.mock import patch
 
-import pytest
 
 from tools.tts_tool import (
-    ELEVENLABS_MODEL_MAX_TEXT_LENGTH,
     FALLBACK_MAX_TEXT_LENGTH,
     PROVIDER_MAX_TEXT_LENGTH,
     _resolve_max_text_length,

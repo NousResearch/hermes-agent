@@ -1,6 +1,5 @@
 """Tests for approvals.cron_mode — configurable approval behavior for cron jobs."""
 
-import os
 import pytest
 
 import tools.approval as approval_module

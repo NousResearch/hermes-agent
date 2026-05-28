@@ -1,8 +1,6 @@
 import logging
 from io import StringIO
 import subprocess
-import sys
-import types
 
 import pytest
 

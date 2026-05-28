@@ -11,7 +11,7 @@ prompt_toolkit input loop. We exercise the same try/except by calling
 through a thin wrapper that mirrors the real dispatch shape.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from cli import HermesCLI
 

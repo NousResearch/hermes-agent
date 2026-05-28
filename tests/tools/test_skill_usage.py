@@ -339,7 +339,7 @@ def test_agent_created_skips_archive_and_hub_dirs(skills_home):
 # ---------------------------------------------------------------------------
 
 def test_archive_skill_moves_directory(skills_home):
-    from tools.skill_usage import archive_skill, get_record, STATE_ARCHIVED
+    from tools.skill_usage import archive_skill, get_record
     skills_dir = skills_home / "skills"
     skill_dir = _write_skill(skills_dir, "old-skill")
     assert skill_dir.exists()

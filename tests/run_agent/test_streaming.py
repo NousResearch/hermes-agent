@@ -3,11 +3,8 @@
 Tests the unified streaming API call, delta callbacks, tool-call
 suppression, provider fallback, and CLI streaming display.
 """
-import json
-import threading
-import uuid
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 

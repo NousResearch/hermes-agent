@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import acp
-from acp.schema import AgentPlanUpdate, ToolCallStart, ToolCallProgress, AgentThoughtChunk, AgentMessageChunk
+from acp.schema import AgentPlanUpdate
 
 from acp_adapter.events import (
     _build_plan_update_from_todo_result,

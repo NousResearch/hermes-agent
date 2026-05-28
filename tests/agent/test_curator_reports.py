@@ -7,8 +7,7 @@ the standard log dir, not inside the user's ``skills/`` data directory.
 from __future__ import annotations
 
 import json
-import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest

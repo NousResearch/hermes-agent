@@ -7,14 +7,12 @@ import subprocess
 import sys
 import time
 import pytest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.environments.local import _HERMES_PROVIDER_ENV_FORCE_PREFIX
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
-    MAX_OUTPUT_CHARS,
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
 )

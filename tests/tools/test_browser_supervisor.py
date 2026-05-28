@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import os
 import shutil
 import subprocess
 import tempfile
@@ -48,7 +47,6 @@ def chrome_cdp(request):
     Always launches with ``--site-per-process`` so cross-origin iframes
     become real OOPIFs (needed by the iframe interaction tests).
     """
-    import socket
 
     # xdist worker_id is "master" in single-process mode or "gw0".."gwN" otherwise.
     # Under subprocess-per-file isolation there's no xdist, so we fall back

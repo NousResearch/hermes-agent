@@ -1085,8 +1085,7 @@ def list_authenticated_providers(
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
-        _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
-        cached_provider_model_ids,
+        _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
         get_curated_nous_model_ids,
     )
 

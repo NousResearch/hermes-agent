@@ -1003,7 +1003,7 @@ class TestTelegramMenuCommands:
 
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
 
         # Set up a config with a telegram-specific disabled list
         config_file = tmp_path / "config.yaml"

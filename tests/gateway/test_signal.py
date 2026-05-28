@@ -1,7 +1,6 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
-import json
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock

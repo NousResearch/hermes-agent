@@ -1,7 +1,5 @@
 """Tests for gateway/sticker_cache.py — sticker description cache."""
 
-import json
-import time
 from unittest.mock import patch
 
 from gateway.sticker_cache import (
@@ -11,7 +9,6 @@ from gateway.sticker_cache import (
     cache_sticker_description,
     build_sticker_injection,
     build_animated_sticker_injection,
-    STICKER_VISION_PROMPT,
 )
 
 

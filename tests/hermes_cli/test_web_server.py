@@ -2,17 +2,13 @@
 
 import os
 import json
-import tempfile
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 from hermes_cli.config import (
-    DEFAULT_CONFIG,
     reload_env,
     redact_key,
-    _EXTRA_ENV_KEYS,
     OPTIONAL_ENV_VARS,
 )
 
@@ -1918,7 +1914,6 @@ class TestPluginAPIAuth:
         shared layer can't silently break the WS auth contract.
         """
         from starlette.websockets import WebSocketDisconnect
-        from hermes_cli.web_server import _SESSION_TOKEN
 
         # Without a token the WS endpoint must close the upgrade itself
         # (its own _check_ws_token), NOT 401 from the HTTP middleware.

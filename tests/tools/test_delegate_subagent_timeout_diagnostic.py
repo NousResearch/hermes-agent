@@ -16,12 +16,10 @@ These tests pin:
 """
 from __future__ import annotations
 
-import os
 import threading
 import time
 from pathlib import Path
-from typing import Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

@@ -568,7 +568,6 @@ class TestStatusBarWidthSource:
     """Ensure status bar fragments don't overflow the terminal width."""
 
     def _make_wide_cli(self):
-        from datetime import datetime, timedelta
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=100_000,

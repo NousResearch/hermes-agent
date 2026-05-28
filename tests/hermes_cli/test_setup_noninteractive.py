@@ -1,7 +1,7 @@
 """Tests for non-interactive setup and first-run headless behavior."""
 
 from argparse import Namespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from hermes_cli.config import DEFAULT_CONFIG, load_config, save_config

@@ -8,7 +8,6 @@ sibling platform-plugin tests on the same xdist worker.
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

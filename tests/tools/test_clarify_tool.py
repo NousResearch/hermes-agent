@@ -3,7 +3,6 @@
 import json
 from typing import List, Optional
 
-import pytest
 
 from tools.clarify_tool import (
     clarify_tool,

@@ -6,7 +6,6 @@ for 'axolotl/' because the string prefix matched. Now uses
 Path.is_relative_to() which handles directory boundaries correctly.
 """
 
-import os
 import pytest
 from pathlib import Path
 

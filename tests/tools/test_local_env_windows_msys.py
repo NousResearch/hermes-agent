@@ -18,10 +18,8 @@ and ``os.path.isdir`` so the MSYS path tests as "missing" exactly like
 on the real OS.
 """
 
-import os
 from unittest.mock import patch
 
-import pytest
 
 from tools.environments import local as local_mod
 from tools.environments.local import (

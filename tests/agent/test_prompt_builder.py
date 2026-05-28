@@ -18,7 +18,6 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
-    build_environment_hints,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,

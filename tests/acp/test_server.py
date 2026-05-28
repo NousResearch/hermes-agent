@@ -18,7 +18,6 @@ from acp.schema import (
     AvailableCommandsUpdate,
     Implementation,
     InitializeResponse,
-    ListSessionsResponse,
     LoadSessionResponse,
     NewSessionResponse,
     PromptResponse,
@@ -33,7 +32,6 @@ from acp.schema import (
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
-    Usage,
     UsageUpdate,
     UserMessageChunk,
 )

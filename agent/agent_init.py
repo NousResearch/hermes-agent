@@ -27,7 +27,6 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 
@@ -37,7 +36,6 @@ from agent.memory_manager import StreamingContextScrubber
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     fetch_model_metadata,
-    get_model_context_length,
     is_local_endpoint,
     query_ollama_num_ctx,
 )
@@ -52,7 +50,6 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from model_tools import check_toolset_requirements, get_tool_definitions
 from utils import base_url_host_matches
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
@@ -1474,7 +1471,6 @@ def init_agent(
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
-    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
     _ctx = getattr(agent.context_compressor, "context_length", 0)
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
         raise ValueError(

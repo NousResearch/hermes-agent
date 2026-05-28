@@ -17,7 +17,6 @@ from plugins.memory.honcho.client import (
     resolve_active_host,
     resolve_config_path,
     resolve_global_config_path,
-    HOST,
 )
 
 

@@ -7,7 +7,6 @@ and shell completion generation.
 
 import json
 import io
-import os
 import tarfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock

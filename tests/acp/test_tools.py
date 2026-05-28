@@ -1,6 +1,5 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
-import pytest
 
 from acp_adapter.edit_approval import EditProposal
 from acp_adapter.tools import (

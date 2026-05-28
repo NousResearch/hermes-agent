@@ -1,6 +1,5 @@
 """Tests for tools/vision_tools.py — URL validation, type hints, error logging."""
 
-import asyncio
 import json
 import logging
 import os

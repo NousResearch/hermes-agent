@@ -3128,7 +3128,6 @@ def _(rid, params: dict) -> dict:
 
 
 def _spawn_trees_root():
-    from pathlib import Path as _P
     from hermes_constants import get_hermes_home
 
     root = get_hermes_home() / "spawn-trees"

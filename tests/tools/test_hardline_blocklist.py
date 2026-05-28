@@ -6,12 +6,10 @@ gateway /yolo, approvals.mode=off, or cron approve mode.
 
 Inspired by Mercury Agent's permission-hardened blocklist.
 """
-import os
 
 import pytest
 
 from tools.approval import (
-    DANGEROUS_PATTERNS,
     HARDLINE_PATTERNS,
     check_all_command_guards,
     check_dangerous_command,

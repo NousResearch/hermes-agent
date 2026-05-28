@@ -1,6 +1,5 @@
 """Tests for gateway /usage command — agent cache lookup and output fields."""
 
-import asyncio
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -44,7 +43,7 @@ def _make_mock_agent(**overrides):
 
 def _make_runner(session_key, agent=None, cached_agent=None):
     """Build a bare GatewayRunner with just the fields _handle_usage_command needs."""
-    from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+    from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}

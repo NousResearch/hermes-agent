@@ -1,7 +1,6 @@
 """Tests for trajectory_compressor.py — config, metrics, and compression logic."""
 
 import importlib
-import json
 import os
 import sys
 from types import SimpleNamespace

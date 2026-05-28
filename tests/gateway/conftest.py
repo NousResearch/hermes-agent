@@ -419,7 +419,6 @@ def pytest_configure(config):
         lock = FileLock(str(lock_file), timeout=120)
     except ImportError:
         # Fallback: no locking (still correct, just slower under contention).
-        import contextlib
 
         class _NoLock:
             def __enter__(self):

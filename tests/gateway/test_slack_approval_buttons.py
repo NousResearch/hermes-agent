@@ -1,7 +1,5 @@
 """Tests for Slack Block Kit approval buttons and thread context fetching."""
 
-import asyncio
-import os
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -44,7 +42,7 @@ def _ensure_slack_mock():
 _ensure_slack_mock()
 
 from gateway.platforms.slack import SlackAdapter
-from gateway.config import Platform, PlatformConfig
+from gateway.config import PlatformConfig
 
 
 def _make_adapter():

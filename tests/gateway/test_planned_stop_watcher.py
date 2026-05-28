@@ -14,10 +14,8 @@ See issue #33778 for the original Windows session-loss bug report.
 import asyncio
 import threading
 import time
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
 from gateway.run import _run_planned_stop_watcher
 

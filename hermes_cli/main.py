@@ -5801,6 +5801,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_project(args):
+    """Filesystem-backed Project Autopilot projects."""
+    from hermes_cli.project import project_command
+
+    return project_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -10296,7 +10303,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
-        "model", "pairing", "plugins", "postinstall", "profile", "proxy",
+        "model", "pairing", "plugins", "postinstall", "profile", "project", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat",
@@ -11258,6 +11265,11 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    from hermes_cli.project import build_parser as _build_project_parser
+
+    project_parser = _build_project_parser(subparsers)
+    project_parser.set_defaults(func=cmd_project)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

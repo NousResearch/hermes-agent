@@ -1,0 +1,12 @@
+{
+  "title": "Refactor database layer",
+  "objective": "Refactor the database access layer to use prepared statements",
+  "target repo or workspace": "relay-go-app",
+  "scope": "Replace all raw SQL queries with prepared statements",
+  "out of scope": "Schema changes, query optimization",
+  "acceptance criteria": "All existing tests pass with prepared statements",
+  "stop conditions": "Scope expansion beyond SQL refactoring",
+  "approval boundaries": "No external changes",
+  "constraints": "No change to public API surface",
+  "expected output": "Refactored DB layer with prepared statements"
+}

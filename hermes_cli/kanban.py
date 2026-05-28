@@ -78,6 +78,8 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "production_order_id": t.production_order_id,
+        "current_state": t.current_state,
     }
 
 
@@ -826,6 +828,168 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                       help="Delete worker log files older than N days (default: 30)")
 
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
+
+    # --- production-order ---
+    p_po = sub.add_parser(
+        "production-order",
+        aliases=["po"],
+        help="Manage Hermes Production Workflow v1 production orders",
+        description=(
+            "Create, list, and inspect production orders for the governed "
+            "multi-profile production workflow. A production order transforms "
+            "an approved brief into a stateful Kanban graph with 6 stage cards "
+            "and a tracked event log."
+        ),
+    )
+    po_sub = p_po.add_subparsers(dest="po_action")
+
+    po_create = po_sub.add_parser(
+        "create",
+        help="Create a production order from a brief JSON file",
+    )
+    po_create.add_argument(
+        "brief_path",
+        help="Path to a JSON file with the approved brief fields",
+    )
+    po_create.add_argument("--board", default=None,
+                           help="Kanban board slug (default: current board)")
+    po_create.add_argument("--idempotency-key", default=None,
+                           help="Dedup key for the parent card")
+    po_create.add_argument("--json", action="store_true",
+                           help="Emit JSON output")
+
+    po_list = po_sub.add_parser(
+        "list", aliases=["ls"],
+        help="List active production orders",
+    )
+    po_list.add_argument("--board", default=None,
+                         help="Kanban board slug (default: current board)")
+    po_list.add_argument("--json", action="store_true",
+                         help="Emit JSON output")
+
+    po_show = po_sub.add_parser(
+        "show",
+        help="Show a specific production order by ID",
+    )
+    po_show.add_argument("production_order_id",
+                         help="Production order ID (e.g. PO-20260525-A3XF)")
+    po_show.add_argument("--board", default=None,
+                         help="Kanban board slug (default: current board)")
+    po_show.add_argument("--events", action="store_true",
+                         help="Show event log for this order")
+    po_show.add_argument("--json", action="store_true",
+                         help="Emit JSON output")
+
+    po_status = po_sub.add_parser(
+        "status",
+        help="Show all production orders with summary",
+    )
+    po_status.add_argument("--board", default=None,
+                           help="Kanban board slug (default: current board)")
+    po_status.add_argument("--json", action="store_true",
+                           help="Emit JSON output")
+
+    po_triage = po_sub.add_parser(
+        "triage",
+        help="Run Slice 5 OrchestratorOS triage for an existing production order",
+    )
+    po_triage.add_argument("production_order_id",
+                           help="Production order ID in ORCHESTRATOR_TRIAGE")
+    po_triage.add_argument("--board", default=None,
+                           help="Kanban board slug (default: current board)")
+    po_triage.add_argument("--json", action="store_true",
+                           help="Emit JSON output")
+
+    po_architect_complete = po_sub.add_parser(
+        "architect-complete",
+        help="Run Slice 6 ArchitectOS spec completion for an existing production order",
+    )
+    po_architect_complete.add_argument(
+        "production_order_id",
+        help="Production order ID in ARCHITECT_SPEC",
+    )
+    po_architect_complete.add_argument("--board", default=None,
+                                       help="Kanban board slug (default: current board)")
+    po_architect_complete.add_argument(
+        "--spec-file",
+        required=True,
+        help="Path to a JSON file containing the ArchitectOS spec packet",
+    )
+    po_architect_complete.add_argument("--json", action="store_true",
+                                       help="Emit JSON output")
+
+    po_dev_complete = po_sub.add_parser(
+        "dev-complete",
+        help="Run Slice 7 DevOS build completion for an existing production order",
+    )
+    po_dev_complete.add_argument(
+        "production_order_id",
+        help="Production order ID in ARCHITECT_READY_FOR_DEV",
+    )
+    po_dev_complete.add_argument("--board", default=None,
+                                 help="Kanban board slug (default: current board)")
+    po_dev_complete.add_argument(
+        "--result-file",
+        required=True,
+        help="Path to a JSON file containing the DevOS build/result packet",
+    )
+    po_dev_complete.add_argument("--json", action="store_true",
+                                 help="Emit JSON output")
+
+    po_audit_complete = po_sub.add_parser(
+        "audit-complete",
+        help="Run AuditOS review completion for an existing production order",
+    )
+    po_audit_complete.add_argument(
+        "production_order_id",
+        help="Production order ID in DEV_COMPLETE or AUDIT_REVIEW",
+    )
+    po_audit_complete.add_argument("--board", default=None,
+                                   help="Kanban board slug (default: current board)")
+    po_audit_complete.add_argument(
+        "--review-file",
+        required=True,
+        help="Path to a JSON file containing the AuditOS review packet",
+    )
+    po_audit_complete.add_argument("--json", action="store_true",
+                                   help="Emit JSON output")
+
+    po_architect_reconcile = po_sub.add_parser(
+        "architect-reconcile",
+        help="Run ArchitectOS reconciliation completion for an existing production order",
+    )
+    po_architect_reconcile.add_argument(
+        "production_order_id",
+        help="Production order ID in AUDIT_PASSED or ARCHITECT_RECONCILE",
+    )
+    po_architect_reconcile.add_argument("--board", default=None,
+                                        help="Kanban board slug (default: current board)")
+    po_architect_reconcile.add_argument(
+        "--reconcile-file",
+        required=True,
+        help="Path to a JSON file containing the ArchitectOS reconcile packet",
+    )
+    po_architect_reconcile.add_argument("--json", action="store_true",
+                                        help="Emit JSON output")
+
+    po_final_review = po_sub.add_parser(
+        "final-review",
+        help="Run Default Hermes final review completion for an existing production order",
+    )
+    po_final_review.add_argument(
+        "production_order_id",
+        help="Production order ID in ARCHITECT_ACCEPTED or DEFAULT_FINAL_REVIEW",
+    )
+    po_final_review.add_argument("--board", default=None,
+                                 help="Kanban board slug (default: current board)")
+    po_final_review.add_argument(
+        "--final-file",
+        required=True,
+        help="Path to a JSON file containing the Default final review packet",
+    )
+    po_final_review.add_argument("--json", action="store_true",
+                                 help="Emit JSON output")
+
     return kanban_parser
 
 
@@ -950,6 +1114,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         "specify":  _cmd_specify,
         "decompose":  _cmd_decompose,
         "gc":       _cmd_gc,
+        "production-order": _cmd_production_order,
+        "po":       _cmd_production_order,
     }
     handler = handlers.get(action)
     if not handler:
@@ -2655,6 +2821,526 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
     return 0
+
+
+def _cmd_production_order(args: argparse.Namespace) -> int:
+    """Dispatch a ``kanban production-order`` subcommand.
+
+    Handles create, list, show, and status actions by delegating to
+    the ``production_order_db`` runtime module.
+    """
+    from hermes_cli.production_order_db import (
+        ProductionOrder,
+        create_production_order,
+        format_production_order_status,
+        get_brief_value,
+        list_production_orders,
+        log_workflow_event,
+        run_architect_spec_bridge,
+        run_architect_reconcile_bridge,
+        run_auditos_review_complete_bridge,
+        run_default_final_review_bridge,
+        run_devos_complete_bridge,
+        run_full_bridge,
+        run_orchestrator_triage_bridge,
+        validate_brief,
+    )
+    import json as stdlib_json
+
+    po_action = getattr(args, "po_action", None)
+    if not po_action:
+        print(
+            "usage: hermes kanban production-order <action> [options]\n"
+            "Actions: create, list, show, status",
+            file=sys.stderr,
+        )
+        return 0
+
+    board = getattr(args, "board", None)
+
+    if po_action == "create":
+        brief_path = getattr(args, "brief_path", None)
+        if not brief_path:
+            print("kanban production-order create: brief_path is required",
+                  file=sys.stderr)
+            return 1
+        try:
+            with open(brief_path, "r") as f:
+                brief = stdlib_json.load(f)
+        except (OSError, stdlib_json.JSONDecodeError) as exc:
+            print(f"kanban production-order create: {exc}", file=sys.stderr)
+            return 1
+
+        # Validate required fields.
+        missing = validate_brief(brief)
+        if missing:
+            print(
+                f"kanban production-order create: missing required brief "
+                f"field(s): {', '.join(missing)}",
+                file=sys.stderr,
+            )
+            return 1
+
+        idempotency_key = getattr(args, "idempotency_key", None)
+
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_full_bridge(
+                    conn,
+                    title=brief.get("title", brief.get("objective", "Untitled")),
+                    source_brief=stdlib_json.dumps(brief, indent=2),
+                    approved_by=brief.get("approved_by", "Jarren"),
+                    priority_lane=brief.get("priority_lane", "Hermes OS"),
+                    repo_or_workspace=get_brief_value(brief, "target repo or workspace", ""),
+                    idempotency_key=idempotency_key,
+                    board=board,
+                )
+        except Exception as exc:
+            print(f"kanban production-order create: {exc}", file=sys.stderr)
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print(f"\nParent card:     {po.parent_kanban_card_id}")
+            print(f"Child cards:")
+            for i, cid in enumerate(po.child_kanban_card_ids, 1):
+                print(f"  {i}. {cid} - {CHILD_CARD_DEF_NAMES[i-1] if i <= len(CHILD_CARD_DEF_NAMES) else ''}")
+        return 0
+
+    if po_action in ("list", "ls", "status"):
+        try:
+            with kb.connect(board=board) as conn:
+                orders = list_production_orders(conn, board=board)
+        except Exception as exc:
+            print(f"kanban production-order list: {exc}", file=sys.stderr)
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps([
+                {
+                    "production_order_id": o.production_order_id,
+                    "title": o.title,
+                    "current_state": o.current_state,
+                    "current_owner_profile": o.current_owner_profile,
+                    "parent_kanban_card_id": o.parent_kanban_card_id,
+                    "approved_by": o.approved_by,
+                }
+                for o in orders
+            ], indent=2))
+        else:
+            if not orders:
+                print("No active production orders.")
+            for o in orders:
+                print(format_production_order_status(o))
+                print("---")
+        return 0
+
+    if po_action == "triage":
+        po_id = getattr(args, "production_order_id", None)
+        if not po_id:
+            print("kanban production-order triage: production_order_id is required",
+                  file=sys.stderr)
+            return 1
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_orchestrator_triage_bridge(
+                    conn,
+                    production_order_id=po_id,
+                )
+        except Exception as exc:
+            print(f"kanban production-order triage: {exc}", file=sys.stderr)
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "next_action": "dispatch_architect_os",
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print("\nSlice 5 triage complete: ArchitectOS handoff attached.")
+        return 0
+
+    if po_action == "architect-complete":
+        po_id = getattr(args, "production_order_id", None)
+        spec_file = getattr(args, "spec_file", None)
+        if not po_id:
+            print(
+                "kanban production-order architect-complete: production_order_id is required",
+                file=sys.stderr,
+            )
+            return 1
+        if not spec_file:
+            print(
+                "kanban production-order architect-complete: --spec-file is required",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with open(spec_file, "r", encoding="utf-8") as f:
+                architect_packet = stdlib_json.load(f)
+        except (OSError, stdlib_json.JSONDecodeError) as exc:
+            print(
+                f"kanban production-order architect-complete: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_architect_spec_bridge(
+                    conn,
+                    production_order_id=po_id,
+                    architect_packet=architect_packet,
+                )
+        except Exception as exc:
+            print(
+                f"kanban production-order architect-complete: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "next_action": "dispatch_dev_os",
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print("\nSlice 6 architect completion complete: DevOS handoff attached.")
+        return 0
+
+    if po_action == "dev-complete":
+        po_id = getattr(args, "production_order_id", None)
+        result_file = getattr(args, "result_file", None)
+        if not po_id:
+            print(
+                "kanban production-order dev-complete: production_order_id is required",
+                file=sys.stderr,
+            )
+            return 1
+        if not result_file:
+            print(
+                "kanban production-order dev-complete: --result-file is required",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with open(result_file, "r", encoding="utf-8") as f:
+                devos_packet = stdlib_json.load(f)
+        except (OSError, stdlib_json.JSONDecodeError) as exc:
+            print(
+                f"kanban production-order dev-complete: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_devos_complete_bridge(
+                    conn,
+                    production_order_id=po_id,
+                    devos_packet=devos_packet,
+                )
+        except Exception as exc:
+            print(
+                f"kanban production-order dev-complete: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "next_action": "dispatch_audit_os",
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print("\nSlice 7 DevOS completion complete: AuditOS handoff attached.")
+        return 0
+
+    if po_action == "audit-complete":
+        po_id = getattr(args, "production_order_id", None)
+        review_file = getattr(args, "review_file", None)
+        if not po_id:
+            print(
+                "kanban production-order audit-complete: production_order_id is required",
+                file=sys.stderr,
+            )
+            return 1
+        if not review_file:
+            print(
+                "kanban production-order audit-complete: --review-file is required",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with open(review_file, "r", encoding="utf-8") as f:
+                review_packet = stdlib_json.load(f)
+        except (OSError, stdlib_json.JSONDecodeError) as exc:
+            print(
+                f"kanban production-order audit-complete: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_auditos_review_complete_bridge(
+                    conn,
+                    production_order_id=po_id,
+                    review_packet=review_packet,
+                )
+        except Exception as exc:
+            print(
+                f"kanban production-order audit-complete: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "next_action": "dispatch_architect_reconcile",
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print("\nAuditOS review complete: ArchitectOS reconcile handoff attached.")
+        return 0
+
+    if po_action == "architect-reconcile":
+        po_id = getattr(args, "production_order_id", None)
+        reconcile_file = getattr(args, "reconcile_file", None)
+        if not po_id:
+            print(
+                "kanban production-order architect-reconcile: production_order_id is required",
+                file=sys.stderr,
+            )
+            return 1
+        if not reconcile_file:
+            print(
+                "kanban production-order architect-reconcile: --reconcile-file is required",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with open(reconcile_file, "r", encoding="utf-8") as f:
+                reconcile_packet = stdlib_json.load(f)
+        except (OSError, stdlib_json.JSONDecodeError) as exc:
+            print(
+                f"kanban production-order architect-reconcile: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_architect_reconcile_bridge(
+                    conn,
+                    production_order_id=po_id,
+                    reconcile_packet=reconcile_packet,
+                )
+        except Exception as exc:
+            print(
+                f"kanban production-order architect-reconcile: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "next_action": "dispatch_default_final_review",
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print("\nArchitectOS reconciliation complete: final review handoff attached.")
+        return 0
+
+    if po_action == "final-review":
+        po_id = getattr(args, "production_order_id", None)
+        final_file = getattr(args, "final_file", None)
+        if not po_id:
+            print(
+                "kanban production-order final-review: production_order_id is required",
+                file=sys.stderr,
+            )
+            return 1
+        if not final_file:
+            print(
+                "kanban production-order final-review: --final-file is required",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with open(final_file, "r", encoding="utf-8") as f:
+                final_packet = stdlib_json.load(f)
+        except (OSError, stdlib_json.JSONDecodeError) as exc:
+            print(
+                f"kanban production-order final-review: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_default_final_review_bridge(
+                    conn,
+                    production_order_id=po_id,
+                    final_packet=final_packet,
+                )
+        except Exception as exc:
+            print(
+                f"kanban production-order final-review: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "next_action": po.final_status or "done",
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print("\nDefault final review complete: workflow marked DONE.")
+        return 0
+
+    if po_action == "show":
+        po_id = getattr(args, "production_order_id", None)
+        if not po_id:
+            print("kanban production-order show: production_order_id is required",
+                  file=sys.stderr)
+            return 1
+
+        try:
+            with kb.connect(board=board) as conn:
+                orders = list_production_orders(conn, board=board)
+        except Exception as exc:
+            print(f"kanban production-order show: {exc}", file=sys.stderr)
+            return 1
+
+        match = [o for o in orders if o.production_order_id == po_id]
+        if not match:
+            print(f"kanban: production order {po_id!r} not found",
+                  file=sys.stderr)
+            return 1
+        po = match[0]
+
+        events = []
+        if getattr(args, "events", False):
+            try:
+                with kb.connect(board=board) as conn:
+                    events = conn.execute(
+                        "SELECT * FROM production_order_events "
+                        "WHERE production_order_id = ? "
+                        "ORDER BY id",
+                        (po_id,),
+                    ).fetchall()
+            except Exception as exc:
+                print(f"kanban production-order show: events: {exc}",
+                      file=sys.stderr)
+                return 1
+
+        if getattr(args, "json", False):
+            result = {
+                "production_order_id": po.production_order_id,
+                "title": po.title,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "parent_kanban_card_id": po.parent_kanban_card_id,
+                "child_kanban_card_ids": po.child_kanban_card_ids,
+                "approved_by": po.approved_by,
+                "approved_at": po.approved_at,
+                "priority_lane": po.priority_lane,
+                "repo_or_workspace": po.repo_or_workspace,
+                "stage_history": [
+                    {"from": s.from_state, "to": s.to_state,
+                     "owner": s.owner_profile, "at": s.timestamp}
+                    for s in po.stage_history
+                ],
+                "blockers": po.blockers,
+            }
+            if getattr(args, "events", False):
+                result["events"] = [
+                    {
+                        "id": ev["id"],
+                        "production_order_id": ev["production_order_id"],
+                        "timestamp": ev["timestamp"],
+                        "event_type": ev["event_type"],
+                        "from_state": ev["from_state"],
+                        "to_state": ev["to_state"],
+                        "owner_profile": ev["owner_profile"],
+                        "kanban_card_id": ev["kanban_card_id"],
+                        "result": ev["result"],
+                        "error": ev["error"],
+                        "next_action": ev["next_action"],
+                    }
+                    for ev in events
+                ]
+            print(stdlib_json.dumps(result, indent=2))
+        else:
+            print(format_production_order_status(po))
+            if getattr(args, "events", False):
+                if not events:
+                    print("  No events logged.")
+                else:
+                    print(f"\n  Events ({len(events)}):")
+                    for ev in events:
+                        print(
+                            f"    [{ev['id']}] {ev['event_type']} "
+                            f"{ev['from_state'] or ''} → {ev['to_state'] or ''} "
+                            f"({ev['owner_profile'] or '?'})"
+                        )
+
+        return 0
+
+    print(f"kanban: unknown production-order action {po_action!r}",
+          file=sys.stderr)
+    return 2
+
+
+def _validate_brief_fields(brief: dict) -> list[str]:
+    """Validate a brief JSON dict has required fields."""
+    from hermes_cli.production_order_db import validate_brief
+    return validate_brief(brief)
+
+
+# Post-import: inline the child card def names so the CLI handler can display them.
+CHILD_CARD_DEF_NAMES = [
+    "OrchestratorOS - Triage + Graph",
+    "ArchitectOS - Spec + Architecture",
+    "DevOS - Build + Tests",
+    "AuditOS - Review + Evidence",
+    "ArchitectOS - Reconcile",
+    "Default Hermes - Final Review",
+]
 
 
 # ---------------------------------------------------------------------------

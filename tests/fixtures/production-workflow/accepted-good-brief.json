@@ -1,0 +1,14 @@
+{
+  "title": "Implement user authentication for Relay demo",
+  "objective": "Add JWT-based authentication to the Relay WhatsApp demo application",
+  "target repo or workspace": "relay-go-app",
+  "scope": "Implement /login and /register endpoints, JWT token generation and validation, middleware for protected routes",
+  "out of scope": "OAuth providers, password reset, rate limiting, frontend UI changes",
+  "acceptance criteria": "All auth endpoints return proper 200/401/403 responses; protected routes reject unauthenticated requests; tests pass",
+  "stop conditions": "Secret management requires external service; scope expands to SSO; tests cannot be run",
+  "approval boundaries": "No spending; no publishing; no destructive DB migrations",
+  "constraints": "Use existing Go module for JWT; follow existing project conventions",
+  "expected output": "Working auth endpoints with tests and documentation",
+  "priority_lane": "Relay",
+  "approved_by": "Jarren"
+}

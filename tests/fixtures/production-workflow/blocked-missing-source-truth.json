@@ -1,0 +1,12 @@
+{
+  "title": "Background job processor",
+  "objective": "Implement a background job queue with Redis",
+  "target repo or workspace": "",
+  "scope": "",
+  "out of scope": "",
+  "acceptance criteria": "",
+  "stop conditions": "",
+  "approval boundaries": "",
+  "constraints": "",
+  "expected output": ""
+}

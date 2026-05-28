@@ -1,0 +1,12 @@
+{
+  "title": "Add logging middleware",
+  "objective": "Add request logging middleware to the API server",
+  "target repo or workspace": "relay-go-app",
+  "scope": "Implement middleware, add tests",
+  "out of scope": "",
+  "acceptance criteria": "Logs appear on every request",
+  "stop conditions": "",
+  "approval boundaries": "",
+  "constraints": "",
+  "expected output": "Logging middleware"
+}

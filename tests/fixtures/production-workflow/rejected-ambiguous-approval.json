@@ -1,0 +1,12 @@
+{
+  "title": "Update API documentation",
+  "objective": "Update the OpenAPI spec for new endpoints",
+  "target repo or workspace": "relay-go-app",
+  "scope": "Add new endpoint docs, update response schemas",
+  "out of scope": "Frontend docs, deployment docs",
+  "acceptance criteria": "OpenAPI spec validates without errors",
+  "stop conditions": "Spec requires consulting external team",
+  "approval boundaries": "No external publishing",
+  "constraints": "Follow existing OpenAPI conventions",
+  "expected output": "Updated openapi.yaml"
+}

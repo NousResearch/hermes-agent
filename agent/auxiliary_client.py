@@ -99,6 +99,7 @@ class _OpenAIProxy:
 
 OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
+from agent.aux_unsupported_model import is_model_unsupported_error
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
@@ -5119,6 +5120,56 @@ def call_llm(
                 "(fallback_chain + main agent model). Raising original error.",
                 task or "call", reason, resolved_provider,
             )
+        # ── Model-unsupported fallback ────────────────────────────────
+        # Provider rejected the *model* (not credentials, not quota): e.g.
+        # "Model mimo-v2.5 is not supported" on opencode-zen, or
+        # "Model 'X' not found" on Nous. This typically happens when the
+        # user's main chat model is forwarded to a provider whose aux-task
+        # catalog differs from its chat catalog (opencode-zen's /chat
+        # endpoint accepting mimo-v2.5 but its aux endpoint only listing
+        # Gemini/etc.).
+        #
+        # Recovery: swap to the provider's registered default aux model
+        # (``ProviderProfile.default_aux_model`` or the legacy fallback
+        # dict). Auto users skip this — their chosen model IS the aux
+        # model, so retrying with it would be a no-op. Distinct from the
+        # payment/connection fallback above: a rejected *model* doesn't
+        # poison the credential or mark the endpoint unhealthy.
+        if is_model_unsupported_error(first_err) and not is_auto:
+            _aux_default = _get_aux_model_for_provider(resolved_provider)
+            if _aux_default and _aux_default != final_model:
+                logger.info(
+                    "Auxiliary %s: %s rejected model %s, falling back to "
+                    "provider default aux model %s",
+                    task or "call", resolved_provider, final_model, _aux_default,
+                )
+                _fb_client, _fb_model = _get_cached_client(
+                    resolved_provider, _aux_default,
+                    api_key=resolved_api_key or "",
+                    api_mode=resolved_api_mode or "",
+                )
+                if _fb_client is not None:
+                    _fb_kwargs = _build_call_kwargs(
+                        resolved_provider, _fb_model or _aux_default, messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, timeout=effective_timeout,
+                        extra_body=effective_extra_body,
+                        base_url=str(getattr(_fb_client, "base_url", "") or ""))
+                    try:
+                        return _validate_llm_response(
+                            _fb_client.chat.completions.create(**_fb_kwargs), task)
+                    except Exception as fb_err:
+                        logger.warning(
+                            "Auxiliary %s: provider default aux model %s also "
+                            "failed (%s). Raising original model-unsupported error.",
+                            task or "call", _aux_default, fb_err,
+                        )
+                else:
+                    logger.warning(
+                        "Auxiliary %s: could not resolve client for provider "
+                        "default aux model %s. Raising original error.",
+                        task or "call", _aux_default,
+                    )
         # Connection/timeout errors leave the cached client poisoned (closed
         # httpx transport, half-read stream, dead async loop).  Drop it from
         # the cache regardless of whether we found a fallback above so the

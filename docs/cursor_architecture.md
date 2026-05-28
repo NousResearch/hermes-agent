@@ -210,6 +210,11 @@ Completed internal events also populate `response.cursor_internal_tools` / `mess
 - **Not true streaming.** Tokens arrive only after the subprocess completes (or synthetic chunks are replayed). Streaming is explicitly disabled for cursor in `conversation_loop.py:_use_streaming`.
 - **Workspace isolation.** Cursor-agent's CLI doesn't sandbox absolute paths; even with `--workspace /tmp/scratch`, a `shell` tool call can `cat /home/user/secrets`. The workspace is a *cwd hint*, not a security boundary. Hermes tools operate on the real cwd as always.
 
+**Context bar accuracy**
+
+- **Best-effort, not exact.** The status-bar token count is derived from Hermes' messages-based estimate (per turn) plus a per-round average of cursor-reported `inputTokens`. Cursor reports the cumulative SUM across all internal LLM round-trips, which can be orders of magnitude larger than the actual context window the model sees on any one round; dividing by `len(tool_events) + 1` is a heuristic approximation. The bar's job is to give a useful "am I close to the limit" signal, not to be exact accounting. Heavy multi-tool turns may show a bar that lags the true context state by a few percent in either direction. Bug-fixing this fully would require either a cursor-side first-class "current context size" event (does not exist today) or a switch to the SDK (see Future Work).
+- **Bar resets per user prompt.** Within one Hermes user turn the bar holds at the high-water mark across internal tool-call loop iterations (prevents flicker). On a new user prompt the floor is reset so the bar can drop back to the new turn's actual size. Resume / compress also reset the floor.
+
 **Tool semantics**
 
 - **Dual tool stacks.** Even with hardened prompting, Cursor's harness may intercept reads/listings/greps internally. Those do **not** become Hermes `tool_calls`; they surface only via internal `tool_call` stream events that fire `tool_progress_callback("narrate"/"shell"/...)` in the activity feed. Audit-conscious deployments should set `HERMES_CURSOR_MODE=ask` to disable cursor's internal mutation tools and force all writes through Hermes' `<tool_call>` channel.

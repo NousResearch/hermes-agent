@@ -304,6 +304,15 @@ def _resolve_runtime_from_pool_entry(
     # config.default was still a Claude model.
     effective_model = (target_model or model_cfg.get("default") or "")
     base_url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").rstrip("/")
+    # MeshBoard stream-tap launcher sets HERMES_LLM_BASE_URL to a local
+    # loopback proxy URL when the stream-tap is active.  This env var
+    # must override the pool's default base_url so inference traffic
+    # is routed through the proxy and captured as JSONL for the
+    # dashboard.  Without this, Hermes bypasses the tap entirely and
+    # the dashboard shows "model silent" during active dispatches.
+    _tap_url = os.getenv("HERMES_LLM_BASE_URL", "").strip().rstrip("/")
+    if _tap_url:
+        base_url = _tap_url
     api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
     api_mode = "chat_completions"
     if provider == "openai-codex":

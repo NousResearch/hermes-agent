@@ -1114,13 +1114,22 @@ class CursorAgentClient:
         # bar sitting at 0 until the result event arrives.
         self._context_estimate_callback = context_estimate_callback
 
-        # High-water mark for the Hermes status bar. Updated on every
-        # call with ``max(prev, new_estimate, cursor_reported)`` so the
-        # bar never visibly DROPS mid-conversation — a wobble that
-        # falsely suggests Hermes has somehow shed context between
-        # turns. Reset on session boundaries (e.g. ``/new``) when a
-        # caller close()s the client.
+        # High-water mark for the Hermes status bar. Held only WITHIN
+        # a single Hermes user turn: Hermes loops on tool_calls (cursor
+        # returning ``<tool_call>`` blocks for Hermes to run), making
+        # multiple cursor calls per user prompt. Each call's footprint
+        # can vary (different tools attached, different message slices),
+        # so the bar must not flicker between those internal calls.
+        # Reset automatically on every NEW user turn (detected by the
+        # user-message count growing in the messages list); previously
+        # this was a session-wide monotonic mark, which incorrectly
+        # froze the bar at the highest-activity turn's value and
+        # prevented it from reflecting the actual current input across
+        # subsequent prompts.
         self._context_high_water: int = 0
+        # Last seen count of user messages in the prompt list. Used to
+        # detect new user turns so we can reset the high-water above.
+        self._last_user_msg_count: int = 0
 
         self.chat = _CursorChatNamespace(self)
         self.is_closed = False
@@ -1194,6 +1203,25 @@ class CursorAgentClient:
         # turn (raw); neither matches what's in the next-turn prompt.
         # Estimating from messages keeps the bar consistent before,
         # during, and after the call (#cursor-bar-stable).
+        # Detect a NEW user turn: Hermes adds a user message at the top
+        # of every fresh prompt cycle, then loops internally on tool_calls
+        # without adding more user messages. So a strictly increased user-
+        # message count is the signal that this is a new prompt and the
+        # high-water mark from the previous turn no longer applies.
+        try:
+            user_msg_count = sum(
+                1 for m in (messages or []) if (m or {}).get("role") == "user"
+            )
+        except Exception:
+            user_msg_count = self._last_user_msg_count
+        is_new_user_turn = user_msg_count > self._last_user_msg_count
+        if is_new_user_turn:
+            # Drop the floor so the bar can reflect this turn's actual
+            # input size (which may legitimately be smaller than a prior
+            # heavy-tool-use turn's per-round average).
+            self._context_high_water = 0
+        self._last_user_msg_count = user_msg_count
+
         try:
             from agent.model_metadata import estimate_request_tokens_rough
             self._last_messages_estimate = estimate_request_tokens_rough(
@@ -1206,13 +1234,25 @@ class CursorAgentClient:
         # status bar reflects input context immediately. Without this the
         # bar shows 0/200K throughout a long in-flight FIRST turn because
         # the compressor only learns about prompt_tokens from the final
-        # response. Subsequent turns are fine (they inherit the previous
-        # turn's value while in-flight).
+        # response.
         if self._last_messages_estimate > self._context_high_water:
             self._context_high_water = self._last_messages_estimate
         if callable(self._context_estimate_callback) and self._last_messages_estimate > 0:
+            # On a new user turn, signal the host so it can reset its
+            # compressor bar to this turn's estimate (allowing the bar
+            # to DROP if appropriate). Otherwise the callback should
+            # bump monotonically so the in-loop cursor calls don't
+            # flicker the bar down between iterations.
             try:
-                self._context_estimate_callback(self._last_messages_estimate)
+                self._context_estimate_callback(
+                    self._last_messages_estimate, reset=is_new_user_turn
+                )
+            except TypeError:
+                # Backward-compat: older callbacks without ``reset`` kwarg.
+                try:
+                    self._context_estimate_callback(self._last_messages_estimate)
+                except Exception:
+                    pass
             except Exception:
                 # Never let a UI hook break the actual request.
                 pass

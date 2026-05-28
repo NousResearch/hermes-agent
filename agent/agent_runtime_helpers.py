@@ -1287,12 +1287,19 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         # Bridge cursor's pre-spawn messages estimate into the host
         # compressor so the status bar shows input context immediately,
         # not just after the (potentially multi-minute) result event.
-        # Monotonic bump only; never let a transient estimate make the
-        # bar regress versus what the previous turn already reported.
-        def _bump_compressor_estimate(tokens: int) -> None:
+        # Monotonic bump within a single user turn (Hermes loops on
+        # tool_calls and we don't want the bar to flicker down between
+        # internal cursor calls). When the client signals a new user
+        # turn (``reset=True``), assign directly so the bar reflects
+        # this turn's actual input size rather than staying frozen at
+        # the prior turn's peak.
+        def _bump_compressor_estimate(tokens: int, reset: bool = False) -> None:
             try:
                 compressor = getattr(agent, "context_compressor", None)
                 if compressor is None or not tokens:
+                    return
+                if reset:
+                    compressor.last_prompt_tokens = int(tokens)
                     return
                 prev = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
                 if tokens > prev:

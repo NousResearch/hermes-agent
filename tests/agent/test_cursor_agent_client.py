@@ -796,6 +796,136 @@ class CreateChatCompletionTests(unittest.TestCase):
         finally:
             client.close()
 
+    def test_high_water_resets_on_new_user_turn(self) -> None:
+        # Across SEPARATE user prompts the high-water mark must reset so
+        # the bar reflects the new turn's actual context size. Earlier
+        # behaviour froze the bar at the highest-activity turn's value
+        # which prevented users from seeing context growth/shrinkage as
+        # they continued conversing.
+        client = CursorAgentClient()
+
+        heavy_proc = _FakeProcess([
+            _make_event(type="system", subtype="init", session_id="s-1"),
+            _make_event(
+                type="assistant",
+                message={"role": "assistant", "content": [{"type": "text", "text": "first"}]},
+                session_id="s-1",
+            ),
+            _make_event(
+                type="result", subtype="success", is_error=False,
+                result="first", session_id="s-1", request_id="r-1",
+                usage={"inputTokens": 200_000, "outputTokens": 5,
+                       "cacheReadTokens": 100_000, "cacheWriteTokens": 0},
+            ),
+        ])
+        light_proc = _FakeProcess([
+            _make_event(type="system", subtype="init", session_id="s-1"),
+            _make_event(
+                type="assistant",
+                message={"role": "assistant", "content": [{"type": "text", "text": "second"}]},
+                session_id="s-1",
+            ),
+            _make_event(
+                type="result", subtype="success", is_error=False,
+                result="second", session_id="s-1", request_id="r-2",
+                usage={"inputTokens": 500, "outputTokens": 5,
+                       "cacheReadTokens": 1_000, "cacheWriteTokens": 0},
+            ),
+        ])
+        try:
+            with self._patch_popen(heavy_proc):
+                resp1 = client.chat.completions.create(
+                    model="composer-2.5-fast",
+                    messages=[
+                        {"role": "system", "content": "You are concise."},
+                        {"role": "user", "content": "do a lot of work"},
+                    ],
+                    tools=[{"type": "function", "function": {
+                        "name": "shell", "description": "x", "parameters": {}}}],
+                )
+            # Heavy turn locks the bar high (per-round average from a
+            # multi-tool turn).
+            self.assertGreaterEqual(resp1.usage.prompt_tokens, 100_000)
+
+            # NEW user prompt (second user message added). High-water
+            # should reset; bar should reflect the second turn's much
+            # smaller actual context, not the prior heavy turn.
+            with self._patch_popen(light_proc):
+                resp2 = client.chat.completions.create(
+                    model="composer-2.5-fast",
+                    messages=[
+                        {"role": "system", "content": "You are concise."},
+                        {"role": "user", "content": "do a lot of work"},
+                        {"role": "assistant", "content": "did work"},
+                        {"role": "user", "content": "hi"},
+                    ],
+                )
+            self.assertLess(resp2.usage.prompt_tokens, resp1.usage.prompt_tokens,
+                            "second-turn bar must drop from the prior heavy turn's "
+                            "frozen peak when a new user prompt arrives")
+        finally:
+            client.close()
+
+    def test_high_water_holds_within_same_user_turn(self) -> None:
+        # WITHIN a single Hermes user turn the bar must NOT flicker down
+        # between internal cursor calls (Hermes loops on tool_calls).
+        # The two calls below share the same user message; only assistant
+        # / tool messages are added between them. High-water from the
+        # first call's heavy per-round average must carry into the second.
+        client = CursorAgentClient()
+
+        big_proc = _FakeProcess([
+            _make_event(type="system", subtype="init", session_id="s-1"),
+            _make_event(
+                type="assistant",
+                message={"role": "assistant", "content": [{"type": "text", "text": "first"}]},
+                session_id="s-1",
+            ),
+            _make_event(
+                type="result", subtype="success", is_error=False,
+                result="first", session_id="s-1", request_id="r-1",
+                usage={"inputTokens": 40_000, "outputTokens": 5,
+                       "cacheReadTokens": 20_000, "cacheWriteTokens": 0},
+            ),
+        ])
+        small_proc = _FakeProcess([
+            _make_event(type="system", subtype="init", session_id="s-1"),
+            _make_event(
+                type="assistant",
+                message={"role": "assistant", "content": [{"type": "text", "text": "second"}]},
+                session_id="s-1",
+            ),
+            _make_event(
+                type="result", subtype="success", is_error=False,
+                result="second", session_id="s-1", request_id="r-2",
+                usage={"inputTokens": 500, "outputTokens": 5,
+                       "cacheReadTokens": 1_000, "cacheWriteTokens": 0},
+            ),
+        ])
+        same_user_msg = {"role": "user", "content": "do tool work"}
+        try:
+            with self._patch_popen(big_proc):
+                resp1 = client.chat.completions.create(
+                    model="composer-2.5-fast",
+                    messages=[same_user_msg],
+                    tools=[{"type": "function", "function": {
+                        "name": "shell", "description": "x", "parameters": {}}}],
+                )
+            with self._patch_popen(small_proc):
+                resp2 = client.chat.completions.create(
+                    model="composer-2.5-fast",
+                    messages=[
+                        same_user_msg,
+                        {"role": "assistant", "content": "running tool..."},
+                        {"role": "tool", "content": "tool result"},
+                    ],
+                )
+            # Within the same user turn the bar must stay AT OR ABOVE the
+            # peak it hit on the first internal call (no flicker down).
+            self.assertGreaterEqual(resp2.usage.prompt_tokens, resp1.usage.prompt_tokens)
+        finally:
+            client.close()
+
     def test_close_resets_high_water_for_new_session(self) -> None:
         # When a new chat starts (e.g. /new), close() is called on the
         # client — the bar's monotonic floor must drop back to current

@@ -44,6 +44,7 @@ def tmp_hermes_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("PHOTON_PROJECT_ID", raising=False)
     monkeypatch.delenv("PHOTON_PROJECT_SECRET", raising=False)
     monkeypatch.delenv("PHOTON_WEBHOOK_SECRET", raising=False)
+    monkeypatch.delenv("PHOTON_DASHBOARD_TOKEN", raising=False)
     # The auth module memoises by reading get_hermes_home at call time
     # so the env var is what matters.
     return home
@@ -53,9 +54,9 @@ def test_store_and_load_photon_token(tmp_hermes_home: Path) -> None:
     photon_auth.store_photon_token("abc123def456")
     assert photon_auth.load_photon_token() == "abc123def456"
 
-    auth_json = json.loads((tmp_hermes_home / "auth.json").read_text())
-    assert "credential_pool" in auth_json
-    assert auth_json["credential_pool"]["photon"][0]["access_token"] == "abc123def456"
+    env_text = (tmp_hermes_home / ".env").read_text(encoding="utf-8")
+    assert "PHOTON_DASHBOARD_TOKEN=abc123def456" in env_text
+    assert not (tmp_hermes_home / "auth.json").exists()
 
 
 def test_store_and_load_project_credentials(tmp_hermes_home: Path) -> None:

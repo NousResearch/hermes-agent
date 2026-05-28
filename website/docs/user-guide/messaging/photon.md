@@ -88,9 +88,9 @@ replacement project, run `hermes photon setup --new-project --phone
 `hermes photon projects list` and `hermes photon projects select
 <project-id>`.
 
-The Photon dashboard token is stored in `~/.hermes/auth.json` under
-`credential_pool.photon`. The Spectrum project credentials used by the
-gateway are written to `~/.hermes/.env` as `PHOTON_PROJECT_ID` and
+Photon secrets are written to `~/.hermes/.env`. The dashboard token is
+stored as `PHOTON_DASHBOARD_TOKEN`; the Spectrum project credentials
+used by the gateway are stored as `PHOTON_PROJECT_ID` and
 `PHOTON_PROJECT_SECRET`.
 
 ## Webhook tunnel
@@ -267,6 +267,7 @@ hermes photon webhook delete <webhook-id>   # remove one
 
 | Variable                  | Default            | Notes                                      |
 |---------------------------|--------------------|--------------------------------------------|
+| `PHOTON_DASHBOARD_TOKEN`  | (unset)            | Set by `hermes photon login`               |
 | `PHOTON_PROJECT_ID`       | (unset)            | Set by `hermes photon setup`               |
 | `PHOTON_PROJECT_SECRET`   | (unset)            | Set by `hermes photon setup`               |
 | `PHOTON_WEBHOOK_SECRET`   | (unset)            | From webhook registration                  |

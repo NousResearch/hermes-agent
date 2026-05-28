@@ -190,29 +190,19 @@ hermes gateway start
 
 ## Credentials
 
-The Photon dashboard token is stored in `~/.hermes/auth.json` under
-`credential_pool`:
-
-```jsonc
-{
-  "credential_pool": {
-    "photon": [
-      { "access_token": "<dashboard-bearer>", "issued_at": ... }
-    ]
-  }
-}
-```
-
-The Spectrum project credentials used by the gateway are stored in
-`~/.hermes/.env`:
+Photon secrets are stored in `~/.hermes/.env`:
 
 ```bash
+PHOTON_DASHBOARD_TOKEN=...
 PHOTON_PROJECT_ID=...
 PHOTON_PROJECT_SECRET=...
 ```
 
-The per-URL webhook signing secret is treated like an API key and
-lives in `~/.hermes/.env` as `PHOTON_WEBHOOK_SECRET`.
+The dashboard token is used only by `hermes photon` management commands
+such as project listing/creation. The Spectrum project credentials are
+used by the gateway and sidecar at runtime. The per-URL webhook signing
+secret is treated like an API key and lives in `.env` as
+`PHOTON_WEBHOOK_SECRET`.
 The registered public webhook URL is stored as
 `PHOTON_WEBHOOK_PUBLIC_URL` so `hermes photon status` can tell you
 whether the next action is tunnel setup, gateway start, or gateway
@@ -224,6 +214,7 @@ All env vars are documented in `plugin.yaml`. The most important are:
 
 | Env var                  | Default            | Meaning                                 |
 |--------------------------|--------------------|-----------------------------------------|
+| `PHOTON_DASHBOARD_TOKEN` | (unset)            | Dashboard token set by `hermes photon login` |
 | `PHOTON_PROJECT_ID`      | (unset)            | Spectrum project ID                     |
 | `PHOTON_PROJECT_SECRET`  | (unset)            | Spectrum project secret (HTTP Basic)    |
 | `PHOTON_WEBHOOK_SECRET`  | (unset)            | Signing secret returned at register     |

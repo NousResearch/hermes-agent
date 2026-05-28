@@ -11,9 +11,8 @@ description: >
   not currently expose a public HTTP send endpoint).
 
   The plugin ships with a `hermes photon` CLI for quick login + project
-  + user + sidecar + managed webhook tunnel setup, persists the dashboard token to
-  ``~/.hermes/auth.json`` and the Spectrum project id + secret to
-  ``~/.hermes/.env``, and exposes Photon's free shared-line model so
+  + user + sidecar + managed webhook tunnel setup, persists Photon secrets
+  to ``~/.hermes/.env``, and exposes Photon's free shared-line model so
   users can get started without a paid plan.
 author: NousResearch
 requires_env:
@@ -28,6 +27,11 @@ requires_env:
     url: "https://app.photon.codes/"
     password: true
 optional_env:
+  - name: PHOTON_DASHBOARD_TOKEN
+    description: "Photon dashboard bearer token (set by `hermes photon login`; used for project listing/creation)"
+    prompt: "Photon dashboard token"
+    url: "https://app.photon.codes/"
+    password: true
   - name: PHOTON_WEBHOOK_SECRET
     description: "Per-URL HMAC-SHA256 signing secret returned at webhook registration"
     prompt: "Photon webhook signing secret"

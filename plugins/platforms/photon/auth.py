@@ -14,7 +14,8 @@ directly:
 
 The webhook receiver + Node sidecar in ``adapter.py`` consume the
 Spectrum project credentials from Hermes' canonical ``~/.hermes/.env``.
-Only the dashboard/device token is persisted to ``~/.hermes/auth.json``.
+Photon's dashboard/device token is also persisted there as
+``PHOTON_DASHBOARD_TOKEN`` so Photon secrets have one storage surface.
 
 Reference docs (read at integration time):
   https://photon.codes/docs/api-reference/introduction
@@ -78,15 +79,22 @@ _setup_lock_holder = threading.local()
 
 
 # ---------------------------------------------------------------------------
-# auth.json helpers — share the file with the rest of hermes-agent.
+# Hermes env helpers — Photon secrets live in the active profile's .env.
 
-def _auth_json_path() -> Path:
-    """Resolve ``~/.hermes/auth.json`` honouring the active Hermes profile."""
+PHOTON_DASHBOARD_TOKEN_ENV = "PHOTON_DASHBOARD_TOKEN"
+
+
+def _env_path() -> Path:
+    """Resolve the active Hermes profile's ``.env`` path."""
     try:
-        from hermes_constants import get_hermes_home  # type: ignore
-        return Path(get_hermes_home()) / "auth.json"
+        from hermes_cli.config import get_env_path  # type: ignore
+        return get_env_path()
     except Exception:
-        return Path(os.path.expanduser("~/.hermes")) / "auth.json"
+        try:
+            from hermes_constants import get_hermes_home  # type: ignore
+            return Path(get_hermes_home()) / ".env"
+        except Exception:
+            return Path(os.path.expanduser("~/.hermes")) / ".env"
 
 
 def _setup_lock_path() -> Path:
@@ -97,53 +105,21 @@ def _setup_lock_path() -> Path:
         return Path(os.path.expanduser("~/.hermes")) / "photon-setup.lock"
 
 
-def _load_auth() -> Dict[str, Any]:
-    path = _auth_json_path()
-    if not path.exists():
-        return {}
-    try:
-        with path.open("r", encoding="utf-8") as fh:
-            return json.load(fh) or {}
-    except (OSError, json.JSONDecodeError) as e:
-        logger.warning("photon: could not read %s: %s", path, e)
-        return {}
-
-
-def _save_auth(data: Dict[str, Any]) -> None:
-    path = _auth_json_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2, sort_keys=True)
-    try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    tmp.replace(path)
-
-
 def load_photon_token() -> Optional[str]:
-    """Return the bearer token stored by ``login()`` or ``None``."""
-    auth = _load_auth()
-    pool = auth.get("credential_pool", {}).get("photon") or []
-    if isinstance(pool, list) and pool:
-        token = pool[0].get("access_token") or pool[0].get("token")
-        if token:
-            return str(token)
-    # Backwards-compat shape: providers.photon.access_token
-    legacy = auth.get("providers", {}).get("photon", {})
-    if legacy.get("access_token"):
-        return str(legacy["access_token"])
-    return None
+    """Return the dashboard bearer token stored by ``login()`` or ``None``."""
+    return _get_hermes_env_value(PHOTON_DASHBOARD_TOKEN_ENV)
 
 
 def store_photon_token(token: str) -> None:
-    """Persist a dashboard bearer token under ``credential_pool.photon``."""
-    auth = _load_auth()
-    auth.setdefault("credential_pool", {})["photon"] = [
-        {"access_token": token, "issued_at": int(time.time())}
-    ]
-    _save_auth(auth)
+    """Persist the dashboard bearer token to Hermes' canonical ``.env``."""
+    try:
+        from hermes_cli.config import save_env_value  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "hermes_cli.config is required to save Photon credentials"
+        ) from exc
+
+    save_env_value(PHOTON_DASHBOARD_TOKEN_ENV, token)
 
 
 def _get_hermes_env_value(key: str) -> Optional[str]:

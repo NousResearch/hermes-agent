@@ -1061,6 +1061,69 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
+_fallback_status_callback: Optional[callable] = None
+
+
+def _set_fallback_status_callback(cb: Optional[callable]) -> None:
+    """Register a status_callback for fallback notifications.
+
+    Called by _run_agent before resolving runtime so that provider
+    failures can surface a user-visible message.
+    """
+    global _fallback_status_callback
+    _fallback_status_callback = cb
+
+
+def _gateway_extra_flag(key: str, default: bool = False) -> bool:
+    """Read a boolean flag from gateway.extra config.yaml section."""
+    try:
+        import yaml as _y
+
+        cfg_path = _hermes_home / "config.yaml"
+        if cfg_path.exists():
+            with open(cfg_path, encoding="utf-8") as _f:
+                cfg = _y.safe_load(_f) or {}
+        else:
+            return default
+        gateway_extra = (cfg.get("gateway") or {}).get("extra") or {}
+        val = gateway_extra.get(key, default)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(val) if val else default
+    except Exception:
+        return default
+
+
+def _notify_fallback_used(
+    fallback_provider: str,
+    fallback_model: str,
+    primary_error: str,
+) -> None:
+    """Send a user-visible notification that the fallback provider activated.
+
+    Uses the callback registered via ``_set_fallback_status_callback`` (set by
+    ``_run_agent`` before resolving runtime).  Only fires when
+    ``fallback_notifications`` is enabled in ``gateway.extra`` config
+    (opt-in, default off).
+    """
+    if not _gateway_extra_flag("fallback_notifications", False):
+        return
+
+    cb = _fallback_status_callback
+    if cb is None:
+        return
+    try:
+        msg = f"⚠️ Primary provider failed ({primary_error}). Switched to fallback: {fallback_provider}"
+        if fallback_model:
+            msg += f" / {fallback_model}"
+        logger.info("Fallback notification: %s", msg)
+        cb("provider_fallback", msg)
+    except Exception:
+        pass
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
@@ -1093,6 +1156,11 @@ def _resolve_runtime_agent_kwargs() -> dict:
             logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
         fb_config = _try_resolve_fallback_provider()
         if fb_config is not None:
+            _notify_fallback_used(
+                fallback_provider=fb_config.get("provider", "unknown"),
+                fallback_model=fb_config.get("model", ""),
+                primary_error=str(auth_exc),
+            )
             return fb_config
         raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
     except Exception as exc:
@@ -16572,6 +16640,10 @@ class GatewayRunner:
                     if getattr(res, "success", False) and mid:
                         _cleanup_msg_ids.append(str(mid))
                 _fut.add_done_callback(_track_status_id)
+
+        # Register fallback notification callback so provider failures can
+        # surface a user-visible message via the same status mechanism.
+        _set_fallback_status_callback(_status_callback_sync)
 
         def run_sync():
             # The conditional re-assignment of `message` further below

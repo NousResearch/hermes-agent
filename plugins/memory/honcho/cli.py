@@ -152,6 +152,202 @@ def cmd_disable(args) -> None:
     print(f"  Saved to {_config_path()}\n")
 
 
+def cmd_prune(args) -> None:
+    """Prune stale Honcho sessions and conclusions.
+
+    Without --dry-run, deletes sessions older than the configured
+    ``pruning.maxAgeDays`` (default 90).  Conclusions attached to
+    deleted sessions are also removed.  The current session is always
+    protected unless --include-active is passed.
+    """
+    import datetime as _dt
+
+    cfg = _read_config()
+    if not _resolve_api_key(cfg):
+        print("  No API key configured. Run 'hermes honcho setup' first.\n")
+        return
+
+    # --- Resolve pruning config -------------------------------------------
+    hosts = cfg.get("hosts", {})
+    hermes = hosts.get(_host_key(), {})
+
+    def _get_pruning(key, default):
+        # host-level wins, then root-level, then hardcoded default
+        return hermes.get(key, cfg.get(key, default))
+
+    max_age_days = int(_get_pruning("maxAgeDays", 90))
+    dry_run = getattr(args, "dry_run", False)
+    include_active = getattr(args, "include_active", False)
+    force = getattr(args, "force", False)
+
+    # --- Connect to Honcho ------------------------------------------------
+    try:
+        from plugins.memory.honcho.client import (
+            HonchoClientConfig,
+            get_honcho_client,
+            reset_honcho_client,
+        )
+
+        reset_honcho_client()
+        hcfg = HonchoClientConfig.from_global_config(host=_host_key())
+        client = get_honcho_client(hcfg)
+    except Exception as e:
+        print(f"  Honcho connection failed: {e}\n")
+        return
+
+    # --- Fetch all sessions for this workspace ---------------------------
+    try:
+        ws = client.workspaces.get(hcfg.workspace_id)
+        if ws is None:
+            ws = client.workspaces.get("hermes")
+        if ws is None:
+            # fallback: try the default workspace
+            all_ws = list(client.workspaces.list())
+            if all_ws:
+                ws = all_ws[0]
+        if ws is None:
+            print("  No Honcho workspace found.\n")
+            return
+
+        sessions = list(ws.sessions.list())
+    except Exception as e:
+        print(f"  Failed to list sessions: {e}\n")
+        return
+
+    if not sessions:
+        print("  No sessions found — nothing to prune.\n")
+        return
+
+    # Current session (protected unless --include-active)
+    current_session_key = hcfg.resolve_session_name() if include_active else None
+    if not include_active:
+        # Best-effort: also protect the gateway's current session key
+        try:
+            from plugins.memory.honcho.session import HonchoSessionManager
+
+            mgr = HonchoSessionManager(honcho=client, config=hcfg)
+            current_session_key = hcfg.resolve_session_name()
+        except Exception:
+            current_session_key = None
+
+    # Classify: stale vs active
+    now = _dt.datetime.now(_dt.timezone.utc)
+    stale = []
+    active = []
+    for s in sessions:
+        # s.metadata is a dict; look for createdAt or lastMessageAt
+        meta = {}
+        try:
+            meta = s.metadata or {}
+        except Exception:
+            pass
+        created_str = meta.get("createdAt") or meta.get("created_at", "")
+        last_msg_str = meta.get("lastMessageAt") or meta.get("last_message_at", "")
+        ref_str = last_msg_str or created_str
+
+        age_days = None
+        if ref_str:
+            try:
+                # ISO 8601 timestamps
+                for fmt in (
+                    "%Y-%m-%dT%H:%M:%S.%fZ",
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    "%Y-%m-%dT%H:%M:%S.%f+00:00",
+                    "%Y-%m-%dT%H:%M:%S+00:00",
+                    "%Y-%m-%d",
+                ):
+                    try:
+                        dt = _dt.datetime.strptime(ref_str, fmt).replace(
+                            tzinfo=_dt.timezone.utc
+                        )
+                        age_days = (now - dt).days
+                        break
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+
+        entry = {
+            "session_key": getattr(s, "id", str(s)),
+            "age_days": age_days,
+            "messages_count": 0,
+        }
+        try:
+            msgs = list(s.messages.list())
+            entry["messages_count"] = len(msgs)
+        except Exception:
+            pass
+
+        sid = entry["session_key"]
+        if not include_active and current_session_key and sid == current_session_key:
+            active.append(entry)
+        elif age_days is not None and age_days > max_age_days:
+            stale.append(entry)
+        elif age_days is None:
+            # No timestamp — too old to judge, skip unless --force
+            if force:
+                stale.append(entry)
+            else:
+                active.append(entry)
+        else:
+            active.append(entry)
+
+    # --- Report -----------------------------------------------------------
+    print(f"\nHoncho session prune ({hcfg.workspace_id})\n" + "─" * 50)
+    print(f"  Max age:      {max_age_days} days")
+    print(f"  Sessions:     {len(sessions)} total")
+    print(f"  Protect curr: {not include_active}")
+    print(f"  Stale:        {len(stale)}")
+    print(f"  Active:       {len(active)}")
+
+    if stale:
+        print(f"\n  {'Session Key':<45} {'Age':>6} {'Msgs':>6}")
+        print(f"  {'─' * 45} {'─' * 6} {'─' * 6}")
+        for entry in sorted(stale, key=lambda e: e["age_days"] or 9999, reverse=True):
+            age_str = f"{entry['age_days']}d" if entry["age_days"] is not None else "?"
+            print(
+                f"  {entry['session_key']:<45} {age_str:>6} {entry['messages_count']:>6}"
+            )
+    else:
+        print()
+
+    if dry_run:
+        print(f"  DRY RUN — {len(stale)} sessions would be deleted.\n")
+        return
+
+    if not stale:
+        print("  No stale sessions to prune.\n")
+        return
+
+    if not force:
+        # Interactive confirmation
+        answer = _prompt(
+            f"  Delete {len(stale)} stale sessions? (yes/no)",
+            default="no",
+        )
+        if answer.lower() != "yes":
+            print("  Aborted.\n")
+            return
+
+    # --- Delete -----------------------------------------------------------
+    deleted = 0
+    failed = 0
+    for entry in stale:
+        sid = entry["session_key"]
+        try:
+            session_obj = ws.sessions.get(sid)
+            if session_obj is None:
+                session_obj = client.session(sid)
+            session_obj.delete()
+            deleted += 1
+            print(f"  deleted  {sid}")
+        except Exception as e:
+            failed += 1
+            print(f"  FAILED   {sid}  ({e})")
+
+    print(f"\n  Pruned: {deleted} deleted, {failed} failed, {len(active)} kept.\n")
+
+
 def cmd_sync(args) -> None:
     """Sync Honcho config to all existing profiles.
 
@@ -1346,9 +1542,11 @@ def honcho_command(args) -> None:
         cmd_disable(args)
     elif sub == "sync":
         cmd_sync(args)
+    elif sub == "prune":
+        cmd_prune(args)
     else:
         print(f"  Unknown honcho command: {sub}")
-        print("  Available: status, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync\n")
+        print("  Available: status, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync, prune\n")
 
 
 def register_cli(subparser) -> None:
@@ -1447,5 +1645,22 @@ def register_cli(subparser) -> None:
     subs.add_parser("enable", help="Enable Honcho for the active profile")
     subs.add_parser("disable", help="Disable Honcho for the active profile")
     subs.add_parser("sync", help="Sync Honcho config to all existing profiles")
+
+    prune_parser = subs.add_parser(
+        "prune",
+        help="Prune stale Honcho sessions older than configured max age",
+    )
+    prune_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be deleted without deleting",
+    )
+    prune_parser.add_argument(
+        "--include-active", action="store_true",
+        help="Also consider the current session for pruning (default: protected)",
+    )
+    prune_parser.add_argument(
+        "--force", action="store_true",
+        help="Skip confirmation prompt and prune without interactive confirmation",
+    )
 
     subparser.set_defaults(func=honcho_command)

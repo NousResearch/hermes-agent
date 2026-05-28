@@ -670,6 +670,69 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
+_fallback_status_callback: Optional[callable] = None
+
+
+def _set_fallback_status_callback(cb: Optional[callable]) -> None:
+    """Register a status_callback for fallback notifications.
+
+    Called by _run_agent before resolving runtime so that provider
+    failures can surface a user-visible message.
+    """
+    global _fallback_status_callback
+    _fallback_status_callback = cb
+
+
+def _gateway_extra_flag(key: str, default: bool = False) -> bool:
+    """Read a boolean flag from gateway.extra config.yaml section."""
+    try:
+        import yaml as _y
+
+        cfg_path = _hermes_home / "config.yaml"
+        if cfg_path.exists():
+            with open(cfg_path, encoding="utf-8") as _f:
+                cfg = _y.safe_load(_f) or {}
+        else:
+            return default
+        gateway_extra = (cfg.get("gateway") or {}).get("extra") or {}
+        val = gateway_extra.get(key, default)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(val) if val else default
+    except Exception:
+        return default
+
+
+def _notify_fallback_used(
+    fallback_provider: str,
+    fallback_model: str,
+    primary_error: str,
+) -> None:
+    """Send a user-visible notification that the fallback provider activated.
+
+    Uses the callback registered via ``_set_fallback_status_callback`` (set by
+    ``_run_agent`` before resolving runtime).  Only fires when
+    ``fallback_notifications`` is enabled in ``gateway.extra`` config
+    (opt-in, default off).
+    """
+    if not _gateway_extra_flag("fallback_notifications", False):
+        return
+
+    cb = _fallback_status_callback
+    if cb is None:
+        return
+    try:
+        msg = f"⚠️ Primary provider failed ({primary_error}). Switched to fallback: {fallback_provider}"
+        if fallback_model:
+            msg += f" / {fallback_model}"
+        logger.info("Fallback notification: %s", msg)
+        cb("provider_fallback", msg)
+    except Exception:
+        pass
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
@@ -693,6 +756,11 @@ def _resolve_runtime_agent_kwargs() -> dict:
         logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
         fb_config = _try_resolve_fallback_provider()
         if fb_config is not None:
+            _notify_fallback_used(
+                fallback_provider=fb_config.get("provider", "unknown"),
+                fallback_model=fb_config.get("model", ""),
+                primary_error=str(auth_exc),
+            )
             return fb_config
         raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
     except Exception as exc:
@@ -1211,6 +1279,7 @@ class GatewayRunner:
         self._busy_input_mode = self._load_busy_input_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
+        self._profile_routing = self._load_profile_routing()
         self._fallback_model = self._load_fallback_model()
 
         # Wire process registry into session store for reset protection
@@ -2460,6 +2529,45 @@ class GatewayRunner:
         except Exception:
             pass
         return {}
+
+    @staticmethod
+    def _load_profile_routing() -> dict:
+        """Load per-user profile routing from config.yaml.
+
+        ``profile_routing`` is a dict mapping user identity strings
+        (Telegram UID, Discord snowflake, etc.) to Hermes profile names.
+
+        Example config.yaml snippet::
+
+            profile_routing:
+              "7165055445": palantir       # Telegram UID → palantir profile
+              "123456789": arien          # Discord ID → arien profile
+
+        Returns an empty dict when the key is absent or unreadable.
+        """
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return cfg.get("profile_routing", {}) or {}
+        except Exception:
+            pass
+        return {}
+
+    @staticmethod
+    def _resolve_profile_for_user(user_id: str | None, profile_routing: dict) -> str | None:
+        """Resolve the Hermes profile for a given user.
+
+        Looks up *user_id* in the *profile_routing* mapping.  Returns the
+        target profile name when found, or None to fall through to the
+        current profile.  Unknown/unmapped users keep whatever profile
+        is active — routing only overrides when explicitly configured.
+        """
+        if not user_id or not profile_routing:
+            return None
+        return profile_routing.get(str(user_id))
 
     @staticmethod
     def _load_fallback_model() -> list | dict | None:
@@ -5784,6 +5892,23 @@ class GatewayRunner:
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
         
+        # --- Per-user profile routing ---------------------------------------
+        # If profile_routing is configured, check whether this user's ID maps
+        # to a specific Hermes profile.  When matched, attach the target profile
+        # to the MessageEvent so downstream agent initialization picks it up.
+        if self._profile_routing and source.user_id:
+            _routed_profile = self._resolve_profile_for_user(
+                str(source.user_id), self._profile_routing
+            )
+            if _routed_profile and _routed_profile != self._active_profile_name():
+                logger.info(
+                    "Profile routing: user %s → profile '%s' (was '%s')",
+                    source.user_id,
+                    _routed_profile,
+                    self._active_profile_name(),
+                )
+                event.target_profile = _routed_profile
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via
@@ -7430,8 +7555,18 @@ class GatewayRunner:
                                     # and searchable via session_search.
                                     _hyg_new_sid = _hyg_agent.session_id
                                     if _hyg_new_sid != session_entry.session_id:
+                                        _hyg_old_sid = session_entry.session_id
                                         session_entry.session_id = _hyg_new_sid
                                         self.session_store._save()
+                                        # Migrate active goal across session_id rotation (#33618)
+                                        try:
+                                            from hermes_cli.goals import migrate_goal
+
+                                            migrate_goal(_hyg_old_sid, _hyg_new_sid)
+                                        except Exception:
+                                            logger.debug(
+                                                "goal migration failed (non-fatal)", exc_info=True
+                                            )
 
                                     self.session_store.rewrite_transcript(
                                         session_entry.session_id, _compressed
@@ -7692,7 +7827,17 @@ class GatewayRunner:
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
-                session_entry.session_id = agent_result["session_id"]
+                old_sid = session_entry.session_id
+                new_sid = agent_result["session_id"]
+                session_entry.session_id = new_sid
+                self.session_store._save()
+                # Migrate active goal across session_id rotation (#33618)
+                try:
+                    from hermes_cli.goals import migrate_goal
+
+                    migrate_goal(old_sid, new_sid)
+                except Exception:
+                    logger.debug("goal migration failed (non-fatal)", exc_info=True)
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
@@ -10960,8 +11105,18 @@ class GatewayRunner:
                 # into the NEW session so the original history stays searchable.
                 new_session_id = tmp_agent.session_id
                 if new_session_id != session_entry.session_id:
+                    old_sid = session_entry.session_id
                     session_entry.session_id = new_session_id
                     self.session_store._save()
+                    # Migrate active goal across session_id rotation (#33618)
+                    try:
+                        from hermes_cli.goals import migrate_goal
+
+                        migrate_goal(old_sid, new_session_id)
+                    except Exception:
+                        logger.debug(
+                            "goal migration failed (non-fatal)", exc_info=True
+                        )
 
                 self.session_store.rewrite_transcript(new_session_id, compressed)
                 # Reset stored token count — transcript changed, old value is stale
@@ -14871,6 +15026,10 @@ class GatewayRunner:
                     _fut.add_done_callback(_track_status_id)
             except Exception as _e:
                 logger.debug("status_callback error (%s): %s", event_type, _e)
+
+        # Register fallback notification callback so provider failures can
+        # surface a user-visible message via the same status mechanism.
+        _set_fallback_status_callback(_status_callback_sync)
 
         def run_sync():
             # The conditional re-assignment of `message` further below

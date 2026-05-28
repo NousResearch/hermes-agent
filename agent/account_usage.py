@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import httpx
 
@@ -321,6 +321,117 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "nous":
+            return _fetch_nous_account_usage()
     except Exception:
         return None
-    return None
+
+
+def _fetch_nous_account_usage() -> Optional[AccountUsageSnapshot]:
+    """Fetch Nous Portal usage snapshot.
+
+    Uses the Nous OAuth credential resolution path (same as inference) to
+    obtain a valid access_token, then queries the inference API. The
+    inference API is OpenAI-compatible so /credits or usage endpoints are
+    tried first; if unavailable, falls back to a connectivity-check
+    snapshot via /models (#33376).
+    """
+    creds: Dict[str, Any] = {}
+    try:
+        from hermes_cli.auth import resolve_nous_runtime_credentials
+
+        creds = resolve_nous_runtime_credentials() or {}
+    except Exception:
+        return None
+
+    api_key = str(creds.get("api_key", "") or "").strip()
+    base_url = str(creds.get("base_url", "") or "").strip()
+    if not api_key:
+        return None
+    if not base_url:
+        base_url = "https://inference.nousresearch.com/v1"
+
+    normalized_url = base_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+
+    # Try credits/usage-style endpoints first.
+    for usage_path in ("/credits", "/usage", "/account/usage"):
+        try:
+            resp = httpx.get(
+                f"{normalized_url}{usage_path}",
+                headers=headers,
+                timeout=8.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return _parse_nous_usage_payload(data, normalized_url, headers)
+        except Exception:
+            continue
+
+    # Fallback: connectivity check — count available models.
+    return _nous_connectivity_snapshot(normalized_url, headers)
+
+
+def _parse_nous_usage_payload(
+    data: Any, base_url: str, headers: dict
+) -> Optional[AccountUsageSnapshot]:
+    """Parse a Nous usage JSON payload into an AccountUsageSnapshot."""
+    if not isinstance(data, dict):
+        return None
+    payload = data.get("data") or data
+
+    details: list[str] = []
+    plan = payload.get("plan") or payload.get("tier") or payload.get("subscription")
+    if plan:
+        details.append(f"Plan: {plan}")
+
+    windows: list[AccountUsageWindow] = []
+    # Try several common Nous credit shapes.
+    total_credits = payload.get("total_credits") or payload.get("credits_total")
+    used_credits = payload.get("used_credits") or payload.get("credits_used") or payload.get("total_usage")
+    credit_limit = payload.get("limit") or payload.get("credit_limit") or payload.get("monthly_limit")
+    if isinstance(used_credits, (int, float)) and isinstance(credit_limit, (int, float)) and float(credit_limit) > 0:
+        used_pct = (float(used_credits) / float(credit_limit)) * 100
+        remaining = max(0.0, float(credit_limit) - float(used_credits))
+        windows.append(
+            AccountUsageWindow(
+                label="Credits",
+                used_percent=round(min(used_pct, 100.0), 1),
+                detail=f"${remaining:.2f} of ${float(credit_limit):.2f} remaining",
+            )
+        )
+    elif isinstance(used_credits, (int, float)):
+        details.append(f"Usage: ${float(used_credits):.2f}")
+
+    if not windows and not details:
+        return _nous_connectivity_snapshot(base_url, headers)
+
+    return AccountUsageSnapshot(
+        provider="nous",
+        source="usage_api",
+        fetched_at=_utc_now(),
+        title="Nous Research",
+        plan=str(plan) if plan else None,
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
+def _nous_connectivity_snapshot(base_url: str, headers: dict) -> Optional[AccountUsageSnapshot]:
+    """Fallback: confirm the token works by listing models."""
+    try:
+        resp = httpx.get(f"{base_url.rstrip('/')}/models", headers=headers, timeout=5.0)
+        models_count = 0
+        if resp.status_code == 200:
+            md = resp.json()
+            models_list = md.get("data") if isinstance(md, dict) else md
+            models_count = len(models_list) if isinstance(models_list, list) else 0
+        return AccountUsageSnapshot(
+            provider="nous",
+            source="connectivity_check",
+            fetched_at=_utc_now(),
+            title="Nous Research",
+            details=(f"{models_count} models available" if models_count else "Connected",),
+        )
+    except Exception:
+        return None

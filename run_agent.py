@@ -165,6 +165,7 @@ from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
+    _normalize_responses_to_chat,
     _split_responses_tool_id as _codex_split_responses_tool_id,
     _summarize_user_message_for_log,
 )
@@ -1271,7 +1272,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server", "responses"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
@@ -7539,6 +7540,19 @@ class AIAgent:
                             invalidate_runtime_client(region)
                         raise
                     result["response"] = normalize_converse_response(raw_response)
+                elif self.api_mode == "responses":
+                    # Generic OpenAI Responses API dispatch — used by custom
+                    # providers (e.g. provider: custom, api_mode: responses)
+                    # that expose a /v1/responses endpoint instead of
+                    # /v1/chat/completions (#33600).
+                    request_client_holder["client"] = self._create_request_openai_client(
+                        reason="responses_api_request",
+                        api_kwargs=api_kwargs,
+                    )
+                    raw_response = request_client_holder[
+                        "client"
+                    ].responses.create(**api_kwargs)
+                    result["response"] = _normalize_responses_to_chat(raw_response)
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(
                         reason="chat_completion_request",

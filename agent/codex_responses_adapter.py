@@ -1048,3 +1048,102 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     else:
         finish_reason = "stop"
     return assistant_message, finish_reason
+
+
+def _normalize_responses_to_chat(raw_response: Any) -> Any:
+    """Normalize an OpenAI Responses API response to chat.completions shape.
+
+    The Responses API returns a different object shape than chat.completions.
+    This converts it so the agent loop can treat it uniformly.
+
+    Used by the generic ``api_mode='responses'`` path for custom providers
+    that expose a ``/v1/responses`` endpoint (#33600).
+    """
+    from types import SimpleNamespace
+
+    # Extract text content — Responses API stores output in .output items
+    text_parts: list[str] = []
+    tool_calls: list[Any] = []
+
+    output = getattr(raw_response, "output", None) or []
+    if isinstance(output, list):
+        for item in output:
+            item_type = getattr(item, "type", "") or ""
+            if item_type == "message":
+                content = getattr(item, "content", None) or []
+                for block in (content if isinstance(content, list) else []):
+                    block_type = getattr(block, "type", "") or ""
+                    if block_type == "output_text":
+                        txt = getattr(block, "text", "") or ""
+                        if txt:
+                            text_parts.append(txt)
+            elif item_type == "function_call":
+                arguments = getattr(item, "arguments", "{}") or "{}"
+                if isinstance(arguments, dict):
+                    arguments = json.dumps(arguments)
+                tool_calls.append(
+                    SimpleNamespace(
+                        id=getattr(item, "call_id", None) or getattr(item, "id", "") or "fc_0",
+                        type="function",
+                        function=SimpleNamespace(
+                            name=getattr(item, "name", "tool") or "tool",
+                            arguments=arguments,
+                        ),
+                    )
+                )
+            elif item_type == "tool_call":
+                arguments = getattr(item, "arguments", "{}") or "{}"
+                if isinstance(arguments, dict):
+                    arguments = json.dumps(arguments)
+                tool_calls.append(
+                    SimpleNamespace(
+                        id=getattr(item, "call_id", None) or getattr(item, "id", "") or "tc_0",
+                        type="function",
+                        function=SimpleNamespace(
+                            name=getattr(item, "name", "tool") or "tool",
+                            arguments=arguments,
+                        ),
+                    )
+                )
+
+    # Fallback: some Responses APIs expose .output_text directly
+    if not text_parts and not tool_calls:
+        output_text = getattr(raw_response, "output_text", None)
+        if isinstance(output_text, str) and output_text:
+            text_parts = [output_text]
+
+    content = "\n".join(text_parts) if text_parts else None
+
+    # Build the chat.completions-style response
+    usage = getattr(raw_response, "usage", None)
+    prompt_tokens = getattr(usage, "input_tokens", 0) or 0 if usage else 0
+    completion_tokens = getattr(usage, "output_tokens", 0) or 0 if usage else 0
+
+    message = SimpleNamespace(
+        content=content,
+        tool_calls=tool_calls if tool_calls else [],
+        role="assistant",
+        reasoning=None,
+    )
+
+    finish_reason = "stop"
+    if tool_calls:
+        finish_reason = "tool_calls"
+
+    return SimpleNamespace(
+        id=getattr(raw_response, "id", "") or "",
+        model=getattr(raw_response, "model", "") or "",
+        choices=[
+            SimpleNamespace(
+                finish_reason=finish_reason,
+                index=0,
+                message=message,
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        ),
+        created=int(getattr(raw_response, "created", 0) or 0),
+    )

@@ -1,5 +1,6 @@
 # GENERATED — do not edit
 # Source: packages/hermes-events/src/allowlist.ts
+# Regenerate: npm run sync:events-allowlist  (or python scripts/sync_events_allowlist.py)
 
 EVENT_ALLOWLIST = [
     "hermes.identity.bootstrap",

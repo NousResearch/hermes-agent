@@ -60,7 +60,12 @@ def test_write_file_rejection_does_not_mutate_existing_file(tmp_path):
     assert target.read_text(encoding="utf-8") == "before\n"
 
 
-def test_write_file_approval_mutates_and_request_includes_diff(tmp_path):
+def test_write_file_approval_mutates_and_request_includes_diff(tmp_path, monkeypatch):
+    # tmp_path on macOS lives under /private/var/folders which matches the
+    # file_tools sensitive-path prefix.  Patch it out so this test focuses on
+    # ACP approval logic, not path-safety gating.
+    monkeypatch.setattr("tools.file_tools._check_sensitive_path", lambda *_a, **_kw: None)
+
     target = tmp_path / "sample.txt"
     target.write_text("before\n", encoding="utf-8")
     proposals = []

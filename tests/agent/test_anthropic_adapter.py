@@ -267,6 +267,12 @@ class TestResolveAnthropicToken:
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-mytoken")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        # Keychain lookup bypasses Path.home — mock it so real macOS credentials
+        # don't leak into this test and cause _prefer_refreshable to override the env token.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
         assert resolve_anthropic_token() == "sk-ant-oat01-mytoken"
 
     def test_does_not_resolve_primary_api_key_as_native_anthropic_token(self, monkeypatch, tmp_path):

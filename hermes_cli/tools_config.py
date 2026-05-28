@@ -1358,6 +1358,24 @@ def _get_platform_tools(
     disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
     if disabled_toolsets:
         disabled_set = {str(ts) for ts in disabled_toolsets}
+        # Reject platform-bundle names (e.g. "hermes-yuanbao") that would
+        # silently wipe ALL tools in the gateway path (#33924). Bundle names
+        # belong in `toolsets:`, not `disabled_toolsets`.
+        from toolsets import TOOLSETS as _TS
+        bad = {ts for ts in disabled_set if ts in _TS and ts.startswith("hermes-")}
+        if bad:
+            for b in sorted(bad):
+                # Attempt to suggest the individual-toolset equivalent
+                suggestion = b[len("hermes-"):]
+                hint = f" Did you mean '{suggestion}'?" if suggestion in _TS else ""
+                logger.warning(
+                    "agent.disabled_toolsets contains platform-bundle name '%s' "
+                    "which would silently disable ALL tools in the gateway path. "
+                    "Ignoring.%s Bundle names belong in `toolsets:`, not "
+                    "`disabled_toolsets`. See #33924.",
+                    b, hint,
+                )
+            disabled_set -= bad
         enabled_toolsets -= disabled_set
 
     return enabled_toolsets

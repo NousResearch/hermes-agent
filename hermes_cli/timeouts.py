@@ -1,6 +1,18 @@
 from __future__ import annotations
 
 
+def _resolve_config_provider_id(provider_id: str) -> str:
+    """Strip ``custom:`` prefix so named custom providers resolve correctly.
+
+    When the runtime reports a named custom provider such as
+    ``"custom:sub2api-openai"``, the matching ``providers`` config key is the
+    bare name (``"sub2api-openai"``).  Built-in providers pass through unchanged.
+    """
+    if provider_id.startswith("custom:"):
+        return provider_id[len("custom:"):]
+    return provider_id
+
+
 def _coerce_timeout(raw: object) -> float | None:
     try:
         timeout = float(raw)
@@ -25,8 +37,9 @@ def get_provider_request_timeout(
         return None
 
     providers = config.get("providers", {}) if isinstance(config, dict) else {}
+    lookup_id = _resolve_config_provider_id(provider_id)
     provider_config = (
-        providers.get(provider_id, {}) if isinstance(providers, dict) else {}
+        providers.get(lookup_id, {}) if isinstance(providers, dict) else {}
     )
     if not isinstance(provider_config, dict):
         return None
@@ -54,8 +67,9 @@ def get_provider_stale_timeout(
         return None
 
     providers = config.get("providers", {}) if isinstance(config, dict) else {}
+    lookup_id = _resolve_config_provider_id(provider_id)
     provider_config = (
-        providers.get(provider_id, {}) if isinstance(providers, dict) else {}
+        providers.get(lookup_id, {}) if isinstance(providers, dict) else {}
     )
     if not isinstance(provider_config, dict):
         return None

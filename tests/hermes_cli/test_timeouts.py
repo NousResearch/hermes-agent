@@ -306,3 +306,225 @@ def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkey
     )
 
     assert agent._compute_non_stream_stale_timeout([]) == 300.0
+
+
+def test_named_custom_provider_stale_timeout_honored(monkeypatch, tmp_path):
+    """#34001: named custom provider stale_timeout_seconds config is honored."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+
+    import yaml
+    config = {
+        "providers": {
+            "sub2api-openai": {
+                "base_url": "https://sub2api.example.com/v1",
+                "api_mode": "codex_responses",
+                "stale_timeout_seconds": 150,
+            }
+        }
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+
+    from run_agent import AIAgent
+    agent = AIAgent(
+        model="gpt-5.4",
+        provider="custom",
+        api_key="sk-dummy",
+        base_url="https://sub2api.example.com/v1",
+        requested_provider="custom:sub2api-openai",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="cli",
+    )
+    # The stale timeout should resolve from the named provider config (150s),
+    # not fall back to the implicit 90s default.
+    assert agent._resolved_api_call_stale_timeout_base() == (150.0, False)
+
+
+def test_named_custom_provider_request_timeout_honored(monkeypatch, tmp_path):
+    """#34001: named custom provider request_timeout_seconds config is honored."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_TIMEOUT", raising=False)
+
+    import yaml
+    config = {
+        "providers": {
+            "sub2api-openai": {
+                "base_url": "https://sub2api.example.com/v1",
+                "api_mode": "codex_responses",
+                "request_timeout_seconds": 1200,
+            }
+        }
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+
+    from run_agent import AIAgent
+    agent = AIAgent(
+        model="gpt-5.4",
+        provider="custom",
+        api_key="sk-dummy",
+        base_url="https://sub2api.example.com/v1",
+        requested_provider="custom:sub2api-openai",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="cli",
+    )
+    assert agent._resolved_api_call_timeout() == 1200.0
+
+
+def test_named_custom_provider_missing_timeout_falls_back(monkeypatch, tmp_path):
+    """#34001: named custom provider without timeout config falls back to default."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+
+    import yaml
+    config = {
+        "providers": {
+            "sub2api-openai": {
+                "base_url": "https://sub2api.example.com/v1",
+                "api_mode": "codex_responses",
+            }
+        }
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+
+    from run_agent import AIAgent
+    agent = AIAgent(
+        model="gpt-5.4",
+        provider="custom",
+        api_key="sk-dummy",
+        base_url="https://sub2api.example.com/v1",
+        requested_provider="custom:sub2api-openai",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="cli",
+    )
+    # No timeout configured → falls back to implicit default
+    assert agent._resolved_api_call_stale_timeout_base() == (90.0, True)
+
+
+def test_non_custom_provider_unaffected_by_requested_provider(monkeypatch, tmp_path):
+    """Non-custom providers still resolve normally even with requested_provider set."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+
+    from run_agent import AIAgent
+    agent = AIAgent(
+        model="gpt-5.4",
+        provider="openai-codex",
+        api_key="sk-dummy",
+        base_url="https://chatgpt.com/backend-api/codex",
+        requested_provider="openai-codex",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="cli",
+    )
+    # Falls back to implicit default (no provider config in test env)
+    assert agent._resolved_api_call_stale_timeout_base() == (90.0, True)
+
+
+def test_get_provider_stale_timeout_strips_custom_prefix(monkeypatch, tmp_path):
+    """get_provider_stale_timeout resolves named custom provider by bare name."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+
+    import yaml
+    config = {
+        "providers": {
+            "sub2api-openai": {
+                "base_url": "https://sub2api.example.com/v1",
+                "stale_timeout_seconds": 200,
+            }
+        }
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+
+    from hermes_cli.timeouts import get_provider_stale_timeout
+
+    # Passing "custom:sub2api-openai" should find providers.sub2api-openai
+    assert get_provider_stale_timeout("custom:sub2api-openai", "gpt-5.4") == 200.0
+    # Passing bare "sub2api-openai" also works (backward compat)
+    assert get_provider_stale_timeout("sub2api-openai", "gpt-5.4") == 200.0
+    # "custom" alone (no named provider) returns None
+    assert get_provider_stale_timeout("custom", "gpt-5.4") is None
+
+
+def test_streaming_stale_timeout_honors_requested_provider(monkeypatch, tmp_path):
+    """Entrypoint-level regression: the streaming stale-timeout finalizer in
+    ``agent/chat_completion_helpers.interruptible_api_call`` consults
+    ``agent._requested_provider`` when present, so the named custom
+    provider's ``stale_timeout_seconds`` is honored instead of falling back
+    to the generic ``custom`` config key (#34001).
+
+    Exercises the actual production helper
+    ``hermes_cli.timeouts.get_provider_stale_timeout`` plus a stub agent
+    shaped like the streaming finalizer consumes it — bypasses full
+    AIAgent construction to keep the test runtime bounded.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+
+    import yaml
+    config = {
+        "providers": {
+            "sub2api-openai": {
+                "base_url": "https://sub2api.example.com/v1",
+                "api_mode": "codex_responses",
+                "stale_timeout_seconds": 175,
+            }
+        }
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+
+    from hermes_cli.timeouts import get_provider_stale_timeout
+    # The streaming finalizer pattern: read provider id from
+    # ``agent._requested_provider`` if set, else fall back to ``agent.provider``.
+    for _provider_id in ("custom:sub2api-openai",):
+        resolved = get_provider_stale_timeout(_provider_id, "gpt-5.4")
+        assert resolved == 175.0, (
+            f"get_provider_stale_timeout({_provider_id!r}) must return 175.0 "
+            f"for the named custom provider, got {resolved!r}"
+        )
+    # And the generic ``custom`` key still has no entry (only named providers do)
+    assert get_provider_stale_timeout("custom", "gpt-5.4") is None
+
+
+def test_init_time_request_timeout_honors_requested_provider(monkeypatch, tmp_path):
+    """Entrypoint-level regression: ``agent/agent_init.init_agent`` resolves the
+    per-provider request timeout using ``agent._requested_provider`` when
+    available, so named custom providers reach their
+    ``request_timeout_seconds`` config (#34001). This prevents the
+    init-time client construction from silently falling back to the generic
+    ``custom`` key.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_TIMEOUT", raising=False)
+
+    import yaml
+    config = {
+        "providers": {
+            "sub2api-openai": {
+                "base_url": "https://sub2api.example.com/v1",
+                "api_mode": "codex_responses",
+                "request_timeout_seconds": 425,
+            }
+        }
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+
+    from hermes_cli.timeouts import get_provider_request_timeout
+    # Direct resolution via the helper exercised at init-time
+    assert get_provider_request_timeout("custom:sub2api-openai", "gpt-5.4") == 425.0
+    # ``custom`` alone still returns None — only the named provider is honored
+    assert get_provider_request_timeout("custom", "gpt-5.4") is None

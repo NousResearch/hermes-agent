@@ -2164,7 +2164,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         import httpx as _httpx
         # Per-provider / per-model request_timeout_seconds (from config.yaml)
         # wins over the HERMES_API_TIMEOUT env default if the user set it.
-        _provider_timeout_cfg = get_provider_request_timeout(agent.provider, agent.model)
+        # Named custom providers (gateway/runtime-resolution path) carry
+        # ``requested_provider`` on the agent; honor it so config-provider
+        # entries are looked up by the canonical ``custom:<name>`` key
+        # instead of falling back to the generic ``custom`` key (#34001).
+        _provider_id = str(getattr(agent, "_requested_provider", "") or "").strip() or agent.provider
+        _provider_timeout_cfg = get_provider_request_timeout(_provider_id, agent.model)
         _base_timeout = (
             _provider_timeout_cfg
             if _provider_timeout_cfg is not None
@@ -2991,7 +2996,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _close_request_client_once("stream_request_complete")
 
     # Provider-configured stale timeout takes priority over env default.
-    _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
+    # Honor agent._requested_provider for named custom providers so the
+    # streaming stale detector also resolves the canonical ``custom:<name>``
+    # config entry instead of falling back to ``custom`` (#34001).
+    _stale_provider_id = str(getattr(agent, "_requested_provider", "") or "").strip() or agent.provider
+    _cfg_stale = get_provider_stale_timeout(_stale_provider_id, agent.model)
     if _cfg_stale is not None:
         _stream_stale_timeout_base = _cfg_stale
     else:

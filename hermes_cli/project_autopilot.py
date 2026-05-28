@@ -614,6 +614,79 @@ def terminal_tasks_missing_reports(
     )
 
 
+def _path_under(parent: Path, child: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _cleanup_inventory_target(node: dict[str, Any], workspace_path: Path) -> dict[str, Any]:
+    return {
+        "task_id": node["id"],
+        "title": node.get("title") or "",
+        "status": node.get("status") or "",
+        "workspace_kind": node.get("workspace_kind") or "",
+        "workspace_path": str(workspace_path),
+        "branch_name": node.get("branch_name"),
+        "exists": workspace_path.exists(),
+    }
+
+
+def generate_cleanup_inventory(project_home: Path) -> dict[str, Any]:
+    doc = verify_project_home(project_home)
+    repo = doc["repo"]
+    worktree_namespace = Path(repo["worktree_namespace"]).expanduser()
+    canonical_checkout = Path(repo["canonical_checkout"]).expanduser()
+    final_worktree_path = Path(doc["final_worktree_path"]).expanduser()
+
+    targets: list[dict[str, Any]] = []
+    for node in doc.get("task_graph", {}).get("nodes", []):
+        if node.get("status") not in TERMINAL_TASK_STATES:
+            continue
+        if node.get("workspace_kind") != "worktree":
+            continue
+        if not node.get("workspace_path"):
+            continue
+
+        workspace_path = Path(node["workspace_path"]).expanduser()
+        if workspace_path == canonical_checkout or workspace_path == final_worktree_path:
+            continue
+        if not _path_under(worktree_namespace, workspace_path):
+            raise InvariantError(
+                "cleanup inventory target outside repo.worktree_namespace: "
+                f"{workspace_path}"
+            )
+        targets.append(_cleanup_inventory_target(node, workspace_path))
+
+    generated_at = now_ts()
+    cleanup_dir = project_home / "artifacts" / "cleanup"
+    cleanup_dir.mkdir(parents=True, exist_ok=True)
+    inventory_path = cleanup_dir / f"cleanup-inventory-{generated_at}.json"
+    inventory = {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "project_slug": doc["slug"],
+        "project_home": str(project_home),
+        "cleanup_policy": doc["cleanup_policy"],
+        "exclusions": {
+            "canonical_checkout": str(canonical_checkout),
+            "final_worktree_path": str(final_worktree_path),
+        },
+        "targets": targets,
+        "inventory_path": str(inventory_path),
+    }
+    write_json(inventory_path, inventory)
+
+    doc["cleanup"]["state"] = "inventory_ready"
+    doc["cleanup"]["inventory_path"] = str(inventory_path)
+    doc["cleanup"]["targets"] = targets
+    doc["updated_at"] = generated_at
+    write_json(project_home / "project.json", doc)
+    return inventory
+
+
 def sync_project_home(
     project_home: Path,
     *,

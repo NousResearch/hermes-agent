@@ -5,6 +5,7 @@ from pathlib import Path
 
 from hermes_cli.project_autopilot import (
     bootstrap_project_home,
+    generate_cleanup_inventory,
     sync_project_home,
     verify_project_home,
 )
@@ -36,6 +37,11 @@ def build_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentPar
     sync = sub.add_parser("sync", help="Sync a Project Autopilot home from kanban")
     sync.add_argument("project_home")
     sync.add_argument("--kanban-db")
+    cleanup_inventory = sub.add_parser(
+        "cleanup-inventory",
+        help="Write an auditable cleanup inventory without deleting anything",
+    )
+    cleanup_inventory.add_argument("project_home")
     parser.set_defaults(func=project_command)
     return parser
 
@@ -71,5 +77,9 @@ def project_command(args: argparse.Namespace) -> int:
         )
         print(f"SYNCED {doc['slug']} from board {doc['board_slug']}")
         return 0
-    print("usage: hermes project <init|sync|verify>")
+    if action == "cleanup-inventory":
+        inventory = generate_cleanup_inventory(Path(args.project_home).expanduser())
+        print(f"CLEANUP_INVENTORY {inventory['inventory_path']}")
+        return 0
+    print("usage: hermes project <init|sync|verify|cleanup-inventory>")
     return 1

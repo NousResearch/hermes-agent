@@ -105,12 +105,6 @@ class TestResolveToolset:
         tools = resolve_toolset("*")
         assert len(tools) > 10
 
-    def test_browser_cdp_is_opt_in_not_default_browser_or_platform(self):
-        assert "browser_cdp" not in resolve_toolset("browser")
-        assert "browser_cdp" not in resolve_toolset("hermes-cli")
-        assert "browser_cdp" not in resolve_toolset("hermes-api-server")
-        assert "browser_cdp" in resolve_toolset("browser-cdp")
-
 
 class TestResolveMultipleToolsets:
     def test_combines_and_deduplicates(self):

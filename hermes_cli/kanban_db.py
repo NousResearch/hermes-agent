@@ -1279,7 +1279,7 @@ def create_task(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
             f"got {workspace_kind!r}"
         )
-    parents_list: list[str] = [p for p in parents if p]
+    parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -1354,22 +1354,22 @@ def create_task(
                     initial_status = "triage"
                 else:
                     initial_status = "ready"
-                    if parents_list:
-                        missing = _find_missing_parents(conn, parents_list)
+                    if parents:
+                        missing = _find_missing_parents(conn, parents)
                         if missing:
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
                         # If any parent is not yet done, we're todo.
                         rows = conn.execute(
                             "SELECT status FROM tasks WHERE id IN "
-                            "(" + ",".join("?" * len(parents_list)) + ")",
-                            parents_list,
+                            "(" + ",".join("?" * len(parents)) + ")",
+                            parents,
                         ).fetchall()
                         if any(r["status"] != "done" for r in rows):
                             initial_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
-                if triage and parents_list:
-                    missing = _find_missing_parents(conn, parents_list)
+                if triage and parents:
+                    missing = _find_missing_parents(conn, parents)
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
@@ -1400,11 +1400,10 @@ def create_task(
                         int(max_retries) if max_retries is not None else None,
                     ),
                 )
-                if parents_list:
-                    # Batch insert task_links to avoid per-parent execute overhead.
-                    conn.executemany(
+                for pid in parents:
+                    conn.execute(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
-                        ((pid, task_id) for pid in parents_list),
+                        (pid, task_id),
                     )
                 _append_event(
                     conn,
@@ -1413,7 +1412,7 @@ def create_task(
                     {
                         "assignee": assignee,
                         "status": initial_status,
-                        "parents": parents_list,
+                        "parents": list(parents),
                         "tenant": tenant,
                         "skills": list(skills_list) if skills_list else None,
                     },
@@ -2219,32 +2218,6 @@ def reassign_task(
         return False
 
 
-def _created_with_parent(
-    conn: sqlite3.Connection,
-    child_id: str,
-    parent_id: str,
-) -> bool:
-    """Return True when a task's creation event declared ``parent_id``.
-
-    Later ``linked`` events are intentionally ignored: kanban_link does not
-    carry trusted provenance, so accepting post-hoc links here would let a
-    worker claim unrelated existing tasks in ``created_cards``.
-    """
-    rows = conn.execute(
-        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'created'",
-        (child_id,),
-    ).fetchall()
-    for row in rows:
-        try:
-            payload = json.loads(row["payload"] or "{}")
-        except (TypeError, json.JSONDecodeError):
-            continue
-        parents = payload.get("parents") if isinstance(payload, dict) else None
-        if isinstance(parents, list) and parent_id in {str(p) for p in parents}:
-            return True
-    return False
-
-
 def _verify_created_cards(
     conn: sqlite3.Connection,
     completing_task_id: str,
@@ -2260,13 +2233,15 @@ def _verify_created_cards(
       which stamps ``created_by=A``).
     * ``created_by`` matches the completing task's id (edge case where
       a worker passed its own task id as the ``created_by`` value).
-    * The card's own ``created`` event declared the completing task as a
-      parent, which proves the relationship was established at creation
-      time rather than through an untrusted post-hoc link.
+    * The card is linked as a ``task_links.child`` of the completing
+      task — i.e. the worker explicitly called ``kanban_create`` with
+      ``parents=[<current_task>]``. This accepts cards created through
+      the dashboard/CLI by a different principal but then attached to
+      the completing task by the worker.
 
     ``phantom`` returns ids that either don't exist at all, or exist
-    but don't satisfy any of the trust conditions. The caller decides
-    what to do with each bucket; this helper never mutates.
+    but don't satisfy any of the three trust conditions. The caller
+    decides what to do with each bucket; this helper never mutates.
     """
     claimed = [str(x).strip() for x in (claimed_ids or []) if str(x).strip()]
     if not claimed:
@@ -2295,6 +2270,10 @@ def _verify_created_cards(
     ).fetchall()
     found = {r["id"]: r["created_by"] for r in rows}
 
+    # Pull the set of cards linked as children of the completing task.
+    # Cheap: one query, indexed on parent_id.
+    linked_children: set[str] = set(child_ids(conn, completing_task_id))
+
     verified: list[str] = []
     phantom: list[str] = []
     for cid in ordered:
@@ -2307,7 +2286,7 @@ def _verify_created_cards(
             verified.append(cid)
         elif created_by == completing_task_id:
             verified.append(cid)
-        elif _created_with_parent(conn, cid, completing_task_id):
+        elif cid in linked_children:
             verified.append(cid)
         else:
             phantom.append(cid)
@@ -3443,7 +3422,6 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             error=error_text,
             outcome="crashed",
             failure_limit=(1 if protocol_violation else None),
-            force_failure_limit=protocol_violation,
             release_claim=False,
             end_run=False,
             event_payload_extra={"pid": pid, "claimer": claimer},
@@ -3465,7 +3443,6 @@ def _record_task_failure(
     *,
     outcome: str,
     failure_limit: int = None,
-    force_failure_limit: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
@@ -3499,12 +3476,10 @@ def _record_task_failure(
     context (e.g. pid on crash, elapsed on timeout).
 
     Resolution order for the effective threshold:
-      1. forced caller-supplied ``failure_limit`` for deterministic
-         one-shot safety guards, such as clean-exit protocol violations
-      2. per-task ``max_retries`` if set
-      3. caller-supplied ``failure_limit`` (gateway passes the config
+      1. per-task ``max_retries`` if set (nothing else overrides)
+      2. caller-supplied ``failure_limit`` (gateway passes the config
          value from ``kanban.failure_limit``; tests pass fixed values)
-      4. ``DEFAULT_FAILURE_LIMIT``
+      3. ``DEFAULT_FAILURE_LIMIT``
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -3519,18 +3494,17 @@ def _record_task_failure(
         failures = int(row["consecutive_failures"]) + 1
         cur_status = row["status"]
 
-        # Normal retry policy lets a task override dispatcher/default
-        # thresholds. Safety-critical callers can force their limit when
-        # retrying would deterministically repeat a protocol violation.
+        # Per-task override wins over both caller-supplied and default
+        # thresholds. None (the common case) falls through.
         task_override = (
             row["max_retries"] if "max_retries" in row.keys() else None
         )
-        if force_failure_limit or task_override is None:
-            effective_limit = int(failure_limit)
-            limit_source = "dispatcher"
-        else:
+        if task_override is not None:
             effective_limit = int(task_override)
             limit_source = "task"
+        else:
+            effective_limit = int(failure_limit)
+            limit_source = "dispatcher"
 
         if failures >= effective_limit:
             # Trip the breaker.

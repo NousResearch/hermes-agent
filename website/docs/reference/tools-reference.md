@@ -29,13 +29,13 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | `browser_type` | Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first. | — |
 | `browser_vision` | Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snaps… | — |
 
-## CDP-gated browser tools
+## `browser` toolset (CDP-gated tools)
 
-`browser_dialog` lives in the default `browser` toolset and registers only when a Chrome DevTools Protocol endpoint is reachable. `browser_cdp` is opt-in via the separate `browser-cdp` toolset; cookie access/mutation and CDP navigation methods are blocked.
+These two tools live in the `browser` toolset but only register when a Chrome DevTools Protocol endpoint is reachable at session start — via `/browser connect`, `browser.cdp_url` config, a Browserbase session, or Camofox.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `browser_cdp` | Send a restricted raw Chrome DevTools Protocol command. Opt-in escape hatch for operations not covered by higher-level `browser_*` tools; blocks cookie and navigation methods. See https://chromedevtools.github.io/devtools-protocol/ | CDP endpoint + `browser-cdp` toolset |
+| `browser_cdp` | Send a raw Chrome DevTools Protocol command. Escape hatch for browser operations not covered by the higher-level `browser_*` tools. See https://chromedevtools.github.io/devtools-protocol/ | CDP endpoint |
 | `browser_dialog` | Respond to a native JavaScript dialog (alert / confirm / prompt / beforeunload). Call `browser_snapshot` first — pending dialogs appear in its `pending_dialogs` field. Then call `browser_dialog(action='accept'\|'dismiss')`. | CDP endpoint |
 
 ## `clarify` toolset

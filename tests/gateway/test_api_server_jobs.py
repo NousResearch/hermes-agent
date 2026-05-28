@@ -328,16 +328,16 @@ class TestUpdateJob:
                     f"/api/jobs/{VALID_JOB_ID}",
                     json={
                         "name": "new-name",
-                        "unknown_key_1": "ignored",
-                        "unknown_key_2": "ignored",
+                        "evil_field": "malicious",
+                        "__proto__": "hack",
                     },
                 )
                 assert resp.status == 200
                 call_args = mock_update.call_args
                 sanitized = call_args[0][1]
                 assert "name" in sanitized
-                assert "unknown_key_1" not in sanitized
-                assert "unknown_key_2" not in sanitized
+                assert "evil_field" not in sanitized
+                assert "__proto__" not in sanitized
 
     @pytest.mark.asyncio
     async def test_update_job_no_valid_fields(self, adapter):
@@ -347,7 +347,7 @@ class TestUpdateJob:
             with patch(f"{_MOD}._CRON_AVAILABLE", True):
                 resp = await cli.patch(
                     f"/api/jobs/{VALID_JOB_ID}",
-                    json={"unknown_key_1": "ignored"},
+                    json={"evil_field": "malicious"},
                 )
                 assert resp.status == 400
                 data = await resp.json()

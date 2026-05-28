@@ -71,11 +71,6 @@ _LOOPBACK_HOSTS = frozenset({
 })
 
 
-def _constant_time_equal(left: str, right: str) -> bool:
-    """Compare text secrets without rejecting non-ASCII values."""
-    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
-
-
 def _is_loopback_host(host: str) -> bool:
     """True when `host` binds only to the local machine.
 
@@ -654,7 +649,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
-            return _constant_time_equal(gl_token, secret)
+            return hmac.compare_digest(gl_token, secret)
 
         # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
         generic_sig = request.headers.get("X-Webhook-Signature", "")

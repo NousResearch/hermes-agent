@@ -2582,14 +2582,6 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
         "advanced": True,
     },
-    "GATEWAY_PROXY_SCOPE_KEY": {
-        "description": "Shared secret used to sign hermes_proxy_scope metadata sent from the gateway proxy to the API server. Must match on both ends to allow the proxy to forward platform and toolset context.",
-        "prompt": "Gateway proxy scope signing key",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
-    },
     "WEBHOOK_ENABLED": {
         "description": "Enable the webhook platform adapter for receiving events from GitHub, GitLab, etc.",
         "prompt": "Enable webhooks (true/false)",

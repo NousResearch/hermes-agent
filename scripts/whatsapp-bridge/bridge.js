@@ -23,8 +23,8 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, chmodSync } from 'fs';
-import { createHmac, randomBytes } from 'crypto';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { randomBytes } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
@@ -57,29 +57,6 @@ const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
-const BRIDGE_TOKEN_FILE = path.join(SESSION_DIR, 'bridge.token');
-
-function loadBridgeToken() {
-  if (process.env.HERMES_WHATSAPP_BRIDGE_TOKEN) {
-    return process.env.HERMES_WHATSAPP_BRIDGE_TOKEN;
-  }
-  try {
-    if (existsSync(BRIDGE_TOKEN_FILE)) {
-      const token = readFileSync(BRIDGE_TOKEN_FILE, 'utf8').trim();
-      if (token) return token;
-    }
-    mkdirSync(SESSION_DIR, { recursive: true, mode: 0o700 });
-    const token = randomBytes(32).toString('base64url');
-    writeFileSync(BRIDGE_TOKEN_FILE, token, { encoding: 'utf8', mode: 0o600 });
-    try { chmodSync(BRIDGE_TOKEN_FILE, 0o600); } catch (_) {}
-    return token;
-  } catch (err) {
-    console.error('[bridge] Failed to load bridge token:', err.message);
-    process.exit(1);
-  }
-}
-
-const BRIDGE_TOKEN = loadBridgeToken();
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -483,16 +460,6 @@ app.use((req, res, next) => {
   next();
 });
 
-
-app.use((req, res, next) => {
-  if (req.path === '/health') return next();
-  const supplied = req.get('X-Hermes-Bridge-Token') || '';
-  if (!BRIDGE_TOKEN || supplied !== BRIDGE_TOKEN) {
-    return res.status(401).json({ error: 'Unauthorized bridge request' });
-  }
-  next();
-});
-
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
   const msgs = messageQueue.splice(0, messageQueue.length);
@@ -546,12 +513,21 @@ app.post('/edit', async (req, res) => {
   try {
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
     const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const messageIds = [];
 
-    // Edits must only mutate the target message. Sending overflow chunks here
-    // makes repeated streaming edits duplicate the tail as fresh messages.
     await sock.sendMessage(chatId, { text: chunks[0], edit: key });
+    if (chunks.length > 1) {
+      for (let i = 1; i < chunks.length; i += 1) {
+        const sent = await sock.sendMessage(chatId, { text: chunks[i] });
+        trackSentMessageId(sent);
+        if (sent?.key?.id) messageIds.push(sent.key.id);
+        if (i < chunks.length - 1) {
+          await sleep(CHUNK_DELAY_MS);
+        }
+      }
+    }
 
-    res.json({ success: true, messageIds: [], overflow: chunks.length > 1 });
+    res.json({ success: true, messageIds });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -698,15 +674,10 @@ app.get('/chat/:id', async (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  const challenge = req.get('X-Hermes-Bridge-Challenge') || '';
-  const bridgeAuth = challenge
-    ? createHmac('sha256', BRIDGE_TOKEN).update(challenge).digest('hex')
-    : undefined;
   res.json({
     status: connectionState,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
-    bridgeAuth,
   });
 });
 

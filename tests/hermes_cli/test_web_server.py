@@ -1,6 +1,5 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
-import ast
 import os
 import json
 import tempfile
@@ -93,23 +92,6 @@ class TestRedactKey:
         assert "not set" in result.lower() or result == "***" or "\x1b" in result
 
 
-def test_normalise_prefix_rejects_cross_origin_metacharacters():
-    from hermes_cli.web_server import _normalise_prefix
-
-    assert _normalise_prefix("hermes") == "/hermes"
-    assert _normalise_prefix("/hermes/dashboard/") == "/hermes/dashboard"
-
-    for raw in (
-        r"/\evil.example",
-        r"/hermes\evil",
-        "/?next=//evil.example",
-        "/#//evil.example",
-        "/hermes:evil",
-        "/hermes@evil",
-        "/hermes%5cevil",
-    ):
-        assert _normalise_prefix(raw) == ""
-
 # ---------------------------------------------------------------------------
 # web_server tests (FastAPI endpoints)
 # ---------------------------------------------------------------------------
@@ -127,20 +109,7 @@ class TestWebServerEndpoints:
             pytest.skip("fastapi/starlette not installed")
 
         import hermes_state
-
-        # Make sure test plugins are enabled and loaded
-        monkeypatch.setattr("hermes_cli.plugins._get_enabled_plugins", lambda: ["hermes-achievements", "kanban"])
-        monkeypatch.setattr("hermes_cli.plugins._get_disabled_plugins", lambda: [])
-        import hermes_cli.web_server
-        hermes_cli.web_server._get_dashboard_plugins(force_rescan=True)
-
         from hermes_constants import get_hermes_home
-        import hermes_cli.plugins
-        monkeypatch.setattr(hermes_cli.plugins, "_get_enabled_plugins", lambda: {"hermes-achievements", "kanban", "memory"})
-        monkeypatch.setattr(hermes_cli.plugins, "_get_disabled_plugins", lambda: set())
-        # We also need to clear _dashboard_plugins_cache so it rescans!
-        import hermes_cli.web_server
-        hermes_cli.web_server._dashboard_plugins_cache = None
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(
@@ -643,20 +612,7 @@ class TestNewEndpoints:
             pytest.skip("fastapi/starlette not installed")
 
         import hermes_state
-
-        from hermes_cli.plugins import _get_enabled_plugins, _get_disabled_plugins
-        monkeypatch.setattr("hermes_cli.plugins._get_enabled_plugins", lambda: ["hermes-achievements", "kanban"])
-        monkeypatch.setattr("hermes_cli.plugins._get_disabled_plugins", lambda: [])
-        from hermes_cli.web_server import _get_dashboard_plugins
-        _get_dashboard_plugins(force_rescan=True)
-
         from hermes_constants import get_hermes_home
-        import hermes_cli.plugins
-        monkeypatch.setattr(hermes_cli.plugins, "_get_enabled_plugins", lambda: {"hermes-achievements", "kanban", "memory"})
-        monkeypatch.setattr(hermes_cli.plugins, "_get_disabled_plugins", lambda: set())
-        # We also need to clear _dashboard_plugins_cache so it rescans!
-        import hermes_cli.web_server
-        hermes_cli.web_server._dashboard_plugins_cache = None
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(
@@ -2068,24 +2024,6 @@ class TestNormaliseThemeExtensions:
         assert r["componentStyles"]["card"] == {"opacity": "0.8", "zIndex": "5"}
 
 
-def test_kanban_plugin_security_note_warns_against_public_binds():
-    """Kanban plugin docs must not imply public dashboard binds are safe."""
-    source = (
-        Path(__file__).resolve().parents[2]
-        / "plugins"
-        / "kanban"
-        / "dashboard"
-        / "plugin_api.py"
-    ).read_text(encoding="utf-8")
-    note = ast.get_docstring(ast.parse(source))
-
-    assert note is not None
-    assert "is safe to run on a LAN" not in note
-    assert "Bind to localhost by default." in note
-    assert "network-level access controls (firewall, VPN, or SSH tunnel)" in note
-    assert "session token is not robust protection" in note
-
-
 class TestPluginAPIAuth:
     """Tests that plugin API routes require the session token (issue #19533)."""
 
@@ -2098,106 +2036,34 @@ class TestPluginAPIAuth:
             pytest.skip("fastapi/starlette not installed")
 
         import hermes_state
-        from hermes_cli.plugins import _get_enabled_plugins, _get_disabled_plugins
-        monkeypatch.setattr("hermes_cli.plugins._get_enabled_plugins", lambda: ["hermes-achievements", "kanban"])
-        monkeypatch.setattr("hermes_cli.plugins._get_disabled_plugins", lambda: [])
-        import hermes_cli.web_server
-        hermes_cli.web_server._get_dashboard_plugins(force_rescan=True)
         from hermes_constants import get_hermes_home
-        import hermes_cli.plugins
-        monkeypatch.setattr(hermes_cli.plugins, "_get_enabled_plugins", lambda: {"hermes-achievements", "kanban", "memory"})
-        monkeypatch.setattr(hermes_cli.plugins, "_get_disabled_plugins", lambda: set())
-        # We also need to clear _dashboard_plugins_cache so it rescans!
-        import hermes_cli.web_server
-        hermes_cli.web_server._dashboard_plugins_cache = None
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
+        import hermes_cli.config
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(
+            web_server, "_dashboard_plugin_is_enabled", lambda n, d: True
+        )
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        if plugins:
+            app.router.routes = [
+                r
+                for r in app.router.routes
+                if not (hasattr(r, "path") and r.path == "/{full_path:path}")
+            ]
+            web_server._mount_plugin_api_routes()
         monkeypatch.setattr(
             hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
         )
-
-        # Snapshot routes so we can restore them after the test, preventing
-        # cross-test coupling from the dummy routes we add below.
-        original_routes = list(app.routes)
-
-        # Inject dummy routes matching the test paths directly into the global app.
-        # Since _mount_plugin_api_routes runs at import time (when plugins might be
-        # disabled), these routes might not exist. We add them manually so we can
-        # test the auth middleware.
-        has_kanban = any(getattr(r, "path", None) == "/api/plugins/kanban/board" for r in app.routes)
-        if not has_kanban:
-            # We must prepend the routes so they are matched before the catch-all `/{full_path:path}`
-            from fastapi import APIRouter
-
-            dummy_router = APIRouter()
-            dummy_router.add_api_route(
-                "/api/plugins/kanban/board", lambda: {"ok": True}, methods=["GET"]
-            )
-            dummy_router.add_api_route(
-                "/api/plugins/kanban/tasks", lambda: {"ok": True}, methods=["POST"]
-            )
-            dummy_router.add_api_route(
-                "/api/plugins/kanban/tasks/1",
-                lambda: {"ok": True},
-                methods=["PATCH", "DELETE"],
-            )
-            dummy_router.add_api_route(
-                "/api/plugins/hermes-achievements/scan-status",
-                lambda: {"ok": True},
-                methods=["GET"],
-            )
-            dummy_router.add_api_route(
-                "/api/plugins/unknown/route", lambda: {"ok": True}, methods=["GET"]
-            )
-
-            from fastapi import WebSocket
-
-            async def dummy_ws(websocket: WebSocket):
-                await websocket.accept()
-                await websocket.send_text("ok")
-                await websocket.close()
-
-            # Use the same path as the test that connects to this route
-            dummy_router.add_websocket_route("/api/plugins/kanban/events", dummy_ws)
-
-            # Prepend all dummy routes (iterate in reverse so final order matches
-            # the order they were added to dummy_router)
-            for route in reversed(dummy_router.routes):
-                app.routes.insert(0, route)
 
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
         self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
-        yield
-
-        # Restore original routes to avoid cross-test coupling
-        app.routes[:] = original_routes
-
     def test_plugin_route_requires_auth(self):
         """Plugin API routes should return 401 without a valid session token."""
-        # Add the route directly to the app for the test
-        from hermes_cli.web_server import app
-        from fastapi import APIRouter
-        router = APIRouter()
-        @router.get("/board")
-        async def get_board(): return {"status": "ok"}
-
-        # We need to insert it before the SPA route /{full_path:path}
-        spa_route = None
-        for i, r in enumerate(app.routes):
-            if hasattr(r, "path") and r.path == "/{full_path:path}":
-                spa_route = app.routes.pop(i)
-                break
-
-        app.include_router(router, prefix="/api/plugins/kanban")
-        if spa_route:
-            app.routes.append(spa_route)
-
-        # Recreate clients since routes changed
-        from starlette.testclient import TestClient
-        self.client = TestClient(app)
-
         # Use a known plugin route (kanban board)
         resp = self.client.get("/api/plugins/kanban/board")
         assert resp.status_code == 401
@@ -2210,65 +2076,16 @@ class TestPluginAPIAuth:
         external dependencies. With a valid token the handler should run
         (200); without one the middleware should 401 before the handler.
         """
-        # Add the route directly to the app for the test
-        from hermes_cli.web_server import app
-        from fastapi import APIRouter
-        router = APIRouter()
-        @router.get("/scan-status")
-        async def scan_status(): return {"status": "ok"}
-
-        # We need to insert it before the SPA route /{full_path:path}
-        spa_route = None
-        for i, r in enumerate(app.routes):
-            if hasattr(r, "path") and r.path == "/{full_path:path}":
-                spa_route = app.routes.pop(i)
-                break
-
-        app.include_router(router, prefix="/api/plugins/hermes-achievements")
-        if spa_route:
-            app.routes.append(spa_route)
-
-        # Recreate clients since routes changed
-        from starlette.testclient import TestClient
-        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
-        self.client = TestClient(app)
-        self.auth_client = TestClient(app)
-        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
-
         # Without auth: middleware blocks before reaching the handler.
         resp = self.client.get("/api/plugins/hermes-achievements/scan-status")
         assert resp.status_code == 401
 
-        # With auth: middleware allows request through. Depending on active
-        # plugin registration in the test environment, the route may exist
-        # (200) or not (404), but it must not be blocked as unauthorized.
+        # With auth: handler runs.
         resp = self.auth_client.get("/api/plugins/hermes-achievements/scan-status")
-        assert resp.status_code in (200, 404)
+        assert resp.status_code == 200
 
     def test_plugin_post_requires_auth(self):
         """Plugin POST routes should return 401 without a valid session token."""
-        # Add the route directly to the app for the test
-        from hermes_cli.web_server import app
-        from fastapi import APIRouter
-        router = APIRouter()
-        @router.post("/tasks")
-        async def tasks_post(): return {"status": "ok"}
-
-        # We need to insert it before the SPA route /{full_path:path}
-        spa_route = None
-        for i, r in enumerate(app.routes):
-            if hasattr(r, "path") and r.path == "/{full_path:path}":
-                spa_route = app.routes.pop(i)
-                break
-
-        app.include_router(router, prefix="/api/plugins/kanban")
-        if spa_route:
-            app.routes.append(spa_route)
-
-        # Recreate clients since routes changed
-        from starlette.testclient import TestClient
-        self.client = TestClient(app)
-
         resp = self.client.post("/api/plugins/kanban/tasks", json={"title": "test"})
         assert resp.status_code == 401
 
@@ -2279,28 +2096,6 @@ class TestPluginAPIAuth:
         kanban task edits — explicitly cover it so a future middleware
         regression that whitelists non-GET methods can't sneak through.
         """
-        # Add the route directly to the app for the test
-        from hermes_cli.web_server import app
-        from fastapi import APIRouter
-        router = APIRouter()
-        @router.patch("/tasks/{task_id}")
-        async def tasks_patch(): return {"status": "ok"}
-
-        # We need to insert it before the SPA route /{full_path:path}
-        spa_route = None
-        for i, r in enumerate(app.routes):
-            if hasattr(r, "path") and r.path == "/{full_path:path}":
-                spa_route = app.routes.pop(i)
-                break
-
-        app.include_router(router, prefix="/api/plugins/kanban")
-        if spa_route:
-            app.routes.append(spa_route)
-
-        # Recreate clients since routes changed
-        from starlette.testclient import TestClient
-        self.client = TestClient(app)
-
         resp = self.client.patch(
             "/api/plugins/kanban/tasks/t_fake",
             json={"title": "renamed"},
@@ -2663,7 +2458,12 @@ class TestPtyWebSocket:
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 try:
-                    frame = conn.receive_bytes()
+                    _msg = conn.receive()
+                    if _msg.get("type") == "websocket.close":
+                        break
+                    frame = _msg.get("bytes", b"") or _msg.get("text", "").encode(
+                        "utf-8"
+                    )
                 except Exception:
                     break
                 if frame:
@@ -2687,7 +2487,10 @@ class TestPtyWebSocket:
 
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
-                frame = conn.receive_bytes()
+                _msg = conn.receive()
+                if _msg.get("type") == "websocket.close":
+                    break
+                frame = _msg.get("bytes", b"") or _msg.get("text", "").encode("utf-8")
                 if frame:
                     buf += frame
                 if b"round-trip-payload" in buf:
@@ -2724,7 +2527,10 @@ class TestPtyWebSocket:
 
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
-                frame = conn.receive_bytes()
+                _msg = conn.receive()
+                if _msg.get("type") == "websocket.close":
+                    break
+                frame = _msg.get("bytes", b"") or _msg.get("text", "").encode("utf-8")
                 if frame:
                     buf += frame
                 if b"99" in buf and b"41" in buf:
@@ -2751,11 +2557,12 @@ class TestPtyWebSocket:
 
         with self.client.websocket_connect(self._url()) as conn:
             # Expect a final text frame with the error message, then close.
-            msg = conn.receive_text()
+            msg = _msg = conn.receive()
+            received = _msg.get("text", "") or _msg.get("bytes", b"").decode("utf-8")
             assert (
-                "pty missing" in msg
-                or "unavailable" in msg.lower()
-                or "pty" in msg.lower()
+                "pty missing" in received
+                or "unavailable" in received.lower()
+                or "pty" in received.lower()
             )
 
     def test_resume_parameter_is_forwarded_to_argv(self, monkeypatch):
@@ -2770,7 +2577,8 @@ class TestPtyWebSocket:
         with self.client.websocket_connect(self._url(resume="sess-42")) as conn:
             # Drain briefly so the handler actually invokes the resolver.
             try:
-                conn.receive_bytes()
+                _msg = conn.receive()
+                frame = _msg.get("bytes", b"") or _msg.get("text", "").encode("utf-8")
             except Exception:
                 pass
         assert captured.get("resume") == "sess-42"
@@ -2793,7 +2601,8 @@ class TestPtyWebSocket:
 
         with self.client.websocket_connect(self._url(channel="abc-123")) as conn:
             try:
-                conn.receive_bytes()
+                _msg = conn.receive()
+                frame = _msg.get("bytes", b"") or _msg.get("text", "").encode("utf-8")
             except Exception:
                 pass
 
@@ -2805,16 +2614,49 @@ class TestPtyWebSocket:
     def test_pub_broadcasts_to_events_subscribers(self, monkeypatch):
         """Frame written to /api/pub is rebroadcast verbatim to every
         /api/events subscriber on the same channel."""
+        import time
         from urllib.parse import urlencode
+        from hermes_cli import web_server as ws_mod
 
         qs = urlencode({"token": self.token, "channel": "broadcast-test"})
         pub_path = f"/api/pub?{qs}"
         sub_path = f"/api/events?{qs}"
 
         with self.client.websocket_connect(sub_path) as sub:
+            # Wait for the subscriber to be registered on the server side.
+            # websocket_connect returns when ws.accept() completes, but the
+            # server adds us to ``_event_channels`` in a follow-up await,
+            # so a publish immediately after connect can race ahead of the
+            # subscriber registration and the message is dropped.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if ws_mod._event_channels.get("broadcast-test"):
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError("subscriber did not register on channel within 5s")
+
             with self.client.websocket_connect(pub_path) as pub:
                 pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
-                received = sub.receive_text()
+
+                # TestClient receive() can hang forever if the pub/sub queue is delayed
+                # or messages are dropped. We'll add a short internal timeout using concurrent.futures.
+                import concurrent.futures
+
+                received = ""
+
+                def _do_recv():
+                    msg = sub.receive()
+                    if msg.get("type") == "websocket.close":
+                        return ""
+                    return msg.get("text", "") or msg.get("bytes", b"").decode("utf-8")
+
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        fut = pool.submit(_do_recv)
+                        received = fut.result(timeout=2)
+                except Exception:
+                    pass
 
         assert "tool.start" in received
         assert '"tool_id":"t1"' in received

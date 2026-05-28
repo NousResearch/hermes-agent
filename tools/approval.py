@@ -17,7 +17,6 @@ import shlex
 import sys
 import threading
 import time
-import uuid
 import unicodedata
 from typing import Optional
 from hermes_cli.config import cfg_get
@@ -37,10 +36,6 @@ _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
 _approval_run_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_run_id",
     default="",
-)
-_approval_interactive: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "approval_interactive",
-    default=False,
 )
 
 
@@ -80,18 +75,8 @@ def reset_current_session_key(token: contextvars.Token[str]) -> None:
     _approval_session_key.reset(token)
 
 
-def set_current_interactive(enabled: bool = True) -> contextvars.Token[bool]:
-    """Bind interactive approval routing to the current context."""
-    return _approval_interactive.set(bool(enabled))
-
-
-def reset_current_interactive(token: contextvars.Token[bool]) -> None:
-    """Restore the prior interactive approval routing context."""
-    _approval_interactive.reset(token)
-
-
 def set_current_run_id(run_id: str) -> contextvars.Token[str]:
-    """Bind the active API run id to the current context."""
+    """Bind the active API run id to pending gateway approvals."""
     return _approval_run_id.set(run_id or "")
 
 
@@ -100,22 +85,9 @@ def reset_current_run_id(token: contextvars.Token[str]) -> None:
     _approval_run_id.reset(token)
 
 
-def get_current_run_id(default: str = "") -> str:
-    """Return the active run id, preferring context-local state."""
-    run_id = _approval_run_id.get()
-    if run_id:
-        return run_id
-    try:
-        from gateway.session_context import get_session_env
-
-        return get_session_env("HERMES_RUN_ID", default)
-    except Exception:
-        return os.getenv("HERMES_RUN_ID", default)
-
-
-def is_current_interactive() -> bool:
-    """Return whether this context should use interactive approval routing."""
-    return _approval_interactive.get() or bool(os.getenv("HERMES_INTERACTIVE"))
+def get_current_run_id() -> str:
+    """Return the active API run id for approval binding, if any."""
+    return _approval_run_id.get()
 
 
 def get_current_session_key(default: str = "default") -> str:
@@ -658,13 +630,11 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("approval_id", "event", "data", "result")
+    __slots__ = ("event", "data", "result")
 
     def __init__(self, data: dict):
-        self.approval_id = str(data.get("approval_id") or uuid.uuid4())
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
-        self.data["approval_id"] = self.approval_id
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
 
 
@@ -699,14 +669,14 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             approval_id: Optional[str] = None) -> int:
+                             run_id: Optional[str] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
     When *resolve_all* is True every pending approval in the session is
-    resolved at once (``/approve all``).  Otherwise a supplied
-    *approval_id* resolves that exact entry; without one, the oldest entry
-    is resolved (FIFO) for the text ``/approve`` compatibility path.
+    resolved at once (``/approve all``).  Otherwise only the oldest one
+    is resolved (FIFO).  When *run_id* is provided, only entries bound to
+    that API run are eligible.
 
     Returns the number of approvals resolved (0 means nothing was pending).
     """
@@ -714,17 +684,16 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
-        if resolve_all:
+        if run_id:
+            matches = [entry for entry in queue if entry.data.get("run_id") == run_id]
+            if not matches:
+                return 0
+            targets = matches if resolve_all else [matches[0]]
+            for entry in targets:
+                queue.remove(entry)
+        elif resolve_all:
             targets = list(queue)
             queue.clear()
-        elif approval_id:
-            targets = []
-            for idx, entry in enumerate(queue):
-                if entry.approval_id == approval_id:
-                    targets = [queue.pop(idx)]
-                    break
-            if not targets:
-                return 0
         else:
             targets = [queue.pop(0)]
         if not queue:
@@ -1123,7 +1092,7 @@ def check_dangerous_command(command: str, env_type: str,
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
-    is_cli = is_current_interactive()
+    is_cli = os.getenv("HERMES_INTERACTIVE")
     is_gateway = _is_gateway_approval_context()
 
     if not is_cli and not is_gateway:
@@ -1251,7 +1220,7 @@ def check_all_command_guards(command: str, env_type: str,
     if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
-    is_cli = is_current_interactive()
+    is_cli = os.getenv("HERMES_INTERACTIVE")
     is_gateway = _is_gateway_approval_context()
     is_ask = os.getenv("HERMES_EXEC_ASK")
 
@@ -1319,15 +1288,9 @@ def check_all_command_guards(command: str, env_type: str,
 
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
-    # Do not auto-approve scanner blocks: a deterministic tirith block requires
-    # an explicit user decision because the command text is model-controlled.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
     # (openai/codex#13860).
-    has_unapproved_tirith_block = (
-        tirith_result.get("action") == "block"
-        and any(is_t for _, _, is_t in warnings)
-    )
-    if approval_mode == "smart" and not has_unapproved_tirith_block:
+    if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         verdict = _smart_approve(command, combined_desc_for_llm)
         if verdict == "approve":

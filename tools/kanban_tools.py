@@ -724,30 +724,9 @@ def _handle_link(args: dict, **kw) -> str:
     child_id = args.get("child_id")
     if not parent_id or not child_id:
         return tool_error("both parent_id and child_id are required")
-    parent_id = str(parent_id)
-    child_id = str(child_id)
-    ownership_err = _enforce_worker_task_ownership(parent_id)
-    if ownership_err:
-        return ownership_err
     try:
         kb, conn = _connect()
         try:
-            env_tid = os.environ.get("HERMES_KANBAN_TASK")
-            if env_tid:
-                child = kb.get_task(conn, child_id)
-                if child is None:
-                    return tool_error(f"task {child_id} not found")
-                current_profiles = {
-                    env_tid,
-                    os.environ.get("HERMES_PROFILE") or "worker",
-                    _current_profile_name(),
-                }
-                if child.created_by not in current_profiles:
-                    return tool_error(
-                        "worker-scoped kanban_link may only attach cards "
-                        "created by this worker; use kanban_create with "
-                        "parents=[current_task] for new child work"
-                    )
             kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
             return _ok(parent_id=parent_id, child_id=child_id)
         finally:

@@ -3479,8 +3479,6 @@ class GatewayRunner:
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-            if hasattr(adapter, "set_interaction_authorizer"):
-                adapter.set_interaction_authorizer(self._is_user_authorized)
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -4762,8 +4760,6 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-                    if hasattr(adapter, "set_interaction_authorizer"):
-                        adapter.set_interaction_authorizer(self._is_user_authorized)
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
@@ -5343,9 +5339,7 @@ class GatewayRunner:
             if not check_qq_requirements():
                 logger.warning("QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured")
                 return None
-            adapter = QQAdapter(config)
-            adapter.gateway_runner = self
-            return adapter
+            return QQAdapter(config)
 
         elif platform == Platform.YUANBAO:
             from gateway.platforms.yuanbao import YuanbaoAdapter, WEBSOCKETS_AVAILABLE
@@ -5424,10 +5418,7 @@ class GatewayRunner:
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
-        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist.
-        # Discord keeps this gateway-level bypass aligned with adapter behavior:
-        # if DISCORD_ALLOW_BOTS is permissive and the message reaches here as a
-        # bot sender, this layer should not re-reject it on user allowlists.
+        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         platform_allow_bots_map = {
             Platform.DISCORD: "DISCORD_ALLOW_BOTS",
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",
@@ -6044,12 +6035,6 @@ class GatewayRunner:
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
-            if (
-                _cmd_def_inner
-                and getattr(_cmd_def_inner, "cli_only", False)
-                and not getattr(_cmd_def_inner, "gateway_config_gate", None)
-            ):
-                return f"Command `/{getattr(_cmd_def_inner, 'name', _evt_cmd)}` is only available in the local CLI."
 
             # Slash command access control on the running-agent fast-path.
             # Mirrors the cold-path gate further below so non-admin users
@@ -6361,13 +6346,6 @@ class GatewayRunner:
         # don't depend on the exact alias the user typed.
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
-        if (
-            command
-            and _cmd_def
-            and getattr(_cmd_def, "cli_only", False)
-            and not getattr(_cmd_def, "gateway_config_gate", None)
-        ):
-            return f"Command `/{canonical}` is only available in the local CLI."
 
         # Expand alias quick commands before built-in dispatch so targets like
         # /model openai/gpt-5.5 --provider openrouter reach the /model handler.
@@ -6456,14 +6434,6 @@ class GatewayRunner:
                     _cmd_def = _resolve_cmd(command) if command else None
                     canonical = _cmd_def.name if _cmd_def else command
                     break
-
-        if (
-            command
-            and _cmd_def
-            and getattr(_cmd_def, "cli_only", False)
-            and not getattr(_cmd_def, "gateway_config_gate", None)
-        ):
-            return f"Command `/{canonical}` is only available in the local CLI."
 
         if canonical == "new":
             if self._is_telegram_topic_root_lobby(source):
@@ -6674,8 +6644,7 @@ class GatewayRunner:
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
-                plugin_command = command.replace("_", "-")
-                plugin_handler = get_plugin_command_handler(plugin_command)
+                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
                     result = plugin_handler(user_args)
@@ -7558,11 +7527,10 @@ class GatewayRunner:
                                                 _werr,
                                             )
                                 finally:
-                                    # Evict and clean the cached session agent so
-                                    # the next turn rebuilds its system prompt
-                                    # without leaking resources owned by the old
-                                    # cached instance.
-                                    self._cleanup_evicted_cached_agent(session_key)
+                                    # Evict the cached agent so the next turn
+                                    # rebuilds its system prompt from current
+                                    # SOUL.md, memory, and skills.
+                                    self._evict_cached_agent(session_key)
                                     self._cleanup_agent_resources(_hyg_agent)
 
                     except Exception as e:
@@ -8479,10 +8447,7 @@ class GatewayRunner:
         if text.startswith("kanban"):
             text = text[len("kanban"):].lstrip()
 
-        try:
-            tokens = shlex.split(text) if text else []
-        except ValueError:
-            tokens = text.split() if text else []
+        tokens = shlex.split(text) if text else []
         requested_board = None
         action = None
         i = 0
@@ -10922,10 +10887,9 @@ class GatewayRunner:
                     force=True,
                 )
             finally:
-                # Evict and clean the cached session agent so next turn
-                # rebuilds its system prompt without leaking resources owned
-                # by the old cached instance.
-                self._cleanup_evicted_cached_agent(session_key)
+                # Evict cached agent so next turn rebuilds system prompt
+                # from current files (SOUL.md, memory, etc.).
+                self._evict_cached_agent(session_key)
                 self._cleanup_agent_resources(tmp_agent)
             lines = [f"🗜️ {summary['headline']}"]
             if focus_topic:
@@ -13802,35 +13766,12 @@ class GatewayRunner:
         if release_running_state:
             self._release_running_agent_state(session_key)
 
-    @staticmethod
-    def _agent_from_cache_entry(entry: Any) -> Any:
-        """Return the agent object from a cache entry, if present."""
-        if isinstance(entry, tuple) and entry:
-            return entry[0]
-        return entry
-
-    def _evict_cached_agent(self, session_key: str) -> Any:
-        """Remove and return a cached agent for a session.
-
-        This is intentionally non-destructive: callers that invalidate a
-        session but need to preserve its tool state should only pop the cache.
-        Call ``_cleanup_evicted_cached_agent`` when the evicted instance is no
-        longer resumable and its resources must be closed.
-        """
-        _cache = getattr(self, "_agent_cache", None)
-        if _cache is None:
-            return None
+    def _evict_cached_agent(self, session_key: str) -> None:
+        """Remove a cached agent for a session (called on /new, /model, etc)."""
         _lock = getattr(self, "_agent_cache_lock", None)
         if _lock:
             with _lock:
-                entry = _cache.pop(session_key, None)
-        else:
-            entry = _cache.pop(session_key, None)
-        return self._agent_from_cache_entry(entry)
-
-    def _cleanup_evicted_cached_agent(self, session_key: str) -> None:
-        """Evict a cached session agent and close resources it owned."""
-        self._cleanup_agent_resources(self._evict_cached_agent(session_key))
+                self._agent_cache.pop(session_key, None)
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
@@ -13850,19 +13791,6 @@ class GatewayRunner:
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
         agent._api_call_count = 0
-
-    @staticmethod
-    def _refresh_agent_source_context(agent: Any, source: SessionSource, session_key: str) -> None:
-        """Refresh source-scoped identity on a cached agent for this gateway turn."""
-        platform = getattr(source.platform, "value", source.platform)
-        agent.platform = platform if platform is None or isinstance(platform, str) else str(platform)
-        agent._user_id = source.user_id
-        agent._user_name = source.user_name
-        agent._chat_id = source.chat_id
-        agent._chat_name = source.chat_name
-        agent._chat_type = source.chat_type
-        agent._thread_id = source.thread_id
-        agent._gateway_session_key = session_key
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.
@@ -14074,6 +14002,11 @@ class GatewayRunner:
 
         proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
 
+        platform_key = _platform_config_key(source.platform)
+        user_config = _load_gateway_config()
+        from hermes_cli.tools_config import _get_platform_tools
+        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
                 return True
@@ -14114,29 +14047,11 @@ class GatewayRunner:
             "model": "hermes-agent",
             "messages": api_messages,
             "stream": True,
-        }
-
-        platform_key = _platform_config_key(source.platform)
-        user_config = _load_gateway_config()
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
-
-        from gateway.proxy_scope_auth import (
-            PROXY_SCOPE_SIGNATURE_HEADER,
-            PROXY_SCOPE_TIMESTAMP_HEADER,
-            get_proxy_scope_key,
-            sign_proxy_scope,
-        )
-        proxy_scope_key = get_proxy_scope_key()
-        if proxy_scope_key:
-            proxy_scope = {
+            "hermes_proxy_scope": {
                 "origin_platform": platform_key,
                 "enabled_toolsets": enabled_toolsets,
-            }
-            proxy_scope_ts, proxy_scope_sig = sign_proxy_scope(proxy_scope, proxy_scope_key)
-            body["hermes_proxy_scope"] = proxy_scope
-            headers[PROXY_SCOPE_TIMESTAMP_HEADER] = proxy_scope_ts
-            headers[PROXY_SCOPE_SIGNATURE_HEADER] = proxy_scope_sig
+            },
+        }
 
         # Set up platform streaming if available -------------------------
         _stream_consumer = None
@@ -14144,6 +14059,7 @@ class GatewayRunner:
         if _scfg is None:
             from gateway.config import StreamingConfig
             _scfg = StreamingConfig()
+
         from gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(
             user_config, platform_key, "streaming"
@@ -15130,7 +15046,6 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
-            self._refresh_agent_source_context(agent, source, session_key)
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
@@ -15262,56 +15177,6 @@ class GatewayRunner:
                 unregister_gateway_notify,
             )
 
-            def _discord_approval_auth_callback(interaction) -> bool:
-                """Authorize Discord approval buttons with gateway-level auth."""
-                user = getattr(interaction, "user", None)
-                user_id = str(getattr(user, "id", "") or "")
-                if not user_id:
-                    return False
-
-                # Preserve Discord's role-aware component gate; GatewayRunner's
-                # text-path shortcut trusts role pre-filtering that button
-                # interactions do not pass through.
-                adapter_auth = getattr(_status_adapter, "_is_allowed_user", None)
-                if callable(adapter_auth):
-                    try:
-                        guild = getattr(interaction, "guild", None)
-                        is_dm = guild is None
-                        discord_policy = any(
-                            os.getenv(name, "").strip()
-                            for name in ("DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES")
-                        )
-                        if adapter_auth(user_id, user, guild=guild, is_dm=is_dm):
-                            if discord_policy:
-                                return True
-                            # Without a Discord-specific policy, adapter_auth
-                            # preserves legacy allow-all. Defer to gateway
-                            # policy so GATEWAY_ALLOWED_USERS and pairing are
-                            # not bypassed by shared-channel button clicks.
-                    except Exception as exc:
-                        logger.warning("Discord exec approval adapter auth failed: %s", exc)
-                        return False
-
-                if os.getenv("DISCORD_ALLOW_ALL_USERS", "").lower().strip() in {"true", "1", "yes"}:
-                    return True
-
-                global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
-                if global_allowlist:
-                    allowed_ids = {uid.strip() for uid in global_allowlist.split(",") if uid.strip()}
-                    if "*" in allowed_ids or user_id in allowed_ids:
-                        return True
-
-                try:
-                    if self.pairing_store.is_approved("discord", user_id):
-                        return True
-                except Exception as exc:
-                    logger.warning("Discord exec approval pairing auth failed: %s", exc)
-                    return False
-
-                # Match the normal gateway default: no allowlists means users
-                # must opt in with GATEWAY_ALLOW_ALL_USERS.
-                return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower().strip() in {"true", "1", "yes"}
-
             def _approval_notify_sync(approval_data: dict) -> None:
                 """Send the approval request to the user from the agent thread.
 
@@ -15337,17 +15202,13 @@ class GatewayRunner:
                 # false positives from MagicMock auto-attribute creation in tests.
                 if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
                     try:
-                        _approval_metadata = dict(_status_thread_metadata or {})
-                        _approval_metadata["approval_id"] = approval_data.get("approval_id")
-                        if source.platform == Platform.DISCORD:
-                            _approval_metadata["approval_auth_callback"] = _discord_approval_auth_callback
                         _approval_result = asyncio.run_coroutine_threadsafe(
                             _status_adapter.send_exec_approval(
                                 chat_id=_status_chat_id,
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_approval_metadata,
+                                metadata=_status_thread_metadata,
                             ),
                             _loop_for_step,
                         ).result(timeout=15)

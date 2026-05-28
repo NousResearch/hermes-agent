@@ -85,34 +85,6 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         )
         return None
 
-
-def _resolve_cron_mcp_server_names(
-    enabled_toolsets: list[str] | None,
-    cfg: dict,
-) -> set[str] | None:
-    """Return MCP servers allowed by the resolved cron tool policy.
-
-    ``None`` preserves the legacy full-toolset fallback when cron toolset
-    resolution fails. Otherwise, cron may only start globally enabled MCP
-    servers whose names survived ``_resolve_cron_enabled_toolsets``.
-    """
-    if enabled_toolsets is None:
-        return None
-
-    enabled_names = {str(name) for name in enabled_toolsets}
-    mcp_servers = (cfg or {}).get("mcp_servers") or {}
-    if not isinstance(mcp_servers, dict):
-        return set()
-
-    return {
-        str(name)
-        for name, server_cfg in mcp_servers.items()
-        if str(name) in enabled_names
-        and isinstance(server_cfg, dict)
-        and str(server_cfg.get("enabled", True)).strip().lower() not in {"0", "false", "no", "off"}
-    }
-
-
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -1410,26 +1382,26 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             except Exception as e:
                 logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
 
-        cron_enabled_toolsets = _resolve_cron_enabled_toolsets(job, _cfg)
-        cron_mcp_server_names = _resolve_cron_mcp_server_names(cron_enabled_toolsets, _cfg)
-
-        # Initialize only MCP servers allowed by cron's resolved tool policy
-        # before AIAgent is constructed. This preserves MCP availability for
-        # cron while honoring platform_toolsets.cron no_mcp/allowlist settings.
-        if cron_mcp_server_names is None or cron_mcp_server_names:
-            try:
-                from tools.mcp_tool import discover_mcp_tools
-                _mcp_tools = discover_mcp_tools(allowed_server_names=cron_mcp_server_names)
-                if _mcp_tools:
-                    logger.info(
-                        "Job '%s': %d MCP tool(s) available",
-                        job_id, len(_mcp_tools),
-                    )
-            except Exception as _mcp_exc:
-                logger.warning(
-                    "Job '%s': MCP initialization failed (non-fatal): %s",
-                    job_id, _mcp_exc,
+        # Initialize MCP servers so configured mcp_servers are available to
+        # the agent's tool registry before AIAgent is constructed. Without
+        # this, cron jobs never saw any MCP tools — only the gateway / CLI
+        # paths called discover_mcp_tools() at startup. Idempotent: subsequent
+        # ticks short-circuit on already-connected servers inside
+        # register_mcp_servers(). Non-fatal on failure: a broken MCP server
+        # shouldn't kill an otherwise-working cron job. See #4219.
+        try:
+            from tools.mcp_tool import discover_mcp_tools
+            _mcp_tools = discover_mcp_tools()
+            if _mcp_tools:
+                logger.info(
+                    "Job '%s': %d MCP tool(s) available",
+                    job_id, len(_mcp_tools),
                 )
+        except Exception as _mcp_exc:
+            logger.warning(
+                "Job '%s': MCP initialization failed (non-fatal): %s",
+                job_id, _mcp_exc,
+            )
 
         agent = AIAgent(
             model=model,
@@ -1449,7 +1421,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
-            enabled_toolsets=cron_enabled_toolsets,
+            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from

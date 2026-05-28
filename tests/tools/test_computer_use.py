@@ -18,9 +18,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _reset_backend():
     """Tear down the cached backend between tests."""
-    from tools.computer_use.tool import reset_backend_for_tests, set_approval_callback
-    import tools.computer_use.tool as tool_mod
-
+    from tools.computer_use.tool import reset_backend_for_tests
     reset_backend_for_tests()
     # Force the noop backend.
     with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):

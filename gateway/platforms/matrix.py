@@ -2176,10 +2176,10 @@ class MatrixAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session- and sender-scoped key for text message batching."""
+        """Session-scoped key for text message batching."""
         from gateway.session import build_session_key
 
-        session_key = build_session_key(
+        return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get(
                 "group_sessions_per_user", True
@@ -2188,12 +2188,6 @@ class MatrixAdapter(BasePlatformAdapter):
                 "thread_sessions_per_user", False
             ),
         )
-        sender_id = getattr(event.source, "user_id", None) or getattr(
-            event.source, "user_id_alt", None
-        )
-        if not sender_id:
-            return session_key
-        return f"{session_key}:sender:{sender_id}"
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer."""

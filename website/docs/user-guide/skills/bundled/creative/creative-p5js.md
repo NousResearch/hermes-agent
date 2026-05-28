@@ -282,10 +282,10 @@ Key implementation patterns:
 | Format | Method | Command |
 |--------|--------|---------|
 | **PNG** | `saveCanvas('output', 'png')` in `keyPressed()` | Press 's' to save |
-| **High-res PNG** | Puppeteer headless capture (local assets only; outbound browser requests are blocked) | `node scripts/export-frames.js sketch.html --width 3840 --height 2160 --frames 1` |
+| **High-res PNG** | Puppeteer headless capture | `node scripts/export-frames.js sketch.html --width 3840 --height 2160 --frames 1` |
 | **GIF** | `saveGif('output', 5)` — captures N seconds | Press 'g' to save |
 | **Frame sequence** | `saveFrames('frame', 'png', 10, 30)` — 10s at 30fps | Then `ffmpeg -i frame-%04d.png -c:v libx264 output.mp4` |
-| **MP4** | Puppeteer frame capture + ffmpeg (same local-only sandbox) | `bash scripts/render.sh sketch.html output.mp4 --duration 30 --fps 30` |
+| **MP4** | Puppeteer frame capture + ffmpeg | `bash scripts/render.sh sketch.html output.mp4 --duration 30 --fps 30` |
 | **SVG** | `createCanvas(w, h, SVG)` with p5.js-svg | `save('output.svg')` |
 
 ### Step 6: Quality Verification
@@ -494,7 +494,7 @@ function setup() {
 }
 ```
 
-The bundled `scripts/export-frames.js` detects `_p5Ready` and calls `redraw()` once per capture for exact 1:1 frame correspondence. It serves the sketch from the sketch directory over localhost and blocks browser requests to any other origin, so keep p5.js, fonts, images, and audio files local for headless export. See `references/export-pipeline.md` § Deterministic Capture.
+The bundled `scripts/export-frames.js` detects `_p5Ready` and calls `redraw()` once per capture for exact 1:1 frame correspondence. See `references/export-pipeline.md` § Deterministic Capture.
 
 For multi-scene videos, use the per-clip architecture: one HTML per scene, render independently, stitch with `ffmpeg -f concat`. See `references/export-pipeline.md` § Per-Clip Architecture.
 
@@ -506,7 +506,7 @@ When building p5.js sketches:
 2. **Open in browser** — `open sketch.html` (macOS) or `xdg-open sketch.html` (Linux)
 3. **Local assets** (fonts, images) require a server: `python3 -m http.server 8080` in the project directory, then open `http://localhost:8080/sketch.html`
 4. **Export PNG/GIF** — add `keyPressed()` shortcuts as shown above, tell the user which key to press
-5. **Headless export** — `node scripts/export-frames.js sketch.html --frames 300` for automated frame capture (sketch must use `noLoop()` + `_p5Ready`; external network requests are blocked)
+5. **Headless export** — `node scripts/export-frames.js sketch.html --frames 300` for automated frame capture (sketch must use `noLoop()` + `_p5Ready`)
 6. **MP4 rendering** — `bash scripts/render.sh sketch.html output.mp4 --duration 30`
 7. **Iterative refinement** — edit the HTML file, user refreshes browser to see changes
 8. **Load references on demand** — use `skill_view(name="p5js", file_path="references/...")` to load specific reference files as needed during implementation

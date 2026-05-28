@@ -309,7 +309,6 @@ _UDS_TRANSPORT_HEADER = '''\
 import json, os, socket, shlex, threading, time
 
 _sock = None
-_rpc_token = None
 # The RPC server handles a single client connection serially and has no
 # request-id in the protocol, so concurrent _call() invocations from multiple
 # threads (e.g. ThreadPoolExecutor) would race on the shared socket and get
@@ -342,20 +341,9 @@ def _connect():
         _sock.settimeout(300)
     return _sock
 
-def _rpc_auth_token():
-    """Return the per-execution RPC token injected by the parent."""
-    global _rpc_token
-    if _rpc_token is None:
-        _rpc_token = os.environ["HERMES_RPC_TOKEN"]
-    return _rpc_token
-
 def _call(tool_name, args):
     """Send a tool call to the parent process and return the parsed result."""
-    request = json.dumps({
-        "auth": _rpc_auth_token(),
-        "tool": tool_name,
-        "args": args,
-    }) + "\\n"
+    request = json.dumps({"tool": tool_name, "args": args}) + "\\n"
     with _call_lock:
         conn = _connect()
         conn.sendall(request.encode())
@@ -455,7 +443,6 @@ def _rpc_server_loop(
     tool_call_counter: list,   # mutable [int] so the thread can increment
     max_tool_calls: int,
     allowed_tools: frozenset,
-    rpc_auth_token: str,
 ):
     """
     Accept one client connection and dispatch tool-call requests until
@@ -493,11 +480,6 @@ def _rpc_server_loop(
                     resp = tool_error(f"Invalid RPC request: {exc}")
                     conn.sendall((resp + "\n").encode())
                     continue
-
-                if request.get("auth") != rpc_auth_token:
-                    resp = json.dumps({"error": "Unauthorized RPC request"})
-                    conn.sendall((resp + "\n").encode())
-                    return
 
                 tool_name = request.get("tool", "")
                 tool_args = request.get("args", {})
@@ -1155,10 +1137,10 @@ def execute_code(
         #   POSIX: AF_UNIX stream socket on sock_path, chmod 0600 for
         #   owner-only access.  Filesystem permissions gate the socket.
         #   Windows: AF_INET stream socket on 127.0.0.1 with an ephemeral
-        #   port.  Access is gated by a per-execution bearer token injected
-        #   only into the spawned child environment.  HERMES_RPC_SOCKET is set
-        #   to ``tcp://127.0.0.1:<port>`` which the generated client parses to
-        #   pick AF_INET.
+        #   port.  No filesystem permission story, but loopback-only bind
+        #   means only the current user's processes (not remote) can
+        #   connect.  HERMES_RPC_SOCKET is set to ``tcp://127.0.0.1:<port>``
+        #   which the generated client parses to pick AF_INET.
         if _use_tcp_rpc:
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_sock.bind(("127.0.0.1", 0))  # ephemeral port
@@ -1169,13 +1151,12 @@ def execute_code(
             server_sock.bind(sock_path)
             os.chmod(sock_path, 0o600)
         server_sock.listen(1)
-        rpc_auth_token = uuid.uuid4().hex + uuid.uuid4().hex
 
         rpc_thread = threading.Thread(
             target=_rpc_server_loop,
             args=(
                 server_sock, task_id, tool_call_log,
-                tool_call_counter, max_tool_calls, sandbox_tools, rpc_auth_token,
+                tool_call_counter, max_tool_calls, sandbox_tools,
             ),
             daemon=True,
         )
@@ -1193,7 +1174,6 @@ def execute_code(
         # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.
         child_env = _scrub_child_env(os.environ)
         child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
-        child_env["HERMES_RPC_TOKEN"] = rpc_auth_token
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Force UTF-8 for the child's stdio and default file encoding.
         #

@@ -176,7 +176,6 @@ _PRESET_HORIZONS = {
 # Configuration
 # =============================================================================
 
-
 class YCBenchEvalConfig(HermesAgentEnvConfig):
     """
     Configuration for the YC-Bench evaluation environment.
@@ -229,7 +228,6 @@ class YCBenchEvalConfig(HermesAgentEnvConfig):
 # =============================================================================
 # Scoring helpers
 # =============================================================================
-
 
 def _read_final_score(db_path: str) -> Dict[str, Any]:
     """
@@ -327,7 +325,6 @@ def _compute_composite_score(
 # =============================================================================
 # Main Environment
 # =============================================================================
-
 
 class YCBenchEvalEnv(HermesAgentBaseEnv):
     """
@@ -498,7 +495,6 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         run_key = f"{preset}_seed{seed}_{run_id}"
 
         from tqdm import tqdm
-
         tqdm.write(f"  [START] preset={preset!r} seed={seed} (run_id={run_id})")
         run_start = time.time()
 
@@ -519,23 +515,14 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             # `sim init` just sets up the world and returns.
             # ----------------------------------------------------------
             init_cmd = [
-                "yc-bench",
-                "sim",
-                "init",
-                "--seed",
-                str(seed),
-                "--start-date",
-                self.config.start_date,
-                "--company-name",
-                self.config.company_name,
-                "--horizon-years",
-                str(horizon),
+                "yc-bench", "sim", "init",
+                "--seed", str(seed),
+                "--start-date", self.config.start_date,
+                "--company-name", self.config.company_name,
+                "--horizon-years", str(horizon),
             ]
             init_result = subprocess.run(
-                init_cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,
+                init_cmd, capture_output=True, text=True, timeout=30,
             )
             if init_result.returncode != 0:
                 error_msg = (init_result.stderr or init_result.stdout).strip()
@@ -614,7 +601,9 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         except Exception as e:
             elapsed = time.time() - run_start
             logger.error("Run %s failed: %s", run_key, e, exc_info=True)
-            tqdm.write(f"  [ERROR] preset={preset!r} seed={seed}: {e} ({elapsed:.0f}s)")
+            tqdm.write(
+                f"  [ERROR] preset={preset!r} seed={seed}: {e} ({elapsed:.0f}s)"
+            )
             out = {
                 "preset": preset,
                 "seed": seed,
@@ -645,7 +634,6 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             )
         except asyncio.TimeoutError:
             from tqdm import tqdm
-
             tqdm.write(
                 f"  [TIMEOUT] preset={preset!r} seed={seed} "
                 f"(exceeded {self.config.run_timeout}s)"
@@ -684,31 +672,37 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
 
         root = logging.getLogger()
         handler = _TqdmHandler()
-        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        handler.setFormatter(
+            logging.Formatter("%(levelname)s %(name)s: %(message)s")
+        )
         root.handlers = [handler]
         for noisy in ("httpx", "openai"):
             logging.getLogger(noisy).setLevel(logging.WARNING)
 
         # --- Print config summary ---
-        print(f"\n{'=' * 60}")
+        print(f"\n{'='*60}")
         print("Starting YC-Bench Evaluation")
-        print(f"{'=' * 60}")
+        print(f"{'='*60}")
         print(f"  Presets: {self.config.presets}")
         print(f"  Seeds: {self.config.seeds}")
         print(f"  Total runs: {len(self.all_eval_items)}")
         print(f"  Max turns/run: {self.config.max_agent_turns}")
         print(f"  Run timeout: {self.config.run_timeout}s")
-        print(f"{'=' * 60}\n")
+        print(f"{'='*60}\n")
 
         results = []
-        pbar = tqdm(total=len(self.all_eval_items), desc="YC-Bench", dynamic_ncols=True)
+        pbar = tqdm(
+            total=len(self.all_eval_items), desc="YC-Bench", dynamic_ncols=True
+        )
 
         try:
             for item in self.all_eval_items:
                 result = await self._run_with_timeout(item)
                 results.append(result)
                 survived_count = sum(1 for r in results if r.get("survived"))
-                pbar.set_postfix_str(f"survived={survived_count}/{len(results)}")
+                pbar.set_postfix_str(
+                    f"survived={survived_count}/{len(results)}"
+                )
                 pbar.update(1)
 
         except (KeyboardInterrupt, asyncio.CancelledError):
@@ -716,10 +710,9 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             pbar.close()
             try:
                 from tools.terminal_tool import cleanup_all_environments
-
                 cleanup_all_environments()
-            except Exception as e:
-                logger.error("Failed to clean up environments: %s", e)
+            except Exception:
+                pass
             if hasattr(self, "_streaming_file") and not self._streaming_file.closed:
                 self._streaming_file.close()
             return
@@ -737,7 +730,9 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         survived_total = sum(1 for r in valid if r.get("survived"))
         survival_rate = survived_total / total if total else 0.0
         avg_score = (
-            sum(r.get("composite_score", 0) for r in valid) / total if total else 0.0
+            sum(r.get("composite_score", 0) for r in valid) / total
+            if total
+            else 0.0
         )
 
         preset_results: Dict[str, List[Dict]] = defaultdict(list)
@@ -755,7 +750,11 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         for preset, items in sorted(preset_results.items()):
             ps = sum(1 for r in items if r.get("survived"))
             pt = len(items)
-            pa = sum(r.get("composite_score", 0) for r in items) / pt if pt else 0
+            pa = (
+                sum(r.get("composite_score", 0) for r in items) / pt
+                if pt
+                else 0
+            )
             key = preset.replace("-", "_")
             eval_metrics[f"eval/survival_rate_{key}"] = ps / pt if pt else 0
             eval_metrics[f"eval/avg_score_{key}"] = pa
@@ -763,10 +762,13 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         self.eval_metrics = list(eval_metrics.items())
 
         # --- Print summary ---
-        print(f"\n{'=' * 60}")
+        print(f"\n{'='*60}")
         print("YC-Bench Evaluation Results")
-        print(f"{'=' * 60}")
-        print(f"Overall survival rate: {survival_rate:.1%} ({survived_total}/{total})")
+        print(f"{'='*60}")
+        print(
+            f"Overall survival rate: {survival_rate:.1%} "
+            f"({survived_total}/{total})"
+        )
         print(f"Average composite score: {avg_score:.4f}")
         print(f"Evaluation time: {end_time - start_time:.1f}s")
 
@@ -774,7 +776,11 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         for preset, items in sorted(preset_results.items()):
             ps = sum(1 for r in items if r.get("survived"))
             pt = len(items)
-            pa = sum(r.get("composite_score", 0) for r in items) / pt if pt else 0
+            pa = (
+                sum(r.get("composite_score", 0) for r in items) / pt
+                if pt
+                else 0
+            )
             print(f"  {preset}: {ps}/{pt} survived  avg_score={pa:.4f}")
             for r in items:
                 status = "SURVIVED" if r.get("survived") else "BANKRUPT"
@@ -785,10 +791,12 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
                     f"score={r.get('composite_score', 0):.3f}"
                 )
 
-        print(f"{'=' * 60}\n")
+        print(f"{'='*60}\n")
 
         # --- Log results ---
-        samples = [{k: v for k, v in r.items() if k != "messages"} for r in valid]
+        samples = [
+            {k: v for k, v in r.items() if k != "messages"} for r in valid
+        ]
 
         try:
             await self.evaluate_log(
@@ -812,17 +820,15 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
 
         try:
             from tools.terminal_tool import cleanup_all_environments
-
             cleanup_all_environments()
-        except Exception as e:
-            logger.error("Failed to clean up environments: %s", e)
+        except Exception:
+            pass
 
         try:
             from environments.agent_loop import _tool_executor
-
             _tool_executor.shutdown(wait=False, cancel_futures=True)
-        except Exception as e:
-            logger.error("Failed to shut down tool executor: %s", e)
+        except Exception:
+            pass
 
     # =========================================================================
     # Wandb logging

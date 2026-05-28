@@ -792,36 +792,6 @@ SUPPORTED_VIDEO_TYPES = {
 }
 
 
-def _trusted_media_directories() -> Tuple[Path, ...]:
-    """Return local directories allowed for model-emitted media delivery."""
-    return (
-        get_hermes_dir("cache/images", "image_cache"),
-        get_hermes_dir("cache/audio", "audio_cache"),
-        get_hermes_dir("cache/videos", "video_cache"),
-        get_hermes_dir("cache/documents", "document_cache"),
-        get_hermes_dir("cache/screenshots", "browser_screenshots"),
-    )
-
-
-def _is_trusted_media_path(path: str) -> bool:
-    """Return True when *path* resolves inside a Hermes-managed media cache."""
-    try:
-        resolved = Path(path).expanduser().resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
-        return False
-
-    if not resolved.is_file():
-        return False
-
-    for directory in _trusted_media_directories():
-        try:
-            resolved.relative_to(directory.expanduser().resolve(strict=False))
-            return True
-        except (OSError, RuntimeError, ValueError):
-            continue
-    return False
-
-
 def get_video_cache_dir() -> Path:
     """Return the video cache directory, creating it if it doesn't exist."""
     VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -3056,21 +3026,8 @@ class BasePlatformAdapter(ABC):
                 # where Telegram's sendPhoto recompression destroys legibility.
                 force_document_attachments = "[[as_document]]" in response
 
-                # Extract MEDIA:<path> tags (from TTS tool) before other processing.
-                # Model-visible response text is untrusted, so only deliver local
-                # files that resolve inside Hermes-managed media cache directories.
-                extracted_media_files, response = self.extract_media(response)
-                media_files = []
-                for path, is_voice in extracted_media_files:
-                    if _is_trusted_media_path(path):
-                        media_files.append((path, is_voice))
-                blocked_media_count = len(extracted_media_files) - len(media_files)
-                if blocked_media_count:
-                    logger.warning(
-                        "[%s] Blocked %d untrusted MEDIA file path(s) from response",
-                        self.name,
-                        blocked_media_count,
-                    )
+                # Extract MEDIA:<path> tags (from TTS tool) before other processing
+                media_files, response = self.extract_media(response)
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
@@ -3086,18 +3043,6 @@ class BasePlatformAdapter(ABC):
                 local_files, text_content = self.extract_local_files(text_content)
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
-                    extracted_local_files = local_files
-                    local_files = [
-                        path for path in extracted_local_files
-                        if _is_trusted_media_path(path)
-                    ]
-                    blocked_local_count = len(extracted_local_files) - len(local_files)
-                    if blocked_local_count:
-                        logger.warning(
-                            "[%s] Blocked %d untrusted local file path(s) from response",
-                            self.name,
-                            blocked_local_count,
-                        )
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has

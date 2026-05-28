@@ -186,42 +186,6 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
     return None
 
 
-def _resolve_project_checkpoint(
-    store: Path,
-    working_dir: str,
-    commit_hash: str,
-) -> Tuple[bool, str, Optional[str]]:
-    """Resolve a checkpoint commit only if it belongs to this project ref."""
-    ref = _ref_name(_project_hash(working_dir))
-    ok_commit, resolved, err = _run_git(
-        ["rev-parse", "--verify", f"{commit_hash}^{{commit}}"],
-        store,
-        working_dir,
-        allowed_returncodes={128},
-    )
-    if not ok_commit or not resolved:
-        return False, "", err or f"Checkpoint '{commit_hash}' not found"
-
-    ok_ref, ref_commit, err = _run_git(
-        ["rev-parse", "--verify", f"{ref}^{{commit}}"],
-        store,
-        working_dir,
-        allowed_returncodes={128},
-    )
-    if not ok_ref or not ref_commit:
-        return False, "", err or f"Checkpoint '{commit_hash}' not found"
-
-    ok_reachable, _, err = _run_git(
-        ["merge-base", "--is-ancestor", resolved, ref_commit],
-        store,
-        working_dir,
-        allowed_returncodes={1},
-    )
-    if not ok_reachable:
-        return False, "", err or f"Checkpoint '{commit_hash}' not found"
-    return True, resolved, None
-
-
 # ---------------------------------------------------------------------------
 # Path / hash helpers
 # ---------------------------------------------------------------------------
@@ -756,7 +720,9 @@ class CheckpointManager:
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
-        ok, resolved_commit, err = _resolve_project_checkpoint(store, abs_dir, commit_hash)
+        ok, _, err = _run_git(
+            ["cat-file", "-t", commit_hash], store, abs_dir,
+        )
         if not ok:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found"}
 
@@ -768,11 +734,11 @@ class CheckpointManager:
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
 
         ok_stat, stat_out, _ = _run_git(
-            ["diff", "--stat", resolved_commit, "--cached"],
+            ["diff", "--stat", commit_hash, "--cached"],
             store, abs_dir, index_file=index_file,
         )
         ok_diff, diff_out, _ = _run_git(
-            ["diff", resolved_commit, "--cached", "--no-color"],
+            ["diff", commit_hash, "--cached", "--no-color"],
             store, abs_dir, index_file=index_file,
         )
 
@@ -810,20 +776,22 @@ class CheckpointManager:
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
-        ok, resolved_commit, err = _resolve_project_checkpoint(store, abs_dir, commit_hash)
+        ok, _, err = _run_git(
+            ["cat-file", "-t", commit_hash], store, abs_dir,
+        )
         if not ok:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found",
                     "debug": err or None}
 
         # Take a pre-rollback snapshot so you can undo the undo.
-        self._take(abs_dir, f"pre-rollback snapshot (restoring to {resolved_commit[:8]})")
+        self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
 
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
 
         restore_target = file_path if file_path else "."
         ok, stdout, err = _run_git(
-            ["checkout", resolved_commit, "--", restore_target],
+            ["checkout", commit_hash, "--", restore_target],
             store, abs_dir, timeout=_GIT_TIMEOUT * 2,
             index_file=index_file,
         )
@@ -833,13 +801,13 @@ class CheckpointManager:
                     "debug": err or None}
 
         ok2, reason_out, _ = _run_git(
-            ["log", "--format=%s", "-1", resolved_commit], store, abs_dir,
+            ["log", "--format=%s", "-1", commit_hash], store, abs_dir,
         )
         reason = reason_out if ok2 else "unknown"
 
         result = {
             "success": True,
-            "restored_to": resolved_commit[:8],
+            "restored_to": commit_hash[:8],
             "reason": reason,
             "directory": abs_dir,
         }

@@ -92,7 +92,6 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`automated-pr-reviewer`](/docs/user-guide/skills/bundled/github/github-automated-pr-reviewer) | Automated PR reviewer: scans for '@jules code review' comments and triggers code reviews. | `github/automated-pr-reviewer` |
 | [`codebase-inspection`](/docs/user-guide/skills/bundled/github/github-codebase-inspection) | Inspect codebases w/ pygount: LOC, languages, ratios. | `github/codebase-inspection` |
 | [`github-auth`](/docs/user-guide/skills/bundled/github/github-github-auth) | GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login. | `github/github-auth` |
 | [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review) | Review PRs: diffs, inline comments via gh or REST. | `github/github-code-review` |
@@ -135,12 +134,6 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | Skill | Description | Path |
 |-------|-------------|------|
 | [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian) | Read, search, create, and edit notes in the Obsidian vault. | `note-taking/obsidian` |
-
-## pr-review
-
-| Skill | Description | Path |
-|-------|-------------|------|
-| [`pr-review`](/docs/user-guide/skills/bundled/pr-review/pr-review-pr-review) | Review current branch against codebase rules before opening PR. | `pr-review` |
 
 ## productivity
 

@@ -82,7 +82,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video", "computer_use"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -107,24 +107,6 @@ def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
 
 
 def _implicit_default_off_toolsets(platform: str) -> Set[str]:
-    """Default-off toolsets that should be suppressed for ``platform``.
-
-    This only applies to configurable toolsets that are valid on the target
-    platform.
-    """
-    configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
-    # Dedicated Home Assistant sessions should keep the homeassistant toolset
-    # enabled by default on that platform.
-    platform_defaults = {"homeassistant"} if platform == "homeassistant" else set()
-    return {
-        ts_key
-        for ts_key in _DEFAULT_OFF_TOOLSETS
-        if (
-            ts_key in configurable_keys
-            and _toolset_allowed_for_platform(ts_key, platform)
-            and ts_key not in platform_defaults
-        )
-    }
     """Toolsets treated as opt-in when inferring enabled sets.
 
     ``homeassistant`` is the only default-off toolset that remains on by
@@ -170,6 +152,15 @@ def _get_plugin_toolset_keys() -> set:
         return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
     except Exception:
         return set()
+
+
+def _implicit_default_off_toolsets(platform: str) -> Set[str]:
+    """Return the default-off toolsets that remain implicitly disabled."""
+    default_off = set(_DEFAULT_OFF_TOOLSETS)
+    if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
+        default_off.remove(platform)
+    return default_off
+
 
 # Platform display config — derived from the canonical registry so every
 # module shares the same data.  Kept as dict-of-dicts for backward
@@ -1008,8 +999,6 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
 _LEGACY_PLATFORM_TOOLSET_ALIASES = {
     "qqbot": ("qq",),
 }
-
-
 def _get_platform_tools(
     config: dict,
     platform: str,

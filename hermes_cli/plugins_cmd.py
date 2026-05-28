@@ -677,46 +677,9 @@ def cmd_disable(name: str) -> None:
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
     console.print(
-        f"[yellow]⊘[/yellow] Plugin [bold]{name}[/bold] disabled. "
+        f"[yellow]\u2298[/yellow] Plugin [bold]{name}[/bold] disabled. "
         "Takes effect on next session."
     )
-
-
-def _resolve_plugin_config_name(name: str) -> Optional[str]:
-    """Return the stable config key for an installed or bundled plugin."""
-    user_dir = _plugins_dir()
-    if user_dir.is_dir():
-        candidate = user_dir / name
-        if candidate.is_dir() and (
-            (candidate / "plugin.yaml").exists()
-            or (candidate / "plugin.yml").exists()
-            or (candidate / "__init__.py").exists()
-        ):
-            return _plugin_config_key(user_dir, candidate)
-        for child in user_dir.iterdir():
-            if not child.is_dir():
-                continue
-            manifest = _read_manifest(child)
-            if manifest.get("name") == name:
-                return _plugin_config_key(user_dir, child)
-
-    from hermes_cli.plugins import get_bundled_plugins_dir
-
-    repo_plugins = get_bundled_plugins_dir()
-    if repo_plugins.is_dir():
-        candidate = repo_plugins / name
-        if candidate.is_dir() and (
-            (candidate / "plugin.yaml").exists()
-            or (candidate / "plugin.yml").exists()
-        ):
-            return _plugin_config_key(repo_plugins, candidate)
-        for child in repo_plugins.iterdir():
-            if not child.is_dir():
-                continue
-            manifest = _read_manifest(child)
-            if manifest.get("name") == name:
-                return _plugin_config_key(repo_plugins, child)
-    return None
 
 
 def _plugin_exists(name: str) -> bool:
@@ -945,7 +908,7 @@ def _configure_memory_provider() -> bool:
 
     for name, desc in providers:
         names.append(name)
-        label = f"{name} — {desc}" if desc else name
+        label = f"{name} \u2014 {desc}" if desc else name
         items.append(label)
         if name == current:
             selected = len(items) - 1
@@ -983,7 +946,7 @@ def _configure_context_engine() -> bool:
 
     for name, desc in engines:
         names.append(name)
-        label = f"{name} — {desc}" if desc else name
+        label = f"{name} \u2014 {desc}" if desc else name
         items.append(label)
         if name == current:
             selected = len(items) - 1
@@ -1028,7 +991,7 @@ def cmd_toggle() -> None:
     plugin_selected = set()
 
     for i, (name, _version, description, source, _d) in enumerate(entries):
-        label = f"{name} — {description}" if description else name
+        label = f"{name} \u2014 {description}" if description else name
         if source == "bundled":
             label = f"{label} [bundled]"
         plugin_names.append(name)
@@ -1106,7 +1069,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                 stdscr.addnstr(0, 0, "Plugins", max_x - 1, hattr)
                 stdscr.addnstr(
                     1, 0,
-                    "  ↑↓ navigate  SPACE toggle  ENTER configure/confirm  ESC done",
+                    "  \u2191\u2193 navigate  SPACE toggle  ENTER configure/confirm  ESC done",
                     max_x - 1, curses.A_DIM,
                 )
             except curses.error:
@@ -1149,8 +1112,8 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                 for i in range(n_plugins):
                     if y >= max_y - 1:
                         break
-                    check = "✓" if i in chosen else " "
-                    arrow = "→" if i == cursor else " "
+                    check = "\u2713" if i in chosen else " "
+                    arrow = "\u2192" if i == cursor else " "
                     line = f" {arrow} [{check}] {plugin_labels[i]}"
                     attr = curses.A_NORMAL
                     if i == cursor:
@@ -1182,8 +1145,8 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                     if y >= max_y - 1:
                         break
                     cat_idx = n_plugins + ci
-                    arrow = "→" if cat_idx == cursor else " "
-                    line = f" {arrow}   {cat_name:<24} ▸ {cat_current}"
+                    arrow = "\u2192" if cat_idx == cursor else " "
+                    line = f" {arrow}   {cat_name:<24} \u25b8 {cat_current}"
                     attr = curses.A_NORMAL
                     if cat_idx == cursor:
                         attr = curses.A_BOLD
@@ -1298,7 +1261,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
         _save_enabled_set(new_enabled)
         _save_disabled_set(new_disabled)
         console.print(
-            f"\n[green]✓[/green] General plugins: {len(new_enabled)} enabled, "
+            f"\n[green]\u2713[/green] General plugins: {len(new_enabled)} enabled, "
             f"{len(plugin_names) - len(new_enabled)} disabled."
         )
     elif n_plugins > 0:
@@ -1308,7 +1271,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
         new_memory = _get_current_memory_provider() or "built-in"
         new_context = _get_current_context_engine()
         console.print(
-            f"[green]✓[/green] Memory provider: [bold]{new_memory}[/bold]  "
+            f"[green]\u2713[/green] Memory provider: [bold]{new_memory}[/bold]  "
             f"Context engine: [bold]{new_context}[/bold]"
         )
 
@@ -1332,7 +1295,7 @@ def _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
 
         while True:
             for i, label in enumerate(plugin_labels):
-                marker = color("[✓]", Colors.GREEN) if i in chosen else "[ ]"
+                marker = color("[\u2713]", Colors.GREEN) if i in chosen else "[ ]"
                 print(f"  {marker} {i + 1:>2}. {label}")
             print()
             try:

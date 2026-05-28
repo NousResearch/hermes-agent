@@ -628,6 +628,38 @@ class S6ServiceManager:
         — so a container started with ``-e HERMES_HOME=/data/hermes``
         gets its logs under /data/hermes/logs/..., not the build-time
         default.
+
+        Output routing — the script is two action directives, applied
+        per line, in order:
+
+          1. ``1`` (forward to stdout) — propagates the line up the
+             s6-supervise pipeline to /init's stdout, which is the
+             container's stdout, which is ``docker logs``. Without
+             this, supervised stdout would be terminated inside
+             s6-log and never reach the container's log stream;
+             users would have to ``docker exec`` and ``tail`` the
+             file just to see startup banners. (Python's ``logging``
+             module defaults to stderr, which s6-supervise leaves
+             unfiltered — so warnings/errors already reach docker
+             logs. This change is specifically about the rich-console
+             banner output and other plain stdout writes.)
+          2. ``T <log_dir>`` — also write a timestamped copy to the
+             rotated log directory (``current`` + archived ``@*.s``
+             files). This is what ``hermes logs`` reads and what
+             persists across container restarts via the volume mount.
+
+        ``T`` is non-sticky: it only prefixes lines for the next
+        action directive. We deliberately put ``T`` between ``1``
+        and the log dir (not before ``1``) so:
+
+          * ``docker logs`` shows raw lines — Python's logging
+            formatter has its own timestamps, and ``docker logs
+            --timestamps`` adds a third layer when desired. No
+            double-stamping in the most common reading path.
+          * The persisted file gets s6-log's own ISO 8601 timestamp
+            so even output that lacked a Python-logger timestamp
+            (rich banners, third-party libs' raw prints) is
+            correlatable in ``current``.
         """
         import shlex
         prof = shlex.quote(profile)
@@ -638,7 +670,7 @@ class S6ServiceManager:
             f'log_dir="$HERMES_HOME/logs/gateways/{prof}"\n'
             f'mkdir -p "$log_dir"\n'
             f'chown -R hermes:hermes "$log_dir" 2>/dev/null || true\n'
-            f'exec s6-setuidgid hermes s6-log n10 s1000000 T "$log_dir"\n'
+            f'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T "$log_dir"\n'
         )
 
     # -- lifecycle ---------------------------------------------------------

@@ -5356,6 +5356,7 @@ def _discover_dashboard_plugins() -> list:
                 slots: List[str] = []
                 if isinstance(slots_src, list):
                     slots = [s for s in slots_src if isinstance(s, str) and s]
+                entry = data.get("entry", "dist/index.js")
                 plugins.append({
                     "name": name,
                     "label": data.get("label", name),
@@ -5364,17 +5365,40 @@ def _discover_dashboard_plugins() -> list:
                     "version": data.get("version", "0.0.0"),
                     "tab": tab_info,
                     "slots": slots,
-                    "entry": data.get("entry", "dist/index.js"),
+                    "entry": entry,
                     "css": data.get("css"),
                     "has_api": bool(data.get("api")),
                     "source": source,
                     "_dir": str(child / "dashboard"),
                     "_api_file": data.get("api"),
+                    "_entry_exists": (child / "dashboard" / entry).is_file(),
                 })
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
                 continue
     return plugins
+
+
+def _public_dashboard_plugins() -> list:
+    """Dashboard plugins safe for the frontend to load.
+
+    Some bundled manifests exist only to exercise backend plugin API routing in
+    tests. They can declare an entry file that is intentionally absent from the
+    checked-out tree. Keep those available to backend route mounting, but do
+    not advertise them to the browser where they would create a broken sidebar
+    tab and a failing ``/dashboard-plugins/...`` script request.
+    """
+    visible = []
+    for plugin in _get_dashboard_plugins():
+        if plugin.get("_entry_exists"):
+            visible.append(plugin)
+        else:
+            _log.debug(
+                "Skipping dashboard plugin %s because entry %s is missing",
+                plugin.get("name"),
+                plugin.get("entry"),
+            )
+    return visible
 
 
 # Cache discovered plugins per-process (refresh on explicit re-scan).
@@ -5394,7 +5418,7 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
 @app.get("/api/dashboard/plugins")
 async def get_dashboard_plugins():
     """Return discovered dashboard plugins (excludes user-hidden ones)."""
-    plugins = _get_dashboard_plugins()
+    plugins = _public_dashboard_plugins()
     # Read user's hidden plugins list from config.
     config = load_config()
     hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
@@ -5409,7 +5433,8 @@ async def get_dashboard_plugins():
 @app.get("/api/dashboard/plugins/rescan")
 async def rescan_dashboard_plugins():
     """Force re-scan of dashboard plugins."""
-    plugins = _get_dashboard_plugins(force_rescan=True)
+    _get_dashboard_plugins(force_rescan=True)
+    plugins = _public_dashboard_plugins()
     return {"ok": True, "count": len(plugins)}
 
 
@@ -5436,7 +5461,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
         _read_manifest as _read_plugin_manifest_at,
     )
 
-    dashboard_list = _get_dashboard_plugins()
+    dashboard_list = _public_dashboard_plugins()
     dash_by_name = {str(p["name"]): p for p in dashboard_list}
 
     disabled_set = _get_disabled_set()

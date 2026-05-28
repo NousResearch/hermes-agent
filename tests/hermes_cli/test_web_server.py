@@ -2228,6 +2228,8 @@ class TestDashboardPluginManifestExtensions:
             "slots": ["sidebar", "header-left"],
             "entry": "dist/index.js",
         })
+        (tmp_path / "plugins" / "skin-home" / "dashboard" / "dist").mkdir()
+        (tmp_path / "plugins" / "skin-home" / "dashboard" / "dist" / "index.js").write_text("")
         from hermes_cli import web_server
         # Bust the process-level cache so the test plugin is picked up.
         web_server._dashboard_plugins_cache = None
@@ -2245,6 +2247,8 @@ class TestDashboardPluginManifestExtensions:
             "tab": {"path": "/bad", "override": "no-leading-slash"},
             "entry": "dist/index.js",
         })
+        (tmp_path / "plugins" / "bad-override" / "dashboard" / "dist").mkdir()
+        (tmp_path / "plugins" / "bad-override" / "dashboard" / "dist" / "index.js").write_text("")
         from hermes_cli import web_server
         web_server._dashboard_plugins_cache = None
         plugins = web_server._get_dashboard_plugins(force_rescan=True)
@@ -2259,6 +2263,8 @@ class TestDashboardPluginManifestExtensions:
             "tab": {"path": "/no-slots"},
             "entry": "dist/index.js",
         })
+        (tmp_path / "plugins" / "no-slots" / "dashboard" / "dist").mkdir()
+        (tmp_path / "plugins" / "no-slots" / "dashboard" / "dist" / "index.js").write_text("")
         from hermes_cli import web_server
         web_server._dashboard_plugins_cache = None
         plugins = web_server._get_dashboard_plugins(force_rescan=True)
@@ -2276,6 +2282,8 @@ class TestDashboardPluginManifestExtensions:
             "slots": ["sidebar", "", 42, None, "header-right"],
             "entry": "dist/index.js",
         })
+        (tmp_path / "plugins" / "mixed-slots" / "dashboard" / "dist").mkdir()
+        (tmp_path / "plugins" / "mixed-slots" / "dashboard" / "dist" / "index.js").write_text("")
         from hermes_cli import web_server
         web_server._dashboard_plugins_cache = None
         plugins = web_server._get_dashboard_plugins(force_rescan=True)
@@ -2305,6 +2313,8 @@ class TestDashboardPluginManifestExtensions:
             ],
             "entry": "dist/index.js",
         })
+        (tmp_path / "plugins" / "page-slots" / "dashboard" / "dist").mkdir()
+        (tmp_path / "plugins" / "page-slots" / "dashboard" / "dist" / "index.js").write_text("")
         from hermes_cli import web_server
         web_server._dashboard_plugins_cache = None
         plugins = web_server._get_dashboard_plugins(force_rescan=True)
@@ -2320,6 +2330,25 @@ class TestDashboardPluginManifestExtensions:
             "cron:bottom",
             "chat:top",
         ]
+
+    def test_missing_entry_not_advertised_to_frontend(self, tmp_path, monkeypatch):
+        """Backend-only dashboard manifests should not create broken tabs."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "api-only", {
+            "name": "api-only",
+            "label": "API Only",
+            "tab": {"path": "/api-only"},
+            "entry": "dist/index.js",
+            "api": "plugin_api.py",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+
+        discovered = web_server._get_dashboard_plugins(force_rescan=True)
+        assert any(p["name"] == "api-only" for p in discovered)
+
+        public = web_server._public_dashboard_plugins()
+        assert all(p["name"] != "api-only" for p in public)
 
 
 # ---------------------------------------------------------------------------

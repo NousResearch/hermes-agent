@@ -102,6 +102,69 @@ class TestGeneratedSystemdUnits:
         assert "WantedBy=multi-user.target" in unit
 
 
+class TestGatewayResourceLimits:
+    """Each gateway unit must declare per-unit + slice-level memory caps so a
+    single runaway gateway, or a cluster of profiles, can't OOM the host
+    (regression: 2026-05-28 outage on synth-kayess i-0025ebc4f220db762).
+    """
+
+    def test_user_unit_joins_shared_slice(self):
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert f"Slice={gateway_cli.SLICE_NAME}" in unit
+
+    def test_user_unit_declares_per_process_memory_caps(self):
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert "MemoryAccounting=true" in unit
+        assert f"MemoryHigh={gateway_cli.GATEWAY_UNIT_MEMORY_HIGH}" in unit
+        assert f"MemoryMax={gateway_cli.GATEWAY_UNIT_MEMORY_MAX}" in unit
+
+    def test_system_unit_joins_shared_slice_and_declares_caps(self):
+        unit = gateway_cli.generate_systemd_unit(system=True)
+        assert f"Slice={gateway_cli.SLICE_NAME}" in unit
+        assert "MemoryAccounting=true" in unit
+        assert f"MemoryHigh={gateway_cli.GATEWAY_UNIT_MEMORY_HIGH}" in unit
+        assert f"MemoryMax={gateway_cli.GATEWAY_UNIT_MEMORY_MAX}" in unit
+
+    def test_slice_unit_declares_aggregate_budget(self):
+        slice_text = gateway_cli.generate_slice_unit()
+        assert "[Slice]" in slice_text
+        assert "MemoryAccounting=true" in slice_text
+        assert f"MemoryMax={gateway_cli.GATEWAY_SLICE_MEMORY_MAX}" in slice_text
+        assert f"CPUWeight={gateway_cli.GATEWAY_SLICE_CPU_WEIGHT}" in slice_text
+        assert f"TasksMax={gateway_cli.GATEWAY_SLICE_TASKS_MAX}" in slice_text
+
+    def test_install_gateway_slice_writes_file_when_missing(self, tmp_path, monkeypatch):
+        slice_path = tmp_path / gateway_cli.SLICE_NAME
+        monkeypatch.setattr(gateway_cli, "get_slice_unit_path", lambda system=False: slice_path)
+
+        assert gateway_cli.install_gateway_slice() is True
+        assert slice_path.exists()
+        assert "[Slice]" in slice_path.read_text(encoding="utf-8")
+
+    def test_install_gateway_slice_is_idempotent(self, tmp_path, monkeypatch):
+        slice_path = tmp_path / gateway_cli.SLICE_NAME
+        monkeypatch.setattr(gateway_cli, "get_slice_unit_path", lambda system=False: slice_path)
+
+        gateway_cli.install_gateway_slice()
+        assert gateway_cli.install_gateway_slice() is False
+
+    def test_systemd_install_writes_slice_before_unit(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        slice_path = tmp_path / gateway_cli.SLICE_NAME
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "get_slice_unit_path", lambda system=False: slice_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "fake unit\n")
+        monkeypatch.setattr(gateway_cli.subprocess, "run", lambda cmd, check=True, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""))
+        monkeypatch.setattr(gateway_cli, "_ensure_linger_enabled", lambda: None)
+        monkeypatch.setattr(gateway_cli, "print_systemd_scope_conflict_warning", lambda: None)
+
+        gateway_cli.systemd_install()
+
+        assert slice_path.exists(), "slice unit must be written by systemd_install"
+        assert unit_path.exists(), "service unit must still be written"
+
+
 class TestGatewayStopCleanup:
     def test_stop_sweeps_manual_gateway_processes_after_service_stop(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"

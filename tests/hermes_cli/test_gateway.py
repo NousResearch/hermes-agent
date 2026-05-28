@@ -86,8 +86,10 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
 
 def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "etc" / "systemd" / "system" / "hermes-gateway.service"
+    slice_path = tmp_path / "etc" / "systemd" / "system" / gateway.SLICE_NAME
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    monkeypatch.setattr(gateway, "get_slice_unit_path", lambda system=False: slice_path)
     monkeypatch.setattr(
         gateway,
         "generate_systemd_unit",

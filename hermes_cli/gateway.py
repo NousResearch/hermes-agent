@@ -126,6 +126,23 @@ def is_windows() -> bool:
 _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
+# Shared cgroup slice that bounds total resources used by all gateway units
+# (per-profile + default). One leaked or runaway gateway can't take down the
+# host because the slice's MemoryMax kicks in before the kernel OOM killer.
+SLICE_NAME = "hermes-gateways.slice"
+SLICE_DESCRIPTION = "Aggregate resource budget for Hermes gateway services"
+
+# Per-unit caps. Idle gateway ~30 MB RSS, active peaks observed at ~80 MB,
+# so 256M / 200M gives ~3x headroom over normal use and bounds a single leak.
+GATEWAY_UNIT_MEMORY_HIGH = "200M"
+GATEWAY_UNIT_MEMORY_MAX = "256M"
+
+# Slice aggregate caps. Sized to leave room on an 8 GB host for caddy + a
+# Node chat backend + hermes-admin + OS, even if many profiles are installed.
+GATEWAY_SLICE_MEMORY_MAX = "1500M"
+GATEWAY_SLICE_CPU_WEIGHT = "50"
+GATEWAY_SLICE_TASKS_MAX = "500"
+
 
 def _profile_suffix() -> str:
     """Derive a service-name suffix from the current HERMES_HOME.
@@ -175,6 +192,24 @@ def get_systemd_unit_path(system: bool = False) -> Path:
     if system:
         return Path("/etc/systemd/system") / f"{name}.service"
     return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"
+
+
+def get_slice_unit_path(system: bool = False) -> Path:
+    if system:
+        return Path("/etc/systemd/system") / SLICE_NAME
+    return Path.home() / ".config" / "systemd" / "user" / SLICE_NAME
+
+
+def generate_slice_unit() -> str:
+    return f"""[Unit]
+Description={SLICE_DESCRIPTION}
+
+[Slice]
+MemoryAccounting=true
+MemoryMax={GATEWAY_SLICE_MEMORY_MAX}
+CPUWeight={GATEWAY_SLICE_CPU_WEIGHT}
+TasksMax={GATEWAY_SLICE_TASKS_MAX}
+"""
 
 
 def _ensure_user_systemd_env() -> None:
@@ -496,6 +531,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+Slice={SLICE_NAME}
 User={username}
 Group={group_name}
 ExecStart={python_path} -m hermes_cli.main gateway run --replace
@@ -511,6 +547,9 @@ RestartSec=30
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=60
+MemoryAccounting=true
+MemoryHigh={GATEWAY_UNIT_MEMORY_HIGH}
+MemoryMax={GATEWAY_UNIT_MEMORY_MAX}
 StandardOutput=journal
 StandardError=journal
 
@@ -529,6 +568,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+Slice={SLICE_NAME}
 ExecStart={python_path} -m hermes_cli.main gateway run --replace
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
@@ -539,6 +579,9 @@ RestartSec=30
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=60
+MemoryAccounting=true
+MemoryHigh={GATEWAY_UNIT_MEMORY_HIGH}
+MemoryMax={GATEWAY_UNIT_MEMORY_MAX}
 StandardOutput=journal
 StandardError=journal
 
@@ -568,6 +611,9 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     if not unit_path.exists() or systemd_unit_is_current(system=system):
         return False
 
+    # The generated unit references SLICE_NAME, so the slice file must exist
+    # before daemon-reload, otherwise systemd will fail to load the unit.
+    install_gateway_slice(system=system)
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     unit_path.write_text(generate_systemd_unit(system=system, run_as_user=expected_user), encoding="utf-8")
     subprocess.run(_systemctl_cmd(system) + ["daemon-reload"], check=True)
@@ -640,6 +686,20 @@ def _select_systemd_scope(system: bool = False) -> bool:
     return get_systemd_unit_path(system=True).exists() and not get_systemd_unit_path(system=False).exists()
 
 
+def install_gateway_slice(system: bool = False) -> bool:
+    """Write/refresh the shared gateway slice unit. Idempotent.
+
+    Returns True when the file was written or refreshed, False when already current.
+    """
+    slice_path = get_slice_unit_path(system=system)
+    expected = generate_slice_unit()
+    if slice_path.exists() and _normalize_service_definition(slice_path.read_text(encoding="utf-8")) == _normalize_service_definition(expected):
+        return False
+    slice_path.parent.mkdir(parents=True, exist_ok=True)
+    slice_path.write_text(expected, encoding="utf-8")
+    return True
+
+
 def systemd_install(force: bool = False, system: bool = False, run_as_user: str | None = None):
     if system:
         _require_root_for_system_service("install")
@@ -650,6 +710,7 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
     if unit_path.exists() and not force:
         if not systemd_unit_is_current(system=system):
             print(f"↻ Repairing outdated {_service_scope_label(system)} systemd service at: {unit_path}")
+            install_gateway_slice(system=system)
             refresh_systemd_unit_if_needed(system=system)
             subprocess.run(_systemctl_cmd(system) + ["enable", get_service_name()], check=True)
             print(f"✓ {_service_scope_label(system).capitalize()} service definition updated")
@@ -659,6 +720,7 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
         return
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
+    install_gateway_slice(system=system)
     print(f"Installing {_service_scope_label(system)} systemd service to: {unit_path}")
     unit_path.write_text(generate_systemd_unit(system=system, run_as_user=run_as_user), encoding="utf-8")
 

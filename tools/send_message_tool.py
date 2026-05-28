@@ -1148,8 +1148,32 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         else:
             att_batches = [[]]
 
+        def _signal_text_params(raw_message: str) -> dict:
+            """Return message params with native Signal formatting applied.
+
+            The gateway adapter converts markdown markers (e.g. *italic*) into
+            Signal textStyle/bodyRange metadata. `hermes send` uses this
+            standalone helper path instead of a live adapter, so it must apply
+            the same conversion here; otherwise Signal shows literal asterisks,
+            which is frightfully gauche even before breakfast.
+            """
+            try:
+                from gateway.platforms.signal import SignalAdapter
+                plain_text, text_styles = SignalAdapter._markdown_to_signal(raw_message)
+            except Exception:
+                logger.debug("Signal markdown formatting conversion failed", exc_info=True)
+                return {"message": raw_message}
+
+            params = {"message": plain_text}
+            if text_styles:
+                if len(text_styles) == 1:
+                    params["textStyle"] = text_styles[0]
+                else:
+                    params["textStyles"] = text_styles
+            return params
+
         async def _post(batch_attachments, batch_message):
-            params = {"account": account, "message": batch_message}
+            params = {"account": account, **_signal_text_params(batch_message)}
             if chat_id.startswith("group:"):
                 params["groupId"] = chat_id[6:]
             else:

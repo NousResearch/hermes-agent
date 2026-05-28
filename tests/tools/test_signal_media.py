@@ -63,6 +63,42 @@ class TestSendSignalMediaFiles:
         assert result["platform"] == "signal"
         assert result["chat_id"] == "+155****9999"
 
+    def test_send_signal_markdown_italic_uses_native_text_style(self, monkeypatch):
+        """Standalone hermes send must convert markdown to Signal textStyle."""
+        from tools.send_message_tool import _send_signal
+
+        captured = {}
+
+        class MockResp:
+            def json(self):
+                return {"timestamp": 1234567890}
+            def raise_for_status(self):
+                pass
+
+        class MockClient:
+            def __init__(self, timeout=None):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                pass
+            async def post(self, *args, **kwargs):
+                captured["json"] = kwargs["json"]
+                return MockResp()
+
+        httpx_mock = _make_httpx_mock()
+        setattr(httpx_mock, "AsyncClient", MockClient)
+        monkeypatch.setitem(sys.modules, "httpx", httpx_mock)
+
+        extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}
+        result = asyncio.run(_send_signal(extra, "group:abc123==", "*Hermes meint dazu: Guten Morgen.*"))
+
+        assert result["success"] is True
+        params = captured["json"]["params"]
+        assert params["message"] == "Hermes meint dazu: Guten Morgen."
+        assert params["textStyle"] == "0:32:ITALIC"
+        assert params["groupId"] == "abc123=="
+
     def test_send_signal_with_attachments(self, tmp_path):
         """Signal messages with media_files include attachments in JSON-RPC."""
         from tools.send_message_tool import _send_signal

@@ -443,7 +443,6 @@
 
 ## 🪟 Native Windows (Beta Continued)
 
-- Thin desktop installer + first-launch `install.ps1` bootstrap. ([#27822](https://github.com/NousResearch/hermes-agent/pull/27822))
 - Complete Windows bootstrap — `dep_ensure` + `install.ps1` + detection. (@alt-glitch) ([#27845](https://github.com/NousResearch/hermes-agent/pull/27845))
 - `install.ps1`: strip BOM, `-Commit`/`-Tag` pin params, harden git ops. (@jquesnelle) ([#28169](https://github.com/NousResearch/hermes-agent/pull/28169))
 - Consolidate ACP browser bootstrap into `install.{sh,ps1}`. (@alt-glitch) ([#27851](https://github.com/NousResearch/hermes-agent/pull/27851))
@@ -453,12 +452,9 @@
 
 ---
 
-## 🖼️ Hermes Desktop GUI
+## 🖥️ Web Dashboard
 
-- `hermes gui` launcher — install + build + launch packaged Electron app. (@OutThisLife) ([#30165](https://github.com/NousResearch/hermes-agent/pull/30165))
-- Desktop UI lift. ([#27227](https://github.com/NousResearch/hermes-agent/pull/27227))
-- `nix` package `.#desktop`. (@ethernet8023) ([#28964](https://github.com/NousResearch/hermes-agent/pull/28964))
-- Hardened Slack socket recovery + Windows desktop restart dedupe. ([#28873](https://github.com/NousResearch/hermes-agent/pull/28873))
+- Hardened Slack socket recovery + Windows restart dedupe. ([#28873](https://github.com/NousResearch/hermes-agent/pull/28873))
 - Web dashboard: migrate checkboxes to `@nous-research/ui` + design-system polish. (@austinpickett) ([#28814](https://github.com/NousResearch/hermes-agent/pull/28814))
 - Web dashboard: collapsible sidebar. (@austinpickett) ([#33421](https://github.com/NousResearch/hermes-agent/pull/33421))
 - Dashboard typography & contrast pass. (salvage of [#28832](https://github.com/NousResearch/hermes-agent/pull/28832)) ([#30714](https://github.com/NousResearch/hermes-agent/pull/30714))
@@ -579,11 +575,11 @@
 ### Notable salvages & cherry-picks
 
 - **@benbarclay** — s6-overlay container supervision (29 commits salvaged), Node 22 LTS upgrade, build-essential cleanup, `gateway run` auto-redirect in s6, tee supervised stdout to docker logs, `hermes update` Docker guidance, build-time SHA stamping
-- **@OutThisLife** — `hermes gui` desktop launcher, `mouse_tracking` DEC mode presets
+- **@OutThisLife** — `mouse_tracking` DEC mode presets
 - **@jquesnelle** — Windows installer hardening, `--branch` flag for `hermes update`, install.ps1 BOM strip / commit-pin
 - **@alt-glitch** — Windows `dep_ensure` bootstrap, Nix package variants (`.#messaging`, `.#full`), install-method stamping, ACP browser bootstrap consolidation
 - **@austinpickett** — `/update` slash command, dashboard checkboxes → `@nous-research/ui`, mobile dashboard polish, collapsible sidebar
-- **@ethernet8023** — Nix `.#desktop` packaging, CI test slicing across GH Actions jobs, TUI clipboard copy fix
+- **@ethernet8023** — CI test slicing across GH Actions jobs, TUI clipboard copy fix
 - **@kshitijk4poor** — doctor section banner + fail-and-issue helpers extraction, post-tag salvage cluster (curator-fallout, kanban SQLite hardening, install world-readable uv dirs, xAI bare-code paste)
 - **@rewbs** — Nous JWT inference switch + refresh-token replay fix
 - **@Codename-11** + **@Schwartz10** — session control API (REST + SSE + multimodal followup)

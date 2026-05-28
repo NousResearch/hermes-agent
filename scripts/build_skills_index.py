@@ -80,30 +80,27 @@ def crawl_source(source, source_name: str, limit: int) -> list:
 
 
 def crawl_skills_sh(source: SkillsShSource) -> list:
-    """Crawl skills.sh using popular queries for broad coverage."""
-    print("  Crawling skills.sh (popular queries)...", flush=True)
+    """Crawl skills.sh via its sitemap to enumerate the full catalog (~20k entries).
+
+    Previously walked a hardcoded list of ~28 popular keywords (each capped at
+    50 results) which yielded ~850 unique skills — about 4% of the real catalog.
+    The SkillsShSource.search("") path now hits the sitemap directly, returning
+    the full 20k-entry catalog deduplicated by canonical identifier.
+    """
+    print("  Crawling skills.sh (sitemap)...", flush=True)
     start = time.time()
 
-    queries = [
-        "",  # featured
-        "react", "python", "web", "api", "database", "docker",
-        "testing", "scraping", "design", "typescript", "git",
-        "aws", "security", "data", "ml", "ai", "devops",
-        "frontend", "backend", "mobile", "cli", "documentation",
-        "kubernetes", "terraform", "rust", "go", "java",
-    ]
+    try:
+        results = source.search("", limit=0)  # 0 = no cap, return the whole catalog
+    except Exception as e:
+        print(f"    Warning: skills.sh sitemap walk failed: {e}", file=sys.stderr)
+        results = []
 
     all_skills: dict[str, dict] = {}
-    for query in queries:
-        try:
-            results = source.search(query, limit=50)
-            for meta in results:
-                entry = _meta_to_dict(meta)
-                if entry["identifier"] not in all_skills:
-                    all_skills[entry["identifier"]] = entry
-        except Exception as e:
-            print(f"    Warning: skills.sh search '{query}' failed: {e}",
-                  file=sys.stderr)
+    for meta in results:
+        entry = _meta_to_dict(meta)
+        if entry["identifier"] not in all_skills:
+            all_skills[entry["identifier"]] = entry
 
     elapsed = time.time() - start
     print(f"  skills.sh: {len(all_skills)} unique skills ({elapsed:.1f}s)",
@@ -345,7 +342,11 @@ def main():
     # or rate limiting kicked in.  Failing here forces a human look before
     # the broken index reaches the live docs.
     EXPECTED_FLOORS = {
-        "skills.sh": 100,
+        # skills.sh now uses the sitemap walker (~20k catalog as of May 2026).
+        # Anything under 10k means the sitemap shape changed or fetches failed
+        # — better to fail loudly than ship a regression to the 858-skill
+        # popular-queries era.
+        "skills.sh": 10000,
         "lobehub": 100,
         # ClawHub had 49,698+ skills as of May 2026 — anything under 20k means
         # pagination broke or the API surface changed.  Fail loudly rather

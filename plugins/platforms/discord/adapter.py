@@ -4818,7 +4818,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 and not in_bot_thread
             )
             _backfill_enabled = self._discord_history_backfill()
-            if _needed_mention and _backfill_enabled:
+            if _backfill_enabled and (_needed_mention or is_thread):
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
                 )

@@ -1090,7 +1090,8 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append("STT provider: OK (OpenAI)")
     else:
         details_parts.append(
-            "STT provider: MISSING (pip install faster-whisper, "
+            "STT provider: MISSING (uv pip install faster-whisper — "
+            "`pip install faster-whisper` also works if pip is on PATH, "
             "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"
         )
 

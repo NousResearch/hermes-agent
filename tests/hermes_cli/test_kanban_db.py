@@ -3805,3 +3805,66 @@ def test_dispatch_once_still_reaps_via_extracted_fn(kanban_home):
                 pids = kb.reap_worker_zombies()
 
     assert pids == [99999]
+
+
+
+# ---------------------------------------------------------------------------
+# connect_closing(): context manager that actually closes the FD
+# Regression coverage for #33159 (kanban.db FD leak — gateway crashes after
+# ~4 days). sqlite3.Connection's built-in __exit__ commits/rollbacks but
+# does NOT close, so `with kb.connect() as conn:` leaks the FD in
+# long-lived processes (gateway run_slash, dashboard decompose handler).
+# `connect_closing()` is the leak-safe replacement.
+# ---------------------------------------------------------------------------
+
+
+def test_connect_closing_closes_connection_on_exit(tmp_path):
+    """The new context manager MUST actually close the underlying FD."""
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect_closing(db_path=db_path) as conn:
+        conn.execute("SELECT 1").fetchone()
+    # After exit, the connection MUST be closed — subsequent execute
+    # should raise ProgrammingError.
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
+
+
+def test_connect_closing_closes_on_exception(tmp_path):
+    """Connection closed even when the body raises."""
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    captured = []
+    with pytest.raises(RuntimeError, match="boom"):
+        with kb.connect_closing(db_path=db_path) as conn:
+            captured.append(conn)
+            raise RuntimeError("boom")
+    with pytest.raises(sqlite3.ProgrammingError):
+        captured[0].execute("SELECT 1")
+
+
+def test_connect_closing_yields_usable_connection(tmp_path):
+    """Smoke test: schema is initialized and basic ops work."""
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect_closing(db_path=db_path) as conn:
+        tid = kb.create_task(conn, title="closing-cm test")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.title == "closing-cm test"
+
+
+def test_bare_connect_does_not_close_on_context_exit(tmp_path):
+    """Document the leak that connect_closing exists to prevent.
+
+    sqlite3.Connection's __exit__ commits/rollbacks but doesn't close.
+    This is the upstream behaviour we cannot change; the regression
+    guard is to make sure connect_closing() does the right thing.
+    """
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect(db_path=db_path) as conn:
+        pass
+    # Still usable after with-block exit (the leak).
+    conn.execute("SELECT 1").fetchone()
+    conn.close()  # explicit close to avoid leaking THIS test

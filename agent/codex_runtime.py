@@ -431,102 +431,122 @@ def _consume_codex_event_stream(
     terminal_error: Any = None
     saw_terminal = False
 
-    for event in event_iter:
-        if on_event is not None:
-            try:
-                on_event(event)
-            except (TimeoutError, InterruptedError):
-                # Control-flow signals from watchdog/cancellation hooks must
-                # propagate, not get swallowed as "debug noise".
-                raise
-            except Exception:
-                # Genuine bugs in third-party debug/log hooks shouldn't break
-                # stream consumption.
-                logger.debug("Codex stream on_event hook raised", exc_info=True)
-        if interrupt_check is not None and interrupt_check():
-            break
-
-        event_type = _event_field(event, "type", "")
-        if not isinstance(event_type, str):
-            event_type = ""
-
-        # ``error`` SSE frames carry the provider's real failure reason
-        # (subscription / quota / model-not-available / rejected-reasoning-replay)
-        # but never appear in the terminal set.  Surface them as a structured
-        # exception so the credential pool + error classifier see the body.
-        if event_type == "error":
-            _raise_stream_error(event)
-
-        if "output_text.delta" in event_type or event_type == "response.output_text.delta":
-            delta_text = _event_field(event, "delta", "")
-            if delta_text:
-                collected_text_deltas.append(delta_text)
-                if not has_tool_calls:
-                    if not first_delta_fired:
-                        first_delta_fired = True
-                        if on_first_delta is not None:
-                            try:
-                                on_first_delta()
-                            except Exception:
-                                logger.debug("Codex stream on_first_delta raised", exc_info=True)
-                    if on_text_delta is not None:
-                        try:
-                            on_text_delta(delta_text)
-                        except Exception:
-                            logger.debug("Codex stream on_text_delta raised", exc_info=True)
-            continue
-
-        if "function_call" in event_type:
-            has_tool_calls = True
-            # fall through — function_call items still get added on output_item.done
-
-        if "reasoning" in event_type and "delta" in event_type:
-            reasoning_text = _event_field(event, "delta", "")
-            if reasoning_text and on_reasoning_delta is not None:
+    try:
+        for event in event_iter:
+            if on_event is not None:
                 try:
-                    on_reasoning_delta(reasoning_text)
+                    on_event(event)
+                except (TimeoutError, InterruptedError):
+                    # Control-flow signals from watchdog/cancellation hooks must
+                    # propagate, not get swallowed as "debug noise".
+                    raise
                 except Exception:
-                    logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
-            continue
+                    # Genuine bugs in third-party debug/log hooks shouldn't break
+                    # stream consumption.
+                    logger.debug("Codex stream on_event hook raised", exc_info=True)
+            if interrupt_check is not None and interrupt_check():
+                break
 
-        if event_type == "response.output_item.done":
-            done_item = _event_field(event, "item")
-            if done_item is not None:
-                collected_output_items.append(done_item)
-            continue
+            event_type = _event_field(event, "type", "")
+            if not isinstance(event_type, str):
+                event_type = ""
 
-        if event_type in _TERMINAL_EVENT_TYPES:
-            saw_terminal = True
-            resp_obj = _event_field(event, "response")
-            if resp_obj is not None:
-                terminal_usage = getattr(resp_obj, "usage", None)
-                if terminal_usage is None and isinstance(resp_obj, dict):
-                    terminal_usage = resp_obj.get("usage")
-                rid = getattr(resp_obj, "id", None)
-                if rid is None and isinstance(resp_obj, dict):
-                    rid = resp_obj.get("id")
-                terminal_response_id = rid
-                rstatus = getattr(resp_obj, "status", None)
-                if rstatus is None and isinstance(resp_obj, dict):
-                    rstatus = resp_obj.get("status")
-                if isinstance(rstatus, str):
-                    terminal_status = rstatus
-                if event_type == "response.incomplete":
-                    terminal_incomplete_details = getattr(resp_obj, "incomplete_details", None)
-                    if terminal_incomplete_details is None and isinstance(resp_obj, dict):
-                        terminal_incomplete_details = resp_obj.get("incomplete_details")
-                if event_type == "response.failed":
-                    terminal_error = getattr(resp_obj, "error", None)
-                    if terminal_error is None and isinstance(resp_obj, dict):
-                        terminal_error = resp_obj.get("error")
-            if event_type == "response.completed":
-                terminal_status = terminal_status or "completed"
-            elif event_type == "response.incomplete":
-                terminal_status = terminal_status or "incomplete"
-            elif event_type == "response.failed":
-                terminal_status = terminal_status or "failed"
-            # Stop on terminal event.
-            break
+            # ``error`` SSE frames carry the provider's real failure reason
+            # (subscription / quota / model-not-available / rejected-reasoning-replay)
+            # but never appear in the terminal set.  Surface them as a structured
+            # exception so the credential pool + error classifier see the body.
+            if event_type == "error":
+                _raise_stream_error(event)
+
+            if "output_text.delta" in event_type or event_type == "response.output_text.delta":
+                delta_text = _event_field(event, "delta", "")
+                if delta_text:
+                    collected_text_deltas.append(delta_text)
+                    if not has_tool_calls:
+                        if not first_delta_fired:
+                            first_delta_fired = True
+                            if on_first_delta is not None:
+                                try:
+                                    on_first_delta()
+                                except Exception:
+                                    logger.debug("Codex stream on_first_delta raised", exc_info=True)
+                        if on_text_delta is not None:
+                            try:
+                                on_text_delta(delta_text)
+                            except Exception:
+                                logger.debug("Codex stream on_text_delta raised", exc_info=True)
+                continue
+
+            if "function_call" in event_type:
+                has_tool_calls = True
+                # fall through — function_call items still get added on output_item.done
+
+            if "reasoning" in event_type and "delta" in event_type:
+                reasoning_text = _event_field(event, "delta", "")
+                if reasoning_text and on_reasoning_delta is not None:
+                    try:
+                        on_reasoning_delta(reasoning_text)
+                    except Exception:
+                        logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+                continue
+
+            if event_type == "response.output_item.done":
+                done_item = _event_field(event, "item")
+                if done_item is not None:
+                    collected_output_items.append(done_item)
+                continue
+
+            if event_type in _TERMINAL_EVENT_TYPES:
+                saw_terminal = True
+                resp_obj = _event_field(event, "response")
+                if resp_obj is not None:
+                    terminal_usage = getattr(resp_obj, "usage", None)
+                    if terminal_usage is None and isinstance(resp_obj, dict):
+                        terminal_usage = resp_obj.get("usage")
+                    rid = getattr(resp_obj, "id", None)
+                    if rid is None and isinstance(resp_obj, dict):
+                        rid = resp_obj.get("id")
+                    terminal_response_id = rid
+                    rstatus = getattr(resp_obj, "status", None)
+                    if rstatus is None and isinstance(resp_obj, dict):
+                        rstatus = resp_obj.get("status")
+                    if isinstance(rstatus, str):
+                        terminal_status = rstatus
+                    if event_type == "response.incomplete":
+                        terminal_incomplete_details = getattr(resp_obj, "incomplete_details", None)
+                        if terminal_incomplete_details is None and isinstance(resp_obj, dict):
+                            terminal_incomplete_details = resp_obj.get("incomplete_details")
+                    if event_type == "response.failed":
+                        terminal_error = getattr(resp_obj, "error", None)
+                        if terminal_error is None and isinstance(resp_obj, dict):
+                            terminal_error = resp_obj.get("error")
+                if event_type == "response.completed":
+                    terminal_status = terminal_status or "completed"
+                elif event_type == "response.incomplete":
+                    terminal_status = terminal_status or "incomplete"
+                elif event_type == "response.failed":
+                    terminal_status = terminal_status or "failed"
+                # Stop on terminal event.
+                break
+    except TypeError as exc:
+        # The OpenAI SDK can still attempt typed terminal reconstruction while
+        # iterating a stream returned by responses.create(stream=True).  If the
+        # Codex backend sends response.completed.response.output=null, the SDK
+        # raises ``TypeError: 'NoneType' object is not iterable`` before Hermes
+        # sees the terminal event.  Recover only when we already collected
+        # usable content from earlier output_item.done/text-delta events.
+        if (
+            "NoneType" in str(exc)
+            and "not iterable" in str(exc)
+            and (collected_output_items or collected_text_deltas)
+        ):
+            logger.info(
+                "Codex stream iterator hit null terminal output after collecting "
+                "%d output item(s) and %d text delta(s); returning collected content.",
+                len(collected_output_items), len(collected_text_deltas),
+            )
+        else:
+            raise
 
     # Build the final output list.  Prefer items observed via output_item.done;
     # if none arrived but we streamed plain text deltas (no tool calls), synthesize

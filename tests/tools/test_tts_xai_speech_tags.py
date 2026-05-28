@@ -25,6 +25,53 @@ def test_apply_xai_auto_speech_tags_preserves_all_documented_xai_tags():
     assert _apply_xai_auto_speech_tags(text) == text
 
 
+def test_apply_xai_auto_speech_tags_multi_paragraph_emits_single_pause():
+    """Regression for #29417 — multi-paragraph input doubled the pause.
+
+    Pre-fix the paragraph substitution injected ``[pause]`` between
+    paragraphs, then the unconditional first-sentence substitution
+    added another one right after, producing ``[pause] [pause]`` in
+    the audio.  The fix re-checks the tag-detection guard after the
+    paragraph pass.
+
+    Requires a first sentence of 12+ chars to hit the
+    ``_XAI_FIRST_SENTENCE_RE`` length floor — the trivial
+    ``"Hello.\\n\\nWorld."`` case dodged the bug by accident.
+    """
+    text = "Welcome to the demo of our new product line.\n\nIt has many features."
+    result = _apply_xai_auto_speech_tags(text)
+
+    # Exactly one [pause] between the paragraphs, not two.
+    assert result.count("[pause]") == 1, (
+        f"expected single [pause], got {result.count('[pause]')} in {result!r}"
+    )
+    assert result == (
+        "Welcome to the demo of our new product line. [pause] It has many features."
+    )
+
+
+def test_apply_xai_auto_speech_tags_single_paragraph_still_gets_first_sentence_pause():
+    """Sanity guard — the fix only suppresses the first-sentence pass when
+    a paragraph pass already injected ``[pause]``.  Single-paragraph input
+    must still get its first-sentence pause.
+    """
+    text = "Welcome to the demo of our new product line. It has many features."
+    assert _apply_xai_auto_speech_tags(text) == (
+        "Welcome to the demo of our new product line. [pause] It has many features."
+    )
+
+
+def test_apply_xai_auto_speech_tags_single_newline_still_gets_first_sentence_pause():
+    """A single newline isn't a paragraph break — no ``[pause]`` injected by
+    the paragraph pass, so the first-sentence pause MUST still fire.
+    Guards against the fix being too greedy.
+    """
+    text = "Welcome to the demo of our new product line.\nIt has many features."
+    assert _apply_xai_auto_speech_tags(text) == (
+        "Welcome to the demo of our new product line. [pause] It has many features."
+    )
+
+
 def test_generate_xai_tts_sends_auto_speech_tags_when_enabled(tmp_path, monkeypatch):
     captured = {}
 

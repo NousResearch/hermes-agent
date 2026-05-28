@@ -1,4 +1,4 @@
-import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
+import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
@@ -143,11 +143,32 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
   return t.color.statusGood
 }
 
+function statusSessionCountLabel(count: number) {
+  return `${count} ${count === 1 ? 'session' : 'sessions'}`
+}
+
 function ctxBar(pct: number | undefined, w = 10) {
   const p = Math.max(0, Math.min(100, pct ?? 0))
   const filled = Math.round((p / 100) * w)
 
   return '█'.repeat(filled) + '░'.repeat(w - filled)
+}
+
+export function statusRuleWidths(cols: number, cwdLabel: string) {
+  const width = Math.max(1, Math.floor(cols || 1))
+  const desiredSeparatorWidth = width >= 24 ? 3 : 1
+  const minLeftWidth = width >= 24 ? 8 : 1
+  const maxRightWidth = Math.max(0, width - desiredSeparatorWidth - minLeftWidth)
+
+  if (!cwdLabel || maxRightWidth <= 0) {
+    return { leftWidth: width, rightWidth: 0, separatorWidth: 0 }
+  }
+
+  const rightWidth = Math.max(0, Math.min(stringWidth(cwdLabel), maxRightWidth))
+  const separatorWidth = rightWidth > 0 ? desiredSeparatorWidth : 0
+  const leftWidth = Math.max(1, width - separatorWidth - rightWidth)
+
+  return { leftWidth, rightWidth, separatorWidth }
 }
 
 function SpawnHud({ t }: { t: Theme }) {
@@ -281,10 +302,12 @@ export function StatusRule({
   modelReasoningEffort,
   usage,
   bgCount,
+  liveSessionCount,
   sessionStartedAt,
   showCost,
   turnStartedAt,
   voiceLabel,
+  onSessionCountClick,
   t
 }: StatusRuleProps) {
   const pct = usage.context_percent
@@ -297,60 +320,105 @@ export function StatusRule({
       : ''
 
   const bar = usage.context_max ? ctxBar(pct) : ''
-  const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
+  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel)
+  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+  const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
+    event.stopImmediatePropagation?.()
+    onSessionCountClick?.()
+  }
+
+  const sessionCountNode = sessionCountText ? (
+    onSessionCountClick ? (
+      <Box flexShrink={0} onClick={handleSessionCountClick}>
+        <Text color={t.color.accent}> │ {sessionCountText}</Text>
+      </Box>
+    ) : (
+      <Text color={t.color.muted}> │ {sessionCountText}</Text>
+    )
+  ) : null
 
   return (
     <Box height={1}>
-      <Box flexShrink={1} width={leftWidth}>
+      <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
         <Text color={t.color.border} wrap="truncate-end">
           {'─ '}
-          {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
-          ) : (
-            <Text color={statusColor}>{status}</Text>
-          )}
-          <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
-          {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
-          {bar ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
-            </Text>
-          ) : null}
-          {sessionStartedAt ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <SessionDuration startedAt={sessionStartedAt} />
-            </Text>
-          ) : null}
-          {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <Text color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted}>
-                cmp {usage.compressions}
-              </Text>
-            </Text>
-          ) : null}
-          <SpawnHud t={t} />
-          {voiceLabel ? (
-            <Text
-              color={
-                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
-              }
-            >
-              {' │ '}
-              {voiceLabel}
-            </Text>
-          ) : null}
-          {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} bg</Text> : null}
-          {showCost && typeof usage.cost_usd === 'number' ? (
-            <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
-          ) : null}
         </Text>
+        {busy ? (
+          <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+        ) : (
+          <Text color={statusColor} wrap="truncate-end">
+            {status}
+          </Text>
+        )}
+        <Text color={t.color.muted} wrap="truncate-end">
+          {' │ '}
+          {modelLabel(model, modelReasoningEffort, modelFast)}
+        </Text>
+        {ctxLabel ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {ctxLabel}
+          </Text>
+        ) : null}
+        {bar ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+          </Text>
+        ) : null}
+        {sessionStartedAt ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <SessionDuration startedAt={sessionStartedAt} />
+          </Text>
+        ) : null}
+        {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <Text
+              color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted}
+            >
+              cmp {usage.compressions}
+            </Text>
+          </Text>
+        ) : null}
+        <SpawnHud t={t} />
+        {voiceLabel ? (
+          <Text
+            color={
+              voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
+            }
+            wrap="truncate-end"
+          >
+            {' │ '}
+            {voiceLabel}
+          </Text>
+        ) : null}
+        {sessionCountNode}
+        {bgCount > 0 ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {bgCount} bg
+          </Text>
+        ) : null}
+        {showCost && typeof usage.cost_usd === 'number' ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ $'}
+            {usage.cost_usd.toFixed(4)}
+          </Text>
+        ) : null}
       </Box>
 
-      <Text color={t.color.border}> ─ </Text>
-      <Text color={t.color.label}>{cwdLabel}</Text>
+      {rightWidth > 0 ? (
+        <>
+          <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
+          <Box flexShrink={0} width={rightWidth}>
+            <Text color={t.color.label} wrap="truncate-end">
+              {cwdLabel}
+            </Text>
+          </Box>
+        </>
+      ) : null}
     </Box>
   )
 }
@@ -455,6 +523,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 
 interface StatusRuleProps {
   bgCount: number
+  liveSessionCount: number
   busy: boolean
   cols: number
   cwdLabel: string
@@ -469,6 +538,7 @@ interface StatusRuleProps {
   turnStartedAt?: null | number
   usage: Usage
   voiceLabel?: string
+  onSessionCountClick?: () => void
 }
 
 interface StickyPromptTrackerProps {

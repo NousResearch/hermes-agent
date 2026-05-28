@@ -1534,7 +1534,11 @@ class HermesACPAgent(acp.Agent):
                 )
             except Exception:
                 logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
-        if final_response and conn and not streamed_message:
+        if final_response and conn and (not streamed_message or result.get("response_transformed")):
+            # Deliver the final response when streaming did not already send it,
+            # or when a plugin hook transformed the response after streaming
+            # finished (e.g. transform_llm_output) — otherwise the appended /
+            # rewritten text never reaches the client.
             update = acp.update_agent_message_text(final_response)
             await conn.session_update(session_id, update)
 

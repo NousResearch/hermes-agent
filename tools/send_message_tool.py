@@ -139,7 +139,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> for a file under a Hermes media cache or HERMES_MEDIA_ALLOW_DIRS — the platform will deliver it as a native media attachment."
             }
         },
         "required": []
@@ -251,6 +251,7 @@ def _handle_send(args):
     force_document_attachments = "[[as_document]]" in message
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -760,8 +761,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
-        elif platform == Platform.MATTERMOST:
-            result = await _send_mattermost(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.MATRIX:
             result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.HOMEASSISTANT:
@@ -1355,30 +1354,6 @@ async def _send_sms(auth_token, chat_id, message):
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
     except Exception as e:
         return _error(f"SMS send failed: {e}")
-
-
-async def _send_mattermost(token, extra, chat_id, message):
-    """Send via Mattermost REST API."""
-    try:
-        import aiohttp
-    except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-    try:
-        base_url = (extra.get("url") or os.getenv("MATTERMOST_URL", "")).rstrip("/")
-        token = token or os.getenv("MATTERMOST_TOKEN", "")
-        if not base_url or not token:
-            return {"error": "Mattermost not configured (MATTERMOST_URL, MATTERMOST_TOKEN required)"}
-        url = f"{base_url}/api/v4/posts"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.post(url, headers=headers, json={"channel_id": chat_id, "message": message}) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return _error(f"Mattermost API error ({resp.status}): {body}")
-                data = await resp.json()
-        return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
-    except Exception as e:
-        return _error(f"Mattermost send failed: {e}")
 
 
 async def _send_matrix(token, extra, chat_id, message):

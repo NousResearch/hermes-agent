@@ -18,6 +18,16 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().picker).toBe(true)
   })
 
+  it('opens the live session switcher locally even when the current session is busy', () => {
+    patchUiState({ busy: true, sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/sessions')).toBe(true)
+    expect(getOverlayState().sessions).toBe(true)
+    expect(ctx.session.guardBusySessionSwitch).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('handles /redraw locally without slash worker fallback', () => {
     const ctx = buildCtx()
 
@@ -779,6 +789,7 @@ const buildSession = () => ({
   die: vi.fn(),
   dieWithCode: vi.fn(),
   guardBusySessionSwitch: vi.fn(() => false),
+  newLiveSession: vi.fn(),
   newSession: vi.fn(),
   resetVisibleHistory: vi.fn(),
   resumeById: vi.fn(),
@@ -796,7 +807,8 @@ const buildTranscript = () => ({
 
 const buildVoice = () => ({
   setVoiceEnabled: vi.fn(),
-  setVoiceRecordKey: vi.fn()
+  setVoiceRecordKey: vi.fn(),
+  setVoiceTts: vi.fn()
 })
 
 interface Ctx {

@@ -67,3 +67,21 @@ def test_resume_rehydrates_previous_summary_from_handoff_message():
     assert "TURNS TO SUMMARIZE:" not in prompt
     assert prompt.count(old_summary) == 1
     assert f"[USER]: {SUMMARY_PREFIX}" not in prompt
+
+
+def test_handoff_in_protected_head_populates_previous_summary_before_update():
+    """A resumed protected-head handoff should restore iterative-summary state."""
+    compressor = _compressor()
+    old_summary = "PROTECTED-HEAD-SUMMARY durable facts from before restart"
+    seen_turns = []
+
+    def fake_generate_summary(turns_to_summarize, focus_topic=None):
+        seen_turns.extend(turns_to_summarize)
+        return "new summary from resumed turns"
+
+    with patch.object(compressor, "_generate_summary", side_effect=fake_generate_summary):
+        compressor.compress(_messages_with_handoff(old_summary))
+
+    assert compressor._previous_summary == old_summary
+    assert seen_turns
+    assert all(old_summary not in str(msg.get("content", "")) for msg in seen_turns)

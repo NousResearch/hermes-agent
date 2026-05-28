@@ -36,7 +36,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 
 | Command | Description |
 |---------|-------------|
-| `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title — e.g. `/new my-experiment` opens a fresh session already titled `my-experiment` so it's easy to find later with `/resume` or `/sessions`. |
+| `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title — e.g. `/new my-experiment` opens a fresh session already titled `my-experiment` so it's easy to find later with `/resume` or `/sessions`. Append `now`, `--yes`, or `-y` to skip the confirmation modal — e.g. `/reset now`, `/new --yes my-experiment`. |
 | `/clear` | Clear screen and start a new session |
 | `/history` | Show conversation history |
 | `/save` | Save the current conversation |
@@ -49,16 +49,16 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/stop` | Kill all running background processes |
 | `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn (doesn't interrupt the current agent response). |
 | `/steer <prompt>` | Inject a mid-run note that arrives at the agent **after the next tool call** — no interrupt, no new user turn. The text is appended to the last tool result's content once the current tool completes, giving the agent new context without breaking the current tool-calling loop. Use this to nudge direction mid-task (e.g. "focus on the auth module" while the agent is running tests). |
-| `/goal <text>` | Set a standing goal Hermes works toward across turns — our take on the Ralph loop. After each turn an auxiliary judge model decides whether the goal is done; if not, Hermes auto-continues. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Budget defaults to 20 turns (`goals.max_turns`); any real user message preempts the continuation loop, and state survives `/resume`. See [Persistent Goals](/docs/user-guide/features/goals) for the full walkthrough. |
+| `/goal <text>` | Set a standing goal Hermes works toward across turns — our take on the Ralph loop. After each turn an auxiliary judge model decides whether the goal is done; if not, Hermes auto-continues. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Budget defaults to 20 turns (`goals.max_turns`); any real user message preempts the continuation loop, and state survives `/resume`. See [Persistent Goals](/user-guide/features/goals) for the full walkthrough. |
 | `/subgoal <text>` | Append a user-supplied criterion to the active goal mid-loop. The continuation prompt surfaces all subgoals to the agent verbatim, and the judge factors them into its DONE/CONTINUE verdict — so the goal isn't marked done until the original goal **and** every subgoal are met. Subcommands: `/subgoal` (list), `/subgoal remove <N>`, `/subgoal clear`. Requires an active `/goal`. |
 | `/resume [name]` | Resume a previously-named session |
-| `/sessions` | Browse and resume previous sessions in an interactive picker |
+| `/sessions` (TUI alias: `/switch`) | Classic CLI: browse and resume previous sessions in an interactive picker. TUI: open the live session switcher for currently open TUI sessions. Use `/sessions new` in the TUI to start another live session immediately. |
 | `/redraw` | Force a full UI repaint (recovers from terminal drift after tmux resize, mouse selection artifacts, etc.) |
 | `/status` | Show session info — model, provider, profile, session ID, working directory, title, created/updated timestamps, token totals, agent-running state — followed by a local **Session recap** block (recent user/assistant turn counts, tool result count, top tools used, last few files touched, the latest user prompt, and the latest assistant reply). The recap is computed locally from the in-memory conversation; no LLM call, no prompt-cache impact. |
 | `/agents` (alias: `/tasks`) | Show active agents and running tasks across the current session. |
-| `/background <prompt>` (alias: `/bg`, `/btw`) | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/docs/user-guide/cli#background-sessions). |
+| `/background <prompt>` (alias: `/bg`, `/btw`) | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/user-guide/cli#background-sessions). |
 | `/branch [name]` (alias: `/fork`) | Branch the current session (explore a different path) |
-| `/handoff <platform>` | **CLI only.** Hand the current session off to a messaging platform (Telegram, Discord, Slack, WhatsApp, Signal, Matrix). The gateway picks it up immediately, creates a fresh thread on platforms that support threads (Telegram topics, Discord text-channel threads, Slack message-anchored threads), re-binds the destination to your CLI session_id so the full role-aware transcript replays, and forges a synthetic user turn so the agent confirms it's working in the new place. Your CLI exits cleanly on success with a `/resume` hint; resume locally any time with `/resume <title>`. Refused mid-turn. Requires the gateway to be running and a home channel configured for the target platform (`/sethome` from the destination chat). See [Cross-Platform Handoff](/docs/user-guide/sessions#cross-platform-handoff). |
+| `/handoff <platform>` | **CLI only.** Hand the current session off to a messaging platform (Telegram, Discord, Slack, WhatsApp, Signal, Matrix). The gateway picks it up immediately, creates a fresh thread on platforms that support threads (Telegram topics, Discord text-channel threads, Slack message-anchored threads), re-binds the destination to your CLI session_id so the full role-aware transcript replays, and forges a synthetic user turn so the agent confirms it's working in the new place. Your CLI exits cleanly on success with a `/resume` hint; resume locally any time with `/resume <title>`. Refused mid-turn. Requires the gateway to be running and a home channel configured for the target platform (`/sethome` from the destination chat). See [Cross-Platform Handoff](/user-guide/sessions#cross-platform-handoff). |
 
 ### Configuration
 
@@ -87,9 +87,10 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/toolsets` | List available toolsets |
 | `/browser [connect\|disconnect\|status]` | Manage a local Chromium-family CDP connection. `connect` attaches browser tools to a running Chrome, Brave, Chromium, or Edge instance (default: `http://127.0.0.1:9222`). `disconnect` detaches. `status` shows current connection. Auto-launches a supported Chromium-family browser if no debugger is detected. |
 | `/skills` | Search, install, inspect, or manage skills from online registries |
+| `/bundles` | List configured skill bundles — `/<name>` slash aliases that preload several skills at once. Configure under `bundles:` in `~/.hermes/config.yaml`. See [Skill Bundles](/user-guide/features/skills#skill-bundles). |
 | `/cron` | Manage scheduled tasks (list, add/create, edit, pause, resume, run, remove) |
-| `/curator` | Background skill maintenance — `status`, `run`, `pin`, `archive`. See [Curator](/docs/user-guide/features/curator). |
-| `/kanban <action>` | Drive the multi-profile, multi-project collaboration board without leaving chat. Full `hermes kanban` surface is available: `/kanban list`, `/kanban show t_abc`, `/kanban create "title" --assignee X`, `/kanban comment t_abc "text"`, `/kanban unblock t_abc`, `/kanban dispatch`, etc. Multi-board support included: `/kanban boards list`, `/kanban boards create <slug>`, `/kanban boards switch <slug>`, `/kanban --board <slug> <action>`. See [Kanban slash command](/docs/user-guide/features/kanban#kanban-slash-command). |
+| `/curator` | Background skill maintenance — `status`, `run`, `pin`, `archive`. See [Curator](/user-guide/features/curator). |
+| `/kanban <action>` | Drive the multi-profile, multi-project collaboration board without leaving chat. Full `hermes kanban` surface is available: `/kanban list`, `/kanban show t_abc`, `/kanban create "title" --assignee X`, `/kanban comment t_abc "text"`, `/kanban unblock t_abc`, `/kanban dispatch`, etc. Multi-board support included: `/kanban boards list`, `/kanban boards create <slug>`, `/kanban boards switch <slug>`, `/kanban --board <slug> <action>`. See [Kanban slash command](/user-guide/features/kanban#kanban-slash-command). |
 | `/reload-mcp` (alias: `/reload_mcp`) | Reload MCP servers from config.yaml |
 | `/reload-skills` (alias: `/reload_skills`) | Re-scan `~/.hermes/skills/` for newly installed or removed skills |
 | `/reload` | Reload `.env` variables into the running session (picks up new API keys without restarting) |
@@ -193,6 +194,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 | Command | Description |
 |---------|-------------|
+| `/start` | Platform-protocol command. Many chat platforms (Telegram, Discord, …) send `/start` automatically the first time a user opens a bot conversation. Hermes acknowledges the ping silently — no agent reply, no session burn — so first-contact handshakes don't waste a turn. You can also send it explicitly to confirm the gateway is reachable. |
 | `/new` | Start a new conversation. |
 | `/reset` | Reset conversation history. |
 | `/status` | Show session info, followed by a local **Session recap** block (recent turn counts, top tools used, files touched, latest prompt + reply). |
@@ -205,7 +207,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/undo` | Remove the last exchange. |
 | `/sethome` (alias: `/set-home`) | Mark the current chat as the platform home channel for deliveries. |
 | `/compress [focus topic]` | Manually compress conversation context. Optional focus topic narrows what the summary preserves. |
-| `/topic [off\|help\|session-id]` | **Telegram DM only.** Manage user-managed multi-session topic mode. `/topic` enables it or shows status; `/topic off` disables it and clears bindings; `/topic help` shows usage; `/topic <session-id>` inside a topic restores a previous session. See [Multi-session DM mode](/docs/user-guide/messaging/telegram#multi-session-dm-mode-topic). |
+| `/topic [off\|help\|session-id]` | **Telegram DM only.** Manage user-managed multi-session topic mode. `/topic` enables it or shows status; `/topic off` disables it and clears bindings; `/topic help` shows usage; `/topic <session-id>` inside a topic restores a previous session. See [Multi-session DM mode](/user-guide/messaging/telegram#multi-session-dm-mode-topic). |
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |
 | `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits pulled live from the provider's API. |
@@ -213,13 +215,13 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display. |
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |
 | `/rollback [number]` | List or restore filesystem checkpoints. |
-| `/background <prompt>` | Run a prompt in a separate background session. Results are delivered back to the same chat when the task finishes. See [Messaging Background Sessions](/docs/user-guide/messaging/#background-sessions). |
+| `/background <prompt>` | Run a prompt in a separate background session. Results are delivered back to the same chat when the task finishes. See [Messaging Background Sessions](/user-guide/messaging/#background-sessions). |
 | `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn without interrupting the current one. |
 | `/steer <prompt>` | Inject a message after the next tool call without interrupting — the model picks it up on its next iteration rather than as a new turn. |
-| `/goal <text>` | Set a standing goal Hermes works toward across turns — our take on the Ralph loop. A judge model checks after each turn; if not done, Hermes auto-continues until it is, you pause/clear it, or the turn budget (default 20) is hit. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Safe to run mid-agent for status/pause/clear; setting a new goal requires `/stop` first. See [Persistent Goals](/docs/user-guide/features/goals). |
+| `/goal <text>` | Set a standing goal Hermes works toward across turns — our take on the Ralph loop. A judge model checks after each turn; if not done, Hermes auto-continues until it is, you pause/clear it, or the turn budget (default 20) is hit. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Safe to run mid-agent for status/pause/clear; setting a new goal requires `/stop` first. See [Persistent Goals](/user-guide/features/goals). |
 | `/footer [on\|off\|status]` | Toggle the runtime-metadata footer on final replies (shows model, tool counts, timing). |
 | `/curator [status\|run\|pin\|archive]` | Background skill maintenance controls. |
-| `/kanban <action>` | Drive the multi-profile, multi-project collaboration board from chat — identical argument surface to the CLI. Bypasses the running-agent guard, so `/kanban unblock t_abc`, `/kanban comment t_abc "…"`, `/kanban list --mine`, `/kanban boards switch <slug>`, etc. work mid-turn. `/kanban create …` auto-subscribes the originating chat to the new task's terminal events. See [Kanban slash command](/docs/user-guide/features/kanban#kanban-slash-command). |
+| `/kanban <action>` | Drive the multi-profile, multi-project collaboration board from chat — identical argument surface to the CLI. Bypasses the running-agent guard, so `/kanban unblock t_abc`, `/kanban comment t_abc "…"`, `/kanban list --mine`, `/kanban boards switch <slug>`, etc. work mid-turn. `/kanban create …` auto-subscribes the originating chat to the new task's terminal events. See [Kanban slash command](/user-guide/features/kanban#kanban-slash-command). |
 | `/reload-mcp` (alias: `/reload_mcp`) | Reload MCP servers from config. |
 | `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
 | `/commands [page]` | Browse all commands and skills (paginated). |
@@ -238,6 +240,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 - `/sethome`, `/update`, `/restart`, `/approve`, `/deny`, `/topic`, and `/commands` are **messaging-only** commands.
 - `/status`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.
+- In the TUI, `/sessions` shows live sessions in the current TUI process. Use `/resume [name]` or `hermes --tui --resume <id-or-title>` for saved or closed transcripts.
 
 ## Confirmation prompts for destructive commands
 
@@ -251,5 +254,7 @@ The CLI prompts before running slash commands that throw away unsaved session st
 | `/exit --delete` / `/quit --delete` | Exits **and** permanently deletes the current session's SQLite history and on-disk transcripts. |
 
 For each of these the CLI opens a three-choice modal: **Approve Once** (proceed this time), **Always Approve** (proceed and persist `approvals.destructive_slash_confirm: false` so future destructive commands run without prompting), or **Cancel**.
+
+**Inline skip:** append `now`, `--yes`, or `-y` to bypass the modal for a single invocation — e.g. `/reset now`, `/new --yes my-session`, `/clear -y`, `/undo -y`. Useful when the modal doesn't render correctly on your terminal (see [issue #30768](https://github.com/NousResearch/hermes-agent/issues/30768) for native Windows PowerShell) or when scripting against the CLI.
 
 Set `approvals.destructive_slash_confirm: false` in `~/.hermes/config.yaml` to disable the prompts globally; set it back to `true` to re-enable. See [Security — Destructive slash command confirmation](../user-guide/security.md#dangerous-command-approval) for context.

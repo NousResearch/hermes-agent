@@ -16,7 +16,7 @@ const MAX_WIDTH = 90
 
 type Stage = 'provider' | 'key' | 'model' | 'disconnect'
 
-export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
+export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
@@ -105,7 +105,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         gw.request<{ provider?: ModelOptionProvider }>('model.save_key', {
           slug: provider?.slug,
           api_key: keyInput.trim(),
-          ...(sessionId ? { session_id: sessionId } : {}),
+          ...(sessionId ? { session_id: sessionId } : {})
         })
           .then(raw => {
             const r = asRpcResult<{ provider?: ModelOptionProvider }>(raw)
@@ -118,9 +118,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
             }
 
             // Update the provider in our list with fresh data
-            setProviders(prev =>
-              prev.map(p => p.slug === r.provider!.slug ? r.provider! : p)
-            )
+            setProviders(prev => prev.map(p => (p.slug === r.provider!.slug ? r.provider! : p)))
             setKeyInput('')
             setKeySaving(false)
             setStage('model')
@@ -166,7 +164,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         setKeySaving(true)
         gw.request<{ disconnected?: boolean }>('model.disconnect', {
           slug: provider.slug,
-          ...(sessionId ? { session_id: sessionId } : {}),
+          ...(sessionId ? { session_id: sessionId } : {})
         })
           .then(raw => {
             const r = asRpcResult<{ disconnected?: boolean }>(raw)
@@ -174,9 +172,16 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
             if (r?.disconnected) {
               // Mark provider as unauthenticated in local state
               setProviders(prev =>
-                prev.map(p => p.slug === provider.slug
-                  ? { ...p, authenticated: false, models: [], total_models: 0, warning: p.key_env ? `paste ${p.key_env} to activate` : 'run `hermes model` to configure' }
-                  : p
+                prev.map(p =>
+                  p.slug === provider.slug
+                    ? {
+                        ...p,
+                        authenticated: false,
+                        models: [],
+                        total_models: 0,
+                        warning: p.key_env ? `paste ${p.key_env} to activate` : 'run `hermes model` to configure'
+                      }
+                    : p
                 )
               )
             }
@@ -244,7 +249,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       const model = models[modelIdx]
 
       if (provider && model) {
-        onSelect(`${model} --provider ${provider.slug}${persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`)
+        onSelect(
+          `${model} --provider ${provider.slug}${allowPersistGlobal && persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`
+        )
       } else {
         setStage('provider')
       }
@@ -252,7 +259,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       return
     }
 
-    if (ch.toLowerCase() === 'g') {
+    if (allowPersistGlobal && ch.toLowerCase() === 'g') {
       setPersistGlobal(v => !v)
 
       return
@@ -302,17 +309,23 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           Paste your API key below (saved to ~/.hermes/.env)
         </Text>
 
-        <Text color={t.color.muted} wrap="truncate-end"> </Text>
+        <Text color={t.color.muted} wrap="truncate-end">
+          {' '}
+        </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
           {provider.key_env}:
         </Text>
 
         <Text color={t.color.accent} wrap="truncate-end">
-          {'  '}{masked || '(empty)'}{keySaving ? '' : '▎'}
+          {'  '}
+          {masked || '(empty)'}
+          {keySaving ? '' : '▎'}
         </Text>
 
-        <Text color={t.color.muted} wrap="truncate-end"> </Text>
+        <Text color={t.color.muted} wrap="truncate-end">
+          {' '}
+        </Text>
 
         {keyError ? (
           <Text color={t.color.label} wrap="truncate-end">
@@ -323,7 +336,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
             saving…
           </Text>
         ) : (
-          <Text color={t.color.muted} wrap="truncate-end"> </Text>
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' '}
+          </Text>
         )}
 
         <OverlayHint t={t}>Enter save · Ctrl+U clear · Esc back</OverlayHint>
@@ -339,7 +354,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           Disconnect {provider.name}?
         </Text>
 
-        <Text color={t.color.muted} wrap="truncate-end"> </Text>
+        <Text color={t.color.muted} wrap="truncate-end">
+          {' '}
+        </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
           This removes saved credentials for {provider.name}.
@@ -349,10 +366,14 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           You can re-authenticate later by selecting it again.
         </Text>
 
-        <Text color={t.color.muted} wrap="truncate-end"> </Text>
+        <Text color={t.color.muted} wrap="truncate-end">
+          {' '}
+        </Text>
 
         {keySaving ? (
-          <Text color={t.color.muted} wrap="truncate-end">disconnecting…</Text>
+          <Text color={t.color.muted} wrap="truncate-end">
+            disconnecting…
+          </Text>
         ) : (
           <OverlayHint t={t}>y/Enter confirm · n/Esc cancel</OverlayHint>
         )}
@@ -362,17 +383,14 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
 
   // ── Provider selection stage ─────────────────────────────────────────
   if (stage === 'provider') {
-    const rows = providers.map(
-      (p, i) => {
-        const authMark = p.authenticated === false ? '○' : p.is_current ? '*' : '●'
-        const modelCount = p.total_models ?? p.models?.length ?? 0
-        const suffix = p.authenticated === false
-          ? (p.auth_type === 'api_key' ? '(no key)' : '(needs setup)')
-          : `${modelCount} models`
+    const rows = providers.map((p, i) => {
+      const authMark = p.authenticated === false ? '○' : p.is_current ? '*' : '●'
+      const modelCount = p.total_models ?? p.models?.length ?? 0
+      const suffix =
+        p.authenticated === false ? (p.auth_type === 'api_key' ? '(no key)' : '(needs setup)') : `${modelCount} models`
 
-        return `${authMark} ${names[i]} · ${suffix}`
-      }
-    )
+      return `${authMark} ${names[i]} · ${suffix}`
+    })
 
     const { items, offset } = windowItems(rows, providerIdx, VISIBLE)
 
@@ -425,7 +443,8 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          persist: {persistGlobal ? 'global' : 'session'} · g toggle
+          persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
+          {allowPersistGlobal ? ' · g toggle' : ' only'}
         </Text>
         <OverlayHint t={t}>↑/↓ select · Enter choose · d disconnect · Esc/q cancel</OverlayHint>
       </Box>
@@ -488,7 +507,8 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        persist: {persistGlobal ? 'global' : 'session'} · g toggle
+        persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
+        {allowPersistGlobal ? ' · g toggle' : ' only'}
       </Text>
       <OverlayHint t={t}>
         {models.length ? '↑/↓ select · Enter switch · Esc back · q close' : 'Enter/Esc back · q close'}
@@ -498,6 +518,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
 }
 
 interface ModelPickerProps {
+  allowPersistGlobal?: boolean
   gw: GatewayClient
   onCancel: () => void
   onSelect: (value: string) => void

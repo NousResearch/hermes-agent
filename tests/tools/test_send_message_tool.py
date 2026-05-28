@@ -377,6 +377,41 @@ class TestSendMessageTool:
             user_id="user-123",
         )
 
+    def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path, monkeypatch):
+        # This test exercises the strict-allowlist path; disable recency trust
+        # so the freshly-written tmp_path file is not auto-accepted by the
+        # trust window. (Recency trust is covered in test_platform_base.py.)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+        config, telegram_cfg = _make_config()
+        secret = tmp_path / "secret.pdf"
+        secret.write_bytes(b"%PDF secret")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": f"hello\nMEDIA:{secret}",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "12345",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
         leaked = "very-secret-query-token-123456"
@@ -2652,4 +2687,3 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
-

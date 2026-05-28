@@ -268,10 +268,18 @@ resolve_install_layout() {
         fi
         INSTALL_DIR="/usr/local/lib/hermes-agent"
         ROOT_FHS_LAYOUT=true
+        # Place uv-managed Python under /usr/local/share so the venv interpreter
+        # is world-readable.  Default uv paths land in /root/.local/share/uv,
+        # which non-root users can't traverse — leaving the shared
+        # /usr/local/bin/hermes wrapper unable to exec the bad-interpreter venv
+        # python.  See #21457.
+        export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-/usr/local/share/uv/python}"
+        export UV_PYTHON_BIN_DIR="${UV_PYTHON_BIN_DIR:-/usr/local/share/uv/bin}"
         log_info "Root install on Linux — using FHS layout"
         log_info "  Code:    $INSTALL_DIR"
         log_info "  Command: /usr/local/bin/hermes"
         log_info "  Data:    $HERMES_HOME (unchanged)"
+        log_info "  uv Python: $UV_PYTHON_INSTALL_DIR (world-readable)"
         return 0
     fi
 

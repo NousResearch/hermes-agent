@@ -1,9 +1,4 @@
-"""Tavily web search + extract + crawl plugin — bundled, auto-loaded.
-
-First plugin in this codebase to advertise ``supports_crawl=True``. The
-crawl method maps to Tavily's ``/crawl`` endpoint, which accepts a seed
-URL plus optional instructions and extract depth.
-"""
+"""Tavily web search + extract plugin — bundled, auto-loaded."""
 
 from __future__ import annotations
 

@@ -432,6 +432,20 @@ def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
     )
 
 
+def _reject_distribution_symlinks(staged: Path) -> None:
+    """Reject symlinks before reading or copying distribution files."""
+    for entry in staged.rglob("*"):
+        if not entry.is_symlink():
+            continue
+        try:
+            rel = entry.relative_to(staged)
+        except ValueError:
+            rel = entry
+        raise DistributionError(
+            f"Profile distributions cannot contain symlinks: {rel}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
@@ -484,6 +498,7 @@ def plan_install(
     from hermes_cli import __version__ as hermes_version
 
     staged, provenance = _stage_source(source, workdir)
+    _reject_distribution_symlinks(staged)
     manifest = read_manifest(staged)
     if manifest is None:
         raise DistributionError(

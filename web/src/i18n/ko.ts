@@ -127,6 +127,8 @@ export const ko: Translations = {
 
   sessions: {
     title: "세션",
+    history: "기록",
+    overview: "개요",
     searchPlaceholder: "메시지 내용 검색...",
     noSessions: "아직 세션이 없습니다",
     noMatch: "검색과 일치하는 세션이 없습니다",
@@ -269,7 +271,7 @@ export const ko: Translations = {
       "Hermes 플러그인을 검색, 설치, 활성화 및 업데이트합니다 (`hermes plugins` 동등).",
     identifierLabel: "Git URL 또는 owner/repo",
     inactive: "비활성",
-    installBtn: "Git에서 설치",
+    installBtn: "설치",
     installHeading: "GitHub / Git URL에서 설치",
     installHint: "owner/repo 약어 또는 전체 https:// 또는 git@ 클론 URL을 사용하세요.",
     memoryProviderLabel: "메모리 제공자",
@@ -367,6 +369,8 @@ export const ko: Translations = {
     description: "다음 위치에 저장된 API 키와 비밀을 관리합니다",
     hideAdvanced: "고급 숨기기",
     showAdvanced: "고급 표시",
+    showLess: "간략히",
+    showMore: "더 보기",
     llmProviders: "LLM 제공자",
     providersConfigured: "{configured}/{total} 제공자가 구성됨",
     getKey: "키 받기",
@@ -392,7 +396,7 @@ export const ko: Translations = {
     disconnect: "연결 해제",
     managedExternally: "외부에서 관리됨",
     copied: "복사됨 ✓",
-    cli: "CLI",
+    cli: "복사",
     copyCliCommand: "CLI 명령 복사 (외부 / 대체용)",
     connect: "연결",
     sessionExpires: "세션이 {time} 후 만료됩니다",
@@ -419,7 +423,7 @@ export const ko: Translations = {
   },
 
   language: {
-    switchTo: "영어로 전환",
+    switchTo: "언어 변경",
   },
 
   theme: {

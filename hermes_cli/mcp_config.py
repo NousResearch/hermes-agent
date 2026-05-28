@@ -749,6 +749,24 @@ def mcp_command(args):
         run_mcp_server(verbose=getattr(args, "verbose", False))
         return
 
+    # Catalog subcommands live in mcp_picker / mcp_catalog. Import lazily so
+    # the original `mcp_config` module stays import-cheap.
+    if action == "picker":
+        from hermes_cli.mcp_picker import run_picker
+        run_picker()
+        return
+    if action == "catalog":
+        from hermes_cli.mcp_picker import show_catalog
+        show_catalog()
+        return
+    if action == "install":
+        from hermes_cli.mcp_picker import install_by_name
+        import sys as _sys
+        rc = install_by_name(getattr(args, "identifier", "") or "")
+        if rc:
+            _sys.exit(rc)
+        return
+
     handlers = {
         "add": cmd_mcp_add,
         "remove": cmd_mcp_remove,
@@ -765,15 +783,20 @@ def mcp_command(args):
     if handler:
         handler(args)
     else:
-        # No subcommand — show list
-        cmd_mcp_list()
+        # No subcommand — drop the user into the catalog picker. This is the
+        # "try enabling and it flows you into setup" UX matching `hermes plugin`.
+        from hermes_cli.mcp_picker import run_picker
+        run_picker()
         print(color("  Commands:", Colors.CYAN))
+        _info("hermes mcp                                    Open the catalog picker (default)")
+        _info("hermes mcp catalog                            List Nous-approved MCPs")
+        _info("hermes mcp install <name>                     Install a catalog MCP")
         _info("hermes mcp serve                              Run as MCP server")
-        _info("hermes mcp add <name> --url <endpoint>        Add an MCP server")
+        _info("hermes mcp add <name> --url <endpoint>        Add a custom MCP server")
         _info("hermes mcp add <name> --command <cmd>         Add a stdio server")
         _info("hermes mcp add <name> --preset <preset>       Add from a known preset")
         _info("hermes mcp remove <name>                      Remove a server")
-        _info("hermes mcp list                               List servers")
+        _info("hermes mcp list                               List configured servers")
         _info("hermes mcp test <name>                        Test connection")
         _info("hermes mcp configure <name>                   Toggle tools")
         _info("hermes mcp login <name>                       Re-authenticate OAuth")

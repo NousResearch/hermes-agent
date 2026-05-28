@@ -193,6 +193,11 @@ class GatewayStreamConsumer:
         return self._final_response_sent
 
     @property
+    def message_id(self) -> str | None:
+        """The Discord/chat message ID of the last-sent or edited message."""
+        return self._message_id
+
+    @property
     def final_content_delivered(self) -> bool:
         """True when the final response content reached the user, even if
         the subsequent cosmetic edit (cursor removal) failed."""
@@ -547,11 +552,6 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Record that the final content reached the user even
-                    # if the cosmetic final edit below fails.
-                    if current_update_visible and self._accumulated:
-                        self._final_content_delivered = True
-
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
@@ -568,6 +568,7 @@ class GatewayStreamConsumer:
                             # final edit — but only for adapters that don't
                             # need an explicit finalize signal.
                             self._final_response_sent = True
+                            self._final_content_delivered = True
                         elif self._message_id:
                             # Either the mid-stream edit didn't run (no
                             # visible update this tick) OR the adapter needs
@@ -575,8 +576,12 @@ class GatewayStreamConsumer:
                             self._final_response_sent = await self._send_or_edit(
                                 self._accumulated, finalize=True,
                             )
+                            if self._final_response_sent:
+                                self._final_content_delivered = True
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
+                            if self._final_response_sent:
+                                self._final_content_delivered = True
                     return
 
                 if commentary_text is not None:
@@ -636,6 +641,7 @@ class GatewayStreamConsumer:
             # "Let me search…") had been delivered, not the real answer.
             if _best_effort_ok and not self._final_response_sent:
                 self._final_response_sent = True
+                self._final_content_delivered = True
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
 
@@ -773,6 +779,7 @@ class GatewayStreamConsumer:
                         pass
                 self._already_sent = True
                 self._final_response_sent = True
+                self._final_content_delivered = True
                 return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
@@ -809,11 +816,13 @@ class GatewayStreamConsumer:
 
             if not result or not result.success:
                 if sent_any_chunk:
-                    # Some continuation text already reached the user. Suppress
-                    # the base gateway final-send path so we don't resend the
-                    # full response and create another duplicate.
+                    # Some continuation text already reached the user, but not
+                    # the full response. Do NOT set _final_response_sent — the
+                    # base gateway final-send path should still deliver the
+                    # complete response so the user gets the full answer.
+                    # Suppress only _already_sent to avoid a duplicate send
+                    # of the same partial content.
                     self._already_sent = True
-                    self._final_response_sent = True
                     self._message_id = last_message_id
                     self._last_sent_text = last_successful_chunk
                     self._fallback_prefix = ""
@@ -851,6 +860,7 @@ class GatewayStreamConsumer:
         self._message_id = last_message_id
         self._already_sent = True
         self._final_response_sent = True
+        self._final_content_delivered = True
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
 

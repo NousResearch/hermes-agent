@@ -120,8 +120,73 @@ def _validate_skill_name(name: str) -> str:
     return _normalize_bundle_path(name, field_name="skill name", allow_nested=False)
 
 
-def _validate_category_name(category: str) -> str:
-    return _normalize_bundle_path(category, field_name="category", allow_nested=False)
+def _validate_install_parent_path(category: str) -> str:
+    return _normalize_bundle_path(category, field_name="install parent path", allow_nested=True)
+
+
+def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
+    """Validate a skill install path before it touches the lock file or disk.
+
+    Lock-file ``install_path`` entries are the source-of-truth for where
+    ``uninstall_skill`` will call ``shutil.rmtree``. A poisoned or buggy
+    entry — empty string, ``"."``, an absolute path, ``../..`` traversal,
+    or anything whose final component doesn't match the skill name — would
+    let ``rmtree`` wipe either the entire ``skills/`` tree or content
+    outside it.
+
+    Enforce that ``install_path`` ends with ``<skill_name>``. Nested
+    official optional skills may legitimately install below paths such as
+    ``mlops/training/<skill_name>``; traversal, absolute paths, empty paths,
+    and mismatched final components are still rejected.
+    """
+    safe_skill_name = _validate_skill_name(skill_name)
+    normalized = _normalize_bundle_path(
+        install_path,
+        field_name="install path",
+        allow_nested=True,
+    )
+    parts = normalized.split("/")
+    if not parts or parts[-1] != safe_skill_name:
+        raise ValueError(f"Unsafe install path: {install_path}")
+    return normalized
+
+
+def _is_path_redirect(path: Path) -> bool:
+    """True when ``path`` is a symlink or (on Windows) a directory junction.
+
+    Either form lets an attacker who can write into the ``skills/`` tree
+    redirect a subsequent ``rmtree`` to content outside it. ``is_junction``
+    only exists on Python 3.12+ Windows; gate with ``hasattr``.
+    """
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
+def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
+    """Resolve a lock-file install path without allowing escapes from ``SKILLS_DIR``.
+
+    Two layers of defence on top of the existing ``is_relative_to`` check
+    that's been on main:
+
+    1. Walk the path component-by-component and refuse if any intermediate
+       component is a symlink/junction (a path resolution that follows a
+       symlink to outside skills/ would otherwise be hidden by Path.resolve).
+    2. After resolve(), reject not just escape-out but also ``resolved == SKILLS_DIR``
+       — an empty/``"."``/``""`` install_path resolves to the skills root itself,
+       and ``rmtree(SKILLS_DIR)`` would wipe every installed skill.
+    """
+    normalized = _normalize_lock_install_path(install_path, skill_name)
+    skills_root = SKILLS_DIR.resolve()
+
+    target = SKILLS_DIR
+    for part in normalized.split("/"):
+        target = target / part
+        if _is_path_redirect(target):
+            raise ValueError(f"Unsafe install path: {install_path}")
+
+    target = target.resolve()
+    if target == skills_root or not target.is_relative_to(skills_root):
+        raise ValueError(f"Unsafe install path: {install_path}")
+    return target
 
 
 def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
@@ -328,12 +393,15 @@ class GitHubSource(SkillSource):
     """Fetch skills from GitHub repos via the Contents API."""
 
     DEFAULT_TAPS = [
-        {"repo": "openai/skills", "path": "skills/"},
+        # NOTE: openai/skills moved its content into skills/.curated/ (and
+        # skills/.system/ for system-level skills). _list_skills_in_repo
+        # skips directories starting with "." or "_", so we point both
+        # entries at the inner paths directly.
+        {"repo": "openai/skills", "path": "skills/.curated/"},
+        {"repo": "openai/skills", "path": "skills/.system/"},
         {"repo": "anthropics/skills", "path": "skills/"},
         {"repo": "huggingface/skills", "path": "skills/"},
-        {"repo": "VoltAgent/awesome-agent-skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
-        {"repo": "MiniMax-AI/cli", "path": "skill/"},
     ]
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
@@ -1791,8 +1859,18 @@ class ClawHubSource(SkillSource):
             results = self._search_catalog(query, limit=limit)
             if results:
                 return results
+        else:
+            # Empty query: route through the paginating catalog walker so the
+            # full ClawHub catalog (20k+ skills) lands in the index. The
+            # single-request listing path below caps at one page (200 items)
+            # regardless of `limit`, which silently truncates the public
+            # skills index. The catalog walker follows `nextCursor`.
+            catalog = self._load_catalog_index()
+            if catalog:
+                return self._dedupe_results(catalog)[:limit] if limit > 0 else self._dedupe_results(catalog)
 
-        # Empty query or catalog fallback failure: use the lightweight listing API.
+        # Non-empty query catalog miss, or catalog walker failure: fall back to
+        # the lightweight listing API for a best-effort response.
         cache_key = f"clawhub_search_listing_v1_{hashlib.md5(query.encode()).hexdigest()}_{limit}"
         cached = _read_index_cache(cache_key)
         if cached is not None:
@@ -1921,7 +1999,12 @@ class ClawHubSource(SkillSource):
         cursor: Optional[str] = None
         results: List[SkillMeta] = []
         seen: set[str] = set()
-        max_pages = 50
+        # ClawHub has 50k+ skills as of May 2026 (live E2E walked 49,698 with
+        # an active cursor still pending); 750 pages * 200/page = 150k ceiling
+        # leaves room for catalog growth. Walk-to-exhaustion typically
+        # terminates well before this on `nextCursor` going None — the cap is
+        # a safety rail against an infinite-cursor loop.
+        max_pages = 750
 
         for _ in range(max_pages):
             params: Dict[str, Any] = {"limit": 200}
@@ -2788,14 +2871,20 @@ class HubLockFile:
         files: List[str],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        # Validate both the skill name and the install path SHAPE before
+        # writing into lock.json. A poisoned lock entry is the precondition
+        # for the uninstall_skill rmtree-escape; reject malformed input at
+        # write time so the file never carries the bad state.
+        safe_name = _validate_skill_name(name)
+        safe_install_path = _normalize_lock_install_path(install_path, safe_name)
         data = self.load()
-        data["installed"][name] = {
+        data["installed"][safe_name] = {
             "source": source,
             "identifier": identifier,
             "trust_level": trust_level,
             "scan_verdict": scan_verdict,
             "content_hash": skill_hash,
-            "install_path": install_path,
+            "install_path": safe_install_path,
             "files": files,
             "metadata": metadata or {},
             "installed_at": datetime.now(timezone.utc).isoformat(),
@@ -2936,16 +3025,21 @@ def install_from_quarantine(
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
     safe_skill_name = _validate_skill_name(skill_name)
-    safe_category = _validate_category_name(category) if category else ""
+    safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
     quarantine_root = QUARANTINE_DIR.resolve()
     if not quarantine_resolved.is_relative_to(quarantine_root):
         raise ValueError(f"Unsafe quarantine path: {quarantine_path}")
 
     if safe_category:
-        install_dir = SKILLS_DIR / safe_category / safe_skill_name
+        install_rel_path = f"{safe_category}/{safe_skill_name}"
     else:
-        install_dir = SKILLS_DIR / safe_skill_name
+        install_rel_path = safe_skill_name
+
+    # Resolve via the same lock-path validator the uninstaller uses. Catches
+    # symlink-in-skills-tree redirects at install time so the lock entry's
+    # path can never refer to a redirected target.
+    install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
 
     if install_dir.exists():
         shutil.rmtree(install_dir)
@@ -2965,6 +3059,21 @@ def install_from_quarantine(
                 )
         except OSError:
             pass
+
+    # Reject symlinks inside the quarantined skill before moving it.
+    # A malicious skill bundle could include a symlink pointing outside the
+    # skills tree; its target contents would then be copied into skills/ and
+    # leaked to the agent on the next skill_view call.
+    for entry in quarantine_path.rglob("*"):
+        if not _is_path_redirect(entry):
+            continue
+        try:
+            rel = entry.relative_to(quarantine_resolved)
+        except ValueError:
+            rel = entry
+        raise ValueError(
+            f"Installed skill contains symlinks, which is not allowed: {rel}"
+        )
 
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
@@ -2999,7 +3108,20 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     if not entry:
         return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
 
-    install_path = SKILLS_DIR / entry["install_path"]
+    # Validate the lock entry's install_path against the skill name. This is
+    # the destructive boundary — anything that falls through to the rmtree
+    # below MUST be inside SKILLS_DIR and MUST NOT be SKILLS_DIR itself
+    # (an empty/"."/"/" install_path would otherwise wipe the entire tree).
+    # _resolve_lock_install_path enforces a relative path ending in
+    # <skill_name>, rejects absolute/traversal paths, and walks the path
+    # component-by-component refusing symlink/junction redirects.
+    try:
+        install_path = _resolve_lock_install_path(
+            entry.get("install_path", ""), skill_name
+        )
+    except ValueError as exc:
+        return False, f"Refusing to uninstall '{skill_name}': {exc}"
+
     if install_path.exists():
         shutil.rmtree(install_path)
 
@@ -3013,6 +3135,10 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
     """Compute a deterministic hash for an in-memory skill bundle."""
     h = hashlib.sha256()
     for rel_path in sorted(bundle.files):
+        # Include the path so swapping file contents between two paths
+        # changes the hash (avoids filename-swap evading update detection).
+        h.update(rel_path.encode("utf-8"))
+        h.update(b"\x00")
         content = bundle.files[rel_path]
         if isinstance(content, bytes):
             h.update(content)

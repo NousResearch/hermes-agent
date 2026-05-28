@@ -66,6 +66,7 @@ from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     fal_key_is_configured,
     managed_nous_tools_enabled,
+    nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
 
@@ -317,6 +318,54 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    # Krea 2 — Krea's first foundation image model, day-0 partner launch on
+    # fal (2026-05-27). Same model family as our direct ``plugins/image_gen/krea``
+    # backend, exposed here for users who prefer to bill through their
+    # existing FAL key / Nous Portal subscription rather than register
+    # directly with Krea.  Both variants share the same parameter schema —
+    # only model id, price, and recommended use case differ.
+    "fal-ai/krea/v2/medium/text-to-image": {
+        "display": "Krea 2 Medium",
+        "speed": "~15-25s",
+        "strengths": "Illustration, anime, painting, expressive/artistic styles",
+        "price": "$0.030 (text) / $0.035 (style refs)",
+        "size_style": "aspect_ratio",
+        # Krea natively accepts 1:1, 4:3, 3:2, 16:9, 2.35:1, 4:5, 2:3, 9:16 —
+        # we map our 3 abstract ratios to the closest match.
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "creativity": "medium",
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "creativity", "seed",
+            "image_style_references",
+        },
+        "upscale": False,
+    },
+    "fal-ai/krea/v2/large/text-to-image": {
+        "display": "Krea 2 Large",
+        "speed": "~25-60s",
+        "strengths": "Photorealism, raw textured looks (motion blur, grain, film)",
+        "price": "$0.060 (text) / $0.065 (style refs)",
+        "size_style": "aspect_ratio",
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "creativity": "medium",
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "creativity", "seed",
+            "image_style_references",
+        },
+        "upscale": False,
+    },
 }
 
 # Default model is the fastest reasonable option. Kept cheap and sub-1s.
@@ -404,12 +453,22 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
         # of a raw HTTP error from httpx.
         status = _extract_http_status(exc)
         if status is not None and 400 <= status < 500:
+            gateway_message = ""
+            if status in {401, 402, 403}:
+                gateway_message = (
+                    "\n\n"
+                    + nous_tool_gateway_unavailable_message(
+                        "managed FAL image generation",
+                        force_fresh=True,
+                    )
+                )
             raise ValueError(
                 f"Nous Subscription gateway rejected model '{model}' "
                 f"(HTTP {status}). This model may not yet be enabled on "
                 f"the Nous Portal's FAL proxy. Either:\n"
                 f"  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
                 f"  • Pick a different model via `hermes tools` → Image Generation."
+                f"{gateway_message}"
             ) from exc
         raise
 
@@ -719,6 +778,11 @@ def _build_no_backend_setup_message() -> str:
         )
     else:
         lines.append("  - FAL_KEY environment variable is not set")
+        gateway_message = nous_tool_gateway_unavailable_message(
+            "managed FAL image generation",
+        )
+        if gateway_message:
+            lines.append(f"  - {gateway_message}")
     lines.append("")
     lines.append("To enable image generation, do one of:")
     lines.append(

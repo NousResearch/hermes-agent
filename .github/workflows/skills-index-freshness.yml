@@ -1,0 +1,149 @@
+name: Skills Index Freshness Check
+
+# Belt-and-suspenders for the twice-daily build_skills_index pipeline.
+# If the live /docs/api/skills-index.json ever goes more than 26 hours
+# stale OR the file disappears entirely OR a major source has collapsed,
+# this workflow opens a GitHub issue so we hear about it before users do.
+#
+# Triggered every 4 hours so we catch a stuck cron within one tick.
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-freshness:
+    if: github.repository == 'NousResearch/hermes-agent'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe live index
+        id: probe
+        run: |
+          set -e
+          URL="https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
+          echo "Probing $URL"
+          # -L follows redirects; -f fails on HTTP errors; -s suppresses progress
+          if ! curl -fsSL -o /tmp/skills-index.json "$URL"; then
+            echo "status=fetch-failed" >> "$GITHUB_OUTPUT"
+            echo "detail=Could not download $URL" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Validate + extract generated_at and per-source counts
+          python3 <<'PY' >> "$GITHUB_OUTPUT"
+          import json, sys
+          from datetime import datetime, timezone
+
+          try:
+              with open("/tmp/skills-index.json") as f:
+                  data = json.load(f)
+          except Exception as e:
+              print(f"status=parse-failed")
+              print(f"detail=JSON decode error: {e}")
+              sys.exit(0)
+
+          generated_at = data.get("generated_at", "")
+          total = data.get("skill_count", 0)
+          skills = data.get("skills", [])
+          if not isinstance(skills, list):
+              print("status=invalid-shape")
+              print(f"detail=skills field is not a list (got {type(skills).__name__})")
+              sys.exit(0)
+
+          # Per-source counts
+          from collections import Counter
+          by_src = Counter(s.get("source", "") for s in skills)
+
+          # Freshness
+          age_hours = None
+          try:
+              ts = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+              age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+          except Exception:
+              pass
+
+          # Floors — same as build_skills_index.py EXPECTED_FLOORS.
+          floors = {
+              "skills.sh": 100,
+              "lobehub": 100,
+              "clawhub": 50,
+              "official": 50,
+              "github": 30,
+              "browse-sh": 50,
+          }
+          issues = []
+          if age_hours is not None and age_hours > 26:
+              issues.append(f"Index is {age_hours:.1f}h old (limit 26h)")
+          for src, floor in floors.items():
+              count = by_src.get(src, 0)
+              if src == "skills.sh":
+                  count = by_src.get("skills.sh", 0) + by_src.get("skills-sh", 0)
+              if count < floor:
+                  issues.append(f"{src}: {count} < {floor}")
+          if total < 1500:
+              issues.append(f"total skills: {total} < 1500")
+
+          if issues:
+              detail = "; ".join(issues)
+              print("status=degraded")
+              # GITHUB_OUTPUT doesn't allow newlines without explicit delimiter
+              print(f"detail={detail}")
+          else:
+              print("status=ok")
+              print(f"detail=Index OK — {total} skills, generated {generated_at}")
+              by_summary = ", ".join(f"{k}={v}" for k, v in by_src.most_common(8))
+              print(f"summary={by_summary}")
+          PY
+
+      - name: Report status
+        run: |
+          echo "Probe status: ${{ steps.probe.outputs.status }}"
+          echo "Detail:       ${{ steps.probe.outputs.detail }}"
+          if [ -n "${{ steps.probe.outputs.summary }}" ]; then
+            echo "Summary:      ${{ steps.probe.outputs.summary }}"
+          fi
+
+      - name: Open issue on degraded / failed probe
+        if: steps.probe.outputs.status != 'ok'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STATUS: ${{ steps.probe.outputs.status }}
+          DETAIL: ${{ steps.probe.outputs.detail }}
+        run: |
+          # Find existing open issue by title prefix so we don't spam — we
+          # append a comment instead of opening a new one each tick.
+          TITLE_PREFIX="[skills-index-watchdog]"
+          existing=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --search "in:title \"$TITLE_PREFIX\"" \
+            --json number,title \
+            --jq '.[] | select(.title | startswith("'"$TITLE_PREFIX"'")) | .number' \
+            | head -1)
+          BODY="Automated freshness probe failed.
+
+          **Status:** \`$STATUS\`
+          **Detail:** $DETAIL
+
+          The Skills Hub at /docs/skills depends on \`/docs/api/skills-index.json\`.
+          The unified index is rebuilt by \`.github/workflows/skills-index.yml\` (cron 6/18 UTC)
+          and \`.github/workflows/deploy-site.yml\` (on every push affecting website/skills).
+          If this issue keeps reopening, check the latest runs:
+
+          - https://github.com/${{ github.repository }}/actions/workflows/skills-index.yml
+          - https://github.com/${{ github.repository }}/actions/workflows/deploy-site.yml
+
+          This issue was opened by \`.github/workflows/skills-index-freshness.yml\`. Close it once the underlying problem is fixed; the next probe will reopen if it's still broken."
+          if [ -n "$existing" ]; then
+            echo "Appending to existing issue #$existing"
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Probe still failing at $(date -u +%FT%TZ): \`$STATUS\` — $DETAIL"
+          else
+            echo "Opening new watchdog issue"
+            gh issue create --repo "${{ github.repository }}" \
+              --title "$TITLE_PREFIX Skills index is stale or degraded ($STATUS)" \
+              --body "$BODY"
+          fi

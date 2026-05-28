@@ -93,15 +93,15 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'browse and resume previous sessions',
+    aliases: ['switch'],
+    help: 'switch between live TUI sessions',
     name: 'sessions',
     run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('switch sessions')) {
-        return
+      if (arg.trim().toLowerCase() === 'new') {
+        return ctx.session.newLiveSession()
       }
-      if (!arg.trim()) {
-        return patchOverlayState({ picker: true })
-      }
+
+      patchOverlayState({ sessions: true })
     }
   },
 
@@ -232,6 +232,7 @@ export const sessionCommands: SlashCommand[] = [
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
+          ctx.voice.setVoiceTts(!!r.tts)
 
           // Render the configured record key (config.yaml ``voice.record_key``)
           // instead of hardcoded "Ctrl+B" — the gateway response carries the

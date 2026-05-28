@@ -40,7 +40,7 @@ def test_normalize_usage_openai_subtracts_cached_prompt_tokens():
 
 
 def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
-    """Some OpenAI-compatible proxies (OpenRouter, Vercel AI Gateway, Cline) expose
+    """Some OpenAI-compatible proxies (OpenRouter, Cline) expose
     Anthropic-style cache token counts at the top level of the usage object when
     routing Claude models, instead of nesting them in prompt_tokens_details.
 

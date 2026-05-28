@@ -153,6 +153,130 @@ class TestWecomCallbackRouting:
         assert calls["json"]["agentid"] == 1001
 
 
+class TestWecomCallbackSendTokenRefresh:
+    @pytest.mark.asyncio
+    async def test_send_retries_with_fresh_token_on_errcode_40001(self):
+        """errcode=40001 must evict the cached token, refresh, and retry once."""
+        adapter = WecomCallbackAdapter(_config())
+        adapter._access_tokens["test-app"] = {"token": "stale", "expires_at": 9999999999}
+        adapter._user_app_map["ww1234567890:alice"] = "test-app"
+
+        responses = [
+            {"errcode": 40001, "errmsg": "invalid credential"},
+            {"errcode": 0, "msgid": "msg-ok"},
+        ]
+        post_calls = []
+
+        class FakeClient:
+            async def post(self, url, json=None, **kw):
+                post_calls.append(url)
+
+                class R:
+                    def json(inner):
+                        return responses[len(post_calls) - 1]
+                return R()
+
+            async def get(self, url, params=None, **kw):
+                class R:
+                    def json(inner):
+                        return {"errcode": 0, "access_token": "fresh", "expires_in": 7200}
+                return R()
+
+        adapter._http_client = FakeClient()
+        result = await adapter.send("ww1234567890:alice", "hello")
+
+        assert result.success is True
+        assert result.message_id == "msg-ok"
+        assert len(post_calls) == 2
+        assert "fresh" in post_calls[1]
+        assert adapter._access_tokens["test-app"]["token"] == "fresh"
+
+    @pytest.mark.asyncio
+    async def test_send_retries_with_fresh_token_on_errcode_42001(self):
+        """errcode=42001 (token expired) must also trigger the refresh-retry path."""
+        adapter = WecomCallbackAdapter(_config())
+        adapter._access_tokens["test-app"] = {"token": "expired", "expires_at": 9999999999}
+
+        responses = [
+            {"errcode": 42001, "errmsg": "access_token expired"},
+            {"errcode": 0, "msgid": "msg-42"},
+        ]
+        post_calls = []
+
+        class FakeClient:
+            async def post(self, url, json=None, **kw):
+                post_calls.append(url)
+
+                class R:
+                    def json(inner):
+                        return responses[len(post_calls) - 1]
+                return R()
+
+            async def get(self, url, params=None, **kw):
+                class R:
+                    def json(inner):
+                        return {"errcode": 0, "access_token": "renewed", "expires_in": 7200}
+                return R()
+
+        adapter._http_client = FakeClient()
+        result = await adapter.send("alice", "hello")
+
+        assert result.success is True
+        assert len(post_calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_send_does_not_retry_on_non_token_errcode(self):
+        """Errors unrelated to token validity must fail immediately without retrying."""
+        adapter = WecomCallbackAdapter(_config())
+        adapter._access_tokens["test-app"] = {"token": "good", "expires_at": 9999999999}
+
+        post_calls = []
+
+        class FakeClient:
+            async def post(self, url, json=None, **kw):
+                post_calls.append(url)
+
+                class R:
+                    def json(inner):
+                        return {"errcode": 60020, "errmsg": "not allow to access"}
+                return R()
+
+        adapter._http_client = FakeClient()
+        result = await adapter.send("alice", "hello")
+
+        assert result.success is False
+        assert len(post_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_send_fails_cleanly_when_retry_also_fails(self):
+        """If the refreshed token is also rejected, return failure without looping further."""
+        adapter = WecomCallbackAdapter(_config())
+        adapter._access_tokens["test-app"] = {"token": "bad1", "expires_at": 9999999999}
+
+        post_calls = []
+
+        class FakeClient:
+            async def post(self, url, json=None, **kw):
+                post_calls.append(url)
+
+                class R:
+                    def json(inner):
+                        return {"errcode": 42001, "errmsg": "access_token expired"}
+                return R()
+
+            async def get(self, url, params=None, **kw):
+                class R:
+                    def json(inner):
+                        return {"errcode": 0, "access_token": "bad2", "expires_in": 7200}
+                return R()
+
+        adapter._http_client = FakeClient()
+        result = await adapter.send("alice", "hello")
+
+        assert result.success is False
+        assert len(post_calls) == 2
+
+
 class TestWecomCallbackPollLoop:
     @pytest.mark.asyncio
     async def test_poll_loop_dispatches_handle_message(self, monkeypatch):

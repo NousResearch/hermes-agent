@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Clock, Pause, Play, Plus, Trash2, X, Zap } from "lucide-react";
+import { Clock, Pause, Play, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -10,7 +10,7 @@ import type { CronJob, ProfileInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
-import { useModalBehavior } from "@nous-research/ui/hooks/use-modal-behavior";
+import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -18,6 +18,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { cn, themedBody } from "@/lib/utils";
 
 function formatTime(iso?: string | null): string {
   if (!iso) return "—";
@@ -228,10 +229,10 @@ export default function CronPage() {
   useLayoutEffect(() => {
     setEnd(
       <Button
+        className="uppercase"
         size="sm"
         onClick={() => setCreateModalOpen(true)}
       >
-        <Plus className="h-3 w-3" />
         {t.common.create}
       </Button>,
     );
@@ -282,7 +283,7 @@ export default function CronPage() {
           aria-modal="true"
           aria-labelledby="create-cron-title"
         >
-          <div className="relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col">
+          <div className={cn(themedBody, "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col")}>
             <Button
               ghost
               size="icon"
@@ -296,7 +297,7 @@ export default function CronPage() {
             <header className="p-5 pb-3 border-b border-border">
               <h2
                 id="create-cron-title"
-                className="font-display text-base tracking-wider uppercase"
+                className="font-mondwest text-display text-base tracking-wider"
               >
                 {t.cron.newJob}
               </h2>
@@ -379,10 +380,11 @@ export default function CronPage() {
 
               <div className="flex justify-end">
                 <Button
+                  className="uppercase"
                   size="sm"
                   onClick={handleCreate}
                   disabled={creating}
-                  prefix={creating ? <Spinner /> : <Plus />}
+                  prefix={creating ? <Spinner /> : undefined}
                 >
                   {creating ? t.common.creating : t.common.create}
                 </Button>

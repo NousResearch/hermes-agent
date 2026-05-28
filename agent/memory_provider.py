@@ -78,6 +78,7 @@ class MemoryProvider(ABC):
           - agent_workspace (str): Shared workspace name (e.g. "hermes").
           - parent_session_id (str): For subagents, the parent's session_id.
           - user_id (str): Platform user identifier (gateway sessions).
+          - user_id_alt (str): Optional alternate stable platform user identifier.
         """
 
     def system_prompt_block(self) -> str:

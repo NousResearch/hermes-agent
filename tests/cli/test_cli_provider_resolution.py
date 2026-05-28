@@ -271,7 +271,10 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
 
 
 def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_tts(monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.managed_nous_tools_enabled",
+        lambda *args, **kwargs: True,
+    )
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "elevenlabs"},
@@ -306,7 +309,10 @@ def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_
 
 
 def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.managed_nous_tools_enabled",
+        lambda *args, **kwargs: True,
+    )
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "edge"},
@@ -534,7 +540,7 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     # then display name. The api_mode prompt also runs before model selection.
     answers = iter(["http://localhost:8000", "local-key", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    monkeypatch.setattr("getpass.getpass", lambda _prompt="": next(answers))
+    monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": next(answers))
 
     hermes_main._model_flow_custom({})
     output = capsys.readouterr().out
@@ -592,7 +598,7 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
         ]
     )
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "test-key")
+    monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": "test-key")
 
     hermes_main._model_flow_custom({"model": {"provider": "custom"}})
 

@@ -1,6 +1,7 @@
 """Tests for agent/anthropic_adapter.py — Anthropic Messages API adapter."""
 
 import json
+import sys
 import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -419,6 +420,24 @@ class TestWriteClaudeCodeCredentials:
         data = json.loads(cred_file.read_text())
         assert data["otherField"] == "keep-me"
         assert data["claudeAiOauth"]["accessToken"] == "new-tok"
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    def test_credentials_file_created_with_0o600(self, tmp_path, monkeypatch):
+        """Refreshed Claude Code credentials must land on disk at 0o600.
+
+        Regression for the TOCTOU race where ``write_text`` + ``replace``
+        + post-write ``chmod`` left both the temp file and the destination
+        briefly readable at the process umask (commonly 0o644). Mirrors
+        the fix shipped in #19673 (google_oauth) and #21148 (mcp_oauth).
+        """
+        import stat as _stat
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        _write_claude_code_credentials("tok", "ref", 12345)
+
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        assert cred_file.exists()
+        mode = _stat.S_IMODE(cred_file.stat().st_mode)
+        assert mode == 0o600, f"creds file mode {oct(mode)} != 0o600 — TOCTOU race regressed"
 
 
 class TestResolveWithRefresh:
@@ -1169,16 +1188,27 @@ class TestBuildAnthropicKwargs:
         # params through its signature, we exercise the strip behavior by
         # calling the internal predicate directly.
         from agent.anthropic_adapter import _forbids_sampling_params
+        assert _forbids_sampling_params("claude-opus-4-8") is True
+        assert _forbids_sampling_params("claude-opus-4-8-fast") is True
         assert _forbids_sampling_params("claude-opus-4-7") is True
         assert _forbids_sampling_params("claude-opus-4-6") is False
         assert _forbids_sampling_params("claude-sonnet-4-5") is False
 
     def test_supports_fast_mode_predicate(self):
-        """Fast mode is Opus 4.6 only — Opus 4.7 and others must be excluded."""
+        """Fast mode is Opus 4.6 only — Opus 4.7 and others must be excluded.
+
+        For Opus 4.8 the fast variant is a separate model ID
+        (anthropic/claude-opus-4.8-fast) routed through the normal model
+        field, NOT via the ``speed: "fast"`` request parameter. So
+        ``_supports_fast_mode`` (which gates the parameter) must stay
+        False for both opus-4-8 and opus-4-8-fast.
+        """
         from agent.anthropic_adapter import _supports_fast_mode
         assert _supports_fast_mode("claude-opus-4-6") is True
         assert _supports_fast_mode("anthropic/claude-opus-4-6") is True
         assert _supports_fast_mode("claude-opus-4-7") is False
+        assert _supports_fast_mode("claude-opus-4-8") is False
+        assert _supports_fast_mode("claude-opus-4-8-fast") is False
         assert _supports_fast_mode("claude-sonnet-4-6") is False
         assert _supports_fast_mode("claude-haiku-4-5") is False
         assert _supports_fast_mode("") is False

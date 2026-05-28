@@ -61,6 +61,7 @@ function visualLines(value: string, cols: number): VisualLine[] {
       }
 
       lineStart = originalIdx
+
       continue
     }
 
@@ -178,7 +179,8 @@ export function transcriptGutterWidth(role: Role, userPrompt: string) {
 }
 
 export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: string, termuxMode = false) {
-  const available = Math.max(1, totalCols - transcriptGutterWidth(role, userPrompt) - 2)
+  const horizontalReserve = termuxMode ? 2 : 4
+  const available = Math.max(1, totalCols - transcriptGutterWidth(role, userPrompt) - horizontalReserve)
 
   if (termuxMode) {
     // On narrow / unusual aspect-ratio mobile panes, forcing a wide minimum

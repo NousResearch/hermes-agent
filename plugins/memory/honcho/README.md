@@ -127,6 +127,41 @@ For every key, resolution order is: **host block > root > env var > default**.
 | `peerName` | string | — | User peer identity |
 | `aiPeer` | string | host key | AI peer identity |
 
+### Identity Mapping (Gateway Multi-User)
+
+In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a platform-native runtime ID (Telegram UID, Discord snowflake, Slack user). These three keys control how those runtime IDs map to Honcho peers. The resolver is config-driven and deterministic — no automatic merging or runtime inference.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `pinUserPeer` | bool | `false` | When `true`, every gateway runtime user collapses to `peerName`. Single-operator deployments where you want all your platforms (and any other users) to share one peer. Also accepted as `pinPeerName` |
+| `pinPeerName` | bool | `false` | Alias for `pinUserPeer`; same effect |
+| `userPeerAliases` | object | `{}` | Map of runtime IDs to peer IDs (`{"86701400": "eri"}`). Many-to-one is the intended pattern — alias all your runtime IDs to one peer name. One-to-many is not supported; one runtime ID resolves to exactly one peer |
+| `runtimePeerPrefix` | string | `""` | Prepended to unknown runtime IDs to namespace them (e.g. `"telegram_"` → `telegram_86701400`). Used only when no alias matches. Prevents collisions between platforms whose runtime IDs share the same shape |
+
+**Resolver ladder** (first match wins):
+
+```
+1. pinUserPeer / pinPeerName=true → return peerName (ignore runtime ID)
+2. userPeerAliases[runtime_id]   → return aliased peer
+3. userPeerAliases[runtime_id_alt] → check alt-ID too (Telegram UID + username, etc.)
+4. runtimePeerPrefix + runtime_id → namespaced peer, with sha256 collision escalation
+5. raw sanitized runtime_id      → fallback peer
+6. peerName                      → no runtime ID at all (CLI/TUI)
+7. session-key fallback          → no config either
+```
+
+**Why no `pinAiPeer`?** The AI peer is already pinned by construction — `aiPeer` is the only AI-side identity setting and the resolver never overrides it. Only the user-side peer has the runtime-vs-config tension that `pinUserPeer` resolves.
+
+**Host vs root semantics.** All three keys are accepted at both root and `hosts.<host>` levels. Host-level wins. For maps and prefixes, host-level *replaces* the root value as a whole (not merge), so a host can intentionally own its identity universe or wipe it with `userPeerAliases: {}` / `runtimePeerPrefix: ""`.
+
+**Deployment shapes** (`hermes honcho setup` asks one prompt to set these):
+
+- **Single-operator** — `pinUserPeer: true`. All gateway users → `peerName`. Recommended for personal use where you connect Hermes to your own Telegram/Discord/etc.
+- **Multi-user gateway** — `pinUserPeer: false`, optional `runtimePeerPrefix`. Each runtime user → own peer. Recommended for bots serving many humans.
+- **Hybrid** — `pinUserPeer: false`, `userPeerAliases` mapping the operator's runtime IDs to `peerName`. Multi-user gateway where YOU are routed but others stay distinct.
+
+**Migrating single → multi.** Flipping `pinUserPeer` from `true` to `false` does not migrate data. Memory accumulated under `peerName` while pinned stays there; runtime users now resolve to fresh, empty peers. To preserve your own continuity, use the **hybrid** shape — alias your runtime IDs back to `peerName` so your turns keep landing on the pooled history while other users get their own peers. The setup wizard offers this path automatically when it detects a single → multi transition.
+
 ### Memory & Recall
 
 | Key | Type | Default | Description |

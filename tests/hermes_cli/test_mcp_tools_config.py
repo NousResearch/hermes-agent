@@ -68,8 +68,13 @@ def test_no_changes_when_checklist_cancelled(capsys):
     assert "no changes" in captured.out.lower()
 
 
-def test_disabling_tool_writes_exclude_list(capsys):
-    """Unchecking a tool adds it to the exclude list."""
+def test_disabling_tool_writes_include_list(capsys):
+    """Unchecking a tool produces an include list of the still-chosen tools.
+
+    Standardized on tools.include (whitelist) across the codebase — the
+    catalog flow, `hermes mcp configure`, and this UI all write the same
+    shape so users don\'t see config drift across UIs.
+    """
     config = {
         "mcp_servers": {
             "github": {"command": "npx"},
@@ -89,8 +94,8 @@ def test_disabling_tool_writes_exclude_list(capsys):
 
     mock_save.assert_called_once()
     tools_cfg = config["mcp_servers"]["github"]["tools"]
-    assert tools_cfg["exclude"] == ["delete_repo"]
-    assert "include" not in tools_cfg
+    assert tools_cfg["include"] == ["create_issue", "search_repos"]
+    assert "exclude" not in tools_cfg
 
 
 def test_enabling_all_clears_filters(capsys):
@@ -244,8 +249,9 @@ def test_description_truncation_in_labels():
     assert len(label) < len(long_desc) + 30  # truncated + tool name + parens
 
 
-def test_switching_from_include_to_exclude(capsys):
-    """When user modifies selection, include list is replaced by exclude list."""
+def test_modifying_include_stays_in_include_mode(capsys):
+    """Changing the selection updates the include list — never switches
+    to exclude mode. Standardized on include-mode writes across the codebase."""
     config = {
         "mcp_servers": {
             "github": {
@@ -256,16 +262,15 @@ def test_switching_from_include_to_exclude(capsys):
     }
     tools = [("create_issue", "Create"), ("search", "Search"), ("delete", "Delete")]
 
-    # User selects create_issue and search (deselects delete)
-    # pre_selected would be {0} (only create_issue from include), so {0, 1} is a change
+    # User adds search to the selection (deselects delete which was never on)
     with patch(_PROBE, return_value={"github": tools}), \
          patch(_CHECKLIST, return_value={0, 1}), \
          patch(_SAVE):
         _configure_mcp_tools_interactive(config)
 
     tools_cfg = config["mcp_servers"]["github"]["tools"]
-    assert tools_cfg["exclude"] == ["delete"]
-    assert "include" not in tools_cfg
+    assert tools_cfg["include"] == ["create_issue", "search"]
+    assert "exclude" not in tools_cfg
 
 
 def test_empty_tools_server_skipped(capsys):

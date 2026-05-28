@@ -152,7 +152,7 @@ class TestEditMessageFinalizeSignature:
             ("plugins.platforms.discord.adapter", "DiscordAdapter"),
             ("gateway.platforms.slack", "SlackAdapter"),
             ("gateway.platforms.matrix", "MatrixAdapter"),
-            ("gateway.platforms.mattermost", "MattermostAdapter"),
+            ("plugins.platforms.mattermost.adapter", "MattermostAdapter"),
             ("gateway.platforms.feishu", "FeishuAdapter"),
             ("gateway.platforms.whatsapp", "WhatsAppAdapter"),
             ("gateway.platforms.dingtalk", "DingTalkAdapter"),
@@ -937,6 +937,133 @@ class TestFinalResponseDeliveryGuard:
         await task
 
         assert consumer._final_response_sent is True
+
+
+class TestFinalContentDeliveredGuard:
+    """Regression coverage for #25010 — _final_content_delivered must only be
+    set when the final response is actually confirmed delivered to the user,
+    not when a mid-stream edit happened to show partial content.  Prematurely
+    setting this flag causes the gateway to suppress the normal final send,
+    leaving the user with an incomplete partial message."""
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_edit_success_does_not_mark_content_delivered(self):
+        """When the mid-stream edit with finalize=True succeeds but the
+        subsequent finalize edit fails, _final_content_delivered must stay
+        False so the gateway does not suppress its fallback send (#25010).
+
+        Simulates TelegramAdapter which sets REQUIRES_EDIT_FINALIZE=True,
+        requiring a second finalize edit even when content is unchanged."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True  # Telegram adapter behavior
+        # First send (initial streaming message) succeeds
+        # Mid-stream finalize edit succeeds
+        # Final finalize edit FAILS (e.g. flood control on Telegram)
+        adapter.edit_message = AsyncMock(side_effect=[
+            SimpleNamespace(success=True),   # mid-stream edit
+            SimpleNamespace(success=True),   # finalize edit on line 548
+            SimpleNamespace(success=False),  # final finalize on line 580 (FAILS)
+        ])
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Simulate streaming: send initial text, then more text, then done
+        consumer.on_delta("Part one of the response...\n")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+
+        consumer.on_delta("Part two, the complete final answer.\n")
+        await asyncio.sleep(0.05)
+
+        consumer.finish()
+        await task
+
+        # The key assertion: _final_content_delivered must NOT be True,
+        # because the final edit failed and the complete response was never
+        # confirmed delivered.
+        assert consumer._final_content_delivered is False, (
+            "_final_content_delivered was prematurely set to True — gateway "
+            "will wrongly suppress its fallback send, leaving the user with "
+            "an incomplete partial message (#25010)"
+        )
+        # The gateway must still be allowed to send the complete response
+        assert consumer._final_response_sent is False, (
+            "_final_response_sent must also be False when the final edit failed"
+        )
+
+    @pytest.mark.asyncio
+    async def test_final_edit_success_does_mark_content_delivered(self):
+        """When the final finalize edit succeeds, _final_content_delivered
+        must be True — the normal happy path should still work."""
+        adapter = MagicMock()
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("The complete response.\n")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+
+        consumer.finish()
+        await task
+
+        assert consumer._final_content_delivered is True, (
+            "_final_content_delivered must be True when the final edit succeeds"
+        )
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_fallback_partial_send_does_not_mark_final_sent(self):
+        """When fallback final send delivers only some chunks before failing,
+        _final_response_sent must stay False so the gateway can still attempt
+        a complete final send (#25010)."""
+        call_count = 0
+
+        async def fake_send(*, chat_id, content, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return SimpleNamespace(success=True, message_id="msg_1")
+            # Third chunk (fallback continuation) FAILS
+            return SimpleNamespace(success=False, error="flood_control:13.0")
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=fake_send)
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="flood_control:13.0"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Trigger enough delta to enter fallback mode
+        consumer.on_delta("Initial streaming text...\n")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+
+        # Send a very long text that will trigger overflow/fallback
+        long_text = ("x" * 3000 + "\n") + ("y" * 3000 + "\n") + "Final answer.\n"
+        consumer.on_delta(long_text)
+        await asyncio.sleep(0.1)
+
+        consumer.finish()
+        await task
+
+        assert consumer._final_response_sent is False, (
+            "Partial fallback send must not set _final_response_sent — gateway "
+            "must still be able to deliver the complete response (#25010)"
+        )
 
 
 class TestEditOverflowSplitAndDeliver:

@@ -8,6 +8,10 @@ description: "Master the Hermes Agent terminal interface — commands, keybindin
 
 Hermes Agent's CLI is a full terminal user interface (TUI) — not a web UI. It features multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output. Built for people who live in the terminal.
 
+:::tip First-time setup
+One command — `hermes setup --portal` — and you're ready to `hermes chat`. See [Nous Portal](/integrations/nous-portal).
+:::
+
 :::tip
 Hermes also ships a modern TUI with modal overlays, mouse selection, and non-blocking input. Launch it with `hermes --tui` — see the [TUI](tui.md) guide.
 :::
@@ -157,7 +161,7 @@ quick_commands:
     target: /gateway restart
 ```
 
-Then type `/status`, `/gpu`, or `/restart` in any chat. See the [Configuration guide](/docs/user-guide/configuration#quick-commands) for more examples.
+Then type `/status`, `/gpu`, or `/restart` in any chat. See the [Configuration guide](/user-guide/configuration#quick-commands) for more examples.
 
 ## Preloading Skills at Launch
 
@@ -305,7 +309,7 @@ The CLI shows animated feedback as the agent works:
   ┊ 📄 web_extract (2.1s)
 ```
 
-Cycle through display modes with `/verbose`: `off → new → all → verbose`. This command can also be enabled for messaging platforms — see [configuration](/docs/user-guide/configuration#display-settings).
+Cycle through display modes with `/verbose`: `off → new → all → verbose`. This command can also be enabled for messaging platforms — see [configuration](/user-guide/configuration#display-settings).
 
 ### Tool Preview Length
 

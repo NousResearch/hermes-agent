@@ -381,12 +381,12 @@ def compress_context(
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
             agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-            os.environ["HERMES_SESSION_ID"] = agent.session_id
             try:
-                from gateway.session_context import _SESSION_ID
-                _SESSION_ID.set(agent.session_id)
+                from gateway.session_context import set_current_session_id
+
+                set_current_session_id(agent.session_id)
             except Exception:
-                pass
+                os.environ["HERMES_SESSION_ID"] = agent.session_id
             agent._session_db_created = False
             agent._session_db.create_session(
                 session_id=agent.session_id,
@@ -421,6 +421,7 @@ def compress_context(
                 agent.session_id or "",
                 boundary_reason="compression",
                 old_session_id=_old_sid,
+                conversation_id=getattr(agent, "_gateway_session_key", None),
             )
     except Exception as _ce_err:
         logger.debug("context engine on_session_start (compression): %s", _ce_err)

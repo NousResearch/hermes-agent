@@ -55,6 +55,31 @@ class TestReadChain:
             {"provider": "nous", "model": "Hermes-4-Llama-3.1-405B"},
         ]
 
+    def test_merges_new_and_legacy_formats(self):
+        from hermes_cli.fallback_cmd import _read_chain
+        cfg = {
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            ],
+            "fallback_model": {"provider": "nous", "model": "Hermes-4"},
+        }
+        assert _read_chain(cfg) == [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            {"provider": "nous", "model": "Hermes-4"},
+        ]
+
+    def test_legacy_duplicate_is_deduplicated_after_merge(self):
+        from hermes_cli.fallback_cmd import _read_chain
+        cfg = {
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            ],
+            "fallback_model": {"provider": "OpenRouter", "model": "anthropic/claude-sonnet-4.6"},
+        }
+        assert _read_chain(cfg) == [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+        ]
+
     def test_migrates_legacy_single_dict(self):
         from hermes_cli.fallback_cmd import _read_chain
         cfg = {"fallback_model": {"provider": "openrouter", "model": "gpt-5.4"}}

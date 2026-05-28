@@ -293,6 +293,74 @@ class GatewaySlashCommandsMixin:
             f"Slash commands you can run: {runnable_str}"
         )
 
+    def _kanban_source_has_unique_thread_binding(self, source) -> bool:
+        """Return True when source is an unambiguous subscribed Kanban task thread."""
+        platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", ""))
+        platform_str = str(platform or "").lower()
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        thread_id = str(getattr(source, "thread_id", "") or "")
+        if not platform_str or not chat_id or not thread_id:
+            return False
+        try:
+            from hermes_cli import kanban_db as _kb
+
+            boards = [
+                str(meta.get("slug") or "")
+                for meta in _kb.list_boards(include_archived=False)
+                if meta.get("slug")
+            ]
+            candidates: set[tuple[str | None, str]] = set()
+            for candidate_board in boards:
+                conn = _kb.connect(board=candidate_board)
+                try:
+                    candidates.update(
+                        (candidate_board, str(row.get("task_id") or ""))
+                        for row in _kb.list_notify_subs(conn)
+                        if row.get("task_id")
+                        and str(row.get("platform") or "").lower() == platform_str
+                        and str(row.get("chat_id") or "") == chat_id
+                        and str(row.get("thread_id") or "") == thread_id
+                    )
+                finally:
+                    conn.close()
+            return len(candidates) == 1
+        except Exception as exc:  # pragma: no cover - best-effort routing guard
+            logger.debug("kanban free-response bound-task lookup failed: %s", exc)
+            return False
+
+    def _kanban_thread_free_response_command(self, event: MessageEvent) -> str | None:
+        """Map plain-language task-thread lifecycle requests to /kanban shorthand."""
+        text = (event.text or "").strip()
+        if not text or text.startswith("/"):
+            return None
+        if not self._kanban_source_has_unique_thread_binding(event.source):
+            return None
+
+        done_match = re.match(
+            r"(?is)^\s*(?:"
+            r"mark\s+(?:this\s+)?(?:task\s+)?(?:as\s+)?done"
+            r"|close\s+(?:this\s+|the\s+)?(?:task|card)"
+            r"|(?:this\s+)?task\s+is\s+done"
+            r")\b(?P<summary>.*)$",
+            text,
+        )
+        if done_match:
+            summary = done_match.group("summary").strip(" \t:-—–")
+            return "/kanban done" + (f" {summary}" if summary else "")
+
+        block_match = re.match(
+            r"(?is)^\s*(?:"
+            r"block\s+(?:this\s+)?(?:task\s+)?"
+            r"|mark\s+(?:this\s+)?(?:task\s+)?(?:as\s+)?blocked"
+            r")\b(?P<reason>.*)$",
+            text,
+        )
+        if block_match:
+            reason = block_match.group("reason").strip(" \t:-—–")
+            return "/kanban block" + (f" {reason}" if reason else "")
+
+        return None
+
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.
 

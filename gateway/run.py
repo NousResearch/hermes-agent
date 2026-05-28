@@ -7365,6 +7365,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return self._telegram_topic_root_lobby_message()
             return None
 
+        kanban_lifecycle_text = self._kanban_thread_free_response_command(event)
+        if kanban_lifecycle_text:
+            event = dataclasses.replace(event, text=kanban_lifecycle_text)
+            return await self._handle_kanban_command(event)
+
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,

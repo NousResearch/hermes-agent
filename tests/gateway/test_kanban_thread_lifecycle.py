@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
@@ -49,6 +50,16 @@ def runner() -> GatewayRunner:
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig()
     runner.adapters = {}
+    runner.session_store = MagicMock()
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._session_run_generation = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._update_prompt_pending = {}
+    runner._draining = False
+    runner._update_runtime_status = MagicMock()
+    runner._is_user_authorized = lambda source: True
     runner._kanban_notifier_profile = "default"
     runner._active_profile_name = lambda: "default"
     return runner
@@ -94,6 +105,7 @@ async def test_kanban_block_in_subscribed_thread_uses_bound_task_id(
         )
     )
 
+    assert result is not None
     assert f"Blocked {task_id}" in result
     conn = kb.connect()
     try:
@@ -119,6 +131,7 @@ async def test_kanban_done_in_subscribed_thread_uses_bound_task_id(
         )
     )
 
+    assert result is not None
     assert f"Completed {task_id}" in result
     conn = kb.connect()
     try:
@@ -126,6 +139,69 @@ async def test_kanban_done_in_subscribed_thread_uses_bound_task_id(
         assert task is not None
         assert task.status == "done"
         assert "smoke test passed" in (task.result or "")
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_free_response_done_in_subscribed_thread_updates_bound_task_without_agent(
+    kanban_home,
+    runner: GatewayRunner,
+    discord_thread_source: SessionSource,
+):
+    task_id = _create_subscribed_task(discord_thread_source)
+
+    async def _agent_should_not_run(*_args, **_kwargs):
+        raise AssertionError("free-response task-thread done command was routed to the agent")
+
+    runner._handle_message_with_agent = _agent_should_not_run
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="mark this task done - smoke test passed",
+            source=discord_thread_source,
+        )
+    )
+
+    assert result is not None
+    assert f"Completed {task_id}" in result
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "done"
+        assert "smoke test passed" in (task.result or "")
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_free_response_block_in_subscribed_thread_updates_bound_task_without_agent(
+    kanban_home,
+    runner: GatewayRunner,
+    discord_thread_source: SessionSource,
+):
+    task_id = _create_subscribed_task(discord_thread_source)
+
+    async def _agent_should_not_run(*_args, **_kwargs):
+        raise AssertionError("free-response task-thread block command was routed to the agent")
+
+    runner._handle_message_with_agent = _agent_should_not_run
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="block this awaiting Sam approval",
+            source=discord_thread_source,
+        )
+    )
+
+    assert result is not None
+    assert f"Blocked {task_id}" in result
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "blocked"
     finally:
         conn.close()
 
@@ -194,6 +270,7 @@ async def test_kanban_complete_shorthand_preserves_explicit_options(
         )
     )
 
+    assert result is not None
     assert f"Completed {task_id}" in result
     conn = kb.connect()
     try:
@@ -237,6 +314,7 @@ async def test_kanban_shorthand_routes_to_non_default_bound_board(
         )
     )
 
+    assert result is not None
     assert f"Blocked {task_id}" in result
     default_conn = kb.connect()
     olympus_conn = kb.connect(board="olympus")

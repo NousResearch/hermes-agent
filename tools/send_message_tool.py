@@ -13,6 +13,7 @@ import re
 import ssl
 import time
 from email.utils import formatdate
+from pathlib import Path
 from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
@@ -275,6 +276,10 @@ def _handle_send(args):
     if duplicate_skip:
         return json.dumps(duplicate_skip)
 
+    internal_matrix_block = _maybe_block_internal_matrix_profile_send(platform_name, chat_id)
+    if internal_matrix_block:
+        return json.dumps(internal_matrix_block)
+
     # Slack: resolve user IDs (U...) to DM channel IDs via conversations.open
     if platform_name == "slack" and chat_id and chat_id.startswith("U"):
         try:
@@ -417,6 +422,104 @@ def _describe_media_for_mirror(media_files):
             return "[Sent audio attachment]"
         return "[Sent document attachment]"
     return f"[Sent {len(media_files)} media attachments]"
+
+
+def _current_profile_name() -> str | None:
+    """Best-effort active Hermes profile name for gateway/tool subprocesses."""
+    explicit = os.getenv("HERMES_PROFILE") or os.getenv("HERMES_ACTIVE_PROFILE")
+    if explicit:
+        return explicit.strip() or None
+    home = os.getenv("HERMES_HOME", "").strip()
+    if not home:
+        return None
+    path = Path(home).expanduser()
+    if path.parent.name == "profiles":
+        return path.name
+    return None
+
+
+def _matrix_routes_candidates() -> list[Path]:
+    explicit = os.getenv("HERMES_MATRIX_ROUTES_FILE", "").strip()
+    candidates = []
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    hermes_home = os.getenv("HERMES_HOME", "").strip()
+    if hermes_home:
+        h = Path(hermes_home).expanduser()
+        candidates.append(h / "coordination" / "matrix_routes.yaml")
+        if h.parent.name == "profiles":
+            candidates.append(h.parent.parent / "coordination" / "matrix_routes.yaml")
+    candidates.append(Path.home() / ".hermes" / "coordination" / "matrix_routes.yaml")
+    unique = []
+    seen = set()
+    for p in candidates:
+        key = str(p)
+        if key not in seen:
+            unique.append(p)
+            seen.add(key)
+    return unique
+
+
+def _matrix_profile_room_owner(chat_id: str) -> str | None:
+    """Return the configured Hermes profile that owns a Matrix room, if any."""
+    if not chat_id or not chat_id.startswith("!"):
+        return None
+    try:
+        import yaml
+    except Exception:
+        return None
+    for path in _matrix_routes_candidates():
+        if not path.exists():
+            continue
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        routes = data.get("routes")
+        if isinstance(routes, dict) and isinstance(routes.get(chat_id), dict):
+            owner = routes[chat_id].get("profile")
+            if owner:
+                return str(owner)
+        profiles = data.get("profiles")
+        if isinstance(profiles, dict):
+            for profile, raw in profiles.items():
+                if not isinstance(raw, dict):
+                    continue
+                room_ids = {raw.get("room_id"), raw.get("native_gateway_room_id")}
+                if chat_id in {str(room_id) for room_id in room_ids if room_id}:
+                    return str(profile)
+    return None
+
+
+def _maybe_block_internal_matrix_profile_send(platform_name: str, chat_id: str) -> dict | None:
+    """Prevent using Matrix as an internal profile-to-profile message bus.
+
+    Profile-owned Matrix rooms are human-facing contact surfaces. Sending from
+    one Hermes profile into another profile's Matrix room creates same-account
+    E2EE/key-sharing ambiguity and is ignored as an own-user event by the
+    destination gateway. Use Kanban/profile-runner/internal messaging instead.
+    """
+    if platform_name != "matrix" or os.getenv("HERMES_ALLOW_MATRIX_INTERNAL_PROFILE_SEND") == "1":
+        return None
+    owner = _matrix_profile_room_owner(chat_id)
+    current = _current_profile_name()
+    if not owner or owner == current:
+        return None
+    return {
+        "error": "matrix_internal_profile_room_blocked",
+        "target_profile": owner,
+        "current_profile": current,
+        "chat_id": chat_id,
+        "message": (
+            "Refusing to send a Matrix message into another Hermes profile's room. "
+            "Matrix profile rooms are human-facing contact rooms, not an internal "
+            "profile-to-profile bus. Use Kanban, a profile runner, or structured "
+            "internal messaging instead. Set HERMES_ALLOW_MATRIX_INTERNAL_PROFILE_SEND=1 "
+            "only for an explicit one-off Matrix diagnostic/proof send."
+        ),
+    }
 
 
 def _get_cron_auto_delivery_target():

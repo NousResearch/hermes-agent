@@ -24,6 +24,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _derive_forum_thread_name,
     _is_telegram_thread_not_found,
+    _maybe_block_internal_matrix_profile_send,
     _parse_target_ref,
     _send_discord,
     _send_matrix_via_adapter,
@@ -260,6 +261,60 @@ class TestSendMessageTool:
             media_files=[],
             force_document=False,
         )
+
+    def test_blocks_matrix_send_to_another_profile_owned_room(self, tmp_path, monkeypatch):
+        routes = tmp_path / "matrix_routes.yaml"
+        routes.write_text(
+            """
+profiles:
+  pa_yunuen:
+    native_gateway_room_id: '!pa:matrix.org'
+  coordinator_maintenance:
+    native_gateway_room_id: '!coord:matrix.org'
+""".strip(),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_MATRIX_ROUTES_FILE", str(routes))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "pa_yunuen"))
+        monkeypatch.delenv("HERMES_ALLOW_MATRIX_INTERNAL_PROFILE_SEND", raising=False)
+
+        result = _maybe_block_internal_matrix_profile_send("matrix", "!coord:matrix.org")
+
+        assert result is not None
+        assert result["error"] == "matrix_internal_profile_room_blocked"
+        assert result["target_profile"] == "coordinator_maintenance"
+        assert result["current_profile"] == "pa_yunuen"
+
+    def test_allows_matrix_send_to_current_profile_room(self, tmp_path, monkeypatch):
+        routes = tmp_path / "matrix_routes.yaml"
+        routes.write_text(
+            """
+profiles:
+  pa_yunuen:
+    native_gateway_room_id: '!pa:matrix.org'
+""".strip(),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_MATRIX_ROUTES_FILE", str(routes))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "pa_yunuen"))
+
+        assert _maybe_block_internal_matrix_profile_send("matrix", "!pa:matrix.org") is None
+
+    def test_allows_explicit_matrix_internal_send_override(self, tmp_path, monkeypatch):
+        routes = tmp_path / "matrix_routes.yaml"
+        routes.write_text(
+            """
+profiles:
+  coordinator_maintenance:
+    native_gateway_room_id: '!coord:matrix.org'
+""".strip(),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_MATRIX_ROUTES_FILE", str(routes))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "pa_yunuen"))
+        monkeypatch.setenv("HERMES_ALLOW_MATRIX_INTERNAL_PROFILE_SEND", "1")
+
+        assert _maybe_block_internal_matrix_profile_send("matrix", "!coord:matrix.org") is None
 
     def test_mirror_receives_current_session_user_id(self):
         config, _telegram_cfg = _make_config()

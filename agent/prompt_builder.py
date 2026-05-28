@@ -66,14 +66,39 @@ def _find_git_root(start: Path) -> Optional[Path]:
     Returns the directory containing ``.git``, or ``None`` if we hit the
     filesystem root without finding one.
     """
-    current = start.resolve()
+    try:
+        current = start.resolve()
+    except OSError:
+        current = start.absolute()
     for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
+        try:
+            has_git_marker = (parent / ".git").exists()
+        except OSError:
+            continue
+        if has_git_marker:
             return parent
     return None
 
 
 _HERMES_MD_NAMES = (".hermes.md", "HERMES.md")
+
+
+def _safe_is_file(path: Path) -> bool:
+    """Return whether *path* is a file without surfacing cwd permission errors."""
+    try:
+        return path.is_file()
+    except OSError as e:
+        logger.debug("Could not stat context file %s: %s", path, e)
+        return False
+
+
+def _safe_is_dir(path: Path) -> bool:
+    """Return whether *path* is a directory without surfacing cwd permission errors."""
+    try:
+        return path.is_dir()
+    except OSError as e:
+        logger.debug("Could not stat context directory %s: %s", path, e)
+        return False
 
 
 def _find_hermes_md(cwd: Path) -> Optional[Path]:
@@ -84,12 +109,19 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     ``None`` if nothing is found.
     """
     stop_at = _find_git_root(cwd)
-    current = cwd.resolve()
+    try:
+        current = cwd.resolve()
+    except OSError:
+        current = cwd.absolute()
 
     for directory in [current, *current.parents]:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
-            if candidate.is_file():
+            try:
+                is_context_file = candidate.is_file()
+            except OSError:
+                continue
+            if is_context_file:
                 return candidate
         # Stop walking at the git root (or filesystem root).
         if stop_at and directory == stop_at:
@@ -1351,7 +1383,7 @@ def _load_agents_md(cwd_path: Path) -> str:
     """AGENTS.md — top-level only (no recursive walk)."""
     for name in ["AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
-        if candidate.exists():
+        if _safe_is_file(candidate):
             try:
                 content = candidate.read_text(encoding="utf-8").strip()
                 if content:
@@ -1367,7 +1399,7 @@ def _load_claude_md(cwd_path: Path) -> str:
     """CLAUDE.md / claude.md — cwd only."""
     for name in ["CLAUDE.md", "claude.md"]:
         candidate = cwd_path / name
-        if candidate.exists():
+        if _safe_is_file(candidate):
             try:
                 content = candidate.read_text(encoding="utf-8").strip()
                 if content:
@@ -1383,7 +1415,7 @@ def _load_cursorrules(cwd_path: Path) -> str:
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
     cursorrules_file = cwd_path / ".cursorrules"
-    if cursorrules_file.exists():
+    if _safe_is_file(cursorrules_file):
         try:
             content = cursorrules_file.read_text(encoding="utf-8").strip()
             if content:
@@ -1393,8 +1425,12 @@ def _load_cursorrules(cwd_path: Path) -> str:
             logger.debug("Could not read .cursorrules: %s", e)
 
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
-        mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
+    if _safe_is_dir(cursor_rules_dir):
+        try:
+            mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
+        except OSError as e:
+            logger.debug("Could not list cursor rules in %s: %s", cursor_rules_dir, e)
+            mdc_files = []
         for mdc_file in mdc_files:
             try:
                 content = mdc_file.read_text(encoding="utf-8").strip()

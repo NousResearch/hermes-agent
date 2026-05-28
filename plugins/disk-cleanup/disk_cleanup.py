@@ -163,9 +163,18 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         _log(f"WARN: unknown category '{category}', using 'other'")
         category = "other"
 
-    path = Path(path_str).resolve()
+    try:
+        path = Path(path_str).expanduser().resolve()
+    except OSError as exc:
+        _log(f"SKIP: {path_str} ({exc.__class__.__name__})")
+        return False
 
-    if not path.exists():
+    try:
+        exists = path.exists()
+    except OSError as exc:
+        _log(f"SKIP: {path} ({exc.__class__.__name__})")
+        return False
+    if not exists:
         _log(f"SKIP: {path} (does not exist)")
         return False
 
@@ -173,7 +182,11 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         _log(f"REJECT: {path} (outside HERMES_HOME)")
         return False
 
-    size = path.stat().st_size if path.is_file() else 0
+    try:
+        size = path.stat().st_size if path.is_file() else 0
+    except OSError as exc:
+        _log(f"SKIP: {path} ({exc.__class__.__name__})")
+        return False
     tracked = load_tracked()
 
     # Deduplicate

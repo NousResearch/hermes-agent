@@ -1560,6 +1560,26 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+def _coerce_agent_result(agent_result: object, *, history_len: int = 0) -> dict:
+    """Return a dict-shaped agent result even when a lower layer violates the contract."""
+    if isinstance(agent_result, dict):
+        return agent_result
+
+    result_type = type(agent_result).__name__
+    response = "" if agent_result is None else str(agent_result)
+    return {
+        "final_response": response,
+        "messages": [],
+        "tools": [],
+        "history_offset": history_len,
+        "api_calls": 0,
+        "last_prompt_tokens": 0,
+        "failed": True,
+        "completed": False,
+        "error": f"agent returned non-dict result ({result_type})",
+    }
+
+
 def _normalize_empty_agent_response(
     agent_result: dict,
     response: str,
@@ -8802,6 +8822,13 @@ class GatewayRunner:
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
             )
+            if not isinstance(agent_result, dict):
+                logger.warning(
+                    "Agent returned non-dict result in session %s: %s; coercing to failure result",
+                    session_entry.session_id,
+                    type(agent_result).__name__,
+                )
+                agent_result = _coerce_agent_result(agent_result, history_len=len(history))
 
             # Stop persistent typing indicator now that the agent is done
             try:

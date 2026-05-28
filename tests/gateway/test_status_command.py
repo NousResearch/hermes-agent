@@ -373,6 +373,33 @@ async def test_first_run_non_slack_home_channel_onboarding_keeps_direct_command(
 
 
 @pytest.mark.asyncio
+async def test_handle_message_coerces_non_dict_agent_result(monkeypatch):
+    import gateway.run as gateway_run
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner._run_agent = AsyncMock(return_value="timeout fallback")
+
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100000,
+    )
+
+    result = await runner._handle_message(_make_event("hello"))
+
+    assert result == "timeout fallback"
+    assert runner.session_store.append_to_transcript.called
+
+
+@pytest.mark.asyncio
 async def test_handle_message_discards_stale_result_after_session_invalidation(monkeypatch):
     import gateway.run as gateway_run
 

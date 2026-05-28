@@ -62,6 +62,17 @@ def _record_track(task_id: str, session_id: str, path: Path, category: str) -> N
         _recent_test_tracks.setdefault(key, set()).add(str(path))
 
 
+def _is_single_line_path_candidate(path_str: str) -> bool:
+    """Return True for path-like strings that cannot contain copied shell output."""
+    return bool(
+        path_str
+        and "\n" not in path_str
+        and "\r" not in path_str
+        and "\\n" not in path_str
+        and "\\r" not in path_str
+    )
+
+
 def _drain(task_id: str, session_id: str) -> Set[str]:
     """Pop the set of test paths tracked during this turn."""
     key = _tracker_key(task_id, session_id)
@@ -71,23 +82,31 @@ def _drain(task_id: str, session_id: str) -> Set[str]:
 
 def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
     """Best-effort auto-track. Never raises."""
+    if not _is_single_line_path_candidate(path_str):
+        return
     try:
         p = Path(path_str).expanduser()
     except Exception:
         return
-    if not p.exists():
+    try:
+        if not p.is_absolute() or not dg.is_safe_path(p) or not p.exists():
+            return
+    except OSError:
         return
     category = dg.guess_category(p)
     if category is None:
         return
-    newly = dg.track(str(p), category, silent=True)
+    try:
+        newly = dg.track(str(p), category, silent=True)
+    except OSError:
+        return
     if newly:
         _record_track(task_id, session_id, p, category)
 
 
 def _extract_paths_from_write_file(args: Dict[str, Any]) -> Set[str]:
     path = args.get(_WRITE_FILE_PATH_KEY)
-    return {path} if isinstance(path, str) and path else set()
+    return {path} if isinstance(path, str) and _is_single_line_path_candidate(path) else set()
 
 
 def _extract_paths_from_patch(args: Dict[str, Any]) -> Set[str]:
@@ -97,7 +116,7 @@ def _extract_paths_from_patch(args: Dict[str, Any]) -> Set[str]:
     # the single-file `path` arg.  Track-then-cleanup is idempotent, so
     # re-tracking an already-tracked file is a no-op (dedup in track()).
     path = args.get("path")
-    return {path} if isinstance(path, str) and path else set()
+    return {path} if isinstance(path, str) and _is_single_line_path_candidate(path) else set()
 
 
 def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
@@ -110,14 +129,15 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
         # Tokenise the command — catches `touch /tmp/hermes-x/test_foo.py`
         try:
             for tok in shlex.split(cmd, posix=True):
-                if tok.startswith(("/", "~")):
+                if tok.startswith(("/", "~")) and _is_single_line_path_candidate(tok):
                     paths.add(tok)
         except ValueError:
             pass
     # Only scan the result text if it's a reasonable size (avoid 50KB dumps).
     if isinstance(result, str) and len(result) < 4096:
         for match in _TERMINAL_PATH_REGEX.findall(result):
-            paths.add(match)
+            if _is_single_line_path_candidate(match):
+                paths.add(match)
     return paths
 
 

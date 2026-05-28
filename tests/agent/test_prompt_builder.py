@@ -4,6 +4,7 @@ import builtins
 import importlib
 import logging
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -507,6 +508,19 @@ class TestBuildContextFilesPrompt:
         assert "Ruff for linting" in result
         assert "Project Context" in result
 
+    def test_skips_inaccessible_context_file_candidates(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "hermes_home").mkdir()
+
+        def fake_is_file(path):
+            if path.name == "AGENTS.md":
+                raise PermissionError("blocked")
+            return False
+
+        monkeypatch.setattr(Path, "is_file", fake_is_file)
+
+        assert build_context_files_prompt(cwd=str(tmp_path), skip_soul=True) == ""
+
     def test_loads_cursorrules(self, tmp_path):
         (tmp_path / ".cursorrules").write_text("Always use type hints.")
         result = build_context_files_prompt(cwd=str(tmp_path))
@@ -752,6 +766,18 @@ class TestFindGitRoot:
         # If result is not None, it must actually contain .git
         if result is not None:
             assert (result / ".git").exists()
+
+    def test_skips_inaccessible_git_marker(self, tmp_path, monkeypatch):
+        real_exists = Path.exists
+
+        def fake_exists(path):
+            if path.name == ".git":
+                raise PermissionError("permission denied")
+            return real_exists(path)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+
+        assert _find_git_root(tmp_path) is None
 
 
 class TestStripYamlFrontmatter:
@@ -1192,6 +1218,3 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-
-

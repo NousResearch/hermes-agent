@@ -651,7 +651,18 @@ def _resolve_named_custom_runtime(
         # Check credential pool first — mirrors the named-custom-provider path
         # so bare `provider: custom` with a configured custom_providers entry
         # also gets its api_key from the pool instead of env var fallbacks.
-        pool_result = _try_resolve_from_custom_pool(base_url, "custom", None)
+        #
+        # Preserve the sub-name from `custom:<subname>` for name-based pool
+        # selection — without this, multiple custom_providers sharing the same
+        # base_url silently collapse to the first url match (#29872).
+        _pool_provider_name: Optional[str] = None
+        if requested_provider and ":" in requested_provider:
+            _sub = requested_provider.split(":", 1)[1].strip()
+            if _sub:
+                _pool_provider_name = _sub
+        pool_result = _try_resolve_from_custom_pool(
+            base_url, "custom", None, provider_name=_pool_provider_name
+        )
         if pool_result:
             pool_result["source"] = "direct-alias"
             return pool_result

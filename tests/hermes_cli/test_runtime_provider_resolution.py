@@ -2657,3 +2657,126 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+# ---------------------------------------------------------------------------
+# #29872 — direct-alias path must preserve `custom:<subname>` for pool lookup
+#
+# When a `model_aliases:` entry resolves to a provider that alias-maps to
+# bare "custom" (the direct-alias bare-custom branch in
+# `_resolve_named_custom_runtime`), the credential-pool lookup previously
+# dropped the sub-name and matched on base_url alone. With multiple
+# `custom_providers` sharing a base_url, the wrong API key would be picked.
+#
+# The fix splits `custom:<subname>` off `requested_provider` and threads it
+# through as the `provider_name` kwarg so name-based pool selection wins
+# over the url-only fallback.
+# ---------------------------------------------------------------------------
+
+def test_direct_alias_custom_subname_passed_to_pool_lookup(monkeypatch):
+    """`custom:<subname>` requested via direct alias must reach the pool
+    lookup as `provider_name=<subname>` so name-based selection wins over
+    base_url-only matching when multiple custom providers share a host."""
+    import hermes_cli.auth as auth_mod
+
+    captured: dict = {}
+
+    def _spy(base_url, provider_label, api_mode_override=None, provider_name=None):
+        captured["base_url"] = base_url
+        captured["provider_label"] = provider_label
+        captured["api_mode_override"] = api_mode_override
+        captured["provider_name"] = provider_name
+        return None
+
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", _spy)
+    monkeypatch.setattr(auth_mod, "resolve_provider", lambda *a, **k: "custom")
+
+    rp._resolve_named_custom_runtime(
+        requested_provider="custom:bobapi-deepseek",
+        explicit_base_url="https://bobdong.cn",
+    )
+
+    assert captured["base_url"] == "https://bobdong.cn"
+    assert captured["provider_label"] == "custom"
+    assert captured["provider_name"] == "bobapi-deepseek", (
+        "sub-name must be threaded into pool lookup so multiple custom_providers "
+        "sharing one base_url resolve to distinct credentials (#29872)"
+    )
+
+
+def test_direct_alias_bare_custom_keeps_provider_name_none(monkeypatch):
+    """Regression guard: bare `provider: custom` (no sub-name) must still
+    pass `provider_name=None` so the url-only pool match continues to work."""
+    import hermes_cli.auth as auth_mod
+
+    captured: dict = {}
+
+    def _spy(base_url, provider_label, api_mode_override=None, provider_name=None):
+        captured["provider_name"] = provider_name
+        return None
+
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", _spy)
+    monkeypatch.setattr(auth_mod, "resolve_provider", lambda *a, **k: "custom")
+
+    rp._resolve_named_custom_runtime(
+        requested_provider="custom",
+        explicit_base_url="http://localhost:11434/v1",
+    )
+
+    assert captured["provider_name"] is None
+
+
+def test_direct_alias_subname_resolves_correct_pool_when_url_shared(monkeypatch):
+    """End-to-end check: with two custom_providers behind one base_url, the
+    fix must select the pool keyed by the alias's sub-name, not whichever
+    entry happens to appear first in iteration order."""
+    import agent.credential_pool as cp
+    import hermes_cli.auth as auth_mod
+
+    cfg = {
+        "custom_providers": [
+            # NB: claude entry comes first so the url-only fallback would
+            # incorrectly pick it. The fix must win via name match.
+            {
+                "name": "bobapi-claude",
+                "base_url": "https://bobdong.cn",
+                "key_env": "BOBAPI_CLAUDE_KEY",
+            },
+            {
+                "name": "bobapi-deepseek",
+                "base_url": "https://bobdong.cn",
+                "key_env": "BOBAPI_DEEPSEEK_KEY",
+            },
+        ]
+    }
+
+    class _Entry:
+        def __init__(self, token):
+            self.access_token = token
+            self.runtime_api_key = None
+
+    class _Pool:
+        def __init__(self, pool_key):
+            self.pool_key = pool_key
+
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry(f"key-for-{self.pool_key}")
+
+    monkeypatch.setattr(rp, "load_config", lambda: cfg)
+    monkeypatch.setattr(cp, "_load_config_safe", lambda: cfg)
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool(provider))
+    monkeypatch.setattr(auth_mod, "resolve_provider", lambda *a, **k: "custom")
+
+    result = rp._resolve_named_custom_runtime(
+        requested_provider="custom:bobapi-deepseek",
+        explicit_base_url="https://bobdong.cn",
+    )
+
+    assert result is not None
+    assert result["source"] == "direct-alias"
+    assert result["api_key"] == "key-for-custom:bobapi-deepseek", (
+        "alias sub-name must select the deepseek pool, not the first url match"
+    )

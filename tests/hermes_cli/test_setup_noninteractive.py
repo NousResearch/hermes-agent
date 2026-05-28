@@ -83,6 +83,23 @@ class TestNonInteractiveSetup:
         out = capsys.readouterr().out
         assert "hermes config set model.provider custom" in out
 
+    def test_non_interactive_setup_backs_up_existing_config(self, tmp_path, monkeypatch):
+        """Setup should back up config.yaml before it decides it cannot run interactively."""
+        from hermes_cli.setup import run_setup_wizard
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = load_config()
+        cfg["model"] = {"provider": "custom", "base_url": "http://localhost:8080/v1", "default": "llama3"}
+        save_config(cfg)
+
+        args = _make_setup_args(non_interactive=True)
+
+        run_setup_wizard(args)
+
+        backups = list(tmp_path.glob("config.yaml.bak.*"))
+        assert len(backups) == 1
+        assert "localhost:8080" in backups[0].read_text()
+
     def test_no_tty_skips_wizard(self, capsys):
         """When stdin has no TTY, the setup wizard should print guidance and return."""
         from hermes_cli.setup import run_setup_wizard

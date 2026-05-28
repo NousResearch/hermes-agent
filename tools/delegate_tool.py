@@ -2481,6 +2481,21 @@ def _load_config() -> dict:
         return {}
 
 
+def _resolve_profile(name: str) -> dict:
+    """Return the named profile dict from delegation.profiles config.
+
+    Raises ValueError with available profile names if not found.
+    """
+    profiles = _load_config().get("profiles", {})
+    if name not in profiles:
+        available = sorted(profiles.keys())
+        raise ValueError(
+            f"Unknown profile '{name}'. "
+            f"Available: {available if available else '(none configured)'}"
+        )
+    return profiles[name]
+
+
 # ---------------------------------------------------------------------------
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------

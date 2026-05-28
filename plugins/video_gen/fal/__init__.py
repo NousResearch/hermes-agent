@@ -282,20 +282,24 @@ def _build_payload(
 
 
 # ---------------------------------------------------------------------------
-# fal_client lazy import (same pattern as image_generation_tool)
+# fal_client lazy import (shared with image_generation_tool via fal_common)
 # ---------------------------------------------------------------------------
 
 _fal_client: Any = None
 
 
 def _load_fal_client() -> Any:
+    """Lazy-load the ``fal_client`` SDK and cache it on this module.
+
+    Delegates the actual import to :func:`tools.fal_common.import_fal_client`
+    so the ``lazy_deps`` ensure-install handling stays in one place.
+    """
     global _fal_client
     if _fal_client is not None:
         return _fal_client
-    import fal_client  # type: ignore
-
-    _fal_client = fal_client
-    return fal_client
+    from tools.fal_common import import_fal_client
+    _fal_client = import_fal_client()
+    return _fal_client
 
 
 # ---------------------------------------------------------------------------

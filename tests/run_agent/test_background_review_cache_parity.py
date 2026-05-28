@@ -38,6 +38,9 @@ def _make_agent_stub(agent_cls):
     agent._MEMORY_REVIEW_PROMPT = "review memory"
     agent._SKILL_REVIEW_PROMPT = "review skills"
     agent._COMBINED_REVIEW_PROMPT = "review both"
+    # Non-None so the test catches a missing-kwarg regression.
+    agent.enabled_toolsets = ["memory", "skills", "terminal"]
+    agent.disabled_toolsets = ["spotify", "feishu_doc"]
     return agent
 
 
@@ -182,4 +185,55 @@ def test_review_fork_pins_session_start_and_session_id():
     assert captured.get("session_id") == agent.session_id, (
         "Review fork did not inherit parent's session_id — "
         "system-prompt rebuild paths would diverge."
+    )
+
+
+def test_review_fork_inherits_parent_toolset_config():
+    """``tools[]`` byte-stability: fork must inherit parent's toolset config."""
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    captured = {}
+
+    class _Recorder:
+        def __init__(self, *args, **kwargs):
+            captured["enabled_toolsets"] = kwargs.get("enabled_toolsets")
+            captured["disabled_toolsets"] = kwargs.get("disabled_toolsets")
+            self._cached_system_prompt = None
+            self._memory_write_origin = None
+            self._memory_write_context = None
+            self._memory_store = None
+            self._memory_enabled = None
+            self._user_profile_enabled = None
+            self._memory_nudge_interval = None
+            self._skill_nudge_interval = None
+            self.suppress_status_output = None
+            self.session_start = None
+            self.session_id = None
+
+        def run_conversation(self, *args, **kwargs):
+            raise RuntimeError("stop after recording — don't actually call the API")
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert captured.get("enabled_toolsets") == agent.enabled_toolsets, (
+        f"enabled_toolsets mismatch: {captured.get('enabled_toolsets')!r} "
+        f"vs expected {agent.enabled_toolsets!r}"
+    )
+    assert captured.get("disabled_toolsets") == agent.disabled_toolsets, (
+        f"disabled_toolsets mismatch: {captured.get('disabled_toolsets')!r} "
+        f"vs expected {agent.disabled_toolsets!r}"
     )

@@ -4354,6 +4354,19 @@ class DiscordAdapter(BasePlatformAdapter):
                     and not include_other_bots
                 ):
                     return None
+                # Apply the receipt-time allowlist to backfilled human messages
+                # so excluded guild members can't plant indirect prompt-injection
+                # content that the bot later reads into model context. Applied
+                # inside _keep so BOTH the primary and reply windows are gated.
+                # _fetch_channel_context is non-DM only (call-site guard).
+                if not getattr(msg.author, "bot", False):
+                    if not self._is_allowed_user(
+                        str(msg.author.id),
+                        msg.author,
+                        guild=getattr(channel, "guild", None),
+                        is_dm=False,
+                    ):
+                        return None
                 if not content and msg.attachments:
                     content = "(attachment)"
                 if not content:
@@ -4363,6 +4376,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     or getattr(msg.author, "name", None)
                     or "unknown"
                 )
+                # Escape structural delimiters so a hostile display name or body
+                # can't forge "[Username] ..." rows / context headers.
+                def _esc(x: str) -> str:
+                    return x.replace("[", "\\[").replace("]", "\\]")
+                name = _esc(name)
+                content = _esc(content)
                 if getattr(msg.author, "bot", False):
                     name = f"{name} [bot]"
                 return f"[{name}] {content}"

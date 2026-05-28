@@ -41,6 +41,23 @@ docker run -d \
 
 Port 8642 exposes the gateway's [OpenAI-compatible API server](./features/api-server.md) and health endpoint. It's optional if you only use chat platforms (Telegram, Discord, etc.), but required if you want the dashboard or external tools to reach the gateway.
 
+:::tip Gateway runs supervised
+Inside the official Docker image, `gateway run` is **automatically supervised by s6-overlay**: if the gateway process crashes it's restarted within a couple of seconds without losing the container, and the dashboard (when `HERMES_DASHBOARD=1` is set) is supervised alongside it. The `gateway run` CMD process itself is a `sleep infinity` heartbeat that keeps the container alive while s6 manages the actual gateway process — so `docker stop` still shuts everything down cleanly, but `docker logs` shows the supervised gateway's output.
+
+You'll see a one-line breadcrumb in `docker logs` confirming the upgrade. To opt out — and get the historical "gateway is the container's main process, container exit = gateway exit" semantics — pass `--no-supervise` or set `HERMES_GATEWAY_NO_SUPERVISE=1`. The opt-out is useful for CI smoke tests that want the container to exit with the gateway's status code; for production deployments the supervised default is strictly better.
+
+This behavior applies to the s6-based image only. Earlier (tini-based) images still run `gateway run` as the foreground main process.
+:::
+
+:::note Where gateway logs go
+Inside the s6 image, the supervised gateway's output is tee'd to two destinations:
+
+- **`docker logs <container>`** — every line in real time (raw, no extra prefix). This is the same stream you'd get from a foreground gateway, so existing `docker logs --follow` / `--timestamps` / log-shipper integrations work unchanged.
+- **`${HERMES_HOME}/logs/gateways/<profile>/current`** (mapped to `~/.hermes/logs/gateways/<profile>/current` on the host via the volume mount) — rotated, with an ISO 8601 timestamp prepended per line. Rotation is 10 archives × 1 MB each, so it can't fill the disk. This is what `hermes logs` reads and what survives container restarts.
+
+The per-profile reconciler keeps a separate audit log at `${HERMES_HOME}/logs/container-boot.log` — one line per profile per container boot, recording whether each gateway was restored to its prior state.
+:::
+
 Note: the API server is gated on `API_SERVER_ENABLED=true`. To expose it beyond `127.0.0.1` inside the container, also set `API_SERVER_HOST=0.0.0.0` and an `API_SERVER_KEY` (minimum 8 characters — generate one with `openssl rand -hex 32`). Example:
 
 ```sh
@@ -123,10 +140,13 @@ The `/opt/data` volume is the single source of truth for all Hermes state. It ma
 | `sessions/` | Conversation history |
 | `memories/` | Persistent memory store |
 | `skills/` | Installed skills |
+| `home/` | Per-profile HOME for Hermes tool subprocesses (`git`, `ssh`, `gh`, `npm`, and skill CLIs) |
 | `cron/` | Scheduled job definitions |
 | `hooks/` | Event hooks |
 | `logs/` | Runtime logs |
 | `skins/` | Custom CLI skins |
+
+Skill CLIs that store credentials under `~` must be initialized against the subprocess HOME, not just the data-volume root. For example, the [xurl skill](./skills/bundled/social-media/social-media-xurl.md) stores OAuth state in `~/.xurl`; in the official Docker layout, Hermes tool calls read that as `/opt/data/home/.xurl`, so run manual xurl auth with `HOME=/opt/data/home` and verify with `HOME=/opt/data/home xurl auth status`.
 
 :::warning
 Never run two Hermes **gateway** containers against the same data directory simultaneously — session files and memory stores are not designed for concurrent write access.
@@ -237,6 +257,84 @@ services:
 ```
 
 Start with `docker compose up -d` and view logs with `docker compose logs -f`. Dashboard output is prefixed with `[dashboard]` so it's easy to filter from gateway logs.
+
+## Optional: Linux desktop audio bridge
+
+Voice mode in Docker needs two separate things to work: Hermes must be allowed to probe audio devices inside the container, and the container must be able to reach your host audio server. The setup below covers the host audio plumbing for Linux desktops that expose a PulseAudio-compatible socket, including many PipeWire setups.
+
+:::caution
+This is a Linux desktop workaround, not a general Docker Desktop feature. It is useful when you already have host audio working and want CLI voice mode inside the Hermes container. If Hermes still reports `Running inside Docker container -- no audio devices`, use a build that includes Docker audio probing support for `PULSE_SERVER` / `PIPEWIRE_REMOTE`.
+:::
+
+First, create an ALSA config next to your Compose file:
+
+```conf title="asound.conf"
+pcm.!default {
+    type pulse
+    hint {
+        show on
+        description "Default ALSA Output (PulseAudio)"
+    }
+}
+
+pcm.pulse {
+    type pulse
+}
+
+ctl.!default {
+    type pulse
+}
+```
+
+Then build a small derived image with the ALSA PulseAudio plugin installed:
+
+```dockerfile title="Dockerfile.audio"
+FROM nousresearch/hermes-agent:latest
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libasound2-plugins \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+Use that image in Compose and pass through the host user's PulseAudio socket and cookie:
+
+```yaml
+services:
+  hermes:
+    build:
+      context: .
+      dockerfile: Dockerfile.audio
+    image: hermes-agent-audio
+    container_name: hermes
+    restart: unless-stopped
+    command: gateway run
+    volumes:
+      - ~/.hermes:/opt/data
+      - /run/user/${HERMES_UID}/pulse:/run/user/${HERMES_UID}/pulse
+      - ~/.config/pulse/cookie:/tmp/pulse-cookie:ro
+      - ./asound.conf:/etc/asound.conf:ro
+    environment:
+      - HERMES_UID=${HERMES_UID}
+      - HERMES_GID=${HERMES_GID}
+      - XDG_RUNTIME_DIR=/run/user/${HERMES_UID}
+      - PULSE_SERVER=unix:/run/user/${HERMES_UID}/pulse/native
+      - PULSE_COOKIE=/tmp/pulse-cookie
+```
+
+Start it with your host UID/GID so the container process can access the per-user audio socket:
+
+```sh
+export HERMES_UID="$(id -u)"
+export HERMES_GID="$(id -g)"
+docker compose up -d --build
+```
+
+To verify what PortAudio sees inside the container:
+
+```sh
+docker exec hermes /opt/hermes/.venv/bin/python -c "import sounddevice as sd; print(sd.query_devices())"
+```
 
 ## Resource limits
 

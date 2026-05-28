@@ -127,6 +127,106 @@ def _ra():
     return run_agent
 
 
+def _nous_entitlement_message(capability: str) -> str:
+    try:
+        from hermes_cli.nous_account import (
+            format_nous_portal_entitlement_message,
+            get_nous_portal_account_info,
+        )
+
+        account_info = get_nous_portal_account_info(force_fresh=True)
+        message = format_nous_portal_entitlement_message(
+            account_info,
+            capability=capability,
+        )
+        return message or ""
+    except Exception:
+        return ""
+
+
+def _print_nous_entitlement_guidance(agent, capability: str) -> bool:
+    message = _nous_entitlement_message(capability)
+    if not message:
+        return False
+    for line in message.splitlines():
+        agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True)
+    return True
+
+
+def _is_nous_inference_route(provider: str, base_url: str) -> bool:
+    provider = (provider or "").strip().lower()
+    if provider == "nous":
+        return True
+    base = str(base_url or "")
+    return (
+        base_url_host_matches(base, "inference-api.nousresearch.com")
+        or base_url_host_matches(base, "inference.nousresearch.com")
+    )
+
+
+def _billing_or_entitlement_message(
+    *,
+    capability: str,
+    provider: str,
+    base_url: str,
+    model: str,
+) -> str:
+    if _is_nous_inference_route(provider, base_url):
+        return _nous_entitlement_message(capability)
+
+    provider_label = (provider or "").strip() or "the selected provider"
+    model_label = (model or "").strip() or "the selected model"
+    lines = [
+        (
+            f"{provider_label} reported that billing, credits, or account "
+            f"entitlement is exhausted for {model_label}."
+        ),
+        "Add credits or update billing with that provider, then retry.",
+    ]
+    if base_url_host_matches(str(base_url or ""), "openrouter.ai"):
+        lines.append("OpenRouter credits: https://openrouter.ai/settings/credits")
+    lines.append("You can switch providers temporarily with /model <model> --provider <provider>.")
+    return "\n".join(lines)
+
+
+def _print_billing_or_entitlement_guidance(
+    agent,
+    *,
+    capability: str,
+    provider: str,
+    base_url: str,
+    model: str,
+) -> bool:
+    message = _billing_or_entitlement_message(
+        capability=capability,
+        provider=provider,
+        base_url=base_url,
+        model=model,
+    )
+    if not message:
+        return False
+    for line in message.splitlines():
+        agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True)
+    return True
+
+
+def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
+    """Refresh Nous runtime credentials after a fresh paid-entitlement check."""
+    try:
+        from hermes_cli.auth import NOUS_INFERENCE_AUTH_MODE_LEGACY
+        from hermes_cli.nous_account import get_nous_portal_account_info
+
+        account_info = get_nous_portal_account_info(force_fresh=True)
+        if account_info.paid_service_access is not True:
+            return False
+        return agent._try_refresh_nous_client_credentials(
+            force=False,
+            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+        )
+    except Exception:
+        return False
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -1017,8 +1117,10 @@ def run_conversation(
         codex_auth_retry_attempted=False
         anthropic_auth_retry_attempted=False
         nous_auth_retry_attempted=False
+        nous_paid_entitlement_refresh_attempted=False
         copilot_auth_retry_attempted=False
         thinking_sig_retry_attempted = False
+        invalid_encrypted_content_retry_attempted = False
         image_shrink_retry_attempted = False
         multimodal_tool_content_retry_attempted = False
         oauth_1m_beta_retry_attempted = False
@@ -1667,10 +1769,19 @@ def run_conversation(
                     prompt_tokens = canonical_usage.prompt_tokens
                     completion_tokens = canonical_usage.output_tokens
                     total_tokens = canonical_usage.total_tokens
+                    # Forward canonical token + cache buckets so context engines
+                    # can make decisions on cache hit ratios / reasoning costs,
+                    # not just legacy aggregate tokens. Legacy keys stay for
+                    # back-compat with engines that only read prompt/completion/total.
                     usage_dict = {
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "total_tokens": total_tokens,
+                        "input_tokens": canonical_usage.input_tokens,
+                        "output_tokens": canonical_usage.output_tokens,
+                        "cache_read_tokens": canonical_usage.cache_read_tokens,
+                        "cache_write_tokens": canonical_usage.cache_write_tokens,
+                        "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
                     agent.context_compressor.update_from_response(usage_dict)
 
@@ -2092,6 +2203,23 @@ def run_conversation(
                     classified.should_rotate_credential, classified.should_fallback,
                 )
 
+                if (
+                    classified.reason == FailoverReason.billing
+                    and _is_nous_inference_route(
+                        getattr(agent, "provider", "") or "",
+                        getattr(agent, "base_url", "") or "",
+                    )
+                    and not nous_paid_entitlement_refresh_attempted
+                ):
+                    nous_paid_entitlement_refresh_attempted = True
+                    if _try_refresh_nous_paid_entitlement_credentials(agent):
+                        agent._vprint(
+                            f"{agent.log_prefix}🔐 Nous paid access verified — "
+                            "refreshed runtime credentials and retrying request...",
+                            force=True,
+                        )
+                        continue
+
                 recovered_with_pool, has_retried_429 = agent._recover_with_credential_pool(
                     status_code=status_code,
                     has_retried_429=has_retried_429,
@@ -2216,9 +2344,10 @@ def run_conversation(
                     print(f"{agent.log_prefix}🔐 Nous 401 — Portal authentication failed.")
                     if _body_text:
                         print(f"{agent.log_prefix}   Response: {_body_text}")
-                    print(f"{agent.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
+                    if not _print_nous_entitlement_guidance(agent, "Nous model access"):
+                        print(f"{agent.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
                     print(f"{agent.log_prefix}   Troubleshooting:")
-                    print(f"{agent.log_prefix}     • Re-authenticate: hermes login --provider nous")
+                    print(f"{agent.log_prefix}     • Re-authenticate: hermes auth add nous")
                     print(f"{agent.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
                     print(f"{agent.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
                     print(f"{agent.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
@@ -2293,6 +2422,49 @@ def run_conversation(
                         "%sThinking block signature recovery: stripped "
                         "reasoning_details from %d messages",
                         agent.log_prefix, len(messages),
+                    )
+                    continue
+
+                # ── Invalid encrypted reasoning replay recovery ───────
+                # OpenAI Responses API surfaces (and some compatible relays)
+                # return HTTP 400 ``invalid_encrypted_content`` when a
+                # replayed ``codex_reasoning_items`` blob from a previous
+                # turn fails verification (provider rotated the encryption
+                # key, the route doesn't actually persist reasoning state,
+                # etc.).  Recovery: disable replay for the rest of the
+                # session, strip cached items from history, retry once.
+                # One-shot — if a second 400 fires we fall through to the
+                # normal retry/backoff path.  Only fires for codex_responses
+                # mode with at least one assistant message that has cached
+                # ``codex_reasoning_items``; without replay state, the
+                # error is unrelated to our cache so the normal retry path
+                # handles it (the provider is rejecting something else).
+                if (
+                    classified.reason == FailoverReason.invalid_encrypted_content
+                    and not invalid_encrypted_content_retry_attempted
+                    and agent.api_mode == "codex_responses"
+                    and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
+                    and any(
+                        isinstance(_m, dict)
+                        and _m.get("role") == "assistant"
+                        and isinstance(_m.get("codex_reasoning_items"), list)
+                        and _m.get("codex_reasoning_items")
+                        for _m in messages
+                    )
+                ):
+                    invalid_encrypted_content_retry_attempted = True
+                    replay_stats = agent._disable_codex_reasoning_replay(messages)
+                    agent._vprint(
+                        f"{agent.log_prefix}⚠️  Encrypted reasoning replay was rejected by the provider — "
+                        f"disabled replay and stripped {replay_stats['items']} item(s) from "
+                        f"{replay_stats['messages']} message(s), retrying...",
+                        force=True,
+                    )
+                    logger.warning(
+                        "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
+                        agent.log_prefix,
+                        replay_stats["items"],
+                        replay_stats["messages"],
                     )
                     continue
 
@@ -2494,7 +2666,12 @@ def run_conversation(
                         base_url=getattr(agent, "base_url", None),
                     )
                     if not pool_may_recover:
-                        agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                        if classified.reason == FailoverReason.billing:
+                            agent._emit_status(
+                                "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                            )
+                        else:
+                            agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
                         if agent._try_activate_fallback(reason=classified.reason):
                             retry_count = 0
                             compression_attempts = 0
@@ -2835,6 +3012,21 @@ def run_conversation(
                     # ssl.SSLError explicitly so the error classifier's
                     # retryable=True mapping takes effect instead.
                     and not isinstance(api_error, ssl.SSLError)
+                    # Provider/SDK "NoneType is not iterable" failures are
+                    # shape mismatches from upstream (e.g. chatgpt.com Codex
+                    # backend response.completed.output=null) — not local
+                    # programming bugs.  Even after #33042 made our own
+                    # consumer immune, third-party shims and mocked clients
+                    # can still surface this shape via TypeError.  Treat
+                    # them as retryable so the error classifier's normal
+                    # retry/fallback path runs instead of killing the turn
+                    # as non-retryable (which left Telegram users staring
+                    # at a bare "Non-retryable error" with no recovery).
+                    and not (
+                        isinstance(api_error, TypeError)
+                        and "nonetype" in str(api_error).lower()
+                        and "not iterable" in str(api_error).lower()
+                    )
                 )
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this
                 # exclusion set.  By the time we reach this block:
@@ -2889,7 +3081,20 @@ def run_conversation(
                     agent._vprint(f"{agent.log_prefix}   🌐 Endpoint: {_base}", force=True)
                     # Actionable guidance for common auth errors
                     if classified.is_auth or classified.reason == FailoverReason.billing:
-                        if _provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
+                        if classified.reason == FailoverReason.billing and _print_billing_or_entitlement_guidance(
+                            agent,
+                            capability="model access",
+                            provider=_provider,
+                            base_url=str(_base),
+                            model=_model,
+                        ):
+                            pass
+                        elif _provider == "nous" and _print_nous_entitlement_guidance(
+                            agent,
+                            "Nous model access",
+                        ):
+                            pass
+                        elif _provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
                             if _provider == "openai-codex":
                                 agent._vprint(f"{agent.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
                                 agent._vprint(f"{agent.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
@@ -2959,7 +3164,23 @@ def run_conversation(
                         primary_recovery_attempted = False
                         continue
                     _final_summary = agent._summarize_api_error(api_error)
-                    if is_rate_limited:
+                    _billing_guidance = ""
+                    if classified.reason == FailoverReason.billing:
+                        agent._emit_status(f"❌ Billing or credits exhausted — {_final_summary}")
+                        _billing_guidance = _billing_or_entitlement_message(
+                            capability="model access",
+                            provider=_provider,
+                            base_url=str(_base),
+                            model=_model,
+                        )
+                        _print_billing_or_entitlement_guidance(
+                            agent,
+                            capability="model access",
+                            provider=_provider,
+                            base_url=str(_base),
+                            model=_model,
+                        )
+                    elif is_rate_limited:
                         agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
                     else:
                         agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
@@ -3004,7 +3225,12 @@ def run_conversation(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
                     agent._persist_session(messages, conversation_history)
-                    _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
+                    if classified.reason == FailoverReason.billing:
+                        _final_response = f"Billing or credits exhausted: {_final_summary}"
+                        if _billing_guidance:
+                            _final_response += f"\n\n{_billing_guidance}"
+                    else:
+                        _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
                     if _is_stream_drop:
                         _final_response += (
                             "\n\nThe provider's stream connection keeps "

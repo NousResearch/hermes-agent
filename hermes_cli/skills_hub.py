@@ -519,11 +519,13 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if bundle.source == "url" and not category and not skip_confirm:
         category = _prompt_for_category(c, _existing_categories())
 
-    # Auto-detect category for official skills (e.g. "official/autonomous-ai-agents/blackbox")
+    # Auto-detect the full parent path for official skills. Optional skills
+    # can be nested (e.g. "official/mlops/training/trl-fine-tuning"), so keep
+    # every identifier segment between "official" and the final skill slug.
     if bundle.source == "official" and not category:
-        id_parts = bundle.identifier.split("/")  # ["official", "category", "skill"]
+        id_parts = bundle.identifier.split("/")
         if len(id_parts) >= 3:
-            category = id_parts[1]
+            category = "/".join(id_parts[1:-1])
 
     # Check if already installed
     lock = HubLockFile()
@@ -1039,6 +1041,48 @@ def do_reset(name: str, restore: bool = False,
         c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
 
 
+def do_repair_official(name: str, restore: bool = False,
+                       console: Optional[Console] = None,
+                       skip_confirm: bool = False,
+                       invalidate_cache: bool = True) -> None:
+    """Backfill or restore official optional skills from repo source."""
+    from tools.skills_sync import restore_official_optional_skill
+
+    c = console or _console
+    if restore and not skip_confirm:
+        c.print(f"\n[bold]Restore official optional skill '{name}' from repo source?[/]")
+        c.print("[dim]Existing matching active copies will be moved to a restore backup before copying the official source.[/]")
+        try:
+            answer = input("Confirm [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer not in {"y", "yes"}:
+            c.print("[dim]Cancelled.[/]\n")
+            return
+
+    result = restore_official_optional_skill(name, restore=restore)
+    if not result.get("ok"):
+        c.print(f"[bold red]Error:[/] {result.get('message', 'Repair failed')}\n")
+        return
+
+    c.print(f"[bold green]{result['message']}[/]")
+    if result.get("restored"):
+        c.print(f"[dim]Restored: {', '.join(result['restored'])}[/]")
+    if result.get("backfilled"):
+        c.print(f"[dim]Backfilled provenance: {', '.join(result['backfilled'])}[/]")
+    if result.get("backed_up"):
+        c.print(f"[dim]Backed up: {', '.join(result['backed_up'])}[/]")
+        c.print(f"[dim]Backup dir: {result.get('backup_dir')}[/]")
+    c.print()
+
+    if invalidate_cache:
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
+
+
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:
     """Manage taps (custom GitHub repo sources)."""
     from tools.skills_hub import TapsManager
@@ -1370,6 +1414,9 @@ def skills_command(args) -> None:
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
+    elif action == "repair-official":
+        do_repair_official(args.name, restore=getattr(args, "restore", False),
+                           skip_confirm=getattr(args, "yes", False))
     elif action == "publish":
         do_publish(
             args.skill_path,

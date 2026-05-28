@@ -371,6 +371,39 @@ def test_do_install_scans_official_bundles_with_source_provenance(
     assert scanned["source"] == "official"
 
 
+def test_do_install_preserves_nested_official_optional_path(
+    monkeypatch, tmp_path, hub_env
+):
+    class _OfficialNestedSource:
+        def inspect(self, identifier):
+            return type("Meta", (), {
+                "extra": {},
+                "identifier": "official/mlops/training/trl-fine-tuning",
+            })()
+
+        def fetch(self, identifier):
+            return type("Bundle", (), {
+                "name": "trl-fine-tuning",
+                "files": {"SKILL.md": "# TRL"},
+                "source": "official",
+                "identifier": "official/mlops/training/trl-fine-tuning",
+                "trust_level": "builtin",
+                "metadata": {},
+            })()
+
+    installs = _install_mocks(monkeypatch, tmp_path, _OfficialNestedSource)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_install(
+        "official/mlops/training/trl-fine-tuning",
+        console=console,
+        skip_confirm=True,
+    )
+
+    assert installs == [{"name": "trl-fine-tuning", "category": "mlops/training"}]
+
+
 # ---------------------------------------------------------------------------
 # UrlSource-specific install paths: --name override, interactive prompts,
 # non-interactive error, existing-category scan.

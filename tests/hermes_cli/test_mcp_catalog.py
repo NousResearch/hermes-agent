@@ -190,6 +190,20 @@ class TestManifestParsing:
 
         assert list_catalog() == []
 
+    def test_invalid_runtime_config_rejected(self, catalog_dir):
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(runtime={"command": "nope"}),
+        )
+        from hermes_cli.mcp_catalog import catalog_diagnostics, list_catalog
+
+        assert list_catalog() == []
+        assert any(
+            "runtime contains unsupported key" in message
+            for _entry_name, _kind, message in catalog_diagnostics()
+        )
+
     def test_get_entry_strips_official_prefix(self, catalog_dir):
         _write_manifest(catalog_dir, "demo", _basic_manifest())
         from hermes_cli.mcp_catalog import get_entry
@@ -315,6 +329,32 @@ class TestInstall:
         assert servers["demo"]["command"] == "npx"
         assert servers["demo"]["args"] == ["-y", "demo-mcp"]
         assert servers["demo"]["enabled"] is True
+
+    def test_install_preserves_manifest_runtime_config(self, catalog_dir):
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(
+                runtime={
+                    "timeout": 180,
+                    "connect_timeout": 90,
+                    "sampling": {"enabled": False},
+                    "env": {"DEMO_MODE": "safe"},
+                }
+            ),
+        )
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["command"] == "npx"
+        assert server["args"] == ["-y", "demo-mcp"]
+        assert server["timeout"] == 180
+        assert server["connect_timeout"] == 90
+        assert server["sampling"] == {"enabled": False}
+        assert server["env"] == {"DEMO_MODE": "safe"}
 
     def test_install_with_install_dir_substitution(self, catalog_dir, tmp_path):
         body = _basic_manifest(

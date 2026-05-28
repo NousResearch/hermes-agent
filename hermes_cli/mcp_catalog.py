@@ -29,6 +29,7 @@ See references/mcp-catalog.md (this repo's skill) for the manifest schema.
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 import shutil
@@ -136,6 +137,7 @@ class CatalogEntry:
     transport: TransportSpec
     auth: AuthSpec
     tools: ToolsSpec = field(default_factory=ToolsSpec)
+    runtime: Dict[str, Any] = field(default_factory=dict)
     install: Optional[InstallSpec] = None
     post_install: str = ""
     catalog_label: str = "official"
@@ -286,6 +288,52 @@ def _parse_env_spec(raw: Any) -> EnvVarSpec:
     )
 
 
+_RUNTIME_KEYS = {"timeout", "connect_timeout", "sampling", "env", "headers"}
+
+
+def _parse_runtime_config(raw: Any, path: Path) -> Dict[str, Any]:
+    """Validate optional manifest runtime settings copied to mcp_servers."""
+    if raw in (None, ""):
+        return {}
+    if not isinstance(raw, dict):
+        raise CatalogError(f"{path}: 'runtime' must be a mapping")
+
+    unknown = sorted(set(raw) - _RUNTIME_KEYS)
+    if unknown:
+        joined = ", ".join(unknown)
+        raise CatalogError(f"{path}: runtime contains unsupported key(s): {joined}")
+
+    runtime: Dict[str, Any] = {}
+    for key in ("timeout", "connect_timeout"):
+        if key not in raw:
+            continue
+        value = raw[key]
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+            raise CatalogError(f"{path}: runtime.{key} must be a positive number")
+        runtime[key] = value
+
+    for key in ("env", "headers"):
+        if key not in raw:
+            continue
+        value = raw[key]
+        if not isinstance(value, dict) or not all(
+            isinstance(k, str) and isinstance(v, (str, int, float, bool))
+            for k, v in value.items()
+        ):
+            raise CatalogError(
+                f"{path}: runtime.{key} must be a mapping of string keys to scalar values"
+            )
+        runtime[key] = {str(k): str(v) for k, v in value.items()}
+
+    if "sampling" in raw:
+        value = raw["sampling"]
+        if not isinstance(value, dict):
+            raise CatalogError(f"{path}: runtime.sampling must be a mapping")
+        runtime["sampling"] = copy.deepcopy(value)
+
+    return runtime
+
+
 def _parse_manifest(path: Path, source_meta: Optional[CatalogSource] = None) -> CatalogEntry:
     """Read and validate a manifest.yaml. Raise CatalogError on any problem."""
     if source_meta is None:
@@ -373,6 +421,8 @@ def _parse_manifest(path: Path, source_meta: Optional[CatalogSource] = None) -> 
             )
     tools_spec = ToolsSpec(default_enabled=default_enabled)
 
+    runtime = _parse_runtime_config(data.get("runtime"), path)
+
     install: Optional[InstallSpec] = None
     install_raw = data.get("install")
     if install_raw is not None:
@@ -402,6 +452,7 @@ def _parse_manifest(path: Path, source_meta: Optional[CatalogSource] = None) -> 
         transport=transport,
         auth=auth,
         tools=tools_spec,
+        runtime=runtime,
         install=install,
         post_install=str(data.get("post_install") or ""),
         catalog_label=source_meta.label,
@@ -648,6 +699,7 @@ def _build_server_config(
         cfg["url"] = t.url
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
+    cfg.update(copy.deepcopy(entry.runtime))
     return cfg
 
 

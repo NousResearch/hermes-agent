@@ -66,6 +66,34 @@ Use `hermes mcp install <name>` for unique manifest names, or
 source. Private catalog entries should use unique manifest names so installing
 them does not collide with official or existing `mcp_servers` keys.
 
+## Catalog manifest runtime keys
+
+Catalog manifests may include an optional `runtime` block for safe server
+settings that should be copied into the installed `mcp_servers.<name>` entry:
+
+```yaml
+manifest_version: 1
+name: browser_debug
+transport:
+  type: stdio
+  command: npx
+  args: ["-y", "chrome-devtools-mcp@0.25.0", "--headless"]
+auth:
+  type: none
+runtime:
+  timeout: 120
+  connect_timeout: 60
+  sampling:
+    enabled: false
+  env:
+    CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1"
+```
+
+Supported `runtime` keys are `timeout`, `connect_timeout`, `sampling`, `env`,
+and `headers`. Transport keys (`command`, `args`, `url`) stay under
+`transport`, and tool filters stay under `tools.default_enabled` so manifests
+cannot silently override unrelated server config fields.
+
 ## Server keys
 
 | Key | Type | Applies to | Meaning |

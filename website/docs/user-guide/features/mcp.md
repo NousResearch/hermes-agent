@@ -170,6 +170,12 @@ point at additional private catalog roots using the platform path separator
 (`:` on macOS/Linux, `;` on Windows). Config.yaml is the recommended stable
 surface for normal use.
 
+Private manifests can include a `runtime` block for the server settings that
+should be copied into `mcp_servers.<name>` on install, such as longer timeouts,
+static non-secret env vars, HTTP headers, or `sampling: {enabled: false}` for
+externally maintained servers. Keep launch details in `transport` and tool
+selection defaults in `tools.default_enabled`.
+
 ### Manifest version compatibility
 
 Manifests pin a `manifest_version`. The catalog is forward-compatible: if a

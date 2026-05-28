@@ -558,7 +558,11 @@ def _derive_chat_session_id(
 
 
 def _new_chat_session_id() -> str:
-    """Return a fresh API chat session identifier."""
+    """Return a fresh API chat session identifier.
+
+    Use this when a new session is needed and there is no conversation history
+    available to derive a stable session key.
+    """
     return f"api-{uuid.uuid4().hex[:16]}"
 
 

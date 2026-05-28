@@ -1615,7 +1615,7 @@ class QQAdapter(BasePlatformAdapter):
             "attachment_info": attachment_info,
         }
 
-    async def _download_and_cache(self, url: str, content_type_or_category: str) -> Optional[str]:
+    async def _download_and_cache(self, url: str, media_type_or_hint: str) -> Optional[str]:
         """Download a URL and cache it locally."""
         from tools.url_safety import is_safe_url
 
@@ -1629,7 +1629,7 @@ class QQAdapter(BasePlatformAdapter):
             data = await self._download_limited_bytes(
                 url,
                 headers=self._qq_media_headers(url),
-                context=content_type_or_category or "media",
+                context=media_type_or_hint or "media",
             )
             if data is None:
                 return None
@@ -1639,10 +1639,10 @@ class QQAdapter(BasePlatformAdapter):
             )
             return None
 
-        if content_type_or_category.startswith("image/"):
-            ext = mimetypes.guess_extension(content_type_or_category) or ".jpg"
+        if media_type_or_hint.startswith("image/"):
+            ext = mimetypes.guess_extension(media_type_or_hint) or ".jpg"
             return cache_image_from_bytes(data, ext)
-        elif content_type_or_category == "voice" or content_type_or_category.startswith("audio/"):
+        elif media_type_or_hint == "voice" or media_type_or_hint.startswith("audio/"):
             # QQ voice messages are typically .amr or .silk format.
             # Convert to .wav using ffmpeg so STT engines can process it.
             return await self._convert_audio_to_wav(data, url)

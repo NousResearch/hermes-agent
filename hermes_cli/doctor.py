@@ -977,7 +977,7 @@ def run_doctor(args):
     if soul_path.exists():
         content = soul_path.read_text(encoding="utf-8").strip()
         # Check if it's just the template comments (no real content)
-        lines = [l for l in content.splitlines() if l.strip() and not l.strip().startswith(("<!--", "-->", "#"))]
+        lines = [line for line in content.splitlines() if line.strip() and not line.strip().startswith(("<!--", "-->", "#"))]
         if lines:
             check_ok(f"{_DHH}/SOUL.md exists (persona configured)")
         else:

@@ -194,7 +194,19 @@ def interactive_setup() -> None:
     )
     rc = _cmd_quick_setup(args)
     if rc != 0:
-        raise SystemExit(rc)
+        print_incomplete_setup_guidance()
+
+
+def print_incomplete_setup_guidance() -> None:
+    """Print explicit next steps when Photon setup did not finish."""
+    print()
+    print("Photon iMessage setup is not complete yet.")
+    print("  Guided setup:")
+    print("        hermes photon quick-setup --phone +15551234567")
+    print("  Check exact status and next step:")
+    print("        hermes photon status")
+    print("  Docs:")
+    print(f"        {_docs_paths()}")
 
 
 def _cmd_setup(args: argparse.Namespace) -> int:

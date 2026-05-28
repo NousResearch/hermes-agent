@@ -2380,7 +2380,12 @@ def _setup_webhooks():
 
 def setup_gateway(config: dict):
     """Configure messaging platform integrations."""
-    from hermes_cli.gateway import _all_platforms, _platform_status, _configure_platform
+    from hermes_cli.gateway import (
+        _all_platforms,
+        _platform_status,
+        _configure_platform,
+        _print_platform_incomplete_guidance,
+    )
 
     print_header("Messaging Platforms")
     print_info("Connect to messaging platforms to chat with Hermes from anywhere.")
@@ -2406,6 +2411,7 @@ def setup_gateway(config: dict):
 
     for idx in selected:
         _configure_platform(platforms[idx])
+        _print_platform_incomplete_guidance(platforms[idx])
 
     # ── Gateway Service Setup ──
     # Count any platform (built-in or plugin) the user configured during this
@@ -3416,14 +3422,42 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
         save_config(config)
 
     print()
-    print_success("Setup complete! You're ready to go.")
+    messaging_ready = _messaging_setup_has_progress() if gateway_choice == 0 else False
+    if gateway_choice == 0 and not messaging_ready:
+        print_success("Core setup complete.")
+        print_warning("Messaging setup is not complete yet.")
+        print_info("  Finish it later: hermes setup gateway")
+        print_info("  Or use the direct setup command shown for your platform.")
+    else:
+        print_success("Setup complete! You're ready to go.")
     print()
     print_info("  Configure all settings:    hermes setup")
     if gateway_choice != 0:
-        print_info("  Connect Telegram/Discord:  hermes setup gateway")
+        print_info("  Connect messaging:         hermes setup gateway")
     print()
 
     _print_setup_summary(config, hermes_home)
+
+
+def _messaging_setup_has_progress() -> bool:
+    """Return True if any gateway platform has meaningful setup progress."""
+    try:
+        from hermes_cli.gateway import _all_platforms, _platform_status
+    except Exception:
+        return False
+
+    def _is_progress(status: str) -> bool:
+        s = status.lower()
+        return not (
+            s == "not configured"
+            or s.startswith("partially")
+            or s.startswith("plugin disabled")
+        )
+
+    try:
+        return any(_is_progress(_platform_status(p)) for p in _all_platforms())
+    except Exception:
+        return False
 
 
 def _run_quick_setup(config: dict, hermes_home):

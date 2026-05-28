@@ -4805,6 +4805,28 @@ def _configure_platform(platform: dict) -> None:
         print_info(f"  {platform['install_hint']}")
 
 
+def _print_platform_incomplete_guidance(platform: dict) -> None:
+    """Print explicit next steps when a selected platform remains incomplete."""
+    status = _platform_status(platform)
+    normalized = status.lower()
+    if normalized == "configured" or normalized.startswith("configured "):
+        return
+
+    label = platform.get("label", platform.get("key", "platform"))
+    print()
+    print_warning(f"{label} setup is not complete yet ({status}).")
+    entry = platform.get("_registry_entry")
+    hint = ""
+    if entry is not None:
+        hint = getattr(entry, "install_hint", "") or ""
+    hint = hint or platform.get("install_hint") or ""
+    if hint:
+        print_info(f"  Next: {hint}")
+    else:
+        print_info("  Next: run `hermes setup gateway` again and select this platform.")
+    print_info("  Check gateway status: hermes gateway status")
+
+
 def gateway_setup():
     """Interactive setup for messaging platforms + gateway service."""
     if is_managed():
@@ -4878,6 +4900,7 @@ def gateway_setup():
             break
 
         _configure_platform(platforms[choice])
+        _print_platform_incomplete_guidance(platforms[choice])
 
     # ── Post-setup: offer to install/restart gateway ──
     # Consider any platform (built-in or plugin) where the user has made

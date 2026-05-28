@@ -539,6 +539,19 @@ def test_adapter_registers_gateway_setup_fn() -> None:
     assert captured["cli"]["setup_fn"] is photon_cli.register_cli
 
 
+def test_interactive_setup_prints_incomplete_guidance(
+    monkeypatch: Any, capsys: Any,
+) -> None:
+    monkeypatch.setattr(photon_cli, "_cmd_quick_setup", lambda _args: 1)
+
+    photon_cli.interactive_setup()
+
+    out = capsys.readouterr().out
+    assert "Photon iMessage setup is not complete yet" in out
+    assert "hermes photon quick-setup --phone +15551234567" in out
+    assert "hermes photon status" in out
+
+
 def test_sidecar_dependency_status_missing_node_modules(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:

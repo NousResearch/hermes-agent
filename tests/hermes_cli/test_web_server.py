@@ -218,6 +218,62 @@ class TestWebServerEndpoints:
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
 
+    def test_setup_env_fields_redacts_values_and_deduplicates(self):
+        """Plugin setup metadata must never expose raw stored credentials."""
+        import hermes_cli.web_server as web_server
+
+        fields = web_server._setup_env_fields(
+            [
+                "FAL_KEY",
+                {
+                    "key": "BRAVE_SEARCH_API_KEY",
+                    "prompt": "Brave Search API key",
+                    "url": "https://brave.com/search/api/",
+                },
+                {"key": "BRAVE_SEARCH_API_KEY", "prompt": "Duplicate"},
+            ],
+            {
+                "BRAVE_SEARCH_API_KEY": "brv-secret-value-123456",
+                "FAL_KEY": "fal-secret-value-123456",
+            },
+        )
+
+        assert [field["key"] for field in fields] == ["FAL_KEY", "BRAVE_SEARCH_API_KEY"]
+        assert fields[0]["is_set"] is True
+        assert fields[0]["redacted_value"] != "fal-secret-value-123456"
+        assert fields[1]["is_set"] is True
+        assert fields[1]["redacted_value"] != "brv-secret-value-123456"
+        assert "secret-value" not in fields[1]["redacted_value"]
+        assert fields[1]["url"] == "https://brave.com/search/api/"
+
+    def test_plugin_providers_persists_web_backend_keys(self, monkeypatch):
+        """The dashboard provider endpoint writes only the fixed web config paths."""
+        import hermes_cli.web_server as web_server
+
+        calls = []
+        monkeypatch.setattr(
+            web_server,
+            "set_config_value",
+            lambda key, value: calls.append((key, value)),
+        )
+
+        resp = self.client.put(
+            "/api/dashboard/plugin-providers",
+            json={
+                "web_search_backend": "brave-free",
+                "web_extract_backend": "firecrawl",
+                "web_backend": "",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert calls == [
+            ("web.search_backend", "brave-free"),
+            ("web.extract_backend", "firecrawl"),
+            ("web.backend", ""),
+        ]
+
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value

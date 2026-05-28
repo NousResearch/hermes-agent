@@ -11,6 +11,7 @@ Usage:
 
 import asyncio
 import hmac
+import importlib
 import importlib.util
 import json
 import logging
@@ -45,6 +46,7 @@ from hermes_cli.config import (
     save_config,
     save_env_value,
     remove_env_value,
+    set_config_value,
     check_config_version,
     redact_key,
 )
@@ -4417,6 +4419,120 @@ def _strip_dashboard_manifest(p: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in p.items() if not k.startswith("_")}
 
 
+def _registry_provider_metadata(registry_module: str, label: str) -> Dict[str, Dict[str, Any]]:
+    """Return registered provider setup metadata for a plugin registry."""
+    providers: Dict[str, Dict[str, Any]] = {}
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+
+        get_plugin_manager().discover_and_load()
+        registry = importlib.import_module(registry_module)
+        for provider in registry.list_providers():
+            try:
+                schema = provider.get_setup_schema() or {}
+            except Exception:
+                schema = {}
+            try:
+                available = bool(provider.is_available())
+            except Exception:
+                available = False
+            name = str(getattr(provider, "name", "") or "").strip()
+            if not name:
+                continue
+            providers[name] = {
+                "name": name,
+                "display_name": getattr(provider, "display_name", name),
+                "available": available,
+                "setup_schema": schema,
+            }
+    except Exception as exc:
+        _log.debug("Could not load %s provider metadata: %s", label, exc)
+    return providers
+
+
+def _web_provider_metadata() -> Dict[str, Dict[str, Any]]:
+    """Return registered web-provider metadata for the plugins hub."""
+    providers: Dict[str, Dict[str, Any]] = {}
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+
+        get_plugin_manager().discover_and_load()
+        from agent.web_search_registry import list_providers
+
+        for provider in list_providers():
+            try:
+                schema = provider.get_setup_schema() or {}
+            except Exception:
+                schema = {}
+            try:
+                available = bool(provider.is_available())
+            except Exception:
+                available = False
+            providers[provider.name] = {
+                "name": provider.name,
+                "display_name": getattr(provider, "display_name", provider.name),
+                "available": available,
+                "supports_search": bool(provider.supports_search()),
+                "supports_extract": bool(provider.supports_extract()),
+                "supports_crawl": bool(provider.supports_crawl()),
+                "setup_schema": schema,
+            }
+    except Exception as exc:
+        _log.debug("Could not load web provider metadata: %s", exc)
+    return providers
+
+
+def _setup_env_fields(
+    env_specs: List[Any],
+    env_on_disk: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """Build redacted env-entry prompts declared by plugin setup metadata."""
+    fields: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_item in env_specs:
+        item = {"key": raw_item} if isinstance(raw_item, str) else raw_item
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        info = OPTIONAL_ENV_VARS.get(key, {})
+        value = env_on_disk.get(key)
+        fields.append({
+            "key": key,
+            "prompt": item.get("prompt") or info.get("prompt") or key,
+            "description": item.get("description") or info.get("description") or "",
+            "url": item.get("url") or info.get("url"),
+            "password": bool(item.get("password", info.get("password", True))),
+            "tools": info.get("tools", []),
+            "is_set": bool(value),
+            "redacted_value": redact_key(value) if value else None,
+        })
+    return fields
+
+
+def _provider_setup_env_specs(
+    provider_names: List[str],
+    provider_meta: Dict[str, Dict[str, Any]],
+) -> List[Any]:
+    """Return env-var specs declared by provider plugin setup schemas."""
+    specs: List[Any] = []
+    for provider_name in provider_names:
+        schema = (provider_meta.get(provider_name) or {}).get("setup_schema") or {}
+        specs.extend(schema.get("env_vars") or [])
+    return specs
+
+
+def _plugin_provider_names(manifest_data: Dict[str, Any], field: str) -> List[str]:
+    """Read provider names from a plugin manifest field."""
+    return [
+        str(p).strip()
+        for p in (manifest_data.get(field) or [])
+        if str(p).strip()
+    ]
+
+
 def _merged_plugins_hub() -> Dict[str, Any]:
     """Agent discovery + dashboard manifests + optional provider picker metadata."""
     from hermes_cli.plugins_cmd import (
@@ -4435,10 +4551,18 @@ def _merged_plugins_hub() -> Dict[str, Any]:
 
     disabled_set = _get_disabled_set()
     enabled_set = _get_enabled_set()
+    web_provider_meta = _web_provider_metadata()
+    browser_provider_meta = _registry_provider_metadata("agent.browser_registry", "browser")
+    image_provider_meta = _registry_provider_metadata("agent.image_gen_registry", "image_gen")
+    video_provider_meta = _registry_provider_metadata("agent.video_gen_registry", "video_gen")
+    tts_provider_meta = _registry_provider_metadata("agent.tts_registry", "tts")
+    stt_provider_meta = _registry_provider_metadata("agent.transcription_registry", "transcription")
+    env_on_disk = load_env()
 
     # Read user-hidden plugins from config for the user_hidden field.
     config = load_config()
     hidden_plugins: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+    web_cfg = config.get("web") if isinstance(config.get("web"), dict) else {}
 
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
     rows: List[Dict[str, Any]] = []
@@ -4483,6 +4607,39 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             except Exception:
                 pass
 
+        web_provider_names = _plugin_provider_names(manifest_data, "provides_web_providers")
+        browser_provider_names = _plugin_provider_names(manifest_data, "provides_browser_providers")
+        image_provider_names = _plugin_provider_names(manifest_data, "provides_image_gen_providers")
+        video_provider_names = _plugin_provider_names(manifest_data, "provides_video_gen_providers")
+        tts_provider_names = _plugin_provider_names(manifest_data, "provides_tts_providers")
+        stt_provider_names = _plugin_provider_names(manifest_data, "provides_transcription_providers")
+
+        # Bundled image/video plugin manifests predate explicit
+        # provides_*_providers fields; their discovery name is category/name.
+        if not image_provider_names and name.startswith("image_gen/"):
+            image_provider_names = [name.split("/", 1)[1]]
+        if not video_provider_names and name.startswith("video_gen/"):
+            video_provider_names = [name.split("/", 1)[1]]
+
+        web_providers = [
+            {k: v for k, v in (web_provider_meta.get(pname) or {"name": pname}).items() if k != "setup_schema"}
+            for pname in web_provider_names
+        ]
+
+        setup_env_specs: List[Any] = []
+        for provider_names, provider_meta in (
+            (web_provider_names, web_provider_meta),
+            (browser_provider_names, browser_provider_meta),
+            (image_provider_names, image_provider_meta),
+            (video_provider_names, video_provider_meta),
+            (tts_provider_names, tts_provider_meta),
+            (stt_provider_names, stt_provider_meta),
+        ):
+            setup_env_specs.extend(_provider_setup_env_specs(provider_names, provider_meta))
+        manifest_requires_env = manifest_data.get("requires_env") or []
+        if isinstance(manifest_requires_env, list):
+            setup_env_specs.extend(manifest_requires_env)
+
         rows.append({
             "name": name,
             "version": version or "",
@@ -4497,6 +4654,8 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             "auth_required": auth_required,
             "auth_command": auth_command,
             "user_hidden": name in hidden_plugins,
+            "web_providers": web_providers,
+            "setup_env": _setup_env_fields(setup_env_specs, env_on_disk),
         })
 
     agent_names = {r["name"] for r in rows}
@@ -4528,6 +4687,13 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             "memory_options": memory_providers,
             "context_engine": _get_current_context_engine(),
             "context_options": context_engines,
+            "web_search_backend": str(web_cfg.get("search_backend") or ""),
+            "web_extract_backend": str(web_cfg.get("extract_backend") or ""),
+            "web_backend": str(web_cfg.get("backend") or ""),
+            "web_options": [
+                {k: v for k, v in meta.items() if k != "setup_schema"}
+                for meta in sorted(web_provider_meta.values(), key=lambda item: str(item.get("display_name") or item.get("name")))
+            ],
         },
     }
 
@@ -4625,11 +4791,14 @@ async def delete_agent_plugin(request: Request, name: str):
 class _PluginProvidersPutBody(BaseModel):
     memory_provider: Optional[str] = None
     context_engine: Optional[str] = None
+    web_search_backend: Optional[str] = None
+    web_extract_backend: Optional[str] = None
+    web_backend: Optional[str] = None
 
 
 @app.put("/api/dashboard/plugin-providers")
 async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
-    """Persist memory provider / context engine selection (writes config.yaml)."""
+    """Persist runtime provider selections (writes config.yaml)."""
     _require_token(request)
     from hermes_cli.plugins_cmd import (
         _save_context_engine,
@@ -4640,6 +4809,12 @@ async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
         _save_memory_provider(body.memory_provider)
     if body.context_engine is not None:
         _save_context_engine(body.context_engine)
+    if body.web_search_backend is not None:
+        set_config_value("web.search_backend", body.web_search_backend)
+    if body.web_extract_backend is not None:
+        set_config_value("web.extract_backend", body.web_extract_backend)
+    if body.web_backend is not None:
+        set_config_value("web.backend", body.web_backend)
     return {"ok": True}
 
 

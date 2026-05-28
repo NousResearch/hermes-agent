@@ -23,6 +23,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 
 /** Select value for built-in memory (`config` uses empty string). Never use `""` — UI Select maps empty value to an empty label. */
 const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
+const WEB_PROVIDER_AUTO = "__hermes_web_auto__";
 
 export default function PluginsPage() {
   const [hub, setHub] = useState<PluginsHubResponse | null>(null);
@@ -34,6 +35,7 @@ export default function PluginsPage() {
   const [rescanBusy, setRescanBusy] = useState(false);
   const [memorySel, setMemorySel] = useState(MEMORY_PROVIDER_BUILTIN);
   const [contextSel, setContextSel] = useState("compressor");
+  const [webSearchSel, setWebSearchSel] = useState(WEB_PROVIDER_AUTO);
   const [providerBusy, setProviderBusy] = useState(false);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
 
@@ -49,6 +51,7 @@ export default function PluginsPage() {
         const p = h.providers;
         setMemorySel(p.memory_provider ? p.memory_provider : MEMORY_PROVIDER_BUILTIN);
         setContextSel(p.context_engine || "compressor");
+        setWebSearchSel(p.web_search_backend || p.web_backend || WEB_PROVIDER_AUTO);
       })
       .catch(() => showToast(t.common.loading, "error"));
   }, [showToast, t.common.loading]);
@@ -123,6 +126,7 @@ export default function PluginsPage() {
         memory_provider:
           memorySel === MEMORY_PROVIDER_BUILTIN ? "" : memorySel,
         context_engine: contextSel,
+        web_search_backend: webSearchSel === WEB_PROVIDER_AUTO ? "" : webSearchSel,
       });
       showToast(t.pluginsPage.savedProviders, "success");
       await loadHub();
@@ -165,7 +169,7 @@ export default function PluginsPage() {
 
             <CardContent className="flex flex-col gap-6">
 
-              <div className="grid gap-6 sm:grid-cols-2 max-w-full">
+              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 max-w-full">
               <div className="grid gap-2 min-w-0">
                 <Label htmlFor="mem-provider">{t.pluginsPage.memoryProviderLabel}</Label>
 
@@ -203,6 +207,27 @@ export default function PluginsPage() {
                     .map((o) => (
                       <SelectOption key={o.name} value={o.name}>
                         {o.name}
+                      </SelectOption>
+                    ))}
+                </Select>
+              </div>
+
+              <div className="grid gap-2 min-w-0">
+                <Label htmlFor="web-search-provider">Web search provider</Label>
+
+                <Select
+                  id="web-search-provider"
+                  className="w-full"
+                  value={webSearchSel}
+                  onValueChange={setWebSearchSel}
+                >
+                  <SelectOption value={WEB_PROVIDER_AUTO}>Auto</SelectOption>
+
+                  {(providers.web_options ?? [])
+                    .filter((o) => o.supports_search)
+                    .map((o) => (
+                      <SelectOption key={o.name} value={o.name}>
+                        {o.display_name ?? o.name}
                       </SelectOption>
                     ))}
                 </Select>
@@ -395,6 +420,33 @@ function PluginRowCard(props: PluginRowCardProps) {
 
   const busy = rowBusy === row.name;
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [envValues, setEnvValues] = useState<Record<string, string>>({});
+  const setupEnv = row.setup_env ?? [];
+  const primaryWebProvider = row.web_providers?.[0];
+  const setupActionLabel = primaryWebProvider ? "Save & Use" : "Save Key";
+
+  const saveSetupEnv = (fieldKey: string) => {
+    const value = (envValues[fieldKey] ?? "").trim();
+    if (!value) {
+      showToast(`Enter ${fieldKey} first`, "error");
+      return;
+    }
+
+    void setRuntimeLoading(row.name, async () => {
+      await api.setEnvVar(fieldKey, value);
+      if (row.runtime_status !== "enabled") {
+        await api.enableAgentPlugin(row.name);
+      }
+      if (primaryWebProvider?.supports_search) {
+        await api.savePluginProviders({ web_search_backend: primaryWebProvider.name });
+      }
+      if (primaryWebProvider?.supports_extract) {
+        await api.savePluginProviders({ web_extract_backend: primaryWebProvider.name });
+      }
+      setEnvValues((current) => ({ ...current, [fieldKey]: "" }));
+      showToast(`${fieldKey} saved`, "success");
+    });
+  };
 
   const badgeTone =
     row.runtime_status === "enabled"
@@ -535,6 +587,61 @@ function PluginRowCard(props: PluginRowCardProps) {
           <p className="min-w-0 w-full text-xs tracking-[0.06em] text-text-secondary break-words">
             {row.description}
           </p>
+        ) : null}
+
+        {setupEnv.length ? (
+          <div className="grid gap-3 rounded border border-current/15 p-3">
+            {setupEnv.map((field) => {
+              const inputId = `${row.name}-${field.key}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+              const hasValue = Boolean((envValues[field.key] ?? "").trim());
+              return (
+                <div key={field.key} className="grid gap-2 md:grid-cols-[minmax(12rem,1fr)_minmax(14rem,1.4fr)_auto] md:items-end">
+                  <div className="min-w-0">
+                    <Label htmlFor={inputId}>{field.prompt || field.key}</Label>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-text-tertiary">
+                      <span className="font-mono-ui">{field.key}</span>
+                      {field.is_set ? <Badge tone="success">{field.redacted_value ?? "set"}</Badge> : null}
+                      {field.url ? (
+                        <a
+                          className="inline-flex items-center gap-1 underline"
+                          href={field.url}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          Source
+                        </a>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <Input
+                    id={inputId}
+                    type={field.password ? "password" : "text"}
+                    autoComplete="off"
+                    placeholder={field.is_set ? "Replace stored value" : "Paste key"}
+                    value={envValues[field.key] ?? ""}
+                    onChange={(e) =>
+                      setEnvValues((current) => ({
+                        ...current,
+                        [field.key]: e.target.value,
+                      }))
+                    }
+                  />
+
+                  <Button
+                    className="h-9 uppercase"
+                    disabled={busy || !hasValue}
+                    size="sm"
+                    onClick={() => saveSetupEnv(field.key)}
+                    prefix={busy ? <Spinner /> : undefined}
+                  >
+                    {setupActionLabel}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
         ) : null}
 
         {dm?.slots?.length ? (

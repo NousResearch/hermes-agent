@@ -429,3 +429,75 @@ class TestFormatNoMatchHint:
         )
         assert result == ""
 
+
+class TestEscapeNormalizedNewString:
+    """Regression tests for unescaping common sequences in new_string
+    when the match succeeded via the escape_normalized strategy.
+
+    Issue #33733: LLMs overwhelmingly represent tabs as the two-character
+    sequence \\t (backslash + t) in JSON tool-call arguments. When the file
+    contains real tab bytes (0x09), the escape_normalized strategy matches
+    old_string by unescaping it — but new_string was written as-is, leaving
+    literal \\t characters in the file.
+    """
+
+    def test_tab_in_new_string_unescaped(self):
+        """File has real tab, model sends literal \\t in new_string."""
+        content = "def hello():\n\tprint(\"before\")\n"
+        old_string = "def hello():\n\\tprint(\"before\")\n"
+        new_string = "def hello():\n\\tprint(\"after\")\n"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        # Must contain a real tab, not literal \t
+        assert "\tprint(\"after\")" in new
+        assert "\\t" not in new
+
+    def test_newline_in_new_string_unescaped(self):
+        """File has real newlines, model sends literal \\n in new_string."""
+        content = "line1\nline2\nline3\n"
+        old_string = "line1\\nline2\\n"
+        new_string = "line1\\nreplaced\\n"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert "replaced" in new
+        assert "\\n" not in new
+
+    def test_carriage_return_in_new_string_unescaped(self):
+        """File has real CR, model sends literal \\r in new_string."""
+        content = "line1\r\nline2\r\n"
+        old_string = "line1\\r\\nline2\\r\\n"
+        new_string = "replaced\\r\\n"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert "replaced\r" in new
+
+    def test_mixed_escape_sequences_in_new_string(self):
+        """Model sends \\t and \\n together in new_string."""
+        content = "def foo():\n\tpass\n"
+        old_string = "def foo():\\n\\tpass\\n"
+        new_string = "def bar():\\n\\treturn 1\\n"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert "\treturn 1" in new
+        assert "\\t" not in new
+        assert "\\n" not in new
+
+    def test_exact_match_preserves_literal_escapes(self):
+        """When matching via exact strategy, literal \\t in new_string should
+        NOT be unescaped — the file genuinely contains backslash-t characters."""
+        content = "path = \"C:\\\\Users\\\"\n"
+        old_string = "path = \"C:\\\\Users\\\"\n"
+        new_string = "path = \"D:\\\\data\\\"\n"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None
+        assert strategy == "exact"
+        # Literal backslashes should be preserved
+        assert "\\\\" in new

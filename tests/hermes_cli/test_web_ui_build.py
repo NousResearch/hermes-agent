@@ -113,12 +113,17 @@ class TestBuildWebUISkipsWhenFresh:
         web_dir, _ = _make_web_dir(tmp_path)
 
         mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout=b"", stderr=b"")
+        build_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+             patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_ok) as mock_idle:
             result = _build_web_ui(web_dir)
 
         assert result is True
-        assert mock_run.call_count == 2  # npm install + npm run build
+        # npm install goes through subprocess.run; npm run build goes through
+        # _run_with_idle_timeout (issue #33788).
+        assert mock_run.call_count == 1   # install only
+        assert mock_idle.call_count == 1  # build only
 
     def test_npm_install_uses_utf8_replace_output_decoding(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
@@ -134,19 +139,29 @@ class TestBuildWebUISkipsWhenFresh:
         assert kwargs["encoding"] == "utf-8"
         assert kwargs["errors"] == "replace"
 
-    def test_web_build_uses_utf8_replace_output_decoding(self, tmp_path):
+    def test_web_build_uses_idle_timeout_helper(self, tmp_path):
+        """npm run build now goes through _run_with_idle_timeout (issue #33788).
+
+        The install step keeps its capture_output behavior (the existing
+        retry-on-EPERM contract depends on it); only the long-running build
+        step is streamed + idle-killed.
+        """
         web_dir, _ = _make_web_dir(tmp_path)
 
-        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main.subprocess.run", side_effect=[mock_cp, mock_cp]) as mock_run:
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp), \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp) as mock_idle:
             result = _build_web_ui(web_dir)
 
         assert result is True
-        _, build_kwargs = mock_run.call_args_list[1]
-        assert build_kwargs["text"] is True
-        assert build_kwargs["encoding"] == "utf-8"
-        assert build_kwargs["errors"] == "replace"
+        # Build was invoked through the idle-timeout helper, not subprocess.run.
+        mock_idle.assert_called_once()
+        args, kwargs = mock_idle.call_args
+        # Positional: [npm, "run", "build"]; cwd passed as kwarg.
+        assert args[0] == ["/usr/bin/npm", "run", "build"]
+        assert kwargs["cwd"] == web_dir
 
 
 class TestBuildWebUIRetryAndStaleFallback:
@@ -155,18 +170,19 @@ class TestBuildWebUIRetryAndStaleFallback:
     def test_retries_build_once_on_failure(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
         Subprocess = __import__("subprocess")
-        # install: success; build attempt 1: fail; build attempt 2: success
         install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        build_fail = Subprocess.CompletedProcess([], 1, stdout="", stderr="EPERM")
+        # build attempt 1: fail; build attempt 2: success.
+        build_fail = Subprocess.CompletedProcess([], 1, stdout="EPERM", stderr="")
         build_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main._time.sleep") as mock_sleep, \
-             patch("hermes_cli.main.subprocess.run",
-                   side_effect=[install_ok, build_fail, build_ok]) as mock_run:
+             patch("hermes_cli.main.subprocess.run", return_value=install_ok), \
+             patch("hermes_cli.main._run_with_idle_timeout",
+                   side_effect=[build_fail, build_ok]) as mock_idle:
             result = _build_web_ui(web_dir)
 
         assert result is True
-        assert mock_run.call_count == 3  # install + build + retry
+        assert mock_idle.call_count == 2  # build + retry
         mock_sleep.assert_called_once_with(3)
 
     def test_falls_back_to_stale_dist_when_retry_also_fails(self, tmp_path, capsys):
@@ -177,11 +193,12 @@ class TestBuildWebUIRetryAndStaleFallback:
 
         Subprocess = __import__("subprocess")
         install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        build_fail = Subprocess.CompletedProcess([], 1, stdout="", stderr="vite ENOMEM")
+        build_fail = Subprocess.CompletedProcess([], 1, stdout="vite ENOMEM", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main._time.sleep"), \
-             patch("hermes_cli.main.subprocess.run",
-                   side_effect=[install_ok, build_fail, build_fail]):
+             patch("hermes_cli.main.subprocess.run", return_value=install_ok), \
+             patch("hermes_cli.main._run_with_idle_timeout",
+                   side_effect=[build_fail, build_fail]):
             result = _build_web_ui(web_dir, fatal=True)
 
         # MUST return True (serve stale) — issue #23817 — even with fatal=True,
@@ -189,18 +206,19 @@ class TestBuildWebUIRetryAndStaleFallback:
         assert result is True
         out = capsys.readouterr().out
         assert "serving stale dist as fallback" in out
-        assert "vite ENOMEM" in out  # stderr surfaced to user
+        assert "vite ENOMEM" in out  # combined output surfaced to user
 
     def test_hard_fails_when_no_dist_to_fall_back_to(self, tmp_path, capsys):
         web_dir, _ = _make_web_dir(tmp_path)
 
         Subprocess = __import__("subprocess")
         install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        build_fail = Subprocess.CompletedProcess([], 1, stdout="", stderr="vite ENOMEM")
+        build_fail = Subprocess.CompletedProcess([], 1, stdout="vite ENOMEM", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main._time.sleep"), \
-             patch("hermes_cli.main.subprocess.run",
-                   side_effect=[install_ok, build_fail, build_fail]):
+             patch("hermes_cli.main.subprocess.run", return_value=install_ok), \
+             patch("hermes_cli.main._run_with_idle_timeout",
+                   side_effect=[build_fail, build_fail]):
             result = _build_web_ui(web_dir, fatal=True)
 
         assert result is False

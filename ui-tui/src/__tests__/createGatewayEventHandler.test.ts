@@ -139,6 +139,7 @@ describe('createGatewayEventHandler', () => {
     const verdict = '✓ Goal achieved: long judge reason goes only in transcript, not merged with cwd label.'
 
     vi.useFakeTimers()
+
     try {
       onEvent({
         payload: { kind: 'goal', text: verdict },
@@ -303,14 +304,40 @@ describe('createGatewayEventHandler', () => {
     vi.useFakeTimers()
     const appended: Msg[] = []
     const streamed = 'short streamed reasoning'
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    createGatewayEventHandler(buildCtx(appended))({ payload: { text: streamed }, type: 'thinking.delta' } as any)
-    vi.runOnlyPendingTimers()
+    try {
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: streamed }, type: 'thinking.delta' } as any)
+      vi.runOnlyPendingTimers()
 
-    expect(getTurnState().reasoning).toBe(streamed)
-    expect(getTurnState().reasoningActive).toBe(true)
-    expect(getTurnState().reasoningTokens).toBe(estimateTokensRough(streamed))
-    vi.useRealTimers()
+      expect(getTurnState().reasoning).toBe(streamed)
+      expect(getTurnState().reasoningActive).toBe(true)
+      expect(getTurnState().reasoningTokens).toBe(estimateTokensRough(streamed))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores late thinking.delta after the turn has already completed', () => {
+    vi.useFakeTimers()
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    try {
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+      expect(getUiState().busy).toBe(false)
+      expect(getUiState().status).toBe('ready')
+
+      onEvent({ payload: { text: 'thinking...' }, type: 'thinking.delta' } as any)
+      vi.runOnlyPendingTimers()
+
+      expect(getUiState().status).toBe('ready')
+      expect(getTurnState().reasoning).toBe('')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('preserves streamed reasoning as one completed thinking panel after segment flushes', () => {

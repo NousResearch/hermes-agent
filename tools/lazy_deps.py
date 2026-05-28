@@ -148,11 +148,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "lark-oapi==1.5.3",
         "qrcode==7.4.2",
     ),
+    # WeCom callback-mode adapter — parses untrusted XML POST bodies. Pulls
+    # defusedxml only; aiohttp/httpx are core dependencies of every messaging
+    # adapter and ship via `platform.discord` / `platform.slack` / etc.
+    "platform.wecom_callback": ("defusedxml==0.7.1",),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
     "terminal.daytona": ("daytona==0.155.0",),
-    "terminal.vercel": ("vercel==0.5.7",),
 
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (

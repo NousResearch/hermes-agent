@@ -115,7 +115,10 @@ _SKILL_REVIEW_PROMPT = (
     "Protected skills (DO NOT edit these):\n"
     "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
     "  • Hub-installed skills (installed via 'hermes skills install').\n"
-    "  • Pinned skills (marked via 'hermes curator pin').\n"
+    "Pinned skills (marked via 'hermes curator pin') CAN be improved — "
+    "pin only blocks deletion/archive/consolidation by the curator, not "
+    "content updates. Patch them when a pitfall or missing step turns up, "
+    "same as any other agent-created skill.\n"
     "If the only skills that need updating are protected, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture (these become persistent self-imposed constraints "
@@ -198,7 +201,10 @@ _COMBINED_REVIEW_PROMPT = (
     "Protected skills (DO NOT edit these):\n"
     "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
     "  • Hub-installed skills (installed via 'hermes skills install').\n"
-    "  • Pinned skills (marked via 'hermes curator pin').\n"
+    "Pinned skills (marked via 'hermes curator pin') CAN be improved — "
+    "pin only blocks deletion/archive/consolidation by the curator, not "
+    "content updates. Patch them when a pitfall or missing step turns up, "
+    "same as any other agent-created skill.\n"
     "If the only skills that need updating are protected, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture as skills (these become persistent self-imposed "
@@ -477,6 +483,11 @@ def _run_review_in_thread(
             finally:
                 clear_thread_tool_whitelist()
 
+            # Snapshot review actions before teardown. close() is allowed to
+            # clean per-session state, but the user-visible self-improvement
+            # summary still needs the completed review agent's tool results.
+            review_messages = list(getattr(review_agent, "_session_messages", []))
+
             # Tear down memory providers while stdout is still
             # redirected so background thread teardown (Honcho flush,
             # Hindsight sync, etc.) stays silent.  The finally block
@@ -489,7 +500,6 @@ def _run_review_in_thread(
                 review_agent.close()
             except Exception:
                 pass
-            review_messages = list(getattr(review_agent, "_session_messages", []))
             review_agent = None
 
         # Scan the review agent's messages for successful tool actions

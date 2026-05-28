@@ -592,6 +592,21 @@ def test_curator_review_prompt_is_umbrella_first():
     )
 
 
+def test_curator_review_prompt_preserves_skill_package_integrity():
+    """Consolidation must not flatten package skills and break linked files."""
+    from agent.curator import CURATOR_REVIEW_PROMPT
+
+    lower = CURATOR_REVIEW_PROMPT.lower()
+    assert "complete" in lower and "directory package" in lower
+    assert "not a new skill root" in lower
+    assert "do not flatten only skill.md" in lower
+    assert "rewrite" in lower and "new paths" in lower
+    assert "archive the entire original skill package unchanged" in lower
+    for dirname in ("references/", "templates/", "scripts/", "assets/"):
+        assert dirname in CURATOR_REVIEW_PROMPT
+
+
+
 def test_curator_review_prompt_offers_support_file_actions():
     """Support-file demotion (references/templates/scripts) must be one of
     the three consolidation methods, alongside merge-into-existing and

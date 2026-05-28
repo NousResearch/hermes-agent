@@ -1168,6 +1168,12 @@ DEFAULT_CONFIG = {
         "persistent_output": True,
         "persistent_output_max_lines": 200,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
+        "session_title_bar": {
+            "enabled": True,      # Show persistent session title inside the interactive CLI
+            "format": "{title}",
+            "foreground": "#87CEEB",
+            "background": "#1a1a2e",
+        },
         # File-mutation verifier footer.  When true (default), the agent
         # appends a one-line advisory to its final response whenever a
         # write_file / patch call failed during the turn and was never

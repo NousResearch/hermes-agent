@@ -163,8 +163,8 @@ class TestAutoTitleSession:
 class TestMaybeAutoTitle:
     """Tests for maybe_auto_title() — the fire-and-forget entry point."""
 
-    def test_skips_if_not_first_exchange(self):
-        """Should not fire for conversations with more than 2 user messages."""
+    def test_refreshes_after_topic_drift(self):
+        """Should refresh the title after later turns so it follows the session direction."""
         db = MagicMock()
         history = [
             {"role": "user", "content": "first"},
@@ -177,10 +177,19 @@ class TestMaybeAutoTitle:
 
         with patch("agent.title_generator.auto_title_session") as mock_auto:
             maybe_auto_title(db, "sess-1", "third", "response 3", history)
-            # Wait briefly for any thread to start
             import time
-            time.sleep(0.1)
-            mock_auto.assert_not_called()
+            time.sleep(0.3)
+            mock_auto.assert_called_once_with(
+                db,
+                "sess-1",
+                "third",
+                "response 3",
+                failure_callback=None,
+                main_runtime=None,
+                title_callback=None,
+                conversation_history=history,
+                update_existing=True,
+            )
 
     def test_fires_on_first_exchange(self):
         """Should fire a background thread for the first exchange."""
@@ -204,6 +213,8 @@ class TestMaybeAutoTitle:
                 failure_callback=None,
                 main_runtime=None,
                 title_callback=None,
+                conversation_history=history,
+                update_existing=False,
             )
 
     def test_forwards_failure_callback_to_worker(self):
@@ -230,6 +241,8 @@ class TestMaybeAutoTitle:
                 failure_callback=_cb,
                 main_runtime=None,
                 title_callback=None,
+                conversation_history=history,
+                update_existing=False,
             )
 
     def test_skips_if_no_response(self):

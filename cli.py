@@ -426,6 +426,12 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
+            "session_title_bar": {
+                "enabled": True,
+                "format": "{title}",
+                "foreground": "#87CEEB",
+                "background": "#1a1a2e",
+            },
 
             "skin": "default",
         },
@@ -669,6 +675,42 @@ def load_cli_config() -> Dict[str, Any]:
 
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
+
+
+_DEFAULT_SESSION_TITLE_BAR_CONFIG = {
+    "enabled": True,
+    "format": "{title}",
+    "foreground": "#87CEEB",
+    "background": "#1a1a2e",
+}
+
+
+def _session_title_bar_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    display = (config or CLI_CONFIG or {}).get("display", {})
+    raw = display.get("session_title_bar", {}) if isinstance(display, dict) else {}
+    if isinstance(raw, bool):
+        raw = {"enabled": raw}
+    if not isinstance(raw, dict):
+        raw = {}
+    merged = dict(_DEFAULT_SESSION_TITLE_BAR_CONFIG)
+    merged.update(raw)
+    return merged
+
+
+def _clean_session_title(value: str) -> str:
+    text = str(value or "")
+    text = re.sub(r"\x1b\].*?(?:\x07|\x1b\\)", "", text)
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:100]
+
+
+def _default_session_title() -> str:
+    try:
+        cwd = Path.cwd()
+        return cwd.name or str(cwd)
+    except Exception:
+        return "Hermes"
 
 
 # Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
@@ -3189,6 +3231,8 @@ class HermesCLI:
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
+        self._session_title: str = ""
+        self._apply_session_title_bar()
         
         # History file for persistent input recall across sessions
         self._history_file = _hermes_home / ".hermes_history"
@@ -3413,6 +3457,31 @@ class HermesCLI:
         if percent_used >= 50:
             return "class:status-bar-warn"
         return "class:status-bar-good"
+
+    def _get_session_title_bar_text(self, width: Optional[int] = None) -> str:
+        """Return the persistent in-terminal session title line."""
+        cfg = _session_title_bar_config(getattr(self, "config", None))
+        if not cfg.get("enabled", True):
+            return ""
+        title = _clean_session_title(getattr(self, "_session_title", ""))
+        if not title:
+            return ""
+        rendered = _clean_session_title(
+            str(cfg.get("format") or "{title}").replace("{title}", title)
+        )
+        if not rendered:
+            return ""
+        text = f" {rendered} "
+        if width is None:
+            width = self._get_tui_terminal_width()
+        trimmed = self._trim_status_bar_text(text, width)
+        return trimmed.ljust(max(0, width or 0))
+
+    def _get_session_title_bar_fragments(self, width: Optional[int] = None):
+        text = self._get_session_title_bar_text(width=width)
+        if not text:
+            return []
+        return [("class:session-title-bar", text)]
 
     @staticmethod
     def _compression_count_style(count: int) -> str:
@@ -3901,6 +3970,8 @@ class HermesCLI:
                 plain_text = "".join(text for _, text in frags)
                 trimmed = self._trim_status_bar_text(plain_text, width)
                 return [("class:status-bar", trimmed)]
+            if total_width < width:
+                frags.append(("class:status-bar", " " * (width - total_width)))
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
@@ -5136,6 +5207,25 @@ class HermesCLI:
 
         self._console_print()
 
+    def _apply_session_title_bar(self, title: Optional[str] = None) -> bool:
+        """Update the persistent in-terminal session title bar."""
+        chosen = title
+        if not chosen and self._session_db and getattr(self, "session_id", None):
+            try:
+                chosen = self._session_db.get_session_title(self.session_id)
+            except Exception:
+                chosen = None
+        cleaned = _clean_session_title(chosen or _default_session_title())
+        changed = cleaned != getattr(self, "_session_title", "")
+        self._session_title = cleaned
+        if changed:
+            self._invalidate()
+        return bool(cleaned)
+
+    def _on_auto_title(self, title: str) -> None:
+        """Callback used by background session-title generation."""
+        self._apply_session_title_bar(title)
+
     def _preload_resumed_session(self) -> bool:
         """Load a resumed session's history from the DB early (before first chat).
 
@@ -5177,6 +5267,7 @@ class HermesCLI:
             if resolved_meta:
                 session_meta = resolved_meta
 
+        self._apply_session_title_bar(session_meta.get("title"))
         restored = self._session_db.get_messages_as_conversation(self.session_id)
         if restored:
             restored = [m for m in restored if m.get("role") != "session_meta"]
@@ -6503,6 +6594,7 @@ class HermesCLI:
                 print(f"(^_^)v New session started: {title}")
             else:
                 print("(^_^)v New session started!")
+        self._apply_session_title_bar(title)
 
     def _handle_handoff_command(self, cmd_original: str) -> bool:
         """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
@@ -6781,6 +6873,7 @@ class HermesCLI:
                 pass
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
+        self._apply_session_title_bar(session_meta.get("title"))
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
         if self.conversation_history:
             _cprint(
@@ -8425,6 +8518,7 @@ class HermesCLI:
                             # Session exists in DB — set title directly
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
+                                    self._apply_session_title_bar(new_title)
                                     _cprint(f"  Session title set: {new_title}")
                                 else:
                                     _cprint("  Session not found in database.")
@@ -8438,6 +8532,7 @@ class HermesCLI:
                                 _cprint(f"  Title '{new_title}' is already in use by session {existing['id']}")
                             else:
                                 self._pending_title = new_title
+                                self._apply_session_title_bar(new_title)
                                 _cprint(f"  Session title queued: {new_title} (will be saved on first message)")
                     else:
                         from hermes_state import format_session_db_unavailable
@@ -11959,6 +12054,7 @@ class HermesCLI:
                             "api_key": self.api_key,
                             "api_mode": self.api_mode,
                         },
+                        title_callback=self._on_auto_title,
                     )
                 except Exception:
                     pass
@@ -12289,6 +12385,14 @@ class HermesCLI:
             style_dict.update(get_prompt_toolkit_style_overrides())
         except Exception:
             pass
+        try:
+            title_cfg = _session_title_bar_config(getattr(self, "config", None))
+            fg = str(title_cfg.get("foreground") or "#87CEEB").strip()
+            bg = str(title_cfg.get("background") or "#1a1a2e").strip()
+            if fg and bg:
+                style_dict["session-title-bar"] = f"bg:{bg} {fg}"
+        except Exception:
+            pass
         # Light-mode remap on the style strings.  Each value is a pt
         # style string like "bg:#1a1a2e #C0C0C0 bold" — split on space,
         # rewrite any "#XXX" tokens (including "bg:#XXX") through the
@@ -12366,6 +12470,7 @@ class HermesCLI:
         spinner_widget=None,
         spacer,
         status_bar,
+        session_title_bar,
         input_rule_top,
         image_bar,
         input_area,
@@ -12392,6 +12497,7 @@ class HermesCLI:
                 spacer,
                 *self._get_extra_tui_widgets(),
                 status_bar,
+                session_title_bar,
                 input_rule_top,
                 image_bar,
                 input_area,
@@ -14128,6 +14234,19 @@ class HermesCLI:
             ),
         )
 
+        session_title_bar = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(lambda: cli_ref._get_session_title_bar_fragments()),
+                height=1,
+                wrap_lines=False,
+            ),
+            filter=Condition(
+                lambda: cli_ref._status_bar_visible
+                and bool(cli_ref._get_session_title_bar_fragments())
+                and not getattr(cli_ref, "_status_bar_suppressed_after_resize", False)
+            ),
+        )
+
         # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)
 
@@ -14148,6 +14267,7 @@ class HermesCLI:
                     spinner_widget=spinner_widget,
                     spacer=spacer,
                     status_bar=status_bar,
+                    session_title_bar=session_title_bar,
                     input_rule_top=input_rule_top,
                     image_bar=image_bar,
                     input_area=input_area,
@@ -14178,6 +14298,7 @@ class HermesCLI:
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
             'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
+            'session-title-bar': 'bg:#111827 #87CEEB',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges

@@ -36,6 +36,18 @@ class TestCodexTransportBasic:
         assert result[0]["type"] == "function"
         assert result[0]["name"] == "terminal"
 
+    def test_convert_tools_maps_web_search_to_native_responses_tool(self, transport):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+            }
+        }]
+        result = transport.convert_tools(tools)
+        assert result == [{"type": "web_search"}]
+
 
 class TestCodexBuildKwargs:
 

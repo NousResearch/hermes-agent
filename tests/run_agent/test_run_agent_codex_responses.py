@@ -1093,6 +1093,16 @@ def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch
     assert result["max_output_tokens"] == 4096
 
 
+def test_preflight_codex_api_kwargs_allows_native_web_search_tool(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["tools"] = [{"type": "web_search"}]
+
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+    result = _preflight_codex_api_kwargs(kwargs)
+    assert result["tools"] == [{"type": "web_search"}]
+
+
 def test_preflight_codex_api_kwargs_allows_service_tier(monkeypatch):
     agent = _build_agent(monkeypatch)
     kwargs = _codex_request_kwargs()

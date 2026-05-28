@@ -642,6 +642,18 @@ class TestCheckWebApiKey:
                     assert check_web_api_key() is True
 
 
+class TestCapabilitySpecificWebChecks:
+    def test_search_check_accepts_native_backend(self):
+        with patch("tools.web_tools._load_web_config", return_value={"search_backend": "native"}):
+            from tools.web_tools import check_web_search_api_key
+            assert check_web_search_api_key() is True
+
+    def test_extract_check_rejects_native_backend_without_extract_provider(self):
+        with patch("tools.web_tools._load_web_config", return_value={"extract_backend": "native"}):
+            from tools.web_tools import check_web_extract_api_key
+            assert check_web_extract_api_key() is False
+
+
 def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 

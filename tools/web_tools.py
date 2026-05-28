@@ -140,7 +140,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "native"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -228,6 +228,12 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    if backend == "native":
+        cfg = _load_web_config()
+        return any(
+            str(cfg.get(key) or "").lower().strip() == "native"
+            for key in ("search_backend", "backend")
+        )
     return False
 
 
@@ -1363,16 +1369,46 @@ async def web_crawl_tool(
         return tool_error(error_msg)
 
 
-# Convenience function to check Firecrawl credentials
-def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
-    configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
+def check_web_search_api_key() -> bool:
+    """Check whether a search-capable backend is available.
+
+    ``native`` is a special-case for Responses-based models: Hermes exposes
+    ``web_search`` in the normal tool registry, but the Responses transport
+    rewrites it into the provider-native ``{"type":"web_search"}`` tool.
+    We only advertise it when the user explicitly configures
+    ``web.search_backend: native`` or ``web.backend: native``.
+    """
+    cfg = _load_web_config()
+    configured = (
+        str(cfg.get("search_backend") or "").lower().strip()
+        or str(cfg.get("backend") or "").lower().strip()
+    )
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai", "native"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
     )
+
+
+def check_web_extract_api_key() -> bool:
+    """Check whether an extract-capable backend is available."""
+    cfg = _load_web_config()
+    configured = (
+        str(cfg.get("extract_backend") or "").lower().strip()
+        or str(cfg.get("backend") or "").lower().strip()
+    )
+    if configured in {"exa", "parallel", "firecrawl", "tavily"}:
+        return _is_backend_available(configured)
+    return any(
+        _is_backend_available(backend)
+        for backend in ("exa", "parallel", "firecrawl", "tavily")
+    )
+
+
+def check_web_api_key() -> bool:
+    """Backward-compatible union of search/extract availability."""
+    return check_web_search_api_key() or check_web_extract_api_key()
 
 
 def check_auxiliary_model() -> bool:
@@ -1542,7 +1578,7 @@ registry.register(
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
-    check_fn=check_web_api_key,
+    check_fn=check_web_search_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",
     max_result_size_chars=100_000,
@@ -1553,7 +1589,7 @@ registry.register(
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
-    check_fn=check_web_api_key,
+    check_fn=check_web_extract_api_key,
     requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",

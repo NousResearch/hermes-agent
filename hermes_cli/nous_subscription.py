@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Set
 
-from hermes_cli.auth import get_nous_auth_status
 from hermes_cli.config import get_env_value, load_config
+from hermes_cli.nous_account import NousPortalAccountInfo, get_nous_portal_account_info
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
 from tools.tool_backend_helpers import (
@@ -53,6 +53,7 @@ class NousSubscriptionFeatures:
     nous_auth_present: bool
     provider_is_nous: bool
     features: Dict[str, NousFeatureState]
+    account_info: Optional[NousPortalAccountInfo] = None
 
     @property
     def web(self) -> NousFeatureState:
@@ -227,6 +228,8 @@ def _resolve_browser_feature_state(
 
 def get_nous_subscription_features(
     config: Optional[Dict[str, object]] = None,
+    *,
+    force_fresh: bool = False,
 ) -> NousSubscriptionFeatures:
     if config is None:
         config = load_config() or {}
@@ -235,12 +238,19 @@ def get_nous_subscription_features(
     provider_is_nous = str(model_cfg.get("provider") or "").strip().lower() == "nous"
 
     try:
-        nous_status = get_nous_auth_status()
+        if force_fresh:
+            account_info = get_nous_portal_account_info(force_fresh=True)
+        else:
+            account_info = get_nous_portal_account_info()
     except Exception:
-        nous_status = {}
+        account_info = None
 
-    managed_tools_flag = managed_nous_tools_enabled()
-    nous_auth_present = bool(nous_status.get("logged_in"))
+    managed_tools_flag = bool(
+        account_info
+        and account_info.logged_in
+        and account_info.paid_service_access is True
+    )
+    nous_auth_present = bool(account_info and account_info.logged_in)
     subscribed = provider_is_nous or nous_auth_present
 
     web_tool_enabled = _toolset_enabled(config, "web")
@@ -317,6 +327,7 @@ def get_nous_subscription_features(
         modal_mode,
         has_direct=direct_modal,
         managed_ready=managed_modal_available,
+        managed_enabled=managed_tools_flag,
     )
 
     web_managed = web_backend == "firecrawl" and managed_web_available and not direct_firecrawl
@@ -483,6 +494,7 @@ def get_nous_subscription_features(
         nous_auth_present=nous_auth_present,
         provider_is_nous=provider_is_nous,
         features=features,
+        account_info=account_info,
     )
 
 
@@ -493,11 +505,15 @@ def apply_nous_managed_defaults(
     config: Dict[str, object],
     *,
     enabled_toolsets: Optional[Iterable[str]] = None,
+    force_fresh: bool = False,
 ) -> set[str]:
-    if not managed_nous_tools_enabled():
+    features = get_nous_subscription_features(config, force_fresh=force_fresh)
+    if not (
+        features.account_info
+        and features.account_info.logged_in
+        and features.account_info.paid_service_access is True
+    ):
         return set()
-
-    features = get_nous_subscription_features(config)
     if not features.provider_is_nous:
         return set()
 
@@ -594,6 +610,8 @@ _ALL_GATEWAY_KEYS = ("web", "image_gen", "tts", "browser")
 
 def get_gateway_eligible_tools(
     config: Optional[Dict[str, object]] = None,
+    *,
+    force_fresh: bool = False,
 ) -> tuple[list[str], list[str], list[str]]:
     """Return (unconfigured, has_direct, already_managed) tool key lists.
 
@@ -604,7 +622,11 @@ def get_gateway_eligible_tools(
     All lists are empty when the user is not a paid Nous subscriber or
     is not using Nous as their provider.
     """
-    if not managed_nous_tools_enabled():
+    if force_fresh:
+        managed_enabled = managed_nous_tools_enabled(force_fresh=True)
+    else:
+        managed_enabled = managed_nous_tools_enabled()
+    if not managed_enabled:
         return [], [], []
 
     if config is None:
@@ -695,7 +717,11 @@ def apply_gateway_defaults(
     return changed
 
 
-def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
+def prompt_enable_tool_gateway(
+    config: Dict[str, object],
+    *,
+    force_fresh: bool = True,
+) -> set[str]:
     """If eligible tools exist, prompt the user to enable the Tool Gateway.
 
     Uses prompt_choice() with a description parameter so the curses TUI
@@ -704,7 +730,10 @@ def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
     Returns the set of tools that were enabled, or empty set if the user
     declined or no tools were eligible.
     """
-    unconfigured, has_direct, already_managed = get_gateway_eligible_tools(config)
+    unconfigured, has_direct, already_managed = get_gateway_eligible_tools(
+        config,
+        force_fresh=force_fresh,
+    )
     if not unconfigured and not has_direct:
         return set()
 

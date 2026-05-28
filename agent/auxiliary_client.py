@@ -269,7 +269,6 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "minimax-oauth": "MiniMax-M2.7-highspeed",
     "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
-    "ai-gateway": "google/gemini-3-flash",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
@@ -384,15 +383,6 @@ def build_nvidia_nim_headers(base_url: str | None) -> dict:
     return {}
 
 
-# Vercel AI Gateway app attribution headers. HTTP-Referer maps to
-# referrerUrl and X-Title maps to appName in the gateway's analytics.
-from hermes_cli import __version__ as _HERMES_VERSION
-
-_AI_GATEWAY_HEADERS = {
-    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-    "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
-}
 
 # Nous Portal extra_body for product attribution.
 # Callers should pass this as extra_body in chat.completions.create()
@@ -785,67 +775,60 @@ class _CodexCompletionsAdapter:
                 pass
 
         try:
-            # Collect output items and text deltas during streaming —
-            # the Codex backend can return empty response.output from
-            # get_final_response() even when items were streamed.
-            collected_output_items: List[Any] = []
-            collected_text_deltas: List[str] = []
-            has_function_calls = False
             if total_timeout:
                 timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
-            with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
-                    _check_cancelled()
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
-                _check_cancelled()
-                final = stream.get_final_response()
 
-            # Backfill empty output from collected stream events
-            _output = getattr(final, "output", None)
-            if isinstance(_output, list) and not _output:
-                if collected_output_items:
-                    final.output = list(collected_output_items)
-                    logger.debug(
-                        "Codex auxiliary: backfilled %d output items from stream events",
-                        len(collected_output_items),
-                    )
-                elif collected_text_deltas and not has_function_calls:
-                    # Only synthesize text when no tool calls were streamed —
-                    # a function_call response with incidental text should not
-                    # be collapsed into a plain-text message.
-                    assembled = "".join(collected_text_deltas)
-                    final.output = [SimpleNamespace(
-                        type="message", role="assistant", status="completed",
-                        content=[SimpleNamespace(type="output_text", text=assembled)],
-                    )]
-                    logger.debug(
-                        "Codex auxiliary: synthesized from %d deltas (%d chars)",
-                        len(collected_text_deltas), len(assembled),
-                    )
+            # Event-driven Responses streaming via the low-level
+            # ``responses.create(stream=True)`` path.  The high-level
+            # ``responses.stream(...)`` helper does post-hoc typed
+            # reconstruction from ``response.completed.response.output``,
+            # which the chatgpt.com Codex backend has been observed to
+            # return as ``null`` (gpt-5.5, May 2026) — that crashes the SDK
+            # with ``TypeError: 'NoneType' object is not iterable``.
+            # Consuming raw events and assembling the final response
+            # ourselves from ``response.output_item.done`` makes us
+            # structurally immune to that drift.
+            from agent.codex_runtime import _consume_codex_event_stream
+
+            stream_kwargs = dict(resp_kwargs)
+            stream_kwargs["stream"] = True
+
+            def _on_each_event(_event: Any) -> None:
+                # Re-check timeout/cancellation per event, matching the
+                # cadence the old in-line ``_check_cancelled()`` used.
+                _check_cancelled()
+
+            event_stream = self._client.responses.create(**stream_kwargs)
+            try:
+                final = _consume_codex_event_stream(
+                    event_stream,
+                    model=resp_kwargs.get("model"),
+                    on_event=_on_each_event,
+                )
+            finally:
+                close_fn = getattr(event_stream, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception:
+                        pass
+
+            if final is None:
+                raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
 
             # Extract text and tool calls from the Responses output.
-            # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
-            # so use a helper that handles both shapes.
+            # Items may be SimpleNamespace (raw-event path) or dicts
+            # (some legacy fallback paths), so handle both shapes.
             def _item_get(obj: Any, key: str, default: Any = None) -> Any:
                 val = getattr(obj, key, None)
                 if val is None and isinstance(obj, dict):
                     val = obj.get(key, default)
                 return val if val is not None else default
 
-            for item in getattr(final, "output", []):
+            for item in (getattr(final, "output", None) or []):
                 item_type = _item_get(item, "type")
                 if item_type == "message":
                     for part in (_item_get(item, "content") or []):
@@ -865,9 +848,12 @@ class _CodexCompletionsAdapter:
             resp_usage = getattr(final, "usage", None)
             if resp_usage:
                 usage = SimpleNamespace(
-                    prompt_tokens=getattr(resp_usage, "input_tokens", 0),
-                    completion_tokens=getattr(resp_usage, "output_tokens", 0),
-                    total_tokens=getattr(resp_usage, "total_tokens", 0),
+                    prompt_tokens=getattr(resp_usage, "input_tokens", 0)
+                        or (resp_usage.get("input_tokens", 0) if isinstance(resp_usage, dict) else 0),
+                    completion_tokens=getattr(resp_usage, "output_tokens", 0)
+                        or (resp_usage.get("output_tokens", 0) if isinstance(resp_usage, dict) else 0),
+                    total_tokens=getattr(resp_usage, "total_tokens", 0)
+                        or (resp_usage.get("total_tokens", 0) if isinstance(resp_usage, dict) else 0),
                 )
         except Exception as exc:
             if timed_out.is_set():
@@ -1405,6 +1391,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
     for provider_id, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
+            continue
+        if _is_provider_unhealthy(provider_id):
+            logger.debug("Auxiliary api-key chain: %s is unhealthy, skipping", provider_id)
             continue
         if provider_id == "anthropic":
             # Only try anthropic when the user has explicitly configured it.
@@ -2260,11 +2249,12 @@ def _is_payment_error(exc: Exception) -> bool:
             "credits", "insufficient funds",
             "can only afford", "billing",
             "payment required",
-            # Daily / monthly quota exhaustion keywords
+            # Daily / monthly / weekly quota exhaustion keywords
             "quota exceeded", "quota_exceeded",
             "too many tokens per day", "daily limit",
             "tokens per day", "daily quota",
             "resource exhausted",  # Vertex AI / gRPC quota errors
+            "weekly usage limit", "weekly limit",  # OpenCode Go weekly subscription cap
         )):
             return True
     return False
@@ -2478,7 +2468,11 @@ def _pool_error_context(exc: Exception) -> Dict[str, Any]:
     return payload
 
 
-def _recoverable_pool_provider(resolved_provider: str, client: Any) -> Optional[str]:
+def _recoverable_pool_provider(
+    resolved_provider: str,
+    client: Any,
+    main_runtime: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
     """Infer which provider pool can recover the current auxiliary client."""
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized not in {"", "auto", "custom"}:
@@ -2496,11 +2490,33 @@ def _recoverable_pool_provider(resolved_provider: str, client: Any) -> Optional[
         return "copilot"
     if base_url_host_matches(base, "api.kimi.com"):
         return "kimi-coding"
+    # For api_key providers not in the hardcoded list (e.g. opencode-go), match
+    # the client base URL against all registered api_key providers so that
+    # credential-pool rotation works for any provider the user configured.
+    if main_runtime:
+        rt = _normalize_main_runtime(main_runtime)
+        rt_provider = rt.get("provider", "")
+        if rt_provider and rt_provider not in {"", "auto", "custom"}:
+            try:
+                from hermes_cli.auth import PROVIDER_REGISTRY
+                pconfig = PROVIDER_REGISTRY.get(rt_provider)
+                if pconfig and getattr(pconfig, "auth_type", None) == "api_key":
+                    rt_base = str(getattr(pconfig, "inference_base_url", "") or "").rstrip("/")
+                    if rt_base and base_url_host_matches(base, base_url_hostname(rt_base)):
+                        return rt_provider
+            except Exception:
+                pass
     return None
 
 
-def _recover_provider_pool(provider: str, exc: Exception) -> bool:
-    """Try same-provider credential-pool recovery for auxiliary calls."""
+def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
+    """Try same-provider credential-pool recovery for auxiliary calls.
+
+    ``failed_api_key`` is the API key that was actually used for the failing
+    request.  Passing it lets mark_exhausted_and_rotate identify the correct
+    pool entry even when another process has already rotated the pool (which
+    would leave current() as None, causing the wrong entry to be marked).
+    """
     normalized = _normalize_aux_provider(provider)
     try:
         pool = load_pool(normalized)
@@ -2512,6 +2528,7 @@ def _recover_provider_pool(provider: str, exc: Exception) -> bool:
 
     status_code = getattr(exc, "status_code", None)
     error_context = _pool_error_context(exc)
+    hint = failed_api_key or None
 
     if _is_auth_error(exc):
         refreshed = pool.try_refresh_current()
@@ -2521,6 +2538,7 @@ def _recover_provider_pool(provider: str, exc: Exception) -> bool:
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else 401,
             error_context=error_context,
+            api_key_hint=hint,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -2532,6 +2550,7 @@ def _recover_provider_pool(provider: str, exc: Exception) -> bool:
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context,
+            api_key_hint=hint,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -2936,6 +2955,11 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+        elif runtime_api_key:
+            # Pin auxiliary to the same api_key as the active main chat session
+            # so that a working key is reused instead of re-selecting from the pool
+            # (which might pick a different, potentially exhausted key).
+            explicit_api_key = runtime_api_key
         # Skip Step-1 if the main provider was recently 402'd. The unhealthy
         # cache TTL bounds how long we bypass it, so a topped-up account
         # recovers automatically. If we tried Step-1 anyway, every aux call
@@ -3115,6 +3139,34 @@ def resolve_provider_client(
     original_provider = (provider or "").strip().lower()
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
+
+    # Universal model-resolution fallback chain.  Callers (notably title
+    # generation, vision, session search, and other auxiliary tasks) can
+    # reach this function without an explicit model — the user picked their
+    # main provider, didn't bother configuring a per-task ``auxiliary.<task>.model``,
+    # and just expects "use my main model for side tasks too."  Resolve in
+    # this order, stopping at the first non-empty answer:
+    #
+    #   1. ``model`` argument (caller knew what they wanted)
+    #   2. Provider's catalog default — cheap/fast model the provider
+    #      registered via ``ProviderProfile.default_aux_model`` or the
+    #      legacy ``_API_KEY_PROVIDER_AUX_MODELS_FALLBACK`` dict.  Empty
+    #      string for OAuth-gated providers (openai-codex, xai-oauth)
+    #      whose accepted-model lists drift on the backend, so we don't
+    #      pin a default that can silently rot.
+    #   3. User's main model from ``model.model`` in config.yaml.  This is
+    #      the load-bearing step for OAuth providers: an xai-oauth user
+    #      with grok-4.3 configured gets grok-4.3 for title generation
+    #      instead of silently dropping to whatever Step-2 fallback (#31845).
+    #
+    # Each provider branch below sees a non-empty ``model`` whenever the
+    # user has *anything* configured — no provider-specific empty-model
+    # guards needed.  When the user has NOTHING configured (fresh install,
+    # main_model also empty), the branches still hit their own
+    # missing-credentials returns and ``_resolve_auto`` falls through to
+    # the Step-2 chain as before.
+    if not model:
+        model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
         """Decide if a plain OpenAI client should be wrapped for Responses API.
@@ -3547,8 +3599,7 @@ def resolve_provider_client(
         else:
             # Fall back to profile.default_headers for providers that declare
             # client-level attribution headers on their profile (e.g. GMI
-            # User-Agent for traffic identification, Vercel AI Gateway
-            # Referer/Title for analytics).
+            # User-Agent for traffic identification).
             try:
                 from providers import get_provider_profile as _gpf_main
                 _ph_main = _gpf_main(provider)
@@ -4300,13 +4351,25 @@ def _get_cached_client(
             else:
                 effective = _compat_model(cached_client, model, cached_default)
                 return cached_client, effective
-    # Build outside the lock
+    # Build outside the lock.
+    # For pool-backed api_key providers, derive the active API key from the
+    # pool entry rather than from env vars.  resolve_api_key_provider_credentials
+    # always prefers env vars (first-entry bias), which bypasses pool rotation:
+    # after key #1 is marked exhausted the retry would still get key #1 from
+    # the env var and fail again, causing the retry2_err handler to mark key #2.
+    effective_api_key = api_key
+    if not effective_api_key:
+        _pe = _peek_pool_entry(_normalize_aux_provider(provider))
+        if _pe is not None:
+            _pk = _pool_runtime_api_key(_pe)
+            if _pk:
+                effective_api_key = _pk
     client, default_model = resolve_provider_client(
         provider,
         model,
         async_mode,
         explicit_base_url=base_url,
-        explicit_api_key=api_key,
+        explicit_api_key=effective_api_key,
         api_mode=api_mode,
         main_runtime=runtime,
         is_vision=is_vision,
@@ -4920,10 +4983,17 @@ def call_llm(
                 )
 
         # ── Same-provider credential-pool recovery ─────────────────────
-        pool_provider = _recoverable_pool_provider(resolved_provider, client)
+        pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
+        # Capture the exact API key used so mark_exhausted_and_rotate can find
+        # the correct pool entry even when another process rotated the pool
+        # between this call and recovery (which leaves current()=None and makes
+        # _select_unlocked() return the NEXT key by mistake).
+        _client_api_key = str(getattr(client, "api_key", "") or "")
         if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
             recovery_err = first_err
-            if _is_rate_limit_error(first_err):
+            # Skip the extra retry for clear payment/quota errors — the endpoint
+            # won't accept another request with the same exhausted key.
+            if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
                 try:
                     return _validate_llm_response(
                         client.chat.completions.create(**kwargs), task)
@@ -4931,27 +5001,40 @@ def call_llm(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err):
+            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
                 logger.info(
                     "Auxiliary %s: recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
                 )
-                return _retry_same_provider_sync(
-                    task=task,
-                    resolved_provider=resolved_provider,
-                    resolved_model=resolved_model,
-                    resolved_base_url=resolved_base_url,
-                    resolved_api_key=resolved_api_key,
-                    resolved_api_mode=resolved_api_mode,
-                    main_runtime=main_runtime,
-                    final_model=final_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    tools=tools,
-                    effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body,
-                )
+                try:
+                    return _retry_same_provider_sync(
+                        task=task,
+                        resolved_provider=resolved_provider,
+                        resolved_model=resolved_model,
+                        resolved_base_url=resolved_base_url,
+                        resolved_api_key=resolved_api_key,
+                        resolved_api_mode=resolved_api_mode,
+                        main_runtime=main_runtime,
+                        final_model=final_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        effective_timeout=effective_timeout,
+                        effective_extra_body=effective_extra_body,
+                    )
+                except Exception as retry2_err:
+                    # The rotated key also hit a quota/auth wall.  Mark it
+                    # immediately so concurrent processes don't make a
+                    # redundant API call to discover it's exhausted too.
+                    # Then fall through to the payment fallback below so
+                    # alternative providers can still serve the request.
+                    if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
+                            or _is_rate_limit_error(retry2_err)):
+                        _recover_provider_pool(pool_provider, retry2_err)
+                        first_err = retry2_err
+                    else:
+                        raise
 
         # ── Payment / credit exhaustion fallback ──────────────────────
         # When the resolved provider returns 402 or a credit-related error,
@@ -4993,7 +5076,7 @@ def call_llm(
                 # 402). Mark THAT label unhealthy so subsequent aux calls
                 # skip it instead of paying another doomed RTT.
                 _mark_provider_unhealthy(
-                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider
+                    _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime) or resolved_provider
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
@@ -5113,6 +5196,7 @@ async def async_call_llm(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
     temperature: float = None,
     max_tokens: int = None,
@@ -5299,10 +5383,13 @@ async def async_call_llm(
                 )
 
         # ── Same-provider credential-pool recovery (mirrors sync) ─────
-        pool_provider = _recoverable_pool_provider(resolved_provider, client)
+        pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
+        _client_api_key = str(getattr(client, "api_key", "") or "")
         if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
             recovery_err = first_err
-            if _is_rate_limit_error(first_err):
+            # Skip the extra retry for clear payment/quota errors — the endpoint
+            # won't accept another request with the same exhausted key.
+            if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
                 try:
                     return _validate_llm_response(
                         await client.chat.completions.create(**kwargs), task)
@@ -5310,26 +5397,34 @@ async def async_call_llm(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err):
+            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
                 logger.info(
                     "Auxiliary %s (async): recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
                 )
-                return await _retry_same_provider_async(
-                    task=task,
-                    resolved_provider=resolved_provider,
-                    resolved_model=resolved_model,
-                    resolved_base_url=resolved_base_url,
-                    resolved_api_key=resolved_api_key,
-                    resolved_api_mode=resolved_api_mode,
-                    final_model=final_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    tools=tools,
-                    effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body,
-                )
+                try:
+                    return await _retry_same_provider_async(
+                        task=task,
+                        resolved_provider=resolved_provider,
+                        resolved_model=resolved_model,
+                        resolved_base_url=resolved_base_url,
+                        resolved_api_key=resolved_api_key,
+                        resolved_api_mode=resolved_api_mode,
+                        final_model=final_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        effective_timeout=effective_timeout,
+                        effective_extra_body=effective_extra_body,
+                    )
+                except Exception as retry2_err:
+                    if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
+                            or _is_rate_limit_error(retry2_err)):
+                        _recover_provider_pool(pool_provider, retry2_err)
+                        first_err = retry2_err
+                    else:
+                        raise
 
         # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
         should_fallback = (

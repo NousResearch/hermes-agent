@@ -68,6 +68,13 @@ def _make_hermes_tree(root: Path) -> None:
     (root / "logs" / "agent.log").write_text("log line\n")
 
 
+def _symlink_file_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # _should_exclude tests
 # ---------------------------------------------------------------------------
@@ -256,6 +263,29 @@ class TestBackup:
         # Should exist in home dir
         zips = list(tmp_path.glob("hermes-backup-*.zip"))
         assert len(zips) == 1
+
+    def test_skips_symlinked_files(self, tmp_path, monkeypatch):
+        """Backup must not dereference symlinks and leak files outside HERMES_HOME."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        outside = tmp_path / "outside-secret.txt"
+        outside.write_text("outside secret\n")
+        _symlink_file_or_skip(hermes_home / "skills" / "outside-link.txt", outside)
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            assert "skills/outside-link.txt" not in names
+            assert all(zf.read(name) != b"outside secret\n" for name in names)
 
 
 # ---------------------------------------------------------------------------
@@ -1420,6 +1450,21 @@ class TestPreUpdateBackup:
             f"keep=0 floor of 1 should still prune older backups; "
             f"remaining={remaining}"
         )
+
+    def test_skips_symlinked_files(self, hermes_home, tmp_path):
+        """Pre-update backups must not dereference symlinks outside HERMES_HOME."""
+        from hermes_cli.backup import create_pre_update_backup
+
+        outside = tmp_path / "outside-secret.txt"
+        outside.write_text("outside secret\n")
+        _symlink_file_or_skip(hermes_home / "skills" / "outside-link.txt", outside)
+
+        out = create_pre_update_backup(hermes_home=hermes_home)
+        assert out is not None
+        with zipfile.ZipFile(out) as zf:
+            names = zf.namelist()
+            assert "skills/outside-link.txt" not in names
+            assert all(zf.read(name) != b"outside secret\n" for name in names)
 
 
 class TestRunPreUpdateBackup:

@@ -11,7 +11,10 @@ import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
   ClipboardPasteResponse,
+  ConfigSetResponse,
   GatewayEvent,
+  SessionActiveListResponse,
+  SessionCloseResponse,
   TerminalResizeResponse
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
@@ -68,6 +71,66 @@ const statusColorOf = (status: string, t: { error: string; muted: string; ok: st
   }
 
   return t.muted
+}
+
+export interface PromptLiveSessionOptions {
+  dispatchSubmission: (full: string) => void
+  maybeWarn: (value: unknown) => void
+  modelArg?: string
+  newLiveSession: (msg?: string, title?: string) => Promise<null | string> | null | string | void
+  onModelSwitched?: (value: string, result: ConfigSetResponse) => void
+  prompt: string
+  rpc: GatewayRpc
+  sys: (text: string) => void
+}
+
+export async function startPromptLiveSession({
+  dispatchSubmission,
+  maybeWarn,
+  modelArg,
+  newLiveSession,
+  onModelSwitched,
+  prompt,
+  rpc,
+  sys
+}: PromptLiveSessionOptions) {
+  const trimmed = prompt.trim()
+
+  if (!trimmed) {
+    return null
+  }
+
+  // Let the backend-created session key (YYYYMMDD_HHMMSS_xxxxxx) remain
+  // the initial title. Auto-title generation can rename it after the first
+  // response; pre-queuing prompt text here causes duplicate-title errors when
+  // users dispatch common prompts like "Hello, what model are you?".
+  const sid = (await newLiveSession('new live session started')) ?? null
+
+  if (!sid) {
+    sys('error: failed to start new live session')
+
+    return null
+  }
+
+  const requestedModel = modelArg?.trim()
+
+  if (requestedModel) {
+    const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })
+
+    if (!result?.value) {
+      sys('error: invalid response: model switch')
+
+      return sid
+    }
+
+    sys(`model → ${result.value}`)
+    maybeWarn(result)
+    onModelSwitched?.(result.value, result)
+  }
+
+  dispatchSubmission(trimmed)
+
+  return sid
 }
 
 export function useMainApp(gw: GatewayClient) {
@@ -252,7 +315,10 @@ export function useMainApp(gw: GatewayClient) {
     return `${thinking}:${tools}`
   }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
 
-  const detailsVisible = detailsLayoutKey !== 'hidden:hidden'
+  const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
+  const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
+  const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
+  const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
 
@@ -281,10 +347,21 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
+        thinkingVisible: thinkingDetailsVisible,
+        toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
         withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
       }),
-    [cols, detailsVisible, firstUserIdx, ui.compact, ui.theme.brand.prompt, virtualRows]
+    [
+      cols,
+      detailsVisible,
+      firstUserIdx,
+      thinkingDetailsVisible,
+      toolsDetailsVisible,
+      ui.compact,
+      ui.theme.brand.prompt,
+      virtualRows
+    ]
   )
 
   const syncHeightCache = useCallback(
@@ -414,6 +491,36 @@ export function useMainApp(gw: GatewayClient) {
   }, [ui.busy])
 
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
+
+  useEffect(() => {
+    if (!ui.sid) {
+      patchUiState({ liveSessionCount: 0 })
+
+      return
+    }
+
+    let stopped = false
+
+    const refresh = () => {
+      gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: getUiState().sid })
+        .then(raw => {
+          const result = asRpcResult<SessionActiveListResponse>(raw)
+
+          if (!stopped && result?.sessions) {
+            patchUiState({ liveSessionCount: result.sessions.length })
+          }
+        })
+        .catch(() => {})
+    }
+
+    refresh()
+    const timer = setInterval(refresh, 1500)
+
+    return () => {
+      stopped = true
+      clearInterval(timer)
+    }
+  }, [gw, ui.sid])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
@@ -669,6 +776,7 @@ export function useMainApp(gw: GatewayClient) {
           die,
           dieWithCode,
           guardBusySessionSwitch: session.guardBusySessionSwitch,
+          newLiveSession: session.newLiveSession,
           newSession: session.newSession,
           resetVisibleHistory: session.resetVisibleHistory,
           resumeById: session.resumeById,
@@ -676,7 +784,7 @@ export function useMainApp(gw: GatewayClient) {
         },
         slashFlightRef,
         transcript: { page, panel, send, setHistoryItems, sys, trimLastExchange: session.trimLastExchange },
-        voice: { setVoiceEnabled, setVoiceRecordKey }
+        voice: { setVoiceEnabled, setVoiceRecordKey, setVoiceTts }
       }),
     [
       catalog,
@@ -746,6 +854,46 @@ export function useMainApp(gw: GatewayClient) {
     slashRef.current(`/model ${value}`)
   }, [])
 
+  const closeLiveSession = useCallback(
+    async (id: string) => {
+      patchUiState({ status: 'closing session…' })
+
+      try {
+        const result = (await session.closeSession(id)) as null | SessionCloseResponse
+        patchUiState({ status: 'ready' })
+
+        return result
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e)
+        sys(`error: ${message}`)
+        patchUiState({ status: 'ready' })
+
+        throw e
+      }
+    },
+    [session, sys]
+  )
+
+  const newPromptSession = useCallback(
+    (prompt: string, modelArg?: string) => {
+      void startPromptLiveSession({
+        dispatchSubmission,
+        maybeWarn,
+        modelArg,
+        newLiveSession: session.newLiveSession,
+        onModelSwitched: value =>
+          patchUiState(state => ({
+            ...state,
+            info: state.info ? { ...state.info, model: value } : { model: value, skills: {}, tools: {} }
+          })),
+        prompt,
+        rpc,
+        sys
+      })
+    },
+    [dispatchSubmission, maybeWarn, rpc, session.newLiveSession, sys]
+  )
+
   const hasReasoning = useTurnSelector(state => Boolean(state.reasoning.trim()))
 
   // Per-section overrides win over the global mode — when every section is
@@ -799,16 +947,32 @@ export function useMainApp(gw: GatewayClient) {
 
   const appActions = useMemo(
     () => ({
+      activateLiveSession: session.activateLiveSession,
+      closeLiveSession,
       answerApproval,
       answerClarify,
       answerSecret,
       answerSudo,
       clearSelection,
+      newLiveSession: () => session.newLiveSession(),
+      newPromptSession,
       onModelSelect,
       resumeById: session.resumeById,
       setStickyPrompt
     }),
-    [answerApproval, answerClarify, answerSecret, answerSudo, clearSelection, onModelSelect, session.resumeById]
+    [
+      answerApproval,
+      answerClarify,
+      answerSecret,
+      answerSudo,
+      clearSelection,
+      closeLiveSession,
+      newPromptSession,
+      onModelSelect,
+      session.activateLiveSession,
+      session.newLiveSession,
+      session.resumeById
+    ]
   )
 
   const appComposer = useMemo(

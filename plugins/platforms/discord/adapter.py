@@ -68,6 +68,26 @@ from gateway.platforms.base import (
 from tools.url_safety import is_safe_url
 
 
+def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
+    """Return discord.py's bundled Windows opus DLL path when present."""
+    if sys.platform != "win32":
+        return None
+    discord_module = discord if discord_module is None else discord_module
+    if discord_module is None:
+        return None
+
+    opus_module = getattr(discord_module, "opus", None)
+    opus_file = getattr(opus_module, "__file__", None)
+    if not opus_file:
+        return None
+
+    target = "x64" if struct.calcsize("P") * 8 > 32 else "x86"
+    bundled = _Path(opus_file).resolve().parent / "bin" / f"libopus-0.{target}.dll"
+    if bundled.is_file():
+        return str(bundled)
+    return None
+
+
 def _clean_discord_id(entry: str) -> str:
     """Strip common prefixes from a Discord user ID or username entry.
 
@@ -403,7 +423,13 @@ class VoiceReceiver:
                 self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
         except Exception as e:
-            logger.debug("Opus decode error for SSRC %s: %s", ssrc, e)
+            with self._lock:
+                self._decoders.pop(ssrc, None)
+            logger.debug(
+                "Opus decode error for SSRC %s; reset decoder: %s",
+                ssrc,
+                e,
+            )
             return
 
     # ------------------------------------------------------------------
@@ -604,7 +630,13 @@ class DiscordAdapter(BasePlatformAdapter):
         # Load opus codec for voice channel support
         if not discord.opus.is_loaded():
             import ctypes.util
+            opus_candidates = []
+            bundled_opus = _find_discord_windows_bundled_opus(discord)
+            if bundled_opus:
+                opus_candidates.append(bundled_opus)
             opus_path = ctypes.util.find_library("opus")
+            if opus_path:
+                opus_candidates.append(opus_path)
             # ctypes.util.find_library fails on macOS with Homebrew-installed libs,
             # so fall back to known Homebrew paths if needed.
             if not opus_path:
@@ -615,11 +647,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 if sys.platform == "darwin":
                     for _hp in _homebrew_paths:
                         if os.path.isfile(_hp):
-                            opus_path = _hp
+                            opus_candidates.append(_hp)
                             break
-            if opus_path:
+            for opus_path in opus_candidates:
                 try:
                     discord.opus.load_opus(opus_path)
+                    if discord.opus.is_loaded():
+                        break
                 except Exception:
                     logger.warning("Opus codec found at %s but failed to load", opus_path)
             if not discord.opus.is_loaded():
@@ -6163,7 +6197,7 @@ def register(ctx) -> None:
         check_fn=check_discord_requirements,
         is_connected=_is_connected,
         required_env=["DISCORD_BOT_TOKEN"],
-        install_hint="pip install 'hermes-agent[discord]'",
+        install_hint="pip install 'hermes-agent[messaging]'",
         # Interactive setup wizard — replaces the central
         # hermes_cli/setup.py::_setup_discord function.  Same shape as Teams.
         setup_fn=interactive_setup,

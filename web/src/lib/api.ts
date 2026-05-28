@@ -307,6 +307,14 @@ export const api = {
       },
     ),
 
+  /** Activate a profile persistently (sticky across restarts).
+   *  Requires session token (injected by fetchJSON). */
+  activateProfile: (name: string) =>
+    fetchJSON<{ ok: boolean; active_profile: string; profile_dir: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/activate`,
+      { method: "POST" },
+    ),
+
   // Skills & Toolsets
   getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
   toggleSkill: (name: string, enabled: boolean) =>

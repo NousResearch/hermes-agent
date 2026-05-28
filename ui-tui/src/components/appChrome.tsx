@@ -165,10 +165,6 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   )
 }
 
-function statusSessionCountLabel(count: number) {
-  return `${count} ${count === 1 ? 'session' : 'sessions'}`
-}
-
 // Colour a credits notice by its level. The notice TEXT already carries its
 // own glyph (⚠ • ✕ ✓) from the Python policy — we only tint it here, never
 // prepend another glyph. `success` maps to the theme's green status colour.
@@ -400,11 +396,9 @@ export function StatusRule({
   usage,
   bgCount,
   lastTurnEndedAt,
-  liveSessionCount,
   sessionStartedAt,
   turnStartedAt,
   voiceLabel,
-  onSessionCountClick,
   t
 }: StatusRuleProps) {
   const segs = statusBarSegments(cols)
@@ -455,8 +449,8 @@ export function StatusRule({
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
-  // descending priority order — duration, compressions, voice, session count,
-  // bg, cost. Lower-priority segments drop first and nothing truncates
+  // descending priority order — duration, compressions, voice, bg, cost.
+  // Lower-priority segments drop first and nothing truncates
   // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
@@ -471,7 +465,6 @@ export function StatusRule({
     return false
   }
 
-  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
 
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
@@ -493,7 +486,6 @@ export function StatusRule({
 
   const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
   const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
-  const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
   const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
@@ -512,18 +504,6 @@ export function StatusRule({
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
 
-  const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
-    event.stopImmediatePropagation?.()
-    onSessionCountClick?.()
-  }
-
-  const sessionCountNode = onSessionCountClick ? (
-    <Box flexShrink={0} onClick={handleSessionCountClick}>
-      <Text color={t.color.accent}> │ {sessionCountText}</Text>
-    </Box>
-  ) : (
-    <Text color={t.color.muted}> │ {sessionCountText}</Text>
-  )
 
   return (
     <Box height={1}>
@@ -601,7 +581,6 @@ export function StatusRule({
             {voiceLabel}
           </Text>
         ) : null}
-        {showSessionCount ? sessionCountNode : null}
         {showBg ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}

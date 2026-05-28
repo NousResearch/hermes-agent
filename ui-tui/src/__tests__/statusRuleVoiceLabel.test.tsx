@@ -50,7 +50,8 @@ describe('StatusRule voice label rendering', () => {
   it('omits the voice segment when voiceLabel is empty', () => {
     const text = statusRuleText('')
 
-    expect(text).toContain('gpt 5.5 │ 1 session')
+    expect(text).toContain('gpt 5.5')
+    expect(text).not.toContain('1 session')
     expect(text).not.toContain('voice')
     expect(text).not.toContain('│ voice')
     expect(text).not.toContain('│  │')

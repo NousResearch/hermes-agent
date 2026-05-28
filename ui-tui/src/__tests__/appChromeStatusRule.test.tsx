@@ -179,8 +179,8 @@ describe('StatusRule background-subagent indicator', () => {
   })
 })
 
-describe('StatusRule session count click target', () => {
-  it('makes the live session count itself clickable', () => {
+describe('StatusRule live session count', () => {
+  it('hides the live session count from the status bar', () => {
     const openSwitcher = vi.fn()
 
     const element = StatusRule({
@@ -200,11 +200,12 @@ describe('StatusRule session count click target', () => {
       voiceLabel: ''
     })
 
+    const text = textContent(element)
     const clickableSessionCount = findClickableWithText(element, '1 session')
 
-    expect(clickableSessionCount).not.toBeNull()
-    clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
-    expect(openSwitcher).toHaveBeenCalledOnce()
+    expect(text).not.toContain('1 session')
+    expect(clickableSessionCount).toBeNull()
+    expect(openSwitcher).not.toHaveBeenCalled()
   })
 
   it('keeps status + model and drops the low-value tail on a narrow terminal', () => {

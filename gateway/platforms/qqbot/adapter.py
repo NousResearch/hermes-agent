@@ -1668,7 +1668,7 @@ class QQAdapter(BasePlatformAdapter):
             return True
         return False
 
-    def _qq_media_headers(self, url: str = "") -> Dict[str, str]:
+    def _qq_media_headers(self, url: str) -> Dict[str, str]:
         """Return Authorization headers for trusted QQ multimedia downloads."""
         if self._access_token and urlparse(url).hostname == "multimedia.nt.qq.com.cn":
             return {"Authorization": f"QQBot {self._access_token}"}
@@ -1679,9 +1679,15 @@ class QQAdapter(BasePlatformAdapter):
             url: str,
             headers: Optional[Dict[str, str]] = None,
             context: str = "attachment",
-    ) -> Optional[bytes]:
+            return_content_type: bool = False,
+    ) -> Optional[bytes | Tuple[bytes, str]]:
         """Download bytes while rejecting oversized responses."""
         if not self._http_client:
+            logger.debug(
+                "[%s] Skipping %s download because HTTP client is unavailable",
+                self._log_tag,
+                context,
+            )
             return None
 
         max_bytes = 25 * 1024 * 1024
@@ -1693,6 +1699,7 @@ class QQAdapter(BasePlatformAdapter):
                 timeout=30.0,
         ) as resp:
             resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "unknown")
             content_length = resp.headers.get("content-length")
             if content_length is not None:
                 try:
@@ -1719,7 +1726,10 @@ class QQAdapter(BasePlatformAdapter):
                         url[:80],
                     )
                     return None
-            return bytes(chunks)
+            data = bytes(chunks)
+            if return_content_type:
+                return data, content_type
+            return data
 
     async def _stt_voice_attachment(
             self,
@@ -1775,23 +1785,25 @@ class QQAdapter(BasePlatformAdapter):
                 is_pre_wav,
                 bool(download_headers),
             )
-            audio_data = await self._download_limited_bytes(
+            download_result = await self._download_limited_bytes(
                 download_url,
                 headers=download_headers,
                 context="voice",
+                return_content_type=True,
             )
-            if audio_data is None:
+            if download_result is None:
                 logger.warning(
                     "[%s] STT: download failed or exceeded size limit for %s",
                     self._log_tag,
                     download_url[:80],
                 )
                 return None
+            audio_data, content_type = download_result
             logger.debug(
                 "[%s] STT: downloaded %d bytes, content_type=%s",
                 self._log_tag,
                 len(audio_data),
-                "unknown",
+                content_type,
             )
 
             if len(audio_data) < 10:

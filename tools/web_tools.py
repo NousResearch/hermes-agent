@@ -103,6 +103,16 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+def _ensure_web_plugins_loaded() -> None:
+    """Idempotently load bundled web provider plugins before registry lookup."""
+    try:
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+    except Exception:
+        logger.debug("Failed to discover web provider plugins", exc_info=True)
+
+
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
 def _env_value(name: str) -> str:
@@ -664,6 +674,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _disabled_web_plugin_for,
         )
 
+        _ensure_web_plugins_loaded()
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
         if provider is None or not provider.supports_search():
@@ -834,6 +845,7 @@ async def web_extract_tool(
                 _disabled_web_plugin_for,
             )
 
+            _ensure_web_plugins_loaded()
             provider = _wsp_get_provider(backend) if backend else None
             if provider is None or not provider.supports_extract():
                 # When the configured name IS registered but doesn't support

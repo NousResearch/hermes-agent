@@ -475,6 +475,24 @@ def compress_context(
     except Exception:
         pass
 
+    # Provider-side context-bar reset hook. External-process providers
+    # (cursor-agent today; gemini-cli, etc. tomorrow) maintain their
+    # own monotonic "high-water" floor for the status bar so it doesn't
+    # wobble within a turn.  Compression genuinely shrinks the request
+    # — let those providers drop their floor too so the bar reflects
+    # the post-compression reality, not the pre-compression peak.
+    # Any client that implements ``reset_context_baseline()`` opts in;
+    # OpenAI-style clients without the hook are no-op'd.
+    try:
+        client = getattr(agent, "client", None)
+        if client is not None and hasattr(client, "reset_context_baseline"):
+            client.reset_context_baseline()
+    except Exception:
+        logger.debug(
+            "post-compression provider-side baseline reset failed",
+            exc_info=True,
+        )
+
     logger.info(
         "context compression done: session=%s messages=%d->%d tokens=~%s",
         agent.session_id or "none", _pre_msg_count, len(compressed),

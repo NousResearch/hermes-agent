@@ -602,6 +602,14 @@ class S6ServiceManager:
         ]
         for k, v in sorted(extra_env.items()):
             lines.append(f"export {k}={shlex.quote(v)}")
+        # Sentinel for the supervised-child path. Prevents recursive
+        # redirect when the supervised gateway re-enters
+        # `_gateway_command_inner` with subcmd == "run" — without it the
+        # supervisor would dispatch `gateway start` which would re-exec
+        # `gateway run --replace` which would re-dispatch `gateway
+        # start`, etc. See `_gateway_command_inner` for the matching
+        # guard.
+        lines.append("export HERMES_S6_SUPERVISED_CHILD=1")
         if profile == "default":
             lines.append("exec s6-setuidgid hermes hermes gateway run")
         else:

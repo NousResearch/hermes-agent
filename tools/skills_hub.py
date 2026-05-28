@@ -1217,6 +1217,16 @@ class SkillsShSource(SkillSource):
 
     BASE_URL = "https://skills.sh"
     SEARCH_URL = f"{BASE_URL}/api/search"
+    # Sitemap index — the real catalog source. The homepage scrape only
+    # exposes a curated featured strip (~200 entries); the sitemap covers
+    # the full ~20k+ catalog. https://www.skills.sh/sitemap.xml points at
+    # sitemap-skills-1.xml + sitemap-skills-2.xml, each up to 10k URLs.
+    SITEMAP_INDEX_URL = "https://www.skills.sh/sitemap.xml"
+    _SITEMAP_LOC_RE = re.compile(r"<loc>([^<]+)</loc>", re.IGNORECASE)
+    _SITEMAP_SKILL_RE = re.compile(
+        r"^https?://(?:www\.)?skills\.sh/(?P<owner>[^/]+)/(?P<repo>[^/]+)/(?P<skill>[^/]+)/?$",
+        re.IGNORECASE,
+    )
     _SKILL_LINK_RE = re.compile(r'href=["\']/(?P<id>(?!agents/|_next/|api/)[^"\'/]+/[^"\'/]+/[^"\'/]+)["\']')
     _INSTALL_CMD_RE = re.compile(
         r'npx\s+skills\s+add\s+(?P<repo>https?://github\.com/[^\s<]+|[^\s<]+)'
@@ -1246,7 +1256,10 @@ class SkillsShSource(SkillSource):
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
         if not query.strip():
-            return self._featured_skills(limit)
+            # Empty query = bulk catalog dump (what build_skills_index.py
+            # calls with). The homepage scrape only sees ~200 featured
+            # entries; the sitemap walks the full ~20k+ catalog.
+            return self._sitemap_catalog(limit)
 
         cache_key = f"skills_sh_search_{hashlib.md5(f'{query}|{limit}'.encode()).hexdigest()}"
         cached = _read_index_cache(cache_key)
@@ -1306,6 +1319,97 @@ class SkillsShSource(SkillSource):
         if meta:
             return self._finalize_inspect_meta(meta, canonical, detail)
         return None
+
+    def _sitemap_catalog(self, limit: int) -> List[SkillMeta]:
+        """Walk the skills.sh sitemap to enumerate the full catalog.
+
+        Cached for the standard index TTL so we don't refetch ~2 MB of
+        sitemap XML per build. Falls back to ``_featured_skills`` if the
+        sitemap is unreachable or empty (network failure, hostname
+        change, etc.).
+        """
+        cache_key = "skills_sh_sitemap_v1"
+        cached = _read_index_cache(cache_key)
+        if cached is not None:
+            metas = [SkillMeta(**item) for item in cached]
+            return metas[:limit] if limit > 0 else metas
+
+        # skills.sh serves the per-skill sitemaps brotli-compressed, and
+        # httpx's optional brotlicffi backend has a streaming-decode bug
+        # that fails on these specific payloads. Excluding "br" from
+        # Accept-Encoding makes the server fall back to gzip (or
+        # identity), which works on every httpx install.
+        sitemap_headers = {"Accept-Encoding": "gzip"}
+
+        # Step 1: fetch the sitemap index → list of skill-sitemap URLs.
+        skill_sitemap_urls: List[str] = []
+        try:
+            resp = httpx.get(
+                self.SITEMAP_INDEX_URL,
+                timeout=20,
+                follow_redirects=True,
+                headers=sitemap_headers,
+            )
+            if resp.status_code != 200:
+                return self._featured_skills(limit)
+            for match in self._SITEMAP_LOC_RE.finditer(resp.text):
+                loc = match.group(1).strip()
+                # Sitemap index entries that point at the per-skill maps.
+                if "sitemap-skills" in loc:
+                    skill_sitemap_urls.append(loc)
+        except httpx.HTTPError:
+            return self._featured_skills(limit)
+
+        if not skill_sitemap_urls:
+            return self._featured_skills(limit)
+
+        # Step 2: fetch each skill sitemap and collect canonical "owner/repo/skill" IDs.
+        seen: set[str] = set()
+        results: List[SkillMeta] = []
+        for sitemap_url in skill_sitemap_urls:
+            try:
+                resp = httpx.get(
+                    sitemap_url,
+                    timeout=30,
+                    follow_redirects=True,
+                    headers=sitemap_headers,
+                )
+                if resp.status_code != 200:
+                    continue
+            except httpx.HTTPError:
+                continue
+            for loc_match in self._SITEMAP_LOC_RE.finditer(resp.text):
+                url = loc_match.group(1).strip()
+                m = self._SITEMAP_SKILL_RE.match(url)
+                if not m:
+                    continue
+                owner = m.group("owner")
+                repo_name = m.group("repo")
+                skill_name = m.group("skill")
+                canonical = f"{owner}/{repo_name}/{skill_name}"
+                if canonical in seen:
+                    continue
+                seen.add(canonical)
+                repo = f"{owner}/{repo_name}"
+                results.append(SkillMeta(
+                    name=skill_name,
+                    description=f"Indexed by skills.sh from {repo}",
+                    source="skills.sh",
+                    identifier=self._wrap_identifier(canonical),
+                    trust_level=self.github.trust_level_for(canonical),
+                    repo=repo,
+                    path=skill_name,
+                    extra={
+                        "detail_url": f"{self.BASE_URL}/{canonical}",
+                        "repo_url": f"https://github.com/{repo}",
+                    },
+                ))
+
+        if not results:
+            return self._featured_skills(limit)
+
+        _write_index_cache(cache_key, [_skill_meta_to_dict(item) for item in results])
+        return results[:limit] if limit > 0 else results
 
     def _featured_skills(self, limit: int) -> List[SkillMeta]:
         cache_key = "skills_sh_featured"

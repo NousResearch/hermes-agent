@@ -544,6 +544,111 @@ class TestSkillManageDispatcher:
         result = json.loads(raw)
         assert result["success"] is False
 
+    def test_patch_mode_applies_v4a_patch_to_supporting_file(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            skill_manage(
+                action="write_file",
+                name="test-skill",
+                file_path="scripts/setup.py",
+                file_content="print('old')\n",
+            )
+            raw = skill_manage(
+                action="patch",
+                name="test-skill",
+                mode="patch",
+                patch=(
+                    "*** Begin Patch\n"
+                    "*** Update File: scripts/setup.py\n"
+                    "@@\n"
+                    "-print('old')\n"
+                    "+print('new')\n"
+                    "*** End Patch\n"
+                ),
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "scripts/setup.py" in result["files_modified"]
+        assert (tmp_path / "test-skill" / "scripts" / "setup.py").read_text() == "print('new')\n"
+
+    def test_patch_mode_can_update_skill_md(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(
+                action="patch",
+                name="test-skill",
+                mode="patch",
+                patch=(
+                    "*** Begin Patch\n"
+                    "*** Update File: SKILL.md\n"
+                    "@@\n"
+                    "-Step 1: Do the thing.\n"
+                    "+Step 1: Do the patched thing.\n"
+                    "*** End Patch\n"
+                ),
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        content = (tmp_path / "test-skill" / "SKILL.md").read_text()
+        assert "Do the patched thing." in content
+
+    def test_patch_mode_rejects_traversal_path(self, tmp_path):
+        outside = tmp_path / "outside.py"
+        outside.write_text("print('old')\n")
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(
+                action="patch",
+                name="test-skill",
+                mode="patch",
+                patch=(
+                    "*** Begin Patch\n"
+                    "*** Update File: ../outside.py\n"
+                    "@@\n"
+                    "-print('old')\n"
+                    "+print('new')\n"
+                    "*** End Patch\n"
+                ),
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "traversal" in result["error"].lower()
+        assert outside.read_text() == "print('old')\n"
+
+    def test_patch_mode_rolls_back_when_later_hunk_fails(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            skill_manage(
+                action="write_file",
+                name="test-skill",
+                file_path="scripts/setup.py",
+                file_content="print('old')\n",
+            )
+            raw = skill_manage(
+                action="patch",
+                name="test-skill",
+                mode="patch",
+                patch=(
+                    "*** Begin Patch\n"
+                    "*** Update File: scripts/setup.py\n"
+                    "@@\n"
+                    "-print('old')\n"
+                    "+print('new')\n"
+                    "*** Update File: SKILL.md\n"
+                    "@@\n"
+                    "-name: test-skill\n"
+                    "+title: test-skill\n"
+                    "*** End Patch\n"
+                ),
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert (tmp_path / "test-skill" / "scripts" / "setup.py").read_text() == "print('old')\n"
+
     def test_full_create_via_dispatcher(self, tmp_path):
         """Foreground create does NOT mark the skill as agent-created.
 

@@ -14,7 +14,7 @@ broad and declarative. Skills are narrow and actionable.
 Actions:
   create     -- Create a new skill (SKILL.md + directory structure)
   edit       -- Replace the SKILL.md content of a user skill (full rewrite)
-  patch      -- Targeted find-and-replace within SKILL.md or any supporting file
+  patch      -- Targeted find-and-replace or V4A patch within a skill directory
   delete     -- Remove a user skill entirely
   write_file -- Add/overwrite a supporting file (reference, template, script, asset)
   remove_file-- Remove a supporting file from a user skill
@@ -786,6 +786,177 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         raise
 
 
+def _validate_v4a_skill_path(file_path: str) -> Optional[str]:
+    """Validate a V4A patch path relative to a skill directory."""
+    from tools.path_security import has_traversal_component
+
+    if not file_path:
+        return "V4A patch file path is required."
+
+    normalized = Path(file_path)
+    if normalized.is_absolute():
+        return f"V4A patch path must be relative to the skill directory: '{file_path}'"
+    if "\\" in file_path:
+        return f"V4A patch path must use '/' separators: '{file_path}'"
+    if has_traversal_component(file_path):
+        return f"V4A patch path contains '..' traversal: '{file_path}'"
+    if normalized.as_posix() == "SKILL.md":
+        return None
+    return _validate_file_path(file_path)
+
+
+def _resolve_v4a_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Path], Optional[str]]:
+    err = _validate_v4a_skill_path(file_path)
+    if err:
+        return None, err
+    if Path(file_path).as_posix() == "SKILL.md":
+        target = skill_dir / "SKILL.md"
+        from tools.path_security import validate_within_dir
+        return target, validate_within_dir(target, skill_dir)
+    return _resolve_skill_target(skill_dir, file_path)
+
+
+def _snapshot_skill_patch_targets(skill_dir: Path, operations: List[Any]) -> Dict[Path, Optional[bytes]]:
+    """Capture touched files so V4A skill patches can roll back on failure."""
+    snapshots: Dict[Path, Optional[bytes]] = {}
+
+    def add(path: str) -> None:
+        target, err = _resolve_v4a_skill_target(skill_dir, path)
+        if err or target is None or target in snapshots:
+            return
+        snapshots[target] = target.read_bytes() if target.is_file() else None
+
+    for op in operations:
+        add(op.file_path)
+        if getattr(op, "new_path", None):
+            add(op.new_path)
+
+    return snapshots
+
+
+def _restore_skill_patch_targets(snapshots: Dict[Path, Optional[bytes]]) -> None:
+    for target, original in snapshots.items():
+        if original is None:
+            if target.is_file() or target.is_symlink():
+                target.unlink()
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(
+            dir=str(target.parent),
+            prefix=f".{target.name}.tmp.",
+            suffix="",
+        )
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(original)
+            atomic_replace(temp_path, target)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                logger.error("Failed to remove temporary file %s during rollback", temp_path, exc_info=True)
+            raise
+
+
+class _SkillV4AFileOperations:
+    """FileOperations-compatible adapter rooted at one skill directory."""
+
+    def __init__(self, skill_dir: Path):
+        self.skill_dir = skill_dir
+
+    def _target(self, path: str) -> Tuple[Optional[Path], Optional[str]]:
+        return _resolve_v4a_skill_target(self.skill_dir, path)
+
+    def read_file_raw(self, path: str):
+        from tools.file_operations import ReadResult
+
+        target, err = self._target(path)
+        if err:
+            return ReadResult(error=err)
+        if target is None or not target.exists():
+            return ReadResult(error=f"File not found: {path}")
+        if target.is_dir():
+            return ReadResult(error=f"Path is a directory: {path}")
+        try:
+            content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return ReadResult(error=f"File is not UTF-8 text: {path}")
+        return ReadResult(
+            content=content,
+            total_lines=len(content.splitlines()),
+            file_size=target.stat().st_size,
+        )
+
+    def write_file(self, path: str, content: str):
+        from tools.file_operations import WriteResult
+
+        target, err = self._target(path)
+        if err:
+            return WriteResult(error=err)
+        if target is None:
+            return WriteResult(error=f"Invalid path: {path}")
+
+        err = _validate_content_size(content, label=path)
+        if err:
+            return WriteResult(error=err)
+        if Path(path).as_posix() == "SKILL.md":
+            err = _validate_frontmatter(content)
+            if err:
+                return WriteResult(error=f"Patch would break SKILL.md structure: {err}")
+        else:
+            content_bytes = len(content.encode("utf-8"))
+            if content_bytes > MAX_SKILL_FILE_BYTES:
+                return WriteResult(
+                    error=(
+                        f"File content is {content_bytes:,} bytes "
+                        f"(limit: {MAX_SKILL_FILE_BYTES:,} bytes / 1 MiB). "
+                        f"Consider splitting into smaller files."
+                    )
+                )
+
+        _atomic_write_text(target, content)
+        return WriteResult(bytes_written=len(content.encode("utf-8")))
+
+    def delete_file(self, path: str):
+        from tools.file_operations import WriteResult
+
+        if Path(path).as_posix() == "SKILL.md":
+            return WriteResult(error="V4A skill patches cannot delete SKILL.md.")
+        target, err = self._target(path)
+        if err:
+            return WriteResult(error=err)
+        if target is None or not target.exists():
+            return WriteResult(error=f"File not found: {path}")
+        target.unlink()
+        return WriteResult()
+
+    def move_file(self, src: str, dst: str):
+        from tools.file_operations import WriteResult
+
+        if Path(src).as_posix() == "SKILL.md" or Path(dst).as_posix() == "SKILL.md":
+            return WriteResult(error="V4A skill patches cannot move SKILL.md.")
+        src_target, err = self._target(src)
+        if err:
+            return WriteResult(error=err)
+        dst_target, err = self._target(dst)
+        if err:
+            return WriteResult(error=err)
+        if src_target is None or not src_target.exists():
+            return WriteResult(error=f"File not found: {src}")
+        if dst_target is None:
+            return WriteResult(error=f"Invalid destination path: {dst}")
+        if dst_target.exists():
+            return WriteResult(error=f"Destination already exists: {dst}")
+        dst_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src_target), str(dst_target))
+        return WriteResult()
+
+    def _check_lint(self, path: str, content: Optional[str] = None):
+        from tools.file_operations import LintResult
+
+        return LintResult(skipped=True, message="skill_manage V4A patches skip per-file lint")
+
+
 # =============================================================================
 # Core actions
 # =============================================================================
@@ -1022,6 +1193,60 @@ def _patch_skill(
         "new": new_string[:200] + ("…" if len(new_string) > 200 else ""),
     }
     return result
+
+
+def _patch_skill_v4a(name: str, patch: str) -> Dict[str, Any]:
+    """Apply a V4A patch rooted at the skill directory."""
+    if not patch:
+        return {"success": False, "error": "patch content is required for mode='patch'."}
+
+    existing = _find_skill(name)
+    if not existing:
+        return {"success": False, "error": _skill_not_found_error(name)}
+
+    from tools.patch_parser import OperationType, apply_v4a_operations, parse_v4a_patch
+
+    operations, parse_error = parse_v4a_patch(patch)
+    if parse_error:
+        return {"success": False, "error": f"Failed to parse patch: {parse_error}"}
+    if not operations:
+        return {"success": False, "error": "Patch did not contain any file operations."}
+
+    skill_dir = existing["path"]
+    for op in operations:
+        paths = [op.file_path]
+        if op.new_path:
+            paths.append(op.new_path)
+        for path in paths:
+            err = _validate_v4a_skill_path(path)
+            if err:
+                return {"success": False, "error": err}
+        if op.operation == OperationType.DELETE and Path(op.file_path).as_posix() == "SKILL.md":
+            return {"success": False, "error": "V4A skill patches cannot delete SKILL.md."}
+        if op.operation == OperationType.MOVE and (
+            Path(op.file_path).as_posix() == "SKILL.md"
+            or Path(op.new_path or "").as_posix() == "SKILL.md"
+        ):
+            return {"success": False, "error": "V4A skill patches cannot move SKILL.md."}
+
+    snapshots = _snapshot_skill_patch_targets(skill_dir, operations)
+    for op in operations:
+        if op.operation == OperationType.ADD and Path(op.file_path).as_posix() == "SKILL.md":
+            return {"success": False, "error": "V4A skill patches cannot add SKILL.md; update it instead."}
+
+    result = apply_v4a_operations(operations, _SkillV4AFileOperations(skill_dir))
+    result_dict = result.to_dict()
+    if not result.success:
+        _restore_skill_patch_targets(snapshots)
+        return result_dict
+
+    scan_error = _security_scan_skill(skill_dir)
+    if scan_error:
+        _restore_skill_patch_targets(snapshots)
+        return {"success": False, "error": scan_error}
+
+    result_dict["message"] = f"Applied V4A patch to skill '{name}'."
+    return result_dict
 
 
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
@@ -1312,6 +1537,8 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
             new_string=payload.get("new_string"),
             replace_all=payload.get("replace_all", False),
             absorbed_into=payload.get("absorbed_into"),
+            mode=payload.get("mode", "replace"),
+            patch=payload.get("patch"),
         )
     finally:
         _skill_gate_bypass.reset(token)
@@ -1328,12 +1555,16 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    mode: str = "replace",
+    patch: str = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
 
     Returns JSON string with results.
     """
+    mode = mode or "replace"
+
     preflight = _background_review_preflight(action, name)
     if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)
@@ -1347,6 +1578,7 @@ def skill_manage(
         file_path=file_path, file_content=file_content,
         old_string=old_string, new_string=new_string,
         replace_all=replace_all, absorbed_into=absorbed_into,
+        mode=mode, patch=patch,
     )
     if gate_result is not None:
         return gate_result
@@ -1362,11 +1594,16 @@ def skill_manage(
         result = _edit_skill(name, content)
 
     elif action == "patch":
-        if not old_string:
-            return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
-        if new_string is None:
-            return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
-        result = _patch_skill(name, old_string, new_string, file_path, replace_all)
+        if mode == "patch":
+            result = _patch_skill_v4a(name, patch)
+        elif mode == "replace":
+            if not old_string:
+                return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
+            if new_string is None:
+                return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
+            result = _patch_skill(name, old_string, new_string, file_path, replace_all)
+        else:
+            result = {"success": False, "error": f"Unknown patch mode '{mode}'. Use: replace, patch"}
 
     elif action == "delete":
         result = _delete_skill(name, absorbed_into=absorbed_into)
@@ -1429,7 +1666,8 @@ SKILL_MANAGE_SCHEMA = {
         "memory — reusable approaches for recurring task types. "
         f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
         "Actions: create (full SKILL.md + optional category), "
-        "patch (old_string/new_string — preferred for fixes), "
+        "patch (mode='replace' old_string/new_string — preferred for small fixes; "
+        "mode='patch' with V4A patch content for multi-file skill edits), "
         "edit (full SKILL.md rewrite — major overhauls only), "
         "delete, write_file, remove_file.\n\n"
         "On delete, pass `absorbed_into=<umbrella>` when you're merging this "
@@ -1480,7 +1718,7 @@ SKILL_MANAGE_SCHEMA = {
             "old_string": {
                 "type": "string",
                 "description": (
-                    "Text to find in the file (required for 'patch'). Must be unique "
+                    "For action='patch' with mode='replace': text to find in the file. Must be unique "
                     "unless replace_all=true. Include enough surrounding context to "
                     "ensure uniqueness."
                 )
@@ -1488,13 +1726,30 @@ SKILL_MANAGE_SCHEMA = {
             "new_string": {
                 "type": "string",
                 "description": (
-                    "Replacement text (required for 'patch'). Can be empty string "
+                    "For action='patch' with mode='replace': replacement text. Can be empty string "
                     "to delete the matched text."
                 )
             },
             "replace_all": {
                 "type": "boolean",
-                "description": "For 'patch': replace all occurrences instead of requiring a unique match (default: false)."
+                "description": "For action='patch' with mode='replace': replace all occurrences instead of requiring a unique match (default: false)."
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["replace", "patch"],
+                "description": (
+                    "For action='patch'. 'replace' (default): requires old_string/new_string. "
+                    "'patch': requires V4A patch content relative to the skill directory."
+                ),
+                "default": "replace",
+            },
+            "patch": {
+                "type": "string",
+                "description": (
+                    "For action='patch' with mode='patch': V4A patch content relative to "
+                    "the skill directory. Allowed paths are SKILL.md or files under "
+                    "references/, templates/, scripts/, or assets/."
+                ),
             },
             "category": {
                 "type": "string",
@@ -1510,7 +1765,7 @@ SKILL_MANAGE_SCHEMA = {
                     "Path to a supporting file within the skill directory. "
                     "For 'write_file'/'remove_file': required, must be under references/, "
                     "templates/, scripts/, or assets/. "
-                    "For 'patch': optional, defaults to SKILL.md if omitted."
+                    "For action='patch' with mode='replace': optional, defaults to SKILL.md if omitted."
                 )
             },
             "file_content": {
@@ -1554,6 +1809,8 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        mode=args.get("mode", "replace"),
+        patch=args.get("patch")),
     emoji="📝",
 )

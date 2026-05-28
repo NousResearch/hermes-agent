@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,13 @@ from wisdom.models import (
     VALID_SOURCE_TYPES,
     WisdomConfig,
 )
+from wisdom.review import (
+    RelatedCapture,
+    ReviewItem,
+    build_review_items,
+    related_captures,
+    review_counts,
+)
 
 
 @dataclass(frozen=True)
@@ -37,6 +44,9 @@ class ReviewData:
     counts: dict[str, int]
     recent: list[CaptureRecord]
     unapplied: list[CaptureRecord]
+    items: list[ReviewItem] = field(default_factory=list)
+    mode: str = "needs_review"
+    category: str | None = None
     period: str | None = None
 
 
@@ -159,7 +169,33 @@ def apply(
     app_type = _valid(application_type, VALID_APPLICATION_TYPES)
     _ = context
     records = create_application_proposals(db, capture_id)
+    if records:
+        db.set_review_status(capture_id, "applied")
     return [record for record in records if record.application_type == app_type] if app_type else records
+
+
+def accept(
+    capture_id: int,
+    *,
+    config: WisdomConfig | None = None,
+    db: WisdomDB | None = None,
+) -> CaptureRecord | None:
+    _config, db = _resolve(config, db)
+    if not db.set_review_status(capture_id, "accepted"):
+        return None
+    return db.get_capture(capture_id)
+
+
+def dismiss(
+    capture_id: int,
+    *,
+    config: WisdomConfig | None = None,
+    db: WisdomDB | None = None,
+) -> CaptureRecord | None:
+    _config, db = _resolve(config, db)
+    if not db.set_review_status(capture_id, "dismissed"):
+        return None
+    return db.get_capture(capture_id)
 
 
 def archive(
@@ -175,6 +211,7 @@ def archive(
 def review(
     *,
     category: str | None = None,
+    mode: str | None = None,
     period: str | None = None,
     limit: int | None = None,
     config: WisdomConfig | None = None,
@@ -183,15 +220,37 @@ def review(
     config, db = _resolve(config, db)
     result_limit = _limit(limit, config.max_results, maximum=50)
     category = _valid(category, VALID_CATEGORIES)
+    mode = _review_mode(mode)
     recent = db.list_captures(limit=result_limit if not category else min(50, max(result_limit * 5, result_limit)))
     unapplied = db.unapplied_captures(limit=result_limit if not category else min(50, max(result_limit * 5, result_limit)))
+    items = build_review_items(db, category=category, mode=mode, limit=result_limit)
     if category:
         recent = [record for record in recent if record.category == category][:result_limit]
         unapplied = [record for record in unapplied if record.category == category][:result_limit]
         counts = {category: db.count_by_category().get(category, 0)}
     else:
         counts = db.count_by_category()
-    return ReviewData(counts=counts, recent=recent[:result_limit], unapplied=unapplied[:result_limit], period=period)
+    counts = {**counts, **review_counts(db)}
+    return ReviewData(
+        counts=counts,
+        recent=recent[:result_limit],
+        unapplied=unapplied[:result_limit],
+        items=items,
+        mode=mode,
+        category=category,
+        period=period,
+    )
+
+
+def related(
+    capture_id: int,
+    *,
+    limit: int | None = None,
+    config: WisdomConfig | None = None,
+    db: WisdomDB | None = None,
+) -> list[RelatedCapture]:
+    config, db = _resolve(config, db)
+    return related_captures(db, capture_id, limit=_limit(limit, config.max_results, maximum=20))
 
 
 def status_payload(*, config: WisdomConfig | None = None, db: WisdomDB | None = None) -> dict[str, Any]:
@@ -276,11 +335,24 @@ def applications_payload(applications: list[ApplicationRecord], *, capture_id: i
     }
 
 
+def related_payload(related_items: list[RelatedCapture], *, capture_id: int) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "capture_id": capture_id,
+        "count": len(related_items),
+        "related": [related_to_dict(item) for item in related_items],
+        "embeddings_used": False,
+    }
+
+
 def review_payload(data: ReviewData) -> dict[str, Any]:
     return {
         "ok": True,
         "period": data.period,
+        "mode": data.mode,
+        "category": data.category,
         "counts": data.counts,
+        "items": [review_item_to_dict(item) for item in data.items],
         "recent": [capture_to_dict(capture) for capture in data.recent],
         "unapplied": [capture_to_dict(capture) for capture in data.unapplied],
         "scheduled": False,
@@ -291,6 +363,17 @@ def archive_payload(capture_id: int, archived: bool) -> dict[str, Any]:
     if not archived:
         return {"ok": False, "error": f"Capture #{capture_id} was not found.", "capture_id": capture_id}
     return {"ok": True, "capture_id": capture_id, "status": "archived", "deleted": False}
+
+
+def review_action_payload(action: str, capture: CaptureRecord | None, *, capture_id: int) -> dict[str, Any]:
+    if capture is None:
+        return {"ok": False, "error": f"Capture #{capture_id} was not found.", "capture_id": capture_id}
+    return {
+        "ok": True,
+        "action": action,
+        "capture": capture_to_dict(capture),
+        "deleted": False,
+    }
 
 
 def status_to_dict(snapshot: StatusSnapshot) -> dict[str, Any]:
@@ -313,9 +396,40 @@ def capture_to_dict(capture: CaptureRecord) -> dict[str, Any]:
         "category": capture.category,
         "source_type": capture.source_type,
         "status": capture.status,
+        "review_status": capture.review_status,
+        "reviewed_at": capture.reviewed_at,
+        "accepted_at": capture.accepted_at,
+        "dismissed_at": capture.dismissed_at,
+        "applied_at": capture.applied_at,
         "confidence": capture.confidence,
         "original_excerpt": _excerpt(capture.original_text),
         "cleaned_excerpt": _excerpt(capture.cleaned_text or ""),
+    }
+
+
+def review_item_to_dict(item: ReviewItem) -> dict[str, Any]:
+    return {
+        "capture": capture_to_dict(item.capture),
+        "quality": {
+            "importance": item.quality.importance,
+            "actionability": item.quality.actionability,
+            "novelty": item.quality.novelty,
+            "reusability": item.quality.reusability,
+            "overall": item.quality.overall,
+            "label": item.quality.label,
+            "reasons": item.quality.reasons,
+        },
+        "suggested_action": item.suggested_action,
+        "application_count": item.application_count,
+        "related": [related_to_dict(related_item) for related_item in item.related],
+    }
+
+
+def related_to_dict(item: RelatedCapture) -> dict[str, Any]:
+    return {
+        "capture": capture_to_dict(item.capture),
+        "score": item.score,
+        "reasons": item.reasons,
     }
 
 
@@ -367,6 +481,13 @@ def _valid(value: str | None, allowed: set[str]) -> str | None:
         return None
     text = str(value).strip().lower()
     return text if text in allowed else None
+
+
+def _review_mode(value: str | None) -> str:
+    text = (value or "needs_review").strip().lower().replace("-", "_")
+    if text in {"needs_review", "unapplied", "high_potential", "all"}:
+        return text
+    return "needs_review"
 
 
 def _excerpt(text: str, limit: int = 220) -> str:

@@ -1,0 +1,51 @@
+- id: business_windshield
+  text: "Business idea: Reports are rear-view mirrors when clients need windshields."
+  expected_category: business
+  expected_application_types:
+    - client_language
+    - principle
+    - task_proposal
+  related_to:
+    - business_forward_reports
+  minimum_quality: 0.55
+- id: business_forward_reports
+  text: "Business idea: Client reports should show the road ahead, not just last quarter."
+  expected_category: business
+  expected_application_types:
+    - client_language
+    - principle
+    - task_proposal
+  related_to:
+    - business_windshield
+  minimum_quality: 0.55
+- id: investing_position_size
+  text: "Investing thought: I confuse a good thesis with a good position size."
+  expected_category: investing
+  expected_application_types:
+    - investment_rule
+    - checklist
+    - decision_rule
+  minimum_quality: 0.55
+- id: health_sleep
+  text: "Health note: Poor sleep changes my decision quality the next morning."
+  expected_category: health
+  expected_application_types:
+    - health_experiment
+    - decision_rule
+    - principle
+  minimum_quality: 0.45
+- id: life_systems_avoidance
+  text: "Life thought: Sometimes I build systems to avoid making the decision."
+  expected_category: life
+  expected_application_types:
+    - principle
+    - writing_idea
+    - decision_rule
+  minimum_quality: 0.45
+- id: noisy_low_value
+  text: "Note this: random vague thing maybe later."
+  expected_category: inbox
+  expected_application_types:
+    - principle
+    - writing_idea
+  maximum_quality: 0.50

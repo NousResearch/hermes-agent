@@ -24,7 +24,9 @@ def test_migrations_are_idempotent(wisdom_config):
     db.init()
     db.init()
     version = db.conn.execute("SELECT version FROM schema_version").fetchone()["version"]
-    assert version == 1
+    assert version == 2
+    columns = {row["name"] for row in db.conn.execute("PRAGMA table_info(captures)").fetchall()}
+    assert {"review_status", "reviewed_at", "accepted_at", "dismissed_at", "applied_at"} <= columns
     db.close()
 
 
@@ -40,6 +42,7 @@ def test_insert_capture_interpretation_application_and_fts_search(wisdom_db, wis
     capture = outcome.capture
     assert capture is not None
     assert capture.original_text == "Remember this: clients buy peace of mind, not alpha."
+    assert capture.review_status == "unreviewed"
 
     interpretation = interpret_capture(wisdom_db, capture.id)
     assert interpretation is not None

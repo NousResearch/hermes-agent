@@ -20,6 +20,7 @@ SourceType = Literal[
     "other",
 ]
 CaptureStatus = Literal["active", "archived"]
+ReviewStatus = Literal["unreviewed", "reviewed", "accepted", "dismissed", "applied", "archived"]
 ApplicationStatus = Literal["proposed", "accepted", "dismissed", "archived"]
 ApplicationType = Literal[
     "task_proposal",
@@ -35,6 +36,7 @@ ApplicationType = Literal[
 
 VALID_CATEGORIES = set(get_args(Category))
 VALID_SOURCE_TYPES = set(get_args(SourceType))
+VALID_REVIEW_STATUSES = set(get_args(ReviewStatus))
 VALID_APPLICATION_TYPES = set(get_args(ApplicationType))
 
 
@@ -79,6 +81,11 @@ class CaptureRecord:
     category: Category
     source_type: SourceType
     status: CaptureStatus
+    review_status: ReviewStatus
+    reviewed_at: float | None
+    accepted_at: float | None
+    dismissed_at: float | None
+    applied_at: float | None
     confidence: float
     importance_score: float | None
     novelty_score: float | None

@@ -17,19 +17,26 @@ from wisdom.render import (
     render_interpretation,
     render_not_found,
     render_original,
-    render_review,
+    render_related_payload,
+    render_review_action,
+    render_review_payload,
     render_status,
 )
 from wisdom.service import (
     WisdomServiceContext,
+    accept,
     apply,
     archive,
     can_natural_capture as service_can_natural_capture,
     capture,
+    dismiss,
     inbox,
     interpret,
     original as get_original_capture,
+    related,
+    related_payload,
     review,
+    review_payload,
     search,
     set_enabled,
     status_snapshot,
@@ -133,9 +140,32 @@ def handle_wisdom_command(
             return "Usage: /wisdom archive <id>"
         return f"Archived #{capture_id}." if archive(capture_id, config=config, db=db) else render_not_found(capture_id)
 
+    if subcommand == "accept":
+        capture_id = _parse_id(arg)
+        if capture_id is None:
+            return "Usage: /wisdom accept <id>"
+        return render_review_action("accepted", accept(capture_id, config=config, db=db), capture_id)
+
+    if subcommand == "dismiss":
+        capture_id = _parse_id(arg)
+        if capture_id is None:
+            return "Usage: /wisdom dismiss <id>"
+        return render_review_action("dismissed", dismiss(capture_id, config=config, db=db), capture_id)
+
+    if subcommand == "related":
+        capture_id = _parse_id(arg)
+        if capture_id is None:
+            return "Usage: /wisdom related <id>"
+        if get_original_capture(capture_id, config=config, db=db) is None:
+            return render_not_found(capture_id)
+        return render_related_payload(
+            related_payload(related(capture_id, config=config, db=db), capture_id=capture_id)
+        )
+
     if subcommand == "review":
-        data = review(config=config, db=db)
-        return render_review(data.counts, data.recent, data.unapplied)
+        category, mode = _parse_review_args(arg)
+        data = review(category=category, mode=mode, config=config, db=db)
+        return render_review_payload(review_payload(data))
 
     return render_help()
 
@@ -162,3 +192,12 @@ def _parse_id(text: str) -> int | None:
     except ValueError:
         return None
     return value if value > 0 else None
+
+
+def _parse_review_args(text: str) -> tuple[str | None, str]:
+    token = (text or "").strip().lower().replace("-", "_")
+    if token in {"unapplied", "high_potential", "all"}:
+        return None, token
+    if token in {"business", "investing", "health", "life", "inbox"}:
+        return token, "needs_review"
+    return None, "needs_review"

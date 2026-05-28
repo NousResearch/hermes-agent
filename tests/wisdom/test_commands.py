@@ -25,9 +25,38 @@ def test_capture_inbox_search_original_interpret_apply_archive_review(wisdom_db,
     assert handle_wisdom_command("original 1", config=wisdom_config, db=wisdom_db) == "Clients need windshields, not rear-view mirrors."
     assert "Counterpoint:" in handle_wisdom_command("interpret 1", config=wisdom_config, db=wisdom_db)
     assert "Application proposals for #1" in handle_wisdom_command("apply 1", config=wisdom_config, db=wisdom_db)
-    assert "Wisdom review" in handle_wisdom_command("review", config=wisdom_config, db=wisdom_db)
+    assert "Wisdom Review" in handle_wisdom_command("review", config=wisdom_config, db=wisdom_db)
     assert "Archived #1" in handle_wisdom_command("archive 1", config=wisdom_config, db=wisdom_db)
     assert "No captures found" in handle_wisdom_command("inbox", config=wisdom_config, db=wisdom_db)
+
+
+def test_review_related_accept_and_dismiss_commands(wisdom_db, wisdom_config):
+    handle_wisdom_command(
+        "capture Reports are rear-view mirrors when clients need windshields.",
+        config=wisdom_config,
+        db=wisdom_db,
+    )
+    handle_wisdom_command(
+        "capture Client reports should show the road ahead, not just last quarter.",
+        config=wisdom_config,
+        db=wisdom_db,
+    )
+
+    review = handle_wisdom_command("review high-potential", config=wisdom_config, db=wisdom_db)
+    assert "Wisdom Review" in review
+    assert "High-potential" in review
+
+    related = handle_wisdom_command("related 1", config=wisdom_config, db=wisdom_db)
+    assert "Related captures for #1" in related
+    assert "#2" in related
+
+    accepted = handle_wisdom_command("accept 1", config=wisdom_config, db=wisdom_db)
+    assert "Accepted #1" in accepted
+    assert wisdom_db.get_capture(1).review_status == "accepted"
+
+    dismissed = handle_wisdom_command("dismiss 2", config=wisdom_config, db=wisdom_db)
+    assert "Dismissed #2" in dismissed
+    assert wisdom_db.get_capture(2).review_status == "dismissed"
 
 
 def test_secret_command_capture_blocked(wisdom_db, wisdom_config):

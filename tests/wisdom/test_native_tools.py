@@ -21,6 +21,9 @@ WISDOM_TOOL_NAMES = [
     "wisdom_interpret",
     "wisdom_apply",
     "wisdom_review",
+    "wisdom_related",
+    "wisdom_accept",
+    "wisdom_dismiss",
     "wisdom_archive",
     "wisdom_inbox",
     "wisdom_set_enabled",
@@ -47,6 +50,9 @@ def test_wisdom_tool_schemas_validate_required_inputs():
         "wisdom_original": ["capture_id"],
         "wisdom_interpret": ["capture_id"],
         "wisdom_apply": ["capture_id"],
+        "wisdom_related": ["capture_id"],
+        "wisdom_accept": ["capture_id"],
+        "wisdom_dismiss": ["capture_id"],
         "wisdom_archive": ["capture_id"],
         "wisdom_set_enabled": ["enabled"],
     }
@@ -61,8 +67,11 @@ def test_tool_descriptions_include_natural_language_trigger_coverage():
     assert all(word in descriptions["wisdom_search"] for word in ("find", "search", "recall", "retrieve"))
     assert all(word in descriptions["wisdom_original"] for word in ("exact", "original", "verbatim"))
     assert all(word in descriptions["wisdom_apply"] for word in ("apply", "turn", "client language", "checklist", "rule"))
-    assert all(word in descriptions["wisdom_review"] for word in ("review", "recent", "unapplied"))
-    assert all(word in descriptions["wisdom_archive"] for word in ("archive", "hide", "dismiss"))
+    assert all(word in descriptions["wisdom_review"] for word in ("review", "high-potential", "unapplied"))
+    assert all(word in descriptions["wisdom_related"] for word in ("related", "connect", "something like this"))
+    assert all(word in descriptions["wisdom_accept"] for word in ("accept", "keep", "compounding"))
+    assert all(word in descriptions["wisdom_dismiss"] for word in ("dismiss", "not useful", "noise"))
+    assert all(word in descriptions["wisdom_archive"] for word in ("archive", "hide"))
 
 
 def test_wisdom_toolset_is_available_to_default_cli_and_telegram_toolsets():
@@ -140,6 +149,27 @@ def test_wisdom_tools_run_through_hermes_dispatcher_with_temp_db(
     assert reviewed["ok"] is True
     assert reviewed["counts"]["business"] == 1
     assert reviewed["recent"][0]["id"] == capture_id
+    assert reviewed["mode"] == "needs_review"
+
+    related_text = "Remember this: peace of mind is the windshield clients pay for."
+    second = _call_tool(
+        "wisdom_capture",
+        {"text": related_text, "category": "business", "source_type": "thought"},
+    )
+    second_id = second["capture"]["id"]
+
+    related_result = _call_tool("wisdom_related", {"capture_id": capture_id, "limit": 5})
+    assert related_result["ok"] is True
+    assert related_result["embeddings_used"] is False
+    assert any(item["capture"]["id"] == second_id for item in related_result["related"])
+
+    accepted = _call_tool("wisdom_accept", {"capture_id": second_id})
+    assert accepted["ok"] is True
+    assert accepted["capture"]["review_status"] == "accepted"
+
+    dismissed = _call_tool("wisdom_dismiss", {"capture_id": second_id})
+    assert dismissed["ok"] is True
+    assert dismissed["capture"]["review_status"] == "dismissed"
 
     archived = _call_tool("wisdom_archive", {"capture_id": capture_id})
     assert archived["ok"] is True

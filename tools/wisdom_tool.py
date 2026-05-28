@@ -8,18 +8,23 @@ from tools.registry import registry, tool_error, tool_result
 from wisdom.redaction import redact_for_log
 from wisdom.service import (
     WisdomServiceContext,
+    accept,
     apply as apply_wisdom,
     applications_payload,
     archive,
     archive_payload,
     capture_payload,
     captures_payload,
+    dismiss,
     inbox,
     interpret,
     interpretation_payload,
     original as get_original_capture,
     original_payload,
+    related,
+    related_payload,
     review,
+    review_action_payload,
     review_payload,
     search,
     set_enabled,
@@ -36,6 +41,9 @@ WISDOM_TOOL_NAMES = [
     "wisdom_interpret",
     "wisdom_apply",
     "wisdom_review",
+    "wisdom_related",
+    "wisdom_accept",
+    "wisdom_dismiss",
     "wisdom_archive",
     "wisdom_inbox",
     "wisdom_set_enabled",
@@ -166,10 +174,37 @@ def wisdom_review_handler(args: dict[str, Any], **_kwargs: Any) -> str:
     def _call() -> dict[str, Any]:
         data = review(
             category=args.get("category"),
+            mode=args.get("mode"),
             period=args.get("period"),
             limit=args.get("limit"),
         )
         return review_payload(data)
+
+    return _safe_tool(_call)
+
+
+def wisdom_related_handler(args: dict[str, Any], **_kwargs: Any) -> str:
+    def _call() -> dict[str, Any]:
+        capture_id = _int_arg(args, "capture_id")
+        if get_original_capture(capture_id) is None:
+            return {"ok": False, "error": f"Capture #{capture_id} was not found.", "capture_id": capture_id}
+        return related_payload(related(capture_id, limit=args.get("limit")), capture_id=capture_id)
+
+    return _safe_tool(_call)
+
+
+def wisdom_accept_handler(args: dict[str, Any], **_kwargs: Any) -> str:
+    def _call() -> dict[str, Any]:
+        capture_id = _int_arg(args, "capture_id")
+        return review_action_payload("accepted", accept(capture_id), capture_id=capture_id)
+
+    return _safe_tool(_call)
+
+
+def wisdom_dismiss_handler(args: dict[str, Any], **_kwargs: Any) -> str:
+    def _call() -> dict[str, Any]:
+        capture_id = _int_arg(args, "capture_id")
+        return review_action_payload("dismissed", dismiss(capture_id), capture_id=capture_id)
 
     return _safe_tool(_call)
 
@@ -339,14 +374,25 @@ WISDOM_APPLY_SCHEMA = {
 WISDOM_REVIEW_SCHEMA = {
     "name": "wisdom_review",
     "description": (
-        "Review recent saved Wisdom captures. Use when the user asks what they have captured recently, "
-        "what they have been thinking about, what their recent or unapplied ideas are, or to review "
-        "Wisdom notes by category. This is manual only; it does not schedule pings."
+        "Review and prioritize saved Wisdom captures. Use when the user asks 'what should I review', "
+        "'review my recent captures', 'what have I captured but not applied', 'show unapplied ideas', "
+        "'show high-potential ideas', 'what have I been thinking about business/investing', "
+        "or 'what should I do with my "
+        "Wisdom notes'. Returns ranked review items with quality indicators, suggested next actions, "
+        "and related captures. This is manual only; it does not schedule pings."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "category": {"type": "string", "enum": _CATEGORIES, "description": "Optional category filter."},
+            "mode": {
+                "type": "string",
+                "enum": ["needs_review", "unapplied", "high_potential", "all"],
+                "description": (
+                    "Review mode: needs_review for normal queue, unapplied for captures without proposals, "
+                    "high_potential for highest-scoring items, or all for broad inspection."
+                ),
+            },
             "period": {"type": "string", "description": "Optional human period label such as recent, week, or month."},
             "limit": {"type": "integer", "description": "Maximum number of captures to include."},
         },
@@ -354,11 +400,65 @@ WISDOM_REVIEW_SCHEMA = {
     },
 }
 
+WISDOM_RELATED_SCHEMA = {
+    "name": "wisdom_related",
+    "description": (
+        "Find deterministic related Wisdom captures for a saved capture. Use when the user asks 'show "
+        "related ideas', 'what does this connect to', 'have I said something like this before', "
+        "'find related captures for #12', or asks what an idea resembles in prior Wisdom notes. Uses "
+        "FTS, category/source matching, keyword overlap, and recency; no embeddings or external calls."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "capture_id": {"type": "integer", "description": "Wisdom capture ID to compare from."},
+            "limit": {"type": "integer", "description": "Maximum number of related captures, usually 5 or fewer."},
+        },
+        "required": ["capture_id"],
+        "additionalProperties": False,
+    },
+}
+
+WISDOM_ACCEPT_SCHEMA = {
+    "name": "wisdom_accept",
+    "description": (
+        "Mark a Wisdom capture as accepted: worth keeping, reviewing, and compounding. Use when the "
+        "user asks to accept, keep, approve, mark as useful, or mark an idea as worth compounding. "
+        "This changes review status only; it does not create external actions."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "capture_id": {"type": "integer", "description": "Wisdom capture ID to accept."},
+        },
+        "required": ["capture_id"],
+        "additionalProperties": False,
+    },
+}
+
+WISDOM_DISMISS_SCHEMA = {
+    "name": "wisdom_dismiss",
+    "description": (
+        "Mark a Wisdom capture as dismissed without deleting it. Use when the user says dismiss, not "
+        "useful, noise, hide from review, deprioritize, or 'that one is not worth keeping'. The exact "
+        "original remains preserved unless separately archived."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "capture_id": {"type": "integer", "description": "Wisdom capture ID to dismiss from normal review."},
+        },
+        "required": ["capture_id"],
+        "additionalProperties": False,
+    },
+}
+
 WISDOM_ARCHIVE_SCHEMA = {
     "name": "wisdom_archive",
     "description": (
-        "Archive a Wisdom capture without deleting it. Use when the user asks to archive, hide, dismiss, "
-        "or mark a saved capture as not useful."
+        "Archive a Wisdom capture without deleting it. Use when the user asks to archive, hide, or "
+        "remove a saved capture from normal Wisdom surfaces. If the user only says an idea is noise "
+        "or not useful, prefer wisdom_dismiss."
     ),
     "parameters": {
         "type": "object",
@@ -412,6 +512,9 @@ for _name, _schema, _handler in (
     ("wisdom_interpret", WISDOM_INTERPRET_SCHEMA, wisdom_interpret_handler),
     ("wisdom_apply", WISDOM_APPLY_SCHEMA, wisdom_apply_handler),
     ("wisdom_review", WISDOM_REVIEW_SCHEMA, wisdom_review_handler),
+    ("wisdom_related", WISDOM_RELATED_SCHEMA, wisdom_related_handler),
+    ("wisdom_accept", WISDOM_ACCEPT_SCHEMA, wisdom_accept_handler),
+    ("wisdom_dismiss", WISDOM_DISMISS_SCHEMA, wisdom_dismiss_handler),
     ("wisdom_archive", WISDOM_ARCHIVE_SCHEMA, wisdom_archive_handler),
     ("wisdom_inbox", WISDOM_INBOX_SCHEMA, wisdom_inbox_handler),
     ("wisdom_set_enabled", WISDOM_SET_ENABLED_SCHEMA, wisdom_set_enabled_handler),

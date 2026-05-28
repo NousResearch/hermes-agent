@@ -20,7 +20,7 @@ from wisdom.models import (
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class WisdomDB:
@@ -64,8 +64,14 @@ class WisdomDB:
                 version = 0
             else:
                 version = int(row["version"])
+            stored_version = version
             if version < 1:
                 self._migrate_v1(conn)
+                version = 1
+            if version < 2:
+                self._migrate_v2(conn)
+                version = 2
+            if stored_version < SCHEMA_VERSION:
                 conn.execute("DELETE FROM schema_version")
                 conn.execute("INSERT INTO schema_version(version) VALUES (?)", (SCHEMA_VERSION,))
         self._ensure_fts()
@@ -154,6 +160,26 @@ class WisdomDB:
                 ON interpretations(capture_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_applications_capture
                 ON applications(capture_id, created_at DESC);
+            """
+        )
+
+    def _migrate_v2(self, conn: sqlite3.Connection) -> None:
+        _add_column_if_missing(conn, "captures", "review_status", "TEXT NOT NULL DEFAULT 'unreviewed'")
+        _add_column_if_missing(conn, "captures", "reviewed_at", "REAL")
+        _add_column_if_missing(conn, "captures", "accepted_at", "REAL")
+        _add_column_if_missing(conn, "captures", "dismissed_at", "REAL")
+        _add_column_if_missing(conn, "captures", "applied_at", "REAL")
+        conn.execute(
+            """
+            UPDATE captures
+            SET review_status = 'archived'
+            WHERE status = 'archived' AND review_status != 'archived'
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_captures_review_status
+                ON captures(review_status, created_at DESC)
             """
         )
 
@@ -296,10 +322,56 @@ class WisdomDB:
 
     def archive_capture(self, capture_id: int) -> bool:
         self.init()
+        now = time.time()
         with self.transaction() as conn:
             cur = conn.execute(
-                "UPDATE captures SET status = 'archived', updated_at = ? WHERE id = ?",
-                (time.time(), capture_id),
+                """
+                UPDATE captures
+                SET status = 'archived',
+                    review_status = 'archived',
+                    updated_at = ?,
+                    reviewed_at = COALESCE(reviewed_at, ?)
+                WHERE id = ?
+                """,
+                (now, now, capture_id),
+            )
+            changed = cur.rowcount > 0
+            if changed:
+                self._refresh_fts_unlocked(conn, capture_id)
+        return changed
+
+    def set_review_status(self, capture_id: int, review_status: str) -> bool:
+        self.init()
+        if review_status not in {"unreviewed", "reviewed", "accepted", "dismissed", "applied", "archived"}:
+            return False
+        now = time.time()
+        timestamp_updates = {
+            "reviewed": "reviewed_at = COALESCE(reviewed_at, ?)",
+            "accepted": "reviewed_at = COALESCE(reviewed_at, ?), accepted_at = ?",
+            "dismissed": "reviewed_at = COALESCE(reviewed_at, ?), dismissed_at = ?",
+            "applied": "reviewed_at = COALESCE(reviewed_at, ?), applied_at = ?",
+            "archived": "reviewed_at = COALESCE(reviewed_at, ?)",
+            "unreviewed": "reviewed_at = NULL, accepted_at = NULL, dismissed_at = NULL, applied_at = NULL",
+        }
+        status_clause = ", status = 'archived'" if review_status == "archived" else ""
+        timestamp_clause = timestamp_updates[review_status]
+        if review_status == "unreviewed":
+            params: tuple[Any, ...] = (review_status, now, capture_id)
+        elif review_status in {"reviewed", "archived"}:
+            params = (review_status, now, now, capture_id)
+        else:
+            params = (review_status, now, now, now, capture_id)
+        with self.transaction() as conn:
+            cur = conn.execute(
+                f"""
+                UPDATE captures
+                SET review_status = ?,
+                    updated_at = ?,
+                    {timestamp_clause}
+                    {status_clause}
+                WHERE id = ?
+                """,
+                params,
             )
             changed = cur.rowcount > 0
             if changed:
@@ -624,6 +696,12 @@ def _fts_table_exists(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def _json(value: dict[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
@@ -650,6 +728,11 @@ def _capture_from_row(row: sqlite3.Row) -> CaptureRecord:
         category=row["category"],
         source_type=row["source_type"],
         status=row["status"],
+        review_status=_row_value(row, "review_status", "unreviewed"),
+        reviewed_at=_row_value(row, "reviewed_at"),
+        accepted_at=_row_value(row, "accepted_at"),
+        dismissed_at=_row_value(row, "dismissed_at"),
+        applied_at=_row_value(row, "applied_at"),
         confidence=float(row["confidence"]),
         importance_score=row["importance_score"],
         novelty_score=row["novelty_score"],
@@ -690,6 +773,10 @@ def _application_from_row(row: sqlite3.Row) -> ApplicationRecord:
 
 def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _row_value(row: sqlite3.Row, key: str, default: Any = None) -> Any:
+    return row[key] if key in row.keys() else default
 
 
 def _fts_query(value: str) -> str:

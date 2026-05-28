@@ -18,7 +18,10 @@ def render_help() -> str:
         "/wisdom interpret <id>\n"
         "/wisdom apply <id>\n"
         "/wisdom archive <id>\n"
-        "/wisdom review\n"
+        "/wisdom review [category|unapplied|high-potential]\n"
+        "/wisdom related <id>\n"
+        "/wisdom accept <id>\n"
+        "/wisdom dismiss <id>\n"
         "/wisdom on | /wisdom off"
     )
 
@@ -110,6 +113,69 @@ def render_review(counts: dict[str, int], recent: list[CaptureRecord], unapplied
     return "\n".join(lines)
 
 
+def render_review_payload(payload: dict) -> str:
+    counts = payload.get("counts") or {}
+    items = payload.get("items") or []
+    mode = str(payload.get("mode") or "needs_review").replace("_", "-")
+    category = payload.get("category")
+    lines = [
+        "Wisdom Review",
+        f"Mode: {mode}" + (f" / {category}" if category else ""),
+        (
+            f"Needs review: {counts.get('needs_review', 0)} | "
+            f"High-potential: {counts.get('high_potential', 0)} | "
+            f"Unapplied: {counts.get('unapplied', 0)}"
+        ),
+    ]
+    if not items:
+        lines.append("No review candidates found.")
+        return "\n".join(lines)
+    for index, item in enumerate(items, start=1):
+        capture = item.get("capture") or {}
+        quality = item.get("quality") or {}
+        related = item.get("related") or []
+        related_ids = ", ".join(f"#{rel.get('capture', {}).get('id')}" for rel in related if rel.get("capture"))
+        lines.extend(
+            [
+                f"{index}. #{capture.get('id')} - {str(capture.get('category', '')).title()} - {capture.get('review_status')}",
+                f"   \"{capture.get('original_excerpt', '')}\"",
+                (
+                    f"   Quality: {quality.get('label')} "
+                    f"(overall {quality.get('overall')}, actionability {quality.get('actionability')}, "
+                    f"reusability {quality.get('reusability')})"
+                ),
+                f"   Why it may matter: {_join_reasons(quality.get('reasons') or [])}",
+                f"   Suggested action: {item.get('suggested_action')}",
+            ]
+        )
+        if related_ids:
+            lines.append(f"   Related: {related_ids}")
+    return "\n".join(lines)
+
+
+def render_related_payload(payload: dict) -> str:
+    capture_id = payload.get("capture_id")
+    related = payload.get("related") or []
+    if not related:
+        return f"Related captures for #{capture_id}\nNo related captures found."
+    lines = [f"Related captures for #{capture_id}"]
+    for item in related:
+        capture = item.get("capture") or {}
+        reasons = item.get("reasons") or []
+        lines.append(
+            f"#{capture.get('id')} - {capture.get('category')} - {capture.get('title')}\n"
+            f"  {_excerpt(capture.get('original_excerpt', ''))}\n"
+            f"  Why related: {_join_reasons(reasons)}"
+        )
+    return "\n".join(lines)
+
+
+def render_review_action(action: str, capture: CaptureRecord | None, capture_id: int) -> str:
+    if capture is None:
+        return render_not_found(capture_id)
+    return f"{action.title()} #{capture.id}. Review status: {capture.review_status}."
+
+
 def render_not_found(capture_id: int) -> str:
     return f"Capture #{capture_id} was not found."
 
@@ -129,3 +195,7 @@ def _excerpt(text: str, limit: int = 120) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3].rstrip() + "..."
+
+
+def _join_reasons(reasons: list[str]) -> str:
+    return "; ".join(str(reason) for reason in reasons[:3]) if reasons else "specific enough to review"

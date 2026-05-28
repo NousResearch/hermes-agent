@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/schemas/s3-s5-preflight.schema.json",
+  "title": "S3-S5 mutation preflight contract",
+  "description": "Shape-only validation for the Spearhead/Helm S3-S5 side-effect preflight contract. Passing validation does not authorize execution.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action",
+    "tier",
+    "actor_profile",
+    "approver",
+    "target",
+    "payload_or_diff",
+    "why",
+    "risks",
+    "rollback",
+    "audit_event"
+  ],
+  "properties": {
+    "action": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact operation/tool/workflow to execute."
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["S3", "S4", "S5"],
+      "description": "High-risk side-effect tier; use the highest plausible tier when uncertain."
+    },
+    "actor_profile": {
+      "type": "string",
+      "enum": ["ema", "gond", "helm", "waukeen", "mystra", "other"],
+      "description": "Executing profile/agent identity. Use 'other' only when the concrete profile is named in the surrounding approval/audit text."
+    },
+    "approver": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human approver or explicit current approval source."
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Recipient, account, repo/branch, host/domain, channel, path, page, database, broker, or credential store."
+    },
+    "payload_or_diff": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact body, diff, order ticket, deployment plan, scan scope, deletion list, or document payload."
+    },
+    "why": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Business, security, or engineering reason for the mutation."
+    },
+    "risks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Material privacy, financial, public visibility, rollback, tenant/account boundary, or abuse risks."
+    },
+    "rollback": {
+      "type": "string",
+      "minLength": 1,
+      "description": "How to undo, or an explicit statement such as 'not fully reversible'."
+    },
+    "audit_event": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Durable place where approval and outcome will be recorded."
+    }
+  }
+}

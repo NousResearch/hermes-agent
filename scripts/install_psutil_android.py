@@ -24,6 +24,7 @@ https://github.com/giampaolo/psutil/pull/2762 and ships a release.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -39,6 +40,7 @@ PSUTIL_URL = (
     "d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/"
     "psutil-7.2.2.tar.gz"
 )
+PSUTIL_SHA256 = "0746f5f8d406af344fd547f1c8daa5f5c33dbc293bb8d6a16d80b4bb88f59372"
 
 MARKER = 'LINUX = sys.platform.startswith("linux")'
 REPLACEMENT = 'LINUX = sys.platform.startswith(("linux", "android"))'
@@ -56,6 +58,37 @@ def _resolve_install_cmd(pip_arg: str | None, prefer_uv: bool) -> list[str]:
     if auto_uv:
         return [auto_uv, "pip"]
     return [sys.executable, "-m", "pip"]
+
+
+def _verify_archive_checksum(archive: Path, expected_sha256: str) -> None:
+    digest = hashlib.sha256()
+    with archive.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if actual != expected_sha256:
+        raise RuntimeError(
+            f"psutil sdist checksum mismatch: expected {expected_sha256}, got {actual}"
+        )
+
+
+def _safe_extract_tar(tar: tarfile.TarFile, destination: Path) -> None:
+    destination = destination.resolve()
+    members = tar.getmembers()
+    for member in members:
+        name = member.name
+        target = (destination / name).resolve()
+        try:
+            target.relative_to(destination)
+        except ValueError:
+            raise RuntimeError(f"Unsafe path in psutil sdist: {name}") from None
+        if Path(name).is_absolute():
+            raise RuntimeError(f"Unsafe path in psutil sdist: {name}")
+        if member.issym() or member.islnk():
+            raise RuntimeError(f"Unsafe link in psutil sdist: {name}")
+        if not (member.isfile() or member.isdir()):
+            raise RuntimeError(f"Unsupported tar entry in psutil sdist: {name}")
+    tar.extractall(destination, members=members)
 
 
 def main() -> int:
@@ -82,8 +115,9 @@ def main() -> int:
         tmp_path = Path(tmp)
         archive = tmp_path / "psutil.tar.gz"
         urllib.request.urlretrieve(PSUTIL_URL, archive)
+        _verify_archive_checksum(archive, PSUTIL_SHA256)
         with tarfile.open(archive) as tar:
-            tar.extractall(tmp_path)
+            _safe_extract_tar(tar, tmp_path)
 
         try:
             src_root = next(

@@ -8075,6 +8075,50 @@ def _is_android_python() -> bool:
     return sys.platform == "android"
 
 
+_PSUTIL_ANDROID_URL = (
+    "https://files.pythonhosted.org/packages/aa/c6/"
+    "d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/"
+    "psutil-7.2.2.tar.gz"
+)
+_PSUTIL_ANDROID_SHA256 = (
+    "0746f5f8d406af344fd547f1c8daa5f5c33dbc293bb8d6a16d80b4bb88f59372"
+)
+
+
+def _verify_psutil_android_archive(archive: Path) -> None:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with archive.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if actual != _PSUTIL_ANDROID_SHA256:
+        raise RuntimeError(
+            "psutil Android compatibility archive checksum mismatch: "
+            f"expected {_PSUTIL_ANDROID_SHA256}, got {actual}"
+        )
+
+
+def _safe_extract_psutil_android_tar(tar, destination: Path) -> None:
+    destination = destination.resolve()
+    members = tar.getmembers()
+    for member in members:
+        name = member.name
+        target = (destination / name).resolve()
+        try:
+            target.relative_to(destination)
+        except ValueError:
+            raise RuntimeError(f"Unsafe path in psutil archive: {name}") from None
+        if Path(name).is_absolute():
+            raise RuntimeError(f"Unsafe path in psutil archive: {name}")
+        if member.issym() or member.islnk():
+            raise RuntimeError(f"Unsafe link in psutil archive: {name}")
+        if not (member.isfile() or member.isdir()):
+            raise RuntimeError(f"Unsupported tar entry in psutil archive: {name}")
+    tar.extractall(destination, members=members)
+
+
 def _install_psutil_android_compat(
     install_cmd_prefix: list[str],
     *,
@@ -8100,18 +8144,13 @@ def _install_psutil_android_compat(
     import tempfile
     import urllib.request
 
-    psutil_url = (
-        "https://files.pythonhosted.org/packages/aa/c6/"
-        "d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/"
-        "psutil-7.2.2.tar.gz"
-    )
-
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         archive = tmp_path / "psutil.tar.gz"
-        urllib.request.urlretrieve(psutil_url, archive)
+        urllib.request.urlretrieve(_PSUTIL_ANDROID_URL, archive)
+        _verify_psutil_android_archive(archive)
         with tarfile.open(archive) as tar:
-            tar.extractall(tmp_path)
+            _safe_extract_psutil_android_tar(tar, tmp_path)
 
         src_root = next(
             p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("psutil-")

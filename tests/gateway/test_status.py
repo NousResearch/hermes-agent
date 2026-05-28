@@ -1022,3 +1022,46 @@ class TestGatewayWrapperSubcommandRejection:
         finally:
             status.release_gateway_runtime_lock()
 
+class TestGetProcessStartTimeFallback:
+    """Tests for _get_process_start_time falling back to psutil on non-Linux."""
+
+    def test_psutil_fallback_when_proc_unavailable(self, monkeypatch):
+        """macOS / Windows have no /proc — must fall back to psutil so the
+        same-PID equality check in get_running_pid stays meaningful."""
+        monkeypatch.setattr(
+            status.Path, "read_text",
+            lambda self, **kwargs: (_ for _ in ()).throw(FileNotFoundError),
+        )
+
+        fake_psutil = SimpleNamespace(
+            Process=lambda pid: SimpleNamespace(create_time=lambda: 1779982521.123),
+        )
+        monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+
+        result = status._get_process_start_time(os.getpid())
+        assert result == 1779982521
+        assert isinstance(result, int)
+
+    def test_returns_none_when_both_proc_and_psutil_fail(self, monkeypatch):
+        monkeypatch.setattr(
+            status.Path, "read_text",
+            lambda self, **kwargs: (_ for _ in ()).throw(FileNotFoundError),
+        )
+
+        def fake_proc_init(pid):
+            raise RuntimeError("no such process")
+
+        fake_psutil = SimpleNamespace(Process=fake_proc_init)
+        monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+
+        assert status._get_process_start_time(99999) is None
+
+    def test_proc_is_used_when_available(self, monkeypatch):
+        """Linux behavior unchanged: /proc/<pid>/stat is the first source."""
+        monkeypatch.setattr(
+            status.Path, "read_text",
+            # Synthetic /proc/<pid>/stat — field 22 = 4242 clock ticks.
+            lambda self, **kwargs: "1 (proc) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4242 rest",
+        )
+        assert status._get_process_start_time(1234) == 4242
+

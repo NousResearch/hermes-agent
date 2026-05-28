@@ -109,12 +109,25 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
+    """Return the kernel start time for a process when available.
+
+    On Linux, reads /proc/<pid>/stat field 22 (clock ticks since boot).
+    On macOS and other platforms without /proc, falls back to psutil,
+    which returns a Unix timestamp. The exact unit does not matter for
+    the same-PID equality check the caller performs — only that the
+    value is stable for a given (host, PID) pair, which both sources
+    provide.
+    """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
-        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text(encoding="utf-8").split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        pass
+
+    try:
+        import psutil  # type: ignore
+        return int(psutil.Process(pid).create_time())
+    except Exception:
         return None
 
 

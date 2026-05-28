@@ -3992,13 +3992,13 @@ class HermesCLI:
         if self._model_is_default:
             fallback_model = "gpt-5.3-codex"
             try:
-                from hermes_cli.codex_models import get_codex_model_ids
+                from hermes_cli.codex_models import get_codex_model_ids, pick_default_codex_model
 
                 available = get_codex_model_ids(
                     access_token=self.api_key if self.api_key else None,
                 )
                 if available:
-                    fallback_model = available[0]
+                    fallback_model = pick_default_codex_model(available)
             except Exception:
                 pass
 

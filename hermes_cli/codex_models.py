@@ -43,6 +43,20 @@ DEFAULT_CODEX_MODELS: List[str] = [
     # live discovery will pick them up automatically via _fetch_models_from_api.
 ]
 
+# Auto-selected defaults should be boring and reliable. The /model picker still
+# shows the full discovery order, including gpt-5.5, but when Hermes needs to
+# choose on the user's behalf we prefer the slugs that have worked consistently
+# on ChatGPT Codex OAuth accounts. See #21444 for the gpt-5.5 silent-hang
+# symptom history.
+SAFE_DEFAULT_CODEX_MODELS: tuple[str, ...] = (
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+)
+
+_DEFAULT_AVOID_MODELS = {"gpt-5.5"}
+
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
     ("gpt-5.4-mini", ("gpt-5.3-codex",)),
@@ -77,6 +91,31 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
             seen.add(synthetic_model)
 
     return ordered
+
+
+def pick_default_codex_model(model_ids: List[str]) -> str:
+    """Choose the safest default model from a discovered Codex lineup.
+
+    This is intentionally different from discovery order. Live discovery sorts
+    by Codex backend priority, but some ChatGPT Codex OAuth accounts accept
+    gpt-5.5 requests and then emit no stream events or errors for minutes. When
+    Hermes is auto-picking a model for an untouched default, prefer the known
+    good slugs first and keep gpt-5.5 opt-in.
+    """
+    ordered = [model.strip() for model in model_ids if isinstance(model, str) and model.strip()]
+    if not ordered:
+        return "gpt-5.3-codex"
+
+    available = set(ordered)
+    for preferred in SAFE_DEFAULT_CODEX_MODELS:
+        if preferred in available:
+            return preferred
+
+    for model in ordered:
+        if model not in _DEFAULT_AVOID_MODELS:
+            return model
+
+    return ordered[0]
 
 
 def _fetch_models_from_api(access_token: str) -> List[str]:

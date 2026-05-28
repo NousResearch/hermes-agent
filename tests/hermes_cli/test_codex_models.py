@@ -1,7 +1,11 @@
 import json
 from unittest.mock import patch
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_cli.codex_models import (
+    DEFAULT_CODEX_MODELS,
+    get_codex_model_ids,
+    pick_default_codex_model,
+)
 
 
 def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
@@ -75,6 +79,18 @@ def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypat
         "gpt-5.4",
         "gpt-5.3-codex-spark",
     ]
+
+
+def test_pick_default_codex_model_prefers_stable_slug_over_gpt_5_5():
+    assert pick_default_codex_model(["gpt-5.5", "gpt-5.4", "gpt-5.3-codex"]) == "gpt-5.4"
+
+
+def test_pick_default_codex_model_falls_back_to_first_non_avoided_slug():
+    assert pick_default_codex_model(["gpt-5.5", "gpt-5.6-preview"]) == "gpt-5.6-preview"
+
+
+def test_pick_default_codex_model_returns_gpt_5_5_when_it_is_the_only_option():
+    assert pick_default_codex_model(["gpt-5.5"]) == "gpt-5.5"
 
 
 def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
@@ -357,12 +373,12 @@ class TestNormalizeModelForProvider:
         assert cli._model_is_default is True
         with patch(
             "hermes_cli.codex_models.get_codex_model_ids",
-            return_value=["gpt-5.3-codex", "gpt-5.4"],
+            return_value=["gpt-5.5", "gpt-5.4", "gpt-5.3-codex"],
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
-        # Uses first from available list
-        assert cli.model == "gpt-5.3-codex"
+        # Uses the safe auto-default, not raw discovery priority.
+        assert cli.model == "gpt-5.4"
 
     def test_default_fallback_when_api_fails(self):
         """No model configured falls back to gpt-5.3-codex when API unreachable."""

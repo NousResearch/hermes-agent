@@ -160,10 +160,11 @@ class TestCopyReasoningContentForApi:
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert api_msg["reasoning_content"] == " "
 
-    def test_non_thinking_provider_preserves_empty_reasoning_content_verbatim(self) -> None:
-        """The stale-placeholder upgrade ONLY fires when the active provider
-        enforces thinking-mode echo. On non-thinking providers, an empty
-        reasoning_content must still round-trip verbatim.
+    def test_non_thinking_provider_strips_reasoning_content(self) -> None:
+        """Non-echo-back providers (OpenRouter, Cerebras, Groq, etc.) reject
+        ``reasoning_content`` on assistant messages with HTTP 400. The field
+        must be stripped before replay regardless of its value, including the
+        empty-string placeholder written by pre-#17341 sessions.
         """
         agent = _make_agent(
             provider="openrouter",
@@ -175,9 +176,9 @@ class TestCopyReasoningContentForApi:
             "content": "hi",
             "reasoning_content": "",
         }
-        api_msg: dict = {}
+        api_msg: dict = {"reasoning_content": ""}
         agent._copy_reasoning_content_for_api(source, api_msg)
-        assert api_msg["reasoning_content"] == ""
+        assert "reasoning_content" not in api_msg
 
     def test_deepseek_reasoning_field_promoted(self) -> None:
         """When only 'reasoning' is set, it gets promoted to reasoning_content."""
@@ -563,3 +564,89 @@ class TestReapplyReasoningEchoForProviderSwitch:
         assert "reasoning_content" not in msgs[0]  # system
         assert "reasoning_content" not in msgs[1]  # user
         assert "reasoning_content" not in msgs[3]  # tool
+
+
+class TestRejectsReasoningContent:
+    """_rejects_reasoning_content() is the inverse of _needs_thinking_reasoning_pad().
+
+    Regression guard for the cross-provider poisoning introduced by #16844:
+    streaming-only reasoning models (GLM, gpt-oss-120b) promote their delta
+    reasoning into ``reasoning_content`` at write time. When the next turn
+    targets a provider that rejects the field (Cerebras, Groq, Fireworks,
+    Together, ...), the replay 400s. The fix: strip for any provider that
+    is not an explicit echo-back provider.
+    """
+
+    def test_deepseek_does_not_reject(self) -> None:
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
+        assert agent._rejects_reasoning_content() is False
+
+    def test_kimi_does_not_reject(self) -> None:
+        agent = _make_agent(provider="kimi-coding", model="kimi-k2")
+        assert agent._rejects_reasoning_content() is False
+
+    def test_mimo_does_not_reject(self) -> None:
+        agent = _make_agent(provider="custom", model="mimo-v2-pro",
+                            base_url="https://api.xiaomimimo.com/v1")
+        assert agent._rejects_reasoning_content() is False
+
+    @pytest.mark.parametrize("provider,model,base_url", [
+        ("custom", "zai-glm-4.7", "https://proxy.example.com/v1"),
+        ("custom", "gpt-oss-120b", "https://proxy.example.com/v1"),
+        ("custom", "llama3.1-8b", "https://proxy.example.com/v1"),
+        ("custom", "qwen-3-235b-a22b-instruct-2507", "https://proxy.example.com/v1"),
+        ("groq", "llama-3.1-70b-versatile", "https://api.groq.com/openai/v1"),
+        ("fireworks", "llama-v3-70b", "https://api.fireworks.ai/inference/v1"),
+        ("together", "meta-llama/Llama-3-70B", "https://api.together.xyz/v1"),
+        ("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1"),
+    ])
+    def test_non_echo_back_provider_rejects(
+        self, provider: str, model: str, base_url: str
+    ) -> None:
+        agent = _make_agent(provider=provider, model=model, base_url=base_url)
+        assert agent._rejects_reasoning_content() is True
+
+    def test_glm_history_stripped_for_cerebras(self) -> None:
+        """GLM turn stored with reasoning_content must be stripped when replaying
+        through a Cerebras (or any non-echo-back) custom provider.
+
+        This is the exact failure reported: switch from zai-glm-4.7 to
+        gpt-oss-120b on Cerebras 400s with::
+
+            messages.2.assistant.reasoning_content: property
+            'messages.2.assistant.reasoning_content' is unsupported
+
+        Root cause: commit d63abbc3 (refs #16844) promotes delta reasoning_content
+        from streaming-only providers (GLM, MiniMax) into the stored history so
+        DeepSeek/Kimi history replay works. The promotion is correct but the
+        field must be stripped when the *next* provider is not an echo-back provider.
+        """
+        # Custom provider (e.g. Cerebras) — not a DeepSeek/Kimi/MiMo echo-back provider
+        cerebras_agent = _make_agent(
+            provider="custom:cerebras",
+            model="gpt-oss-120b",
+            base_url="https://proxy.example.com/v1",
+        )
+        # History turn written by zai-glm-4.7 with promoted reasoning_content
+        glm_history_turn = {
+            "role": "assistant",
+            "content": "Hello!",
+            "reasoning": "Let me think...",
+            "reasoning_content": "Let me think...",  # promoted by #16844
+        }
+        api_msg: dict = {"reasoning_content": "Let me think..."}
+        cerebras_agent._copy_reasoning_content_for_api(glm_history_turn, api_msg)
+        assert "reasoning_content" not in api_msg
+
+    def test_deepseek_history_preserved_for_deepseek(self) -> None:
+        """DeepSeek history replayed on DeepSeek must keep reasoning_content."""
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
+        source = {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "some thought",
+            "tool_calls": [{"id": "c1", "function": {"name": "terminal"}}],
+        }
+        api_msg: dict = {}
+        agent._copy_reasoning_content_for_api(source, api_msg)
+        assert api_msg["reasoning_content"] == "some thought"

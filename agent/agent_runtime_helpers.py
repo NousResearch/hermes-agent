@@ -1928,6 +1928,25 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     if source_msg.get("role") != "assistant":
         return
 
+    # 0. Provider rejects reasoning_content — strip and bail out immediately.
+    #
+    # Most OpenAI-compatible providers (Cerebras, Groq, Fireworks, Together,
+    # etc.) return HTTP 400 when ``reasoning_content`` appears on an assistant
+    # message.  The field is only meaningful to the small set of providers that
+    # require it echoed back (DeepSeek V4 thinking, Kimi/Moonshot thinking,
+    # MiMo thinking).  When the session history was written by one of those
+    # providers — or by a streaming-only reasoning model like GLM or
+    # gpt-oss-120b that promotes its delta reasoning into ``reasoning_content``
+    # at write time (refs #16844) — replaying through a non-echo-back provider
+    # poisons the request and triggers an immediate non-retryable 400.
+    #
+    # Safe default: strip unless the current provider is known to require the
+    # echo-back.  The inverse check (``_needs_thinking_reasoning_pad``) is
+    # already battle-tested for DeepSeek/Kimi/MiMo detection.
+    if agent._rejects_reasoning_content():
+        api_msg.pop("reasoning_content", None)
+        return
+
     # 1. Explicit reasoning_content already set — preserve it verbatim
     # (includes DeepSeek/Kimi's own space-placeholder written at creation
     # time, and any valid reasoning content from the same provider).

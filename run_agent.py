@@ -4102,6 +4102,24 @@ class AIAgent:
         self._thinking_pad_cache = (key, result)
         return result
 
+    def _rejects_reasoning_content(self) -> bool:
+        """Return True when the active provider does NOT accept ``reasoning_content`` in messages.
+
+        Most OpenAI-compatible providers (Cerebras, Groq, Fireworks, Together,
+        etc.) reject ``reasoning_content`` on assistant messages with HTTP 400.
+        The field is only meaningful to the small set of providers that require
+        it echoed back (DeepSeek V4 thinking, Kimi/Moonshot thinking, MiMo
+        thinking).  For every other provider, passing it through causes failures
+        when the session history was previously written by one of those
+        reasoning-aware providers or by a streaming-only reasoning model (GLM,
+        MiniMax, gpt-oss-120b) that emits ``reasoning_content`` deltas.
+
+        The safe default is: strip unless the current provider is known to
+        require the echo-back.  This is the inverse of
+        ``_needs_thinking_reasoning_pad()``.
+        """
+        return not self._needs_thinking_reasoning_pad()
+
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.
 

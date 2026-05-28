@@ -96,7 +96,7 @@ _CONFIG_LOCK = threading.RLock()
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
-    "OPENAI_API_KEY", "OPENAI_BASE_URL",
+    "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_IMAGE_API_KEY", "OPENAI_IMAGE_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "DISCORD_HOME_CHANNEL", "DISCORD_HOME_CHANNEL_NAME",
     "TELEGRAM_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL_NAME",
@@ -2212,6 +2212,22 @@ OPTIONAL_ENV_VARS = {
         "tools": ["image_generate", "video_generate"],
         "password": True,
         "category": "tool",
+    },
+    "OPENAI_IMAGE_API_KEY": {
+        "description": "OpenAI-compatible API key for GPT Image 2 image generation",
+        "prompt": "OpenAI-compatible image API key",
+        "url": "https://platform.openai.com/api-keys",
+        "tools": ["image_generate"],
+        "password": True,
+        "category": "tool",
+    },
+    "OPENAI_IMAGE_BASE_URL": {
+        "description": "OpenAI-compatible base URL for GPT Image 2 image generation",
+        "prompt": "OpenAI-compatible image base URL",
+        "tools": ["image_generate"],
+        "password": False,
+        "category": "tool",
+        "advanced": True,
     },
     "VOICE_TOOLS_OPENAI_KEY": {
         "description": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",

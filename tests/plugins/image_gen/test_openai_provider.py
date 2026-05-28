@@ -37,7 +37,7 @@ def _tmp_hermes_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def provider(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_IMAGE_API_KEY", "test-key")
     return openai_plugin.OpenAIImageGenProvider()
 
 
@@ -74,9 +74,15 @@ class TestMetadata:
 class TestAvailability:
     def test_no_api_key_unavailable(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_IMAGE_API_KEY", raising=False)
         assert openai_plugin.OpenAIImageGenProvider().is_available() is False
 
     def test_api_key_set_available(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_IMAGE_API_KEY", "test")
+        assert openai_plugin.OpenAIImageGenProvider().is_available() is True
+
+    def test_general_openai_key_remains_fallback(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_IMAGE_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "test")
         assert openai_plugin.OpenAIImageGenProvider().is_available() is True
 
@@ -121,6 +127,60 @@ class TestModelResolution:
         assert meta["quality"] == "high"
 
 
+class TestApiConfig:
+    def test_normalizes_full_images_endpoint(self):
+        assert (
+            openai_plugin._normalize_base_url("https://ai.example/v1/images/generations")
+            == "https://ai.example/v1"
+        )
+
+    def test_image_specific_key_and_base_url_win(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "general-key")
+        monkeypatch.setenv("OPENAI_IMAGE_API_KEY", "image-key")
+        monkeypatch.setenv("OPENAI_IMAGE_BASE_URL", "https://ai.example/v1/images/generations")
+
+        cfg = openai_plugin._resolve_api_config()
+
+        assert cfg["api_key"] == "image-key"
+        assert cfg["base_url"] == "https://ai.example/v1"
+
+    def test_configured_key_env_and_base_url(self, tmp_path, monkeypatch):
+        import yaml
+        monkeypatch.delenv("OPENAI_IMAGE_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("CUSTOM_IMAGE_KEY", "custom-key")
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({
+                "image_gen": {
+                    "openai": {
+                        "api_key_env": "CUSTOM_IMAGE_KEY",
+                        "base_url": "https://ai.example/v1/images/generations",
+                    }
+                }
+            })
+        )
+
+        cfg = openai_plugin._resolve_api_config()
+
+        assert cfg["api_key"] == "custom-key"
+        assert cfg["api_key_env"] == "CUSTOM_IMAGE_KEY"
+        assert cfg["base_url"] == "https://ai.example/v1"
+
+    def test_reads_image_key_from_hermes_env_file(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENAI_IMAGE_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        (tmp_path / ".env").write_text(
+            "OPENAI_IMAGE_API_KEY=file-key\n"
+            "OPENAI_IMAGE_BASE_URL=https://ai.example/v1/images/generations\n",
+            encoding="utf-8",
+        )
+
+        cfg = openai_plugin._resolve_api_config()
+
+        assert cfg["api_key"] == "file-key"
+        assert cfg["base_url"] == "https://ai.example/v1"
+
+
 # ── Generate ────────────────────────────────────────────────────────────────
 
 
@@ -132,6 +192,7 @@ class TestGenerate:
 
     def test_missing_api_key(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_IMAGE_API_KEY", raising=False)
         result = openai_plugin.OpenAIImageGenProvider().generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "auth_required"
@@ -163,6 +224,22 @@ class TestGenerate:
         assert call_kwargs["size"] == "1536x1024"
         # gpt-image-2 rejects response_format — we must NOT send it.
         assert "response_format" not in call_kwargs
+
+    def test_client_uses_image_key_and_compatible_base_url(self, provider, monkeypatch):
+        monkeypatch.setenv("OPENAI_IMAGE_API_KEY", "image-key")
+        monkeypatch.setenv("OPENAI_IMAGE_BASE_URL", "https://ai.example/v1/images/generations")
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.return_value = fake_client
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            provider.generate("a cat")
+
+        fake_openai.OpenAI.assert_called_once_with(
+            api_key="image-key",
+            base_url="https://ai.example/v1",
+        )
 
     @pytest.mark.parametrize("tier,expected_quality", [
         ("gpt-image-2-low", "low"),

@@ -22,6 +22,7 @@ def test_managed_agents_config_loads_all_declared_runtime_agents():
         "codex",
         "deepseek-tui",
         "pirlo",
+        "designer",
         "intelligence",
         "ambrosini",
         "agent-tars",
@@ -65,6 +66,7 @@ def test_managed_agents_model_refs_are_declared_in_models_config():
         "deepseek-tui": "opencode_go_deepseek_pro",
         "intelligence": "opencode_go_qwen37_max",
         "pirlo": "opencode_go_kimi26",
+        "designer": "opencode_go_kimi26",
         "ambrosini": "opencode_go_glm51",
         "hermes-internal": "opencode_go_glm51",
         "agent-tars": "opencode_go_mimo25_pro",
@@ -90,6 +92,7 @@ def test_managed_agent_model_strategies_prefer_subscription_pool_before_api_fall
         "deepseek-tui",
         "intelligence",
         "pirlo",
+        "designer",
         "agent-tars",
         "ambrosini",
     }
@@ -131,7 +134,14 @@ def test_managed_agents_skill_whitelists_are_declared():
     assert "playwright-mcp" not in registry.get("codex").skills
     assert registry.get("intelligence").skills == ("competitive-intelligence",)
     assert "claude-design" in registry.get("pirlo").skills
+    assert "html-anything" not in registry.get("pirlo").skills
     assert "comfyui" not in registry.get("pirlo").skills
+    assert "html-anything" in registry.get("designer").skills
+    assert "design-taste-frontend" in registry.get("designer").skills
+    assert "gpt-taste" in registry.get("designer").skills
+    assert "brandkit" in registry.get("designer").skills
+    assert "image_gen" in registry.get("designer").tools
+    assert "terminal" in registry.get("designer").tools
     assert "browser-automation-for-blocked-sites" in registry.get("agent-tars").skills
     assert "playwright-mcp" in registry.get("agent-tars").skills
     assert "libreoffice-cli" in registry.get("agent-tars").skills
@@ -178,6 +188,10 @@ def test_known_tool_bound_skills_are_assigned_to_executable_agents():
     assert "comfyui" not in registry.get("pirlo").skills
     assert "terminal" not in registry.get("pirlo").tools
 
+    assert "html-anything" in registry.get("designer").skills
+    assert "terminal" in registry.get("designer").tools
+    assert "image_gen" in registry.get("designer").tools
+
     assert "playwright-mcp" in registry.get("agent-tars").skills
     assert "browser" in registry.get("agent-tars").tools
     assert "playwright-mcp" not in registry.get("codex").skills
@@ -197,6 +211,7 @@ def test_active_skill_frontmatter_uses_canonical_agent_ids():
         "codex",
         "intelligence",
         "pirlo",
+        "designer",
         "agent-tars",
         "ambrosini",
     }

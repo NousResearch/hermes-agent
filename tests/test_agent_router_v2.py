@@ -52,6 +52,11 @@ def mock_registry():
                 "display_name": "Hermes Internal Reasoning",
                 "capabilities": ["analysis", "decision_making", "creative_planning", "prioritization", "strategy_decision"],
             },
+            "designer": {
+                "id": "designer",
+                "display_name": "Designer 视觉设计师",
+                "capabilities": ["creative_direction", "visual_design", "web_visual_design", "ui_design"],
+            },
             "intelligence": {
                 "id": "intelligence",
                 "display_name": "Intelligence",
@@ -79,7 +84,7 @@ def mock_registry():
             "web_research": "intelligence",
             "file_reading_analysis": "intelligence",
             "strategy_decision": "hermes-internal",
-            "creative_direction": "hermes-internal",
+            "creative_direction": "designer",
             "background_task": "deepseek-worker",
         },
     }

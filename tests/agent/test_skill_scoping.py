@@ -389,6 +389,7 @@ class TestHermesWhitelist:
         ("hermes", [], 8),          # 主 Agent 白名单（忽略 profile，只从 HERMES_CORE_SKILLS 取）
         ("deepseek-tui", ["code-review", "git-operations"], 1),
         ("pirlo", ["design-md", "sketch"], 1),
+        ("designer", ["sketch", "design-md"], 1),
     ])
     def test_build_with_agent_shows_scoped(self, skills_tree, agent_id, profile_skills, min_count):
         """各种 agent_id 返回正确数量的 skill"""

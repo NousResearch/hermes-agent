@@ -52,6 +52,13 @@ def _write_test_registry(hermes_home: Path) -> Path:
                 "type": "analyst",
                 "capabilities": ["analysis", "decision_making", "creative_planning", "web_search", "file_reading", "technical_decomposition"],
             },
+            "designer": {
+                "id": "designer",
+                "display_name": "Designer 视觉设计师",
+                "aliases": ["视觉设计师", "设计师", "designer"],
+                "type": "visual_designer",
+                "capabilities": ["creative_direction", "visual_design", "web_visual_design", "ui_design"],
+            },
             "intelligence": {
                 "id": "intelligence",
                 "type": "researcher",
@@ -88,7 +95,7 @@ def _write_test_registry(hermes_home: Path) -> Path:
             "code_review": "codex",
             "desktop_control": "agent-tars",
             "strategy_decision": "hermes-internal",
-            "creative_direction": "hermes-internal",
+            "creative_direction": "designer",
             "technical_decomposition": "hermes-internal",
             "test_generation": "deepseek-tui",
         },
@@ -228,11 +235,10 @@ class TestRouting:
         assert decision.mode == "pipeline"
 
     def test_registry_missing_route(self, hermetic_registry):
-        """visual_design: capability creative_direction maps to hermes-internal, should work."""
+        """visual_design: capability creative_direction maps to designer, should work."""
         router = AgentRouter()
         decision = router.route("visual_design")
-        # creative_direction → hermes-internal exists in routing_rules
-        assert "hermes-internal" in decision.agents
+        assert "designer" in decision.agents
 
     def test_code_review_routes_to_codex(self, hermetic_registry):
         router = AgentRouter()

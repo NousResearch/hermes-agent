@@ -268,11 +268,6 @@ agents:
   - humanizer
   - humanizer-zh
   - claude-design
-  - sketch
-  - baoyu-infographic
-  - baoyu-comic
-  - architecture-diagram
-  - html-anything
   tools:
   - file
   permission: read_only
@@ -284,6 +279,68 @@ agents:
   - content_writing
   - planning
   - document_creation
+  risk_allowed:
+  - R0
+  - R1
+  - R2
+- agent_id: designer
+  name: Designer 视觉设计师
+  role: visual_designer
+  aliases:
+  - Designer 视觉设计师
+  - 视觉设计师
+  - 设计师
+  - UI设计师
+  - 网页设计师
+  - 海报设计师
+  - designer
+  role_summary: 海报、视觉型 HTML、网页/UI 前端视觉、品牌视觉、图片生成方向；默认调用 html-anything、taste-skill 和 image_generate，不负责复杂工程实现。
+  model_ref: opencode_go_kimi26
+  model_strategy:
+    mode: fallback
+    primary: opencode_go_kimi26
+    chain:
+    - opencode_go_kimi26
+    - opencode_go_qwen37_max
+    - opencode_go_minimax27
+    - deepseek_pro
+    fallback_on:
+    - quota_exceeded
+    - rate_limited
+    - timeout
+    - server_error
+    - empty_final_content
+  skills:
+  - html-anything
+  - design-taste-frontend
+  - gpt-taste
+  - redesign-existing-projects
+  - high-end-visual-design
+  - imagegen-frontend-web
+  - imagegen-frontend-mobile
+  - brandkit
+  - claude-design
+  - sketch
+  - baoyu-infographic
+  - baoyu-comic
+  - architecture-diagram
+  tools:
+  - file
+  - terminal
+  - browser
+  - image_gen
+  permission: ask
+  can_delegate: false
+  capabilities:
+  - creative_direction
+  - visual_design
+  - poster_design
+  - web_visual_design
+  - ui_design
+  - frontend_visual_design
+  - brand_identity
+  - image_generation_direction
+  - html_visual_delivery
   risk_allowed:
   - R0
   - R1
@@ -406,7 +463,15 @@ routing:
     web_research: intelligence
     file_reading_analysis: hermes-internal
     strategy_decision: hermes-internal
-    creative_direction: hermes-internal
+    creative_direction: designer
+    visual_design: designer
+    poster_design: designer
+    web_visual_design: designer
+    ui_design: designer
+    frontend_visual_design: designer
+    brand_identity: designer
+    image_generation_direction: designer
+    html_visual_delivery: designer
     analysis: hermes-internal
     decision_making: hermes-internal
     market_intelligence: intelligence

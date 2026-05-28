@@ -19,6 +19,16 @@ Selection precedence (first hit wins):
 2. ``image_gen.openai.model`` in ``config.yaml``
 3. ``image_gen.model`` in ``config.yaml`` (when it's one of our tier IDs)
 4. :data:`DEFAULT_MODEL` — ``gpt-image-2-medium``
+
+Endpoint/key precedence:
+
+1. ``image_gen.openai.api_key_env`` (defaults to ``OPENAI_IMAGE_API_KEY``)
+2. ``OPENAI_IMAGE_API_KEY``
+3. ``OPENAI_API_KEY``
+
+``image_gen.openai.base_url`` or ``OPENAI_IMAGE_BASE_URL`` may point at either
+an OpenAI-compatible root (``.../v1``) or the concrete images endpoint
+(``.../v1/images/generations``); the latter is normalized for the SDK client.
 """
 
 from __future__ import annotations
@@ -92,9 +102,19 @@ def _load_openai_config() -> Dict[str, Any]:
         return {}
 
 
+def _get_env_value(key: str) -> str:
+    """Read environment values from process env or Hermes' .env file."""
+    try:
+        from hermes_cli.config import get_env_value
+
+        return (get_env_value(key) or "").strip()
+    except Exception:
+        return os.environ.get(key, "").strip()
+
+
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     """Decide which tier to use and return ``(model_id, meta)``."""
-    env_override = os.environ.get("OPENAI_IMAGE_MODEL")
+    env_override = _get_env_value("OPENAI_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
         return env_override, _MODELS[env_override]
 
@@ -116,6 +136,46 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
 
 
+def _normalize_base_url(value: Optional[str]) -> Optional[str]:
+    """Normalize OpenAI-compatible base URLs for the SDK client."""
+    raw = (value or "").strip().rstrip("/")
+    if not raw:
+        return None
+    suffix = "/images/generations"
+    if raw.endswith(suffix):
+        raw = raw[: -len(suffix)].rstrip("/")
+    return raw or None
+
+
+def _resolve_api_config() -> Dict[str, Optional[str]]:
+    """Resolve API key and optional OpenAI-compatible base URL."""
+    cfg = _load_openai_config()
+    openai_cfg = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
+    if not isinstance(openai_cfg, dict):
+        openai_cfg = {}
+
+    env_name = str(openai_cfg.get("api_key_env") or "OPENAI_IMAGE_API_KEY").strip()
+    api_key = ""
+    if env_name:
+        api_key = _get_env_value(env_name)
+    if not api_key:
+        api_key = _get_env_value("OPENAI_IMAGE_API_KEY")
+    if not api_key:
+        api_key = _get_env_value("OPENAI_API_KEY")
+
+    base_url = (
+        _get_env_value("OPENAI_IMAGE_BASE_URL")
+        or openai_cfg.get("base_url")
+        or _get_env_value("OPENAI_BASE_URL")
+        or ""
+    )
+    return {
+        "api_key": api_key or None,
+        "api_key_env": env_name or "OPENAI_IMAGE_API_KEY",
+        "base_url": _normalize_base_url(str(base_url)),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
@@ -133,7 +193,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return "OpenAI"
 
     def is_available(self) -> bool:
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not _resolve_api_config().get("api_key"):
             return False
         try:
             import openai  # noqa: F401
@@ -163,9 +223,13 @@ class OpenAIImageGenProvider(ImageGenProvider):
             "tag": "gpt-image-2 at low/medium/high quality tiers",
             "env_vars": [
                 {
-                    "key": "OPENAI_API_KEY",
-                    "prompt": "OpenAI API key",
+                    "key": "OPENAI_IMAGE_API_KEY",
+                    "prompt": "OpenAI-compatible image API key",
                     "url": "https://platform.openai.com/api-keys",
+                },
+                {
+                    "key": "OPENAI_IMAGE_BASE_URL",
+                    "prompt": "OpenAI-compatible image API base URL",
                 },
             ],
         }
@@ -187,10 +251,11 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not os.environ.get("OPENAI_API_KEY"):
+        api_config = _resolve_api_config()
+        if not api_config.get("api_key"):
             return error_response(
                 error=(
-                    "OPENAI_API_KEY not set. Run `hermes tools` → Image "
+                    "OPENAI_IMAGE_API_KEY not set. Run `hermes tools` → Image "
                     "Generation → OpenAI to configure, or `hermes setup` "
                     "to add the key."
                 ),
@@ -223,7 +288,10 @@ class OpenAIImageGenProvider(ImageGenProvider):
         }
 
         try:
-            client = openai.OpenAI()
+            client_kwargs = {"api_key": api_config["api_key"]}
+            if api_config.get("base_url"):
+                client_kwargs["base_url"] = api_config["base_url"]
+            client = openai.OpenAI(**client_kwargs)
             response = client.images.generate(**payload)
         except Exception as exc:
             logger.debug("OpenAI image generation failed", exc_info=True)

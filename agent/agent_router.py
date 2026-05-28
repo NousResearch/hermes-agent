@@ -46,7 +46,7 @@ DEFAULT_ROUTES: Dict[str, Dict[str, Any]] = {
     "visual_design": {
         "mode": "single_agent",
         "capability": "creative_direction",
-        "reason": "视觉设计任务适合分发给图像/PPT Agent",
+        "reason": "视觉设计任务适合分发给专门的 Designer 视觉设计师",
     },
     "research": {
         "mode": "single_agent",

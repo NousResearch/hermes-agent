@@ -169,6 +169,20 @@ def test_on_session_end_ingests_clean_messages(provider):
     ]
 
 
+def test_on_session_end_respects_auto_capture_false(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    _save_supermemory_config({"auto_capture": False}, str(tmp_path))
+
+    provider = SupermemoryMemoryProvider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+    provider.on_session_end([
+        {"role": "user", "content": "please do not capture this session"},
+        {"role": "assistant", "content": "not captured"},
+    ])
+    assert getattr(provider._client, "ingest_calls") == []
+
+
 def test_on_memory_write_tracks_thread(provider):
     provider.on_memory_write("add", "memory", "Jordan likes concise docs")
     assert provider._write_thread is not None

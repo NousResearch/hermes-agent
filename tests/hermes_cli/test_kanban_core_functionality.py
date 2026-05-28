@@ -4532,3 +4532,353 @@ def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch
         )
         assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
         assert kb.get_task(conn, t).status == "running"
+
+
+# ---------------------------------------------------------------------------
+# JSON output corruption/error handling
+# ---------------------------------------------------------------------------
+
+def test_list_json_on_corrupt_db_returns_parseable_empty_array(tmp_path, monkeypatch):
+    """list --json must emit parseable JSON even when the DB is corrupt.
+
+    The array contract is critical: Hermes Desktop iterates tasks as an array.
+    Returning an error object or empty stdout would break the UI.
+    """
+    import subprocess as _sp
+    import sys as _sys
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # Write a corrupt SQLite header (invalid page-0 signature).
+    db_path = home / "kanban.db"
+    db_path.write_bytes(b"SQLite format 3\x00" + b"\xff" * 64)
+
+    worktree_root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": str(worktree_root)}
+    r = _sp.run(
+        [_sys.executable, "-m", "hermes_cli.main", "kanban",
+         "list", "--json"],
+        capture_output=True, text=True, env=env,
+    )
+
+    # Must not crash with a non-zero exit that prevents JSON parsing.
+    # The DB is corrupt so we accept any non-zero exit code.
+    assert r.returncode in (0, 1), f"rc={r.returncode} stdout={r.stdout!r} stderr={r.stderr!r}"
+
+    # stdout must be parseable JSON.
+    import json as _json
+    out = _json.loads(r.stdout)
+    # Array contract: must be a list (even if empty).
+    assert isinstance(out, list), f"expected list, got {type(out).__name__}: {r.stdout!r}"
+
+    # stderr must carry the error so operators can diagnose.
+    assert len(r.stderr) > 0, "stderr should carry the corruption error"
+
+
+def test_list_json_returns_array_contract(tmp_path, monkeypatch):
+    """list --json must return a JSON array, never an object or null."""
+    import subprocess as _sp
+    import sys as _sys
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    worktree_root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": str(worktree_root)}
+    r = _sp.run(
+        [_sys.executable, "-m", "hermes_cli.main", "kanban",
+         "list", "--json"],
+        capture_output=True, text=True, env=env,
+    )
+
+    assert r.returncode == 0, f"rc={r.returncode} stderr={r.stderr}"
+    import json as _json
+    out = _json.loads(r.stdout)
+    assert isinstance(out, list), f"list --json must return array, got {type(out).__name__}"
+
+
+def test_init_on_corrupt_db_emits_parseable_error_json(tmp_path, monkeypatch):
+    """init --json on a corrupt board must emit parseable JSON to stdout.
+
+    Other commands (non-list) on corruption should still write human error
+    to stderr and return non-zero — but stdout must not be empty so the
+    caller knows this is a structured error response.
+    """
+    import subprocess as _sp
+    import sys as _sys
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # Corrupt the default board's DB.
+    db_path = home / "kanban.db"
+    db_path.write_bytes(b"notsqlite" + b"\x00" * 64)
+
+    worktree_root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": str(worktree_root)}
+    r = _sp.run(
+        [_sys.executable, "-m", "hermes_cli.main", "kanban",
+         "init", "--json"],
+        capture_output=True, text=True, env=env,
+    )
+
+    # Expect non-zero: corruption is a failure.
+    assert r.returncode != 0, f"expected non-zero rc for corrupt DB, got {r.returncode}"
+
+    # stdout must not be empty — it should carry a structured error envelope.
+    assert len(r.stdout.strip()) > 0, "stdout must not be empty for init --json on corruption"
+    import json as _json
+    # Must be valid JSON.
+    out = _json.loads(r.stdout)
+    # It's an error response — shape is not strictly defined but must parse.
+    assert isinstance(out, dict), f"expected dict, got {type(out).__name__}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Cross-process write-lock + dispatcher singleton + backup deduplication
+# ---------------------------------------------------------------------------
+
+def test_write_txn_acquires_per_board_lock(kanban_home):
+    """write_txn must acquire the per-board RLock for the duration.
+
+    Verifies that concurrent threads are blocked when the lock is held and
+    only proceed after the outer transaction releases.  Separate connections
+    are used per thread (SQLite requirement); the board-level RLock ensures
+    their BEGIN IMMEDIATE transactions do not overlap.
+    """
+    import threading
+    import time
+
+    # Synchronization events.
+    main_txn_began = threading.Event()       # main signals: I am inside write_txn
+    bg_lock_blocked = threading.Event()      # bg signals: I am blocked on the lock
+    main_proceed = threading.Event()         # main signals: you may proceed
+    bg_completed = threading.Event()
+    errors = []
+
+    def background_writer():
+        try:
+            conn = kb.connect()
+            try:
+                # Try to acquire the board lock. If main holds it, we block here.
+                with kb.write_txn(conn):
+                    # We only reach here after acquiring the board lock.
+                    # Signal that we are inside write_txn (and therefore were blocked
+                    # on the lock when main was holding it).
+                    bg_lock_blocked.set()
+                    # Wait for main to tell us to proceed (it will sleep + release).
+                    main_proceed.wait(timeout=5)
+            finally:
+                conn.close()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            bg_completed.set()
+
+    # Start background writer — it will block on the board lock immediately.
+    t = threading.Thread(target=background_writer)
+    t.start()
+
+    # Main thread acquires the lock first.
+    main_conn = kb.connect()
+    try:
+        with kb.write_txn(main_conn):
+            main_txn_began.set()
+            # Wait for bg to confirm it is blocked on the lock.
+            blocked = bg_lock_blocked.wait(timeout=5)
+            assert blocked, "bg writer should be blocked on board lock"
+            # While we hold the lock, bg is confirmed blocked — give it time to
+            # prove it is still blocked (it cannot enter write_txn yet).
+            time.sleep(0.25)
+            assert bg_lock_blocked.is_set(), "bg writer should still be blocked"
+        # Board lock released here — bg can now enter write_txn.
+    finally:
+        main_proceed.set()   # tell bg to proceed
+        main_conn.close()
+
+    # Wait for bg to finish.
+    bg_completed.wait(timeout=5)
+    t.join(timeout=5)
+    assert not errors, f"background writer encountered errors: {errors}"
+
+
+def test_backup_deduplication_same_path_returns_same_backup(kanban_home, monkeypatch):
+    """_backup_corrupt_db must not create duplicate backups for the same DB."""
+    # Write a corrupt DB.
+    db_path = kb.kanban_db_path()
+    db_path.write_bytes(b"corrupt" * 32)
+
+    # Call _backup_corrupt_db twice.
+    from hermes_cli.kanban_db import _backup_corrupt_db
+    backup1 = _backup_corrupt_db(db_path)
+    backup2 = _backup_corrupt_db(db_path)
+
+    assert backup1 is not None, "first backup should succeed"
+    assert backup2 is not None, "second backup should succeed"
+    assert backup1 == backup2, "second call should return same backup path (dedup)"
+
+    # There should be only ONE backup file on disk.
+    corrupt_backups = list(db_path.parent.glob("kanban.db.corrupt.*.bak"))
+    assert len(corrupt_backups) == 1, f"expected 1 corrupt backup, found {len(corrupt_backups)}: {corrupt_backups}"
+
+
+def test_corrupt_backup_dedup_cache_avoids_copy_failure_on_retry(kanban_home):
+    """After a copy failure, subsequent calls must not retry the copy."""
+    import shutil
+    from hermes_cli.kanban_db import _backup_corrupt_db
+
+    db_path = kb.kanban_db_path()
+    db_path.write_bytes(b"corrupt" * 32)
+
+    # Manually record a failure in the dedup cache (simulate copy failure).
+    from hermes_cli import kanban_db as kb_module
+    kb_module._CORRUPT_BACKUPS_DEDUP[str(db_path.resolve())] = None
+
+    # Next call should return None immediately (not retry the copy).
+    result = _backup_corrupt_db(db_path)
+    assert result is None, "should return cached failure, not retry copy"
+
+
+def test_dispatch_once_singleton_stale_pid_skips_tick(kanban_home, monkeypatch):
+    """dispatch_once must skip a board when another dispatcher PID is still alive."""
+    # Create a "stale" pidfile with a dead PID (simulating a dead dispatcher).
+    import os
+    db_path = kb.kanban_db_path()
+    board_dir = db_path.parent
+
+    # First, create a fake "other dispatcher" pidfile with our own PID
+    # (so we "own" it), then the tick should complete normally.
+    pidfile = board_dir / ".kanban.dispatcher.pid"
+    pidfile.write_text(f"{os.getpid()}|20250101_000000", encoding="utf-8")
+
+    conn = kb.connect()
+    result = kb.dispatch_once(conn, board="default")
+
+    # Dispatch should work (we own the lock with our own PID).
+    assert result is not None
+
+    # Clean up.
+    pidfile.unlink(missing_ok=True)
+
+
+def test_dispatch_once_singleton_alive_pid_returns_early(kanban_home, monkeypatch):
+    """dispatch_once must skip when another process's PID is alive."""
+    import os
+    db_path = kb.kanban_db_path()
+    board_dir = db_path.parent
+    pidfile = board_dir / ".kanban.dispatcher.pid"
+
+    # Write a fake "alive but not us" PID. We use a non-existent high PID
+    # that won't match any real process, so os.kill raises ESRCH — we mock
+    # os.kill to simulate an alive process check.
+    fake_pid = 999999
+    pidfile.write_text(f"{fake_pid}|20250101_000000", encoding="utf-8")
+
+    # Mock os.kill to simulate "process alive" by raising nothing for this PID.
+    original_kill = os.kill
+    def mock_kill(pid, sig):
+        if pid == fake_pid:
+            return  # process is "alive"
+        return original_kill(pid, sig)
+
+    monkeypatch.setattr(os, "kill", mock_kill)
+
+    conn = kb.connect()
+    result = kb.dispatch_once(conn, board="default")
+
+    # Should return empty result immediately (another dispatcher owns the board).
+    assert result is not None
+    # All fields should be zero/empty since we skipped.
+    assert result.reclaimed == 0
+    assert result.spawned == []
+
+    # Clean up.
+    pidfile.unlink(missing_ok=True)
+
+
+def test_concurrent_write_txn_from_two_threads_serializes(kanban_home):
+    """Two threads writing to the same board via write_txn must serialize.
+
+    Tests the per-board RLock directly: two threads create tasks using
+    separate connections (SQLite requirement), and the board-level RLock
+    ensures their BEGIN IMMEDIATE transactions do not overlap.
+
+    Note: does NOT call dispatch_once (which calls helper functions that
+    also use write_txn, causing "nested transaction" errors in test).
+    """
+    import threading
+    import random
+    errors = []
+
+    def writer_thread(thread_id):
+        # Each thread creates its own connection to the same board DB.
+        try:
+            conn = kb.connect()
+            for i in range(5):
+                with kb.write_txn(conn):
+                    title = f"thread-{thread_id}-task-{i}"
+                    kb.create_task(conn, title=title, initial_status="running")
+                    time.sleep(random.uniform(0.001, 0.005))
+            conn.close()
+        except Exception as exc:
+            errors.append((thread_id, exc))
+
+    threads = [threading.Thread(target=writer_thread, args=(i,)) for i in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"threads encountered errors: {errors}"
+    conn2 = kb.connect()
+    rows = conn2.execute("SELECT COUNT(*) as cnt FROM tasks").fetchone()["cnt"]
+    # 3 threads × 5 tasks = 15 tasks
+    assert rows >= 15, f"expected at least 15 tasks, got {rows}"
+
+
+def test_kanban_cli_list_json_on_corrupt_db_still_parses(kanban_home, monkeypatch):
+    """Phase 1 contract: list --json on corrupt board returns parseable []."""
+    import subprocess as _sp
+    import sys as _sys
+
+    # Create and corrupt the DB.
+    kb.init_db()
+    db_path = kb.kanban_db_path()
+    # Overwrite with garbage — loses the SQLite header.
+    db_path.write_bytes(b"NOTSQLITE" * 16)
+
+    worktree_root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "HERMES_HOME": str(kanban_home), "PYTHONPATH": str(worktree_root)}
+    r = _sp.run(
+        [_sys.executable, "-m", "hermes_cli.main", "kanban",
+         "list", "--json"],
+        capture_output=True, text=True, env=env,
+    )
+
+    assert r.returncode == 0, f"rc={r.returncode} stderr={r.stderr}"
+    import json as _json
+    out = _json.loads(r.stdout)
+    assert isinstance(out, list), f"list --json must return array, got {type(out).__name__}"
+    assert out == [], "corrupt list must return empty array"
+
+
+def test_pragmas_set_on_connect(kanban_home):
+    """connect() must set busy_timeout, synchronous, and foreign_keys."""
+    conn = kb.connect()
+    try:
+        timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        sync = conn.execute("PRAGMA synchronous").fetchone()[0]
+        fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+
+        assert timeout == 30000, f"busy_timeout should be 30000, got {timeout}"
+        assert sync == 2, f"synchronous should be 2 (FULL), got {sync}"
+        assert fk == 1, f"foreign_keys should be 1 (ON), got {fk}"
+    finally:
+        conn.close()

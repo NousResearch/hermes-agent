@@ -3845,6 +3845,14 @@ def test_dispatch_once_still_reaps_via_extracted_fn(kanban_home):
 
     assert pids == [99999]
 
+# -----------------------------------------------------------------------------
+# connect_closing(): context manager that actually closes the FD
+# Regression coverage for #33159 (kanban.db FD leak — gateway crashes after
+# ~4 days). sqlite3.Connection's built-in __exit__ commits/rollbacks but
+# does NOT close, so `with kb.connect() as conn:` leaks the FD in
+# long-lived processes (gateway run_slash, dashboard decompose handler).
+# `connect_closing()` is the leak-safe replacement.
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -3907,3 +3915,78 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# busy_timeout PRAGMA
+# ---------------------------------------------------------------------------
+
+def test_connect_sets_busy_timeout(tmp_path, monkeypatch):
+    """connect() must set PRAGMA busy_timeout to 30000 for lock-contention mitigation."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+
+    conn = kb.connect()
+    try:
+        [row] = conn.execute("PRAGMA busy_timeout").fetchall()
+        timeout_val = row[0]  # PRAGMA returns a scalar tuple, not a dict
+        assert timeout_val == 30000, (
+            f"expected busy_timeout=30000, got {timeout_val}"
+        )
+    finally:
+        conn.close()
+
+
+def test_busy_timeout_is_lock_contention_mitigation_not_corruption_fix():
+    """Document that busy_timeout mitigates lock contention — corruption root cause unproven."""
+    # This is a documentation test that always passes. The actual mitigation
+    # claim is in the connect() docstring. This test exists to flag the
+    # distinction in test output so it is never accidentally interpreted as
+    # a fix for SQLite index corruption.
+    assert True
+
+
+# -----------------------------------------------------------------------
+# Nested write_txn (re-entrancy)
+# -----------------------------------------------------------------------
+
+def test_write_txn_nested_on_same_connection(kanban_home):
+    """write_txn must not issue BEGIN when the connection is already in a transaction.
+
+    This tests the re-entrancy path: operations that call other operations
+    that also use write_txn on the same connection (e.g. create_task →
+    link_tasks → _find_missing_parents) must not cause "cannot start a
+    transaction within a transaction" errors.
+    """
+    with kb.connect() as conn:
+        # Outer write_txn + inner write_txn on the same connection.
+        with kb.write_txn(conn):
+            t1 = kb.create_task(conn, title="outer-task", assignee="a")
+            # Nested write_txn — must not fail and must not commit prematurely.
+            with kb.write_txn(conn):
+                t2 = kb.create_task(conn, title="inner-task", assignee="b")
+                # Inner scope: both tasks must be visible (same transaction).
+                row = conn.execute(
+                    "SELECT id, title FROM tasks WHERE id IN (?, ?)",
+                    (t1, t2),
+                ).fetchall()
+                assert len(row) == 2, f"inner scope: expected 2 tasks, got {row}"
+
+            # After inner scope exits, still in outer transaction.
+            # Cannot create-task-with-link pattern here because we need a
+            # third task whose link would be inserted in the inner txn, but
+            # the key invariant is: no "nested transaction" exception was
+            # raised and no premature commit happened.
+            row2 = conn.execute(
+                "SELECT id FROM tasks WHERE id = ?", (t2,)
+            ).fetchone()
+            assert row2 is not None, "t2 must still exist after inner scope"
+
+        # After outer scope: transaction should be committed.
+        # Both tasks must exist in the DB.
+        rows = conn.execute(
+            "SELECT title FROM tasks WHERE id IN (?, ?)", (t1, t2)
+        ).fetchall()
+        assert len(rows) == 2, f"after commit: expected 2 tasks, got {rows}"

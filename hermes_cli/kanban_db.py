@@ -1066,6 +1066,95 @@ def _cross_process_init_lock(path: Path):
         finally:
             handle.close()
 
+# ---------------------------------------------------------------------------
+# Per-board cross-process write locks
+# ---------------------------------------------------------------------------
+# A per-board RLock dictionary. The RLock is process-local (threading) but the
+# lock *file* (written by the dispatcher pidfile mechanism) is cross-process.
+# This dictionary is only for preventing SAME-PROCESS races (e.g. two threads
+# in the gateway dispatcher). Cross-process singleton enforcement lives in the
+# dispatcher tick via a pidfile check.
+_BOARD_WRITE_LOCKS: dict[str, threading.RLock] = {}
+_BOARD_WRITE_LOCKS_INIT_LOCK = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Per-connection transaction depth tracking for nested write_txn
+# ---------------------------------------------------------------------------
+# Tracks how many write_txn context levels are active per (connection object,
+# thread identity) pair.  A plain int keyed by (id(conn), thread_ident) so
+# that:
+#   - Same thread + same connection + depth > 0  → nested call, join parent
+#   - Same connection + different thread          → unsupported; different
+#                                                  connections are used instead
+# This replaces conn.in_transaction as the sole nesting guard — that flag
+# cannot distinguish "same-connection cross-thread use" from "true nested
+# same-thread call".
+_TXN_DEPTH: dict[tuple[int, int], int] = {}
+
+
+def _get_board_write_lock(board: Optional[str] = None) -> threading.RLock:
+    """Return a per-board RLock for same-process thread safety.
+
+    Board is resolved from ``board`` arg or the current kanban board
+    resolution chain (same as kanban_db_path uses).  The returned RLock
+    is process-local — it does NOT replace the cross-process dispatcher
+    pidfile lock; it guards same-process re-entrancy only.
+    """
+    if board is None:
+        try:
+            board = os.environ.get("HERMES_KANBAN_BOARD", "") or _get_current_board_unguarded()
+        except Exception:
+            board = "default"
+    slug = board or "default"
+    with _BOARD_WRITE_LOCKS_INIT_LOCK:
+        if slug not in _BOARD_WRITE_LOCKS:
+            _BOARD_WRITE_LOCKS[slug] = threading.RLock()
+        return _BOARD_WRITE_LOCKS[slug]
+
+
+@contextlib.contextmanager
+def _board_write_lock(board: Optional[str] = None):
+    """Context manager: acquire the per-board write lock for the duration.
+
+    This lock is process-local (threading.RLock) and does NOT replace
+    cross-process file-based locking.  It prevents two threads in the same
+    process from racing through write_txn on the same board simultaneously.
+    The cross-process singleton guarantee is provided separately by the
+    dispatcher pidfile check in dispatch_once.
+
+    Hold time must be short: only around the DB transaction, not during
+    model/tool work or workspace setup.
+    """
+    lock = _get_board_write_lock(board)
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def _get_current_board_unguarded() -> str:
+    """Read current board without triggering full kanban_db_path resolution.
+
+    Used only for board-lock key injection when no explicit board is set.
+    """
+    try:
+        current_file = kanban_home() / "kanban" / "current"
+        if current_file.exists():
+            return current_file.read_text(encoding="utf-8").strip() or "default"
+    except Exception:
+        pass
+    return "default"
+
+
+# ---------------------------------------------------------------------------
+# Corrupt-backup deduplication (per-process, per-board per session)
+# ---------------------------------------------------------------------------
+# Tracks which boards have already had a corrupt backup created this session.
+# Prevents repeatedly writing .corrupt.*.bak files on every corruption probe.
+# Key: resolved DB path string.  Value: backup Path or None (already checked, no backup needed).
+_CORRUPT_BACKUPS_DEDUP: dict[str, Optional[Path]] = {}
+
 
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
     """Return True for a TLS record header at ``data[offset:]``."""
@@ -1142,6 +1231,10 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
 
     Returns the backup path of the main DB file, or ``None`` if the copy
     itself failed (the caller still raises loudly in that case).
+    Deduplication: if this process has already created a backup for this
+    exact DB path this session, returns the existing backup path immediately
+    instead of creating a duplicate.  This prevents a corrupt board from
+    generating unbounded .corrupt.*.bak files on every corruption probe.
 
     Writes are confined to the original DB's parent directory. The
     backup basename is derived purely from ``path.name``, never from
@@ -1153,6 +1246,12 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     resolved = path.resolve()
     parent = resolved.parent
     base_name = resolved.name  # basename only
+
+    # Deduplication: per-process, per-board per session.
+    # If we already made a backup for this resolved path, reuse it.
+    if str(resolved) in _CORRUPT_BACKUPS_DEDUP:
+        return _CORRUPT_BACKUPS_DEDUP[str(resolved)]
+
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     candidate = parent / f"{base_name}.corrupt.{stamp}.bak"
     # Defensive: candidate must still be inside parent after construction.
@@ -1170,6 +1269,8 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     try:
         shutil.copy2(resolved, candidate)
     except OSError:
+        # Record the failure so we don't keep retrying the copy on every probe.
+        _CORRUPT_BACKUPS_DEDUP[str(resolved)] = None
         return None
     for suffix in ("-wal", "-shm"):
         sidecar = parent / (base_name + suffix)
@@ -1182,6 +1283,10 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
             shutil.copy2(sidecar, sidecar_backup)
         except OSError:
             pass
+
+    # Record successful backup so future probes on the same corrupt DB
+    # in this session return the existing backup immediately.
+    _CORRUPT_BACKUPS_DEDUP[str(resolved)] = candidate
     return candidate
 
 
@@ -1662,34 +1767,67 @@ def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
 
 
 @contextlib.contextmanager
-def write_txn(conn: sqlite3.Connection):
+def write_txn(conn: sqlite3.Connection, board: Optional[str] = None):
     """Context manager for an IMMEDIATE write transaction.
 
     Use for any multi-statement write (creating a task + link, claiming a
     task + recording an event, etc.).  A claim CAS inside this context is
     atomic -- at most one concurrent writer can succeed.
 
-    The explicit ROLLBACK on exception is wrapped in try/except so that
-    a SQLite auto-rollback (which leaves no active transaction) does not
-    shadow the original exception with a spurious rollback error.
+    Same-process thread safety: wraps acquisition of the per-board RLock so
+    two threads in the same process cannot race on the same board's write
+    transactions. Cross-process safety (two gateway processes, CLI vs gateway)
+    is provided separately by the dispatcher pidfile singleton mechanism.
+
+    Re-entrancy (nested write_txn on the same connection, same thread):
+        Uses an explicit transaction-depth counter keyed by
+        (id(conn), thread_ident()).  A nested call with depth > 0 joins the
+        existing parent transaction — no BEGIN, no COMMIT/ROLLBACK, no board
+        lock re-acquisition.  The outermost call owns the final COMMIT.
+
+    Unsupported cross-thread same-connection use: sqlite3.Connection objects
+        are not thread-safe.  Production code must use separate connections per
+        thread.  The _TXN_DEPTH guard keys on thread identity, so if the same
+        connection is passed to write_txn from a different thread, depth will
+        be 0 and the board lock will be taken — but the underlying sqlite3
+        connection is unsafe in that scenario, so this is a last-resort
+        safety net, not a supported configuration.
     """
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        yield conn
-    except Exception:
+    key = (id(conn), threading.get_ident())
+    depth = _TXN_DEPTH.get(key, 0)
+
+    if depth > 0:
+        # Nested call in the same thread: join the existing transaction.
+        _TXN_DEPTH[key] = depth + 1
         try:
-            conn.execute("ROLLBACK")
-        except sqlite3.OperationalError:
-            # SQLite has already auto-rolled-back the transaction (typical
-            # under EIO, lock contention, or corruption). Nothing to undo;
-            # do not let this secondary failure shadow the real one.
-            pass
-        raise
+            yield conn
+        finally:
+            _TXN_DEPTH[key] -= 1
     else:
-        conn.execute("COMMIT")
-        # Post-commit file-length check: header page_count must match actual file pages.
-        # A discrepancy means a torn-extend — raise now rather than silently corrupt.
-        _check_file_length_invariant(conn)
+        # Outermost call: acquire board lock, begin transaction.
+        with _board_write_lock(board):
+            conn.execute("BEGIN IMMEDIATE")
+            _TXN_DEPTH[key] = 1
+            try:
+                yield conn
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.OperationalError:
+                    # SQLite has already auto-rolled-back the transaction
+                    # (typical under EIO, lock contention, or corruption).
+                    # Nothing to undo; do not let this secondary failure
+                    # shadow the real one.
+                    pass
+                raise
+            else:
+                conn.execute("COMMIT")
+                # Post-commit file-length check: header page_count must match
+                # actual file pages. A discrepancy means a torn-extend — raise
+                # now rather than silently corrupt data.
+                _check_file_length_invariant(conn)
+            finally:
+                _TXN_DEPTH.pop(key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -5365,9 +5503,73 @@ def dispatch_once(
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
-    # Reap zombie children from previously spawned workers. See
-    # reap_worker_zombies() for the full rationale.
-    reap_worker_zombies()
+    # -------------------------------------------------------------------------
+    # Dispatcher singleton: prevent two dispatchers from racing on the same
+    # board.  Uses a per-board pidfile at <board_dir>/.kanban.dispatcher.pid.
+    # If the file contains a PID that is still alive, this tick exits early.
+    # If our own PID is already in the file (we own it), we skip this tick if
+    # another dispatcher tick is already running (detect via stale timestamp).
+    # This guarantees cross-process mutual exclusion for the dispatcher tick.
+    # -------------------------------------------------------------------------
+    db_path_for_lock = kanban_db_path(board=board)
+    board_dir_for_lock = db_path_for_lock.parent
+    pidfile = board_dir_for_lock / ".kanban.dispatcher.pid"
+    our_pid = str(os.getpid())
+    tick_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    try:
+        if pidfile.exists():
+            existing = pidfile.read_text(encoding="utf-8").strip()
+            if existing:
+                parts = existing.split("|", 1)
+                existing_pid = parts[0]
+                # If another process owns the lock, skip this tick entirely.
+                if existing_pid != our_pid:
+                    try:
+                        os.kill(int(existing_pid), 0)
+                        # Process is alive — another dispatcher owns this board.
+                        return DispatchResult()
+                    except (OSError, ValueError):
+                        # Stale pidfile (process dead) — take ownership.
+                        pass
+        # Write our PID and tick timestamp to claim the lock.
+        pidfile.write_text(f"{our_pid}|{tick_stamp}", encoding="utf-8")
+    except OSError:
+        # Cannot write pidfile — non-fatal, proceed without singleton guarantee.
+        # This is acceptable in test environments or read-only scenarios.
+        pass
+
+    # Reap zombie children from previously spawned workers.
+    # The gateway-embedded dispatcher is the parent of every worker spawned
+    # via _default_spawn (start_new_session=True only detaches the
+    # controlling tty, not the parent). Without an explicit waitpid, each
+    # completed worker becomes a <defunct> entry that lingers until gateway
+    # exit. WNOHANG keeps this non-blocking; ChildProcessError means no
+    # children to reap. Bounded: at most one tick's worth of completions
+    # can be in <defunct> at once.
+    #
+    # We also record the exit status keyed by pid, so
+    # ``detect_crashed_workers`` can distinguish a worker that exited
+    # cleanly without calling ``kanban_complete`` / ``kanban_block``
+    # (protocol violation — auto-block) from a real crash (OOM killer,
+    # SIGKILL, non-zero exit — existing counter behavior).
+    #
+    # Windows has no zombies / no os.WNOHANG — subprocess.Popen handles
+    # are freed when the Python object is garbage-collected or .wait() is
+    # called explicitly.  The kanban dispatcher discards the Popen handle
+    # after spawn (``_default_spawn`` → abandon), so on Windows there's
+    # nothing to reap here — skip the whole block.
+    if os.name != "nt":
+        try:
+            while True:
+                try:
+                    _pid, _status = os.waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if _pid == 0:
+                    break
+                _record_worker_exit(_pid, _status)
+        except Exception:
+            pass
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
@@ -5597,6 +5799,15 @@ def dispatch_once(
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
+    # Clean up dispatcher pidfile so another dispatcher can take over.
+    # Only clean if we own it (our PID matches).
+    try:
+        if pidfile.exists():
+            existing = pidfile.read_text(encoding="utf-8").strip()
+            if existing and existing.split("|", 1)[0] == our_pid:
+                pidfile.unlink(missing_ok=True)
+    except OSError:
+        pass
     return result
 
 

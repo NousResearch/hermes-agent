@@ -3295,8 +3295,13 @@ class TestRunConversation:
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 
-    def test_non_minimax_delta_overflow_still_probes_down(self, agent):
-        """Non-MiniMax providers should keep the generic probe-down behavior."""
+    def test_non_minimax_overflow_without_provider_limit_keeps_context(self, agent):
+        """Generic overflow without a provider-reported max must NOT probe-step down.
+
+        Previously a 200K configured window would silently drop to the 128K probe
+        tier on a generic overflow error.  Now we keep the configured window and
+        rely on compression — see #33669 / PR #33826.
+        """
         self._setup_agent(agent)
         agent.provider = "openrouter"
         agent.model = "some/unknown-model"
@@ -3330,7 +3335,8 @@ class TestRunConversation:
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_called_once()
-        assert agent.context_compressor.context_length == 128_000
+        # Context length preserved — no guessed probe-tier step-down.
+        assert agent.context_compressor.context_length == 200_000
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 

@@ -13,9 +13,9 @@ from tools.memory_tool import (
 )
 
 
-# =========================================================================
+# ==================================================================
 # Tool schema guidance
-# =========================================================================
+# ==================================================================
 
 class TestMemorySchema:
     def test_discourages_diary_style_task_logs(self):
@@ -27,9 +27,9 @@ class TestMemorySchema:
         assert ">80%" not in description
 
 
-# =========================================================================
+# ==================================================================
 # Security scanning
-# =========================================================================
+# ==================================================================
 
 class TestScanMemoryContent:
     def test_clean_content_passes(self):
@@ -254,9 +254,9 @@ class TestScanMemoryContent:
         assert _scan_memory_content("The .hermes/config.yaml file contains runtime options") is None
 
 
-# =========================================================================
+# ==================================================================
 # MemoryStore core operations
-# =========================================================================
+# ==================================================================
 
 @pytest.fixture()
 def store(tmp_path, monkeypatch):
@@ -395,9 +395,9 @@ class TestMemoryStoreSnapshot:
         assert store.format_for_system_prompt("memory") is None
 
 
-# =========================================================================
+# ==================================================================
 # memory_tool() dispatcher
-# =========================================================================
+# ==================================================================
 
 class TestMemoryToolDispatcher:
     def test_no_store_returns_error(self):
@@ -426,7 +426,7 @@ class TestMemoryToolDispatcher:
         assert result["success"] is False
 
 
-# =========================================================================
+# ==================================================================
 # External drift guard (#26045)
 #
 # An external writer — patch tool, shell append, manual edit, or sister
@@ -437,7 +437,7 @@ class TestMemoryToolDispatcher:
 # discarding the appended bytes. Reproduced in production on 2026-05-14 —
 # ~8KB of structured vendor / standing-orders / pinboard content destroyed
 # by a sister session's replace.
-# =========================================================================
+# ==================================================================
 
 
 class TestExternalDriftGuard:
@@ -551,7 +551,7 @@ class TestExternalDriftGuard:
         assert ".bak." in r2["drift_backup"]
 
 
-# =========================================================================
+# ==================================================================
 # Load-time snapshot sanitization — promptware defense (#496)
 #
 # Memory entries flow into the FROZEN system-prompt snapshot at load_from_disk()
@@ -559,7 +559,7 @@ class TestExternalDriftGuard:
 # sister-session write) must NOT inject into the system prompt. We replace
 # poisoned entries in the snapshot only; live state keeps the original so
 # the user can see and delete it.
-# =========================================================================
+# ==================================================================
 
 
 class TestLoadTimeSnapshotSanitization:
@@ -637,3 +637,55 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+class TestReadFileMarkdownSplit:
+    """_read_file splits raw markdown (no § delimiters) by ## headings."""
+
+    def test_raw_markdown_split_by_headings(self, tmp_path):
+        """When a memory file has ## headings but no §, each section becomes an entry."""
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text(
+            "## Schedule\n- Daily: website check\n- Weekly: backup\n\n## Projects\nFOAF network at /data/dossiers/\n",
+            encoding="utf-8",
+        )
+        entries = MemoryStore._read_file(mem_file)
+        assert len(entries) == 2
+        assert "## Schedule" in entries[0]
+        assert "## Projects" in entries[1]
+        assert "- Daily: website check" in entries[0]
+        assert "FOAF network" in entries[1]
+
+    def test_h3_headings_also_split(self, tmp_path):
+        """### headings are also split correctly."""
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text(
+            "## Alpha\ncontent alpha\n### Sub-alpha\nsub content\n## Beta\ncontent beta\n",
+            encoding="utf-8",
+        )
+        entries = MemoryStore._read_file(mem_file)
+        assert len(entries) == 3
+        assert "## Alpha" in entries[0]
+        assert "### Sub-alpha" in entries[1]
+        assert "## Beta" in entries[2]
+
+    def test_plain_text_no_splits(self, tmp_path):
+        """Plain text without headings stays as one entry (no warning)."""
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text("Just some random text without headings or delimiters.\n", encoding="utf-8")
+        entries = MemoryStore._read_file(mem_file)
+        assert len(entries) == 1
+
+    def test_section_delimiter_wins(self, tmp_path):
+        """§ delimiters are preferred over markdown heading split."""
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text(
+            "## A\n\n§\n\n## B\n",
+            encoding="utf-8",
+        )
+        entries = MemoryStore._read_file(mem_file)
+        assert len(entries) == 2
+
+    def test_nonexistent_file_returns_empty(self, tmp_path):
+        """Missing file returns [], not an error."""
+        entries = MemoryStore._read_file(tmp_path / "DOES_NOT_EXIST.md")
+        assert entries == []

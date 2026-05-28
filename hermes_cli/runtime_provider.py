@@ -240,6 +240,7 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
 _VALID_API_MODES = {
     "chat_completions",
     "codex_responses",
+    "responses",            # alias for codex_responses (GitHub #33600)
     "anthropic_messages",
     "bedrock_converse",
     # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
@@ -252,10 +253,17 @@ _VALID_API_MODES = {
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
-    """Validate an api_mode value from config. Returns None if invalid."""
+    """Validate an api_mode value from config. Returns None if invalid.
+
+    ``"responses"`` is normalised to ``"codex_responses"`` so downstream
+    code only needs to check for ``"codex_responses"``.
+    """
     if isinstance(raw, str):
         normalized = raw.strip().lower()
         if normalized in _VALID_API_MODES:
+            # Normalise the alias (GitHub #33600).
+            if normalized == "responses":
+                return "codex_responses"
             return normalized
     return None
 

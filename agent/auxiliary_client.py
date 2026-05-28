@@ -2932,10 +2932,22 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
         resolved_provider = main_provider
         explicit_base_url = None
         explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
+        if main_provider == "custom" or main_provider.startswith("custom:"):
             resolved_provider = "custom"
-            explicit_base_url = runtime_base_url
-            explicit_api_key = runtime_api_key or None
+            if runtime_base_url:
+                # Live session — use the runtime override.
+                explicit_base_url = runtime_base_url
+                explicit_api_key = runtime_api_key or None
+            else:
+                # Cron / background task — no live runtime.  Fall back to
+                # config.yaml model.base_url + model.api_key via the same
+                # resolver that _try_custom_endpoint uses (GitHub #33333).
+                _cr = _resolve_custom_runtime()
+                if _cr and _cr[0]:
+                    explicit_base_url = _cr[0]
+                    explicit_api_key = _cr[1] or None
+                    if not runtime_api_mode:
+                        runtime_api_mode = _cr[2] or ""
         # Skip Step-1 if the main provider was recently 402'd. The unhealthy
         # cache TTL bounds how long we bypass it, so a topped-up account
         # recovers automatically. If we tried Step-1 anyway, every aux call

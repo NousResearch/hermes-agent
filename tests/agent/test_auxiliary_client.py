@@ -2991,3 +2991,52 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestResolveAutoCustomNoRuntime:
+    """_resolve_auto should use config.yaml credentials for custom provider
+    even when main_runtime is None (cron / background tasks).
+    GitHub #33333."""
+
+    def test_custom_provider_no_runtime_uses_config(self, monkeypatch):
+        """When main_provider is 'custom' but no runtime override exists,
+        _resolve_auto should fall back to _resolve_custom_runtime() to
+        read base_url/api_key from config.yaml."""
+        from agent.auxiliary_client import _resolve_auto
+        from unittest.mock import patch, MagicMock
+
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"),              patch("agent.auxiliary_client._read_main_model", return_value="deepseek-v4-pro"),              patch("agent.auxiliary_client._resolve_custom_runtime",
+                   return_value=("https://proxy.example.com/v1", "sk-test-key", None)),              patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc:
+
+            mock_rpc.return_value = (MagicMock(), "deepseek-v4-pro")
+            client, model = _resolve_auto(main_runtime=None)
+
+        # resolve_provider_client should have been called with the config credentials
+        mock_rpc.assert_called_once()
+        call_kwargs = mock_rpc.call_args
+        assert call_kwargs[1]["explicit_base_url"] == "https://proxy.example.com/v1"
+        assert call_kwargs[1]["explicit_api_key"] == "sk-test-key"
+
+    def test_custom_provider_with_runtime_uses_runtime(self, monkeypatch):
+        """When main_provider is 'custom' AND a runtime override exists,
+        _resolve_auto should prefer the runtime base_url (live session)."""
+        from agent.auxiliary_client import _resolve_auto
+        from unittest.mock import patch, MagicMock
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"),              patch("agent.auxiliary_client._read_main_model", return_value="deepseek-v4-pro"),              patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc:
+
+            mock_rpc.return_value = (MagicMock(), "deepseek-v4-pro")
+            client, model = _resolve_auto(main_runtime={
+                "provider": "custom",
+                "model": "deepseek-v4-pro",
+                "base_url": "https://runtime.example.com/v1",
+                "api_key": "sk-runtime-key",
+            })
+
+        call_kwargs = mock_rpc.call_args
+        assert call_kwargs[1]["explicit_base_url"] == "https://runtime.example.com/v1"
+        assert call_kwargs[1]["explicit_api_key"] == "sk-runtime-key"

@@ -2626,3 +2626,17 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+def test_responses_alias_normalised_to_codex_responses():
+    """"responses" is a valid api_mode and should normalise to "codex_responses" (GitHub #33600)."""
+    assert rp._parse_api_mode("responses") == "codex_responses"
+    assert rp._parse_api_mode("Responses") == "codex_responses"
+    assert rp._parse_api_mode("RESPONSES") == "codex_responses"
+
+
+def test_parse_api_mode_invalid_still_returns_none():
+    """Unknown api_mode values still return None."""
+    assert rp._parse_api_mode("streaming") is None
+    assert rp._parse_api_mode("") is None
+    assert rp._parse_api_mode(None) is None

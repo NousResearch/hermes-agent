@@ -55,9 +55,12 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
     SendResult,
     is_network_accessible,
 )
+from gateway.session import SessionSource
 
 logger = logging.getLogger(__name__)
 
@@ -932,6 +935,83 @@ class APIServerAdapter(BasePlatformAdapter):
         return raw, None
 
     # ------------------------------------------------------------------
+    # Multi-agent routing
+    # ------------------------------------------------------------------
+
+    # Routing identity headers.  These are optional and fully backward
+    # compatible — when absent, every request resolves to ``default_agent``
+    # just like before.  Header names mirror ``X-Hermes-Session-Id`` /
+    # ``X-Hermes-Session-Key`` already used by this adapter.
+    _AGENT_CHAT_ID_HEADER = "X-Hermes-Chat-Id"
+    _AGENT_USER_ID_HEADER = "X-Hermes-User-Id"
+    _AGENT_THREAD_ID_HEADER = "X-Hermes-Thread-Id"
+
+    def _read_routing_header(
+        self, request: "web.Request", name: str,
+    ) -> Optional[str]:
+        """Return a sanitised routing header value or ``None``.
+
+        Applies the same control-character and length caps as the session
+        headers so a malicious caller can't inject CRLF or burn memory by
+        passing a multi-kilobyte "chat id".
+        """
+        raw = request.headers.get(name, "").strip()
+        if not raw:
+            return None
+        if re.search(r'[\r\n\x00]', raw):
+            return None
+        if len(raw) > self._MAX_SESSION_HEADER_LEN:
+            return None
+        return raw
+
+    def _resolve_agent_profile(self, request: "web.Request"):
+        """Resolve the routed ``AgentProfile`` for *request*.
+
+        Builds a synthetic ``SessionSource`` from the ``X-Hermes-*``
+        routing headers, runs it through the shared ``_attach_agent_id``
+        hook (declarative routes + ``select_agent`` plugin), and looks up
+        the resulting ``agent_id`` in the gateway's registry.
+
+        Returns ``(profile, agent_id)``.  When no profile is registered
+        (single-agent install) ``profile`` is ``None`` and callers should
+        simply skip the ``use_profile`` wrapper — that is exactly the
+        legacy ``HERMES_HOME`` path.
+        """
+        chat_id = self._read_routing_header(request, self._AGENT_CHAT_ID_HEADER)
+        user_id = self._read_routing_header(request, self._AGENT_USER_ID_HEADER)
+        thread_id = self._read_routing_header(request, self._AGENT_THREAD_ID_HEADER)
+
+        source = SessionSource(
+            platform=Platform.API_SERVER,
+            # chat_id is non-optional on SessionSource; fall back to the
+            # empty string when no header was supplied so the resolver can
+            # still apply ``platform: api_server`` style routes.
+            chat_id=chat_id or "",
+            chat_type="dm",
+            user_id=user_id,
+            thread_id=thread_id,
+        )
+        event = MessageEvent(text="", message_type=MessageType.TEXT, source=source)
+        try:
+            self._attach_agent_id(event)
+        except Exception as exc:  # never break dispatch on a routing bug
+            logger.debug("[%s] route resolution failed: %s", self.name, exc)
+
+        agent_id = getattr(event.source, "agent_id", None) or (
+            self._default_agent_id or "main"
+        )
+
+        profile = None
+        registry = getattr(self._gateway_ref, "_agent_registry", None) if self._gateway_ref else None
+        if registry is not None:
+            profile = registry.get(agent_id)
+        logger.info(
+            "[%s] routed to agent: %s (chat_id=%r user_id=%r thread_id=%r)",
+            self.name, agent_id, chat_id, user_id, thread_id,
+        )
+        return profile, agent_id
+
+    # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
 
@@ -1674,6 +1754,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        # Resolve the routed agent profile from X-Hermes-Chat-Id / -User-Id /
+        # -Thread-Id headers.  Absent headers fall through to ``default_agent``,
+        # preserving backward compatibility for existing OpenAI-API callers.
+        agent_profile, _agent_id = self._resolve_agent_profile(request)
+
         # Parse request body
         try:
             body = await request.json()
@@ -1868,6 +1953,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                agent_profile=agent_profile,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1887,6 +1973,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                agent_profile=agent_profile,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2743,6 +2830,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        # Resolve the routed agent profile from X-Hermes-Chat-Id headers
+        # (see _resolve_agent_profile).  No header → default_agent.
+        agent_profile, _agent_id = self._resolve_agent_profile(request)
+
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
@@ -2900,6 +2991,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                agent_profile=agent_profile,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2933,6 +3025,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                agent_profile=agent_profile,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3435,6 +3528,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        agent_profile: Optional[Any] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3446,39 +3540,52 @@ class APIServerAdapter(BasePlatformAdapter):
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
+
+        When *agent_profile* is set, the AgentProfile ContextVar is bound
+        for the duration of the run so SOUL.md, memory, skills, and
+        toolset resolution all resolve to the per-agent home directory.
+        Binding happens inside the executor thread because asyncio's
+        default executor does not propagate ContextVars across the
+        thread boundary.
         """
         loop = asyncio.get_running_loop()
 
         def _run():
-            agent = self._create_agent(
-                ephemeral_system_prompt=ephemeral_system_prompt,
-                session_id=session_id,
-                stream_delta_callback=stream_delta_callback,
-                tool_progress_callback=tool_progress_callback,
-                tool_start_callback=tool_start_callback,
-                tool_complete_callback=tool_complete_callback,
-                gateway_session_key=gateway_session_key,
-            )
-            if agent_ref is not None:
-                agent_ref[0] = agent
-            effective_task_id = session_id or str(uuid.uuid4())
-            result = agent.run_conversation(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                task_id=effective_task_id,
-            )
-            usage = {
-                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-            }
-            # Include the effective session ID in the result so callers
-            # (e.g. X-Hermes-Session-Id header) can track compression-
-            # triggered session rotations. (#16938)
-            _eff_sid = getattr(agent, "session_id", session_id)
-            if isinstance(_eff_sid, str) and _eff_sid:
-                result["session_id"] = _eff_sid
-            return result, usage
+            # Re-bind the active agent profile inside the executor thread
+            # so path getters (get_hermes_home, skills_dir, …) see the
+            # per-agent home.  ``use_profile(None)`` is a no-op, so
+            # single-agent installs pay nothing.
+            from agent.profile import use_profile
+            with use_profile(agent_profile):
+                agent = self._create_agent(
+                    ephemeral_system_prompt=ephemeral_system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=stream_delta_callback,
+                    tool_progress_callback=tool_progress_callback,
+                    tool_start_callback=tool_start_callback,
+                    tool_complete_callback=tool_complete_callback,
+                    gateway_session_key=gateway_session_key,
+                )
+                if agent_ref is not None:
+                    agent_ref[0] = agent
+                effective_task_id = session_id or str(uuid.uuid4())
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                )
+                usage = {
+                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                }
+                # Include the effective session ID in the result so callers
+                # (e.g. X-Hermes-Session-Id header) can track compression-
+                # triggered session rotations. (#16938)
+                _eff_sid = getattr(agent, "session_id", session_id)
+                if isinstance(_eff_sid, str) and _eff_sid:
+                    result["session_id"] = _eff_sid
+                return result, usage
 
         return await loop.run_in_executor(None, _run)
 
@@ -3556,6 +3663,10 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+
+        # Resolve the routed agent profile from X-Hermes-Chat-Id headers
+        # (see _resolve_agent_profile).  No header → default_agent.
+        agent_profile, _agent_id = self._resolve_agent_profile(request)
 
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
@@ -3665,15 +3776,21 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
         async def _run_and_close():
+            from agent.profile import use_profile
+
             try:
                 self._set_run_status(run_id, "running")
-                agent = self._create_agent(
-                    ephemeral_system_prompt=ephemeral_system_prompt,
-                    session_id=session_id,
-                    stream_delta_callback=_text_cb,
-                    tool_progress_callback=event_cb,
-                    gateway_session_key=gateway_session_key,
-                )
+                # Bind the routed agent profile so per-agent home dir,
+                # SOUL.md, memory, skills, and toolset resolution all see
+                # the right per-agent paths during agent construction.
+                with use_profile(agent_profile):
+                    agent = self._create_agent(
+                        ephemeral_system_prompt=ephemeral_system_prompt,
+                        session_id=session_id,
+                        stream_delta_callback=_text_cb,
+                        tool_progress_callback=event_cb,
+                        gateway_session_key=gateway_session_key,
+                    )
                 self._active_run_agents[run_id] = agent
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
@@ -3695,6 +3812,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         pass
 
                 def _run_sync():
+                    from agent.profile import use_profile as _use_profile_thread
                     from gateway.session_context import clear_session_vars, set_session_vars
                     from tools.approval import (
                         register_gateway_notify,
@@ -3716,11 +3834,14 @@ class APIServerAdapter(BasePlatformAdapter):
                             session_key=approval_session_key,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
-                        r = agent.run_conversation(
-                            user_message=user_message,
-                            conversation_history=conversation_history,
-                            task_id=effective_task_id,
-                        )
+                        # Re-bind the agent profile inside the executor thread
+                        # (asyncio's default executor does not copy ContextVars).
+                        with _use_profile_thread(agent_profile):
+                            r = agent.run_conversation(
+                                user_message=user_message,
+                                conversation_history=conversation_history,
+                                task_id=effective_task_id,
+                            )
                     finally:
                         try:
                             unregister_gateway_notify(approval_session_key)

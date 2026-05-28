@@ -7819,6 +7819,30 @@ class HermesCLI:
         except Exception:
             return False
 
+    def _should_handle_interrupt_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /interrupt should be dispatched immediately on the UI thread.
+
+        /interrupt MUST bypass the normal _pending_input → process_loop path when
+        the agent is active, because process_loop is blocked inside self.chat()
+        for the duration of the run.  By the time the queued command is pulled
+        from _pending_input, _agent_running has already flipped back to False,
+        and process_command() takes the idle fallback — delivering the message
+        as a next-turn message instead of interrupting mid-run.  Dispatching
+        inline on the UI thread calls agent.interrupt() directly, which is
+        thread-safe (uses _interrupt_requested flag + thread-local signals).
+        """
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name == "interrupt")
+        except Exception:
+            return False
+
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -8631,6 +8655,26 @@ class HermesCLI:
                         _cprint("  Steer rejected (empty payload).")
             else:
                 # No active run — treat as a normal next-turn message.
+                self._pending_input.put(payload)
+                _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+        elif canonical == "interrupt":
+            # Kill in-flight tool executions and inject a new message immediately.
+            # If the agent is actively running, call agent.interrupt() which is
+            # thread-safe (uses _interrupt_requested flag + per-thread interrupt
+            # signals).  If no agent is running, fall back to queue semantics.
+            parts = cmd_original.split(None, 1)
+            payload = parts[1].strip() if len(parts) > 1 else ""
+            if not payload:
+                _cprint("  Usage: /interrupt <message>")
+                _cprint("  Aliases: /i <message>")
+            elif self._agent_running and self.agent is not None and hasattr(self.agent, "interrupt"):
+                try:
+                    self.agent.interrupt(payload)
+                except Exception as exc:
+                    _cprint(f"  Interrupt failed: {exc}")
+                else:
+                    _cprint(f"  ⚡ Interrupting with: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+            else:
                 self._pending_input.put(payload)
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
@@ -12700,6 +12744,16 @@ class HermesCLI:
                 # post-run next-turn message — defeating mid-run injection.
                 # agent.steer() is thread-safe (holds _pending_steer_lock).
                 if self._should_handle_steer_command_inline(text, has_images=has_images):
+                    self.process_command(text)
+                    event.app.current_buffer.reset(append_to_history=True)
+                    return
+
+                # Handle /interrupt while the agent is running immediately on the
+                # UI thread.  Same reasoning as /steer — queuing through
+                # _pending_input would deadlock the interrupt until after the
+                # agent loop finishes.  agent.interrupt() is thread-safe
+                # (uses _interrupt_requested flag + per-thread interrupt signals).
+                if self._should_handle_interrupt_command_inline(text, has_images=has_images):
                     self.process_command(text)
                     event.app.current_buffer.reset(append_to_history=True)
                     return

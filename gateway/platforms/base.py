@@ -1573,6 +1573,10 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # Per-chat stop signals for typing refresh loops. Final-delivery and
+        # streaming paths can stop refreshing before the completed response is
+        # posted, avoiding a late platform typing tick after the reply lands.
+        self._typing_stop_events: Dict[str, asyncio.Event] = {}
 
     @property
     def message_len_fn(self) -> Callable[[str], int]:
@@ -2551,9 +2555,24 @@ class BasePlatformAdapter(ABC):
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        _max_typing_seconds = _float_env("HERMES_TYPING_MAX_SECONDS", 600.0)
+        _loop = asyncio.get_running_loop()
+        _started_at = _loop.time()
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
+                    return
+                if (
+                    _max_typing_seconds > 0
+                    and _loop.time() - _started_at >= _max_typing_seconds
+                ):
+                    logger.warning(
+                        "[%s] typing indicator max lifetime reached for chat %s "
+                        "(%.0fs); stopping stale typing loop",
+                        self.name,
+                        chat_id,
+                        _max_typing_seconds,
+                    )
                     return
                 if chat_id not in self._typing_paused:
                     try:
@@ -2575,10 +2594,9 @@ class BasePlatformAdapter(ABC):
                 if stop_event is None:
                     await asyncio.sleep(interval)
                     continue
-                loop = asyncio.get_running_loop()
-                deadline = loop.time() + interval
+                deadline = _loop.time() + interval
                 while not stop_event.is_set():
-                    remaining = deadline - loop.time()
+                    remaining = deadline - _loop.time()
                     if remaining <= 0:
                         break
                     # Poll instead of wait_for(stop_event.wait()).  Cancelling
@@ -2614,12 +2632,19 @@ class BasePlatformAdapter(ABC):
         """Resume typing indicator for a chat after approval resolves."""
         self._typing_paused.discard(chat_id)
 
+    def request_typing_stop(self, chat_id: str) -> None:
+        """Ask the active typing refresher for ``chat_id`` to stop promptly."""
+        stop_event = self._typing_stop_events.get(chat_id)
+        if stop_event is not None:
+            stop_event.set()
+
     async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
         """Signal the active session loop to stop and clear typing immediately."""
         if session_key:
             interrupt_event = self._active_sessions.get(session_key)
             if interrupt_event is not None:
                 interrupt_event.set()
+        self.request_typing_stop(chat_id)
         try:
             await self.stop_typing(chat_id)
         except Exception:
@@ -3511,21 +3536,29 @@ class BasePlatformAdapter(ABC):
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-        _keep_typing_kwargs = {"metadata": _thread_metadata}
+        typing_stop_event = asyncio.Event()
+        self._typing_stop_events[event.source.chat_id] = typing_stop_event
+        _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
         try:
             _keep_typing_sig = inspect.signature(self._keep_typing)
         except (TypeError, ValueError):
             _keep_typing_sig = None
         if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
-            _keep_typing_kwargs["stop_event"] = interrupt_event
+            _keep_typing_kwargs["stop_event"] = typing_stop_event
         typing_task = asyncio.create_task(
             self._keep_typing(
                 event.source.chat_id,
                 **_keep_typing_kwargs,
             )
         )
+        typing_task_stopped = False
 
         async def _stop_typing_task() -> None:
+            nonlocal typing_task_stopped
+            if typing_task_stopped:
+                return
+            typing_task_stopped = True
+            typing_stop_event.set()
             typing_task.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)
@@ -3533,6 +3566,15 @@ class BasePlatformAdapter(ABC):
                 # Cancellation cleanup must not block adapter shutdown.  The
                 # typing task is already cancelled; if the parent task is also
                 # cancelling, let this message-processing task unwind now.
+                pass
+
+        async def _stop_typing_before_final_delivery() -> None:
+            """Prevent a late typing refresh from outliving the final reply."""
+            await _stop_typing_task()
+            try:
+                if hasattr(self, "stop_typing"):
+                    await self.stop_typing(event.source.chat_id)
+            except Exception:
                 pass
         
         try:
@@ -3627,6 +3669,7 @@ class BasePlatformAdapter(ABC):
                 _tts_caption_delivered = False
                 if _tts_path and Path(_tts_path).exists():
                     try:
+                        await _stop_typing_before_final_delivery()
                         telegram_tts_caption = None
                         if (
                             self.platform == Platform.TELEGRAM
@@ -3651,6 +3694,7 @@ class BasePlatformAdapter(ABC):
 
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
+                    await _stop_typing_before_final_delivery()
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     # Mark final response messages for notification delivery.
@@ -3693,6 +3737,7 @@ class BasePlatformAdapter(ABC):
 
                 # Send extracted images as native attachments
                 if images:
+                    await _stop_typing_before_final_delivery()
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
                         await self.send_multiple_images(
@@ -3736,6 +3781,7 @@ class BasePlatformAdapter(ABC):
 
                 if _image_paths:
                     try:
+                        await _stop_typing_before_final_delivery()
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
@@ -3747,6 +3793,7 @@ class BasePlatformAdapter(ABC):
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
                 for media_path, is_voice in _non_image_media:
+                    await _stop_typing_before_final_delivery()
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
@@ -3777,6 +3824,7 @@ class BasePlatformAdapter(ABC):
 
                 # Send auto-detected local non-image files as native attachments
                 for file_path in _non_image_local:
+                    await _stop_typing_before_final_delivery()
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
@@ -3914,6 +3962,8 @@ class BasePlatformAdapter(ABC):
                     await self.stop_typing(event.source.chat_id)
             except Exception:
                 pass
+            if self._typing_stop_events.get(event.source.chat_id) is typing_stop_event:
+                self._typing_stop_events.pop(event.source.chat_id, None)
             # Final drain/release boundary: force-flush any timer that missed
             # the in-band drain before deciding whether the guard can clear.
             await self._flush_text_debounce_now(session_key)

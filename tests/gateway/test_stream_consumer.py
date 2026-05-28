@@ -360,6 +360,29 @@ class TestStreamRunMediaStripping:
 
         assert consumer.already_sent
 
+    @pytest.mark.asyncio
+    async def test_stream_finish_requests_typing_stop(self):
+        """When the model stream ends, stop platform typing refresh promptly."""
+        adapter = MagicMock()
+        adapter.request_typing_stop = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True,
+            message_id="msg_1",
+        ))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.REQUIRES_EDIT_FINALIZE = False
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("Done.")
+        consumer.finish()
+
+        await consumer.run()
+
+        adapter.request_typing_stop.assert_called_once_with("chat_123")
+
 
 # ── Segment break (tool boundary) tests ──────────────────────────────────
 
@@ -1780,4 +1803,3 @@ class TestUtf16OverflowDetection:
         # auto-attr mock. Verified indirectly by all the other tests in
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
-

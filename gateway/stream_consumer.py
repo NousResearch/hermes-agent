@@ -155,6 +155,7 @@ class GatewayStreamConsumer:
         # streaming, even if the final edit (cursor removal etc.)
         # subsequently failed.
         self._final_content_delivered = False
+        self._typing_stop_requested = False
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
         # a redundant final edit.  Everyone else keeps the fast path.
@@ -393,6 +394,18 @@ class GatewayStreamConsumer:
             self._accumulated += self._think_buffer
             self._think_buffer = ""
 
+    def _request_typing_stop(self) -> None:
+        """Tell the platform adapter to stop background typing refreshes."""
+        if self._typing_stop_requested:
+            return
+        self._typing_stop_requested = True
+        request_stop = getattr(self.adapter, "request_typing_stop", None)
+        if callable(request_stop):
+            try:
+                request_stop(self.chat_id)
+            except Exception:
+                pass
+
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
         # Platform message length limit — leave room for cursor + formatting.
@@ -449,6 +462,7 @@ class GatewayStreamConsumer:
                 # tag is not lost.
                 if got_done:
                     self._flush_think_buffer()
+                    self._request_typing_stop()
 
                 # Decide whether to flush an edit
                 now = time.monotonic()

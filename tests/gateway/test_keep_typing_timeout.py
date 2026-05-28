@@ -198,3 +198,21 @@ class TestKeepTypingTimeoutPerTick:
         assert calls == [], (
             f"send_typing was called on a paused chat: {calls}"
         )
+
+    def test_request_typing_stop_sets_registered_stop_event(self):
+        """External final-delivery paths can stop the refresher by chat id."""
+        adapter = _StubAdapter()
+        stop_event = asyncio.Event()
+        adapter._typing_stop_events["chat-final"] = stop_event
+
+        adapter.request_typing_stop("chat-final")
+
+        assert stop_event.is_set()
+
+    def test_request_typing_stop_ignores_unknown_chat(self):
+        """A stale or already-cleaned chat id should be a harmless no-op."""
+        adapter = _StubAdapter()
+
+        adapter.request_typing_stop("missing-chat")
+
+        assert adapter._typing_stop_events == {}

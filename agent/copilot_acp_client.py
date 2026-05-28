@@ -682,6 +682,36 @@ class CopilotACPClient:
             chunk_text = ""
             if isinstance(content, dict):
                 chunk_text = str(content.get("text") or "")
+                # ── tool_use / tool_result handling (#33636) ──────────
+                # Copilot CLI delivers tool calls as structured content
+                # blocks rather than embedding <tool_call> XML in the
+                # text stream.  When the kind is tool_use or tool_result
+                # the content dict carries the tool metadata directly.
+                # Serialise it as <tool_call> JSON so the existing
+                # _extract_tool_calls_from_text parser can consume it
+                # without changes, and any text accumulated before the
+                # tool event is preserved alongside it.
+                if not chunk_text and kind in ("tool_use", "tool_result"):
+                    _tool_name = content.get("name") or content.get("tool_name") or ""
+                    _tool_id = content.get("id") or content.get("call_id") or ""
+                    _tool_input = content.get("input") or content.get("arguments") or {}
+                    if isinstance(_tool_input, dict):
+                        _tool_input = json.dumps(_tool_input, ensure_ascii=False)
+                    if _tool_name and _tool_id:
+                        _tc = {
+                            "id": _tool_id,
+                            "type": "function",
+                            "function": {
+                                "name": _tool_name,
+                                "arguments": str(_tool_input),
+                            },
+                        }
+                        chunk_text = json.dumps(_tc, ensure_ascii=False)
+                        if text_parts is not None:
+                            text_parts.append(
+                                f"<tool_call>{chunk_text}</tool_call>"
+                            )
+                        return True
             if kind == "agent_message_chunk" and chunk_text and text_parts is not None:
                 text_parts.append(chunk_text)
             elif kind == "agent_thought_chunk" and chunk_text and reasoning_parts is not None:

@@ -312,3 +312,81 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+# ── ACP mixed text + tool_use regressions (#33636) ─────────────────────
+
+def test_handle_server_message_preserves_text_before_tool_use():
+    """Structured tool_use updates are appended without dropping prior text."""
+    from unittest.mock import MagicMock
+
+    from agent.copilot_acp_client import CopilotACPClient, _extract_tool_calls_from_text
+
+    client = CopilotACPClient()
+    process = MagicMock()
+    process.stdin = MagicMock()
+    text_parts = ["I will inspect the file first.\n"]
+    handled = client._handle_server_message(
+        {
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "tool_use",
+                    "content": {
+                        "name": "read_file",
+                        "id": "call_33636",
+                        "input": {"path": "README.md"},
+                    },
+                }
+            },
+        },
+        process=process,
+        cwd="/tmp",
+        text_parts=text_parts,
+        reasoning_parts=[],
+    )
+
+    assert handled is True
+    combined = "".join(text_parts)
+    tool_calls, cleaned = _extract_tool_calls_from_text(combined)
+    assert "I will inspect the file first." in cleaned
+    assert len(tool_calls) == 1
+    assert tool_calls[0].id == "call_33636"
+    assert tool_calls[0].function.name == "read_file"
+    assert tool_calls[0].function.arguments == '{"path": "README.md"}'
+
+
+def test_handle_server_message_tool_use_accepts_string_arguments():
+    """tool_use arguments already encoded as JSON text are not double encoded."""
+    from unittest.mock import MagicMock
+
+    from agent.copilot_acp_client import CopilotACPClient, _extract_tool_calls_from_text
+
+    client = CopilotACPClient()
+    process = MagicMock()
+    process.stdin = MagicMock()
+    text_parts = []
+    client._handle_server_message(
+        {
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "tool_use",
+                    "content": {
+                        "name": "terminal",
+                        "id": "call_args",
+                        "input": '{"command": "pwd"}',
+                    },
+                }
+            },
+        },
+        process=process,
+        cwd="/tmp",
+        text_parts=text_parts,
+        reasoning_parts=[],
+    )
+
+    tool_calls, cleaned = _extract_tool_calls_from_text("".join(text_parts))
+    assert cleaned == ""
+    assert len(tool_calls) == 1
+    assert tool_calls[0].function.arguments == '{"command": "pwd"}'

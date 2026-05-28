@@ -830,6 +830,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
+                if "ignore_mention_all" in platform_cfg:
+                    bridged["ignore_mention_all"] = platform_cfg["ignore_mention_all"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
                     bridged["allowed_chats"] = platform_cfg["allowed_chats"]
                 if plat == Platform.TELEGRAM and "group_allowed_chats" in platform_cfg:
@@ -1118,6 +1120,8 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(feishu_cfg, dict):
                 if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
                     os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
+                if "ignore_mention_all" in feishu_cfg and not os.getenv("FEISHU_IGNORE_MENTION_ALL"):
+                    os.environ["FEISHU_IGNORE_MENTION_ALL"] = str(feishu_cfg["ignore_mention_all"]).lower()
 
     except Exception as e:
         logger.warning(

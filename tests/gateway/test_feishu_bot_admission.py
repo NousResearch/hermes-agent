@@ -112,6 +112,29 @@ def test_feishu_load_settings_require_mention(monkeypatch, env_value, extra, exp
     assert settings.require_mention is expected
 
 
+@pytest.mark.parametrize(
+    "env_value, extra, expected",
+    [
+        (None, {}, False),
+        ("false", {}, False),
+        ("true", {}, True),
+        ("false", {"ignore_mention_all": True}, False),
+    ],
+)
+def test_feishu_load_settings_ignore_mention_all(monkeypatch, env_value, extra, expected):
+    from gateway.platforms.feishu import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    if env_value is None:
+        monkeypatch.delenv("FEISHU_IGNORE_MENTION_ALL", raising=False)
+    else:
+        monkeypatch.setenv("FEISHU_IGNORE_MENTION_ALL", env_value)
+
+    settings = FeishuAdapter._load_settings(extra=extra)
+    assert settings.ignore_mention_all is expected
+
+
 def test_feishu_load_settings_parses_per_group_require_mention(monkeypatch):
     from gateway.platforms.feishu import FeishuAdapter
 
@@ -146,6 +169,36 @@ def test_sender_identity_handles_missing_sender_id():
     from gateway.platforms.feishu import _sender_identity
 
     assert _sender_identity(SimpleNamespace()) == frozenset()
+
+
+def test_mentions_self_treats_all_hands_as_mention_by_default():
+    adapter = make_adapter_skeleton(bot_open_id="ou_self")
+    message = make_message(mentions=[])
+    message.content = '{"text":"@_all please look"}'
+
+    assert adapter._mentions_self(message) is True
+
+
+def test_mentions_self_ignores_all_hands_when_configured():
+    adapter = make_adapter_skeleton(bot_open_id="ou_self", ignore_mention_all=True)
+    message = make_message(mentions=[])
+    message.content = '{"text":"@_all please look"}'
+
+    assert adapter._mentions_self(message) is False
+
+
+def test_mentions_self_explicit_bot_mention_unaffected_when_ignoring_all_hands():
+    adapter = make_adapter_skeleton(bot_open_id="ou_self", ignore_mention_all=True)
+    message = make_message(mentions=[
+        SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_self", user_id=""),
+            name="Hermes",
+        )
+    ])
+    message.content = '{"text":"@_all @_user_1 please look"}'
+
+    assert adapter._mentions_self(message) is True
 
 
 @pytest.mark.parametrize("sender_type", ["bot", "app"])

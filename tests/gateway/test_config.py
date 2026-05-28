@@ -505,6 +505,45 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("FEISHU_ALLOW_BOTS") == "none"
 
+    def test_bridges_feishu_ignore_mention_all_from_config_yaml_to_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n  ignore_mention_all: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("FEISHU_IGNORE_MENTION_ALL", raising=False)
+
+        config = load_gateway_config()
+
+        assert os.environ.get("FEISHU_IGNORE_MENTION_ALL") == "true"
+        assert config.platforms[Platform.FEISHU].extra["ignore_mention_all"] is True
+
+    def test_feishu_ignore_mention_all_env_overrides_config_yaml(self, tmp_path, monkeypatch):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n  ignore_mention_all: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+        monkeypatch.setenv("FEISHU_IGNORE_MENTION_ALL", "false")
+
+        config = load_gateway_config()
+        settings = FeishuAdapter._load_settings(extra=config.platforms[Platform.FEISHU].extra)
+
+        assert config.platforms[Platform.FEISHU].extra["ignore_mention_all"] is True
+        assert settings.ignore_mention_all is False
+
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

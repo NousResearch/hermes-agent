@@ -204,10 +204,17 @@ FEISHU_GROUP_POLICY=allowlist   # 默认
 在所有模式下，消息处理前机器人必须被明确 @提及（或 @all）。私信始终绕过此限制。
 
 设置 `FEISHU_REQUIRE_MENTION=false` 可让 Hermes 读取所有群消息而无需 @提及：
-
 ```bash
 FEISHU_REQUIRE_MENTION=false
 ```
+
+如需防止全工作区 `@all` / `@everyone` 广播唤醒 Hermes，请设置：
+
+```bash
+FEISHU_IGNORE_MENTION_ALL=true
+```
+
+这只影响群聊准入：明确 @提及机器人仍然有效，已处理消息中的飞书 `@all` 提及仍会正常渲染。也可在 `config.yaml` 中配置为 `feishu.ignore_mention_all`（两者同时设置时，环境变量优先）。
 
 如需按群控制，在 `group_rules` 条目中设置 `require_mention`——参见下方[按群访问控制](#per-group-access-control)。
 
@@ -490,6 +497,7 @@ platforms:
 | `FEISHU_ALLOWED_USERS` | — | _（空）_ | 用户白名单的逗号分隔 open_id 列表 |
 | `FEISHU_ALLOW_BOTS` | — | `none` | 接受其他机器人消息：`none`、`mentions` 或 `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | 群消息是否必须 @提及 机器人 |
+| `FEISHU_IGNORE_MENTION_ALL` | — | `false` | 忽略群聊 `@all` / `@everyone` 作为机器人提及触发 |
 | `FEISHU_HOME_CHANNEL` | — | — | cron/通知输出的聊天 ID |
 | `FEISHU_ENCRYPT_KEY` | — | _（空）_ | webhook 签名验证的加密密钥 |
 | `FEISHU_VERIFICATION_TOKEN` | — | _（空）_ | webhook payload 认证的验证 token |

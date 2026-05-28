@@ -465,6 +465,12 @@ def compress_context(
     )
     agent.context_compressor.last_prompt_tokens = _compressed_est
     agent.context_compressor.last_completion_tokens = 0
+    # Mark the value as a rough estimate (not an API-reported count) so
+    # `should_compress()` can defer one cycle if the estimate is only
+    # marginally above threshold — the rough estimator can over-count by
+    # 5-30% for tool-heavy sessions, and using it as a hard trigger causes
+    # compression to re-fire every turn after the first compaction (#27566).
+    agent.context_compressor._last_prompt_tokens_is_estimate = True
 
     # Clear the file-read dedup cache.  After compression the original
     # read content is summarised away — if the model re-reads the same

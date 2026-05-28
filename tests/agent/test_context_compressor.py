@@ -38,6 +38,76 @@ class TestShouldCompress:
         assert compressor.should_compress(prompt_tokens=50000) is False
 
 
+class TestPostCompressionEstimateDefer:
+    """Regression for #27566.
+
+    After a compression runs, the bookkeeping code in
+    ``conversation_compression.py`` writes a rough estimate into
+    ``last_prompt_tokens`` so pressure calculations use the post-compression
+    count, not the stale pre-compression count.  That estimate can over-count
+    real tokens by 5-30% (tool schemas, system prompt, thinking blocks), and
+    used to keep ``should_compress()`` returning True on every subsequent
+    call, firing compression every 1-2 turns even when no real API response
+    had yet confirmed the new size.
+
+    The fix: when the only token signal is a post-compression estimate
+    (no API ``usage.prompt_tokens`` since the last compress) AND the value
+    sits within 10% of threshold, defer until the next API turn supplies a
+    precise count.  If the estimate is materially above threshold (>10%
+    over) we still fire so unbounded sessions can't slip past the gate.
+    """
+
+    def test_estimate_just_over_threshold_defers(self, compressor):
+        # Simulate "we just compressed once" + post-compress estimate write.
+        compressor.compression_count = 1
+        compressor.last_prompt_tokens = 86000  # 1.2% over 85k threshold
+        compressor._last_prompt_tokens_is_estimate = True
+        assert compressor.should_compress() is False, (
+            "post-compression estimate within 10% of threshold should defer "
+            "until next API response confirms the count (#27566)"
+        )
+
+    def test_api_confirmation_clears_defer(self, compressor):
+        compressor.compression_count = 1
+        compressor.last_prompt_tokens = 86000
+        compressor._last_prompt_tokens_is_estimate = True
+        # Real API response arrives — precise count happens to be 86k too.
+        compressor.update_from_response({
+            "prompt_tokens": 86000,
+            "completion_tokens": 0,
+            "total_tokens": 86000,
+        })
+        assert compressor._last_prompt_tokens_is_estimate is False
+        assert compressor.should_compress() is True, (
+            "after the API confirms the count, the deferral must lift"
+        )
+
+    def test_estimate_far_over_threshold_still_fires(self, compressor):
+        compressor.compression_count = 1
+        compressor.last_prompt_tokens = 95000  # ~12% over 85k threshold
+        compressor._last_prompt_tokens_is_estimate = True
+        assert compressor.should_compress() is True, (
+            "estimate >10% over threshold should still fire — we don't want "
+            "unbounded growth even on the estimate path"
+        )
+
+    def test_no_defer_before_first_compression(self, compressor):
+        # First compression cycle ever: there is no prior estimate write, so
+        # the estimate-defer guard must NOT block the very first compress.
+        assert compressor.compression_count == 0
+        compressor.last_prompt_tokens = 86000
+        compressor._last_prompt_tokens_is_estimate = True
+        assert compressor.should_compress() is True
+
+    def test_api_response_with_zero_does_not_clear_flag(self, compressor):
+        # Stale "no usage" API response (provider returned no usage dict)
+        # must not silently clear the estimate flag.
+        compressor.compression_count = 1
+        compressor.last_prompt_tokens = 86000
+        compressor._last_prompt_tokens_is_estimate = True
+        compressor.update_from_response({})
+        assert compressor._last_prompt_tokens_is_estimate is True
+
 
 class TestUpdateFromResponse:
     def test_updates_fields(self, compressor):

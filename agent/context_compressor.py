@@ -577,6 +577,15 @@ class ContextCompressor(ContextEngine):
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
+        # True when the last `last_prompt_tokens` write came from a rough
+        # estimate (post-compression bookkeeping) rather than an API-reported
+        # `usage.prompt_tokens`. `should_compress()` uses this to defer
+        # re-firing compression until a real API count is observed — without
+        # this guard the post-compression estimate (which can over-count by
+        # 5-30% vs the provider's tokenizer when tool schemas, system prompt,
+        # or thinking blocks are heavy) can keep the session above threshold
+        # and trigger compression every turn (#27566).
+        self._last_prompt_tokens_is_estimate = False
 
         self.summary_model = summary_model_override or ""
 
@@ -607,9 +616,15 @@ class ContextCompressor(ContextEngine):
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
-        self.last_prompt_tokens = usage.get("prompt_tokens", 0)
+        _prompt = usage.get("prompt_tokens", 0) or 0
+        self.last_prompt_tokens = _prompt
         self.last_completion_tokens = usage.get("completion_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
+        # A real API-reported prompt count supersedes any post-compression
+        # estimate.  Clear the "estimate pending confirmation" flag so the
+        # next `should_compress()` honours the (precise) API value.
+        if _prompt > 0:
+            self._last_prompt_tokens_is_estimate = False
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
@@ -617,6 +632,13 @@ class ContextCompressor(ContextEngine):
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
+
+        If the only token signal we have post-compression is the rough
+        estimate (no API response has confirmed `prompt_tokens` since the
+        last compress), defer firing until the next API turn — the
+        estimate can over-count by 5-30% vs the provider's tokenizer when
+        tool schemas / system prompt are heavy, which used to cause a
+        compression-every-turn loop (#27566).
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
@@ -629,6 +651,27 @@ class ContextCompressor(ContextEngine):
                     "Consider /new to start a fresh session, or /compress <topic> "
                     "for focused compression.",
                     self._ineffective_compression_count,
+                )
+            return False
+        # Defer one cycle when the only signal is a post-compression
+        # estimate that has not yet been confirmed by an API response.
+        # The next API call will overwrite `last_prompt_tokens` with the
+        # provider's precise count (see `update_from_response`), and we
+        # can make a real decision then.  We only defer once and only at
+        # most by `threshold * 1.10` worth of headroom — if the estimate
+        # is *truly* far above threshold (e.g. >10% over) we still fire
+        # to keep an unbounded session from running away.
+        if (
+            self.compression_count > 0
+            and self._last_prompt_tokens_is_estimate
+            and tokens < int(self.threshold_tokens * 1.10)
+        ):
+            if not self.quiet_mode:
+                logger.info(
+                    "Compression deferred — post-compression estimate "
+                    "(~%d tokens) is within 10%% of threshold (%d); "
+                    "waiting for next API response to confirm.",
+                    tokens, self.threshold_tokens,
                 )
             return False
         return True

@@ -3312,16 +3312,38 @@ def _sync_codex_pool_entries(
     tokens: Dict[str, str],
     last_refresh: Optional[str],
 ) -> None:
-    """Mirror a fresh Codex re-auth into the credential_pool singleton entries.
+    """Mirror a fresh Codex re-auth into the credential_pool OAuth entries.
 
     The runtime selects credentials from ``credential_pool.openai-codex``, not
     from ``providers.openai-codex.tokens``.  A re-auth invalidates the prior
-    OAuth pair server-side, but the pool's ``device_code`` entry keeps holding
-    the now-consumed refresh token plus any stale error markers — so the next
-    request spends a dead token and gets a 401 ``token_invalidated``.  Update
-    the singleton-seeded entries in lockstep with the provider tokens and clear
-    the error state so the fresh credentials take effect immediately.  Manual
-    (``manual:*``) entries are independent credentials and are left untouched.
+    OAuth pair server-side, but pool entries keep holding the now-consumed
+    refresh token plus any stale error markers — so the next request spends a
+    dead token and gets a 401 ``token_invalidated``.
+
+    What gets refreshed:
+
+    * ``device_code`` — the singleton-seeded entry written by the device-code
+      OAuth flow when the user logged in via ``hermes setup`` / the model
+      picker.  Always synced with the fresh tokens.
+    * ``manual:device_code`` — entries created by ``hermes auth add openai-codex``
+      that use the same device-code OAuth mechanism.  An interactive re-auth
+      proves the user owns the ChatGPT account, so it is safe (and expected)
+      to refresh these entries too.  Without this, a user who once ran the
+      ``hermes auth add`` workaround for #33000 would silently leave that
+      manual entry stale on every subsequent re-auth, recreating the issue
+      reported in #33538.
+
+    What does NOT get refreshed:
+
+    * ``manual:api_key`` and any other non-device-code manual sources — those
+      are independent credentials (an explicit API key, a different ChatGPT
+      account, etc.) and must not be overwritten by a single re-auth.
+
+    Error markers (``last_status``, ``last_error_*``) are also cleared on
+    every device-code-backed entry — even those whose tokens we did not
+    rewrite — so that an interactive re-auth gives every relevant pool entry
+    a fresh selection chance instead of leaving them marked unhealthy from a
+    pre-re-auth 401.
     """
     access_token = tokens.get("access_token")
     if not access_token:
@@ -3333,8 +3355,15 @@ def _sync_codex_pool_entries(
     entries = pool.get("openai-codex")
     if not isinstance(entries, list):
         return
+    # Sources whose tokens should be rewritten by a fresh Codex device-code
+    # OAuth re-auth.  ``manual:api_key`` and unknown sources are intentionally
+    # excluded — they represent independent credentials.
+    REFRESHABLE_SOURCES = {"device_code", "manual:device_code"}
     for entry in entries:
-        if not isinstance(entry, dict) or entry.get("source") != "device_code":
+        if not isinstance(entry, dict):
+            continue
+        source = entry.get("source")
+        if source not in REFRESHABLE_SOURCES:
             continue
         entry["access_token"] = access_token
         if refresh_token:

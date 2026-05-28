@@ -8865,6 +8865,17 @@ class GatewayRunner:
                     run_generation,
                 )
                 _stale_adapter = self.adapters.get(source.platform)
+                # Defensive: clear typing indicator on stale-result path too.
+                # Bug fix 2026-05-28: stop_typing only fired on the happy path
+                # above; when the run was invalidated (e.g. by /stop), this
+                # early-return left the chat_action: typing sticky until the
+                # NEXT inbound message cycled it. See gateway.log: a 15:43
+                # /stop left the indicator sticky through the next user turn.
+                if _stale_adapter and hasattr(_stale_adapter, "stop_typing"):
+                    try:
+                        await _stale_adapter.stop_typing(source.chat_id)
+                    except Exception:
+                        pass
                 if getattr(type(_stale_adapter), "pop_post_delivery_callback", None) is not None:
                     _stale_adapter.pop_post_delivery_callback(
                         _quick_key,

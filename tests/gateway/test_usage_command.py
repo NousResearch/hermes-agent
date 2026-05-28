@@ -7,6 +7,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def _make_usage_event(user_id="operator", chat_id="12345", chat_type="dm"):
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    event = MagicMock()
+    event.source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        user_id=user_id,
+    )
+    return event
+
+
 def _make_mock_agent(**overrides):
     """Create a mock AIAgent with realistic session counters."""
     agent = MagicMock()
@@ -186,7 +200,8 @@ class TestUsageAccountSection:
         agent.base_url = "https://chatgpt.com/backend-api/codex"
         agent.api_key = "unused"
         runner = _make_runner(SK, cached_agent=agent)
-        event = MagicMock()
+        event = _make_usage_event()
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "operator")
 
         monkeypatch.setattr(
             "gateway.run.fetch_account_usage",
@@ -223,6 +238,7 @@ class TestUsageAccountSection:
         runner.session_store.load_transcript.return_value = [
             {"role": "user", "content": "earlier"},
         ]
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "operator")
 
         calls = {}
 
@@ -244,10 +260,68 @@ class TestUsageAccountSection:
             ],
         )
 
-        event = MagicMock()
+        event = _make_usage_event()
         result = await runner._handle_usage_command(event)
 
         assert calls["args"] == ("openai-codex",)
         assert calls["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
         assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result
+
+    @pytest.mark.asyncio
+    async def test_usage_command_hides_account_section_for_allow_all_user(self, monkeypatch):
+        agent = _make_mock_agent(provider="openai-codex")
+        runner = _make_runner(SK, cached_agent=agent)
+        event = _make_usage_event(user_id="ordinary-user")
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+
+        calls = []
+
+        def _record_fetch(*args, **kwargs):
+            calls.append((args, kwargs))
+            return object()
+
+        monkeypatch.setattr("gateway.run.fetch_account_usage", _record_fetch)
+        monkeypatch.setattr(
+            "gateway.run.render_account_usage_lines",
+            lambda snapshot, markdown=False: ["📈 **Account limits**"],
+        )
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+            mock_cost.return_value = MagicMock(amount_usd=None, status="included")
+            result = await runner._handle_usage_command(event)
+
+        assert calls == []
+        assert "📊 **Session Token Usage**" in result
+        assert "📈 **Account limits**" not in result
+
+    @pytest.mark.asyncio
+    async def test_usage_command_hides_account_only_fallback_for_unprivileged_user(self, monkeypatch):
+        runner = _make_runner(SK)
+        runner._session_db = MagicMock()
+        runner._session_db.get_session.return_value = {
+            "billing_provider": "openai-codex",
+            "billing_base_url": "https://chatgpt.com/backend-api/codex",
+        }
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-1"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = []
+        event = _make_usage_event(user_id="ordinary-user")
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+
+        calls = []
+        monkeypatch.setattr(
+            "gateway.run.fetch_account_usage",
+            lambda *args, **kwargs: calls.append((args, kwargs)) or object(),
+        )
+        monkeypatch.setattr(
+            "gateway.run.render_account_usage_lines",
+            lambda snapshot, markdown=False: ["📈 **Account limits**"],
+        )
+
+        result = await runner._handle_usage_command(event)
+
+        assert calls == []
+        assert result == "No usage data available for this session."
+        assert "📈 **Account limits**" not in result

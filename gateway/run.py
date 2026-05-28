@@ -5567,6 +5567,89 @@ class GatewayRunner:
 
         return bool(check_ids & allowed_ids)
 
+    def _is_account_usage_authorized(self, source: SessionSource) -> bool:
+        """Return True when /usage may include provider account limits.
+
+        Account limits are account-wide billing/quota metadata, so normal
+        gateway access is not enough: allow-all, pairing, webhook auth, and
+        group-chat allowlists authorize bot use but not operator billing data.
+        """
+        if source.platform == Platform.LOCAL:
+            return True
+
+        user_id = source.user_id
+        if not user_id:
+            return False
+
+        # A configured DM home channel is treated as the operator's private
+        # destination.  Do not extend this to groups/channels, where other
+        # members may be able to invoke slash commands.
+        try:
+            home = self.config.get_home_channel(source.platform) if getattr(self, "config", None) else None
+        except Exception:
+            home = None
+        if (
+            home
+            and source.chat_type == "dm"
+            and str(home.chat_id) == str(source.chat_id)
+            and (not home.thread_id or str(home.thread_id) == str(source.thread_id or ""))
+        ):
+            return True
+
+        platform_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+            Platform.DISCORD: "DISCORD_ALLOWED_USERS",
+            Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+            Platform.SLACK: "SLACK_ALLOWED_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+            Platform.EMAIL: "EMAIL_ALLOWED_USERS",
+            Platform.SMS: "SMS_ALLOWED_USERS",
+            Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
+            Platform.MATRIX: "MATRIX_ALLOWED_USERS",
+            Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+            Platform.FEISHU: "FEISHU_ALLOWED_USERS",
+            Platform.WECOM: "WECOM_ALLOWED_USERS",
+            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
+            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+            Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+        }
+        if source.platform not in platform_env_map:
+            try:
+                from gateway.platform_registry import platform_registry
+                entry = platform_registry.get(source.platform.value)
+                if entry and entry.allowed_users_env:
+                    platform_env_map[source.platform] = entry.allowed_users_env
+            except Exception:
+                pass
+
+        allowed_ids = set()
+        for env_name in (platform_env_map.get(source.platform, ""), "GATEWAY_ALLOWED_USERS"):
+            if not env_name:
+                continue
+            raw = os.getenv(env_name, "").strip()
+            if raw:
+                allowed_ids.update(uid.strip() for uid in raw.split(",") if uid.strip() and uid.strip() != "*")
+
+        if not allowed_ids:
+            return False
+
+        check_ids = {user_id}
+        if "@" in user_id:
+            check_ids.add(user_id.split("@", 1)[0])
+        if source.platform == Platform.WHATSAPP:
+            normalized_allowed_ids = set()
+            for allowed_id in allowed_ids:
+                normalized_allowed_ids.update(_expand_whatsapp_auth_aliases(allowed_id))
+            allowed_ids = normalized_allowed_ids or allowed_ids
+            check_ids.update(_expand_whatsapp_auth_aliases(user_id))
+            normalized_user_id = _normalize_whatsapp_identifier(user_id)
+            if normalized_user_id:
+                check_ids.add(normalized_user_id)
+
+        return bool(check_ids & allowed_ids)
+
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform.
 
@@ -11606,26 +11689,27 @@ class GatewayRunner:
                     if cached:
                         agent = cached[0]
 
-        # Resolve provider/base_url/api_key for the account-usage fetch.
-        # Prefer the live agent; fall back to persisted billing data on the
-        # SessionDB row so `/usage` still returns account info between turns
-        # when no agent is resident.
-        provider = getattr(agent, "provider", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
-        base_url = getattr(agent, "base_url", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
-        api_key = getattr(agent, "api_key", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
-        if not provider and getattr(self, "_session_db", None) is not None:
-            try:
-                _entry_for_billing = self.session_store.get_or_create_session(source)
-                persisted = self._session_db.get_session(_entry_for_billing.session_id) or {}
-            except Exception:
-                persisted = {}
-            provider = provider or persisted.get("billing_provider")
-            base_url = base_url or persisted.get("billing_base_url")
+        # Resolve and fetch account-wide billing/quota details only for
+        # operator-level requests.  Ordinary gateway access can authorize bot
+        # use without authorizing account billing metadata.
+        account_lines: list[str] = []
+        account_usage_authorized = self._is_account_usage_authorized(source)
+        if account_usage_authorized:
+            provider = getattr(agent, "provider", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+            base_url = getattr(agent, "base_url", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+            api_key = getattr(agent, "api_key", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+            if not provider and getattr(self, "_session_db", None) is not None:
+                try:
+                    _entry_for_billing = self.session_store.get_or_create_session(source)
+                    persisted = self._session_db.get_session(_entry_for_billing.session_id) or {}
+                except Exception:
+                    persisted = {}
+                provider = provider or persisted.get("billing_provider")
+                base_url = base_url or persisted.get("billing_base_url")
 
         # Fetch account usage off the event loop so slow provider APIs don't
         # block the gateway. Failures are non-fatal -- account_lines stays [].
-        account_lines: list[str] = []
-        if provider:
+        if account_usage_authorized and provider:
             try:
                 account_snapshot = await asyncio.to_thread(
                     fetch_account_usage,

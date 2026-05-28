@@ -379,14 +379,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("NVIDIA_API_KEY",),
         base_url_env_var="NVIDIA_BASE_URL",
     ),
-    "ai-gateway": ProviderConfig(
-        id="ai-gateway",
-        name="Vercel AI Gateway",
-        auth_type="api_key",
-        inference_base_url="https://ai-gateway.vercel.sh/v1",
-        api_key_env_vars=("AI_GATEWAY_API_KEY",),
-        base_url_env_var="AI_GATEWAY_BASE_URL",
-    ),
     "opencode-zen": ProviderConfig(
         id="opencode-zen",
         name="OpenCode Zen",
@@ -737,6 +729,12 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
 # Error Types
 # =============================================================================
 
+# Error code marking upstream rate-limit / usage-quota exhaustion (HTTP 429).
+# Such failures are transient and re-authenticating cannot resolve them, so
+# they must be kept distinct from missing/expired-credential errors.
+CODEX_RATE_LIMITED_CODE = "codex_rate_limited"
+
+
 class AuthError(RuntimeError):
     """Structured auth error with UX mapping hints."""
 
@@ -754,9 +752,50 @@ class AuthError(RuntimeError):
         self.relogin_required = relogin_required
 
 
+def is_rate_limited_auth_error(error: Exception) -> bool:
+    """True when an :class:`AuthError` represents upstream rate-limiting / quota
+    exhaustion rather than missing or invalid credentials.
+
+    These failures are transient — re-authenticating cannot resolve them — so
+    callers should surface a "retry later" notice and prefer a fallback chain
+    instead of prompting the operator to run ``hermes auth``.
+    """
+    return (
+        isinstance(error, AuthError)
+        and not error.relogin_required
+        and error.code == CODEX_RATE_LIMITED_CODE
+    )
+
+
+def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
+    """Best-effort parse of a ``Retry-After`` header into whole seconds.
+
+    Supports the delta-seconds form (e.g. ``"120"``). HTTP-date forms and
+    missing/unparseable values return ``None`` rather than guessing.
+    """
+    if headers is None:
+        return None
+    try:
+        raw = headers.get("retry-after")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds >= 0 else None
+
+
 def format_auth_error(error: Exception) -> str:
     """Map auth failures to concise user-facing guidance."""
     if not isinstance(error, AuthError):
+        return str(error)
+
+    # Rate-limit / quota errors are not credential problems — never append the
+    # "re-authenticate" remediation, which would mislead the operator.
+    if is_rate_limited_auth_error(error):
         return str(error)
 
     if error.relogin_required:
@@ -1086,11 +1125,32 @@ def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
 
 
 def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
+    """Return a provider's persisted state.
+
+    In profile mode, falls back to the global-root ``auth.json`` when the
+    profile has no entry for ``provider_id``. This mirrors the per-provider
+    shadowing already used by ``read_credential_pool``: workers spawned in a
+    profile can see providers (e.g. ``nous``) that were only authenticated at
+    global scope. Once the user runs ``hermes auth login <provider>`` inside
+    the profile, the profile state fully shadows the global state on the next
+    read. See issue #18594 follow-up.
+    """
     providers = auth_store.get("providers")
-    if not isinstance(providers, dict):
-        return None
-    state = providers.get(provider_id)
-    return dict(state) if isinstance(state, dict) else None
+    if isinstance(providers, dict):
+        state = providers.get(provider_id)
+        if isinstance(state, dict):
+            return dict(state)
+
+    # Read-only fallback to the global-root auth store (profile mode only;
+    # returns empty dict in classic mode so this is a no-op).
+    global_store = _load_global_auth_store()
+    if global_store:
+        global_providers = global_store.get("providers")
+        if isinstance(global_providers, dict):
+            global_state = global_providers.get(provider_id)
+            if isinstance(global_state, dict):
+                return dict(global_state)
+    return None
 
 
 def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Dict[str, Any]) -> None:
@@ -1244,23 +1304,18 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
     """Return persisted auth state for a provider, or None.
 
-    In profile mode, falls back to the global-root ``auth.json`` when the
-    profile has no state for this provider. Profile state always wins when
-    present. Writes (``_save_auth_store`` / ``persist_*_credentials``) are
-    unchanged — they still target the profile only. This mirrors
+    In profile mode, ``_load_provider_state`` already falls back to the
+    global-root ``auth.json`` per-provider when the profile has no entry —
+    so this is now a thin convenience wrapper. Profile state always wins
+    when present. Writes (``_save_auth_store`` / ``persist_*_credentials``)
+    are unchanged — they still target the profile only. This mirrors
     ``read_credential_pool``'s per-provider shadowing semantics so that
     ``_seed_from_singletons`` can reseed a profile's credential pool from
     global-scope provider state (e.g. a globally-authenticated Anthropic
     OAuth or Nous device-code session). See issue #18594 follow-up.
     """
     auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, provider_id)
-    if state is not None:
-        return state
-    global_store = _load_global_auth_store()
-    if not global_store:
-        return None
-    return _load_provider_state(global_store, provider_id)
+    return _load_provider_state(auth_store, provider_id)
 
 
 def get_active_provider() -> Optional[str]:
@@ -1440,7 +1495,6 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
-        "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
@@ -3232,6 +3286,48 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
+def _sync_codex_pool_entries(
+    auth_store: Dict[str, Any],
+    tokens: Dict[str, str],
+    last_refresh: Optional[str],
+) -> None:
+    """Mirror a fresh Codex re-auth into the credential_pool singleton entries.
+
+    The runtime selects credentials from ``credential_pool.openai-codex``, not
+    from ``providers.openai-codex.tokens``.  A re-auth invalidates the prior
+    OAuth pair server-side, but the pool's ``device_code`` entry keeps holding
+    the now-consumed refresh token plus any stale error markers — so the next
+    request spends a dead token and gets a 401 ``token_invalidated``.  Update
+    the singleton-seeded entries in lockstep with the provider tokens and clear
+    the error state so the fresh credentials take effect immediately.  Manual
+    (``manual:*``) entries are independent credentials and are left untouched.
+    """
+    access_token = tokens.get("access_token")
+    if not access_token:
+        return
+    refresh_token = tokens.get("refresh_token")
+    pool = auth_store.get("credential_pool")
+    if not isinstance(pool, dict):
+        return
+    entries = pool.get("openai-codex")
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("source") != "device_code":
+            continue
+        entry["access_token"] = access_token
+        if refresh_token:
+            entry["refresh_token"] = refresh_token
+        if last_refresh:
+            entry["last_refresh"] = last_refresh
+        entry["last_status"] = None
+        entry["last_status_at"] = None
+        entry["last_error_code"] = None
+        entry["last_error_reason"] = None
+        entry["last_error_message"] = None
+        entry["last_error_reset_at"] = None
+
+
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
@@ -3243,6 +3339,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
         _save_provider_state(auth_store, "openai-codex", state)
+        _sync_codex_pool_entries(auth_store, tokens, last_refresh)
         _save_auth_store(auth_store)
 
 
@@ -3272,6 +3369,30 @@ def refresh_codex_oauth_pure(
                 "refresh_token": refresh_token,
                 "client_id": CODEX_OAUTH_CLIENT_ID,
             },
+        )
+
+    if response.status_code == 429:
+        # Upstream rate-limit / usage-quota exhaustion on the token endpoint.
+        # The stored refresh token is still valid here — re-authenticating
+        # cannot lift a quota cap. Classify distinctly from auth failures so
+        # callers surface a "retry later" notice instead of a misleading
+        # "run hermes auth" prompt (see issue #32790).
+        retry_after = _parse_retry_after_seconds(getattr(response, "headers", None))
+        if retry_after is not None:
+            message = (
+                f"Codex provider quota exhausted (429); retry after {retry_after}s. "
+                "Credentials are still valid."
+            )
+        else:
+            message = (
+                "Codex provider quota exhausted (429). Credentials are still valid; "
+                "retry after the usage limit resets."
+            )
+        raise AuthError(
+            message,
+            provider="openai-codex",
+            code=CODEX_RATE_LIMITED_CODE,
+            relogin_required=False,
         )
 
     if response.status_code != 200:
@@ -3411,8 +3532,36 @@ def resolve_codex_runtime_credentials(
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
-    """Resolve runtime credentials from Hermes's own Codex token store."""
-    data = _read_codex_tokens()
+    """Resolve runtime credentials from Hermes's own Codex token store.
+
+    Falls back to the credential pool when the singleton (``providers.openai-codex.tokens``)
+    has no usable access_token but the pool (``credential_pool.openai-codex``) does. This
+    closes the divergence between the chat path (singleton-only via this function) and
+    the auxiliary path (pool-first via ``_read_codex_access_token``). Without this
+    fallback, a user whose tokens live only in the pool — for example after a manual
+    pool seed, a partial re-auth, or pool-only restoration from a backup — gets a bare
+    HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
+    credential. See issue #32992.
+    """
+    try:
+        data = _read_codex_tokens()
+    except AuthError:
+        pool_token = _pool_codex_access_token()
+        if pool_token:
+            base_url = (
+                os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+                or DEFAULT_CODEX_BASE_URL
+            )
+            return {
+                "provider": "openai-codex",
+                "base_url": base_url,
+                "api_key": pool_token,
+                "source": "credential_pool",
+                "last_refresh": None,
+                "auth_mode": "chatgpt",
+            }
+        raise
+
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
@@ -3448,6 +3597,46 @@ def resolve_codex_runtime_credentials(
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
     }
+
+
+def _pool_codex_access_token() -> str:
+    """Return the most-recent usable access_token from the openai-codex pool.
+
+    Used as a fallback by ``resolve_codex_runtime_credentials`` when the
+    singleton has no creds.  Reads ``credential_pool.openai-codex`` entries
+    directly from auth.json and picks the first non-empty access_token,
+    preferring entries that are not currently in an exhaustion cooldown.
+    Returns ``""`` when no usable entry is found (caller handles by raising
+    the original AuthError).
+    """
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return ""
+        entries = pool.get("openai-codex")
+        if not isinstance(entries, list):
+            return ""
+
+        def _entry_usable(entry: Dict[str, Any]) -> bool:
+            if not isinstance(entry, dict):
+                return False
+            token = entry.get("access_token")
+            if not isinstance(token, str) or not token.strip():
+                return False
+            # Skip entries currently in an exhaustion cooldown window.
+            reset_at = entry.get("last_error_reset_at")
+            if isinstance(reset_at, (int, float)) and reset_at > time.time():
+                return False
+            return True
+
+        for entry in entries:
+            if _entry_usable(entry):
+                return str(entry.get("access_token", "")).strip()
+    except Exception:
+        logger.debug("Codex pool fallback lookup failed", exc_info=True)
+    return ""
 
 
 # =============================================================================

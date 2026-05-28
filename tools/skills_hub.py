@@ -120,8 +120,8 @@ def _validate_skill_name(name: str) -> str:
     return _normalize_bundle_path(name, field_name="skill name", allow_nested=False)
 
 
-def _validate_category_name(category: str) -> str:
-    return _normalize_bundle_path(category, field_name="category", allow_nested=False)
+def _validate_install_parent_path(category: str) -> str:
+    return _normalize_bundle_path(category, field_name="install parent path", allow_nested=True)
 
 
 def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
@@ -134,8 +134,10 @@ def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
     let ``rmtree`` wipe either the entire ``skills/`` tree or content
     outside it.
 
-    Enforce that ``install_path`` is exactly ``<skill_name>`` or
-    ``<category>/<skill_name>``. Reject anything else.
+    Enforce that ``install_path`` ends with ``<skill_name>``. Nested
+    official optional skills may legitimately install below paths such as
+    ``mlops/training/<skill_name>``; traversal, absolute paths, empty paths,
+    and mismatched final components are still rejected.
     """
     safe_skill_name = _validate_skill_name(skill_name)
     normalized = _normalize_bundle_path(
@@ -144,7 +146,7 @@ def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
         allow_nested=True,
     )
     parts = normalized.split("/")
-    if len(parts) not in {1, 2} or parts[-1] != safe_skill_name:
+    if not parts or parts[-1] != safe_skill_name:
         raise ValueError(f"Unsafe install path: {install_path}")
     return normalized
 
@@ -3008,7 +3010,7 @@ def install_from_quarantine(
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
     safe_skill_name = _validate_skill_name(skill_name)
-    safe_category = _validate_category_name(category) if category else ""
+    safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
     quarantine_root = QUARANTINE_DIR.resolve()
     if not quarantine_resolved.is_relative_to(quarantine_root):
@@ -3095,9 +3097,9 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     # the destructive boundary — anything that falls through to the rmtree
     # below MUST be inside SKILLS_DIR and MUST NOT be SKILLS_DIR itself
     # (an empty/"."/"/" install_path would otherwise wipe the entire tree).
-    # _resolve_lock_install_path enforces shape (<skill_name> or
-    # <category>/<skill_name>), rejects absolute/traversal paths, and walks
-    # the path component-by-component refusing symlink/junction redirects.
+    # _resolve_lock_install_path enforces a relative path ending in
+    # <skill_name>, rejects absolute/traversal paths, and walks the path
+    # component-by-component refusing symlink/junction redirects.
     try:
         install_path = _resolve_lock_install_path(
             entry.get("install_path", ""), skill_name

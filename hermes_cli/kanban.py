@@ -707,6 +707,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nrm.add_argument("--chat-id", required=True)
     p_nrm.add_argument("--thread-id", default=None)
 
+    # --- repair / reconcile ---
+    p_repair = sub.add_parser(
+        "repair",
+        aliases=["reconcile"],
+        help="Report and optionally repair Kanban projection/subscription metadata",
+    )
+    p_repair.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply safe repairs instead of reporting only",
+    )
+    p_repair.add_argument("--json", action="store_true")
+
     # --- log ---
     p_log = sub.add_parser(
         "log",
@@ -955,6 +968,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "notify-subscribe":   _cmd_notify_subscribe,
             "notify-list":        _cmd_notify_list,
             "notify-unsubscribe": _cmd_notify_unsubscribe,
+            "repair":   _cmd_repair,
+            "reconcile": _cmd_repair,
             "context":  _cmd_context,
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
@@ -2461,6 +2476,38 @@ def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
         print("(no such subscription)", file=sys.stderr)
         return 1
     print(f"Unsubscribed from {args.task_id}")
+    return 0
+
+
+def _cmd_repair(args: argparse.Namespace) -> int:
+    apply_changes = bool(getattr(args, "apply", False))
+    with kb.connect_closing() as conn:
+        projection_report = kb.repair_projection_subscriptions(
+            conn,
+            apply=apply_changes,
+        )
+    report = {
+        "dry_run": not apply_changes,
+        "projection_subscriptions": projection_report,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+
+    mode = "applied" if apply_changes else "dry-run"
+    print(f"Kanban repair ({mode})")
+    print(
+        "  projection_subscriptions: "
+        f"scanned={projection_report['scanned']} "
+        f"orphaned={projection_report['orphaned']} "
+        f"removed={projection_report['removed']}"
+    )
+    for orphan in projection_report["orphans"]:
+        print(
+            "    orphan "
+            f"{orphan['task_id']} -> "
+            f"{orphan['platform']}:{orphan['chat_id']}:{orphan['thread_id']}"
+        )
     return 0
 
 

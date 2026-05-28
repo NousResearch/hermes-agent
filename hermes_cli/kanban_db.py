@@ -7300,6 +7300,60 @@ def remove_notify_sub(
     return cur.rowcount > 0
 
 
+def repair_projection_subscriptions(
+    conn: sqlite3.Connection,
+    *,
+    apply: bool = False,
+) -> dict:
+    """Report and optionally remove notification/projection rows for missing tasks.
+
+    ``kanban_notify_subs`` is the local source of truth that binds gateway
+    projection destinations (Discord forum/thread rows, Telegram topics, etc.)
+    back to canonical Kanban tasks. Legacy migrations and manual DB repairs can
+    leave rows whose ``task_id`` no longer exists; those rows confuse thread
+    lifecycle routing because a projected source appears bound to a phantom
+    task. Dry-run mode reports them, while apply mode deletes only those orphan
+    rows and preserves every row with a live task.
+    """
+    rows = conn.execute(
+        """
+        SELECT s.*
+          FROM kanban_notify_subs AS s
+          LEFT JOIN tasks AS t ON t.id = s.task_id
+         WHERE t.id IS NULL
+         ORDER BY s.task_id, s.platform, s.chat_id, s.thread_id
+        """
+    ).fetchall()
+    orphans = [
+        {
+            "task_id": str(row["task_id"]),
+            "platform": str(row["platform"]),
+            "chat_id": str(row["chat_id"]),
+            "thread_id": str(row["thread_id"] or ""),
+        }
+        for row in rows
+    ]
+    scanned = int(conn.execute("SELECT COUNT(*) FROM kanban_notify_subs").fetchone()[0])
+    removed = 0
+    if apply and orphans:
+        with write_txn(conn):
+            for row in orphans:
+                cur = conn.execute(
+                    """
+                    DELETE FROM kanban_notify_subs
+                     WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                    """,
+                    (row["task_id"], row["platform"], row["chat_id"], row["thread_id"]),
+                )
+                removed += cur.rowcount
+    return {
+        "scanned": scanned,
+        "orphaned": len(orphans),
+        "removed": removed,
+        "orphans": orphans,
+    }
+
+
 def unseen_events_for_sub(
     conn: sqlite3.Connection,
     *,

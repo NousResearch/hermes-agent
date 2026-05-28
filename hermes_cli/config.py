@@ -5483,7 +5483,205 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
-def set_config_value(key: str, value: str):
+def _get_validation_schema() -> dict:
+    """Build a comprehensive schema dict for validating config keys."""
+    schema = copy.deepcopy(DEFAULT_CONFIG)
+    
+    # model can be set as a string (e.g. model: gpt-4o) or as a dictionary (e.g. model.provider)
+    schema["model"] = {
+        "default": "",
+        "provider": "",
+        "base_url": "",
+        "context_length": 4096,
+        "model": "",
+    }
+
+    # Add known gateway configuration keys and other global options
+    schema.update({
+        "session_reset": {
+            "mode": "both",
+            "at_hour": 4,
+            "idle_minutes": 1440,
+            "notify": True,
+            "notify_exclude_platforms": [],
+        },
+        "default_reset_policy": {
+            "mode": "both",
+            "at_hour": 4,
+            "idle_minutes": 1440,
+            "notify": True,
+            "notify_exclude_platforms": [],
+        },
+        "reset_by_type": {},
+        "reset_by_platform": {},
+        "reset_triggers": [],
+        "quick_commands": {},
+        "sessions_dir": "",
+        "always_log_local": True,
+        "stt": {
+            "enabled": True,
+        },
+        "stt_enabled": True,
+        "group_sessions_per_user": True,
+        "thread_sessions_per_user": False,
+        "unauthorized_dm_behavior": "",
+        "streaming": {
+            "enabled": False,
+            "transport": "edit",
+            "edit_interval": 0.8,
+            "buffer_threshold": 24,
+            "cursor": " ▉",
+            "fresh_final_after_seconds": 60.0,
+        },
+        "session_store_max_age_days": 90,
+        "platforms": {},
+        "verbose": 0,
+        "command_allowlist": [],
+    })
+
+    # Add custom_providers schema
+    custom_provider_template = {
+        "name": "",
+        "base_url": "",
+        "api_key": "",
+        "api_mode": "",
+        "model": "",
+        "models": {}, # supports arbitrary subkeys
+        "context_length": 4096,
+        "rate_limit_delay": 0.0,
+        "extra_body": {},
+        "key_env": "",
+    }
+    schema["custom_providers"] = [custom_provider_template]
+
+    # Add platforms
+    platform_names = [
+        "local", "telegram", "discord", "whatsapp", "slack", "signal",
+        "mattermost", "matrix", "homeassistant", "email", "sms",
+        "dingtalk", "api_server", "webhook", "msgraph_webhook",
+        "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
+        "qqbot", "yuanbao"
+    ]
+    try:
+        from gateway.config import Platform
+        for p in Platform:
+            if p.value not in platform_names:
+                platform_names.append(p.value)
+    except Exception:
+        pass
+
+    platform_schema_template = {
+        "enabled": False,
+        "token": "",
+        "api_key": "",
+        "home_channel": {
+            "platform": "",
+            "chat_id": "",
+            "name": "",
+            "thread_id": "",
+        },
+        "reply_to_mode": "first",
+        "gateway_restart_notification": True,
+        "unauthorized_dm_behavior": "pair",
+        "notice_delivery": "public",
+        "reply_prefix": "",
+        "reply_in_thread": False,
+        "require_mention": True,
+        "allowed_chats": [],
+        "group_allowed_chats": [],
+        "allowed_topics": [],
+        "free_response_channels": [],
+        "mention_patterns": [],
+        "exclusive_bot_mentions": False,
+        "observe_unmentioned_group_messages": False,
+        "dm_policy": "",
+        "allow_from": [],
+        "allow_admin_from": [],
+        "user_allowed_commands": [],
+        "group_policy": "",
+        "group_allow_from": [],
+        "group_allow_admin_from": [],
+        "group_user_allowed_commands": [],
+        "channel_skill_bindings": {},
+        "channel_prompts": {},
+        "extra": {},
+    }
+
+    for plat in platform_names:
+        schema["platforms"][plat] = platform_schema_template
+        schema[plat] = platform_schema_template
+
+    return schema
+
+
+def _gather_schema_paths(schema, prefix="") -> set:
+    paths = set()
+    if isinstance(schema, dict):
+        for k, v in schema.items():
+            full_key = f"{prefix}.{k}" if prefix else k
+            paths.add(full_key)
+            paths.update(_gather_schema_paths(v, full_key))
+    elif isinstance(schema, list):
+        full_key = f"{prefix}.*"
+        paths.add(full_key)
+        if len(schema) > 0:
+            paths.update(_gather_schema_paths(schema[0], full_key))
+    return paths
+
+
+def _normalize_key_path(dotted_key: str) -> str:
+    parts = dotted_key.split(".")
+    normalized_parts = []
+    for part in parts:
+        if part.isdigit():
+            normalized_parts.append("*")
+        else:
+            normalized_parts.append(part)
+    return ".".join(normalized_parts)
+
+
+def _is_valid_schema_path(dotted_key: str, valid_paths: set) -> bool:
+    normalized = _normalize_key_path(dotted_key)
+    if normalized in valid_paths:
+        return True
+    
+    # Check if this path goes through a valid dictionary that permits arbitrary keys
+    parts = normalized.split(".")
+    allowed_arbitrary_prefixes = {
+        "providers", "quick_commands", "credential_pool_strategies",
+        "reset_by_type", "reset_by_platform", "custom_providers.*.models"
+    }
+    
+    # Platform blocks (both 'platforms.<platform_name>' and direct '<platform_name>') allow arbitrary keys
+    platform_names = [
+        "local", "telegram", "discord", "whatsapp", "slack", "signal",
+        "mattermost", "matrix", "homeassistant", "email", "sms",
+        "dingtalk", "api_server", "webhook", "msgraph_webhook",
+        "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
+        "qqbot", "yuanbao"
+    ]
+    try:
+        from gateway.config import Platform
+        for p in Platform:
+            if p.value not in platform_names:
+                platform_names.append(p.value)
+    except Exception:
+        pass
+    
+    for plat in platform_names:
+        allowed_arbitrary_prefixes.add(f"platforms.{plat}")
+        allowed_arbitrary_prefixes.add(plat)
+        
+    for i in range(len(parts)):
+        subpath = ".".join(parts[:i+1])
+        if subpath in valid_paths:
+            if parts[i] in ("extra", "extra_body") or subpath in allowed_arbitrary_prefixes:
+                return True
+                
+    return False
+
+
+def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value."""
     if is_managed():
         managed_error("set configuration values")
@@ -5505,6 +5703,24 @@ def set_config_value(key: str, value: str):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
+    
+    # Validation step for keys destined for config.yaml
+    if not force:
+        schema = _get_validation_schema()
+        valid_paths = _gather_schema_paths(schema)
+        if not _is_valid_schema_path(key, valid_paths):
+            import difflib
+            display_paths = [p.replace("*", "0") for p in valid_paths]
+            normalized_key = _normalize_key_path(key).replace("*", "0")
+            matches = difflib.get_close_matches(normalized_key, display_paths, n=3, cutoff=0.5)
+            
+            print(color(f"\n  Error: Configuration key {key!r} is not recognized.", Colors.RED), file=sys.stderr)
+            if matches:
+                print(color("  Did you mean one of these?", Colors.DIM), file=sys.stderr)
+                for match in matches:
+                    print(color(f"    • {match}", Colors.DIM), file=sys.stderr)
+            print(color(f"\n  Use '--force' or '-f' if you want to override validation and set this key anyway.\n", Colors.DIM), file=sys.stderr)
+            sys.exit(1)
     
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid
@@ -5586,15 +5802,16 @@ def config_command(args):
     elif subcmd == "set":
         key = getattr(args, 'key', None)
         value = getattr(args, 'value', None)
+        force = getattr(args, 'force', False)
         if not key or value is None:
-            print("Usage: hermes config set <key> <value>")
+            print("Usage: hermes config set <key> <value> [--force]")
             print()
             print("Examples:")
             print("  hermes config set model anthropic/claude-sonnet-4")
             print("  hermes config set terminal.backend docker")
             print("  hermes config set OPENROUTER_API_KEY sk-or-...")
             sys.exit(1)
-        set_config_value(key, value)
+        set_config_value(key, value, force=force)
     
     elif subcmd == "path":
         print(get_config_path())

@@ -12566,6 +12566,12 @@ Examples:
         "key", nargs="?", help="Configuration key (e.g., model, terminal.backend)"
     )
     config_set.add_argument("value", nargs="?", help="Value to set")
+    config_set.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="Force setting the key even if it is not recognized in the schema",
+    )
 
     # config path
     config_subparsers.add_parser("path", help="Print config file path")

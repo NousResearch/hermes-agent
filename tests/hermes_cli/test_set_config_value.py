@@ -248,3 +248,47 @@ class TestListNavigation:
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
+
+
+# ---------------------------------------------------------------------------
+# Key validation and force override tests
+# ---------------------------------------------------------------------------
+
+class TestConfigKeyValidation:
+    """Tests for validating dotted configuration keys and utilizing the force override."""
+
+    def test_unrecognized_key_raises_error(self, _isolated_hermes_home):
+        with pytest.raises(SystemExit) as exc_info:
+            set_config_value("fake.key.path", "true")
+        assert exc_info.value.code == 1
+
+    def test_unrecognized_key_with_force_succeeds(self, _isolated_hermes_home):
+        set_config_value("fake.key.path", "true", force=True)
+        config = _read_config(_isolated_hermes_home)
+        assert "fake:" in config
+        assert "key:" in config
+        assert "path: true" in config or "path: 'true'" in config
+
+    def test_fuzzy_matching_suggestion(self, _isolated_hermes_home, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            set_config_value("model.provder", "deepseek")
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        # Fuzzy suggestion should print close matches
+        assert "model.provider" in captured.err or "model.provider" in captured.out
+
+    def test_valid_schema_key_succeeds(self, _isolated_hermes_home):
+        set_config_value("terminal.backend", "singularity")
+        config = _read_config(_isolated_hermes_home)
+        assert "backend: singularity" in config
+
+    def test_cli_command_with_force_flag(self, _isolated_hermes_home):
+        args = argparse.Namespace(config_command="set", key="fake.key.path", value="value", force=True)
+        config_command(args)
+        config = _read_config(_isolated_hermes_home)
+        assert "fake:" in config
+
+    def test_cli_command_without_force_flag_fails(self, _isolated_hermes_home):
+        args = argparse.Namespace(config_command="set", key="fake.key.path", value="value", force=False)
+        with pytest.raises(SystemExit):
+            config_command(args)

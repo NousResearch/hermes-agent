@@ -2774,6 +2774,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 ),
                 status=400
             )
+        
+        tools = body.get("tools", [])
+        for tool in tools:
+            if isinstance(tool, dict):
+                tool_format = tool.get("response_format", {})
+                if tool_format.get("type") == "json_schema":
+                    return web.json_response(
+                        _openai_error(
+                            "Structured output (json_schema) in tool definitions is not yet supported on the /v1/responses endpoint."
+                        ),
+                        status=400
+                    )
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:

@@ -2464,6 +2464,7 @@ def select_provider_and_model(args=None):
         "alibaba",
         "huggingface",
         "xiaomi",
+        "xiaomi-token-plan",
         "arcee",
         "gmi",
         "nvidia",

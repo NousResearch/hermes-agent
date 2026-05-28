@@ -424,6 +424,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "xiaomi-token-plan": ProviderConfig(
+        id="xiaomi-token-plan",
+        name="Xiaomi MiMo Token Plan",
+        auth_type="api_key",
+        inference_base_url="https://token-plan-sgp.xiaomimimo.com/v1",
+        api_key_env_vars=("XIAOMI_TOKEN_PLAN_API_KEY",),
+        base_url_env_var="XIAOMI_TOKEN_PLAN_BASE_URL",
+    ),
     "tencent-tokenhub": ProviderConfig(
         id="tencent-tokenhub",
         name="Tencent TokenHub",
@@ -1499,6 +1507,7 @@ def resolve_provider(
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
+        "xiaomi-token": "xiaomi-token-plan", "mimo-token": "xiaomi-token-plan", "token-plan": "xiaomi-token-plan",
         "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
         "tencent-cloud": "tencent-tokenhub", "tencentmaas": "tencent-tokenhub",
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",

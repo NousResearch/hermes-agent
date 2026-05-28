@@ -1,0 +1,5 @@
+name: xiaomi-token-plan-provider
+kind: model-provider
+version: 1.0.0
+description: Xiaomi MiMo Token Plan
+author: Nous Research

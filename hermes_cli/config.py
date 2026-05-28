@@ -2355,6 +2355,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "XIAOMI_TOKEN_PLAN_API_KEY": {
+        "description": "Xiaomi MiMo Token Plan API key (token-plan-sgp.xiaomimimo.com)",
+        "prompt": "Xiaomi Token Plan API Key",
+        "url": "https://platform.xiaomimimo.com",
+        "password": True,
+        "category": "provider",
+    },
+    "XIAOMI_TOKEN_PLAN_BASE_URL": {
+        "description": "Xiaomi MiMo Token Plan base URL override (default: https://token-plan-sgp.xiaomimimo.com/v1)",
+        "prompt": "Xiaomi Token Plan base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "AWS_REGION": {
         "description": "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
         "prompt": "AWS Region",

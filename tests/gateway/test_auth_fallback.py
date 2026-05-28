@@ -72,6 +72,65 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             with pytest.raises(RuntimeError):
                 _resolve_runtime_agent_kwargs()
 
+    def test_empty_api_key_for_api_key_provider_activates_fallback(
+        self, tmp_path, monkeypatch,
+    ):
+        """``resolve_runtime_provider`` for an api-key provider (DeepSeek,
+        Z.AI, Kimi, …) silently returns ``api_key=""`` when its env var
+        is unset. Without the post-resolution credential check the
+        gateway would build an agent with no key and fail at the API
+        call with a generic 401 instead of trying the fallback chain
+        (#33936). Pin the new behavior: empty key on primary should
+        flip into AuthError and fall through to the fallback.
+        """
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "model:\n  provider: deepseek\n  default: deepseek-chat\n"
+            "fallback_model:\n  provider: openrouter\n"
+            "  model: meta-llama/llama-4-maverick\n"
+        )
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        calls = []
+
+        def _mock_resolve(**kwargs):
+            calls.append(kwargs.get("requested"))
+            if len(calls) == 1:
+                # Primary path — simulate the silent empty-key return
+                # that the api-key provider branch produces when the
+                # env var is unset.
+                return {
+                    "api_key": "",
+                    "base_url": "https://api.deepseek.com/v1",
+                    "provider": "deepseek",
+                    "api_mode": "chat_completions",
+                }
+            # Fallback path — fully resolved openrouter runtime.
+            return {
+                "api_key": "fallback-key",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": None,
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_mock_resolve,
+        ):
+            from gateway.run import _resolve_runtime_agent_kwargs
+            result = _resolve_runtime_agent_kwargs()
+
+        assert result["provider"] == "openrouter"
+        assert result["api_key"] == "fallback-key"
+        # Primary was called, returned silently with empty key, then
+        # the credential check raised AuthError and the fallback path
+        # took over.
+        assert len(calls) >= 2
+
     def test_legacy_fallback_is_appended_after_fallback_providers(self, tmp_path, monkeypatch):
         """When both keys exist, the legacy entry still participates in resolution."""
         config_path = tmp_path / "config.yaml"

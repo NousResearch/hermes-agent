@@ -1077,11 +1077,18 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
+        ensure_runtime_credentials_or_raise,
     )
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
     try:
         runtime = resolve_runtime_provider()
+        # api-key providers (DeepSeek, Z.AI, Kimi, Mistral, …) silently
+        # return ``api_key=""`` when their env var is unset. Without
+        # this promotion the gateway constructs an agent with empty
+        # credentials and the request eventually fails with a 401
+        # instead of fal­ling through to ``fallback_providers`` (#33936).
+        ensure_runtime_credentials_or_raise(runtime)
     except AuthError as auth_exc:
         # Distinguish a transient rate-limit/quota cap (credentials are fine,
         # re-auth cannot help) from a genuine auth failure (expired/revoked

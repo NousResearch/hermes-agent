@@ -1543,6 +1543,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
             format_runtime_provider_error,
+            ensure_runtime_credentials_or_raise,
         )
         from hermes_cli.auth import AuthError
         try:
@@ -1557,6 +1558,18 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
+            # api-key providers (DeepSeek, Z.AI/GLM, Kimi, Mistral, …)
+            # silently return an empty ``api_key`` when their env var is
+            # unset rather than raising. Without this check the cron
+            # scheduler skipped the fallback chain entirely and the job
+            # eventually crashed at the API call with a generic 401,
+            # leaving operators chasing the wrong tail (#33936). Promote
+            # the empty-key case to AuthError so the existing
+            # ``except AuthError`` branch below can try each configured
+            # fallback provider.
+            ensure_runtime_credentials_or_raise(
+                runtime, requested_provider=job.get("provider"),
+            )
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
             logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)

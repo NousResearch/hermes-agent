@@ -16,7 +16,11 @@ running ``pwd -P``, so the configured cwd is always what gets recorded.
 from tempfile import TemporaryFile
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import (
+    BaseEnvironment,
+    _SNAPSHOT_SECRET_ENV_RE,
+    _snapshot_export_command,
+)
 
 
 class _TestableEnv(BaseEnvironment):
@@ -146,3 +150,82 @@ class TestInitSessionCwdRespect:
         assert "'/my project/with spaces'" in bootstrap, (
             "bootstrap cd must properly quote paths with spaces"
         )
+
+    def test_snapshot_capture_filters_secret_env_names(self):
+        env = _TestableEnv(cwd="/tmp")
+        captured = {}
+
+        def mock_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
+            captured["cmd"] = cmd_string
+            mock = MagicMock()
+            mock.poll.return_value = 0
+            mock.returncode = 0
+            stdout = TemporaryFile(mode="w+b")
+            stdout.seek(0)
+            mock.stdout = stdout
+            return mock
+
+        env._run_bash = mock_run_bash
+        env.init_session()
+
+        bootstrap = captured["cmd"]
+        assert "export -p | grep -Eiv" in bootstrap
+        assert "TOKEN" in bootstrap
+        assert "PASSWORD" in bootstrap
+        assert "KEY" in bootstrap
+        assert "CREDENTIALS?" in bootstrap
+        assert "AUTHORIZATION" in bootstrap
+        assert "BEARER" in bootstrap
+
+    def test_snapshot_refresh_filters_secret_env_names(self):
+        env = _TestableEnv(cwd="/tmp")
+        env._snapshot_ready = True
+
+        wrapped = env._wrap_command("true", "/tmp")
+
+        assert "export -p | grep -Eiv" in wrapped
+        assert "TOKEN" in wrapped
+        assert "PASSWORD" in wrapped
+        assert "KEY" in wrapped
+        assert "CREDENTIALS?" in wrapped
+        assert "AUTHORIZATION" in wrapped
+
+    def test_snapshot_filter_does_not_drop_auth_socket_names(self):
+        cmd = _snapshot_export_command("/tmp/snap.sh")
+        assert "AUTHORIZATION" in cmd
+        assert "BEARER" in cmd
+        assert "AUTH($|_)" not in cmd
+
+    def test_snapshot_filter_scrubs_common_secret_names_but_keeps_socket_names(self):
+        lines = "\n".join(
+            [
+                'declare -x OPENAI_API_KEY="secret"',
+                'declare -x api_key="secret"',
+                'declare -x OPENAI_KEY="secret"',
+                'declare -x GOOGLE_APPLICATION_CREDENTIALS="secret"',
+                'declare -x AWS_ACCESS_KEY_ID="secret"',
+                'declare -x NPM_CONFIG__AUTH_TOKEN="secret"',
+                'declare -x SSH_AUTH_SOCK="/tmp/ssh.sock"',
+                'declare -x XAUTHORITY="/tmp/auth"',
+                'declare -x TOKENIZER_PARALLELISM="false"',
+            ]
+        )
+        import subprocess
+
+        proc = subprocess.run(
+            ["grep", "-Eiv", _SNAPSHOT_SECRET_ENV_RE],
+            input=lines,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        snapshot = proc.stdout
+        assert "OPENAI_API_KEY" not in snapshot
+        assert "api_key" not in snapshot
+        assert "OPENAI_KEY" not in snapshot
+        assert "GOOGLE_APPLICATION_CREDENTIALS" not in snapshot
+        assert "AWS_ACCESS_KEY_ID" not in snapshot
+        assert "NPM_CONFIG__AUTH_TOKEN" not in snapshot
+        assert "SSH_AUTH_SOCK" in snapshot
+        assert "XAUTHORITY" in snapshot
+        assert "TOKENIZER_PARALLELISM" in snapshot

@@ -754,6 +754,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
 
+                if not adapter_self._news_article_persistent_view_registered:
+                    try:
+                        adapter_self._client.add_view(
+                            NewsArticleFeedbackView(
+                                adapter=adapter_self,
+                                allowed_user_ids=adapter_self._allowed_user_ids,
+                            )
+                        )
+                        adapter_self._news_article_persistent_view_registered = True
+                    except Exception as e:
+                        logger.debug("Could not register Discord article feedback persistent view: %s", e)
+
                 if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
                     adapter_self._post_connect_task.cancel()
                 adapter_self._post_connect_task = asyncio.create_task(
@@ -5490,7 +5502,145 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, NewsArticleFeedbackView
+
+    class NewsArticleFeedbackView(discord.ui.View):
+        """Persistent feedback controls for Life news and Intelligence article posts."""
+
+        FEEDBACK_REACTIONS = {
+            "read": "✅",
+            "keep": "⭐",
+            "skip": "👎",
+            "deep": "🧵",
+            "save": "💾",
+        }
+
+        CUSTOM_IDS = {
+            "read": "intelligence_article_read",
+            "keep": "intelligence_article_more",
+            "skip": "intelligence_article_shallow",
+            "deep": "intelligence_article_deep",
+            "save": "intelligence_article_save",
+        }
+
+        def __init__(self, allowed_user_ids: set, adapter=None):
+            super().__init__(timeout=None)
+            self.allowed_user_ids = allowed_user_ids
+            self.adapter = adapter
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            if not self.allowed_user_ids:
+                return True
+            return str(interaction.user.id) in self.allowed_user_ids
+
+        async def _deny_if_unauthorized(self, interaction: discord.Interaction) -> bool:
+            if self._check_auth(interaction):
+                return False
+            await interaction.response.send_message("このボタンを使う権限がないみたいです〜", ephemeral=True)
+            return True
+
+        def _extract_article_url(self, message) -> str | None:
+            content = getattr(message, "content", "") or ""
+            urls = re.findall(r"https?://[^\s)]+", content)
+            if urls:
+                return urls[0].rstrip('>.,)"]}')
+            embeds = getattr(message, "embeds", None) or []
+            for embed in embeds:
+                url = getattr(embed, "url", None)
+                if url:
+                    return str(url)
+            return None
+
+        def _persist_news_feedback(self, interaction: discord.Interaction, key: str, label: str, emoji: str) -> None:
+            try:
+                from datetime import datetime, timezone
+                from hermes_constants import get_hermes_home
+
+                state_dir = get_hermes_home() / "state"
+                state_dir.mkdir(parents=True, exist_ok=True)
+                log_path = state_dir / "news_feedback.jsonl"
+                message = getattr(interaction, "message", None)
+                channel = getattr(interaction, "channel", None)
+                record = {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "reaction": key,
+                    "reaction_label": label,
+                    "reaction_emoji": emoji,
+                    "custom_id": self.CUSTOM_IDS.get(key) or f"news_article_{key}",
+                    "feedback_scope": "article" if label in {"読んだ", "もっとこの系統", "浅い/つまらない", "追調査して", "保存"} else "link",
+                    "guild_id": str(getattr(getattr(interaction, "guild", None), "id", "") or ""),
+                    "channel_id": str(getattr(channel, "id", "") or ""),
+                    "thread_id": str(getattr(channel, "id", "") or "") if isinstance(channel, discord.Thread) else None,
+                    "message_id": str(getattr(message, "id", "") or ""),
+                    "user_id": str(getattr(getattr(interaction, "user", None), "id", "") or ""),
+                    "user_name": getattr(getattr(interaction, "user", None), "display_name", None),
+                    "article_url": self._extract_article_url(message) if message else None,
+                    "article_title": getattr(message, "content", "")[:500] if message else None,
+                }
+                with log_path.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            except Exception:
+                logger.exception("Failed to persist article feedback event")
+
+        async def _mark(self, interaction: discord.Interaction, key: str, label: str) -> None:
+            if await self._deny_if_unauthorized(interaction):
+                return
+            message = getattr(interaction, "message", None)
+            if message is None:
+                await interaction.response.send_message("対象の記事メッセージが見つかりませんでした〜", ephemeral=True)
+                return
+
+            await interaction.response.defer(ephemeral=True, thinking=False)
+            emoji = self.FEEDBACK_REACTIONS[key]
+            try:
+                await message.add_reaction(emoji)
+                self._persist_news_feedback(interaction, key, label, emoji)
+                await interaction.followup.send(f"{emoji} {label} として記録しました〜", ephemeral=True)
+            except Exception as exc:
+                await interaction.followup.send(f"記録に失敗しました: {exc}", ephemeral=True)
+
+        async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+            logger.exception("Article feedback button failed: item=%s", item, exc_info=error)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("ボタン処理でエラーになりました〜", ephemeral=True)
+            else:
+                await interaction.followup.send("ボタン処理でエラーになりました〜", ephemeral=True)
+
+        @discord.ui.button(label="読んだ", style=discord.ButtonStyle.green, emoji="✅", custom_id="intelligence_article_read")
+        async def read_intelligence_article(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._mark(interaction, "read", "読んだ")
+
+        @discord.ui.button(label="もっとこの系統", style=discord.ButtonStyle.blurple, emoji="⭐", custom_id="intelligence_article_more")
+        async def more_intelligence_article(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._mark(interaction, "keep", "もっとこの系統")
+
+        @discord.ui.button(label="浅い/つまらない", style=discord.ButtonStyle.grey, emoji="👎", custom_id="intelligence_article_shallow")
+        async def shallow_intelligence_article(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._mark(interaction, "skip", "浅い/つまらない")
+
+        @discord.ui.button(label="追調査して", style=discord.ButtonStyle.blurple, emoji="🧵", custom_id="intelligence_article_deep")
+        async def deep_intelligence_article(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._mark(interaction, "deep", "追調査して")
+
+        @discord.ui.button(label="保存", style=discord.ButtonStyle.green, emoji="💾", custom_id="intelligence_article_save")
+        async def save_intelligence_article(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._mark(interaction, "save", "保存")
+
+        @discord.ui.button(label="Read", style=discord.ButtonStyle.green, emoji="✅", custom_id="news_article_read")
+        async def read_news_article(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._mark(interaction, "read", "Read")
+
+        @discord.ui.button(label="More", style=discord.ButtonStyle.blurple, emoji="⭐", custom_id="news_article_keep")
+        async def keep_news_article(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._mark(interaction, "keep", "More")
+
+        @discord.ui.button(label="Less", style=discord.ButtonStyle.grey, emoji="👎", custom_id="news_article_skip")
+        async def skip_news_article(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._mark(interaction, "skip", "Less")
+
+        @discord.ui.button(label="Deep Dive", style=discord.ButtonStyle.grey, emoji="🧵", custom_id="news_article_deep")
+        async def deep_news_article(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._mark(interaction, "deep", "Deep Dive")
 
     class ExecApprovalView(discord.ui.View):
         """

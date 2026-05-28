@@ -903,6 +903,21 @@ DEFAULT_CONFIG = {
         "max_line_length": 2000,
     },
 
+    # ACP adapter display policy. This controls editor/client-visible ACP
+    # protocol rendering only; it does not change model-facing tool output caps.
+    # - detail: condensed (default polished summaries), full (expanded visible
+    #   content).
+    # - advertise_config_option: kept off by default so clients like Zed keep the
+    #   model picker prominent; advanced clients may still call
+    #   session/set_config_option(tool_output_detail, ...).
+    "acp": {
+        "output": {
+            "detail": "condensed",
+            "resource_max_bytes": 512 * 1024,
+            "advertise_config_option": False,
+        },
+    },
+
     # Tool loop guardrails nudge models when they repeat failed or
     # non-progressing tool calls. Soft warnings are always-on by default;
     # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.

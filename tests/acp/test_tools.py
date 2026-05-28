@@ -1,8 +1,14 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
+import json
+
 import pytest
 
 from acp_adapter.edit_approval import EditProposal
+from acp_adapter.output_policy import (
+    ACPOutputPolicy,
+    resolve_acp_output_policy,
+)
 from acp_adapter.tools import (
     TOOL_KIND_MAP,
     build_tool_complete,
@@ -266,6 +272,64 @@ class TestBuildToolStart:
         assert "print('hello')" in result.content[0].content.text
         assert result.raw_input is None
 
+    def test_build_tool_start_condensed_policy_truncates_large_previews(self):
+        code = "print('start')\n" + ("x" * 1500) + "\nprint('CONDENSED_SENTINEL')"
+
+        result = build_tool_start(
+            "tc-code-condensed",
+            "execute_code",
+            {"code": code},
+            output_policy=ACPOutputPolicy(detail="condensed"),
+        )
+
+        text = result.content[0].content.text
+        assert "truncated" in text
+        assert "CONDENSED_SENTINEL" not in text
+        assert result.raw_input is None
+
+    def test_build_tool_start_full_policy_keeps_large_previews(self):
+        long_code = "print('start')\n" + ("x" * 1500) + "\nprint('FULL_CODE_SENTINEL')"
+        process_input = ("y" * 700) + "FULL_PROCESS_SENTINEL"
+        delegate_goal = ("z" * 900) + "FULL_DELEGATE_SENTINEL"
+        memory_text = ("m" * 700) + "FULL_MEMORY_SENTINEL"
+        polished_payload = ("p" * 1500) + "FULL_POLISHED_SENTINEL"
+        policy = ACPOutputPolicy(detail="full")
+
+        code_start = build_tool_start("tc-code-full", "execute_code", {"code": long_code}, output_policy=policy)
+        process_start = build_tool_start("tc-process-full", "process", {"action": "submit", "data": process_input}, output_policy=policy)
+        delegate_start = build_tool_start("tc-delegate-full", "delegate_task", {"goal": delegate_goal}, output_policy=policy)
+        memory_start = build_tool_start("tc-memory-full", "memory", {"action": "add", "target": "memory", "content": memory_text}, output_policy=policy)
+        polished_start = build_tool_start("tc-polished-full", "browser_navigate", {"url": "https://example.com", "payload": polished_payload}, output_policy=policy)
+
+        assert "FULL_CODE_SENTINEL" in code_start.content[0].content.text
+        assert "FULL_PROCESS_SENTINEL" in process_start.content[0].content.text
+        assert "FULL_DELEGATE_SENTINEL" in delegate_start.content[0].content.text
+        assert "FULL_MEMORY_SENTINEL" in memory_start.content[0].content.text
+        assert "FULL_POLISHED_SENTINEL" in polished_start.content[0].content.text
+        assert all(
+            "truncated" not in event.content[0].content.text
+            for event in [code_start, process_start, delegate_start, memory_start, polished_start]
+        )
+
+    def test_build_tool_start_full_policy_keeps_all_preview_items(self):
+        policy = ACPOutputPolicy(detail="full")
+        todo_items = [
+            {"id": f"item-{i}", "content": f"Todo item {i}", "status": "pending"}
+            for i in range(12)
+        ]
+        delegate_tasks = [
+            {"goal": f"Delegate task {i}", "role": "leaf"}
+            for i in range(12)
+        ]
+
+        todo_start = build_tool_start("tc-todo-full", "todo", {"todos": todo_items}, output_policy=policy)
+        delegate_start = build_tool_start("tc-delegate-batch-full", "delegate_task", {"tasks": delegate_tasks}, output_policy=policy)
+
+        assert "Todo item 11" in todo_start.content[0].content.text
+        assert "Delegate task 11" in delegate_start.content[0].content.text
+        assert "more" not in todo_start.content[0].content.text
+        assert "more" not in delegate_start.content[0].content.text
+
     def test_build_tool_start_for_skill_manage_patch_shows_diff(self):
         result = build_tool_start(
             "tc-skill-manage",
@@ -292,6 +356,19 @@ class TestBuildToolStart:
         result = build_tool_start("tc-5", "some_tool", args)
         assert isinstance(result, ToolCallStart)
         assert result.kind == "other"
+        assert result.raw_input is None
+
+    def test_legacy_raw_output_detail_is_not_supported(self):
+        policy = resolve_acp_output_policy(
+            config={"acp": {"output": {"detail": "raw"}}},
+            env={
+                "HERMES_ACP_TOOL_OUTPUT_DETAIL": "raw",
+                "HERMES_ACP_RAW_OUTPUT": "true",
+                "HERMES_ACP_RAW_CHAR_LIMIT": "50",
+            },
+        )
+
+        assert policy.detail == "condensed"
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +413,87 @@ class TestBuildToolComplete:
         assert "GitHub Pitfalls" in text
         assert "Use gh carefully" not in text
         assert "Full skill content is available to the agent" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_omits_plain_text_raw_output_by_default(self):
+        result = build_tool_complete(
+            "tc-plugin-plain",
+            "some_plugin_tool",
+            "plain plugin output that should stay out of raw fields",
+        )
+
+        assert "plain plugin output" in result.content[0].content.text
+        assert result.raw_output is None
+
+    def test_legacy_raw_output_env_does_not_populate_protocol_raw_fields(self):
+        policy = resolve_acp_output_policy(env={"HERMES_ACP_RAW_OUTPUT": "true"})
+        result = build_tool_complete(
+            "tc-plugin-legacy-raw-env",
+            "some_plugin_tool",
+            '{"ok": true, "content": "client visible only"}',
+            output_policy=policy,
+        )
+
+        assert policy.detail == "condensed"
+        assert result.raw_output is None
+
+    def test_build_tool_complete_full_policy_shows_full_skill_content(self):
+        result = build_tool_complete(
+            "tc-skill-full",
+            "skill_view",
+            json.dumps(
+                {
+                    "success": True,
+                    "name": "github-pitfalls",
+                    "description": "GitHub gotchas",
+                    "content": "# GitHub Pitfalls\nUse gh carefully.\nFULL UNIQUE LINE",
+                }
+            ),
+            output_policy=ACPOutputPolicy(detail="full"),
+        )
+
+        text = result.content[0].content.text
+        assert "FULL UNIQUE LINE" in text
+        assert "```markdown" in text
+        assert "Full skill content is available to the agent" not in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_full_policy_does_not_condense_large_read_file(self):
+        long_content = "1|" + ("x" * 6000)
+        result = build_tool_complete(
+            "tc-read-full",
+            "read_file",
+            json.dumps({"content": long_content, "total_lines": 1}),
+            function_args={"path": "README.md"},
+            output_policy=ACPOutputPolicy(detail="full"),
+        )
+
+        text = result.content[0].content.text
+        assert len(text) > 6000
+        assert "truncated" not in text
+
+    def test_build_tool_complete_full_policy_shows_successful_web_extract_content(self):
+        result = build_tool_complete(
+            "tc-web-extract-full",
+            "web_extract",
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "url": "https://example.com",
+                            "title": "Example",
+                            "content": "# Intro\nThis is extracted content.",
+                        }
+                    ]
+                }
+            ),
+            output_policy=ACPOutputPolicy(detail="full"),
+        )
+
+        text = result.content[0].content.text
+        assert "Web extract results" in text
+        assert "https://example.com" in text
+        assert "This is extracted content" in text
         assert result.raw_output is None
 
     def test_build_tool_complete_for_execute_code_formats_output(self):

@@ -190,6 +190,38 @@ ACP mode uses the same Hermes configuration as the CLI:
 
 Provider resolution uses Hermes' normal runtime resolver, so ACP inherits the currently configured provider and credentials. Hermes also advertises a terminal auth method (`--setup`) for first-run registry clients; this opens Hermes' interactive model/provider setup.
 
+### Tool output detail
+
+ACP tool output is **condensed by default**. Hermes keeps the editor transcript readable by showing polished summaries for large/noisy tools such as `skill_view`, `read_file`, `web_extract`, `process`, browser snapshots, and structured JSON results.
+
+Clients or users can opt into more visible transcript detail with ACP output detail modes:
+
+| Mode | Visible transcript content | ACP raw fields |
+|---|---|---|
+| `condensed` | Polished summaries and existing truncation/default compact behavior | Raw fields stay omitted by default |
+| `full` | Full ACP-controlled visible content for tool starts/completions, including full `skill_view`, `web_extract`, tool-input previews, and JSON/text results returned by tools | Raw fields stay omitted |
+
+Global default in `~/.hermes/config.yaml`:
+
+```yaml
+acp:
+  output:
+    detail: condensed        # condensed | full
+    resource_max_bytes: 524288
+    advertise_config_option: false  # true lets ACP clients discover a Tool Output Detail picker
+```
+
+Environment overrides are useful for debugging or CI:
+
+```bash
+HERMES_ACP_TOOL_OUTPUT_DETAIL=full hermes acp
+HERMES_ACP_RESOURCE_MAX_BYTES=1048576 hermes acp
+```
+
+ACP clients can also set the mode per session with `session/set_config_option` using `acp_output_detail`, `tool_output_detail`, `acp_tool_output_detail`, or `output_detail` and a value of `condensed` or `full`. Session-scoped choices override env/config defaults and are persisted with ACP session metadata for replay/load/fork; invalid values are ignored so they do not silently downgrade an env/config default.
+
+`resource_max_bytes` controls ACP prompt resource/attachment inlining and is intentionally separate from tool transcript detail. It keeps binary/image and very large resource payloads bounded even when visible tool output is `full`; `full` also cannot recover data that an underlying tool already paged or truncated before returning it.
+
 ## Session behavior
 
 ACP sessions are tracked by the ACP adapter's in-memory session manager while the server is running.

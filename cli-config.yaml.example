@@ -813,6 +813,18 @@ platform_toolsets:
 #       log_level: "info"       # audit verbosity
 
 # =============================================================================
+# ACP (Agent Client Protocol) Adapter
+# =============================================================================
+# Controls editor/client-visible ACP transcript rendering only; model-facing
+# tool-output limits stay governed by the normal tool_output settings.
+acp:
+  output:
+    detail: "condensed"          # condensed | full
+    resource_max_bytes: 524288   # Prompt resource/attachment inline cap (512 KiB)
+    advertise_config_option: false
+                                  # true lets ACP clients discover a Tool Output Detail picker.
+
+# =============================================================================
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.

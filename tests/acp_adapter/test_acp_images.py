@@ -10,6 +10,7 @@ from acp.schema import (
     TextResourceContents,
 )
 
+from acp_adapter.output_policy import ACPOutputPolicy
 from acp_adapter.server import HermesACPAgent, _content_blocks_to_openai_user_content
 
 
@@ -59,6 +60,27 @@ def test_acp_resource_link_file_is_inlined_as_text(tmp_path):
     )
 
 
+def test_acp_resource_policy_controls_text_file_inline_cap(tmp_path):
+    attached = tmp_path / "large-notes.md"
+    attached.write_text("abcdef", encoding="utf-8")
+
+    content = _content_blocks_to_openai_user_content(
+        [
+            ResourceContentBlock(
+                type="resource_link",
+                name="large-notes.md",
+                uri=attached.as_uri(),
+                mimeType="text/markdown",
+            )
+        ],
+        output_policy=ACPOutputPolicy(detail="full", resource_max_bytes=3),
+    )
+
+    assert "abc" in content
+    assert "def" not in content
+    assert "truncated to 3 of 6 bytes" in content
+
+
 def test_acp_embedded_text_resource_is_inlined_as_text():
     content = _content_blocks_to_openai_user_content([
         EmbeddedResourceContentBlock(
@@ -76,6 +98,26 @@ def test_acp_embedded_text_resource_is_inlined_as_text():
         "URI: file:///workspace/todo.txt\n\n"
         "first\nsecond"
     )
+
+
+def test_acp_embedded_text_resource_respects_resource_cap():
+    content = _content_blocks_to_openai_user_content(
+        [
+            EmbeddedResourceContentBlock(
+                type="resource",
+                resource=TextResourceContents(
+                    uri="file:///workspace/todo.txt",
+                    mimeType="text/plain",
+                    text="abcdef",
+                ),
+            ),
+        ],
+        output_policy=ACPOutputPolicy(detail="full", resource_max_bytes=3),
+    )
+
+    assert "abc" in content
+    assert "def" not in content
+    assert "truncated to 3 of 6 bytes" in content
 
 
 @pytest.mark.asyncio
@@ -116,6 +158,28 @@ def test_acp_resource_link_image_file_is_inlined_as_image_url(tmp_path):
     assert content[2]["type"] == "image_url"
     expected_url = "data:image/png;base64," + base64.b64encode(_ONE_PX_PNG).decode("ascii")
     assert content[2]["image_url"]["url"] == expected_url
+
+
+def test_acp_resource_link_image_file_respects_resource_cap(tmp_path):
+    attached = tmp_path / "shot.png"
+    attached.write_bytes(_ONE_PX_PNG)
+
+    content = _content_blocks_to_openai_user_content(
+        [
+            ResourceContentBlock(
+                type="resource_link",
+                name="shot.png",
+                uri=attached.as_uri(),
+                mimeType="image/png",
+            )
+        ],
+        output_policy=ACPOutputPolicy(detail="full", resource_max_bytes=3),
+    )
+
+    assert isinstance(content, str)
+    assert "Image too large to inline" in content
+    assert "cap=3" in content
+    assert "data:image/png;base64" not in content
 
 
 def test_acp_resource_link_image_mime_inferred_from_suffix(tmp_path):

@@ -88,7 +88,6 @@ def _build_permission_tool_call(command: str, description: str):
         kind="execute",
         status="pending",
         content=[_acp.tool_content(_acp.text_block(content_text))],
-        raw_input={"command": command, "description": description},
     )
 
 

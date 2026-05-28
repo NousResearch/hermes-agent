@@ -11,6 +11,7 @@ import pytest
 import acp
 from acp.schema import AgentPlanUpdate, ToolCallStart, ToolCallProgress, AgentThoughtChunk, AgentMessageChunk
 
+from acp_adapter.output_policy import ACPOutputPolicy
 from acp_adapter.events import (
     _build_plan_update_from_todo_result,
     _send_update,
@@ -101,6 +102,28 @@ class TestToolProgressCallback:
             cb("tool.started", "terminal", "$ echo hi", None)
 
         assert "terminal" in tool_call_ids
+
+    def test_output_policy_getter_reaches_tool_start(self, mock_conn, event_loop_fixture):
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+        policy = ACPOutputPolicy(detail="full")
+
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-full-start"), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb = make_tool_progress_cb(
+                mock_conn,
+                "session-1",
+                loop,
+                tool_call_ids,
+                tool_call_meta,
+                output_policy_getter=lambda: policy,
+            )
+            cb("tool.started", "skill_view", None, {"name": "github-pitfalls"})
+
+        update = mock_send.call_args.args[3]
+        assert isinstance(update, ToolCallStart)
+        assert update.raw_input is None
 
     def test_duplicate_same_name_tool_calls_use_fifo_ids(self, mock_conn, event_loop_fixture):
         """Multiple same-name tool calls should be tracked independently in order."""
@@ -232,7 +255,12 @@ class TestStepCallback:
             cb(1, [{"name": "terminal", "result": '{"output": "hello"}'}])
 
         mock_btc.assert_called_once_with(
-            "tc-xyz789", "terminal", result='{"output": "hello"}', function_args=None, snapshot=None
+            "tc-xyz789",
+            "terminal",
+            result='{"output": "hello"}',
+            function_args=None,
+            snapshot=None,
+            output_policy=None,
         )
 
     def test_none_result_passed_through(self, mock_conn, event_loop_fixture):
@@ -252,7 +280,9 @@ class TestStepCallback:
 
             cb(1, [{"name": "web_search", "result": None}])
 
-        mock_btc.assert_called_once_with("tc-aaa", "web_search", result=None, function_args=None, snapshot=None)
+        mock_btc.assert_called_once_with(
+            "tc-aaa", "web_search", result=None, function_args=None, snapshot=None, output_policy=None
+        )
 
     def test_step_callback_passes_arguments_and_snapshot(self, mock_conn, event_loop_fixture):
         from collections import deque
@@ -277,7 +307,38 @@ class TestStepCallback:
             result='{"bytes_written": 23}',
             function_args={"path": "diff-test.txt"},
             snapshot="snap",
+            output_policy=None,
         )
+
+    def test_output_policy_getter_reaches_tool_completion(self, mock_conn, event_loop_fixture):
+        from collections import deque
+
+        policy = ACPOutputPolicy(detail="full")
+        tool_call_ids = {"skill_view": deque(["tc-full-complete"])}
+        tool_call_meta = {"tc-full-complete": {"args": {"name": "github-pitfalls"}, "snapshot": None}}
+        loop = event_loop_fixture
+        cb = make_step_cb(
+            mock_conn,
+            "session-1",
+            loop,
+            tool_call_ids,
+            tool_call_meta,
+            output_policy_getter=lambda: policy,
+        )
+
+        with patch("acp_adapter.events._send_update") as mock_send, \
+             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+            cb(1, [{"name": "skill_view", "result": '{"content":"full skill text"}'}])
+
+        mock_btc.assert_called_once_with(
+            "tc-full-complete",
+            "skill_view",
+            result='{"content":"full skill text"}',
+            function_args={"name": "github-pitfalls"},
+            snapshot=None,
+            output_policy=policy,
+        )
+        mock_send.assert_called_once()
 
     def test_tool_progress_captures_snapshot_metadata(self, mock_conn, event_loop_fixture):
         tool_call_ids = {}

@@ -289,6 +289,7 @@ class TestPersistence:
     def test_get_session_restores_from_db(self, manager):
         """Simulate process restart: create session, drop from memory, get again."""
         state = manager.create_session(cwd="/work")
+        state.output_detail = "full"
         state.history.append({"role": "user", "content": "hello"})
         state.history.append({"role": "assistant", "content": "hi there"})
         manager.save_session(state.session_id)
@@ -304,6 +305,7 @@ class TestPersistence:
         assert restored is not None
         assert restored.session_id == sid
         assert restored.cwd == "/work"
+        assert restored.output_detail == "full"
         assert len(restored.history) == 2
         assert restored.history[0]["content"] == "hello"
         assert restored.history[1]["content"] == "hi there"
@@ -414,6 +416,28 @@ class TestPersistence:
         assert len(forked.history) == 1
         assert forked.history[0]["content"] == "context"
         assert forked.session_id != original.session_id
+
+    def test_fork_session_persists_output_detail(self, manager):
+        original = manager.create_session(cwd="/base")
+        original.output_detail = "full"
+        manager.save_session(original.session_id)
+
+        forked = manager.fork_session(original.session_id, cwd="/fork")
+        assert forked is not None
+        assert forked.output_detail == "full"
+
+        db = manager._get_db()
+        row = db.get_session(forked.session_id)
+        mc = json.loads(row["model_config"])
+        assert mc["cwd"] == "/fork"
+        assert mc["acp_output_detail"] == "full"
+
+        with manager._lock:
+            del manager._sessions[forked.session_id]
+
+        restored = manager.get_session(forked.session_id)
+        assert restored is not None
+        assert restored.output_detail == "full"
 
     def test_update_cwd_restores_from_db(self, manager):
         state = manager.create_session(cwd="/old")

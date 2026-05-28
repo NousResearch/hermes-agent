@@ -49,6 +49,8 @@ from acp.schema import (
     SessionForkCapabilities,
     SessionInfoUpdate,
     SessionListCapabilities,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
     SessionMode,
     SessionModeState,
     SessionModelState,
@@ -63,6 +65,12 @@ from acp.schema import (
 )
 
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
+from acp_adapter.output_policy import (
+    ACPOutputPolicy,
+    parse_output_detail,
+    resolve_acp_output_policy,
+    should_advertise_output_config,
+)
 from acp_adapter.events import (
     _build_plan_update_from_todo_result,
     make_message_cb,
@@ -100,6 +108,12 @@ _TEXT_RESOURCE_MIME_TYPES = {
     "application/toml",
     "application/sql",
 }
+
+
+def _resource_max_bytes(output_policy: ACPOutputPolicy | None = None) -> int:
+    if isinstance(output_policy, ACPOutputPolicy):
+        return max(1, int(output_policy.resource_max_bytes or _MAX_ACP_RESOURCE_BYTES))
+    return _MAX_ACP_RESOURCE_BYTES
 
 
 def _resource_display_name(uri: str, name: str | None = None, title: str | None = None) -> str:
@@ -193,6 +207,14 @@ def _decode_text_bytes(data: bytes, mime_type: str | None) -> str | None:
     return data.decode("utf-8", errors="replace")
 
 
+def _cap_text_resource_body(text: str, cap: int) -> tuple[str, str | None]:
+    """Cap embedded text resources by UTF-8 byte length without splitting codepoints."""
+    data = text.encode("utf-8", errors="replace")
+    if len(data) <= cap:
+        return text, None
+    return data[:cap].decode("utf-8", errors="ignore"), f"truncated to {cap} of {len(data)} bytes"
+
+
 def _format_resource_text(
     *,
     uri: str,
@@ -208,7 +230,10 @@ def _format_resource_text(
     return f"{header}\nURI: {uri}\n\n{body}"
 
 
-def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]:
+def _resource_link_to_parts(
+    block: ResourceContentBlock,
+    output_policy: ACPOutputPolicy | None = None,
+) -> list[dict[str, Any]]:
     """Convert an ACP resource_link block to OpenAI content parts.
 
     Returns a list of {"type": "text", ...} and/or {"type": "image_url", ...}
@@ -223,6 +248,7 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
     name = str(getattr(block, "name", "") or "").strip() or None
     title = str(getattr(block, "title", "") or "").strip() or None
     mime_type = str(getattr(block, "mime_type", "") or "").strip() or None
+    cap = _resource_max_bytes(output_policy)
     path = _path_from_file_uri(uri)
 
     if path is None:
@@ -242,14 +268,14 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
     if image_mime and _is_image_resource(image_mime):
         try:
             size = path.stat().st_size
-            if size > _MAX_ACP_RESOURCE_BYTES:
+            if size > cap:
                 return [{
                     "type": "text",
                     "text": _format_resource_text(
                         uri=uri,
                         name=name,
                         title=title,
-                        body=f"[Image too large to inline: {size} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]",
+                        body=f"[Image too large to inline: {size} bytes, cap={cap}]",
                     ),
                 }]
             with path.open("rb") as fh:
@@ -273,7 +299,7 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
 
     try:
         size = path.stat().st_size
-        read_size = min(size, _MAX_ACP_RESOURCE_BYTES)
+        read_size = min(size, cap)
         with path.open("rb") as fh:
             data = fh.read(read_size)
         text = _decode_text_bytes(data, mime_type)
@@ -288,8 +314,8 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
                 ),
             }]
         note = None
-        if size > _MAX_ACP_RESOURCE_BYTES:
-            note = f"truncated to {_MAX_ACP_RESOURCE_BYTES} of {size} bytes"
+        if size > cap:
+            note = f"truncated to {cap} of {size} bytes"
         return [{
             "type": "text",
             "text": _format_resource_text(uri=uri, name=name, title=title, body=text, note=note),
@@ -307,16 +333,21 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
         }]
 
 
-def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dict[str, Any]]:
+def _embedded_resource_to_parts(
+    block: EmbeddedResourceContentBlock,
+    output_policy: ACPOutputPolicy | None = None,
+) -> list[dict[str, Any]]:
     resource = getattr(block, "resource", None)
     if resource is None:
         return []
 
     uri = str(getattr(resource, "uri", "") or "").strip()
     mime_type = str(getattr(resource, "mime_type", "") or "").strip() or None
+    cap = _resource_max_bytes(output_policy)
 
     if isinstance(resource, TextResourceContents):
-        return [{"type": "text", "text": _format_resource_text(uri=uri, body=resource.text)}]
+        body, note = _cap_text_resource_body(resource.text, cap)
+        return [{"type": "text", "text": _format_resource_text(uri=uri, body=body, note=note)}]
 
     if isinstance(resource, BlobResourceContents):
         blob = resource.blob or ""
@@ -327,12 +358,12 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
 
         # Image blobs go through as image_url so vision models can see them.
         if _is_image_resource(mime_type):
-            if len(data) > _MAX_ACP_RESOURCE_BYTES:
+            if len(data) > cap:
                 return [{
                     "type": "text",
                     "text": _format_resource_text(
                         uri=uri,
-                        body=f"[Embedded image too large to inline: {len(data)} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]",
+                        body=f"[Embedded image too large to inline: {len(data)} bytes, cap={cap}]",
                     ),
                 }]
             display = _resource_display_name(uri)
@@ -341,13 +372,13 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
                 {"type": "image_url", "image_url": {"url": _image_data_url(data, mime_type or "image/png")}},
             ]
 
-        text = _decode_text_bytes(data[:_MAX_ACP_RESOURCE_BYTES], mime_type)
+        text = _decode_text_bytes(data[:cap], mime_type)
         if text is None:
             body = f"[Binary embedded file omitted: {len(data)} bytes, mime={mime_type or 'unknown'}]"
         else:
             body = text
-            if len(data) > _MAX_ACP_RESOURCE_BYTES:
-                body += f"\n\n[Truncated to {_MAX_ACP_RESOURCE_BYTES} of {len(data)} bytes]"
+            if len(data) > cap:
+                body += f"\n\n[Truncated to {cap} of {len(data)} bytes]"
         return [{"type": "text", "text": _format_resource_text(uri=uri, body=body)}]
 
     text = getattr(resource, "text", None)
@@ -399,6 +430,7 @@ def _content_blocks_to_openai_user_content(
         | ResourceContentBlock
         | EmbeddedResourceContentBlock
     ],
+    output_policy: ACPOutputPolicy | None = None,
 ) -> str | list[dict[str, Any]]:
     """Convert ACP prompt blocks into a Hermes/OpenAI-compatible user content payload."""
     parts: list[dict[str, Any]] = []
@@ -416,14 +448,14 @@ def _content_blocks_to_openai_user_content(
                 parts.append(image_part)
             continue
         if isinstance(block, ResourceContentBlock):
-            resource_parts = _resource_link_to_parts(block)
+            resource_parts = _resource_link_to_parts(block, output_policy=output_policy)
             for part in resource_parts:
                 parts.append(part)
                 if part.get("type") == "text":
                     text_parts.append(part["text"])
             continue
         if isinstance(block, EmbeddedResourceContentBlock):
-            resource_parts = _embedded_resource_to_parts(block)
+            resource_parts = _embedded_resource_to_parts(block, output_policy=output_policy)
             for part in resource_parts:
                 parts.append(part)
                 if part.get("type") == "text":
@@ -500,6 +532,12 @@ class HermesACPAgent(acp.Agent):
     )
 
     _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
+    _ACP_OUTPUT_DETAIL_CONFIG_IDS = {
+        "acp_output_detail",
+        "tool_output_detail",
+        "acp_tool_output_detail",
+        "output_detail",
+    }
     _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
     _MODE_DEFAULT = "default"
     _MODE_ACCEPT_EDITS = "accept_edits"
@@ -563,6 +601,54 @@ class HermesACPAgent(acp.Agent):
         mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
         return policy, state.cwd
+
+    @staticmethod
+    def _load_config_for_output_policy() -> dict[str, Any] | None:
+        try:
+            from hermes_cli.config import load_config
+
+            return load_config()
+        except Exception:
+            return None
+
+    def _output_policy_for_state(self, state: SessionState | None) -> ACPOutputPolicy:
+        return resolve_acp_output_policy(
+            session_detail=getattr(state, "output_detail", "") if state is not None else None,
+            config=self._load_config_for_output_policy(),
+        )
+
+    def _session_config_options(self, state: SessionState | None) -> list[Any] | None:
+        config = self._load_config_for_output_policy()
+        if not should_advertise_output_config(config):
+            return None
+        output_policy = resolve_acp_output_policy(
+            session_detail=getattr(state, "output_detail", "") if state is not None else None,
+            config=config,
+        )
+        return [
+            SessionConfigOptionSelect(
+                id="acp_output_detail",
+                name="Tool Output Detail",
+                description=(
+                    "Controls ACP-visible tool output detail: condensed summaries "
+                    "or expanded visible content."
+                ),
+                type="select",
+                current_value=output_policy.detail,
+                options=[
+                    SessionConfigSelectOption(
+                        value="condensed",
+                        name="Condensed",
+                        description="Readable summaries and default truncation.",
+                    ),
+                    SessionConfigSelectOption(
+                        value="full",
+                        name="Full",
+                        description="Expanded visible content where supported.",
+                    ),
+                ],
+            )
+        ]
 
     @staticmethod
     def _encode_model_choice(provider: str | None, model: str | None) -> str:
@@ -993,6 +1079,7 @@ class HermesACPAgent(acp.Agent):
             return
 
         active_tool_calls: dict[str, tuple[str, dict[str, Any]]] = {}
+        output_policy = self._output_policy_for_state(state)
 
         async def _send(update: Any) -> bool:
             try:
@@ -1038,7 +1125,14 @@ class HermesACPAgent(acp.Agent):
                             continue
                         tool_name, args = self._history_tool_call_name_args(tool_call)
                         active_tool_calls[tool_call_id] = (tool_name, args)
-                        if not await _send(build_tool_start(tool_call_id, tool_name, args)):
+                        if not await _send(
+                            build_tool_start(
+                                tool_call_id,
+                                tool_name,
+                                args,
+                                output_policy=output_policy,
+                            )
+                        ):
                             return
                 continue
 
@@ -1058,6 +1152,7 @@ class HermesACPAgent(acp.Agent):
                         tool_name,
                         result=result_text,
                         function_args=function_args,
+                        output_policy=output_policy,
                     )
                 ):
                     return
@@ -1079,6 +1174,7 @@ class HermesACPAgent(acp.Agent):
         self._schedule_usage_update(state)
         return NewSessionResponse(
             session_id=state.session_id,
+            config_options=self._session_config_options(state),
             models=self._build_model_state(state),
             modes=self._session_modes(state),
         )
@@ -1123,6 +1219,7 @@ class HermesACPAgent(acp.Agent):
         self._schedule_available_commands_update(session_id)
         self._schedule_usage_update(state)
         return LoadSessionResponse(
+            config_options=self._session_config_options(state),
             models=self._build_model_state(state),
             modes=self._session_modes(state),
         )
@@ -1155,6 +1252,7 @@ class HermesACPAgent(acp.Agent):
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
         return ResumeSessionResponse(
+            config_options=self._session_config_options(state),
             models=self._build_model_state(state),
             modes=self._session_modes(state),
         )
@@ -1189,6 +1287,7 @@ class HermesACPAgent(acp.Agent):
             self._schedule_available_commands_update(new_id)
         return ForkSessionResponse(
             session_id=new_id,
+            config_options=self._session_config_options(state) if state is not None else None,
             models=self._build_model_state(state) if state is not None else None,
             modes=self._session_modes(state) if state is not None else None,
         )
@@ -1259,7 +1358,8 @@ class HermesACPAgent(acp.Agent):
             return PromptResponse(stop_reason="refusal")
 
         user_text = _extract_text(prompt).strip()
-        user_content = _content_blocks_to_openai_user_content(prompt)
+        output_policy = self._output_policy_for_state(state)
+        user_content = _content_blocks_to_openai_user_content(prompt, output_policy=output_policy)
         text_only_prompt = all(isinstance(block, TextContentBlock) for block in prompt)
         has_content = bool(user_text) or (
             isinstance(user_content, list) and bool(user_content)
@@ -1354,9 +1454,17 @@ class HermesACPAgent(acp.Agent):
                 tool_call_ids,
                 tool_call_meta,
                 edit_approval_policy_getter=lambda: self._edit_approval_policy_for_state(state),
+                output_policy_getter=lambda: self._output_policy_for_state(state),
             )
             reasoning_cb = make_thinking_cb(conn, session_id, loop)
-            step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+            step_cb = make_step_cb(
+                conn,
+                session_id,
+                loop,
+                tool_call_ids,
+                tool_call_meta,
+                output_policy_getter=lambda: self._output_policy_for_state(state),
+            )
             message_cb = make_message_cb(conn, session_id, loop)
 
             def stream_delta_cb(text: str) -> None:
@@ -1941,6 +2049,16 @@ class HermesACPAgent(acp.Agent):
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
             setattr(state, "mode", mode)
+        elif str(config_id) in self._ACP_OUTPUT_DETAIL_CONFIG_IDS:
+            normalized_detail = parse_output_detail(value)
+            if normalized_detail is not None:
+                setattr(state, "output_detail", normalized_detail)
+            else:
+                logger.warning(
+                    "Session %s: ignored invalid ACP output detail config value %r",
+                    session_id,
+                    value,
+                )
         else:
             options = getattr(state, "config_options", None)
             if not isinstance(options, dict):
@@ -1949,4 +2067,4 @@ class HermesACPAgent(acp.Agent):
             setattr(state, "config_options", options)
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
-        return SetSessionConfigOptionResponse(config_options=[])
+        return SetSessionConfigOptionResponse(config_options=self._session_config_options(state) or [])

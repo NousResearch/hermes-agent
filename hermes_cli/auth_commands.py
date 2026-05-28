@@ -27,7 +27,7 @@ from agent.credential_pool import (
     load_pool,
 )
 import hermes_cli.auth as auth_mod
-from hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_cli.auth import PROVIDER_REGISTRY, WEB_POOL_PROVIDERS
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -162,7 +162,12 @@ def _format_exhausted_status(entry) -> str:
 
 def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
-    if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
+    if (
+        provider not in PROVIDER_REGISTRY
+        and provider != "openrouter"
+        and provider not in WEB_POOL_PROVIDERS
+        and not provider.startswith(CUSTOM_POOL_PREFIX)
+    ):
         raise SystemExit(f"Unknown provider: {provider}")
 
     requested_type = str(getattr(args, "auth_type", "") or "").strip().lower()
@@ -437,6 +442,7 @@ def auth_list_command(args) -> None:
         providers = sorted({
             *PROVIDER_REGISTRY.keys(),
             "openrouter",
+            *WEB_POOL_PROVIDERS,
             *list_custom_pool_providers(),
         })
     for provider in providers:
@@ -649,7 +655,7 @@ def _interactive_auth() -> None:
 
 def _pick_provider(prompt: str = "Provider") -> str:
     """Prompt for a provider name with auto-complete hints."""
-    known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"]))
+    known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"] + list(WEB_POOL_PROVIDERS)))
     custom_names = _get_custom_provider_names()
     if custom_names:
         custom_display = [name for name, _key, _provider_key in custom_names]
@@ -666,7 +672,12 @@ def _pick_provider(prompt: str = "Provider") -> str:
 
 def _interactive_add() -> None:
     provider = _pick_provider("Provider to add credential for")
-    if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
+    if (
+        provider not in PROVIDER_REGISTRY
+        and provider != "openrouter"
+        and provider not in WEB_POOL_PROVIDERS
+        and not provider.startswith(CUSTOM_POOL_PREFIX)
+    ):
         raise SystemExit(f"Unknown provider: {provider}")
 
     # For OAuth-capable providers, ask which type

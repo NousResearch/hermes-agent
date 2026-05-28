@@ -26,11 +26,20 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List
+import re
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
+from agent.credential_pool import CredentialPool, PooledCredential, load_pool
 from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
+
+_POOL_PROVIDER = "exa"
+_ROTATE_STATUSES = frozenset({401, 403, 429})
+# Anchored to HTTP/status so trace IDs containing 401/403/429 don't false-positive.
+_STATUS_RE = re.compile(r"\b(?:HTTP|status[a-z_ ]*)\W{0,4}(401|403|429)\b", re.IGNORECASE)
+
+T = TypeVar("T")
 
 # Module-level note: the canonical ``_exa_client`` cache slot lives on
 # :mod:`tools.web_tools` so tests that do ``tools.web_tools._exa_client =
@@ -38,25 +47,54 @@ logger = logging.getLogger(__name__)
 # that public module (see :func:`_get_exa_client`).
 
 
-def _get_exa_client() -> Any:
-    """Lazy-import and cache an Exa SDK client.
+def _load_exa_pool() -> Optional[CredentialPool]:
+    """Return the Exa credential pool, or ``None`` if loading fails."""
+    try:
+        return load_pool(_POOL_PROVIDER)
+    except Exception as exc:  # noqa: BLE001 — pool failures must not break web_search
+        logger.warning("exa: failed to load credential pool: %s", exc)
+        return None
 
-    Cache lives on :mod:`tools.web_tools` (as ``_exa_client``) so unit
-    tests that reset that name between cases keep working. Raises
-    ``ValueError`` when ``EXA_API_KEY`` is unset.
-    """
+
+def _pool_runtime_api_key(entry: Any) -> str:
+    if entry is None:
+        return ""
+    key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+    return str(key or "").strip()
+
+
+def _resolve_exa_key() -> Tuple[Optional[str], Optional[CredentialPool], Optional[PooledCredential]]:
+    """Resolve an Exa API key (pool-first, env fallback). ``pool``/``entry`` are ``None`` for env."""
+    pool = _load_exa_pool()
+    if pool is not None and pool.has_credentials():
+        entry = pool.select()
+        if entry is not None:
+            api_key = _pool_runtime_api_key(entry)
+            if api_key:
+                return api_key, pool, entry
+
+    env_key = os.getenv("EXA_API_KEY", "").strip()
+    return (env_key or None), None, None
+
+
+def _pool_has_entries() -> bool:
+    """Cheap probe for ``is_available()`` — no seeding/persisting."""
+    try:
+        from hermes_cli.auth import read_credential_pool
+
+        entries = read_credential_pool(_POOL_PROVIDER)
+    except Exception:
+        return False
+    return bool(entries)
+
+
+def _build_exa_client(
+    api_key: str,
+    pool: Optional[CredentialPool] = None,
+    entry: Optional[PooledCredential] = None,
+) -> Any:
+    """Build, cache, and return an Exa SDK client; stash pool state for rotation."""
     import tools.web_tools as _wt
-
-    cached = getattr(_wt, "_exa_client", None)
-    if cached is not None:
-        return cached
-
-    api_key = os.getenv("EXA_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "EXA_API_KEY environment variable not set. "
-            "Get your API key at https://exa.ai"
-        )
 
     try:
         from tools.lazy_deps import ensure as _lazy_ensure
@@ -71,15 +109,101 @@ def _get_exa_client() -> Any:
 
     client = Exa(api_key=api_key)
     client.headers["x-exa-integration"] = "hermes-agent"
+    client._hermes_pool_state = (
+        (pool, entry, api_key) if pool is not None and entry is not None else None
+    )
     _wt._exa_client = client
     return client
 
 
-def _reset_client_for_tests() -> None:
-    """Drop the cached Exa client so tests can re-instantiate cleanly."""
+def _get_exa_client() -> Any:
+    """Return a cached Exa SDK client (pool-first, env fallback). Raises ``ValueError`` if neither."""
     import tools.web_tools as _wt
 
-    _wt._exa_client = None
+    cached = getattr(_wt, "_exa_client", None)
+    if cached is not None:
+        return cached
+
+    api_key, pool, entry = _resolve_exa_key()
+    if not api_key:
+        raise ValueError(
+            "EXA_API_KEY environment variable not set. "
+            "Get your API key at https://exa.ai"
+        )
+
+    return _build_exa_client(api_key, pool, entry)
+
+
+def _exa_error_status(exc: BaseException) -> Optional[int]:
+    """Best-effort extraction of an HTTP status code from an Exa SDK exception."""
+    for attr in ("status_code", "status", "http_status", "code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int):
+            return status
+    match = _STATUS_RE.search(str(exc))
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _call_with_rotation(fn: Callable[[Any], T]) -> T:
+    """Invoke ``fn(client)``; on 401/403/429 mark the cached client's entry exhausted and retry once."""
+    import tools.web_tools as _wt
+
+    cached = getattr(_wt, "_exa_client", None)
+    if cached is not None:
+        client = cached
+        state = getattr(client, "_hermes_pool_state", None)
+        if state is not None:
+            pool, entry, api_key = state
+        else:
+            pool, entry, api_key = None, None, str(getattr(client, "api_key", "") or "")
+    else:
+        api_key, pool, entry = _resolve_exa_key()
+        if not api_key:
+            raise ValueError(
+                "EXA_API_KEY environment variable not set. "
+                "Get your API key at https://exa.ai"
+            )
+        client = _build_exa_client(api_key, pool, entry)
+
+    for attempt in (1, 2):
+        try:
+            return fn(client)
+        except (ValueError, ImportError):
+            raise
+        except Exception as exc:  # noqa: BLE001 — Exa SDK error class varies
+            status = _exa_error_status(exc)
+            if (
+                attempt == 1
+                and pool is not None
+                and entry is not None
+                and status in _ROTATE_STATUSES
+            ):
+                rotated = pool.mark_exhausted_and_rotate(
+                    status_code=status,
+                    error_context={"message": str(exc), "status_code": status},
+                )
+                if rotated is not None:
+                    new_key = _pool_runtime_api_key(rotated)
+                    if new_key and new_key != api_key:
+                        logger.info(
+                            "exa: rotating credential after HTTP %s and retrying", status
+                        )
+                        entry = rotated
+                        api_key = new_key
+                        client = _build_exa_client(api_key, pool, entry)
+                        continue
+            raise
+
+    raise RuntimeError("exa: _call_with_rotation exited retry loop unexpectedly")
 
 
 class ExaWebSearchProvider(WebSearchProvider):
@@ -99,8 +223,10 @@ class ExaWebSearchProvider(WebSearchProvider):
         return "Exa"
 
     def is_available(self) -> bool:
-        """Return True when ``EXA_API_KEY`` is set to a non-empty value."""
-        return bool(os.getenv("EXA_API_KEY", "").strip())
+        """Return True when an Exa credential is available via env or pool. Must stay cheap."""
+        if os.getenv("EXA_API_KEY", "").strip():
+            return True
+        return _pool_has_entries()
 
     def supports_search(self) -> bool:
         return True
@@ -122,10 +248,12 @@ class ExaWebSearchProvider(WebSearchProvider):
                 return {"success": False, "error": "Interrupted"}
 
             logger.info("Exa search: '%s' (limit=%d)", query, limit)
-            response = _get_exa_client().search(
-                query,
-                num_results=limit,
-                contents={"highlights": True},
+            response = _call_with_rotation(
+                lambda client: client.search(
+                    query,
+                    num_results=limit,
+                    contents={"highlights": True},
+                )
             )
 
             web_results = []
@@ -166,7 +294,9 @@ class ExaWebSearchProvider(WebSearchProvider):
                 ]
 
             logger.info("Exa extract: %d URL(s)", len(urls))
-            response = _get_exa_client().get_contents(urls, text=True)
+            response = _call_with_rotation(
+                lambda client: client.get_contents(urls, text=True)
+            )
 
             results: List[Dict[str, Any]] = []
             for result in response.results or []:

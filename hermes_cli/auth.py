@@ -149,6 +149,12 @@ SERVICE_PROVIDER_NAMES: Dict[str, str] = {
     "spotify": "Spotify",
 }
 
+# Pool-only auth (api_key, no OAuth) for web-search backends.
+WEB_POOL_PROVIDERS: Dict[str, str] = {
+    "tavily": "Tavily",
+    "exa": "Exa",
+}
+
 # Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
 DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
 GEMINI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60  # refresh 60s before expiry
@@ -1180,13 +1186,19 @@ def _store_provider_state(
 
 def is_known_auth_provider(provider_id: str) -> bool:
     normalized = (provider_id or "").strip().lower()
-    return normalized in PROVIDER_REGISTRY or normalized in SERVICE_PROVIDER_NAMES
+    return (
+        normalized in PROVIDER_REGISTRY
+        or normalized in SERVICE_PROVIDER_NAMES
+        or normalized in WEB_POOL_PROVIDERS
+    )
 
 
 def get_auth_provider_display_name(provider_id: str) -> str:
     normalized = (provider_id or "").strip().lower()
     if normalized in PROVIDER_REGISTRY:
         return PROVIDER_REGISTRY[normalized].name
+    if normalized in WEB_POOL_PROVIDERS:
+        return WEB_POOL_PROVIDERS[normalized]
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
@@ -5968,6 +5980,15 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
+    # Pool-only providers (e.g. Tavily/Exa).
+    if target in WEB_POOL_PROVIDERS:
+        entries = read_credential_pool(target)
+        return {
+            "logged_in": bool(entries),
+            "provider": target,
+            "name": WEB_POOL_PROVIDERS[target],
+            "key_count": len(entries) if isinstance(entries, list) else 0,
+        }
     # AWS SDK providers (Bedrock) — check via boto3 credential chain
     if pconfig and pconfig.auth_type == "aws_sdk":
         try:

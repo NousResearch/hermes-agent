@@ -62,6 +62,137 @@ class TestTavilyRequest:
                     _tavily_request("search", {"query": "test"})
 
 
+# ─── credential pool integration ──────────────────────────────────────────────
+
+class _FakePoolEntry:
+    """Minimal stand-in for PooledCredential."""
+
+    def __init__(self, key: str) -> None:
+        self.runtime_api_key = key
+        self.access_token = key
+
+
+class _FakePool:
+    """Minimal stand-in for CredentialPool driving select / rotate paths."""
+
+    def __init__(self, entries):
+        self._entries = list(entries)
+        self._current = 0
+        self.rotate_calls = []
+
+    def has_credentials(self) -> bool:
+        return bool(self._entries)
+
+    def select(self):
+        if not self._entries:
+            return None
+        return self._entries[self._current]
+
+    def mark_exhausted_and_rotate(self, status_code=None, **kwargs):
+        self.rotate_calls.append(status_code)
+        if self._current + 1 < len(self._entries):
+            self._current += 1
+            return self._entries[self._current]
+        return None
+
+
+def _http_response(status: int = 200, json_body=None):
+    """Build a MagicMock httpx response that raises HTTPStatusError on >=400."""
+    import httpx as _httpx
+    resp = MagicMock()
+    resp.status_code = status
+    resp.json.return_value = json_body if json_body is not None else {"results": []}
+    if status >= 400:
+        resp.raise_for_status.side_effect = _httpx.HTTPStatusError(
+            f"{status} error", request=MagicMock(), response=resp
+        )
+    else:
+        resp.raise_for_status = MagicMock()
+    return resp
+
+
+class TestTavilyCredentialPool:
+    """Verify the pool-first credential resolution and 401/403/429 rotation."""
+
+    def test_pool_entry_preferred_over_env(self):
+        pool = _FakePool([_FakePoolEntry("pool-key-1")])
+        mock_response = _http_response(200)
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "env-key-shadowed"}):
+            with patch("plugins.web.tavily.provider.load_pool", return_value=pool), \
+                 patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post:
+                from tools.web_tools import _tavily_request
+                _tavily_request("search", {"query": "hi"})
+                payload = mock_post.call_args.kwargs["json"]
+                assert payload["api_key"] == "pool-key-1"
+
+    def test_env_used_when_pool_empty(self):
+        pool = _FakePool([])
+        mock_response = _http_response(200)
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "env-key"}):
+            with patch("plugins.web.tavily.provider.load_pool", return_value=pool), \
+                 patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post:
+                from tools.web_tools import _tavily_request
+                _tavily_request("search", {"query": "hi"})
+                assert mock_post.call_args.kwargs["json"]["api_key"] == "env-key"
+
+    def test_429_with_pool_rotates_and_retries(self):
+        pool = _FakePool([_FakePoolEntry("key-A"), _FakePoolEntry("key-B")])
+        failed = _http_response(429)
+        ok = _http_response(200)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TAVILY_API_KEY", None)
+            with patch("plugins.web.tavily.provider.load_pool", return_value=pool), \
+                 patch("tools.web_tools.httpx.post", side_effect=[failed, ok]) as mock_post:
+                from tools.web_tools import _tavily_request
+                result = _tavily_request("search", {"query": "hi"})
+                assert result == {"results": []}
+                assert pool.rotate_calls == [429]
+                assert mock_post.call_count == 2
+                assert mock_post.call_args_list[0].kwargs["json"]["api_key"] == "key-A"
+                assert mock_post.call_args_list[1].kwargs["json"]["api_key"] == "key-B"
+
+    def test_429_with_env_only_does_not_rotate(self):
+        import httpx as _httpx
+        pool = _FakePool([])
+        failed = _http_response(429)
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "env-only"}):
+            with patch("plugins.web.tavily.provider.load_pool", return_value=pool), \
+                 patch("tools.web_tools.httpx.post", return_value=failed) as mock_post:
+                from tools.web_tools import _tavily_request
+                with pytest.raises(_httpx.HTTPStatusError):
+                    _tavily_request("search", {"query": "hi"})
+                assert mock_post.call_count == 1
+                assert pool.rotate_calls == []
+
+    def test_500_does_not_rotate(self):
+        import httpx as _httpx
+        pool = _FakePool([_FakePoolEntry("key-A"), _FakePoolEntry("key-B")])
+        failed = _http_response(500)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TAVILY_API_KEY", None)
+            with patch("plugins.web.tavily.provider.load_pool", return_value=pool), \
+                 patch("tools.web_tools.httpx.post", return_value=failed) as mock_post:
+                from tools.web_tools import _tavily_request
+                with pytest.raises(_httpx.HTTPStatusError):
+                    _tavily_request("search", {"query": "hi"})
+                assert mock_post.call_count == 1
+                assert pool.rotate_calls == []
+
+    def test_is_available_via_pool_only(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TAVILY_API_KEY", None)
+            with patch("hermes_cli.auth.read_credential_pool", return_value=[{"id": "k1"}]):
+                from plugins.web.tavily.provider import TavilyWebSearchProvider
+                assert TavilyWebSearchProvider().is_available() is True
+
+    def test_is_available_false_when_no_env_and_empty_pool(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TAVILY_API_KEY", None)
+            with patch("hermes_cli.auth.read_credential_pool", return_value=[]):
+                from plugins.web.tavily.provider import TavilyWebSearchProvider
+                assert TavilyWebSearchProvider().is_available() is False
+
+
 # ─── _normalize_tavily_search_results ─────────────────────────────────────────
 
 class TestNormalizeTavilySearchResults:

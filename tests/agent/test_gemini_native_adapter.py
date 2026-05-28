@@ -198,6 +198,50 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
     assert response.choices[0].message.content == "hello"
 
 
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        ("gemini-3-flash", "gemini-3-flash-preview"),
+        ("gemini-3-pro-preview", "gemini-3.1-pro-preview"),
+        ("gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite"),
+        ("models/gemini-3-flash", "gemini-3-flash-preview"),
+        ("models/gemini-3.5-flash", "gemini-3.5-flash"),
+    ],
+)
+def test_native_client_normalizes_retired_model_ids(monkeypatch, requested, expected):
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    recorded = {}
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            recorded["url"] = url
+            return DummyResponse(
+                payload={
+                    "candidates": [
+                        {
+                            "content": {"parts": [{"text": "hello"}]},
+                            "finishReason": "STOP",
+                        }
+                    ],
+                }
+            )
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+
+    client = GeminiNativeClient(api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta")
+    response = client.chat.completions.create(
+        model=requested,
+        messages=[{"role": "user", "content": "Hello"}],
+    )
+
+    assert recorded["url"] == f"https://generativelanguage.googleapis.com/v1beta/models/{expected}:generateContent"
+    assert response.model == expected
+
+
 def test_native_http_error_keeps_status_and_retry_after():
     from agent.gemini_native_adapter import gemini_http_error
 

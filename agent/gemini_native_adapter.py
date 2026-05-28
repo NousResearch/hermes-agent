@@ -33,6 +33,19 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
+_GEMINI_MODEL_ALIASES = {
+    "gemini-3-flash": "gemini-3-flash-preview",
+    "gemini-3-pro-preview": "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite",
+}
+
+
+def _normalize_gemini_model_id(model: str) -> str:
+    normalized = str(model or "").strip()
+    if normalized.startswith("models/"):
+        normalized = normalized[len("models/") :]
+    return _GEMINI_MODEL_ALIASES.get(normalized, normalized)
+
 
 def is_native_gemini_base_url(base_url: str) -> bool:
     """Return True when the endpoint speaks Gemini's native REST API."""
@@ -880,6 +893,7 @@ class GeminiNativeClient:
         timeout: Any = None,
         **_: Any,
     ) -> Any:
+        model = _normalize_gemini_model_id(model)
         thinking_config = None
         if isinstance(extra_body, dict):
             thinking_config = extra_body.get("thinking_config") or extra_body.get("thinkingConfig")

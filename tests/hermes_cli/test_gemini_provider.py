@@ -132,6 +132,26 @@ class TestGeminiModelCatalog:
         assert "gemini" in _PROVIDER_MODELS
         assert len(_PROVIDER_MODELS["gemini"]) >= 1
 
+    def test_direct_gemini_catalog_uses_current_native_ids(self):
+        assert _PROVIDER_MODELS["gemini"] == [
+            "gemini-3.5-flash",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
+        ]
+
+    def test_direct_gemini_catalog_excludes_retired_native_ids(self):
+        retired = {
+            "gemini-3-flash",
+            "gemini-3-pro-preview",
+            "gemini-3.1-flash-lite-preview",
+        }
+        assert retired.isdisjoint(_PROVIDER_MODELS["gemini"])
+
+    def test_aggregator_gemini_catalog_entries_are_unchanged(self):
+        assert "google/gemini-3.1-flash-lite-preview" in _PROVIDER_MODELS["gmi"]
+        assert "gemini-3-flash" in _PROVIDER_MODELS["opencode-zen"]
+
     def test_provider_label(self):
         assert "gemini" in _PROVIDER_LABELS
         assert _PROVIDER_LABELS["gemini"] == "Google AI Studio"

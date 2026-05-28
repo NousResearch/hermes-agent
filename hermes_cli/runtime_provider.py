@@ -255,6 +255,8 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     """Validate an api_mode value from config. Returns None if invalid."""
     if isinstance(raw, str):
         normalized = raw.strip().lower()
+        if normalized == "responses":
+            normalized = "codex_responses"
         if normalized in _VALID_API_MODES:
             return normalized
     return None

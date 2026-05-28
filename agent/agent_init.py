@@ -291,8 +291,11 @@ def init_agent(
     agent.provider = provider_name or ""
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
-        agent.api_mode = api_mode
+    normalized_api_mode = str(api_mode or "").strip().lower()
+    if normalized_api_mode == "responses":
+        normalized_api_mode = "codex_responses"
+    if normalized_api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+        agent.api_mode = normalized_api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
     elif agent.provider in {"xai", "xai-oauth"}:

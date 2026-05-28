@@ -271,7 +271,10 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
 
 
 def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_tts(monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.managed_nous_tools_enabled",
+        lambda *args, **kwargs: True,
+    )
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "elevenlabs"},
@@ -306,7 +309,10 @@ def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_
 
 
 def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.managed_nous_tools_enabled",
+        lambda *args, **kwargs: True,
+    )
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "edge"},

@@ -3351,7 +3351,6 @@ async def get_models_analytics(days: int = 30):
 # ---------------------------------------------------------------------------
 
 import re
-import asyncio
 
 # PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
 # Windows the import raises; catch and leave PtyBridge=None so the rest of

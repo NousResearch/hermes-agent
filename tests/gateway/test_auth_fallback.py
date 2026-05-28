@@ -1,7 +1,6 @@
 """Test that AuthError triggers fallback provider resolution (#7230)."""
 
-import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 

@@ -21,10 +21,8 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import os
-import re
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 

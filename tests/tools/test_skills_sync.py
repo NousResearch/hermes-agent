@@ -15,8 +15,6 @@ from tools.skills_sync import (
     sync_skills,
     reset_bundled_skill,
     restore_official_optional_skill,
-    MANIFEST_FILE,
-    SKILLS_DIR,
 )
 
 

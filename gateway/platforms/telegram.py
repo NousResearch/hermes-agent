@@ -1690,7 +1690,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommandScopeAllPrivateChats,
                     BotCommandScopeAllGroupChats,
                     BotCommandScopeDefault,
-                    BotCommandScopeChat,
                 )
                 from hermes_cli.commands import telegram_menu_commands
                 # Telegram allows up to 100 commands but has an undocumented

@@ -944,7 +944,7 @@ class TestSilenceDetection:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder, SAMPLE_RATE
+        from tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         # Use very short durations for testing
@@ -1322,7 +1322,7 @@ class TestSubprocessTimeoutKill:
     """Bug: proc.wait(timeout) raised TimeoutExpired but process was not killed."""
 
     def test_timeout_kills_process(self):
-        import subprocess, os
+        import subprocess
         proc = subprocess.Popen(["sleep", "600"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         pid = proc.pid
         assert proc.poll() is None

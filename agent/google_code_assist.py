@@ -31,7 +31,6 @@ import json
 import logging
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field

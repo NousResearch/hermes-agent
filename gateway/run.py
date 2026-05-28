@@ -2569,7 +2569,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
+        # Track active session leases for interrupt management
         self._active_session_leases: Dict[str, Any] = {}
+        # Count of in-flight media deliveries (file uploads) happening after the
+        # agent slot has been released.  _drain_active_agents waits for this to
+        # reach zero so a --replace restart doesn't kill an ongoing upload.
+        self._pending_media_count: int = 0
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Last successfully-resolved (non-empty) model, keyed by session. Used
         # as a fallback when a fresh config read transiently returns an empty
@@ -4499,12 +4504,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return snapshot, True
 
         deadline = asyncio.get_running_loop().time() + timeout
-        while self._running_agents and asyncio.get_running_loop().time() < deadline:
+        while (self._running_agents or self._pending_media_count > 0 or self._adapter_pending_media() > 0) and asyncio.get_running_loop().time() < deadline:
             _maybe_update_status()
             await asyncio.sleep(0.1)
-        timed_out = bool(self._running_agents)
+        timed_out = bool(self._running_agents or self._pending_media_count > 0 or self._adapter_pending_media() > 0)
         _maybe_update_status(force=True)
         return snapshot, timed_out
+
+    def _adapter_pending_media(self) -> int:
+        """Return total count of in-flight media deliveries across all adapters."""
+        total = 0
+        for adapter in self.adapters.values():
+            total += getattr(adapter, "_pending_media_deliveries", 0)
+        return total
 
     def _interrupt_running_agents(self, reason: str) -> None:
         for session_key, agent in list(self._running_agents.items()):
@@ -10096,9 +10108,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
-                        await self._deliver_media_from_response(
-                            response, event, _media_adapter,
-                        )
+                        self._pending_media_count += 1
+                        try:
+                            await self._deliver_media_from_response(
+                                response, event, _media_adapter,
+                            )
+                        finally:
+                            self._pending_media_count -= 1
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.

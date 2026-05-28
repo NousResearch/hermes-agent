@@ -2165,6 +2165,10 @@ class BasePlatformAdapter(ABC):
         # construction (gateway/run.py). Default to "interrupt" so a stray
         # pre-sync read matches the single-knob default rather than silently
         # queueing.
+        # Count of in-flight media deliveries (chunked file uploads, etc.).
+        # GatewayRunner._drain_active_agents waits for this to reach zero so
+        # a --replace restart doesn't kill an ongoing upload mid-flight.
+        self._pending_media_deliveries: int = 0
         self._busy_text_mode: str = (
             os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "interrupt").strip().lower()
             or "interrupt"
@@ -4725,23 +4729,35 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(media_path).suffix.lower()
                         if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-                            media_result = await self.send_voice(
-                                chat_id=event.source.chat_id,
-                                audio_path=media_path,
-                                metadata=_final_thread_metadata,
-                            )
+                            self._pending_media_deliveries += 1
+                            try:
+                                media_result = await self.send_voice(
+                                    chat_id=event.source.chat_id,
+                                    audio_path=media_path,
+                                    metadata=_final_thread_metadata,
+                                )
+                            finally:
+                                self._pending_media_deliveries -= 1
                         elif ext in _VIDEO_EXTS:
-                            media_result = await self.send_video(
-                                chat_id=event.source.chat_id,
-                                video_path=media_path,
-                                metadata=_final_thread_metadata,
-                            )
+                            self._pending_media_deliveries += 1
+                            try:
+                                media_result = await self.send_video(
+                                    chat_id=event.source.chat_id,
+                                    video_path=media_path,
+                                    metadata=_final_thread_metadata,
+                                )
+                            finally:
+                                self._pending_media_deliveries -= 1
                         else:
-                            media_result = await self.send_document(
-                                chat_id=event.source.chat_id,
-                                file_path=media_path,
-                                metadata=_final_thread_metadata,
-                            )
+                            self._pending_media_deliveries += 1
+                            try:
+                                media_result = await self.send_document(
+                                    chat_id=event.source.chat_id,
+                                    file_path=media_path,
+                                    metadata=_final_thread_metadata,
+                                )
+                            finally:
+                                self._pending_media_deliveries -= 1
 
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
@@ -4755,17 +4771,25 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(file_path).suffix.lower()
                         if ext in _VIDEO_EXTS:
-                            await self.send_video(
-                                chat_id=event.source.chat_id,
-                                video_path=file_path,
-                                metadata=_final_thread_metadata,
-                            )
+                            self._pending_media_deliveries += 1
+                            try:
+                                await self.send_video(
+                                    chat_id=event.source.chat_id,
+                                    video_path=file_path,
+                                    metadata=_final_thread_metadata,
+                                )
+                            finally:
+                                self._pending_media_deliveries -= 1
                         else:
-                            await self.send_document(
-                                chat_id=event.source.chat_id,
-                                file_path=file_path,
-                                metadata=_final_thread_metadata,
-                            )
+                            self._pending_media_deliveries += 1
+                            try:
+                                await self.send_document(
+                                    chat_id=event.source.chat_id,
+                                    file_path=file_path,
+                                    metadata=_final_thread_metadata,
+                                )
+                            finally:
+                                self._pending_media_deliveries -= 1
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
 

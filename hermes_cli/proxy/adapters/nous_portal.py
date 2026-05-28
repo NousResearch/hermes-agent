@@ -84,10 +84,21 @@ class NousPortalAdapter(UpstreamAdapter):
         failed_credential: UpstreamCredential,
         status_code: int,
     ) -> Optional[UpstreamCredential]:
-        _ = failed_credential, status_code
-        return None
+        _ = failed_credential
+        if status_code != 401:
+            return None
+        logger.info("proxy: Nous upstream rejected bearer; force-refreshing invoke JWT")
+        return self._get_credential(
+            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_AUTO,
+            force_refresh=True,
+        )
 
-    def _get_credential(self, *, inference_auth_mode: str) -> UpstreamCredential:
+    def _get_credential(
+        self,
+        *,
+        inference_auth_mode: str,
+        force_refresh: bool = False,
+    ) -> UpstreamCredential:
         with self._lock:
             state = self._read_state()
             if state is None:
@@ -98,6 +109,7 @@ class NousPortalAdapter(UpstreamAdapter):
             try:
                 refreshed = resolve_nous_runtime_credentials(
                     inference_auth_mode=inference_auth_mode,
+                    force_refresh=force_refresh,
                 )
             except AuthError as exc:
                 if _is_terminal_nous_refresh_error(exc):

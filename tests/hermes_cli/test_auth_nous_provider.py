@@ -485,7 +485,7 @@ def test_nous_device_code_login_does_not_retry_legacy_scope_when_invoke_refused(
     assert scopes == [auth_mod.DEFAULT_NOUS_SCOPE]
 
 
-def test_legacy_session_env_is_ignored_for_invoke_scope_and_jwt_storage(tmp_path, monkeypatch):
+def test_removed_legacy_session_env_var_does_not_change_jwt_auth(tmp_path, monkeypatch):
     import hermes_cli.auth as auth_mod
 
     hermes_home = tmp_path / "hermes"
@@ -609,13 +609,16 @@ def test_get_nous_auth_status_checks_credential_pool(tmp_path, monkeypatch):
     # Seed the credential pool with a Nous entry
     from agent.credential_pool import PooledCredential, load_pool
     pool = load_pool("nous")
+    token = _invoke_jwt(seconds=3600)
+    expires_at = _future_iso(3600)
     entry = PooledCredential.from_dict("nous", {
-        "access_token": "test-access-token",
+        "access_token": token,
         "refresh_token": "test-refresh-token",
         "portal_base_url": "https://portal.example.com",
         "inference_base_url": "https://inference.example.com/v1",
-        "agent_key": "test-agent-key",
-        "agent_key_expires_at": "2099-01-01T00:00:00+00:00",
+        "agent_key": token,
+        "agent_key_expires_at": expires_at,
+        "scope": "inference:invoke",
         "label": "dashboard device_code",
         "auth_type": "oauth",
         "source": "manual:dashboard_device_code",
@@ -628,7 +631,7 @@ def test_get_nous_auth_status_checks_credential_pool(tmp_path, monkeypatch):
     assert "example.com" in str(status.get("portal_base_url", ""))
 
 
-def test_get_nous_auth_status_pool_opaque_key_is_not_portal_login(tmp_path, monkeypatch):
+def test_get_nous_auth_status_pool_opaque_key_is_not_inference_credential(tmp_path, monkeypatch):
     from hermes_cli.auth import get_nous_auth_status, invalidate_nous_auth_status_cache
 
     hermes_home = tmp_path / "hermes"
@@ -656,11 +659,11 @@ def test_get_nous_auth_status_pool_opaque_key_is_not_portal_login(tmp_path, monk
     status = get_nous_auth_status()
 
     assert status["logged_in"] is False
-    assert status["inference_credential_present"] is True
-    assert status["credential_source"] == "pool:manual opaque key"
+    assert status["inference_credential_present"] is False
+    assert status["credential_source"] is None
     assert status.get("access_token") is None
     assert status.get("portal_base_url") is None
-    assert status.get("inference_base_url") == "https://inference.example.com/v1"
+    assert status.get("inference_base_url") is None
     invalidate_nous_auth_status_cache()
 
 

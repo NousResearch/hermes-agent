@@ -160,6 +160,7 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
+_PLAIN_AT_MENTION_RE = re.compile(r"(?<![\w@])@([A-Za-z0-9_.-]{1,64})")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
@@ -1435,6 +1436,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
         self._dedup_lock = threading.Lock()
         self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
+        self._known_at_mapping: Dict[str, tuple[str, str, float]] = {}  # normalized name → (open_id, display_name, expire_at)
         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
         self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
         self._card_action_tokens: Dict[str, float] = {}  # token → first_seen_time
@@ -3832,11 +3834,87 @@ class FeishuAdapter(BasePlatformAdapter):
         display_name = await self._resolve_sender_name_from_api(
             name_lookup_id, is_bot=is_bot,
         )
+        self._remember_at_mapping(open_id, display_name)
         return {
             "user_id": primary_id,
             "user_name": display_name,
             "user_id_alt": union_id,
         }
+
+    @staticmethod
+    def _normalize_at_mention_key(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        return str(value).strip().lstrip("@").casefold()
+
+    def _remember_at_mapping(self, open_id: Optional[str], display_name: Optional[str]) -> None:
+        trimmed_open_id = str(open_id or "").strip()
+        trimmed_name = str(display_name or "").strip()
+        normalized = self._normalize_at_mention_key(trimmed_name)
+        if not trimmed_open_id or not trimmed_name or not normalized:
+            return
+        cache = getattr(self, "_known_at_mapping", None)
+        if cache is None:
+            cache = {}
+            self._known_at_mapping = cache
+        cache[normalized] = (
+            trimmed_open_id,
+            trimmed_name,
+            time.time() + _FEISHU_SENDER_NAME_TTL_SECONDS,
+        )
+
+    def _resolve_at_mention_ref(self, mention_name: str) -> Optional[tuple[str, str]]:
+        normalized = self._normalize_at_mention_key(mention_name)
+        if not normalized:
+            return None
+        now = time.time()
+        cache = getattr(self, "_known_at_mapping", {})
+        cached = cache.get(normalized)
+        if cached is not None:
+            open_id, display_name, expire_at = cached
+            if now < expire_at:
+                return open_id, display_name
+            cache.pop(normalized, None)
+        if self._bot_open_id and normalized == self._normalize_at_mention_key(self._bot_name):
+            display_name = str(self._bot_name or "user").strip() or "user"
+            self._remember_at_mapping(self._bot_open_id, display_name)
+            return self._bot_open_id, display_name
+        for sender_id, (display_name, expire_at) in getattr(self, "_sender_name_cache", {}).items():
+            if not sender_id or not str(sender_id).startswith("ou_") or now >= expire_at:
+                continue
+            if normalized == self._normalize_at_mention_key(display_name):
+                self._remember_at_mapping(str(sender_id), display_name)
+                return str(sender_id), str(display_name)
+        return None
+
+    def _build_at_mention_post_payload(self, content: str) -> Optional[str]:
+        rows: List[List[Dict[str, str]]] = []
+        matched_any = False
+        for line in content.splitlines() or [""]:
+            row: List[Dict[str, str]] = []
+            cursor = 0
+            for match in _PLAIN_AT_MENTION_RE.finditer(line):
+                resolved = self._resolve_at_mention_ref(match.group(1))
+                if resolved is None:
+                    continue
+                matched_any = True
+                if match.start() > cursor:
+                    row.append({"tag": "text", "text": line[cursor:match.start()]})
+                open_id, display_name = resolved
+                row.append(
+                    {
+                        "tag": "at",
+                        "user_id": open_id,
+                        "user_name": display_name,
+                    }
+                )
+                cursor = match.end()
+            if cursor < len(line):
+                row.append({"tag": "text", "text": line[cursor:]})
+            rows.append(row or [{"tag": "text", "text": ""}])
+        if not matched_any:
+            return None
+        return json.dumps({"zh_cn": {"content": rows}}, ensure_ascii=False)
 
     def _get_cached_sender_name(self, sender_id: Optional[str]) -> Optional[str]:
         """Return a cached sender name only while its TTL is still valid."""
@@ -4284,6 +4362,9 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        at_payload = self._build_at_mention_post_payload(content)
+        if at_payload:
+            return "post", at_payload
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.
@@ -4382,31 +4463,18 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
-        _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request("thread_id", body)
+        body = self._build_create_message_body(
+            receive_id=chat_id,
+            msg_type=msg_type,
+            content=payload,
+            uuid_value=str(uuid.uuid4()),
+        )
+        # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
+        if chat_id.startswith("ou_"):
+            receive_id_type = "open_id"
         else:
-            body = self._build_create_message_body(
-                receive_id=chat_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
-            if chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
-            else:
-                receive_id_type = "chat_id"
-            request = self._build_create_message_request(receive_id_type, body)
+            receive_id_type = "chat_id"
+        request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
     @staticmethod

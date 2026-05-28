@@ -35,6 +35,14 @@ their side — so until then the sidecar is the only way to call
 down the sidecar automatically. When Photon ships an HTTP send
 endpoint we'll retire the sidecar in a follow-up release.
 
+For shared iMessage lines, inbound webhooks and outbound SDK lookups
+use slightly different identifiers. Webhooks deliver a canonical
+Spectrum space id like `any;-;+15551234567`; the current iMessage SDK
+helper resolves a direct-message send space by recipient address
+(`+15551234567`). Hermes keeps the webhook `space.id` as the gateway
+chat id, and the sidecar maps that id back to the recipient address
+when it needs to resolve an uncached outbound space.
+
 ## Prerequisites
 
 - A Photon account — sign up at [app.photon.codes][app]
@@ -85,7 +93,7 @@ rejects deliveries with a timestamp drift greater than 5 minutes.
 ## Start the gateway
 
 ```bash
-hermes gateway start --platform photon
+hermes gateway run -v
 ```
 
 You'll see something like:
@@ -95,6 +103,13 @@ You'll see something like:
 ```
 
 Send an iMessage to your assigned number and Hermes will reply.
+
+For always-on local use, install the launchd service and start it:
+
+```bash
+hermes gateway install --force
+hermes gateway start
+```
 
 ## Status & troubleshooting
 
@@ -127,6 +142,15 @@ Common issues:
 - **Webhook reachable from localhost but Photon can't deliver** —
   Photon needs a public hostname. Cloudflare Tunnel is the easiest
   free option.
+- **`unable to resolve space id any;-;+...`** — the sidecar is using
+  the webhook `space.id` directly instead of resolving the iMessage
+  DM by phone number. Update the Photon plugin; current versions cache
+  inbound `Space` objects and fall back to the phone-number lookup.
+- **`TypeError: c.build is not a function` while sending** — an old
+  sidecar called `space.send(text, { replyTo })`. The SDK expects
+  content builders such as `text(...)`; current versions send plain
+  text with `space.send(text(...))` and do not wire threaded replies
+  yet.
 
 ## Webhook management
 
@@ -142,6 +166,10 @@ hermes photon webhook delete <webhook-id>   # remove one
   attachment retrieval endpoint as roadmap.
 - **Outbound attachments not wired yet.** Easy to add in the sidecar
   once the agent has reason to send them.
+- **Threaded replies not wired yet.** Hermes can carry a `replyTo`
+  id internally, but Photon replies require the SDK `reply(...)`
+  builder plus the original message object, so the sidecar currently
+  sends plain outbound text.
 - **Photon's free quotas:** 5,000 messages per server per day,
   50 new-conversation initiations per shared line per day. Increases
   available — email `help@photon.codes`.

@@ -44,12 +44,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 
-# Photon's published OAuth device-client identifier for first-party CLIs.
-# We use a fixed "hermes-agent" client_id string — Photon's device endpoint
-# accepts any opaque client_id and ties the bearer token to the approving
-# user, not to the client.  If Photon later requires registered clients,
-# this is the one knob to update.
-DEFAULT_CLIENT_ID = "hermes-agent"
+# Hosted Photon currently allowlists the published Photon CLI device client.
+# Use that compatibility client until the dashboard API registers Hermes as its
+# own device-flow client_id.
+DEFAULT_CLIENT_ID = "photon-cli"
+DEFAULT_SCOPE = "openid profile email"
 
 DEFAULT_DASHBOARD_HOST = "https://app.photon.codes"
 DEFAULT_SPECTRUM_HOST = "https://spectrum.photon.codes"
@@ -175,7 +174,7 @@ def _spectrum_host() -> str:
 
 
 def request_device_code(
-    *, client_id: str = DEFAULT_CLIENT_ID, scope: Optional[str] = None,
+    *, client_id: str = DEFAULT_CLIENT_ID, scope: Optional[str] = DEFAULT_SCOPE,
 ) -> DeviceCode:
     """POST ``/api/auth/device/code`` and return the device + user codes."""
     if httpx is None:

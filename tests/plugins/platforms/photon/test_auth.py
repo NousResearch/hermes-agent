@@ -97,7 +97,8 @@ def test_request_device_code(monkeypatch: pytest.MonkeyPatch) -> None:
     assert code.user_code == "ABCD-1234"
     assert code.expires_in == 600
     assert "/api/auth/device/code" in captured["url"]
-    assert captured["body"]["client_id"] == "hermes-agent"
+    assert captured["body"]["client_id"] == "photon-cli"
+    assert captured["body"]["scope"] == "openid profile email"
 
 
 def test_poll_for_token_via_header(monkeypatch: pytest.MonkeyPatch) -> None:

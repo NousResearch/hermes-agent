@@ -43,6 +43,16 @@ When Photon ships an HTTP send endpoint, `_sidecar_send` is the one
 function that swaps and the sidecar disappears. The rest of the
 plugin stays the same.
 
+One implementation detail matters for shared iMessage lines: webhook
+events identify a conversation with a canonical Spectrum space id
+like `any;-;+15551234567`, while the current `spectrum-ts`
+`imessage(app).space(...)` helper resolves direct-message spaces by
+recipient address (`+15551234567`). The sidecar therefore caches
+send-capable `Space` objects from the inbound stream and, for uncached
+shared-line DMs, strips the `any;-;` prefix before sending. This
+bridges Photon's webhook shape to the SDK's outbound lookup shape
+without changing the Python gateway contract.
+
 ## First-time setup
 
 ```bash
@@ -52,17 +62,24 @@ hermes photon login
 # 2. Full setup: project, user, sidecar deps
 hermes photon setup --phone +15551234567
 
-# 3. Expose your webhook URL to the public internet
-#    (cloudflared, ngrok, your gateway's public hostname, etc.)
-#    Then register it with Photon:
-hermes photon webhook register https://your-host.example.com/photon/webhook
+# 3. Expose the local webhook listener to the public internet.
+#    Keep this running while testing; copy the trycloudflare.com URL it prints.
+cloudflared tunnel --url http://127.0.0.1:8788
 
-# 4. Save the signing secret it prints to ~/.hermes/.env
+# 4. Register that public tunnel URL with Photon.
+hermes photon webhook register https://YOUR-TUNNEL.trycloudflare.com/photon/webhook
+
+# 5. Save the signing secret it prints to ~/.hermes/.env
 #    as PHOTON_WEBHOOK_SECRET=...
 #    Photon only returns it ONCE.
 
-# 5. Start the gateway
-hermes gateway start --platform photon
+# 6. Restart/start the gateway in foreground QA mode.
+#    Restart is required after webhook registration so Hermes loads the secret.
+hermes gateway run -v
+
+# For always-on local use, install/start the launchd service instead:
+hermes gateway install --force
+hermes gateway start
 ```
 
 ## Credentials
@@ -110,6 +127,10 @@ All env vars are documented in `plugin.yaml`. The most important are:
 - **Outbound attachments are not supported yet.** Adding them is
   straightforward once the sidecar wires up `attachment(...)` /
   `space.send(attachment(...))` from `spectrum-ts`.
+- **Threaded reply metadata is not sent yet.** Hermes may pass a
+  `replyTo` id to the sidecar, but the sidecar currently sends plain
+  text with `space.send(text(...))`; true Spectrum replies need the
+  SDK `reply(...)` content builder and the original message object.
 - **Reactions, message effects, polls** — not exposed yet; the
   `spectrum-ts` SDK supports them, and the sidecar is the natural
   place to add them when the agent has reason to use them.

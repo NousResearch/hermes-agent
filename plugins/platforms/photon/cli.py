@@ -18,14 +18,17 @@ import argparse
 import getpass
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, Optional
 
 from . import auth as photon_auth
 
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
+_MIN_SPECTRUM_TS_VERSION = (1, 7, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +196,11 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     print("✓ Photon setup complete.")
     print("  Next: register a webhook URL Photon can reach:")
     print("        hermes photon webhook register https://YOUR-PUBLIC-URL/photon/webhook")
-    print("  Then start the gateway:")
-    print("        hermes gateway start --platform photon")
+    print("  Then start the gateway in foreground QA mode:")
+    print("        hermes gateway run -v")
+    print("  For always-on local use:")
+    print("        hermes gateway install --force")
+    print("        hermes gateway start")
     return 0
 
 
@@ -206,9 +212,8 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     # The two non-credential rows live here so the helper stays purely
     # about credentials.
     node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
-    sidecar_installed = (_SIDECAR_DIR / "node_modules").exists()
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
-    print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
+    print(f"  sidecar deps        : {_sidecar_dependency_status()}")
     return 0
 
 
@@ -235,6 +240,71 @@ def _install_sidecar() -> int:
     if proc.returncode != 0:
         print("npm install failed", file=sys.stderr)
     return proc.returncode
+
+
+def _sidecar_dependency_status() -> str:
+    if not (_SIDECAR_DIR / "node_modules").exists():
+        return "✗ run `hermes photon install-sidecar`"
+
+    version, problems = _installed_spectrum_ts()
+    if not version:
+        return "✗ spectrum-ts missing; run `hermes photon install-sidecar`"
+
+    parsed = _parse_semver(version)
+    if parsed is None:
+        return f"⚠ spectrum-ts {version} installed; unable to verify version"
+    if parsed < _MIN_SPECTRUM_TS_VERSION:
+        return (
+            f"✗ spectrum-ts {version} is too old; "
+            "run `hermes photon install-sidecar`"
+        )
+    if problems:
+        detail = str(problems[0]).splitlines()[0][:120]
+        return (
+            f"⚠ spectrum-ts {version} installed but npm reports {detail}; "
+            "run `hermes photon install-sidecar`"
+        )
+    return f"✓ installed (spectrum-ts {version})"
+
+
+def _installed_spectrum_ts() -> tuple[Optional[str], list[Any]]:
+    npm = shutil.which("npm") or "npm"
+    if not shutil.which(npm):
+        return None, ["npm missing"]
+    try:
+        proc = subprocess.run(  # noqa: S603
+            [npm, "ls", "spectrum-ts", "--depth=0", "--json"],
+            cwd=str(_SIDECAR_DIR),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, [str(e)]
+
+    data: dict[str, Any] = {}
+    if proc.stdout:
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            data = {}
+    deps = data.get("dependencies") or {}
+    spectrum = deps.get("spectrum-ts") or {}
+    version = spectrum.get("version")
+    problems = data.get("problems") or []
+    if proc.returncode != 0 and not problems:
+        msg = (proc.stderr or "npm ls failed").strip()
+        if msg:
+            problems = [msg]
+    return str(version) if version else None, list(problems)
+
+
+def _parse_semver(version: str) -> Optional[tuple[int, int, int]]:
+    match = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)", version)
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
 def _cmd_webhook(args: argparse.Namespace) -> int:

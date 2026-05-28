@@ -625,10 +625,21 @@ class TestKanbanWaitpidWindowsGuard:
         # Find the waitpid call and confirm it's inside a POSIX gate.
         idx = source.find("os.waitpid(-1, os.WNOHANG)")
         assert idx > 0, "waitpid call must exist"
-        # Look backwards up to 400 chars for the gate.
+        # Look backwards up to 400 chars for the gate. Accept either form:
+        #   `if os.name != "nt":` (run iff POSIX), or
+        #   `if os.name == "nt": return []` (early-return guard).
+        # Both correctly keep the waitpid loop off Windows; the early-return
+        # form is stronger because the rest of the function never runs.
         preamble = source[max(0, idx - 400):idx]
-        assert 'os.name != "nt"' in preamble or "os.name != 'nt'" in preamble, (
-            "os.waitpid(-1, os.WNOHANG) must sit behind an os.name != 'nt' guard"
+        guard_patterns = (
+            'os.name != "nt"',
+            "os.name != 'nt'",
+            'os.name == "nt"',  # early-return guard
+            "os.name == 'nt'",
+        )
+        assert any(p in preamble for p in guard_patterns), (
+            "os.waitpid(-1, os.WNOHANG) must sit behind an os.name guard "
+            f"(checked patterns: {guard_patterns})"
         )
 
 

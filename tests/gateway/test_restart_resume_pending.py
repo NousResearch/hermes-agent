@@ -373,6 +373,29 @@ class TestGetOrCreateResumePending:
         # Flag is NOT cleared on read — only on successful turn completion.
         assert second.resume_pending is True
 
+    def test_resume_pending_does_not_bypass_idle_reset_policy(self, tmp_path):
+        """Expired resume_pending sessions must not resurrect stale transcripts."""
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=1)
+        )
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        source = _make_source()
+        first = store.get_or_create_session(source)
+        original_sid = first.session_id
+        store.mark_resume_pending(first.session_key)
+
+        with store._lock:
+            entry = store._entries[first.session_key]
+            entry.updated_at = datetime.now() - timedelta(minutes=5)
+            store._save()
+
+        second = store.get_or_create_session(source)
+
+        assert second.session_id != original_sid
+        assert second.was_auto_reset is True
+        assert second.auto_reset_reason == "idle"
+        assert second.resume_pending is False
+
     def test_suspended_still_creates_new_session(self, tmp_path):
         """Regression guard — suspended must still force a clean slate."""
         store = _make_store(tmp_path)

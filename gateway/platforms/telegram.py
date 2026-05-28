@@ -73,6 +73,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_video_from_bytes,
     cache_document_from_bytes,
+    MAX_VIDEO_BYTES,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
@@ -4104,6 +4105,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
         elif msg.video:
             try:
+                video_size = getattr(msg.video, "file_size", None)
+                if not video_size or video_size > MAX_VIDEO_BYTES:
+                    event.text = (
+                        "The video is too large or its size could not be verified. "
+                        "Maximum: 20 MB."
+                    )
+                    logger.info("[Telegram] Video too large: %s bytes", video_size)
+                    await self.handle_message(event)
+                    return
+
                 file_obj = await msg.video.get_file()
                 video_bytes = await file_obj.download_as_bytearray()
                 ext = ".mp4"

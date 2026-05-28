@@ -372,6 +372,55 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
     assert "foo-umbrella" in md
 
 
+def test_curator_does_not_repoint_cron_from_model_only_consolidation(curator_env_with_cron):
+    """LLM-only consolidation claims must not choose persistent cron targets."""
+    curator = curator_env_with_cron["curator"]
+    jobs = curator_env_with_cron["jobs"]
+
+    job = jobs.create_job(
+        prompt="",
+        schedule="every 1h",
+        skills=["benign-removed-skill"],
+        name="sensitive-job",
+    )
+
+    llm_final = (
+        "## Structured summary (required)\n"
+        "```yaml\n"
+        "consolidations:\n"
+        "  - from: benign-removed-skill\n"
+        "    into: attacker-existing-skill\n"
+        "    reason: model-only claim\n"
+        "prunings: []\n"
+        "```\n"
+    )
+
+    run_dir = curator._write_run_report(
+        started_at=datetime.now(timezone.utc),
+        elapsed_seconds=1.0,
+        auto_counts={"checked": 1, "marked_stale": 0, "archived": 1, "reactivated": 0},
+        auto_summary="1 archived",
+        before_report=[
+            {"name": "benign-removed-skill", "state": "active", "pinned": False}
+        ],
+        before_names={"benign-removed-skill"},
+        after_report=[
+            {"name": "attacker-existing-skill", "state": "active", "pinned": False}
+        ],
+        llm_meta=_make_llm_meta(final=llm_final, tool_calls=[]),
+    )
+
+    loaded = jobs.get_job(job["id"])
+    assert loaded["skills"] == []
+    assert loaded["skill"] is None
+
+    payload = json.loads((run_dir / "run.json").read_text())
+    assert payload["consolidated"][0]["source"] == "model"
+    rewrite = payload["cron_rewrites"]["rewrites"][0]
+    assert rewrite["mapped"] == {}
+    assert rewrite["dropped"] == ["benign-removed-skill"]
+
+
 def test_curator_drops_pruned_skill_from_cron_job(curator_env_with_cron):
     """A pruned (no-umbrella) skill should be dropped from the cron
     job's skill list entirely — there's no forwarding target."""

@@ -54,11 +54,14 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if thread_id is None:
         return None
     metadata = {"thread_id": thread_id}
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+    platform = _platform_name(getattr(source, "platform", None))
+    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
+    if platform == "feishu" and reply_to_message_id is not None:
+        metadata["reply_to_message_id"] = str(reply_to_message_id)
     return metadata
 
 
@@ -778,6 +781,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
 # ---------------------------------------------------------------------------
 
 VIDEO_CACHE_DIR = get_hermes_dir("cache/videos", "video_cache")
+MAX_VIDEO_BYTES = 20 * 1024 * 1024
 
 SUPPORTED_VIDEO_TYPES = {
     ".mp4": "video/mp4",
@@ -826,12 +830,34 @@ def get_video_cache_dir() -> Path:
 
 def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     """Save raw video bytes to the cache and return the absolute file path."""
+    if len(data) > MAX_VIDEO_BYTES:
+        raise ValueError("Video exceeds maximum cache size of 20 MB")
     cache_dir = get_video_cache_dir()
     filename = f"video_{uuid.uuid4().hex[:12]}{ext}"
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
 
+
+def cleanup_video_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached videos older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    import time
+
+    cache_dir = get_video_cache_dir()
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    for f in cache_dir.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            try:
+                f.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
 
 # ---------------------------------------------------------------------------
 # Document cache utilities

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -49,6 +50,8 @@ ACTIVE_PIPELINE_STATES = {
     "writing_linear",
     "sending_teams",
 }
+CLIENT_REVIEW_STATE = "awaiting_client_report_review"
+TERMINAL_PIPELINE_STATES.add(CLIENT_REVIEW_STATE)
 
 
 class TeamsPipelineError(RuntimeError):
@@ -282,6 +285,7 @@ class TeamsMeetingPipeline:
         notion_writer: Optional[NotionWriter] = None,
         linear_writer: Optional[LinearWriter] = None,
         teams_sender: Optional[SinkFn] = None,
+        approval_store: Any | None = None,
     ) -> None:
         self.graph_client = graph_client
         self.store = store
@@ -291,6 +295,7 @@ class TeamsMeetingPipeline:
         self.notion_writer = notion_writer
         self.linear_writer = linear_writer
         self.teams_sender = teams_sender
+        self.approval_store = approval_store
 
     def create_job_from_notification(self, notification: dict[str, Any]) -> TeamsMeetingPipelineJob:
         event_id = TeamsPipelineStore.build_notification_receipt_key(notification)
@@ -408,8 +413,8 @@ class TeamsMeetingPipeline:
             job.summary_payload = summary_payload
             job = self._persist_job(job, summary_payload=summary_payload.to_dict())
 
-            await self._write_sinks(job, summary_payload)
-            job = self._persist_job(job, status="completed")
+            final_status = await self._write_sinks(job, summary_payload)
+            job = self._persist_job(job, status=final_status or "completed")
             return job
         except TeamsPipelineRetryableError as exc:
             job = self._persist_job(
@@ -468,7 +473,7 @@ class TeamsMeetingPipeline:
             )
             audio_path = await self._prepare_audio_path(recording_path)
             job = self._persist_job(job, status="transcribing_audio")
-            result = await asyncio.to_thread(self.transcribe_fn, str(audio_path), self.config.stt_model)
+            result = await self._run_transcription(str(audio_path))
             if not result.get("success"):
                 raise TeamsPipelineRetryableError(str(result.get("error") or "Unknown STT failure"))
             transcript = str(result.get("transcript") or "").strip()
@@ -501,6 +506,14 @@ class TeamsMeetingPipeline:
             detail = stderr.decode("utf-8", errors="replace").strip()
             raise TeamsPipelineRetryableError(f"ffmpeg audio extraction failed: {detail}")
         return audio_path
+
+    async def _run_transcription(self, audio_path: str) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="teams-stt")
+        try:
+            return await loop.run_in_executor(executor, self.transcribe_fn, audio_path, self.config.stt_model)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     async def _generate_summary_payload(
         self,
@@ -556,7 +569,7 @@ class TeamsMeetingPipeline:
             ),
         )
 
-    async def _write_sinks(self, job: TeamsMeetingPipelineJob, payload: TeamsMeetingSummaryPayload) -> None:
+    async def _write_sinks(self, job: TeamsMeetingPipelineJob, payload: TeamsMeetingSummaryPayload) -> str | None:
         if self.config.notion and self.config.notion.get("enabled") and self.notion_writer:
             job = self._persist_job(job, status="writing_notion")
             sink_key = f"notion:{payload.meeting_ref.meeting_id}"
@@ -575,11 +588,103 @@ class TeamsMeetingPipeline:
             job = self._persist_job(job, status="sending_teams")
             sink_key = f"teams:{payload.meeting_ref.meeting_id}"
             existing = self.store.get_sink_record(sink_key)
+            if self._teams_delivery_requires_review():
+                self._ensure_teams_review_record(sink_key, payload, existing)
+                return CLIENT_REVIEW_STATE
             if hasattr(self.teams_sender, "write_summary"):
                 result = await self.teams_sender.write_summary(payload, self.config.teams_delivery, existing)
             else:
                 result = await self.teams_sender(payload, self.config.teams_delivery, existing)
             self.store.upsert_sink_record(sink_key, result)
+        return None
+
+    def _teams_delivery_requires_review(self) -> bool:
+        delivery = self.config.teams_delivery or {}
+        return bool(delivery.get("final_report_review_required", True))
+
+    def _approval_store(self):
+        if self.approval_store is None:
+            from hermes_cli.ops_approvals import ApprovalStore
+
+            self.approval_store = ApprovalStore()
+        return self.approval_store
+
+    def _ensure_teams_review_record(
+        self,
+        sink_key: str,
+        payload: TeamsMeetingSummaryPayload,
+        existing: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if existing and existing.get("approval_id") and existing.get("status") == "pending_review":
+            return existing
+
+        target = (
+            (self.config.teams_delivery or {}).get("channel_id")
+            or (self.config.teams_delivery or {}).get("chat_id")
+            or (self.config.teams_delivery or {}).get("team_id")
+            or "teams"
+        )
+        approval = self._approval_store().propose_from_context(
+            {
+                "title": f"Review final report: {payload.title or payload.meeting_ref.meeting_id}",
+                "project": "Teams meeting pipeline",
+                "profile": "default",
+                "risk_label": "External-side-effect",
+                "proposed_action": "Send the generated final meeting report to the configured Teams destination.",
+                "target": str(target),
+                "preview": _render_summary_markdown(payload)[:4000],
+                "reason": "Final report review is required before issuing client-facing delivery.",
+                "rollback_or_verification": "Verify the Teams message content and destination after release.",
+                "created_by": "Hermes Teams Pipeline",
+                "source_surface": "teams_pipeline",
+                "source_ref": payload.meeting_ref.meeting_id,
+            }
+        )
+        return self.store.upsert_sink_record(
+            sink_key,
+            {
+                "status": "pending_review",
+                "approval_id": approval["id"],
+                "target": str(target),
+            },
+        )
+
+    async def release_teams_report(self, job_or_id: TeamsMeetingPipelineJob | str) -> dict[str, Any]:
+        job = self._coerce_job(job_or_id)
+        if job.summary_payload is None:
+            return {"released": False, "error": f"Job {job.job_id} has no summary payload."}
+        if not self.teams_sender:
+            return {"released": False, "error": "Teams delivery is not configured."}
+
+        payload = job.summary_payload
+        sink_key = f"teams:{payload.meeting_ref.meeting_id}"
+        existing = self.store.get_sink_record(sink_key)
+        if not existing or existing.get("status") != "pending_review":
+            return {"released": False, "error": f"No pending Teams review for job {job.job_id}."}
+
+        approval_id = str(existing.get("approval_id") or "")
+        if not approval_id:
+            return {"released": False, "error": "Pending Teams review has no approval_id."}
+        approval = self._approval_store().get(approval_id)
+        if approval.get("status") != "approved":
+            return {"released": False, "error": f"Final report review is not approved: {approval.get('status')}"}
+
+        if hasattr(self.teams_sender, "write_summary"):
+            result = await self.teams_sender.write_summary(payload, self.config.teams_delivery or {}, existing)
+        else:
+            result = await self.teams_sender(payload, self.config.teams_delivery or {}, existing)
+        record = dict(result or {})
+        record.update(
+            {
+                "status": "sent",
+                "approval_id": approval_id,
+                "approved_by": approval.get("decided_by"),
+                "approved_at": approval.get("decided_at"),
+            }
+        )
+        self.store.upsert_sink_record(sink_key, record)
+        self._persist_job(job, status="completed")
+        return {"released": True, "sink_key": sink_key, "approval_id": approval_id, "result": record}
 
 
 def _collect_call_metrics(artifacts: list[MeetingArtifact]) -> dict[str, Any]:

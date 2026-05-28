@@ -354,8 +354,13 @@ class TestTeamsMeetingPipeline:
             graph_client=FakeGraphClient(),
             store=store,
             config={
+                "tmp_dir": str(tmp_path / "teams-tmp"),
                 "notion": {"enabled": True, "database_id": "db-1"},
-                "teams_delivery": {"enabled": True, "channel_id": "channel-1"},
+                "teams_delivery": {
+                    "enabled": True,
+                    "channel_id": "channel-1",
+                    "final_report_review_required": False,
+                },
             },
             transcribe_fn=_transcribe,
             summarize_fn=_summarize,
@@ -382,6 +387,134 @@ class TestTeamsMeetingPipeline:
         assert notion_record["page_id"] == "page-1"
         assert teams_record is not None
         assert teams_record["message_id"] == "msg-1"
+
+    async def test_teams_delivery_requires_final_report_review_by_default(self, tmp_path, monkeypatch):
+        from plugins.teams_pipeline import pipeline as pipeline_module
+
+        monkeypatch.setattr(pipeline_module, "resolve_meeting_reference", _transcript_meeting_resolver)
+
+        async def _fetch_transcript(client, meeting_ref):
+            return (
+                MeetingArtifact(artifact_type="transcript", artifact_id="tx-review", display_name="meeting.vtt"),
+                "Decision: Share final report after review.\nAction: Send approved client report.",
+            )
+
+        async def _summarize(**kwargs):
+            return pipeline_module.TeamsMeetingSummaryPayload(
+                meeting_ref=kwargs["resolved_meeting"],
+                title="Client Weekly Sync",
+                transcript_text=kwargs["transcript_text"],
+                summary="Client-ready summary",
+                key_decisions=["Share final report after review."],
+                action_items=["Send approved client report."],
+                risks=[],
+                confidence="high",
+                confidence_notes="Transcript available.",
+                source_artifacts=kwargs["artifacts"],
+            )
+
+        sent = []
+
+        async def _teams_sender(payload, config, existing_record=None):
+            sent.append(payload.title)
+            return {"message_id": "msg-review"}
+
+        monkeypatch.setattr(pipeline_module, "fetch_preferred_transcript_text", _fetch_transcript)
+        monkeypatch.setattr(pipeline_module, "enrich_meeting_with_call_record", _no_call_record)
+
+        store = TeamsPipelineStore(tmp_path / "teams-store.json")
+        pipeline = TeamsMeetingPipeline(
+            graph_client=FakeGraphClient(),
+            store=store,
+            config={"transcript_min_chars": 20, "teams_delivery": {"enabled": True, "channel_id": "client-channel"}},
+            summarize_fn=_summarize,
+            teams_sender=_teams_sender,
+        )
+
+        job = await pipeline.run_notification(
+            {
+                "id": "notif-review",
+                "changeType": "updated",
+                "resource": "communications/onlineMeetings/meeting-review",
+                "resourceData": {"id": "meeting-review"},
+            }
+        )
+
+        assert job.status == "awaiting_client_report_review"
+        assert sent == []
+        teams_record = store.get_sink_record("teams:meeting-review")
+        assert teams_record is not None
+        assert teams_record["status"] == "pending_review"
+        assert teams_record["approval_id"]
+
+    async def test_release_teams_report_sends_only_after_approval(self, tmp_path, monkeypatch):
+        from hermes_cli.ops_approvals import ApprovalStore
+        from plugins.teams_pipeline import pipeline as pipeline_module
+
+        monkeypatch.setattr(pipeline_module, "resolve_meeting_reference", _transcript_meeting_resolver)
+
+        async def _fetch_transcript(client, meeting_ref):
+            return (
+                MeetingArtifact(artifact_type="transcript", artifact_id="tx-release", display_name="meeting.vtt"),
+                "Decision: Release after approval.\nAction: Send final client report.",
+            )
+
+        async def _summarize(**kwargs):
+            return pipeline_module.TeamsMeetingSummaryPayload(
+                meeting_ref=kwargs["resolved_meeting"],
+                title="Approved Client Sync",
+                transcript_text=kwargs["transcript_text"],
+                summary="Approved summary",
+                key_decisions=["Release after approval."],
+                action_items=["Send final client report."],
+                confidence="high",
+                source_artifacts=kwargs["artifacts"],
+            )
+
+        sent = []
+
+        async def _teams_sender(payload, config, existing_record=None):
+            sent.append(payload.title)
+            return {"message_id": "msg-approved"}
+
+        monkeypatch.setattr(pipeline_module, "fetch_preferred_transcript_text", _fetch_transcript)
+        monkeypatch.setattr(pipeline_module, "enrich_meeting_with_call_record", _no_call_record)
+
+        store = TeamsPipelineStore(tmp_path / "teams-store.json")
+        approval_store = ApprovalStore(base_dir=tmp_path / "approvals")
+        pipeline = TeamsMeetingPipeline(
+            graph_client=FakeGraphClient(),
+            store=store,
+            config={"transcript_min_chars": 20, "teams_delivery": {"enabled": True, "channel_id": "client-channel"}},
+            summarize_fn=_summarize,
+            teams_sender=_teams_sender,
+            approval_store=approval_store,
+        )
+
+        job = await pipeline.run_notification(
+            {
+                "id": "notif-release",
+                "changeType": "updated",
+                "resource": "communications/onlineMeetings/meeting-release",
+                "resourceData": {"id": "meeting-release"},
+            }
+        )
+
+        blocked = await pipeline.release_teams_report(job.job_id)
+        assert blocked["released"] is False
+        assert "not approved" in blocked["error"]
+        assert sent == []
+
+        approval_id = store.get_sink_record("teams:meeting-release")["approval_id"]
+        approval_store.decide(approval_id, "approved", decided_by="Travis")
+
+        released = await pipeline.release_teams_report(job.job_id)
+        assert released["released"] is True
+        assert sent == ["Approved Client Sync"]
+        teams_record = store.get_sink_record("teams:meeting-release")
+        assert teams_record["status"] == "sent"
+        assert teams_record["message_id"] == "msg-approved"
+        assert store.get_job(job.job_id)["status"] == "completed"
 
     async def test_missing_transcript_and_recording_schedules_retry(self, tmp_path, monkeypatch):
         from plugins.teams_pipeline import pipeline as pipeline_module

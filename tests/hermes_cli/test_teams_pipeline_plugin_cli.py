@@ -50,6 +50,9 @@ def test_register_cli_builds_tree():
     register_cli(parser)
     args = parser.parse_args(["list"])
     assert args.teams_pipeline_action == "list"
+    args = parser.parse_args(["release", "job-1"])
+    assert args.teams_pipeline_action == "release"
+    assert args.job_id == "job-1"
 
 
 def test_list_prints_recent_jobs(capsys, tmp_path):
@@ -106,6 +109,28 @@ def test_fetch_requires_meeting_identifier(capsys):
     teams_pipeline_command(_make_args(teams_pipeline_action="fetch"))
     out = capsys.readouterr().out
     assert "meeting_id or join_web_url is required" in out
+
+
+def test_release_prints_release_result(monkeypatch, capsys, tmp_path):
+    class FakePipeline:
+        async def release_teams_report(self, job_id):
+            assert job_id == "job-1"
+            return {"released": True, "sink_key": "teams:meeting-1"}
+
+    monkeypatch.setattr(
+        "plugins.teams_pipeline.cli._build_release_pipeline",
+        lambda store: FakePipeline(),
+    )
+
+    teams_pipeline_command(
+        _make_args(
+            teams_pipeline_action="release",
+            job_id="job-1",
+            store_path=str(tmp_path / "teams_pipeline_store.json"),
+        )
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"released": True, "sink_key": "teams:meeting-1"}
 
 
 def test_subscriptions_lists_graph_subscriptions(monkeypatch, capsys):

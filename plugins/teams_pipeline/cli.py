@@ -45,6 +45,10 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     run_p.add_argument("job_id")
     run_p.add_argument("--store-path", default="")
 
+    release_p = subs.add_parser("release", help="Send an approved final report to Teams")
+    release_p.add_argument("job_id")
+    release_p.add_argument("--store-path", default="")
+
     fetch_p = subs.add_parser("fetch", aliases=["test"], help="Dry-run meeting artifact resolution")
     fetch_p.add_argument("--meeting-id", default="")
     fetch_p.add_argument("--join-web-url", default="")
@@ -94,7 +98,7 @@ def teams_pipeline_command(args: argparse.Namespace) -> int:
     if not action:
         print(
             "Usage: hermes teams-pipeline "
-            "{list|show|run|fetch|subscriptions|subscribe|renew-subscription|delete-subscription|maintain-subscriptions|token-health|validate}"
+            "{list|show|run|release|fetch|subscriptions|subscribe|renew-subscription|delete-subscription|maintain-subscriptions|token-health|validate}"
         )
         return 2
 
@@ -105,6 +109,8 @@ def teams_pipeline_command(args: argparse.Namespace) -> int:
             _cmd_show(args)
         elif action in {"run", "replay"}:
             _cmd_run(args)
+        elif action == "release":
+            _cmd_release(args)
         elif action in {"fetch", "test"}:
             _cmd_fetch(args)
         elif action in {"subscriptions", "subs"}:
@@ -302,6 +308,40 @@ def _cmd_run(args) -> None:
     pipeline = TeamsMeetingPipeline(graph_client=build_graph_client(), store=store, config={})
     result = _run_async(pipeline.run_job(job_id))
     print(json.dumps(_compact_job(result.to_dict()), indent=2, sort_keys=True))
+
+
+def _build_release_pipeline(store: TeamsPipelineStore) -> TeamsMeetingPipeline:
+    from plugins.teams_pipeline.runtime import build_pipeline_runtime_config
+
+    gateway_config = load_gateway_config()
+    pipeline_config = build_pipeline_runtime_config(gateway_config)
+    teams_sender = None
+    teams_config = gateway_config.platforms.get(Platform("teams"))
+    teams_delivery = dict(pipeline_config.get("teams_delivery") or {})
+    if teams_config and teams_config.enabled and teams_delivery.get("enabled"):
+        try:
+            from plugins.platforms.teams.adapter import TeamsSummaryWriter
+        except ImportError:
+            teams_sender = None
+        else:
+            teams_sender = TeamsSummaryWriter(platform_config=teams_config)
+    return TeamsMeetingPipeline(
+        graph_client=object(),
+        store=store,
+        config=pipeline_config,
+        teams_sender=teams_sender,
+    )
+
+
+def _cmd_release(args) -> None:
+    job_id = str(getattr(args, "job_id", "") or "").strip()
+    if not job_id:
+        print("job_id is required")
+        return
+    store = TeamsPipelineStore(_store_path(getattr(args, "store_path", None)))
+    pipeline = _build_release_pipeline(store)
+    result = _run_async(pipeline.release_teams_report(job_id))
+    print(json.dumps(result, indent=2, sort_keys=True))
 
 
 def _cmd_fetch(args) -> None:

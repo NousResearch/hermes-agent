@@ -478,6 +478,46 @@ class TestBlueBubblesWebhookHandling:
         assert second.text == "ok"
         assert handled == ["hello"]
 
+    @pytest.mark.asyncio
+    async def test_duplicate_dm_guid_variants_only_process_once(self, monkeypatch):
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch, webhook_events=["new-message", "updated-message"])
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append((event.text, event.source.chat_id))
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        first_payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-guid-a",
+                "text": "same text",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "chats": [{"guid": "any;-;+15551234567", "chatIdentifier": "+15551234567"}],
+            },
+        }
+        second_payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-guid-b",
+                "text": "same text",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "chatIdentifier": "+15551234567",
+            },
+        }
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest(first_payload))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest(second_payload))
+        await asyncio.sleep(0)
+
+        assert first.text == "ok"
+        assert second.text == "ok"
+        assert handled == [("same text", "any;-;+15551234567")]
+
 
 class TestBlueBubblesWebhookParsing:
     def test_webhook_prefers_chat_guid_over_message_guid(self, monkeypatch):

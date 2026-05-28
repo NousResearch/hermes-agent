@@ -230,7 +230,49 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return f"guid:{message_guid}:{text_hash}"
         return f"fallback:{chat_guid or ''}:{date_created or ''}:{text_hash}"
 
-    def _is_duplicate_inbound_message(self, key: str) -> bool:
+    @staticmethod
+    def _message_content_dedup_key(payload: Dict[str, Any], record: Dict[str, Any], text: str) -> str:
+        """Best-effort duplicate key for BlueBubbles' duplicate DM webhooks.
+
+        Some BlueBubbles deployments deliver the same DM twice with different
+        chat IDs (for example ``any;-;+155...`` and ``+155...``) and sometimes
+        different message GUIDs. The normal GUID-based key cannot catch that,
+        so keep a short-lived canonical sender/chat/text key as a second guard.
+        """
+        chat_guid = BlueBubblesAdapter._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+        )
+        chats = record.get("chats") or []
+        chat_identifier = BlueBubblesAdapter._value(
+            record.get("chatIdentifier"),
+            record.get("identifier"),
+            payload.get("chatIdentifier"),
+            payload.get("identifier"),
+        )
+        if not chat_guid and chats and isinstance(chats[0], dict):
+            chat_guid = chats[0].get("guid") or chats[0].get("chatGuid")
+            chat_identifier = chat_identifier or chats[0].get("chatIdentifier")
+        sender = (
+            BlueBubblesAdapter._value(
+                record.get("handle", {}).get("address")
+                if isinstance(record.get("handle"), dict)
+                else None,
+                record.get("sender"),
+                record.get("from"),
+                record.get("address"),
+            )
+            or chat_identifier
+            or chat_guid
+        )
+        is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        canonical_chat = chat_guid if is_group else (chat_identifier or sender or chat_guid or "")
+        text_hash = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+        return f"recent:{'group' if is_group else 'dm'}:{canonical_chat}:{sender or ''}:{text_hash}"
+
+    def _is_duplicate_inbound_message(self, *keys: str) -> bool:
         now = time.monotonic()
         while self._seen_inbound_messages:
             _, seen_at = next(iter(self._seen_inbound_messages.items()))
@@ -238,16 +280,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 break
             self._seen_inbound_messages.popitem(last=False)
 
-        if key in self._seen_inbound_messages:
-            seen_at = self._seen_inbound_messages[key]
-            self._seen_inbound_messages.move_to_end(key)
-            self._seen_inbound_messages[key] = now
-            return now - seen_at <= _DEDUP_TTL_SECONDS
+        duplicate = False
+        for key in keys:
+            if not key:
+                continue
+            if key in self._seen_inbound_messages:
+                seen_at = self._seen_inbound_messages[key]
+                self._seen_inbound_messages.move_to_end(key)
+                self._seen_inbound_messages[key] = now
+                duplicate = duplicate or (now - seen_at <= _DEDUP_TTL_SECONDS)
+            else:
+                self._seen_inbound_messages[key] = now
 
-        self._seen_inbound_messages[key] = now
-        if len(self._seen_inbound_messages) > _DEDUP_MAX_ENTRIES:
+        while len(self._seen_inbound_messages) > _DEDUP_MAX_ENTRIES:
             self._seen_inbound_messages.popitem(last=False)
-        return False
+        return duplicate
 
     def _api_url(self, path: str) -> str:
         sep = "&" if "?" in path else "?"
@@ -1122,7 +1169,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # --- End attachment handling ---
 
         dedup_key = self._message_dedup_key(payload, record, text)
-        if self._is_duplicate_inbound_message(dedup_key):
+        content_dedup_key = self._message_content_dedup_key(payload, record, text)
+        if self._is_duplicate_inbound_message(dedup_key, content_dedup_key):
             logger.info("[bluebubbles] duplicate inbound webhook ignored")
             return web.Response(text="ok")
 

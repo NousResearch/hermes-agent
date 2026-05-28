@@ -113,3 +113,22 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+
+class TestToolsLintRegression:
+    """Scoped lint regression: individual tools/* files must stay clean of F-class violations."""
+
+    def test_cronjob_tools_f_class_clean(self) -> None:
+        """tools/cronjob_tools.py must have zero F-class (lint) violations."""
+        import subprocess, sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F",
+             "--output-format=concise", "tools/cronjob_tools.py"],
+            capture_output=True, text=True, check=False,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/cronjob_tools.py has F-class violations:\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )

@@ -266,3 +266,45 @@ class TestPreRouteBlock:
         assert agent._user_turn_count == 1, (
             "Pre-route must increment _user_turn_count so memory nudges accumulate"
         )
+
+    def test_pre_route_no_double_count_on_delegate_exception(self):
+        """On delegate exception, _user_turn_count must NOT be incremented by the pre-route."""
+        agent = self._make_agent()
+        agent._user_turn_count = 0
+        with patch("agent.conversation_loop._should_delegate_to_claude_code", return_value=True), \
+             patch("tools.claude_code_delegate_tool.delegate_to_claude_code",
+                   side_effect=RuntimeError("delegate failed after import")):
+            try:
+                from agent.conversation_loop import run_conversation
+                run_conversation(agent, "browse to example.com")
+            except Exception:
+                pass
+        # Normal loop increments once on fallthrough — count must be exactly 1.
+        # If pre-route incremented before the exception, then normal loop also
+        # increments on fallthrough, giving 2 (double-count).
+        assert agent._user_turn_count == 1, (
+            "Expected exactly 1 increment (normal loop); "
+            "got double-count — pre-route must not increment before delegate call"
+        )
+
+    def test_pre_route_uses_persist_user_message_for_history(self):
+        """Gateway/API-server callers pass persist_user_message; that cleaned version must be stored."""
+        agent = self._make_agent()
+        fake_result = json.dumps({"success": True, "result": "Done."})
+        raw_msg = "Voice context prefix: browse to example.com"
+        clean_msg = "browse to example.com"
+        with patch("agent.conversation_loop._should_delegate_to_claude_code", return_value=True), \
+             patch("tools.claude_code_delegate_tool.delegate_to_claude_code",
+                   return_value=fake_result):
+            from agent.conversation_loop import run_conversation
+            result = run_conversation(
+                agent, raw_msg, persist_user_message=clean_msg
+            )
+        # The persisted user message must be the clean version, not the raw wrapper
+        user_turn = next(
+            (m for m in result["messages"] if m.get("role") == "user"), None
+        )
+        assert user_turn is not None
+        assert user_turn["content"] == clean_msg, (
+            f"Expected clean persist_user_message in history, got: {user_turn['content']!r}"
+        )

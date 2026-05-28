@@ -462,18 +462,9 @@ def run_conversation(
             agent.session_id or "none",
             agent.platform or "unknown",
         )
-        if agent.status_callback:
-            try:
-                agent.status_callback("Delegating tool-heavy request to Claude Code...")
-            except Exception:
-                pass
+        agent._emit_status("Delegating tool-heavy request to Claude Code...")
         try:
             from tools.claude_code_delegate_tool import delegate_to_claude_code
-            # Count this turn only on the success path (import succeeded).
-            # If the import fails and we fall through to the normal loop, the
-            # normal loop's own increment at the top of run_conversation handles
-            # it — keeping the total at exactly 1 increment per turn.
-            agent._user_turn_count = getattr(agent, "_user_turn_count", 0) + 1
             raw_delegate_result = delegate_to_claude_code({
                 "prompt": str(user_message),
                 "timeout_s": int(os.environ.get("HERMES_DELEGATE_TIMEOUT_S", "120")),
@@ -492,7 +483,15 @@ def run_conversation(
             ).strip()
             if not final_response:
                 final_response = "Claude Code delegation completed without a text result."
-            messages.append({"role": "user", "content": user_message})
+            # Count the turn only on the success path. The fallthrough path (any
+            # exception above) is counted by the normal loop's own increment,
+            # keeping the total at exactly one increment per run_conversation call.
+            agent._user_turn_count = getattr(agent, "_user_turn_count", 0) + 1
+            # Use persist_user_message when provided — gateway/API-server callers
+            # pass a clean version that should be stored instead of the raw
+            # user_message which may contain context wrappers (voice prefix, etc.).
+            _stored_user_msg = persist_user_message if persist_user_message is not None else user_message
+            messages.append({"role": "user", "content": _stored_user_msg})
             messages.append({"role": "assistant", "content": final_response})
             if hasattr(agent, "_persist_session"):
                 agent._persist_session(messages, conversation_history)

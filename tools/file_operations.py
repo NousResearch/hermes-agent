@@ -1906,7 +1906,16 @@ class ShellFileOperations(FileOperations):
         
         # Exclude hidden directories (matching ripgrep's default behavior).
         # This prevents searching inside .hub/index-cache/, .git/, etc.
-        cmd_parts.append("--exclude-dir='.*'")
+        # But GNU grep's --exclude-dir also matches the search root itself, so
+        # an unconditional exclude returns nothing when the root is hidden
+        # (e.g. ~/.hermes/workspace). Mirror _search_files: skip it for hidden
+        # roots so explicit hidden-root searches still work. (#18473)
+        has_hidden_path_ancestor = any(
+            part not in {".", ".."} and part.startswith(".")
+            for part in Path(path).parts
+        )
+        if not has_hidden_path_ancestor:
+            cmd_parts.append("--exclude-dir='.*'")
         
         # Add context if requested
         if context > 0:

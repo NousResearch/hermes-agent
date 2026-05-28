@@ -249,8 +249,42 @@ def _split_markdown_table_row(line: str) -> list[str]:
     return [cell.strip() for cell in stripped.split("|")]
 
 
+def _normalize_table_heading(cell: str) -> str:
+    """Return a plain-text heading from a raw table cell.
+
+    Strips the outermost markdown wrapper (``**``, ``__``, ``*``, ``_``,
+    backtick) so that the caller can safely re-wrap the result in bold
+    without producing double-marker artefacts like ``****text****``.
+    Also strips NBSP (U+00A0) and zero-width space (U+200B) which can
+    survive the GFM pipe-split and would cause silent string-equality
+    failures in any comparison.
+    """
+    s = cell.strip()
+    for wrap in ("**", "__", "*", "_", "`"):
+        if s.startswith(wrap) and s.endswith(wrap) and len(s) > 2 * len(wrap):
+            s = s[len(wrap) : -len(wrap)]
+            break  # strip one outermost layer only
+    return s.replace("\u00a0", " ").replace("\u200b", "").strip()
+
+
 def _render_table_block_for_telegram(table_block: list[str]) -> str:
-    """Render a detected GFM table as Telegram-friendly row groups."""
+    """Render a detected GFM table as Telegram-friendly row groups.
+
+    Design invariant: ``cells[0]`` of every data row ALWAYS becomes the
+    bold heading for that row-group.  ``cells[1:]`` ALWAYS become the
+    bullets, aligned with ``headers[1:]``.  There is no dedup step — the
+    heading cell is structurally excluded from the bullet list, so it
+    cannot appear twice regardless of its string content or markdown
+    wrapping.
+
+    When the first header cell is explicitly empty (the conventional
+    "row-label column" GFM style), ``headers[0]`` is blank and
+    ``headers[1:]`` are the data-column labels — the same ``headers[1:]``
+    slice applies, so no special branch is needed.
+
+    Empty bullet values (row has fewer cells than headers) are silently
+    omitted rather than emitting ``• Header: `` with a trailing blank.
+    """
     if len(table_block) < 3:
         return "\n".join(table_block)
 
@@ -258,38 +292,35 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
     if len(headers) < 2:
         return "\n".join(table_block)
 
-    # Detect row-label column: present when data rows have one more cell
-    # than the header row (the row-label column carries no header).
-    first_data_row = _split_markdown_table_row(table_block[2]) if len(table_block) > 2 else []
-    has_row_label_col = len(first_data_row) == len(headers) + 1
+    # The first header labels the row-identifier column (which becomes the
+    # bold heading).  The remaining headers label the data columns that
+    # appear as bullets.
+    data_headers = headers[1:]
 
     rendered_groups: list[str] = []
     for index, row in enumerate(table_block[2:], start=1):
         cells = _split_markdown_table_row(row)
-        if has_row_label_col:
-            # First cell is the row-label (heading); remaining cells align with headers.
-            heading = cells[0] if cells and cells[0] else f"Row {index}"
-            data_cells = cells[1:]
-        else:
-            # No row-label column: use first non-empty cell as heading.
-            heading = next((cell for cell in cells if cell), f"Row {index}")
-            data_cells = cells
+        if not cells:
+            continue
 
-        # Pad or trim data_cells to match headers length.
-        if len(data_cells) < len(headers):
-            data_cells.extend([""] * (len(headers) - len(data_cells)))
-        elif len(data_cells) > len(headers):
-            data_cells = data_cells[: len(headers)]
+        heading_raw = cells[0]
+        heading = _normalize_table_heading(heading_raw) or f"Row {index}"
+        data_cells = cells[1:]
 
-        # Build the bulleted lines for this row.  Skip any bullet whose value
-        # duplicates the heading text -- when has_row_label_col is False the
-        # heading IS the first data cell, and emitting it twice (once as the
-        # bold heading, once as the first bullet) is visual noise.
-        bullets: list[str] = []
-        for header, value in zip(headers, data_cells):
-            if not has_row_label_col and value == heading:
-                continue
-            bullets.append(f"• {header}: {value}")
+        # Pad or trim data_cells to match data_headers length.
+        if len(data_cells) < len(data_headers):
+            data_cells = data_cells + [""] * (len(data_headers) - len(data_cells))
+        elif len(data_cells) > len(data_headers):
+            data_cells = data_cells[: len(data_headers)]
+
+        # Build the bulleted lines for this row.  Skip bullets whose value
+        # is empty — avoids emitting "• Header: " with a trailing blank when
+        # a row has fewer cells than the header declares.
+        bullets = [
+            f"• {h}: {v}"
+            for h, v in zip(data_headers, data_cells)
+            if v
+        ]
 
         # Within a row-group: single newline between heading and its bullets,
         # and between successive bullets.  This keeps the row visually tight

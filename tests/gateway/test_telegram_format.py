@@ -38,6 +38,7 @@ _ensure_telegram_mock()
 from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
+    _normalize_table_heading,
     _strip_mdv2,
     _wrap_markdown_tables,
 )
@@ -785,6 +786,115 @@ class TestWrapMarkdownTables:
         assert "• Score: 150" in out
         assert "• Rank: 1" in out
         assert "**Alice**\n• Score: 150\n• Rank: 1" in out
+
+    # -----------------------------------------------------------------------
+    # New tests for the no-duplicate-row-label fix
+    # -----------------------------------------------------------------------
+
+    def test_shape_a_numeric_first_col_no_duplicate(self):
+        """Shape A: numeric first column, no markdown wrappers.
+
+        The '1' cell must appear exactly once (as heading), NOT as a bullet.
+        """
+        text = (
+            "| # | Topic | Verdict |\n"
+            "|---|---|---|\n"
+            "| 1 | Bundle download | \u2705 confirmed |\n"
+            "| 2 | Stale URL | \u2705 reproduced |\n"
+        )
+        out = _wrap_markdown_tables(text)
+        assert "**1**" in out
+        assert "**2**" in out
+        # Heading '1' must NOT re-appear as a bullet under any header.
+        assert "\u2022 #: 1" not in out
+        assert "\u2022 #: 2" not in out
+        # The data columns are Topic and Verdict.
+        assert "\u2022 Topic: Bundle download" in out
+        assert "\u2022 Verdict: \u2705 confirmed" in out
+        assert "\u2022 Topic: Stale URL" in out
+        assert "\u2022 Verdict: \u2705 reproduced" in out
+
+    def test_shape_b_markdown_wrapped_first_col_no_double_bold(self):
+        """Shape B: first column cells have **bold** markdown wrappers.
+
+        The heading must be un-wrapped (no ****text**** double-bold artefact)
+        and must NOT re-appear as a bullet.
+        """
+        text = (
+            "| Entry | Target | Status |\n"
+            "|---|---|---|\n"
+            "| **#1 \u2014 @-mention rule** | `path/foo.md` | ADD |\n"
+            "| **#2 \u2014 sqlite recovery** | `path/bar.md` | ALREADY THERE \u2705 |\n"
+        )
+        out = _wrap_markdown_tables(text)
+        # Heading is normalized: no double-bold markers.
+        assert "****" not in out
+        assert "**#1 \u2014 @-mention rule**" in out
+        assert "**#2 \u2014 sqlite recovery**" in out
+        # The heading cell must NOT reappear as a bullet under "Entry".
+        assert "\u2022 Entry: **#1" not in out
+        assert "\u2022 Entry: **#2" not in out
+        # Data columns Target and Status are present.
+        assert "\u2022 Target: `path/foo.md`" in out
+        assert "\u2022 Status: ADD" in out
+
+    def test_shape_c_empty_first_header_no_duplicate(self):
+        """Shape C: header row has an explicitly empty first cell.
+
+        The old code used has_row_label_col detection; the new code treats
+        every table identically.  Output must be correct regardless.
+        """
+        text = (
+            "|     | Col1 | Col2 |\n"
+            "|-----|------|------|\n"
+            "| Lab1 | v1 | v2 |\n"
+        )
+        out = _wrap_markdown_tables(text)
+        assert "**Lab1**" in out
+        assert "\u2022 Col1: v1" in out
+        assert "\u2022 Col2: v2" in out
+        # Lab1 must appear exactly once in the output.
+        assert out.count("Lab1") == 1
+
+    def test_normalize_table_heading_strips_bold(self):
+        """_normalize_table_heading removes **bold** wrappers."""
+        assert _normalize_table_heading("**hello**") == "hello"
+        assert _normalize_table_heading("__world__") == "world"
+
+    def test_normalize_table_heading_strips_italic(self):
+        assert _normalize_table_heading("*hi*") == "hi"
+        assert _normalize_table_heading("_em_") == "em"
+
+    def test_normalize_table_heading_strips_backtick(self):
+        assert _normalize_table_heading("`code`") == "code"
+
+    def test_normalize_table_heading_strips_nbsp(self):
+        """NBSP inside a cell survives the GFM pipe-split and should be normalised."""
+        assert _normalize_table_heading("1\u00a0") == "1"
+        assert _normalize_table_heading("\u00a01") == "1"
+
+    def test_normalize_table_heading_strips_zwsp(self):
+        assert _normalize_table_heading("\u200bhello\u200b") == "hello"
+
+    def test_normalize_table_heading_does_not_double_unwrap(self):
+        """Only the OUTERMOST wrapper is removed — inner wrappers are preserved."""
+        # **bold *nested* bold** -> bold *nested* bold (not bold nested bold)
+        assert _normalize_table_heading("**bold *nested* bold**") == "bold *nested* bold"
+
+    def test_empty_value_bullets_omitted(self):
+        """When a row has fewer cells than headers, the short row should not
+        produce bullets with an empty value (``• Header: ``).
+        """
+        text = (
+            "| Name | Score | Rank |\n"
+            "|------|-------|------|\n"
+            "| Alice | 150 |\n"  # only 2 cells, Rank absent
+        )
+        out = _wrap_markdown_tables(text)
+        assert "**Alice**" in out
+        assert "\u2022 Score: 150" in out
+        # Rank bullet should be silently omitted, not emitted as "• Rank: ".
+        assert "\u2022 Rank: " not in out
 
 
 class TestFormatMessageTables:

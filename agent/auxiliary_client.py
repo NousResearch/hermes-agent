@@ -1493,13 +1493,16 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
-        if not or_key:
-            _mark_provider_unhealthy("openrouter", ttl=60)
-            return None, None
-        base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
-        logger.debug("Auxiliary client: OpenRouter via pool")
-        return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+        if or_key:
+            base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
+            logger.debug("Auxiliary client: OpenRouter via pool")
+            return OpenAI(api_key=or_key, base_url=base_url,
+                           default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+        # Pool exists but no usable entry — fall through to env var below.
+        # Pool exhaustion may be from a model-specific 429 (e.g. one provider
+        # rate-limiting one model), not a key-level issue.  Falling through
+        # lets the env var — which is the same key the pool was seeded from —
+        # take over when the pool can't provide a working entry.
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:

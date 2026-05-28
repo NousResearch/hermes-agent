@@ -240,7 +240,19 @@ KANBAN_GUIDANCE = (
     "specialist profile.\n"
     "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
     "for short reasoning subtasks inside your own run; board tasks are for "
-    "cross-agent handoffs that outlive one API loop."
+    "cross-agent handoffs that outlive one API loop.\n"
+    "\n"
+    "## Protocol Violation Warning\n"
+    "\n"
+    "**CRITICAL \u2014 Always close the lifecycle.** Before your turn ends, you "
+    "MUST call `kanban_complete()` or `kanban_block()`. If you complete your "
+    "work but exit without calling either, the dispatcher classifies this as "
+    "a *protocol violation* and immediately marks the task CRASHED \u2192 BLOCKED. "
+    "Your work is discarded and the task is retried from scratch. "
+    "This wastes a full cycle and Sebastian sees a misleading crash report. "
+    "The auto-close safety net (Layer 1) is a last-resort fallback \u2014 it exists "
+    "so crashed workers don't stall the pipeline, but you should never rely on "
+    "it. Close explicitly every time."
 )
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (

@@ -4308,6 +4308,21 @@ def run_conversation(
     # Clear stream callback so it doesn't leak into future calls
     agent._stream_callback = None
 
+    # ── Kanban auto-close hook ──────────────────────────────────────────
+    # After the conversation loop exits, if a kanban_auto_close callback
+    # is registered (injected by the CLI layer when HERMES_KANBAN_TASK
+    # is set), call it with the result dict. The callback checks whether
+    # the worker called kanban_complete/kanban_block and auto-completes
+    # the task if not. This is the PRIMARY layer of defense — it runs in
+    # the Python process after every run_conversation() exit, regardless
+    # of model behavior, and cannot be bypassed by the model failing to
+    # call the kanban_complete tool.
+    if agent._kanban_auto_close is not None:
+        try:
+            agent._kanban_auto_close(result)
+        except Exception as exc:
+            logger.warning("kanban_auto_close callback failed: %s", exc)
+
     # Check skill trigger NOW — based on how many tool iterations THIS turn used.
     _should_review_skills = False
     if (agent._skill_nudge_interval > 0

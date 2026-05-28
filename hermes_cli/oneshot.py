@@ -25,7 +25,7 @@ import logging
 import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
-from typing import Optional
+from typing import Dict, Any, Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -305,6 +305,39 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
+    # ── Kanban auto-close callback ────────────────────────────────────────
+    # When HERMES_KANBAN_TASK is set (kanban dispatcher spawned us),
+    # wire up the auto-close hook. After the conversation loop exits,
+    # this callback checks whether the worker called kanban_complete /
+    # kanban_block. If not, it auto-completes the task to prevent
+    # protocol violation crashes. This is the PRIMARY enforcement
+    # layer — it runs in the Python process after every
+    # run_conversation() exit and cannot be bypassed by model behavior.
+    _kc_task_id = os.environ.get("HERMES_KANBAN_TASK")
+    _kc_callback = None
+    if _kc_task_id:
+        def _kanban_auto_close(result: Dict[str, Any]) -> None:
+            try:
+                from hermes_cli.kanban_db import connect as _kbc, complete_task
+                _kconn = _kbc()
+                _krow = _kconn.execute(
+                    "SELECT status FROM tasks WHERE id = ?", (_kc_task_id,)
+                ).fetchone()
+                if _krow and _krow["status"] == "running":
+                    _kresp = result.get("final_response", "") or ""
+                    _ksummary = (_kresp[:500] + "...") if len(_kresp) > 500 else _kresp
+                    if not _ksummary:
+                        _ksummary = "Auto-closed: worker exited without calling kanban_complete"
+                    complete_task(
+                        _kconn, _kc_task_id,
+                        result=_ksummary,
+                        summary=_ksummary,
+                    )
+            except Exception as _kexc:
+                logger.warning("kanban_auto_close callback failed for task %s: %s",
+                               _kc_task_id, _kexc)
+        _kc_callback = _kanban_auto_close
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -328,6 +361,7 @@ def _run_agent(
         #                (set above); also falls back to deny on non-tty
         #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
         #   - skill secret capture → returns gracefully when no callback set
+        kanban_auto_close=_kc_callback,
         clarify_callback=_oneshot_clarify_callback,
     )
 

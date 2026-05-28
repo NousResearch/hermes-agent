@@ -4948,6 +4948,42 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+
+            # ── Kanban auto-close callback ───────────────────────────────
+            # When HERMES_KANBAN_TASK is set (kanban dispatcher spawned us),
+            # wire up the auto-close hook. After the conversation loop exits,
+            # this callback checks whether the worker called kanban_complete /
+            # kanban_block. If not, it auto-completes the task to prevent
+            # protocol violation crashes. This is the PRIMARY enforcement
+            # layer — it runs in the Python process after every
+            # run_conversation() exit and cannot be bypassed by model behavior.
+            _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK")
+            _kc_callback = None
+            if _kanban_task_id:
+                def _kanban_auto_close(result: Dict[str, Any]) -> None:
+                    try:
+                        from hermes_cli.kanban_db import connect as _kbc, complete_task
+                        _kconn = _kbc()
+                        _krow = _kconn.execute(
+                            "SELECT status FROM tasks WHERE id = ?", (_kanban_task_id,)
+                        ).fetchone()
+                        if _krow and _krow["status"] == "running":
+                            _kresp = result.get("final_response", "") or ""
+                            _ksummary = (_kresp[:500] + "...") if len(_kresp) > 500 else _kresp
+                            if not _ksummary:
+                                _ksummary = "Auto-closed: worker exited without calling kanban_complete"
+                            complete_task(
+                                _kconn, _kanban_task_id,
+                                result=_ksummary,
+                                summary=_ksummary,
+                            )
+                    except Exception as _kexc:
+                        logging.getLogger(__name__).warning(
+                            "kanban_auto_close callback failed for task %s: %s",
+                            _kanban_task_id, _kexc,
+                        )
+                _kc_callback = _kanban_auto_close
+
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -4994,6 +5030,7 @@ class HermesCLI:
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
+                kanban_auto_close=_kc_callback,
             )
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref

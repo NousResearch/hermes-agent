@@ -10246,8 +10246,16 @@ class GatewayRunner:
 
         raw_args = event.get_command_args().strip()
 
-        # Parse --provider and --global flags
-        model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
+        # Parse --provider, --global, and --refresh flags
+        model_input, explicit_provider, persist_global, force_refresh = parse_model_flags(raw_args)
+
+        # --refresh: bust the disk cache so the picker shows live data.
+        if force_refresh:
+            try:
+                from hermes_cli.models import clear_provider_models_cache
+                clear_provider_models_cache()
+            except Exception:
+                pass
 
         # Read current model/provider from config
         current_model = ""

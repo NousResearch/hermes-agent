@@ -1,0 +1,130 @@
+{
+  "feature": "skill-curator-audit",
+  "generated_at": "2026-05-27T15:20:44-0400",
+  "issues": [4, 6, 7],
+  "acceptance_criteria": [
+    {
+      "issue": 4,
+      "criterion": "Command or script produces a deterministic report.",
+      "evidence": [
+        "tools/skill_curator_audit.py::audit_skills sorts SKILL.md traversal and findings deterministically",
+        "tests/tools/test_skill_curator_audit.py::test_report_order_is_deterministic",
+        "python tools/skill_curator_audit.py --skills-dir skills --today 2026-05-27"
+      ]
+    },
+    {
+      "issue": 4,
+      "criterion": "No private raw session data is exposed in output.",
+      "evidence": [
+        "tools/skill_curator_audit.py reports aggregate references/ byte count and file count only",
+        "tests/tools/test_skill_curator_audit.py::test_flags_bloated_references_folder_without_raw_content asserts raw filename and SECRET_TOKEN are absent from rendered output"
+      ]
+    },
+    {
+      "issue": 4,
+      "criterion": "Tests cover at least stale learning skill, deprecated missing target, and bloated references folder.",
+      "evidence": [
+        "tests/tools/test_skill_curator_audit.py::test_flags_stale_learning_skill",
+        "tests/tools/test_skill_curator_audit.py::test_flags_deprecated_skill_missing_replacement",
+        "tests/tools/test_skill_curator_audit.py::test_flags_bloated_references_folder_without_raw_content"
+      ]
+    },
+    {
+      "issue": 6,
+      "criterion": "Examples show learning, candidate, and/or locked states.",
+      "evidence": [
+        "skills/social-media/xitter/SKILL.md migrated as learning",
+        "systematic-debugging skill migrated as locked",
+        "skills/software-development/writing-plans/SKILL.md was migrated as candidate in PR #8"
+      ]
+    },
+    {
+      "issue": 6,
+      "criterion": "Each example has a Validation & Retention section.",
+      "evidence": [
+        "skills/social-media/xitter/SKILL.md includes ## Validation & Retention",
+        "systematic-debugging skill includes ## Validation & Retention",
+        "skills/software-development/writing-plans/SKILL.md includes ## Validation & Retention from PR #8"
+      ]
+    },
+    {
+      "issue": 6,
+      "criterion": "Diffs are small enough to review.",
+      "evidence": [
+        "git diff --stat showed 43 insertions across three modified existing files before adding the audit script and tests"
+      ]
+    },
+    {
+      "issue": 7,
+      "criterion": "Tests run with the existing Hermes test command.",
+      "evidence": [
+        "python -m pytest tests/tools/test_skill_curator_audit.py -q -o 'addopts=' exited 0 with 4 passed from repo root using the ambient Python; the broader lifecycle manager regression suite also passed in the Hermes development virtualenv"
+      ]
+    },
+    {
+      "issue": 7,
+      "criterion": "No tests touch the user's real ~/.hermes directory.",
+      "evidence": [
+        "tests/tools/test_skill_curator_audit.py uses pytest tmp_path for synthetic skills",
+        "tests/tools/test_skill_manager_tool.py uses existing test isolation from the repository"
+      ]
+    },
+    {
+      "issue": 7,
+      "criterion": "PR includes exact test command output as a receipt.",
+      "evidence": [
+        "verification_commands contains exact command, exit code, and observed summary: 4 passed, 1 warning in 0.14s"
+      ]
+    }
+  ],
+  "changes": [
+    {
+      "path": "tools/skill_curator_audit.py",
+      "summary": "Added deterministic lifecycle curator audit with stale learning, deprecated replacement, bloated references, duplicate description, locked failure receipt, and validation/falsifier checks."
+    },
+    {
+      "path": "tests/tools/test_skill_curator_audit.py",
+      "summary": "Added tests for stale learning, deprecated missing replacement, bloated references privacy, and deterministic ordering."
+    },
+    {
+      "path": "skills/social-media/xitter/SKILL.md",
+      "summary": "Added learning lifecycle metadata and Validation & Retention section for a public-write social media skill."
+    },
+    {
+      "path": "systematic-debugging skill file",
+      "summary": "Added locked lifecycle metadata and Validation & Retention section for a mature operational skill."
+    },
+    {
+      "path": "website/docs/developer-guide/creating-skills.md",
+      "summary": "Documented how to run the curator audit and what it intentionally does not expose."
+    }
+  ],
+  "verification_commands": [
+    {
+      "command": "python -m pytest tests/tools/test_skill_curator_audit.py -q -o 'addopts='",
+      "exit_code": 0,
+      "summary": "4 passed, 1 warning in 0.14s"
+    },
+    {
+      "command": "python tools/skill_curator_audit.py --skills-dir skills --today 2026-05-27",
+      "exit_code": 0,
+      "summary": "Audited 94 skills; reported 4 bloated references findings without raw reference filenames or contents."
+    },
+    {
+      "command": "python tools/skill_curator_audit.py --skills-dir skills --today 2026-05-27 --json | python -m json.tool > /tmp/skill-curator-audit.json",
+      "exit_code": 0,
+      "summary": "JSON output parsed successfully."
+    }
+  ],
+  "known_risks": [
+    "The curator audit is a deterministic heuristic report, not an automatic fixer.",
+    "Duplicate description detection is exact-match only; semantic overlap remains a future improvement.",
+    "Locked failure receipt detection scans JSON text for explicit fail markers and intentionally avoids rendering raw receipt content."
+  ],
+  "falsifiers": [
+    "The audit output includes raw reference filenames, transcript contents, or secrets.",
+    "The same inputs produce findings in a different order across runs.",
+    "A stale learning skill, deprecated skill without superseded_by, or bloated references folder is not flagged by tests.",
+    "Lifecycle-aware examples omit Validation & Retention sections."
+  ]
+}

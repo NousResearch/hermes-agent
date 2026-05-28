@@ -1,0 +1,98 @@
+{
+  "feature": "skill-lifecycle-epic-guideline-check",
+  "generated_at": "2026-05-27T18:58:50-0400",
+  "epic_issue": 1,
+  "related_prs": [8, 9],
+  "guideline_sources": [
+    "CONTRIBUTING.md",
+    "AGENTS.md"
+  ],
+  "checks": [
+    {
+      "rule": "Branch names use feat/fix/docs/test/refactor prefixes.",
+      "status": "pass",
+      "evidence": "PR #8 used feat/skill-lifecycle-metadata and PR #9 used feat/skill-curator-audit. Cleanup branch uses fix/contribution-guideline-cleanup."
+    },
+    {
+      "rule": "PRs stay focused on one logical change.",
+      "status": "pass",
+      "evidence": "PR #8 covered lifecycle metadata/schema/docs/receipt template; PR #9 covered curator audit/examples/tests/docs/receipt."
+    },
+    {
+      "rule": "PR description includes what changed, how to test, tested platforms, and related issues.",
+      "status": "warn",
+      "evidence": "PR #8 and PR #9 include summaries, issues, receipts, verification commands, and risks. PR #9 final validation corrected stale test output in a comment/receipt, and this cleanup documents the platform explicitly as macOS."
+    },
+    {
+      "rule": "Run focused tests for changed code paths.",
+      "status": "pass",
+      "evidence": "python -m pytest tests/tools/test_skill_curator_audit.py -q -o 'addopts=' exited 0 with 4 passed, 1 warning. ACP compatibility test tests/acp/test_server.py exited 0 with 31 passed after the AuthMethod compatibility fix."
+    },
+    {
+      "rule": "Run full test suite before pushing.",
+      "status": "known_failures_outside_lifecycle_slice",
+      "evidence": "python -m pytest tests/ -q -o 'addopts=' ran to collection/execution after the ACP AuthMethod fix and produced 6036 passed, 164 skipped, 37 failed, 115 warnings. Failures are outside the lifecycle-curator files and include prompt builder/cache marker expectations, cron scheduler expectations, model-provider mapping, Home Assistant filtering, Discord voice flow, CLI quick command session_id, delegate credential fallback, and transcription provider behavior."
+    },
+    {
+      "rule": "Security-sensitive code avoids shell injection, path traversal, and secret logging.",
+      "status": "pass",
+      "evidence": "skill_curator_audit.py uses pathlib and local file reads only; reports aggregate references/ size/count and tests assert raw filenames and SECRET_TOKEN are absent."
+    },
+    {
+      "rule": "Cross-platform path handling uses pathlib and avoids Unix-only assumptions.",
+      "status": "pass",
+      "evidence": "Curator audit code uses pathlib.Path and does not use termios, fcntl, process management, or shell commands. Tested platform: macOS."
+    },
+    {
+      "rule": "Developer utility placement is clear.",
+      "status": "pass",
+      "evidence": "Docs now state tools/skill_curator_audit.py is a developer utility script, not an agent-registered runtime tool, and intentionally has no registry.register() or toolset exposure."
+    },
+    {
+      "rule": "Receipts include changed files, validation commands, test results, known risks, and falsifiers.",
+      "status": "pass",
+      "evidence": "receipts/skill-lifecycle-metadata-receipt.json, receipts/skill-curator-audit-receipt.json, and this guideline check receipt provide the ledger."
+    }
+  ],
+  "cleanup_changes": [
+    {
+      "path": "acp_adapter/server.py",
+      "summary": "Compatibility fallback from acp.schema.AuthMethod to AuthMethodAgent so ACP tests collect and pass with the installed ACP schema version."
+    },
+    {
+      "path": "website/docs/developer-guide/creating-skills.md",
+      "summary": "Clarified that skill_curator_audit.py is a developer utility script, not a registered agent tool."
+    },
+    {
+      "path": "receipts/skill-lifecycle-epic-guideline-check.json",
+      "summary": "Recorded contribution-guideline compliance status for the lifecycle epic."
+    }
+  ],
+  "verification_commands": [
+    {
+      "command": "python -m pytest tests/acp/test_server.py -q -o 'addopts='",
+      "exit_code": 0,
+      "summary": "31 passed in 0.93s"
+    },
+    {
+      "command": "python -m pytest tests/ -q -o 'addopts='",
+      "exit_code": 1,
+      "summary": "6036 passed, 164 skipped, 37 failed, 115 warnings in 332.04s; failures are outside the lifecycle-curator slice."
+    },
+    {
+      "command": "python -m pytest tests/tools/test_skill_curator_audit.py -q -o 'addopts='",
+      "exit_code": 0,
+      "summary": "4 passed, 1 warning in prior final validation."
+    }
+  ],
+  "known_risks": [
+    "Full repository test suite still has unrelated failures after the ACP collection blocker is fixed.",
+    "PR #9 was already merged before this guideline-check cleanup; this receipt is a follow-up ledger, not a rewrite of the historical merge.",
+    "The curator audit remains a deterministic heuristic and does not automatically modify skills."
+  ],
+  "falsifiers": [
+    "ACP tests fail to collect or tests/acp/test_server.py fails with the installed ACP schema package.",
+    "The curator audit is accidentally exposed as an agent runtime tool without toolset design review.",
+    "Lifecycle receipts grow prompt/context bulk without improving maintenance decisions."
+  ]
+}

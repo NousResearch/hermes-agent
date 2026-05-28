@@ -148,6 +148,90 @@ class TestValidateFrontmatter:
         content = "---\n: invalid: yaml: {{{\n---\n\nBody.\n"
         assert "YAML frontmatter parse error" in _validate_frontmatter(content)
 
+    def test_lifecycle_metadata_is_optional(self):
+        assert _validate_frontmatter(VALID_SKILL_CONTENT) is None
+
+    def test_valid_lifecycle_metadata(self):
+        content = """\
+---
+name: test-skill
+description: A test skill with lifecycle metadata.
+metadata:
+  hermes:
+    lifecycle:
+      status: candidate
+      validation_level: repeated
+      retention_policy: retain compact receipts only
+      last_validated: '2026-05-27'
+      evidence_count: 3
+      supersedes: [old-skill]
+      superseded_by: new-skill
+---
+
+# Test Skill
+
+Step 1: Do the thing.
+"""
+        assert _validate_frontmatter(content) is None
+
+    def test_invalid_lifecycle_status_rejected(self):
+        content = """\
+---
+name: test-skill
+description: A test skill with invalid lifecycle metadata.
+metadata:
+  hermes:
+    lifecycle:
+      status: immortal
+---
+
+# Test Skill
+
+Step 1: Do the thing.
+"""
+        err = _validate_frontmatter(content)
+        assert err is not None
+        assert "metadata.hermes.lifecycle.status" in err
+        assert "learning, candidate, locked, deprecated" in err
+
+    def test_invalid_lifecycle_validation_level_rejected(self):
+        content = """\
+---
+name: test-skill
+description: A test skill with invalid lifecycle metadata.
+metadata:
+  hermes:
+    lifecycle:
+      validation_level: vibes
+---
+
+# Test Skill
+
+Step 1: Do the thing.
+"""
+        err = _validate_frontmatter(content)
+        assert err is not None
+        assert "metadata.hermes.lifecycle.validation_level" in err
+        assert "unvalidated, observed, repeated, locked" in err
+
+    def test_invalid_lifecycle_evidence_count_rejected(self):
+        content = """\
+---
+name: test-skill
+description: A test skill with invalid lifecycle metadata.
+metadata:
+  hermes:
+    lifecycle:
+      evidence_count: three
+---
+
+# Test Skill
+
+Step 1: Do the thing.
+"""
+        err = _validate_frontmatter(content)
+        assert err == "metadata.hermes.lifecycle.evidence_count must be an integer."
+
 
 # ---------------------------------------------------------------------------
 # _validate_file_path — path traversal prevention

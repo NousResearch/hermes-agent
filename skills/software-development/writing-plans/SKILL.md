@@ -9,6 +9,14 @@ metadata:
   hermes:
     tags: [planning, design, implementation, workflow, documentation]
     related_skills: [subagent-driven-development, test-driven-development, requesting-code-review]
+    lifecycle:
+      status: candidate
+      validation_level: repeated
+      retention_policy: retain compact receipts and falsifiers only
+      last_validated: '2026-05-27'
+      evidence_count: 1
+      supersedes: []
+      superseded_by:
 ---
 
 # Writing Implementation Plans
@@ -281,6 +289,13 @@ When executing, use the `subagent-driven-development` skill:
 - Spec compliance review after each task
 - Code quality review after spec passes
 - Proceed only when both reviews approve
+
+## Validation & Retention
+
+- Evidence: Migrated as the first lifecycle-aware bundled skill for the skill lifecycle metadata/schema work.
+- Retained receipt: PR receipt for the lifecycle metadata change, including before/after frontmatter and validation commands.
+- Discarded: Raw session transcript and any unrelated planning examples not needed to validate this convention.
+- Falsifier: If plan-writing guidance stops requiring concrete file paths, test commands, and implementation handoff, demote from candidate and update the skill before re-locking.
 
 ## Remember
 

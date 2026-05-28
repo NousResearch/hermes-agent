@@ -9,6 +9,14 @@ metadata:
   hermes:
     tags: [debugging, troubleshooting, problem-solving, root-cause, investigation]
     related_skills: [test-driven-development, writing-plans, subagent-driven-development]
+    lifecycle:
+      status: locked
+      validation_level: locked
+      retention_policy: retain minimal falsifier notes; discard raw debugging transcripts
+      last_validated: '2026-05-27'
+      evidence_count: 1
+      supersedes: []
+      superseded_by:
 ---
 
 # Systematic Debugging
@@ -355,6 +363,13 @@ When fixing bugs:
 2. Debug systematically to find root cause
 3. Fix the root cause (GREEN)
 4. The test proves the fix and prevents regression
+
+## Validation & Retention
+
+- Evidence: Core debugging workflow has been reused across bug fixes, CI failures, and production incidents; migrated as the locked lifecycle example.
+- Retained receipt: Lifecycle migration PR receipt and the compact principle in this file: no fix without root cause.
+- Discarded: Raw debugging transcripts, stack traces containing local paths/secrets, and one-off incident logs.
+- Falsifier: If repeated use shows root-cause-first delays resolution without reducing regressions, demote from locked and revise the phases.
 
 ## Real-World Impact
 

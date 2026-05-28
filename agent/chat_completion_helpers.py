@@ -279,17 +279,15 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # mode where it accepts the connection but never emits a single stream
     # event (observed directly: 0 events, no HTTP status, the socket just
     # hangs). A fresh reconnect succeeds in ~2s, but the wall-clock stale
-    # timeout (often 180–900s) makes us wait minutes before retrying. While no
-    # stream event has arrived yet we apply a much shorter TTFB cutoff so the
-    # main retry loop can reconnect promptly. Large subscription-backed Codex
-    # requests can legitimately spend tens of seconds in backend admission /
-    # prompt prefill before the first SSE event, so the no-byte TTFB watchdog
-    # is disabled for large chatgpt.com/backend-api/codex requests. A second
-    # failure mode emits an opening SSE frame and then stalls forever in SSL
-    # read; for that we watch the gap since the last Codex stream event. This
-    # matches Codex CLI's stream_idle_timeout model: any valid SSE event is
-    # activity. Operators can tune via HERMES_CODEX_TTFB_TIMEOUT_SECONDS and
-    # HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS (0 disables each).
+    # timeout (often 180–900s) makes us wait minutes before retrying. A short
+    # no-byte TTFB cutoff is risky for subscription-backed Codex requests,
+    # which can legitimately spend a while in backend admission / prompt
+    # prefill before the first SSE event, so that watchdog is opt-in via
+    # HERMES_CODEX_TTFB_TIMEOUT_SECONDS. A second failure mode emits an opening
+    # SSE frame and then stalls forever in SSL read; for that we watch the gap
+    # since the last Codex stream event. This matches Codex CLI's
+    # stream_idle_timeout model: any valid SSE event is activity. Operators can
+    # tune via HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS (0 disables it).
     _codex_watchdog_enabled = agent.api_mode == "codex_responses"
     _openai_codex_backend = _is_openai_codex_backend(agent)
     _est_tokens_for_codex_watchdog = estimate_request_context_tokens(api_kwargs)
@@ -310,8 +308,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
     else:
         _codex_idle_timeout_default = 12.0
 
-    _ttfb_enabled = _codex_watchdog_enabled
-    _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 12.0)
+    _ttfb_env = os.environ.get("HERMES_CODEX_TTFB_TIMEOUT_SECONDS")
+    _ttfb_enabled = _codex_watchdog_enabled and _ttfb_env is not None
+    _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 0.0)
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
     elif _openai_codex_backend:

@@ -2,11 +2,11 @@
 
 The chatgpt.com/backend-api/codex endpoint has an intermittent failure mode
 where it accepts the connection but never emits a single stream event. The
-watchdog in ``interruptible_api_call`` kills such a connection at a short TTFB
-cutoff (instead of waiting out the much longer wall-clock stale timeout) so the
-retry loop can reconnect promptly. Once any stream event arrives, the TTFB
-watchdog is satisfied and a separate idle watchdog handles streams that stop
-emitting SSE events.
+watchdog in ``interruptible_api_call`` can kill such a connection at a short
+TTFB cutoff so the retry loop can reconnect promptly, but that no-byte watchdog
+is opt-in because backend admission / prefill can legitimately take longer
+than a fixed first-byte cutoff. Once any stream event arrives, a separate idle
+watchdog handles streams that stop emitting SSE events.
 
 The "bytes flowing" signal is ``agent._codex_stream_last_event_ts``, set on
 *any* event by ``codex_runtime.run_codex_stream`` — so reasoning-only or
@@ -100,6 +100,39 @@ def test_ttfb_kills_when_no_stream_event(tmp_path, monkeypatch):
         assert elapsed < 15, f"TTFB watchdog took {elapsed:.1f}s"
     finally:
         stop["flag"] = True
+
+
+def test_ttfb_is_disabled_by_default(tmp_path, monkeypatch):
+    """No-byte TTFB reconnects are opt-in. Without the env var, a slow first
+    event should get the normal provider/SDK stale-timeout window."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", raising=False)
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        time.sleep(2.0)
+        return sentinel
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+    assert resp is sentinel
+    assert "codex_ttfb_kill" not in closes
 
 
 def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):

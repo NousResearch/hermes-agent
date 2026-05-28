@@ -113,8 +113,16 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             # old_string/new_string — e.g. LLM used 2-space indent but the
             # file is 4-space. Shift new_string by the indentation delta so
             # the replacement matches the file's actual indent pattern.
+            effective_new = new_string
+            if strategy_name == "escape_normalized":
+                # The escape_normalized strategy matched because old_string
+                # contained literal \t/\n/\r that were unescaped to match
+                # real control characters in the file. Apply the same
+                # unescaping to new_string so we don't write literal
+                # backslash sequences where the file has real tabs/newlines.
+                effective_new = _unescape_common_sequences(new_string)
             new_content = _apply_replacements(
-                content, matches, new_string,
+                content, matches, effective_new,
                 old_string=old_string if strategy_name != "exact" else None,
             )
             return new_content, len(matches), strategy_name, None
@@ -245,6 +253,19 @@ def _reindent_replacement(file_region: str, old_string: str, new_string: str) ->
             # the start of new_string. Anchor to the file's base.
             out_lines.append(file_indent + line.lstrip(" \t"))
     return "\n".join(out_lines)
+
+
+def _unescape_common_sequences(s: str) -> str:
+    """Unescape common C-style escape sequences that LLMs produce literally.
+
+    When the model sends ``\\t`` (two characters: backslash + t) instead of a
+    real tab byte (0x09), the patch tool would write the literal characters.
+    This helper converts common escape sequences to their actual byte values.
+
+    Only call this when the matching strategy confirmed that the file already
+    contains real control characters (i.e. ``escape_normalized`` matched).
+    """
+    return s.replace('\\t', '\t').replace('\\n', '\n').replace('\\r', '\r')
 
 
 def _apply_replacements(content: str, matches: List[Tuple[int, int]],

@@ -71,6 +71,90 @@ def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     assert "53 51 4c 69 74 17 03 03 00 13" in msg
 
 
+def test_connect_exposes_board_diagnostic_for_corrupt_header(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    corrupt = home / "kanban.db"
+    corrupt.write_bytes(b"not sqlite")
+
+    with pytest.raises(kb.KanbanDbUnavailableError) as exc_info:
+        kb.connect(board="default")
+
+    diagnostic = exc_info.value.diagnostic
+    assert diagnostic.board_slug == "default"
+    assert diagnostic.db_path == str(corrupt)
+    assert diagnostic.category == "corrupt"
+    assert diagnostic.phase == "connect"
+    assert diagnostic.error_class == "DatabaseError"
+    assert diagnostic.quarantine is True
+    assert "restore or move aside" in diagnostic.operator_action
+
+
+def test_connect_wraps_wal_disk_io_error_with_board_diagnostic(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(kb, "_guard_existing_db_is_healthy", lambda _path: None)
+
+    class BrokenWalConn:
+        row_factory = None
+        closed = False
+
+        def execute(self, sql, *args):
+            if "journal_mode" in sql.lower():
+                raise sqlite3.OperationalError("disk I/O error")
+            return self
+
+        def close(self):
+            self.closed = True
+
+    broken = BrokenWalConn()
+    monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: broken)
+
+    with pytest.raises(kb.KanbanDbUnavailableError) as exc_info:
+        kb.connect(board="default")
+
+    diagnostic = exc_info.value.diagnostic
+    assert broken.closed is True
+    assert diagnostic.board_slug == "default"
+    assert diagnostic.db_path == str(home / "kanban.db")
+    assert diagnostic.category == "disk_io"
+    assert diagnostic.phase == "connect"
+    assert diagnostic.error_class == "OperationalError"
+    assert diagnostic.quarantine is True
+    assert "disk" in diagnostic.operator_action.lower()
+
+
+def test_dispatch_once_returns_degraded_result_for_release_stale_claims_read_error(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class BrokenReadConn:
+        def execute(self, *args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+
+    result = kb.dispatch_once(BrokenReadConn(), board="default")  # type: ignore[arg-type]
+
+    assert result.db_error is not None
+    assert result.db_error.board_slug == "default"
+    assert result.db_error.db_path == str(home / "kanban.db")
+    assert result.db_error.category == "disk_io"
+    assert result.db_error.phase == "dispatch_once"
+    assert result.db_error.quarantine is True
+    assert result.spawned == []
+
+
 def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     """Legacy DBs missing additive indexed columns must migrate cleanly.
 

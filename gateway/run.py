@@ -1053,6 +1053,380 @@ from gateway.whatsapp_identity import (
 
 logger = logging.getLogger(__name__)
 
+_KANBAN_DISPATCH_RUNTIME_STATUS_LOCK = threading.Lock()
+_KANBAN_DISPATCH_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
+
+
+def _update_kanban_dispatch_runtime_status(slug: str, **fields: Any) -> None:
+    """Record gateway-embedded dispatch health for dashboard/API diagnostics.
+
+    The dispatcher owns the in-memory truth for per-board degradation and
+    quarantine. The dashboard plugin can recompute DB/task state itself, but it
+    cannot infer that a board is being intentionally skipped until the retry
+    window expires unless the gateway exposes this small snapshot.
+    """
+    now = int(time.time())
+    with _KANBAN_DISPATCH_RUNTIME_STATUS_LOCK:
+        current = dict(_KANBAN_DISPATCH_RUNTIME_STATUS.get(slug, {}))
+        current.update(fields)
+        current.setdefault("board", slug)
+        current["checked_at"] = now
+        _KANBAN_DISPATCH_RUNTIME_STATUS[slug] = current
+
+
+def get_kanban_dispatch_runtime_status() -> dict[str, dict[str, Any]]:
+    """Return a copy of the gateway-embedded Kanban dispatch status map."""
+    with _KANBAN_DISPATCH_RUNTIME_STATUS_LOCK:
+        return {slug: dict(status) for slug, status in _KANBAN_DISPATCH_RUNTIME_STATUS.items()}
+
+
+@dataclasses.dataclass(frozen=True)
+class _KanbanDispatchDbDiagnostic:
+    """Classified SQLite failure from one gateway-embedded Kanban board tick."""
+
+    kind: str
+    severity: str
+    quarantine: bool
+    operator_action: str
+    error_class: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+def _kanban_dispatch_error_class_and_message(
+    diagnostic: _KanbanDispatchDbDiagnostic,
+    exc: Exception,
+) -> tuple[str, str]:
+    """Prefer board-local SQLite diagnostic metadata over wrapper classes."""
+    return (
+        diagnostic.error_class or exc.__class__.__name__,
+        diagnostic.error_message if diagnostic.error_message is not None else str(exc),
+    )
+
+
+def _kanban_board_db_fingerprint(kb_module: Any, slug: str) -> tuple[str, int | None, int | None]:
+    """Return a stable-enough fingerprint for per-board dispatch quarantine."""
+    path = kb_module.kanban_db_path(slug)
+    try:
+        resolved = str(path.expanduser().resolve())
+    except Exception:
+        resolved = str(path)
+    try:
+        stat = path.stat()
+    except OSError:
+        return (resolved, None, None)
+    return (resolved, stat.st_mtime_ns, stat.st_size)
+
+
+def _classify_kanban_dispatch_db_error(
+    kb_module: Any,
+    exc: Exception,
+) -> _KanbanDispatchDbDiagnostic | None:
+    """Classify SQLite errors far enough for safe gateway dispatch handling.
+
+    Gateway-embedded dispatch must isolate board-local DB failures: a bad
+    SuperOptions board should not break SuperBettor/default ticks, and a
+    persistent unreadable board should not emit an exception traceback every
+    interval.  The taxonomy is intentionally limited to what sqlite3 exposes:
+    WAL incompatibility handled inside ``apply_wal_with_fallback`` degrades to
+    DELETE mode before it reaches this layer; WAL/sidecar errors that still
+    bubble up, corrupt-file signals, and OS-level disk I/O errors quarantine
+    only the board whose DB fingerprint failed; lock/busy signals are treated
+    as transient and retried on the next tick. Unknown failures still return
+    ``None`` so callers log a normal exception and do not hide programming
+    errors.
+    """
+    diagnostic = getattr(exc, "diagnostic", None)
+    if diagnostic is not None and hasattr(diagnostic, "category"):
+        category = str(getattr(diagnostic, "category", "sqlite_error") or "sqlite_error")
+        quarantine = bool(getattr(diagnostic, "quarantine", False))
+        return _KanbanDispatchDbDiagnostic(
+            kind=category,
+            severity="error" if quarantine or category != "busy_locked" else "warning",
+            quarantine=quarantine,
+            operator_action=str(
+                getattr(
+                    diagnostic,
+                    "operator_action",
+                    "inspect the board DB path and gateway logs; retry after the underlying SQLite error is understood",
+                )
+            ),
+            error_class=str(getattr(diagnostic, "error_class", exc.__class__.__name__)),
+            error_message=str(getattr(diagnostic, "error_message", str(exc))),
+        )
+
+    corrupt_guard_error = getattr(kb_module, "KanbanDbCorruptError", None)
+    if corrupt_guard_error is not None and isinstance(exc, corrupt_guard_error):
+        return _KanbanDispatchDbDiagnostic(
+            kind="corrupt",
+            severity="error",
+            quarantine=True,
+            operator_action=(
+                "restore or move aside the corrupt board DB and its -wal/-shm "
+                "sidecars; run `hermes kanban init` only when a fresh board is intended"
+            ),
+        )
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return None
+
+    msg = str(exc).lower()
+    if (
+        "file is not a database" in msg
+        or "database disk image is malformed" in msg
+        or "not a valid sqlite database" in msg
+    ):
+        return _KanbanDispatchDbDiagnostic(
+            kind="corrupt",
+            severity="error",
+            quarantine=True,
+            operator_action=(
+                "restore or move aside the corrupt board DB and its -wal/-shm "
+                "sidecars; run `hermes kanban init` only when a fresh board is intended"
+            ),
+        )
+    if "disk i/o error" in msg or "disk io error" in msg or "i/o error" in msg:
+        return _KanbanDispatchDbDiagnostic(
+            kind="disk_io",
+            severity="error",
+            quarantine=True,
+            operator_action=(
+                "check disk health, free space, file permissions, and the DB/WAL/SHM "
+                "sidecar files; repair or restore the board, then restart the gateway "
+                "or wait for the quarantine retry"
+            ),
+        )
+    if (
+        "database is locked" in msg
+        or "database table is locked" in msg
+        or "database schema is locked" in msg
+        or "database is busy" in msg
+        or msg.strip() in {"busy", "locked"}
+    ):
+        return _KanbanDispatchDbDiagnostic(
+            kind="busy_locked",
+            severity="warning",
+            quarantine=False,
+            operator_action=(
+                "wait for the active writer/reader to finish; if it persists, inspect "
+                "stuck worker processes holding the board DB"
+            ),
+        )
+    if "locking protocol" in msg or "journal_mode" in msg or "-wal" in msg or "-shm" in msg:
+        return _KanbanDispatchDbDiagnostic(
+            kind="wal_sidecar",
+            severity="error",
+            quarantine=True,
+            operator_action=(
+                "inspect the board DB and WAL/SHM sidecars; if the board lives on "
+                "NFS/SMB/FUSE move it to a local filesystem or restore a healthy copy"
+            ),
+        )
+    return None
+
+
+def _log_kanban_dispatch_db_diagnostic(
+    slug: str,
+    fingerprint: tuple[str, int | None, int | None],
+    operation: str,
+    diagnostic: _KanbanDispatchDbDiagnostic,
+    exc: Exception,
+) -> None:
+    """Log one clear, non-traceback diagnostic for a classified board failure."""
+    log_fn = logger.error if diagnostic.severity == "error" else logger.warning
+    pause = "pausing dispatch for this board" if diagnostic.quarantine else "skipping this tick"
+    error_class, error_message = _kanban_dispatch_error_class_and_message(diagnostic, exc)
+    log_fn(
+        "kanban dispatcher: board=%s db_path=%s operation=%s "
+        "error_class=%s error_message=%r sqlite_failure=%s; %s. "
+        "Recommended action: %s.",
+        slug,
+        fingerprint[0],
+        operation,
+        error_class,
+        error_message,
+        diagnostic.kind,
+        pause,
+        diagnostic.operator_action,
+        extra={
+            "board_slug": slug,
+            "db_path": fingerprint[0],
+            "operation": operation,
+            "error_class": error_class,
+            "error_message": error_message,
+            "sqlite_failure": diagnostic.kind,
+            "recommended_operator_action": diagnostic.operator_action,
+            "quarantined": diagnostic.quarantine,
+        },
+    )
+
+
+def _dispatch_kanban_board_once(
+    kb_module: Any,
+    slug: str,
+    *,
+    disabled_boards: dict[str, tuple[tuple[str, int | None, int | None], float, _KanbanDispatchDbDiagnostic]],
+    quarantine_retry_after_seconds: int,
+    max_spawn: Optional[int] = None,
+    max_in_progress: Optional[int] = None,
+    failure_limit: Optional[int] = None,
+    stale_timeout_seconds: int = 0,
+) -> Optional[object]:
+    """Run one gateway-embedded dispatch tick for one board.
+
+    Classified SQLite failures are isolated to ``slug`` and, when appropriate,
+    quarantined by DB fingerprint so other boards continue ticking and the
+    gateway does not emit the same traceback every interval.
+    """
+    conn = None
+    fingerprint = _kanban_board_db_fingerprint(kb_module, slug)
+    disabled_entry = disabled_boards.get(slug)
+    if disabled_entry is not None:
+        disabled_fingerprint, disabled_at, _diagnostic = disabled_entry
+        age = time.monotonic() - disabled_at
+        if disabled_fingerprint == fingerprint and age < quarantine_retry_after_seconds:
+            _update_kanban_dispatch_runtime_status(
+                slug,
+                state="quarantined",
+                healthy=False,
+                degraded=True,
+                db_path=fingerprint[0],
+                last_error_kind=_diagnostic.kind,
+                last_error_severity=_diagnostic.severity,
+                last_error_action=_diagnostic.operator_action,
+                quarantine_started_monotonic=disabled_at,
+                quarantine_age_seconds=int(age),
+                quarantine_retry_after_seconds=quarantine_retry_after_seconds,
+            )
+            return None
+        if disabled_fingerprint == fingerprint:
+            logger.info(
+                "kanban dispatcher: board %s database fingerprint unchanged "
+                "after %.0fs quarantine; retrying dispatch",
+                slug,
+                age,
+            )
+        else:
+            logger.info(
+                "kanban dispatcher: board %s database changed; retrying dispatch",
+                slug,
+            )
+        disabled_boards.pop(slug, None)
+
+    operation = "connect"
+    try:
+        conn = kb_module.connect(board=slug)
+        operation = "dispatch_once"
+        kwargs: dict[str, Any] = {
+            "board": slug,
+            "max_spawn": max_spawn,
+            "max_in_progress": max_in_progress,
+            "stale_timeout_seconds": stale_timeout_seconds,
+        }
+        if failure_limit is not None:
+            kwargs["failure_limit"] = failure_limit
+        result = kb_module.dispatch_once(conn, **kwargs)
+        _update_kanban_dispatch_runtime_status(
+            slug,
+            state="healthy",
+            healthy=True,
+            degraded=False,
+            db_path=fingerprint[0],
+            last_successful_tick=int(time.time()),
+            last_error_kind=None,
+            last_error_severity=None,
+            last_error_message=None,
+            last_error_action=None,
+            last_result={
+                "spawned": len(getattr(result, "spawned", []) or []),
+                "reclaimed": getattr(result, "reclaimed", None),
+                "stale": len(getattr(result, "stale", []) or []),
+                "crashed": len(getattr(result, "crashed", []) or []),
+                "timed_out": len(getattr(result, "timed_out", []) or []),
+                "promoted": getattr(result, "promoted", None),
+                "auto_blocked": len(getattr(result, "auto_blocked", []) or []),
+            },
+        )
+        return result
+    except sqlite3.DatabaseError as exc:
+        diagnostic = _classify_kanban_dispatch_db_error(kb_module, exc)
+        if diagnostic is not None:
+            if diagnostic.quarantine:
+                disabled_boards[slug] = (fingerprint, time.monotonic(), diagnostic)
+            error_class, error_message = _kanban_dispatch_error_class_and_message(diagnostic, exc)
+            _update_kanban_dispatch_runtime_status(
+                slug,
+                state="quarantined" if diagnostic.quarantine else "degraded",
+                healthy=False,
+                degraded=True,
+                db_path=fingerprint[0],
+                operation=operation,
+                last_error_kind=diagnostic.kind,
+                last_error_severity=diagnostic.severity,
+                last_error_class=error_class,
+                last_error_message=error_message,
+                last_error_action=diagnostic.operator_action,
+                quarantine_retry_after_seconds=(
+                    quarantine_retry_after_seconds if diagnostic.quarantine else None
+                ),
+            )
+            _log_kanban_dispatch_db_diagnostic(slug, fingerprint, operation, diagnostic, exc)
+            return None
+        _update_kanban_dispatch_runtime_status(
+            slug,
+            state="degraded",
+            healthy=False,
+            degraded=True,
+            db_path=fingerprint[0],
+            operation=operation,
+            last_error_kind="sqlite_unclassified",
+            last_error_severity="error",
+            last_error_message=str(exc),
+        )
+        logger.exception("kanban dispatcher: tick failed on board %s", slug)
+        return None
+    except Exception as exc:
+        diagnostic = _classify_kanban_dispatch_db_error(kb_module, exc)
+        if diagnostic is not None:
+            if diagnostic.quarantine:
+                disabled_boards[slug] = (fingerprint, time.monotonic(), diagnostic)
+            error_class, error_message = _kanban_dispatch_error_class_and_message(diagnostic, exc)
+            _update_kanban_dispatch_runtime_status(
+                slug,
+                state="quarantined" if diagnostic.quarantine else "degraded",
+                healthy=False,
+                degraded=True,
+                db_path=fingerprint[0],
+                operation=operation,
+                last_error_kind=diagnostic.kind,
+                last_error_severity=diagnostic.severity,
+                last_error_class=error_class,
+                last_error_message=error_message,
+                last_error_action=diagnostic.operator_action,
+                quarantine_retry_after_seconds=(
+                    quarantine_retry_after_seconds if diagnostic.quarantine else None
+                ),
+            )
+            _log_kanban_dispatch_db_diagnostic(slug, fingerprint, operation, diagnostic, exc)
+            return None
+        _update_kanban_dispatch_runtime_status(
+            slug,
+            state="degraded",
+            healthy=False,
+            degraded=True,
+            db_path=fingerprint[0],
+            operation=operation,
+            last_error_kind=exc.__class__.__name__,
+            last_error_severity="error",
+            last_error_message=str(exc),
+        )
+        logger.exception("kanban dispatcher: tick failed on board %s", slug)
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
@@ -5424,37 +5798,18 @@ class GatewayRunner:
         HEALTH_WINDOW = 6
         bad_ticks = 0
         last_warn_at = 0
-        # Avoid hot-looping corrupt-looking board DBs, but do not suppress
-        # same-fingerprint retries forever: transient WAL/open races can
-        # surface as "database disk image is malformed" for one tick.
-        CORRUPT_BOARD_RETRY_AFTER_SECONDS = 300
-        disabled_corrupt_boards: dict[
-            str, tuple[tuple[str, int | None, int | None], float]
+        # Avoid hot-looping board-local SQLite failures, but do not suppress
+        # same-fingerprint retries forever: transient WAL/open/read races can
+        # surface as corruption or disk I/O errors for one tick.
+        BOARD_DB_QUARANTINE_RETRY_AFTER_SECONDS = 300
+        disabled_board_db_failures: dict[
+            str,
+            tuple[
+                tuple[str, int | None, int | None],
+                float,
+                _KanbanDispatchDbDiagnostic,
+            ],
         ] = {}
-
-        def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
-            path = _kb.kanban_db_path(slug)
-            try:
-                resolved = str(path.expanduser().resolve())
-            except Exception:
-                resolved = str(path)
-            try:
-                stat = path.stat()
-            except OSError:
-                return (resolved, None, None)
-            return (resolved, stat.st_mtime_ns, stat.st_size)
-
-        def _is_corrupt_board_db_error(exc: Exception) -> bool:
-            corrupt_guard_error = getattr(_kb, "KanbanDbCorruptError", None)
-            if corrupt_guard_error is not None and isinstance(exc, corrupt_guard_error):
-                return True
-            if not isinstance(exc, sqlite3.DatabaseError):
-                return False
-            msg = str(exc).lower()
-            return (
-                "file is not a database" in msg
-                or "database disk image is malformed" in msg
-            )
 
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
@@ -5465,82 +5820,23 @@ class GatewayRunner:
             opened explicitly so concurrent boards never share a
             connection handle or accidentally claim across each other.
             """
-            conn = None
-            fingerprint = _board_db_fingerprint(slug)
-            disabled_entry = disabled_corrupt_boards.get(slug)
-            if disabled_entry is not None:
-                disabled_fingerprint, disabled_at = disabled_entry
-                age = time.monotonic() - disabled_at
-                if (
-                    disabled_fingerprint == fingerprint
-                    and age < CORRUPT_BOARD_RETRY_AFTER_SECONDS
-                ):
-                    return None
-                if disabled_fingerprint == fingerprint:
-                    logger.info(
-                        "kanban dispatcher: board %s database fingerprint unchanged "
-                        "after %.0fs quarantine; retrying dispatch",
-                        slug,
-                        age,
-                    )
-                else:
-                    logger.info(
-                        "kanban dispatcher: board %s database changed; retrying dispatch",
-                        slug,
-                    )
-                disabled_corrupt_boards.pop(slug, None)
-            try:
-                conn = _kb.connect(board=slug)
-                # `connect()` runs the schema + idempotent migration on
-                # first open per process; the previous explicit
-                # `init_db()` call here busted the per-process cache and
-                # re-ran the migration on a second connection, racing
-                # the first. See the matching comment in
-                # `_kanban_notifier_watcher` and issue #21378.
-                return _kb.dispatch_once(
-                    conn,
-                    board=slug,
-                    max_spawn=max_spawn,
-                    max_in_progress=max_in_progress,
-                    failure_limit=failure_limit,
-                    stale_timeout_seconds=stale_timeout_seconds,
-                )
-            except sqlite3.DatabaseError as exc:
-                if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
-                    logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; pausing dispatch for this board until "
-                        "the file changes, the gateway restarts, or the "
-                        "quarantine timer expires. Move or restore the file, "
-                        "then run `hermes kanban init` if you need a fresh board.",
-                        slug,
-                        fingerprint[0],
-                    )
-                    return None
-                logger.exception("kanban dispatcher: tick failed on board %s", slug)
-                return None
-            except Exception as exc:
-                if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
-                    logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; pausing dispatch for this board until "
-                        "the file changes, the gateway restarts, or the "
-                        "quarantine timer expires. Move or restore the file, "
-                        "then run `hermes kanban init` if you need a fresh board.",
-                        slug,
-                        fingerprint[0],
-                    )
-                    return None
-                logger.exception("kanban dispatcher: tick failed on board %s", slug)
-                return None
-            finally:
-                if conn is not None:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
+            # `connect()` runs the schema + idempotent migration on first
+            # open per process; the previous explicit `init_db()` call here
+            # busted the per-process cache and re-ran migration on a second
+            # connection, racing the first. See `_kanban_notifier_watcher`
+            # and issue #21378. `_dispatch_kanban_board_once` also handles
+            # board-local SQLite quarantine so one bad board cannot break
+            # gateway-embedded dispatch for the others.
+            return _dispatch_kanban_board_once(
+                _kb,
+                slug,
+                disabled_boards=disabled_board_db_failures,
+                quarantine_retry_after_seconds=BOARD_DB_QUARANTINE_RETRY_AFTER_SECONDS,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                failure_limit=failure_limit,
+                stale_timeout_seconds=stale_timeout_seconds,
+            )
 
         def _tick_once() -> "list[tuple[str, Optional[object]]]":
             """Run one dispatch_once per board. Returns (slug, result) pairs.

@@ -1034,6 +1034,118 @@ _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 
 
+@dataclass(frozen=True)
+class KanbanDbDiagnostic:
+    """Actionable classification for one board-local SQLite access failure."""
+
+    board_slug: str
+    db_path: str
+    category: str
+    phase: str
+    error_class: str
+    error_message: str
+    operator_action: str
+    quarantine: bool
+
+
+class KanbanDbUnavailableError(sqlite3.DatabaseError):
+    """Raised when a board DB cannot be opened with an operator diagnostic."""
+
+    def __init__(self, diagnostic: KanbanDbDiagnostic):
+        self.diagnostic = diagnostic
+        super().__init__(
+            f"kanban board {diagnostic.board_slug!r} database unavailable: "
+            f"{diagnostic.category} during {diagnostic.phase} at {diagnostic.db_path}: "
+            f"{diagnostic.error_class}: {diagnostic.error_message}. "
+            f"Recommended action: {diagnostic.operator_action}"
+        )
+
+
+def _classify_kanban_db_failure(exc: Exception) -> tuple[str, bool, str]:
+    """Classify sqlite3's coarse errors into board-dispatch actions.
+
+    This intentionally only uses exception type/message because that is all
+    Python's sqlite3 reliably exposes across platforms.  WAL incompatibility
+    that ``hermes_state.apply_wal_with_fallback`` can handle never reaches
+    here; WAL/sidecar failures that still bubble, corrupt-file signals, and
+    OS-level disk I/O errors are board-local quarantine cases.  Busy/locked
+    errors are transient and should be retried on the next tick.
+    """
+    if isinstance(exc, KanbanDbCorruptError):
+        return (
+            "corrupt",
+            True,
+            "restore or move aside the corrupt board DB and its -wal/-shm sidecars; "
+            "run `hermes kanban init` only when a fresh board is intended",
+        )
+    msg = str(exc).lower()
+    if (
+        "file is not a database" in msg
+        or "database disk image is malformed" in msg
+        or "not a valid sqlite database" in msg
+    ):
+        return (
+            "corrupt",
+            True,
+            "restore or move aside the corrupt board DB and its -wal/-shm sidecars; "
+            "run `hermes kanban init` only when a fresh board is intended",
+        )
+    if "disk i/o error" in msg or "disk io error" in msg or "i/o error" in msg:
+        return (
+            "disk_io",
+            True,
+            "check disk health, free space, file permissions, and the DB/WAL/SHM sidecar files; "
+            "repair or restore the board before relying on dispatch",
+        )
+    if (
+        "database is locked" in msg
+        or "database table is locked" in msg
+        or "database schema is locked" in msg
+        or "database is busy" in msg
+        or msg.strip() in {"busy", "locked"}
+    ):
+        return (
+            "busy_locked",
+            False,
+            "wait for the active writer/reader to finish; if it persists, inspect stuck worker processes holding the board DB",
+        )
+    if "locking protocol" in msg or "journal_mode" in msg or "-wal" in msg or "-shm" in msg:
+        return (
+            "wal_sidecar",
+            True,
+            "inspect the board DB and WAL/SHM sidecars; if the board lives on NFS/SMB/FUSE move it to a local filesystem or restore a healthy copy",
+        )
+    return (
+        "sqlite_error",
+        False,
+        "inspect the board DB path and gateway logs; retry after the underlying SQLite error is understood",
+    )
+
+
+def _kanban_db_diagnostic(
+    exc: Exception,
+    *,
+    path: Path,
+    board: Optional[str],
+    phase: str,
+) -> KanbanDbDiagnostic:
+    category, quarantine, operator_action = _classify_kanban_db_failure(exc)
+    try:
+        db_path = str(path.expanduser().resolve())
+    except Exception:
+        db_path = str(path)
+    return KanbanDbDiagnostic(
+        board_slug=_normalize_board_slug(board) or DEFAULT_BOARD,
+        db_path=db_path,
+        category=category,
+        phase=phase,
+        error_class=exc.__class__.__name__,
+        error_message=str(exc),
+        operator_action=operator_action,
+        quarantine=quarantine,
+    )
+
+
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
     """Return True for a TLS record header at ``data[offset:]``."""
     if len(data) < offset + 5:
@@ -1237,16 +1349,30 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
+    board_context = db_path is None or board is not None
     path.parent.mkdir(parents=True, exist_ok=True)
     # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
     # and other invalid-header cases without opening a sqlite connection.
-    _validate_sqlite_header(path)
-    # Full integrity probe — catches corruption past the header (malformed
-    # pages, broken internal metadata). Cached per-path after first success
-    # via _INITIALIZED_PATHS so it only runs once per process per path.
-    _guard_existing_db_is_healthy(path)
+    try:
+        _validate_sqlite_header(path)
+        # Full integrity probe — catches corruption past the header (malformed
+        # pages, broken internal metadata). Cached per-path after first success
+        # via _INITIALIZED_PATHS so it only runs once per process per path.
+        _guard_existing_db_is_healthy(path)
+    except (sqlite3.DatabaseError, KanbanDbCorruptError) as exc:
+        if not board_context:
+            raise
+        raise KanbanDbUnavailableError(
+            _kanban_db_diagnostic(exc, path=path, board=board, phase="connect")
+        ) from exc
+
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    try:
+        conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    except sqlite3.DatabaseError as exc:
+        raise KanbanDbUnavailableError(
+            _kanban_db_diagnostic(exc, path=path, board=board, phase="connect")
+        ) from exc
     try:
         conn.row_factory = sqlite3.Row
         with _INIT_LOCK:
@@ -1258,18 +1384,23 @@ def connect(
             # falls back to DELETE with one WARNING so kanban stays usable there.
             # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
             from hermes_state import apply_wal_with_fallback
-            apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            # FULL (was NORMAL): fsync before each checkpoint to narrow the
-            # crash window that can leave a b-tree page header torn.
-            conn.execute("PRAGMA synchronous=FULL")
-            conn.execute("PRAGMA wal_autocheckpoint=100")
-            conn.execute("PRAGMA foreign_keys=ON")
-            # Zero freed pages so a later torn write cannot expose stale
-            # cell content; persisted in the DB header for new DBs.
-            conn.execute("PRAGMA secure_delete=ON")
-            # Surface corrupt cells as read errors instead of silent
-            # wrong-data returns.
-            conn.execute("PRAGMA cell_size_check=ON")
+            try:
+                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                # FULL (was NORMAL): fsync before each checkpoint to narrow the
+                # crash window that can leave a b-tree page header torn.
+                conn.execute("PRAGMA synchronous=FULL")
+                conn.execute("PRAGMA wal_autocheckpoint=100")
+                conn.execute("PRAGMA foreign_keys=ON")
+                # Zero freed pages so a later torn write cannot expose stale
+                # cell content; persisted in the DB header for new DBs.
+                conn.execute("PRAGMA secure_delete=ON")
+                # Surface corrupt cells as read errors instead of silent
+                # wrong-data returns.
+                conn.execute("PRAGMA cell_size_check=ON")
+            except sqlite3.DatabaseError as exc:
+                raise KanbanDbUnavailableError(
+                    _kanban_db_diagnostic(exc, path=path, board=board, phase="connect")
+                ) from exc
             needs_init = resolved not in _INITIALIZED_PATHS
             if needs_init:
                 # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
@@ -1277,8 +1408,13 @@ def connect(
                 # process are cheap. The lock prevents same-process dispatcher
                 # threads from racing through the additive ALTER TABLE pass with
                 # stale PRAGMA snapshots during gateway startup.
-                conn.executescript(SCHEMA_SQL)
-                _migrate_add_optional_columns(conn)
+                try:
+                    conn.executescript(SCHEMA_SQL)
+                    _migrate_add_optional_columns(conn)
+                except sqlite3.DatabaseError as exc:
+                    raise KanbanDbUnavailableError(
+                        _kanban_db_diagnostic(exc, path=path, board=board, phase="connect")
+                    ) from exc
                 _INITIALIZED_PATHS.add(resolved)
     except Exception:
         conn.close()
@@ -4474,6 +4610,8 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    db_error: Optional[KanbanDbDiagnostic] = None
+    """Board-level SQLite failure that degraded this tick instead of spawning."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5578,26 +5716,41 @@ def dispatch_once(
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
+    result = DispatchResult()
+
+    def _degrade_db_error(exc: Exception) -> DispatchResult:
+        if isinstance(exc, KanbanDbUnavailableError):
+            result.db_error = exc.diagnostic
+        else:
+            result.db_error = _kanban_db_diagnostic(
+                exc,
+                path=kanban_db_path(board=board),
+                board=board,
+                phase="dispatch_once",
+            )
+        return result
+
     # Reap zombie children from previously spawned workers. See
     # reap_worker_zombies() for the full rationale.
-    reap_worker_zombies()
-
-    result = DispatchResult()
-    result.reclaimed = release_stale_claims(conn)
-    result.stale = detect_stale_running(
-        conn, stale_timeout_seconds=stale_timeout_seconds,
-    )
-    result.crashed = detect_crashed_workers(conn)
-    # detect_crashed_workers stashes protocol-violation auto-blocks on
-    # itself so the public list-return stays stable. Pull them into the
-    # DispatchResult here so telemetry / tests see the trip.
-    _crash_auto_blocked = getattr(
-        detect_crashed_workers, "_last_auto_blocked", []
-    )
-    if _crash_auto_blocked:
-        result.auto_blocked.extend(_crash_auto_blocked)
-    result.timed_out = enforce_max_runtime(conn)
-    result.promoted = recompute_ready(conn)
+    try:
+        reap_worker_zombies()
+        result.reclaimed = release_stale_claims(conn)
+        result.stale = detect_stale_running(
+            conn, stale_timeout_seconds=stale_timeout_seconds,
+        )
+        result.crashed = detect_crashed_workers(conn)
+        # detect_crashed_workers stashes protocol-violation auto-blocks on
+        # itself so the public list-return stays stable. Pull them into the
+        # DispatchResult here so telemetry / tests see the trip.
+        _crash_auto_blocked = getattr(
+            detect_crashed_workers, "_last_auto_blocked", []
+        )
+        if _crash_auto_blocked:
+            result.auto_blocked.extend(_crash_auto_blocked)
+        result.timed_out = enforce_max_runtime(conn)
+        result.promoted = recompute_ready(conn)
+    except (KanbanDbUnavailableError, sqlite3.DatabaseError) as exc:
+        return _degrade_db_error(exc)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full

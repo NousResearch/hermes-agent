@@ -128,6 +128,7 @@ AUTHOR_MAP = {
     "buraysandro9@gmail.com": "ygd58",
     "108427749+buntingszn@users.noreply.github.com": "buntingszn",
     "yanglongwei06@gmail.com": "Alex-yang00",
+    "yanghongda@jackyun.com": "yangguangjin",
     "teknium@nousresearch.com": "teknium1",
     "markuscontasul@gmail.com": "Glucksberg",
     "80581902+Glucksberg@users.noreply.github.com": "Glucksberg",

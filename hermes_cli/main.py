@@ -661,11 +661,11 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             preview = (s.get("preview") or "").strip()
             source = s.get("source", "")[:6]
             last_active = _relative_time(s.get("last_active"))
-            sid = s["id"][:18]
+            sid = s["id"]
 
             # Adaptive column widths based on terminal width
-            # Layout: [arrow 3] [title/preview flexible] [active 12] [src 6] [id 18]
-            fixed_cols = 3 + 12 + 6 + 18 + 6  # arrow + active + src + id + padding
+            # Layout: [arrow 3] [title/preview flexible] [active 12] [src 6] [id 32]
+            fixed_cols = 3 + 12 + 6 + 32 + 6  # arrow + active + src + id + padding
             name_width = max(20, max_x - fixed_cols)
 
             if title:
@@ -732,7 +732,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     pass
 
                 # Column header line
-                fixed_cols = 3 + 12 + 6 + 18 + 6
+                fixed_cols = 3 + 12 + 6 + 32 + 6
                 name_width = max(20, max_x - fixed_cols)
                 col_header = f"   {'Title / Preview':<{name_width}}  {'Active':<10}  {'Src':<5} {'ID'}"
                 try:

@@ -66,6 +66,46 @@ def _load_config() -> dict:
     return config
 
 
+def _explicit_source_keys() -> set:
+    """Return the set of config keys that came from an explicit user source.
+
+    A key is "explicit" if it was set via an environment variable
+    (``MEM0_API_KEY`` / ``MEM0_USER_ID`` / ``MEM0_AGENT_ID``) OR appeared
+    with a non-empty value in ``$HERMES_HOME/mem0.json``.
+
+    Used by ``initialize()`` to decide whether a runtime override
+    (e.g. profile name → ``agent_id``) should win over a value present in
+    the loaded config dict.  Without this, the env-var defaults for
+    ``user_id`` and ``agent_id`` would always look "set" and runtime
+    overrides could never take effect.
+    """
+    from hermes_constants import get_hermes_home
+
+    explicit: set = set()
+    _env_keys = {
+        "api_key": "MEM0_API_KEY",
+        "user_id": "MEM0_USER_ID",
+        "agent_id": "MEM0_AGENT_ID",
+    }
+    for _k, _env in _env_keys.items():
+        _v = os.environ.get(_env)
+        if _v not in (None, ""):
+            explicit.add(_k)
+
+    config_path = get_hermes_home() / "mem0.json"
+    if config_path.exists():
+        try:
+            file_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            for _k, _v in file_cfg.items():
+                if _v is None or _v == "":
+                    continue
+                explicit.add(_k)
+        except Exception:
+            pass
+
+    return explicit
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas
 # ---------------------------------------------------------------------------
@@ -202,11 +242,41 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
+        explicit_keys = _explicit_source_keys()
+        # Merge in per-provider config from config.yaml's `memory.mem0.*`
+        # subsection — threaded by agent_init as the `provider_config` kwarg.
+        # Source precedence (lowest → highest):
+        #   hardcoded defaults → env vars → mem0.json → config.yaml memory.mem0.*
+        # `explicit_keys` tracks keys that came from a user-supplied source
+        # (env / mem0.json / yaml) rather than a hardcoded default — so a
+        # runtime override (e.g. profile name → agent_id) won't silently
+        # clobber an explicit user setting.
+        # Skip empty values so that an unset YAML key (e.g. `user_id: ""`)
+        # doesn't silently wipe out a non-empty env / mem0.json value.
+        prov_cfg = kwargs.get("provider_config") or {}
+        if isinstance(prov_cfg, dict):
+            for _k, _v in prov_cfg.items():
+                if _v is None or _v == "":
+                    continue
+                self._config[_k] = _v
+                explicit_keys.add(_k)
         self._api_key = self._config.get("api_key", "")
         # Prefer gateway-provided user_id for per-user memory scoping;
-        # fall back to config/env default for CLI (single-user) sessions.
+        # fall back to config (yaml/json/env) for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
-        self._agent_id = self._config.get("agent_id", "hermes")
+        # agent_id precedence: explicit config (env / mem0.json / yaml) >
+        # runtime profile name (agent_identity, set by agent_init) >
+        # hardcoded "hermes" default. This way, multi-profile users get
+        # per-profile attribution automatically while a user who explicitly
+        # pinned `MEM0_AGENT_ID`, `mem0.json`'s `agent_id`, or
+        # `memory.mem0.agent_id` is still honoured.
+        if "agent_id" in explicit_keys:
+            self._agent_id = self._config["agent_id"]
+        else:
+            self._agent_id = (
+                kwargs.get("agent_identity")
+                or self._config.get("agent_id", "hermes")
+            )
         self._rerank = self._config.get("rerank", True)
 
     def _read_filters(self) -> Dict[str, Any]:

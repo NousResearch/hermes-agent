@@ -1109,6 +1109,22 @@ def init_agent(
                         "hermes_home": str(get_hermes_home()),
                         "agent_context": "primary",
                     }
+                    # Thread per-provider subconfig from config.yaml so that
+                    # `memory.<provider_name>.*` keys (e.g.
+                    # `memory.mem0.user_id` / `memory.mem0.agent_id`) actually
+                    # reach the plugin.  Without this, the only path into a
+                    # plugin's `_load_config()` is env vars + its own
+                    # $HERMES_HOME/<provider>.json — config.yaml is silently
+                    # ignored, so users who set `memory.mem0.user_id: jereme`
+                    # still get writes scoped to the env default
+                    # ("hermes-user"), which defeats per-profile memory
+                    # scoping in multi-profile setups.
+                    try:
+                        _provider_subconf = mem_config.get(_mem_provider_name)
+                        if isinstance(_provider_subconf, dict) and _provider_subconf:
+                            _init_kwargs["provider_config"] = dict(_provider_subconf)
+                    except Exception:
+                        pass
                     # Thread session title for memory provider scoping
                     # (e.g. honcho uses this to derive chat-scoped session keys)
                     if agent._session_db:

@@ -280,6 +280,14 @@ class MattermostAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_POST_LENGTH)
 
+        # Also treat thread_id from metadata as a reply anchor so that
+        # status updates, progress messages, and other gateway-originated
+        # sends that carry metadata["thread_id"] are posted into the correct
+        # thread rather than as flat channel messages.
+        effective_reply_to = reply_to or (
+            metadata.get("thread_id") if metadata else None
+        )
+
         last_id = None
         for chunk in chunks:
             payload: Dict[str, Any] = {
@@ -287,10 +295,10 @@ class MattermostAdapter(BasePlatformAdapter):
                 "message": chunk,
             }
             # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
+            if effective_reply_to and self._reply_mode == "thread":
                 # Ensure root_id points to the thread root, not a reply.
                 # Mattermost rejects non-root post IDs as root_id.
-                resolved_root = await self._resolve_root_id(reply_to)
+                resolved_root = await self._resolve_root_id(effective_reply_to)
                 payload["root_id"] = resolved_root
 
             data = await self._api_post("posts", payload)

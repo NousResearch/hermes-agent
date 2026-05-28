@@ -127,6 +127,21 @@ class TestDecideImageInputMode:
         with patch("agent.models_dev.fetch_models_dev", return_value=registry):
             assert decide_image_input_mode("xiaomi", "mimo-v2.5-pro", {}) == "text"
 
+    def test_auto_custom_gpt_uses_openai_semantic_capabilities(self):
+        registry = {
+            "openai": {
+                "models": {
+                    "gpt-5.5": {
+                        "modalities": {"input": ["text", "image"]},
+                        "tool_call": True,
+                        "reasoning": True,
+                    },
+                },
+            },
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            assert decide_image_input_mode("custom", "gpt-5.5", {}) == "native"
+
 
 # ─── _coerce_capability_bool ─────────────────────────────────────────────────
 

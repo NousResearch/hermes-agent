@@ -135,6 +135,83 @@ class ProviderInfo:
 
 
 # ---------------------------------------------------------------------------
+# Semantic provider inference for custom/relay endpoints
+# ---------------------------------------------------------------------------
+
+
+def infer_semantic_provider_for_model(provider: str, model: str) -> str:
+    """Return the provider whose model semantics should be used.
+
+    Custom providers are often OpenAI-compatible relay endpoints: the route is
+    user-defined, but the model id still belongs to an upstream model family.
+    When the route provider is ``custom`` and the model slug is high-confidence,
+    infer that upstream provider so metadata lookups (context, tools, vision,
+    reasoning) can reuse the same models.dev records as first-party providers.
+
+    Unknown/custom local model names intentionally stay ``custom``.
+    """
+    provider_norm = (provider or "").strip().lower()
+    model_norm = (model or "").strip().lower()
+    if provider_norm != "custom" or not model_norm:
+        return provider_norm
+
+    # Strip common catalog prefixes users may paste into a custom relay model
+    # field; the relay still receives the original model string elsewhere.
+    if "/" in model_norm:
+        prefix, suffix = model_norm.split("/", 1)
+        prefix_map = {
+            "openai": "openai",
+            "anthropic": "anthropic",
+            "deepseek": "deepseek",
+            "xai": "xai",
+            "google": "gemini",
+            "google-gemini": "gemini",
+            "gemini": "gemini",
+            "alibaba": "alibaba",
+            "qwen": "alibaba",
+            "zai": "zai",
+            "z-ai": "zai",
+            "glm": "zai",
+            "kimi": "kimi",
+            "moonshot": "kimi",
+            "minimax": "minimax",
+        }
+        mapped = prefix_map.get(prefix)
+        if mapped and suffix:
+            return mapped
+
+    # Bare OpenAI / GPT family slugs. Keep this intentionally conservative:
+    # these names are globally recognisable and commonly relayed unchanged.
+    openai_prefixes = (
+        "gpt-",
+        "o1-", "o3-", "o4-",
+        "chatgpt-",
+        "codex-",
+    )
+    if model_norm.startswith(openai_prefixes) or model_norm in {"o1", "o3", "o4"}:
+        return "openai"
+
+    if model_norm.startswith(("claude-", "anthropic.claude-")):
+        return "anthropic"
+    if model_norm.startswith(("deepseek-", "deepseek/")):
+        return "deepseek"
+    if model_norm.startswith(("grok-", "xai/")):
+        return "xai"
+    if model_norm.startswith(("gemini-", "gemma-")):
+        return "gemini"
+    if model_norm.startswith(("qwen", "qwq", "dashscope/")):
+        return "alibaba"
+    if model_norm.startswith(("glm-", "zai/", "z-ai/")):
+        return "zai"
+    if model_norm.startswith(("kimi-", "moonshot-")):
+        return "kimi"
+    if model_norm.startswith("minimax-"):
+        return "minimax"
+
+    return provider_norm
+
+
+# ---------------------------------------------------------------------------
 # Provider ID mapping: Hermes ↔ models.dev
 # ---------------------------------------------------------------------------
 
@@ -324,6 +401,7 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     Returns the context window in tokens, or None if not found.
     Handles case-insensitive matching and filters out context=0 entries.
     """
+    provider = infer_semantic_provider_for_model(provider, model)
     mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
     if not mdev_provider_id:
         return None
@@ -410,11 +488,12 @@ class ModelCapabilities:
     model_family: str = ""
 
 
-def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
+def _get_provider_models(provider: str, model: str = "") -> Optional[Dict[str, Any]]:
     """Resolve a Hermes provider ID to its models dict from models.dev.
 
     Returns the models dict or None if the provider is unknown or has no data.
     """
+    provider = infer_semantic_provider_for_model(provider, model)
     mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
     if not mdev_provider_id:
         return None
@@ -461,7 +540,7 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
       - limit.output  (int) → max_output_tokens
       - family     (str)   → model_family
     """
-    models = _get_provider_models(provider)
+    models = _get_provider_models(provider, model)
     if models is None:
         return None
 

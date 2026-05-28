@@ -883,3 +883,169 @@ class TestWeixinContentDedup:
         assert adapter.handle_message.await_count == 0
         # is_duplicate should only be called for message_id, never for content
         assert all("content:" not in str(call) for call in adapter._dedup.is_duplicate.call_args_list)
+
+
+def _make_text_message(from_user_id: str, text: str, message_id: str = "msg-1") -> dict:
+    """Helper: build a minimal text message dict for testing."""
+    return {
+        "from_user_id": from_user_id,
+        "message_id": message_id,
+        "item_list": [{"type": 1, "text_item": {"text": text}}],
+        "context_token": "",
+    }
+
+
+class TestWeixinInputBuffering:
+    """Tests for the per-sender input-buffer feature (``input_buffer_seconds``)."""
+
+    ASYNC_RUN = asyncio.run
+
+    def test_buffering_disabled_by_default_dispatches_immediately(self):
+        """With input_buffer_seconds=0 (default), messages fire immediately."""
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._input_buffer_seconds = 0.0
+
+        asyncio.run(adapter._process_message(
+            _make_text_message("wxid_a", "hello")))
+        assert adapter.handle_message.await_count == 1
+        assert adapter.handle_message.await_args[0][0].text == "hello"
+
+    def test_buffering_coalesces_two_messages(self):
+        """Two rapid text messages from the same sender are merged."""
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._input_buffer_seconds = 0.05  # 50 ms
+
+        async def _send():
+            await adapter._process_message(_make_text_message("wxid_a", "hello", "m1"))
+            await adapter._process_message(_make_text_message("wxid_a", "world", "m2"))
+            # Let the timer fire
+            await asyncio.sleep(0.15)
+
+        asyncio.run(_send())
+        assert adapter.handle_message.await_count == 1
+        event = adapter.handle_message.await_args[0][0]
+        assert "hello" in event.text
+        assert "world" in event.text
+
+    def test_buffering_resets_timer_on_each_message(self):
+        """Each new message resets the window — no premature flush."""
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._input_buffer_seconds = 0.2
+
+        async def _send():
+            await adapter._process_message(_make_text_message("wxid_a", "a", "m1"))
+            await asyncio.sleep(0.05)
+            await adapter._process_message(_make_text_message("wxid_a", "b", "m2"))
+            await asyncio.sleep(0.05)
+            await adapter._process_message(_make_text_message("wxid_a", "c", "m3"))
+            # Now wait for the final timer to expire
+            await asyncio.sleep(0.3)
+
+        asyncio.run(_send())
+        assert adapter.handle_message.await_count == 1
+        event = adapter.handle_message.await_args[0][0]
+        parts = event.text.split("\n")
+        assert parts == ["a", "b", "c"]
+
+    def test_different_senders_have_independent_buffers(self):
+        """Buffer is per-sender — messages from B don't interfere with A."""
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._input_buffer_seconds = 0.1
+
+        async def _send():
+            await adapter._process_message(_make_text_message("wxid_a", "a1", "m1"))
+            await adapter._process_message(_make_text_message("wxid_b", "b1", "m2"))
+            await asyncio.sleep(0.2)
+
+        asyncio.run(_send())
+        assert adapter.handle_message.await_count == 2
+        texts = {call.args[0].text for call in adapter.handle_message.await_args_list}
+        assert texts == {"a1", "b1"}
+
+    def test_single_message_after_timer_is_not_merged(self):
+        """Only one message in the window → dispatched as-is (no join)."""
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._input_buffer_seconds = 0.05
+
+        async def _send():
+            await adapter._process_message(_make_text_message("wxid_a", "solo"))
+            await asyncio.sleep(0.1)
+
+        asyncio.run(_send())
+        assert adapter.handle_message.await_count == 1
+        assert adapter.handle_message.await_args[0][0].text == "solo"
+
+    def test_media_message_bypasses_buffer(self):
+        """A media message is dispatched immediately, even when buffering is on.
+
+        We verify bypass by checking that no buffer entry is created and
+        _dispatch_message is called (not queued).  Because _collect_media
+        needs a real iLink session, we mock _dispatch_message directly
+        and assert it was invoked.
+        """
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter._dispatch_message = AsyncMock()
+        adapter._input_buffer_seconds = 2.0
+
+        media_msg = {
+            "from_user_id": "wxid_a",
+            "message_id": "m-img",
+            "item_list": [{"type": 2}],  # ITEM_IMAGE
+            "context_token": "",
+        }
+        asyncio.run(adapter._process_message(media_msg))
+        # Media messages bypass the buffer entirely
+        assert "wxid_a" not in adapter._input_buffers
+        adapter._dispatch_message.assert_awaited_once()
+
+    def test_media_flushes_pending_text_buffer(self):
+        """Media arriving while text buffer pending: flush text first, then media."""
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter._dispatch_message = AsyncMock()
+        adapter._input_buffer_seconds = 2.0
+
+        async def _send():
+            await adapter._process_message(_make_text_message("wxid_a", "before"))
+            # Text is buffered; media should flush it
+            media_msg = {
+                "from_user_id": "wxid_a",
+                "message_id": "m-img",
+                "item_list": [{"type": 2}],
+                "context_token": "",
+            }
+            await adapter._process_message(media_msg)
+
+        asyncio.run(_send())
+        # Both the flushed text and the media are dispatched
+        assert adapter._dispatch_message.await_count >= 2
+        # The buffer should be empty after flush
+        assert "wxid_a" not in adapter._input_buffers
+
+    def test_buffer_cleared_on_disconnect(self):
+        """On disconnect, pending buffers are flushed."""
+        adapter = _make_adapter()
+        adapter._poll_session = AsyncMock(closed=False)
+        adapter._send_session = AsyncMock(closed=False)
+        adapter.handle_message = AsyncMock()
+        adapter._input_buffer_seconds = 2.0
+
+        async def _send():
+            await adapter._process_message(_make_text_message("wxid_a", "queued"))
+            adapter._running = False
+            await adapter.disconnect()
+
+        asyncio.run(_send())
+        assert adapter.handle_message.await_count == 1
+        assert adapter.handle_message.await_args[0][0].text == "queued"

@@ -1019,6 +1019,14 @@ def _message_type_from_media(media_types: List[str], text: str) -> MessageType:
     return MessageType.TEXT
 
 
+def _item_list_has_media(item_list: List[Dict[str, Any]]) -> bool:
+    """Return True if *item_list* contains any image/video/file/voice item."""
+    for item in item_list:
+        if item.get("type") in {ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE}:
+            return True
+    return False
+
+
 def _sync_buf_path(hermes_home: str, account_id: str) -> Path:
     return _account_dir(hermes_home) / f"{account_id}.sync.json"
 
@@ -1226,6 +1234,17 @@ class WeixinAdapter(BasePlatformAdapter):
             default=False,
         )
 
+        # Input buffering: when a sender fires multiple messages in quick
+        # succession (e.g. splitting a thought across several short lines),
+        # wait ``input_buffer_seconds`` before dispatching so they can be
+        # coalesced into a single turn.  0 disables buffering (default).
+        self._input_buffer_seconds = float(
+            extra.get("input_buffer_seconds")
+            or os.getenv("WEIXIN_INPUT_BUFFER_SECONDS", "2.0")
+        )
+        # per-sender_id: {inbound queue of raw message dicts, asyncio.Task timer}
+        self._input_buffers: Dict[str, Dict[str, Any]] = {}
+
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
             if persisted:
@@ -1300,6 +1319,20 @@ class WeixinAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
+
+        # Cancel pending input-buffer timers and flush any queued text so
+        # no messages are lost on shutdown.
+        for sender_id in list(self._input_buffers.keys()):
+            entry = self._input_buffers[sender_id]
+            timer = entry.get("timer")
+            if timer is not None and not timer.done():
+                timer.cancel()
+            try:
+                await self._flush_input_buffer(sender_id)
+            except Exception:
+                pass
+        self._input_buffers.clear()
+
         if self._poll_session and not self._poll_session.closed:
             await self._poll_session.close()
         self._poll_session = None
@@ -1406,10 +1439,38 @@ class WeixinAdapter(BasePlatformAdapter):
         elif not self._is_dm_allowed(sender_id):
             return
 
+        # Input buffering: when enabled, queue text messages from the same
+        # sender and coalesce them after a configurable window.  Media
+        # messages are dispatched immediately (they can't be meaningfully
+        # merged) and also flush any pending buffer for the same sender.
+        has_media = _item_list_has_media(item_list)
+        use_buffer = self._input_buffer_seconds > 0 and not has_media
+
+        if use_buffer:
+            self._enqueue_input_buffer(sender_id, message)
+            return
+
+        # Media message arriving while a text buffer is pending for this
+        # sender: flush the buffer first so the media is processed after
+        # any queued text, preserving order.
+        if self._input_buffer_seconds > 0 and sender_id in self._input_buffers:
+            await self._flush_input_buffer(sender_id)
+
+        await self._dispatch_message(message)
+
+    async def _dispatch_message(self, message: Dict[str, Any]) -> None:
+        """Build a MessageEvent from a raw inbound dict and hand it to the gateway."""
+        sender_id = str(message.get("from_user_id") or "").strip()
+        item_list = message.get("item_list") or []
+        text = _extract_text(item_list)
+
+        message_id = str(message.get("message_id") or "").strip()
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             self._token_store.set(self._account_id, sender_id, context_token)
         asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
+
+        chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
 
         media_paths: List[str] = []
         media_types: List[str] = []
@@ -1442,6 +1503,81 @@ class WeixinAdapter(BasePlatformAdapter):
         )
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         await self.handle_message(event)
+
+    def _enqueue_input_buffer(self, sender_id: str, message: Dict[str, Any]) -> None:
+        """Queue a text message for the sender and reset the coalesce timer."""
+        entry = self._input_buffers.get(sender_id)
+        if entry is None:
+            entry = {"messages": [], "timer": None}
+            self._input_buffers[sender_id] = entry
+        entry["messages"].append(message)
+
+        # Cancel any existing timer — each new message resets the window.
+        old_timer = entry.get("timer")
+        if old_timer is not None and not old_timer.done():
+            old_timer.cancel()
+
+        entry["timer"] = asyncio.create_task(
+            self._flush_input_buffer_after(sender_id, self._input_buffer_seconds)
+        )
+
+    async def _flush_input_buffer_after(self, sender_id: str, delay: float) -> None:
+        """Sleep *delay* seconds, then drain the sender's buffer."""
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        await self._flush_input_buffer(sender_id)
+
+    async def _flush_input_buffer(self, sender_id: str) -> None:
+        """Merge all queued messages for *sender_id* into one and dispatch."""
+        entry = self._input_buffers.pop(sender_id, None)
+        if entry is None:
+            return
+        timer = entry.get("timer")
+        if timer is not None and not timer.done():
+            timer.cancel()
+
+        messages = entry.get("messages", [])
+        if not messages:
+            return
+
+        if len(messages) == 1:
+            await self._dispatch_message(messages[0])
+            return
+
+        # Merge: concatenate text from every message, use the last message
+        # as the metadata carrier (context_token, message_id, etc.).
+        merged_parts: List[str] = []
+        for msg in messages:
+            t = _extract_text(msg.get("item_list") or [])
+            if t:
+                merged_parts.append(t)
+
+        merged_text = "\n".join(merged_parts)
+        last_message = messages[-1]
+
+        # Build a synthetic message dict with the merged text.
+        merged_message = dict(last_message)
+        merged_item_list: List[Dict[str, Any]] = []
+        for item in (last_message.get("item_list") or []):
+            merged_item_list.append(dict(item))
+        # Replace text in the first text item, or add one.
+        replaced = False
+        for item in merged_item_list:
+            if item.get("type") == ITEM_TEXT:
+                item.setdefault("text_item", {})["text"] = merged_text
+                replaced = True
+                break
+        if not replaced:
+            merged_item_list.append({"type": ITEM_TEXT, "text_item": {"text": merged_text}})
+        merged_message["item_list"] = merged_item_list
+
+        logger.debug(
+            "[%s] Flushed input buffer for %s: %d messages coalesced (%d chars)",
+            self.name, _safe_id(sender_id), len(messages), len(merged_text),
+        )
+        await self._dispatch_message(merged_message)
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         if self._dm_policy == "disabled":

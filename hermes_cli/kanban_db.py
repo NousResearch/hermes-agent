@@ -4304,6 +4304,8 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    respawn_guard_overridden: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks whose respawn guard was explicitly ignored by a force dispatch."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5335,6 +5337,8 @@ def dispatch_once(
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
+    task_ids: Optional[Iterable[str]] = None,
+    force: bool = False,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -5363,12 +5367,17 @@ def dispatch_once(
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
+    ``task_ids`` optionally restricts dispatch to named tasks. ``force``
+    bypasses respawn guards (active PR / recent success / auth blocker) and
+    records a ``respawn_guard_overridden`` event for auditability.
     """
     # Reap zombie children from previously spawned workers. See
     # reap_worker_zombies() for the full rationale.
     reap_worker_zombies()
 
     result = DispatchResult()
+    task_filter = {str(t) for t in (task_ids or ()) if str(t).strip()}
+
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -5405,6 +5414,8 @@ def dispatch_once(
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    if task_filter:
+        ready_rows = [row for row in ready_rows if row["id"] in task_filter]
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
@@ -5459,17 +5470,26 @@ def dispatch_once(
         # blocks via the normal path rather than on first occurrence.
         guard_reason = check_respawn_guard(conn, row["id"])
         if guard_reason is not None:
-            result.respawn_guarded.append((row["id"], guard_reason))
-            # Emit an event so operators can see why the task was
-            # skipped when reading `hermes kanban tail` — without
-            # this the task appears stuck in ready with no diagnosis.
-            if not dry_run:
-                with write_txn(conn):
-                    _append_event(
-                        conn, row["id"], "respawn_guarded",
-                        {"reason": guard_reason},
-                    )
-            continue
+            if force:
+                result.respawn_guard_overridden.append((row["id"], guard_reason))
+                if not dry_run:
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "respawn_guard_overridden",
+                            {"reason": guard_reason},
+                        )
+            else:
+                result.respawn_guarded.append((row["id"], guard_reason))
+                # Emit an event so operators can see why the task was
+                # skipped when reading `hermes kanban tail` — without
+                # this the task appears stuck in ready with no diagnosis.
+                if not dry_run:
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "respawn_guarded",
+                            {"reason": guard_reason},
+                        )
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
@@ -5536,6 +5556,8 @@ def dispatch_once(
         "WHERE status = 'review' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    if task_filter:
+        review_rows = [row for row in review_rows if row["id"] in task_filter]
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break

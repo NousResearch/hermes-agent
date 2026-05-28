@@ -1487,6 +1487,56 @@ def test_dispatch_respawn_guard_skips_active_pr(
         assert kb.get_task(conn, t).status == "ready"
 
 
+def test_dispatch_force_overrides_active_pr_guard(
+    kanban_home, all_assignees_spawnable
+):
+    """force=True lets operators intentionally re-run a ready task with an active PR."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="has-pr", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, force=True)
+        events = kb.list_events(conn, t)
+
+    assert (t, "active_pr") in res.respawn_guard_overridden
+    assert (t, "active_pr") not in res.respawn_guarded
+    assert t in spawned_ids
+    assert t not in res.auto_blocked
+    overridden = [e for e in events if e.kind == "respawn_guard_overridden"]
+    assert overridden
+    assert overridden[-1].payload.get("reason") == "active_pr"
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t).status == "running"
+
+
+def test_dispatch_task_filter_only_spawns_named_task(
+    kanban_home, all_assignees_spawnable
+):
+    """task_ids narrows a dispatcher pass to an operator-selected task."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        selected = kb.create_task(conn, title="selected", assignee="alice")
+        other = kb.create_task(conn, title="other", assignee="bob")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, task_ids=[selected])
+
+    assert spawned_ids == [selected]
+    assert [item[0] for item in res.spawned] == [selected]
+    with kb.connect() as conn:
+        assert kb.get_task(conn, selected).status == "running"
+        assert kb.get_task(conn, other).status == "ready"
+
+
 def test_dispatch_respawn_guard_dry_run_no_auto_block(
     kanban_home, all_assignees_spawnable
 ):

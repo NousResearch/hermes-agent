@@ -608,6 +608,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help="Don't actually spawn processes; just print what would happen")
     p_disp.add_argument("--max", type=int, default=None,
                         help="Cap number of spawns this pass")
+    p_disp.add_argument("--task", "--task-id", dest="task_ids", action="append",
+                        default=None, metavar="TASK_ID",
+                        help="Only dispatch the named task (repeatable).")
+    p_disp.add_argument("--force", action="store_true",
+                        help="Bypass respawn guards such as active_pr/recent_success for selected ready tasks.")
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
                         help=f"Auto-block a task after this many consecutive non-success attempts "
@@ -2093,6 +2098,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             max_spawn=args.max,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+            task_ids=getattr(args, "task_ids", None),
+            force=getattr(args, "force", False),
         )
     if getattr(args, "json", False):
         print(json.dumps({
@@ -2105,6 +2112,14 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws}
                 for (tid, who, ws) in res.spawned
+            ],
+            "respawn_guarded": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.respawn_guarded
+            ],
+            "respawn_guard_overridden": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.respawn_guard_overridden
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
@@ -2128,6 +2143,14 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     for tid, who, ws in res.spawned:
         tag = " (dry)" if args.dry_run else ""
         print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
+    if res.respawn_guarded:
+        print("Respawn guarded:")
+        for tid, reason in res.respawn_guarded:
+            print(f"  - {tid}: {reason}")
+    if res.respawn_guard_overridden:
+        print("Respawn guards overridden:")
+        for tid, reason in res.respawn_guard_overridden:
+            print(f"  - {tid}: {reason}")
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     if res.skipped_nonspawnable:

@@ -279,6 +279,37 @@ def clear_goal(session_id: str) -> None:
     save_goal(session_id, state)
 
 
+def migrate_goal(old_session_id: str, new_session_id: str) -> None:
+    """Copy an active GoalState from *old_session_id* to *new_session_id*.
+
+    Called after session compression (session_id rotation) so the active
+    goal survives the transition instead of silently vanishing (#33618).
+    The old goal entry is preserved but marked cleared for audit.
+    """
+    if old_session_id == new_session_id:
+        return
+    state = load_goal(old_session_id)
+    if state is None:
+        return
+    if state.status != "active":
+        return
+    # Preserve the old entry as cleared, write fresh active copy under new id
+    state.status = "cleared"
+    save_goal(old_session_id, state)
+    migrated = GoalState(
+        goal=state.goal,
+        status="active",
+        turns_used=state.turns_used,
+        max_turns=state.max_turns,
+        created_at=state.created_at,
+        last_turn_at=state.last_turn_at,
+        last_verdict=state.last_verdict,
+        last_reason=state.last_reason,
+        subgoals=list(state.subgoals),
+    )
+    save_goal(new_session_id, migrated)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Judge
 # ──────────────────────────────────────────────────────────────────────

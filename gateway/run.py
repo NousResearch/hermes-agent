@@ -8608,8 +8608,18 @@ class GatewayRunner:
                                     # and searchable via session_search.
                                     _hyg_new_sid = _hyg_agent.session_id
                                     if _hyg_new_sid != session_entry.session_id:
+                                        _hyg_old_sid = session_entry.session_id
                                         session_entry.session_id = _hyg_new_sid
                                         self.session_store._save()
+                                        # Migrate active goal across session_id rotation (#33618)
+                                        try:
+                                            from hermes_cli.goals import migrate_goal
+
+                                            migrate_goal(_hyg_old_sid, _hyg_new_sid)
+                                        except Exception:
+                                            logger.debug(
+                                                "goal migration failed (non-fatal)", exc_info=True
+                                            )
 
                                     self.session_store.rewrite_transcript(
                                         session_entry.session_id, _compressed
@@ -8873,8 +8883,17 @@ class GatewayRunner:
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
-                session_entry.session_id = agent_result["session_id"]
+                old_sid = session_entry.session_id
+                new_sid = agent_result["session_id"]
+                session_entry.session_id = new_sid
                 self.session_store._save()
+                # Migrate active goal across session_id rotation (#33618)
+                try:
+                    from hermes_cli.goals import migrate_goal
+
+                    migrate_goal(old_sid, new_sid)
+                except Exception:
+                    logger.debug("goal migration failed (non-fatal)", exc_info=True)
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
@@ -12309,8 +12328,18 @@ class GatewayRunner:
                 # into the NEW session so the original history stays searchable.
                 new_session_id = tmp_agent.session_id
                 if new_session_id != session_entry.session_id:
+                    old_sid = session_entry.session_id
                     session_entry.session_id = new_session_id
                     self.session_store._save()
+                    # Migrate active goal across session_id rotation (#33618)
+                    try:
+                        from hermes_cli.goals import migrate_goal
+
+                        migrate_goal(old_sid, new_session_id)
+                    except Exception:
+                        logger.debug(
+                            "goal migration failed (non-fatal)", exc_info=True
+                        )
 
                 self.session_store.rewrite_transcript(new_session_id, compressed)
                 # Reset stored token count — transcript changed, old value is stale

@@ -443,6 +443,20 @@ def compress_context(
     except Exception as _me_err:
         logger.debug("memory manager on_session_switch (compression): %s", _me_err)
 
+    # Migrate goal state to the continuation session so /goal survives
+    # compression.  Goal state is keyed by ``goal:<session_id>`` in
+    # state_meta, so it must be copied to the new key.  See #33618.
+    try:
+        _old_sid = locals().get("old_session_id")
+        if _old_sid:
+            from hermes_cli.goals import load_goal, save_goal
+
+            _old_goal = load_goal(_old_sid)
+            if _old_goal is not None:
+                save_goal(agent.session_id, _old_goal)
+    except Exception as _goal_err:
+        logger.debug("goal migration on compression: %s", _goal_err)
+
     # Warn on repeated compressions (quality degrades with each pass)
     _cc = agent.context_compressor.compression_count
     if _cc >= 2:

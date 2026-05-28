@@ -252,6 +252,32 @@ class TestGoalManager:
         assert mgr2.state.goal == "do the thing"
         assert mgr2.is_active()
 
+    def test_goal_migrates_across_session_rotation(self, hermes_home):
+        """Goal must survive context compression session_id rotation.
+
+        Compression creates a continuation session with a new id and
+        copies the goal via load_goal/save_goal.  A GoalManager bound
+        to the new id must see the original goal.  Regression guard
+        for #33618.
+        """
+        from hermes_cli.goals import GoalManager, load_goal, save_goal
+
+        old_sid = "compress-old-sid"
+        new_sid = "compress-new-sid"
+
+        mgr_old = GoalManager(session_id=old_sid)
+        mgr_old.set("ship the feature")
+
+        # Simulate what compress_context now does:
+        old_goal = load_goal(old_sid)
+        assert old_goal is not None
+        save_goal(new_sid, old_goal)
+
+        mgr_new = GoalManager(session_id=new_sid)
+        assert mgr_new.state is not None
+        assert mgr_new.state.goal == "ship the feature"
+        assert mgr_new.is_active()
+
     def test_evaluate_after_turn_done(self, hermes_home):
         """Judge says done → status=done, no continuation."""
         from hermes_cli import goals

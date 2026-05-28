@@ -933,6 +933,16 @@ def run_conversation(
                         _injections.append(_fenced)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
+                # Workspace awareness: surface other hermes sessions in
+                # the same working directory (top-level sessions only).
+                if not getattr(agent, "_parent_session_id", None):
+                    try:
+                        from agent.workspace_awareness import build_context_block
+                        _ws_context = build_context_block(agent.session_id)
+                        if _ws_context:
+                            _injections.append(_ws_context)
+                    except Exception:
+                        pass  # best-effort convenience
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):

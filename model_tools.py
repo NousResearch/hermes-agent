@@ -861,6 +861,21 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("post_tool_call hook error: %s", _hook_err)
 
+        # ── workspace awareness ───────────────────────────────────────
+        # Let other hermes sessions in the same cwd know what we're doing.
+        try:
+            from agent.workspace_awareness import update_presence
+            _ws_session_id = session_id or os.environ.get("HERMES_SESSION_ID", "")
+            if _ws_session_id:
+                update_presence(
+                    session_id=_ws_session_id,
+                    tool_name=function_name,
+                    args=function_args,
+                    task_id=task_id,
+                )
+        except Exception:
+            pass  # best-effort — never crash on presence failure
+
         # Generic tool-result canonicalization seam: plugins receive the
         # final result string (JSON, usually) and may replace it by
         # returning a string from transform_tool_result. Runs after

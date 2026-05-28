@@ -330,6 +330,107 @@ def test_xai_loopback_login_manual_paste_state_mismatch_raises(monkeypatch):
     assert exc.value.code == "xai_state_mismatch"
 
 
+def test_xai_loopback_login_manual_paste_bare_code_succeeds(monkeypatch):
+    """Bare-code paste (state=None) must complete login under manual_paste.
+
+    xAI's consent page renders the authorization code in-page rather than
+    redirecting through 127.0.0.1, so on remote/headless setups the only
+    value the user can obtain is the opaque code with no ``state=``
+    parameter. ``_parse_pasted_callback`` correctly returns
+    ``state=None`` for that input. The login flow must accept this case
+    (PKCE still protects the exchange); historically it raised
+    ``xai_state_mismatch``. Regression for the bare-code branch of #26923.
+    """
+    monkeypatch.setattr(
+        auth_mod, "_xai_oauth_discovery",
+        lambda *_a, **_k: {
+            "authorization_endpoint": "https://auth.x.ai/oauth2/authorize",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+        },
+    )
+    monkeypatch.setattr(
+        auth_mod, "_prompt_manual_callback_paste",
+        lambda _ru: {
+            "code": "bare-opaque-code",
+            "state": None,
+            "error": None,
+            "error_description": None,
+        },
+    )
+
+    def _fake_token_post(*_a, **_k):
+        return _StubTokenResponse(
+            {
+                "access_token": "at",
+                "refresh_token": "rt",
+                "id_token": "",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            }
+        )
+
+    monkeypatch.setattr(auth_mod.httpx, "post", _fake_token_post)
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        creds = auth_mod._xai_oauth_loopback_login(manual_paste=True)
+
+    assert creds["tokens"]["access_token"] == "at"
+    assert creds["tokens"]["refresh_token"] == "rt"
+
+
+def test_xai_loopback_login_loopback_path_rejects_missing_state(monkeypatch):
+    """Loopback (manual_paste=False) must NOT accept ``state=None``.
+
+    The bare-code relaxation only applies to the manual-paste path,
+    where the user demonstrably has no way to supply ``state``. The
+    HTTP-server path always sees ``state`` populated from the real
+    callback query string, so missing state there means something is
+    wrong (a malformed callback, an attacker-supplied request) and
+    must still raise ``xai_state_mismatch``.
+    """
+    monkeypatch.setattr(
+        auth_mod, "_xai_oauth_discovery",
+        lambda *_a, **_k: {
+            "authorization_endpoint": "https://auth.x.ai/oauth2/authorize",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+        },
+    )
+
+    class _StubServer:
+        def shutdown(self):
+            return None
+
+        def server_close(self):
+            return None
+
+    monkeypatch.setattr(
+        auth_mod, "_xai_start_callback_server",
+        lambda *_a, **_k: (
+            _StubServer(),
+            None,
+            {"code": "fake", "state": None, "error": None,
+             "error_description": None},
+            "http://127.0.0.1:56121/callback",
+        ),
+    )
+    monkeypatch.setattr(
+        auth_mod, "_xai_wait_for_callback",
+        lambda *_a, **_k: {
+            "code": "fake",
+            "state": None,
+            "error": None,
+            "error_description": None,
+        },
+    )
+    monkeypatch.setattr(auth_mod, "_xai_validate_loopback_redirect_uri", lambda _u: None)
+    monkeypatch.setattr(auth_mod, "_print_loopback_ssh_hint", lambda *_a, **_k: None)
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        with pytest.raises(auth_mod.AuthError) as exc:
+            auth_mod._xai_oauth_loopback_login(manual_paste=False, open_browser=False)
+    assert exc.value.code == "xai_state_mismatch"
+
+
 def test_xai_loopback_login_manual_paste_missing_code_raises(monkeypatch):
     """Empty paste must surface as ``xai_code_missing``, not crash."""
     monkeypatch.setattr(

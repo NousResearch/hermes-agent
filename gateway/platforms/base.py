@@ -1556,6 +1556,16 @@ class BasePlatformAdapter(ABC):
     - Sending messages/responses
     - Handling media
     """
+    _MEDIA_EXTENSIONS_RE = (
+        r"png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|"
+        r"epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa|kmz|kml|"
+        r"json|xml|html?|geojson|gpx"
+    )
+    _MEDIA_TAG_RE = re.compile(
+        r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^\n]+?\.(?:'''
+        + _MEDIA_EXTENSIONS_RE
+        + r''')(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+    )
     
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
@@ -2457,9 +2467,7 @@ class BasePlatformAdapter(ABC):
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
-        media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
-        )
+        media_pattern = BasePlatformAdapter._MEDIA_TAG_RE
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
@@ -3633,7 +3641,7 @@ class BasePlatformAdapter(ABC):
                 # Strip any remaining internal directives from message body (fixes #1561)
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
                 text_content = text_content.replace("[[as_document]]", "").strip()
-                text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
+                text_content = BasePlatformAdapter._MEDIA_TAG_RE.sub("", text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 

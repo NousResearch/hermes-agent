@@ -648,7 +648,7 @@ class GatewayStreamConsumer:
     # Pattern to strip MEDIA:<path> tags (including optional surrounding quotes).
     # Matches the simple cleanup regex used by the non-streaming path in
     # gateway/platforms/base.py for post-processing.
-    _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+    _MEDIA_RE = _BasePlatformAdapter._MEDIA_TAG_RE
 
     @staticmethod
     def _clean_for_display(text: str) -> str:

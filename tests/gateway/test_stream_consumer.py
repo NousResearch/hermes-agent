@@ -76,6 +76,24 @@ class TestCleanForDisplay:
         assert "generated" in result
         assert "for you." in result
 
+    def test_windows_spaced_media_path_stripped_without_leaking_tail(self):
+        """Windows MEDIA paths with spaces should be stripped as one token."""
+        text = r"Generated MEDIA:C:\Users\Confera\OneDrive\Nusa Alam Kreasindo\Project\Foo\report.pdf for you."
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert "MEDIA:" not in result
+        assert "Alam Kreasindo" not in result
+        assert "Generated" in result
+        assert "for you." in result
+
+    def test_structured_data_media_path_with_spaces_stripped(self):
+        """GIS / structured-data MEDIA extensions should strip like images."""
+        text = "Map ready\nMEDIA:/home/user/My Folder/coords.kmz\nDone"
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert "MEDIA:" not in result
+        assert "My Folder" not in result
+        assert "Map ready" in result
+        assert "Done" in result
+
     def test_preserves_non_media_colons(self):
         """Normal colons and text with 'MEDIA' as a word aren't stripped."""
         text = "The media: files are stored in /tmp. Use social MEDIA carefully."
@@ -1907,4 +1925,3 @@ class TestUtf16OverflowDetection:
         # auto-attr mock. Verified indirectly by all the other tests in
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
-

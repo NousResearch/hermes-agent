@@ -32,7 +32,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import sys
 import threading
 import time
@@ -176,9 +175,9 @@ def _extract_attachments(msg: dict) -> List[dict]:
     # MEDIA: tags in text content
     text = _extract_message_content(msg)
     if text:
-        media_pattern = re.compile(r'MEDIA:\s*(\S+)')
-        for match in media_pattern.finditer(text):
-            path = match.group(1)
+        from gateway.platforms.base import BasePlatformAdapter
+
+        for path, _ in BasePlatformAdapter.extract_media(text)[0]:
             attachments.append({"type": "media", "path": path})
 
     return attachments

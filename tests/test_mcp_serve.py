@@ -343,6 +343,25 @@ class TestAttachmentExtraction:
         assert len(att) == 1
         assert att[0] == {"type": "media", "path": "/tmp/out.png"}
 
+    def test_windows_spaced_media_tag_in_text(self):
+        from mcp_serve import _extract_attachments
+        msg = {
+            "content": r"Here MEDIA: C:\Users\Confera\OneDrive\Nusa Alam Kreasindo\Project\Foo\report.pdf done"
+        }
+        att = _extract_attachments(msg)
+        assert len(att) == 1
+        assert att[0] == {
+            "type": "media",
+            "path": r"C:\Users\Confera\OneDrive\Nusa Alam Kreasindo\Project\Foo\report.pdf",
+        }
+
+    def test_structured_data_media_tag_in_text(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": "Here MEDIA: /home/user/My Folder/coords.kmz done"}
+        att = _extract_attachments(msg)
+        assert len(att) == 1
+        assert att[0] == {"type": "media", "path": "/home/user/My Folder/coords.kmz"}
+
     def test_multiple_media_tags(self):
         from mcp_serve import _extract_attachments
         msg = {"content": "MEDIA: /a.png and MEDIA: /b.mp3"}

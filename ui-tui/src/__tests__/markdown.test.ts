@@ -181,6 +181,12 @@ describe('protocol sentinels', () => {
     )
     expect('`MEDIA:/tmp/a.png`'.match(MEDIA_LINE_RE)?.[1]).toBe('/tmp/a.png')
     expect('"MEDIA:C:\\files\\a.png"'.match(MEDIA_LINE_RE)?.[1]).toBe('C:\\files\\a.png')
+    expect('MEDIA:C:\\Users\\Confera\\OneDrive\\Nusa Alam Kreasindo\\Project\\Foo\\report.pdf'.match(MEDIA_LINE_RE)?.[1]).toBe(
+      'C:\\Users\\Confera\\OneDrive\\Nusa Alam Kreasindo\\Project\\Foo\\report.pdf'
+    )
+    expect('MEDIA:/home/user/My Folder/coords.kmz'.match(MEDIA_LINE_RE)?.[1]).toBe(
+      '/home/user/My Folder/coords.kmz'
+    )
   })
 
   it('ignores MEDIA: tokens embedded in prose', () => {

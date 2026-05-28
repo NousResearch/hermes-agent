@@ -330,6 +330,34 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_supports_windows_drive_paths_with_spaces(self):
+        content = r"Here is the file MEDIA:C:\Users\Confera\OneDrive\Nusa Alam Kreasindo\Project\Foo\report.pdf for you."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            (r"C:\Users\Confera\OneDrive\Nusa Alam Kreasindo\Project\Foo\report.pdf", False)
+        ]
+        assert "MEDIA:" not in cleaned
+        assert "Alam Kreasindo" not in cleaned
+        assert "Here is the file" in cleaned
+        assert "for you." in cleaned
+
+    def test_media_tag_supports_unc_paths_with_spaces(self):
+        content = r"MEDIA:\\fileserver\shared reports\Q2\map export.kml"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            (r"\\fileserver\shared reports\Q2\map export.kml", False)
+        ]
+        assert cleaned == ""
+
+    def test_media_tag_supports_structured_data_extensions_with_spaces(self):
+        content = "MEDIA:/home/user/My Folder/coords.kmz\nMEDIA:/home/user/My Folder/schema.geojson"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            ("/home/user/My Folder/coords.kmz", False),
+            ("/home/user/My Folder/schema.geojson", False),
+        ]
+        assert cleaned == ""
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the

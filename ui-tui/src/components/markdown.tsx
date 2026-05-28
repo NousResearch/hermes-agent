@@ -86,7 +86,46 @@ const MATH_BLOCK_OPEN_RE = /^\s*(\$\$|\\\[)(.*)$/
 const MATH_BLOCK_CLOSE_DOLLAR_RE = /^(.*?)\$\$\s*$/
 const MATH_BLOCK_CLOSE_BRACKET_RE = /^(.*?)\\\]\s*$/
 
-export const MEDIA_LINE_RE = /^\s*[`"']?MEDIA:\s*(\S+?)[`"']?\s*$/
+// Keep in sync with BasePlatformAdapter._MEDIA_EXTENSIONS_RE in
+// gateway/platforms/base.py. TypeScript cannot import the Python constant.
+export const MEDIA_EXTENSIONS = [
+  'png',
+  'jpe?g',
+  'gif',
+  'webp',
+  'mp4',
+  'mov',
+  'avi',
+  'mkv',
+  'webm',
+  'ogg',
+  'opus',
+  'mp3',
+  'wav',
+  'm4a',
+  'flac',
+  'epub',
+  'pdf',
+  'zip',
+  'rar',
+  '7z',
+  'docx?',
+  'xlsx?',
+  'pptx?',
+  'txt',
+  'csv',
+  'apk',
+  'ipa',
+  'kmz',
+  'kml',
+  'json',
+  'xml',
+  'html?',
+  'geojson',
+  'gpx',
+]
+const MEDIA_EXTENSIONS_RE = MEDIA_EXTENSIONS.join('|')
+export const MEDIA_LINE_RE = new RegExp(String.raw`^\s*[\`"']?MEDIA:\s*(?=\S)(.+?\.(?:${MEDIA_EXTENSIONS_RE})(?=[\s\`"',;:)\]}]|$)|\S+?)[\`"']?\s*$`)
 export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
 
 // Inline markdown tokens, in priority order. The outer regex picks the

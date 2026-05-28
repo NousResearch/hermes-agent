@@ -1048,10 +1048,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback()  # skip invalid, try next
 
+    # Skip fallback entries that don't support tool calls when the agent
+    # has active tools.  Local llama.cpp models (and some providers like
+    # kimi-k2.6 via opencode-zen) reject tool schemas with 400 errors.
+    # Mark these entries with `supports_tools: false` in config.yaml.
+    has_active_tools = bool(getattr(agent, "tools", None))
+    if has_active_tools and fb.get("supports_tools") is False:
+        logger.warning(
+            "Fallback skip: %s/%s does not support tool calls (supports_tools: false)",
+            fb_provider, fb_model,
+        )
+        return agent._try_activate_fallback()  # try next in chain
+
     # Skip entries that resolve to the current (provider, model) — falling
-    # back to the same backend that just failed loops the failure. Compare
+    # back to the same backend that just failed loops the failure.  Compare
     # base_url too so two distinct custom_providers entries pointing at the
-    # same shim/proxy URL also dedup. See issue #22548.
+    # same shim/proxy URL also dedup.  See issue #22548.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     current_model = (getattr(agent, "model", "") or "").strip()
     current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()

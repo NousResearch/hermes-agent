@@ -28,7 +28,8 @@ from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
 )
-from tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
+from hermes_cli.nous_account import format_nous_portal_entitlement_message
+from tools.tool_backend_helpers import fal_key_is_configured
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ CONFIGURABLE_TOOLSETS = [
     ("skills",          "📚 Skills",                    "list, view, manage"),
     ("todo",            "📋 Task Planning",             "todo"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
+    ("context_engine",  "🧩 Context Engine",            "runtime tools from the active context engine"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
@@ -1294,6 +1296,24 @@ def _get_platform_tools(
                 enabled_toolsets.add(pts)
             # else: known but not in config = user disabled it
 
+    # Context-engine tools are runtime-provided by the active engine, so they
+    # are not part of any static platform composite. When a non-default engine
+    # is selected, keep its recovery/status tools available even after a user
+    # saves an explicit platform toolset list. Preserve the explicit empty-list
+    # contract: selecting no configurable tools means no context-engine tools
+    # either unless the user adds ``context_engine`` manually later.
+    context_cfg = config.get("context") or {}
+    if not isinstance(context_cfg, dict):
+        context_cfg = {}
+    context_engine_name = str(context_cfg.get("engine") or "compressor").strip().lower()
+    explicit_empty_selection = (
+        platform in platform_toolsets
+        and isinstance(platform_toolsets.get(platform), list)
+        and not toolset_names
+    )
+    if context_engine_name and context_engine_name != "compressor" and not explicit_empty_selection:
+        enabled_toolsets.add("context_engine")
+
     # Preserve any explicit non-configurable toolset entries (for example,
     # custom toolsets or MCP server names saved in platform_toolsets).
     explicit_passthrough = {
@@ -1399,7 +1419,12 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     save_config(config)
 
 
-def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
+def _toolset_has_keys(
+    ts_key: str,
+    config: dict = None,
+    *,
+    force_fresh: bool = False,
+) -> bool:
     """Check if a toolset's required API keys are configured."""
     if config is None:
         config = load_config()
@@ -1414,7 +1439,7 @@ def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
             return False
 
     if ts_key in {"web", "image_gen", "tts", "browser"}:
-        features = get_nous_subscription_features(config)
+        features = get_nous_subscription_features(config, force_fresh=force_fresh)
         feature = features.features.get(ts_key)
         if feature and (feature.available or feature.managed_by_nous):
             return True
@@ -1422,7 +1447,7 @@ def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
     # Check TOOL_CATEGORIES first (provider-aware)
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat:
-        for provider in _visible_providers(cat, config):
+        for provider in _visible_providers(cat, config, force_fresh=force_fresh):
             env_vars = provider.get("env_vars", [])
             if not env_vars:
                 return True  # No-key provider (e.g. Local Browser, Edge TTS)
@@ -1493,7 +1518,13 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     return _tool_token_cache
 
 
-def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: str = "cli") -> Set[str]:
+def _prompt_toolset_checklist(
+    platform_label: str,
+    enabled: Set[str],
+    platform: str = "cli",
+    *,
+    force_fresh: bool = True,
+) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_cli.curses_ui import curses_checklist
     from toolsets import resolve_toolset
@@ -1511,7 +1542,10 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: 
     labels = []
     for ts_key, ts_label, ts_desc in effective:
         suffix = ""
-        if not _toolset_has_keys(ts_key) and (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
+        if (
+            not _toolset_has_keys(ts_key, force_fresh=force_fresh)
+            and (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
+        ):
             suffix = "  [no API key]"
         labels.append(f"{ts_label}  ({ts_desc}){suffix}")
 
@@ -1547,7 +1581,12 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: 
 
 # ─── Provider-Aware Configuration ────────────────────────────────────────────
 
-def _configure_toolset(ts_key: str, config: dict):
+def _configure_toolset(
+    ts_key: str,
+    config: dict,
+    *,
+    force_fresh: bool = True,
+):
     """Configure a toolset - provider selection + API keys.
     
     Uses TOOL_CATEGORIES for provider-aware config, falls back to simple
@@ -1556,7 +1595,7 @@ def _configure_toolset(ts_key: str, config: dict):
     cat = TOOL_CATEGORIES.get(ts_key)
 
     if cat:
-        _configure_tool_category(ts_key, cat, config)
+        _configure_tool_category(ts_key, cat, config, force_fresh=force_fresh)
     else:
         # Simple fallback for vision, moa, etc.
         _configure_simple_requirements(ts_key)
@@ -1809,12 +1848,22 @@ def _plugin_tts_providers() -> list[dict]:
     return rows
 
 
-def _visible_providers(cat: dict, config: dict) -> list[dict]:
+def _visible_providers(
+    cat: dict,
+    config: dict,
+    *,
+    force_fresh: bool = False,
+) -> list[dict]:
     """Return provider entries visible for the current auth/config state."""
-    features = get_nous_subscription_features(config)
+    features = get_nous_subscription_features(config, force_fresh=force_fresh)
+    managed_available = bool(
+        features.account_info
+        and features.account_info.logged_in
+        and features.account_info.paid_service_access is True
+    )
     visible = []
     for provider in cat.get("providers", []):
-        if provider.get("managed_nous_feature") and not managed_nous_tools_enabled():
+        if provider.get("managed_nous_feature") and not managed_available:
             continue
         if provider.get("requires_nous_auth") and not features.nous_auth_present:
             continue
@@ -1855,6 +1904,31 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     return visible
 
 
+def _hidden_nous_gateway_message(
+    cat: dict,
+    config: dict,
+    capability: str,
+    *,
+    force_fresh: bool = False,
+) -> str:
+    """Return a reason when a category's Nous provider is hidden."""
+    features = get_nous_subscription_features(config, force_fresh=force_fresh)
+    managed_available = bool(
+        features.account_info
+        and features.account_info.logged_in
+        and features.account_info.paid_service_access is True
+    )
+    if managed_available:
+        return ""
+    if not any(p.get("managed_nous_feature") for p in cat.get("providers", [])):
+        return ""
+    message = format_nous_portal_entitlement_message(
+        features.account_info,
+        capability=capability,
+    )
+    return message or ""
+
+
 _POST_SETUP_INSTALLED: dict = {
     # post_setup_key -> predicate(): True when the install side-effect
     # is already satisfied. Used by `_toolset_needs_configuration_prompt`
@@ -1886,17 +1960,22 @@ def _post_setup_already_installed(post_setup_key: str) -> bool:
         return True
 
 
-def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
+def _toolset_needs_configuration_prompt(
+    ts_key: str,
+    config: dict,
+    *,
+    force_fresh: bool = False,
+) -> bool:
     """Return True when enabling this toolset should open provider setup."""
     cat = TOOL_CATEGORIES.get(ts_key)
     if not cat:
-        return not _toolset_has_keys(ts_key, config)
+        return not _toolset_has_keys(ts_key, config, force_fresh=force_fresh)
 
     # If any visible provider has a registered post_setup install-state
     # check that hasn't been satisfied (e.g. cua-driver binary not on
     # PATH yet), force the configuration flow so `_configure_provider`
     # invokes `_run_post_setup` and the install actually runs.
-    for provider in _visible_providers(cat, config):
+    for provider in _visible_providers(cat, config, force_fresh=force_fresh):
         post_setup = provider.get("post_setup")
         if post_setup and not _post_setup_already_installed(post_setup):
             return True
@@ -1947,14 +2026,26 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
             pass
         return True
 
-    return not _toolset_has_keys(ts_key, config)
+    return not _toolset_has_keys(ts_key, config, force_fresh=force_fresh)
 
 
-def _configure_tool_category(ts_key: str, cat: dict, config: dict):
+def _configure_tool_category(
+    ts_key: str,
+    cat: dict,
+    config: dict,
+    *,
+    force_fresh: bool = True,
+):
     """Configure a tool category with provider selection."""
     icon = cat.get("icon", "")
     name = cat["name"]
-    providers = _visible_providers(cat, config)
+    providers = _visible_providers(cat, config, force_fresh=force_fresh)
+    hidden_nous_message = _hidden_nous_gateway_message(
+        cat,
+        config,
+        f"the Nous Subscription provider for {name}",
+        force_fresh=force_fresh,
+    )
 
     # Check Python version requirement
     if cat.get("requires_python"):
@@ -1975,7 +2066,10 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         # For single-provider tools, show a note if available
         if cat.get("setup_note"):
             _print_info(f"  {cat['setup_note']}")
-        _configure_provider(provider, config)
+        if hidden_nous_message:
+            for line in hidden_nous_message.splitlines():
+                _print_warning(f"  {line}")
+        _configure_provider(provider, config, force_fresh=force_fresh)
     else:
         # Multiple providers - let user choose
         print()
@@ -1984,6 +2078,9 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         print(color(f"  --- {icon} {name} - {title} ---", Colors.CYAN))
         if cat.get("setup_note"):
             _print_info(f"  {cat['setup_note']}")
+        if hidden_nous_message:
+            for line in hidden_nous_message.splitlines():
+                _print_warning(f"  {line}")
         print()
 
         # Plain text labels only (no ANSI codes in menu items)
@@ -1992,7 +2089,10 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         # obvious which options cost extra vs. cost nothing on top of Nous.
         try:
             _nous_logged_in = bool(
-                get_nous_subscription_features(config).nous_auth_present
+                get_nous_subscription_features(
+                    config,
+                    force_fresh=force_fresh,
+                ).nous_auth_present
             )
         except Exception:
             _nous_logged_in = False
@@ -2004,7 +2104,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
             configured = ""
             env_vars = p.get("env_vars", [])
             if not env_vars or all(get_env_value(v["key"]) for v in env_vars):
-                if _is_provider_active(p, config):
+                if _is_provider_active(p, config, force_fresh=force_fresh):
                     configured = " [active]"
                 elif not env_vars:
                     configured = ""
@@ -2024,7 +2124,11 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         provider_choices.append("Skip — keep defaults / configure later")
 
         # Detect current provider as default
-        default_idx = _detect_active_provider_index(providers, config)
+        default_idx = _detect_active_provider_index(
+            providers,
+            config,
+            force_fresh=force_fresh,
+        )
 
         provider_idx = _prompt_choice(f"  {title}:", provider_choices, default_idx)
 
@@ -2033,10 +2137,15 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
             _print_info(f"  Skipped {name}")
             return
 
-        _configure_provider(providers[provider_idx], config)
+        _configure_provider(providers[provider_idx], config, force_fresh=force_fresh)
 
 
-def _is_provider_active(provider: dict, config: dict) -> bool:
+def _is_provider_active(
+    provider: dict,
+    config: dict,
+    *,
+    force_fresh: bool = False,
+) -> bool:
     """Check if a provider entry matches the currently active config."""
     plugin_name = provider.get("image_gen_plugin_name")
     if plugin_name:
@@ -2050,7 +2159,7 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
 
     managed_feature = provider.get("managed_nous_feature")
     if managed_feature:
-        features = get_nous_subscription_features(config)
+        features = get_nous_subscription_features(config, force_fresh=force_fresh)
         feature = features.features.get(managed_feature)
         if feature is None:
             return False
@@ -2097,10 +2206,15 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
     return False
 
 
-def _detect_active_provider_index(providers: list, config: dict) -> int:
+def _detect_active_provider_index(
+    providers: list,
+    config: dict,
+    *,
+    force_fresh: bool = False,
+) -> int:
     """Return the index of the currently active provider, or 0."""
     for i, p in enumerate(providers):
-        if _is_provider_active(p, config):
+        if _is_provider_active(p, config, force_fresh=force_fresh):
             return i
         # Fallback: env vars present → likely configured
         env_vars = p.get("env_vars", [])
@@ -2403,15 +2517,29 @@ def _select_plugin_video_gen_provider(plugin_name: str, config: dict) -> None:
     _configure_videogen_model_for_plugin(plugin_name, config)
 
 
-def _configure_provider(provider: dict, config: dict):
+def _configure_provider(
+    provider: dict,
+    config: dict,
+    *,
+    force_fresh: bool = True,
+):
     """Configure a single provider - prompt for API keys and set config."""
     env_vars = provider.get("env_vars", [])
     managed_feature = provider.get("managed_nous_feature")
 
     if provider.get("requires_nous_auth"):
-        features = get_nous_subscription_features(config)
-        if not features.nous_auth_present:
-            _print_warning("  Nous Subscription is only available after logging into Nous Portal.")
+        features = get_nous_subscription_features(config, force_fresh=force_fresh)
+        entitled = bool(
+            features.account_info and features.account_info.paid_service_access is True
+        )
+        if not features.nous_auth_present or not entitled:
+            message = format_nous_portal_entitlement_message(
+                features.account_info,
+                capability=f"{provider.get('name', 'Nous Subscription')}",
+            )
+            _print_warning(
+                f"  {message or 'Nous Subscription is only available after logging into Nous Portal.'}"
+            )
             return
 
     # Set TTS provider in config if applicable
@@ -2501,7 +2629,10 @@ def _configure_provider(provider: dict, config: dict):
                     _has_managed_sibling = True
                     break
             if _has_managed_sibling:
-                _features = get_nous_subscription_features(config)
+                _features = get_nous_subscription_features(
+                    config,
+                    force_fresh=force_fresh,
+                )
                 _show_portal_hint = not _features.nous_auth_present
         except Exception:
             _show_portal_hint = False
@@ -2619,7 +2750,11 @@ def _configure_simple_requirements(ts_key: str):
             _print_warning("    Skipped")
 
 
-def _reconfigure_tool(config: dict):
+def _reconfigure_tool(
+    config: dict,
+    *,
+    force_fresh: bool = True,
+):
     """Let user reconfigure an existing tool's provider or API key."""
     # Build list of configurable tools that are currently set up
     configurable = []
@@ -2627,7 +2762,10 @@ def _reconfigure_tool(config: dict):
         cat = TOOL_CATEGORIES.get(ts_key)
         reqs = TOOLSET_ENV_REQUIREMENTS.get(ts_key)
         if cat or reqs:
-            if _toolset_has_keys(ts_key, config) or _toolset_enabled_for_reconfigure(ts_key, config):
+            if (
+                _toolset_has_keys(ts_key, config, force_fresh=force_fresh)
+                or _toolset_enabled_for_reconfigure(ts_key, config)
+            ):
                 configurable.append((ts_key, ts_label))
 
     if not configurable:
@@ -2646,7 +2784,12 @@ def _reconfigure_tool(config: dict):
     cat = TOOL_CATEGORIES.get(ts_key)
 
     if cat:
-        _configure_tool_category_for_reconfig(ts_key, cat, config)
+        _configure_tool_category_for_reconfig(
+            ts_key,
+            cat,
+            config,
+            force_fresh=force_fresh,
+        )
     else:
         _reconfigure_simple_requirements(ts_key)
 
@@ -2675,20 +2818,38 @@ def _toolset_enabled_for_reconfigure(ts_key: str, config: dict) -> bool:
     return False
 
 
-def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
+def _configure_tool_category_for_reconfig(
+    ts_key: str,
+    cat: dict,
+    config: dict,
+    *,
+    force_fresh: bool = True,
+):
     """Reconfigure a tool category - provider selection + API key update."""
     icon = cat.get("icon", "")
     name = cat["name"]
-    providers = _visible_providers(cat, config)
+    providers = _visible_providers(cat, config, force_fresh=force_fresh)
+    hidden_nous_message = _hidden_nous_gateway_message(
+        cat,
+        config,
+        f"the Nous Subscription provider for {name}",
+        force_fresh=force_fresh,
+    )
 
     if len(providers) == 1:
         provider = providers[0]
         print()
         print(color(f"  --- {icon} {name} ({provider['name']}) ---", Colors.CYAN))
-        _reconfigure_provider(provider, config)
+        if hidden_nous_message:
+            for line in hidden_nous_message.splitlines():
+                _print_warning(f"  {line}")
+        _reconfigure_provider(provider, config, force_fresh=force_fresh)
     else:
         print()
         print(color(f"  --- {icon} {name} - Choose a provider ---", Colors.CYAN))
+        if hidden_nous_message:
+            for line in hidden_nous_message.splitlines():
+                _print_warning(f"  {line}")
         print()
 
         provider_choices = []
@@ -2698,7 +2859,7 @@ def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
             configured = ""
             env_vars = p.get("env_vars", [])
             if not env_vars or all(get_env_value(v["key"]) for v in env_vars):
-                if _is_provider_active(p, config):
+                if _is_provider_active(p, config, force_fresh=force_fresh):
                     configured = " [active]"
                 elif not env_vars:
                     configured = ""
@@ -2706,21 +2867,43 @@ def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
                     configured = " [configured]"
             provider_choices.append(f"{p['name']}{badge}{tag}{configured}")
 
-        default_idx = _detect_active_provider_index(providers, config)
+        default_idx = _detect_active_provider_index(
+            providers,
+            config,
+            force_fresh=force_fresh,
+        )
 
         provider_idx = _prompt_choice("  Select provider:", provider_choices, default_idx)
-        _reconfigure_provider(providers[provider_idx], config)
+        _reconfigure_provider(
+            providers[provider_idx],
+            config,
+            force_fresh=force_fresh,
+        )
 
 
-def _reconfigure_provider(provider: dict, config: dict):
+def _reconfigure_provider(
+    provider: dict,
+    config: dict,
+    *,
+    force_fresh: bool = True,
+):
     """Reconfigure a provider - update API keys."""
     env_vars = provider.get("env_vars", [])
     managed_feature = provider.get("managed_nous_feature")
 
     if provider.get("requires_nous_auth"):
-        features = get_nous_subscription_features(config)
-        if not features.nous_auth_present:
-            _print_warning("  Nous Subscription is only available after logging into Nous Portal.")
+        features = get_nous_subscription_features(config, force_fresh=force_fresh)
+        entitled = bool(
+            features.account_info and features.account_info.paid_service_access is True
+        )
+        if not features.nous_auth_present or not entitled:
+            message = format_nous_portal_entitlement_message(
+                features.account_info,
+                capability=f"{provider.get('name', 'Nous Subscription')}",
+            )
+            _print_warning(
+                f"  {message or 'Nous Subscription is only available after logging into Nous Portal.'}"
+            )
             return
 
     if provider.get("tts_provider"):
@@ -2921,11 +3104,11 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             auto_configured = apply_nous_managed_defaults(
                 config,
                 enabled_toolsets=new_enabled,
+                force_fresh=True,
             )
-            if managed_nous_tools_enabled():
-                for ts_key in sorted(auto_configured):
-                    label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
-                    print(color(f"  ✓ {label}: using your Nous subscription defaults", Colors.GREEN))
+            for ts_key in sorted(auto_configured):
+                label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
+                print(color(f"  ✓ {label}: using your Nous subscription defaults", Colors.GREEN))
 
             # Walk through ALL selected tools that have provider options or
             # need API keys.  This ensures browser (Local vs Browserbase),
@@ -2993,7 +3176,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
         # "Reconfigure" selected
         if idx == _reconfig_idx:
-            _reconfigure_tool(config)
+            _reconfigure_tool(config, force_fresh=True)
             print()
             continue
 
@@ -3009,7 +3192,11 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             all_current = set()
             for pk in platform_keys:
                 all_current |= _get_platform_tools(config, pk, include_default_mcp_servers=False)
-            new_enabled = _prompt_toolset_checklist("All platforms", all_current)
+            new_enabled = _prompt_toolset_checklist(
+                "All platforms",
+                all_current,
+                force_fresh=True,
+            )
             if new_enabled != all_current:
                 for pk in platform_keys:
                     prev = _get_platform_tools(config, pk, include_default_mcp_servers=False)
@@ -3027,7 +3214,11 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                     # Configure API keys for newly enabled tools
                     for ts_key in sorted(added):
                         if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
-                            if _toolset_needs_configuration_prompt(ts_key, config):
+                            if _toolset_needs_configuration_prompt(
+                                ts_key,
+                                config,
+                                force_fresh=True,
+                            ):
                                 _configure_toolset(ts_key, config)
                     _save_platform_tools(config, pk, new_enabled)
                 save_config(config)
@@ -3049,7 +3240,11 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         current_enabled = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
 
         # Show checklist
-        new_enabled = _prompt_toolset_checklist(pinfo["label"], current_enabled)
+        new_enabled = _prompt_toolset_checklist(
+            pinfo["label"],
+            current_enabled,
+            force_fresh=True,
+        )
 
         if new_enabled != current_enabled:
             added = new_enabled - current_enabled
@@ -3067,7 +3262,11 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             # Configure newly enabled toolsets that need API keys
             for ts_key in sorted(added):
                 if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
-                    if _toolset_needs_configuration_prompt(ts_key, config):
+                    if _toolset_needs_configuration_prompt(
+                        ts_key,
+                        config,
+                        force_fresh=True,
+                    ):
                         _configure_toolset(ts_key, config)
 
             _save_platform_tools(config, pkey, new_enabled)

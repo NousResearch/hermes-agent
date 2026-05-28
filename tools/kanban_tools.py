@@ -102,7 +102,7 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
     return env_tid or None
 
 
-def _worker_run_id(task_id: str) -> Optional[int]:
+def _worker_run_id(conn: Any, task_id: str) -> Optional[int]:
     """Return this worker's dispatcher run id when it is scoped to task_id."""
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return None
@@ -110,9 +110,22 @@ def _worker_run_id(task_id: str) -> Optional[int]:
     if not raw:
         return None
     try:
-        return int(raw)
+        run_id = int(raw)
     except ValueError:
         return None
+
+    # Manual recovery sessions can inherit a stale run id while the task has
+    # already been reclaimed/promoted back to ready with no current_run_id.
+    # Dropping the CAS token in that state lets the worker follow the
+    # mandatory terminal-call contract; if a different run is active, keep the
+    # token so stale workers still fail closed.
+    try:
+        row = conn.execute("SELECT current_run_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is not None and row["current_run_id"] is None:
+            return None
+    except Exception:
+        pass
+    return run_id
 
 
 def _stamp_worker_session_metadata(
@@ -469,7 +482,7 @@ def _handle_complete(args: dict, **kw) -> str:
                 conn, tid,
                 result=result, summary=summary, metadata=metadata,
                 created_cards=created_cards,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=_worker_run_id(conn, tid),
             )
         except kb.HallucinatedCardsError as hall_err:
             # Structured rejection — surface the phantom ids so the
@@ -523,7 +536,7 @@ def _handle_block(args: dict, **kw) -> str:
         ok = kb.block_task(
             conn, tid,
             reason=reason,
-            expected_run_id=_worker_run_id(tid),
+            expected_run_id=_worker_run_id(conn, tid),
         )
         if not ok:
             return tool_error(
@@ -568,7 +581,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
             conn,
             tid,
             note=note,
-            expected_run_id=_worker_run_id(tid),
+            expected_run_id=_worker_run_id(conn, tid),
         )
         if not ok:
             return tool_error(

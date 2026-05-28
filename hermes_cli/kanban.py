@@ -43,10 +43,13 @@ _STATUS_ICONS = {
 }
 
 
-def _fmt_ts(ts: Optional[int]) -> str:
+def _fmt_ts(ts: Any) -> str:
     if not ts:
         return ""
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(ts)))
+    except (TypeError, ValueError, OSError):
+        return "unknown time"
 
 
 def _fmt_task_line(t: kb.Task) -> str:
@@ -1269,7 +1272,7 @@ def _cmd_heartbeat(args: argparse.Namespace) -> int:
             conn,
             args.task_id,
             note=getattr(args, "note", None),
-            expected_run_id=_worker_run_id_for(args.task_id),
+            expected_run_id=_worker_run_id_for(args.task_id, conn),
         )
     if not ok:
         print(f"cannot heartbeat {args.task_id} (not running?)", file=sys.stderr)
@@ -1844,16 +1847,36 @@ def _cmd_comment(args: argparse.Namespace) -> int:
     return 0
 
 
-def _worker_run_id_for(task_id: str) -> Optional[int]:
+def _worker_run_id_for(task_id: str, conn: Optional[Any] = None) -> Optional[int]:
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return None
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
     if not raw:
         return None
     try:
-        return int(raw)
+        run_id = int(raw)
     except ValueError:
         return None
+
+    # Manual recovery sessions may inherit a stale HERMES_KANBAN_RUN_ID for
+    # a task that is already back in ready with current_run_id cleared. In
+    # that case, do not pass a CAS token or the operator cannot block/close
+    # the recovered ready task. If another run is currently active, keep the
+    # token so stale workers still fail closed.
+    try:
+        owns_conn = conn is None
+        if owns_conn:
+            conn = kb.connect()
+        try:
+            task = kb.get_task(conn, task_id) if conn is not None else None
+        finally:
+            if owns_conn and conn is not None:
+                conn.close()
+        if task is not None and task.current_run_id is None:
+            return None
+    except Exception:
+        pass
+    return run_id
 
 
 def _cmd_complete(args: argparse.Namespace) -> int:
@@ -1892,7 +1915,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 result=args.result,
                 summary=summary,
                 metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=_worker_run_id_for(tid, conn),
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
@@ -1942,7 +1965,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 conn,
                 tid,
                 reason=reason,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=_worker_run_id_for(tid, conn),
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
@@ -1964,7 +1987,7 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
                 conn,
                 tid,
                 reason=reason,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=_worker_run_id_for(tid, conn),
             ):
                 failed.append(tid)
                 print(f"cannot schedule {tid}", file=sys.stderr)

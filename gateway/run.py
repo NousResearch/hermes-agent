@@ -50,7 +50,7 @@ from typing import Dict, Optional, Any, List, Union
 # `gateway.run.fetch_account_usage` as a module-level attribute. The
 # gateway is a long-running daemon, so its boot cost matters less than
 # preserving the established test-patch surface.
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from agent.account_usage import fetch_account_usage, fetch_all_providers_quota, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
@@ -7616,6 +7616,9 @@ class GatewayRunner:
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
+        if canonical == "quota":
+            return await self._handle_quota_command(event)
+
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
@@ -12972,7 +12975,11 @@ class GatewayRunner:
         if not name:
             # List recent titled sessions for this user/platform
             try:
-                titled = _list_titled_sessions()
+                user_source = source.platform.value if source.platform else None
+                sessions = self._session_db.list_sessions_rich(
+                    source=user_source, limit=20, order_by_last_active=True
+                )
+                titled = [s for s in sessions if s.get("title")]
                 if not titled:
                     return t("gateway.resume.no_named_sessions")
                 lines = [t("gateway.resume.list_header")]
@@ -13278,6 +13285,24 @@ class GatewayRunner:
         if account_lines:
             return "\n".join(account_lines)
         return t("gateway.usage.no_data")
+
+    async def _handle_quota_command(self, event: MessageEvent) -> str:
+        """Handle /quota command -- show quota/balance for all configured providers."""
+        try:
+            snapshots = await asyncio.to_thread(fetch_all_providers_quota)
+        except Exception as exc:
+            return f"Quota lookup failed: {exc}"
+
+        if not snapshots:
+            return "No providers configured (no API keys found in env)."
+
+        parts: list[str] = ["📊 **Provider quota overview**", ""]
+        for snapshot in snapshots:
+            lines = render_account_usage_lines(snapshot, markdown=True)
+            parts.extend(lines)
+            parts.append("")
+
+        return "\n".join(parts).strip()
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""

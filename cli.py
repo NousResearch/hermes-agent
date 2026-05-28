@@ -7900,6 +7900,26 @@ class HermesCLI:
             self._console_print(f"    {header:40s}  {bar}  {pct_str}")
         self._console_print()
 
+    def _handle_quota_command(self) -> None:
+        """Show quota/balance for all configured providers."""
+        from agent.account_usage import fetch_all_providers_quota, render_account_usage_lines
+
+        snapshots = fetch_all_providers_quota()
+
+        if not snapshots:
+            self._console_print("  [dim]No providers configured (no API keys found in env).[/]")
+            return
+
+        self._console_print()
+        self._console_print("  [bold]Provider quota overview[/]")
+        self._console_print()
+
+        for snapshot in snapshots:
+            lines = render_account_usage_lines(snapshot)
+            for line in lines:
+                self._console_print(f"  {line}")
+            self._console_print()
+
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         parts = cmd.split(maxsplit=1)
@@ -8497,6 +8517,8 @@ class HermesCLI:
             self._handle_codex_runtime(cmd_original)
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
+        elif canonical == "quota":
+            self._handle_quota_command()
 
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)

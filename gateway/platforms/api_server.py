@@ -1704,7 +1704,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     _db._conn.execute(
                         "UPDATE messages SET files = ? WHERE session_id = ? "
                         "AND role = 'user' AND timestamp = ("
-                        "SELECT MIN(timestamp) FROM messages WHERE session_id = ? AND role = 'user')",
+                        "SELECT MAX(timestamp) FROM messages WHERE session_id = ? AND role = 'user')",
                         (json.dumps(_request_files, ensure_ascii=False), session_id, session_id),
                     )
             except Exception:
@@ -1958,7 +1958,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         _db._conn.execute(
                             "UPDATE messages SET files = ? WHERE session_id = ? "
                             "AND role = 'user' AND timestamp = ("
-                            "SELECT MIN(timestamp) FROM messages WHERE session_id = ? AND role = 'user')",
+                            "SELECT MAX(timestamp) FROM messages WHERE session_id = ? AND role = 'user')",
                             (json.dumps(_request_files, ensure_ascii=False), session_id, session_id),
                         )
                 except Exception:
@@ -4469,26 +4469,37 @@ class APIServerAdapter(BasePlatformAdapter):
         offset = (page - 1) * page_size
 
         try:
-            # Total count
-            total_row = db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+            # Total count — exclude child sessions (compression continuations,
+            # subagent runs) unless they are explicit branch children,
+            # matching list_sessions_rich() semantics.
+            total_row = db._conn.execute(
+                "SELECT COUNT(*) FROM sessions s "
+                "WHERE (s.parent_session_id IS NULL "
+                "   OR EXISTS (SELECT 1 FROM sessions p "
+                "              WHERE p.id = s.parent_session_id "
+                "              AND p.end_reason = 'branched' "
+                "              AND s.started_at >= p.ended_at))"
+            ).fetchone()
             total = total_row[0] if total_row else 0
 
-            # Paginated query
-            cursor = db._conn.execute(
-                "SELECT id, title, model, started_at, message_count "
-                "FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
-                (page_size, offset),
+            # Use list_sessions_rich to handle compression-chain projection:
+            # compressed parent sessions are replaced by their live continuation
+            # tip, so each logical conversation appears exactly once.
+            rich = db.list_sessions_rich(
+                limit=page_size,
+                offset=offset,
+                include_children=False,
+                project_compression_tips=True,
             )
-            rows = cursor.fetchall()
             sessions = [
                 {
-                    "id": row[0],
-                    "title": row[1],
-                    "model": row[2],
-                    "started_at": row[3],
-                    "message_count": row[4],
+                    "id": s["id"],
+                    "title": s.get("title"),
+                    "model": s.get("model"),
+                    "started_at": s.get("started_at"),
+                    "message_count": s.get("message_count", 0),
                 }
-                for row in rows
+                for s in rich
             ]
             return _json_response({
                 "sessions": sessions,

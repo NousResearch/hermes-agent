@@ -861,6 +861,78 @@ _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
 _cleanup_thread = None
 _cleanup_running = False
 
+# Once-per-process guard for the docker orphan reaper (issue #20561).
+# Set when _maybe_reap_docker_orphans first runs; concurrent _create_environment
+# calls for parallel subagents won't re-trigger the sweep.
+_docker_orphan_reaper_ran = False
+_docker_orphan_reaper_lock = threading.Lock()
+
+
+def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
+    """Run the docker orphan reaper once per process, if enabled.
+
+    Sweeps long-Exited containers labeled ``hermes-agent=1`` for the current
+    profile that match the issue #20561 leak class — containers left behind
+    by Hermes processes that exited without firing ``atexit`` (SIGKILL,
+    OOM, terminal-window-close). The reaper is conservative by default:
+    only Exited containers older than ``2 × lifetime_seconds`` and scoped to
+    the current profile.
+
+    Gates:
+
+    * ``terminal.docker_orphan_reaper: false`` disables it entirely (the
+      operator opted out — usually because they're running multiple
+      Hermes processes in the same profile and don't trust the
+      conservative defaults).
+    * ``_docker_orphan_reaper_ran`` flag — sweep runs once per Python
+      interpreter, not on every subagent / RL-rollout / parallel
+      ``terminal()`` call.
+    """
+    global _docker_orphan_reaper_ran
+    if not container_config.get("docker_orphan_reaper", True):
+        return
+    # Cheap double-checked-locking: read without the lock, take the lock
+    # only on first run, recheck inside.
+    if _docker_orphan_reaper_ran:
+        return
+    with _docker_orphan_reaper_lock:
+        if _docker_orphan_reaper_ran:
+            return
+        _docker_orphan_reaper_ran = True
+
+    # 2 × lifetime_seconds gives sibling Hermes processes a generous grace
+    # window. Floor at 60s so an operator with TERMINAL_LIFETIME_SECONDS=0
+    # doesn't get an instant-reap that races their own setup.
+    # ``container_config`` only carries container_* keys, so read
+    # lifetime_seconds from the env var the rest of the module uses.
+    try:
+        lifetime = int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300"))
+    except (TypeError, ValueError):
+        lifetime = 300
+    lifetime = max(60, lifetime)
+    max_age = lifetime * 2
+
+    try:
+        from tools.environments.docker import (
+            reap_orphan_containers, _get_active_profile_name,
+        )
+    except ImportError:
+        return
+    try:
+        profile = _get_active_profile_name()
+        removed = reap_orphan_containers(
+            max_age_seconds=max_age, profile_filter=profile,
+        )
+        if removed:
+            logger.info(
+                "Docker orphan reaper removed %d stale container(s) for profile %s",
+                removed, profile,
+            )
+    except Exception as e:
+        # Never fail the env-creation path because of a janitor problem.
+        logger.debug("Docker orphan reaper raised: %s", e)
+
+
 # Per-task environment overrides registry.
 # Allows environments (e.g., TerminalBench2Env) to specify a custom Docker/Modal
 # image for a specific task_id BEFORE the agent loop starts. When the terminal or
@@ -1033,6 +1105,13 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_persist_across_processes": os.getenv(
             "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
         ).lower() in {"true", "1", "yes"},
+        # Startup orphan reaper for hermes-tagged containers left behind by
+        # crashed / SIGKILL'd previous processes that bypassed atexit.
+        # Conservative: only sweeps Exited containers older than 2× the
+        # idle-reap window AND scoped to the current profile. Issue #20561.
+        "docker_orphan_reaper": os.getenv(
+            "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
+        ).lower() in {"true", "1", "yes"},
     }
 
 
@@ -1081,6 +1160,13 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":
+        # One-shot orphan reaper: clean up labeled containers left behind by
+        # prior Hermes processes that hit SIGKILL / OOM / a closed terminal
+        # before the atexit cleanup hook could run.  Gated to once per
+        # process so concurrent _create_environment calls (parallel
+        # subagents, RL benchmarks) don't run the reaper N times.
+        # Disable via ``terminal.docker_orphan_reaper: false`` (issue #20561).
+        _maybe_reap_docker_orphans(cc)
         return _DockerEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
@@ -1773,6 +1859,7 @@ def terminal_tool(
                                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                                 "docker_extra_args": config.get("docker_extra_args", []),
                                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
                             }
 
                         local_config = None

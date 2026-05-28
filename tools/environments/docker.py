@@ -133,6 +133,132 @@ def _get_active_profile_name() -> str:
         return "default"
 
 
+def reap_orphan_containers(
+    *,
+    max_age_seconds: int = 600,
+    profile_filter: str | None = None,
+    docker_exe: str | None = None,
+) -> int:
+    """Remove stale hermes-tagged containers left behind by prior processes.
+
+    Targets containers that match all of:
+
+    * ``label=hermes-agent=1`` (created by this codebase)
+    * ``status=exited`` (running containers are NEVER reaped — they may
+      belong to a sibling Hermes process whose reuse path will pick them
+      up; killing them would crash the sibling mid-command)
+    * (optional) ``label=hermes-profile=<profile_filter>`` (sweep only the
+      caller's profile by default; a hermes process in profile A must not
+      tear down profile B's containers)
+    * ``State.FinishedAt`` older than *max_age_seconds* ago (so a sibling
+      process that just exited and is about to be replaced doesn't get
+      its container yanked out from under it)
+
+    Returns the number of containers removed. Best-effort: any failure
+    (docker daemon unreachable, slow inspect, parse error) is logged at
+    debug level and the function returns whatever it managed before the
+    failure. Safe to call repeatedly; idempotent.
+
+    Issue #20561 — this is the safety net for SIGKILL / OOM / crashed
+    terminal exits that bypass the ``atexit`` cleanup hook. Without it,
+    even with the cleanup-fix in the prior commit, a hard-killed Hermes
+    process leaves its container behind permanently because there's no
+    subsequent Hermes process scheduled to reuse that exact (task, profile)
+    pair.
+    """
+    docker = docker_exe or find_docker() or "docker"
+    filters = ["--filter", "label=hermes-agent=1", "--filter", "status=exited"]
+    if profile_filter:
+        filters.extend(["--filter", f"label=hermes-profile={_sanitize_label_value(profile_filter)}"])
+
+    try:
+        listing = subprocess.run(
+            [docker, "ps", "-a", *filters, "--format", "{{.ID}}"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("orphan reaper docker ps failed: %s", e)
+        return 0
+    if listing.returncode != 0:
+        logger.debug(
+            "orphan reaper docker ps returned %d: %s",
+            listing.returncode, listing.stderr.strip(),
+        )
+        return 0
+
+    candidate_ids = [ln.strip() for ln in listing.stdout.splitlines() if ln.strip()]
+    if not candidate_ids:
+        return 0
+
+    # Inspect each candidate to get FinishedAt; reap only those exited
+    # long enough ago.  Doing this per-container (rather than bulk inspect)
+    # keeps the failure blast radius to one container at a time.
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    removed = 0
+    for cid in candidate_ids:
+        finished_at = _container_finished_at(docker, cid)
+        if finished_at is None:
+            # Couldn't determine age — be conservative and leave it alone.
+            continue
+        age = (now - finished_at).total_seconds()
+        if age < max_age_seconds:
+            continue
+        try:
+            result = subprocess.run(
+                [docker, "rm", "-f", cid],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                removed += 1
+                logger.info(
+                    "Reaped orphan container %s (exited %d seconds ago)",
+                    cid[:12], int(age),
+                )
+            else:
+                logger.debug(
+                    "docker rm -f %s failed: %s",
+                    cid[:12], result.stderr.strip(),
+                )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("orphan reaper docker rm %s failed: %s", cid[:12], e)
+    return removed
+
+
+def _container_finished_at(docker_exe: str, container_id: str):
+    """Parse ``docker inspect`` FinishedAt for *container_id*.
+
+    Returns a timezone-aware datetime, or ``None`` if the field is missing,
+    unparseable, or the zero-value ``0001-01-01T00:00:00Z`` Docker emits
+    for never-finished containers. ``None`` means "don't reap" — the caller
+    leaves the container alone.
+    """
+    try:
+        result = subprocess.run(
+            [docker_exe, "inspect", "--format", "{{.State.FinishedAt}}", container_id],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("orphan reaper docker inspect %s failed: %s", container_id[:12], e)
+        return None
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    if not raw or raw.startswith("0001-01-01"):
+        return None
+    # Docker emits RFC3339 with nanoseconds (e.g. "2026-05-28T13:45:00.123456789Z").
+    # Python's fromisoformat handles microseconds but not nanoseconds; trim.
+    import re as _re
+    raw = _re.sub(r"(\.\d{6})\d+", r"\1", raw)
+    raw = raw.replace("Z", "+00:00")
+    try:
+        import datetime
+        return datetime.datetime.fromisoformat(raw)
+    except ValueError as e:
+        logger.debug("could not parse FinishedAt %r for %s: %s", raw, container_id[:12], e)
+        return None
+
+
 def find_docker() -> Optional[str]:
     """Locate the docker (or podman) CLI binary.
 
@@ -564,7 +690,7 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-profile": profile_name,
         }
 
-        # Cross-process reuse (issue #20561 — docs claim "ONE long-lived
+        # Cross-process container reuse (issue #20561 — docs claim "ONE long-lived
         # container shared across sessions").  If a prior Hermes process
         # already started a container for this (task_id, profile) and it
         # still exists, attach to it instead of starting a fresh one.  This

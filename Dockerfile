@@ -213,13 +213,32 @@ COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-r
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
+
+# `docker exec` privilege-drop shim. When operators run
+# `docker exec <c> hermes ...` they default to root, and any file the
+# command writes under $HERMES_HOME (auth.json, .env, config.yaml) ends
+# up root-owned and unreadable to the supervised gateway (UID 10000).
+# The shim lives at /opt/hermes/bin/hermes, sits earliest on PATH, and
+# transparently re-exec's the real venv binary via `s6-setuidgid hermes`
+# when invoked as root. Non-root callers (supervised processes,
+# `--user hermes`, etc.) hit the short-circuit path with no overhead.
+# Recursion is impossible because the shim exec's the venv binary by
+# absolute path (/opt/hermes/.venv/bin/hermes). See the shim source for
+# the opt-out env var (HERMES_DOCKER_EXEC_AS_ROOT=1).
+COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hermes
+
 # Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported
 # the venv bin onto PATH; Architecture B's main-wrapper.sh does the
 # same for the container's main process, but `docker exec` and our
 # cont-init.d scripts don't pass through the wrapper. Expose the venv
 # bin globally so `docker exec <container> hermes ...` and any
 # subprocess that doesn't activate the venv first still find hermes.
-ENV PATH="/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
+#
+# /opt/hermes/bin is prepended ahead of the venv so the privilege-drop
+# shim wins PATH resolution. The shim's last act is to exec the venv
+# binary by absolute path, so this PATH ordering is transparent to
+# every other consumer.
+ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 

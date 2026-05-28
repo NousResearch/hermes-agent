@@ -74,6 +74,87 @@ from utils import base_url_host_matches, env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+_KANBAN_TERMINAL_TOOLS = {"kanban_complete", "kanban_block"}
+
+
+def _assistant_tool_call_names(messages: List[Dict[str, Any]]) -> List[str]:
+    """Return function names from assistant tool calls in ``messages``."""
+    names: List[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for call in msg.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            fn = call.get("function") or {}
+            name = fn.get("name") if isinstance(fn, dict) else None
+            if isinstance(name, str) and name:
+                names.append(name)
+    return names
+
+
+def _kanban_worker_called_terminal_tool(messages: List[Dict[str, Any]]) -> bool:
+    """True once a kanban worker attempted its required terminal transition."""
+    return any(name in _KANBAN_TERMINAL_TOOLS for name in _assistant_tool_call_names(messages))
+
+
+def _auto_block_kanban_worker_protocol_violation(
+    *,
+    messages: List[Dict[str, Any]],
+    final_response: Optional[str],
+    api_call_count: int,
+    effective_task_id: Optional[str],
+) -> bool:
+    """Fail closed when a kanban worker tries to finish with plain text only.
+
+    Kanban-dispatched workers have a stricter lifecycle than normal CLI chat:
+    every run must end by writing ``kanban_complete`` or ``kanban_block``.  A
+    model can still ignore that instruction and return a final text response.
+    Before this guard, the child process then exited rc=0 and the dispatcher
+    could only record a protocol-violation crash on the next tick.  That caused
+    devops/pm cards to loop as clean exits with no board handoff.
+
+    If the model never even attempted a terminal kanban tool call, write a
+    conservative block on its behalf so the board has a durable, actionable
+    state instead of a silent clean exit.  We intentionally do not auto-complete:
+    a text-only final response is not a reliable completion handoff.
+    """
+    kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+    if not kanban_task or final_response is None:
+        return False
+    if _kanban_worker_called_terminal_tool(messages):
+        return False
+
+    preview = " ".join(str(final_response).split())[:240]
+    reason = (
+        "protocol-guard: worker produced a final text response without "
+        "calling kanban_complete or kanban_block; auto-blocked to prevent "
+        f"clean-exit protocol violation. api_calls={api_call_count}; "
+        f"final_response_preview={preview!r}"
+    )
+    try:
+        _ra().handle_function_call(
+            "kanban_block",
+            {"task_id": kanban_task, "reason": reason},
+            task_id=effective_task_id,
+        )
+        logger.warning(
+            "Auto-blocked kanban worker %s after text-only final response "
+            "without terminal kanban tool call (api_calls=%d)",
+            kanban_task,
+            api_call_count,
+        )
+        return True
+    except Exception:
+        logger.warning(
+            "Failed to auto-block kanban worker %s after text-only final "
+            "response without terminal kanban tool call",
+            kanban_task,
+            exc_info=True,
+        )
+        return False
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -4107,6 +4188,18 @@ def run_conversation(
                     _kanban_task,
                     exc_info=True,
                 )
+
+    # Kanban workers have a mandatory termination contract.  If a worker
+    # reaches a normal final text response without ever attempting
+    # kanban_complete/kanban_block, fail closed by blocking the task before the
+    # child exits rc=0; otherwise the dispatcher can only record a crash on its
+    # next PID sweep.
+    _auto_block_kanban_worker_protocol_violation(
+        messages=messages,
+        final_response=final_response,
+        api_call_count=api_call_count,
+        effective_task_id=effective_task_id,
+    )
 
     # Determine if conversation completed successfully
     completed = (

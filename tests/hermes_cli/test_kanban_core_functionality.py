@@ -2271,6 +2271,25 @@ def test_cli_show_json_carries_runs(kanban_home):
         assert "run_id" in e
 
 
+def test_cli_show_tolerates_malformed_comment_timestamp(kanban_home):
+    """Plain-text `hermes kanban show` must not crash on legacy rows that
+    stored event JSON in task_comments.created_at instead of an integer."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="legacy comment timestamp", assignee="worker")
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+            (tid, "worker", "protocol_violation", '{"pid": 123, "exit_code": 0}'),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = run_slash(f"show {tid}")
+    assert "unknown time" in out
+    assert "protocol_violation" in out
+
+
 # -------------------------------------------------------------------------
 # Pre-merge audit by @erosika (issue #16102 comment 4331125835) — fixes
 # -------------------------------------------------------------------------

@@ -203,6 +203,22 @@ def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):
     assert "Branch:   wt/t6-wire" in context
 
 
+def test_build_worker_context_tolerates_malformed_comment_timestamp(kanban_home):
+    """Legacy bad rows must not crash every worker prompt for a task."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="legacy comment timestamp")
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (tid, "legacy", "CLAIMED_EVENT_SHAPED_COMMENT", '{"lock":"x"}'),
+        )
+        context = kb.build_worker_context(conn, tid)
+
+    assert "Comment thread" in context
+    assert "unknown time" in context
+    assert "CLAIMED_EVENT_SHAPED_COMMENT" in context
+
+
 def test_branch_name_requires_worktree_workspace(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="worktree"):
         kb.create_task(
@@ -2197,14 +2213,21 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    # Clear module cache so a fresh connect() is attempted
+    # Clear module caches so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()
+    kb._connection_pool.clear()
 
     real_connect = _sqlite3.connect
 
     class _WalBlockingConnection(_sqlite3.Connection):
         def execute(self, sql, *args, **kwargs):  # type: ignore[override]
             if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                # Roll back any implicit transaction before raising,
+                # otherwise the next execute fails with "database is locked".
+                try:
+                    super().rollback()
+                except Exception:
+                    pass
                 raise _sqlite3.OperationalError("locking protocol")
             return super().execute(sql, *args, **kwargs)
 

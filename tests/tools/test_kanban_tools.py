@@ -1367,6 +1367,37 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
     assert d.get("ok") is True
 
 
+def test_worker_block_allows_stale_env_run_id_after_reclaim(worker_env, monkeypatch):
+    """Manual recovery workers may inherit HERMES_KANBAN_RUN_ID after a task
+    has been reclaimed back to ready/current_run_id=NULL; block must still
+    work so the worker can satisfy its terminal-call contract."""
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        stale_run = kb.latest_run(conn, worker_env)
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, claim_lock=NULL, claim_expires=NULL WHERE id=?",
+            (worker_env,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(stale_run.id))
+    out = kt._handle_block({"reason": "manual recovery block"})
+    d = json.loads(out)
+    assert d.get("ok") is True
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task.status == "blocked"
+    finally:
+        conn.close()
+
+
 def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
     """Orchestrator profiles (no HERMES_KANBAN_TASK) can still complete
     any task via explicit task_id. The check only applies to workers."""

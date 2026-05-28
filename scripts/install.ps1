@@ -16,6 +16,9 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [string]$Branch = "main",
+    [string]$RepoUrl = "",
+    [string]$RepoUrlHttps = "",
+    [string]$RepoUrlSsh = "",
     # -Commit and -Tag are higher-precedence variants of -Branch for users
     # who need reproducible installs (desktop installer pinning, CI, release
     # bundles).  When set, the repository stage clones $Branch (faster than
@@ -75,8 +78,18 @@ try {
 # Configuration
 # ============================================================================
 
-$RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
-$RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
+$repoUrlExplicit = -not [string]::IsNullOrWhiteSpace($RepoUrl) -or -not [string]::IsNullOrWhiteSpace($RepoUrlHttps) -or -not [string]::IsNullOrWhiteSpace($RepoUrlSsh)
+if ([string]::IsNullOrWhiteSpace($RepoUrlHttps)) {
+    if (-not [string]::IsNullOrWhiteSpace($RepoUrl)) {
+        $RepoUrlHttps = $RepoUrl
+    } else {
+        $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
+    }
+}
+if ([string]::IsNullOrWhiteSpace($RepoUrlSsh) -and -not $repoUrlExplicit) {
+    $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
+}
+$RepoArchiveBaseUrl = $RepoUrlHttps -replace "\.git$", ""
 $PythonVersion = "3.11"
 $NodeVersion = "22"
 
@@ -971,6 +984,11 @@ function Install-Repository {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try {
+                if ($repoUrlExplicit) {
+                    Write-Info "Setting origin remote to $RepoUrlHttps"
+                    git -c windows.appendAtomically=false remote set-url origin $RepoUrlHttps
+                    if ($LASTEXITCODE -ne 0) { throw "git remote set-url failed (exit $LASTEXITCODE)" }
+                }
                 git -c windows.appendAtomically=false fetch origin
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
                 # Precedence: Commit > Tag > Branch.  Commit and Tag check
@@ -1028,18 +1046,25 @@ function Install-Repository {
         $env:GIT_CONFIG_VALUE_0 = "false"
         git config --global windows.appendAtomically false 2>$null
 
-        # Try SSH first, then HTTPS, with -c flag for atomic write fix
-        Write-Info "Trying SSH clone..."
-        $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
-        try {
-            git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir
-            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
-        } catch { }
-        $env:GIT_SSH_COMMAND = $null
+        # Try SSH first, then HTTPS, with -c flag for atomic write fix. When
+        # -RepoUrl is provided, use that URL directly via the HTTPS fallback path.
+        if (-not [string]::IsNullOrWhiteSpace($RepoUrlSsh)) {
+            Write-Info "Trying SSH clone..."
+            $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
+            try {
+                git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir
+                if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+            } catch { }
+            $env:GIT_SSH_COMMAND = $null
+        }
 
         if (-not $cloneSuccess) {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
-            Write-Info "SSH failed, trying HTTPS..."
+            if (-not [string]::IsNullOrWhiteSpace($RepoUrlSsh)) {
+                Write-Info "SSH failed, trying HTTPS..."
+            } else {
+                Write-Info "Cloning from $RepoUrlHttps..."
+            }
             try {
                 git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir
                 if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
@@ -1055,13 +1080,13 @@ function Install-Repository {
                 # for.  GitHub supports archive URLs for commits, tags, and
                 # branches; we honour Commit > Tag > Branch.
                 if ($Commit) {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/$Commit.zip"
+                    $zipUrl = "$RepoArchiveBaseUrl/archive/$Commit.zip"
                     $zipLabel = $Commit
                 } elseif ($Tag) {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$Tag.zip"
+                    $zipUrl = "$RepoArchiveBaseUrl/archive/refs/tags/$Tag.zip"
                     $zipLabel = $Tag
                 } else {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
+                    $zipUrl = "$RepoArchiveBaseUrl/archive/refs/heads/$Branch.zip"
                     $zipLabel = $Branch
                 }
                 $zipPath = "$env:TEMP\hermes-agent-$zipLabel.zip"

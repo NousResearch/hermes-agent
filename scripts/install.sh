@@ -43,8 +43,19 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+if [ -n "${HERMES_REPO_URL:-}" ]; then
+    REPO_URL_SSH="${HERMES_REPO_URL_SSH:-}"
+    REPO_URL_HTTPS="$HERMES_REPO_URL"
+    REPO_URL_EXPLICIT=true
+elif [ -n "${HERMES_REPO_URL_HTTPS:-}" ] || [ -n "${HERMES_REPO_URL_SSH:-}" ]; then
+    REPO_URL_SSH="${HERMES_REPO_URL_SSH:-}"
+    REPO_URL_HTTPS="${HERMES_REPO_URL_HTTPS:-}"
+    REPO_URL_EXPLICIT=true
+else
+    REPO_URL_SSH="${HERMES_REPO_URL_SSH:-git@github.com:NousResearch/hermes-agent.git}"
+    REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+    REPO_URL_EXPLICIT=false
+fi
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
@@ -102,6 +113,12 @@ while [[ $# -gt 0 ]]; do
             BRANCH="$2"
             shift 2
             ;;
+        --repo-url)
+            REPO_URL_HTTPS="$2"
+            REPO_URL_SSH=""
+            REPO_URL_EXPLICIT=true
+            shift 2
+            ;;
         --dir)
             INSTALL_DIR="$2"
             INSTALL_DIR_EXPLICIT=true
@@ -129,6 +146,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --skip-browser Skip Playwright/Chromium install (browser tools won't work)"
             echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --repo-url URL Clone/update from a different git remote"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -906,6 +924,11 @@ clone_repo() {
         if [ -d "$INSTALL_DIR/.git" ]; then
             log_info "Existing installation found, updating..."
             cd "$INSTALL_DIR"
+            if [ "$REPO_URL_EXPLICIT" = true ]; then
+                local remote_url="${REPO_URL_HTTPS:-$REPO_URL_SSH}"
+                log_info "Setting origin remote to $remote_url"
+                git remote set-url origin "$remote_url"
+            fi
 
             local autostash_ref=""
             if [ -n "$(git status --porcelain)" ]; then
@@ -957,16 +980,27 @@ clone_repo() {
             exit 1
         fi
     else
-        # Try SSH first (for private repo access), fall back to HTTPS
+        # Try SSH first (for private repo access), fall back to HTTPS.
+        # When --repo-url or HERMES_REPO_URL is provided, use that URL directly.
         # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
         # so SSH fails fast instead of hanging when no key is configured.
-        log_info "Trying SSH clone..."
-        if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+        if [ -n "$REPO_URL_SSH" ]; then
+            log_info "Trying SSH clone..."
+        fi
+        if [ -n "$REPO_URL_SSH" ] && GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
            git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
             log_success "Cloned via SSH"
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
-            log_info "SSH failed, trying HTTPS..."
+            if [ -n "$REPO_URL_SSH" ]; then
+                log_info "SSH failed, trying HTTPS..."
+            else
+                log_info "Cloning from $REPO_URL_HTTPS..."
+            fi
+            if [ -z "$REPO_URL_HTTPS" ]; then
+                log_error "SSH clone failed and no HTTPS repository URL is configured"
+                exit 1
+            fi
             if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else

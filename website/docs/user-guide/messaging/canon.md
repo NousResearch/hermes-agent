@@ -4,6 +4,28 @@ The Canon platform plugin connects Hermes directly to Canon conversations over
 Canon's REST and SSE APIs. It is the long-term native channel for
 Canon-Hermes deployments and does not require the legacy Node sidecar bridge.
 
+## Install the Canon-Enabled Branch
+
+Until Canon support is available in a released Hermes build, install Hermes
+from the public Canon branch rather than from PyPI or upstream `main`.
+
+On Linux, macOS, WSL2, or Termux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ernestgalore/hermes-agent/codex/upstream-canon-platform/scripts/install.sh \
+  | bash -s -- \
+      --repo-url https://github.com/ernestgalore/hermes-agent.git \
+      --branch codex/upstream-canon-platform
+```
+
+On native Windows PowerShell:
+
+```powershell
+$installer = "$env:TEMP\install-canon-hermes.ps1"
+irm https://raw.githubusercontent.com/ernestgalore/hermes-agent/codex/upstream-canon-platform/scripts/install.ps1 -OutFile $installer
+& $installer -RepoUrl https://github.com/ernestgalore/hermes-agent.git -Branch codex/upstream-canon-platform
+```
+
 ## Authentication
 
 Run the gateway setup wizard and select Canon. In the checklist UI, toggle
@@ -60,6 +82,15 @@ picker sends the mention metadata to Hermes; typing plain `@Name` text may not.
 Hermes surfaces structured mention state to the model, but Canon can still
 filter delivery before Hermes sees a message when the conversation's behavior
 policy requires mentions.
+
+## Outbound Media
+
+Canon supports native outbound attachments from Hermes. Agents can include
+`MEDIA:<local_path>` in a final response, or in `send_message` text, for files
+under the Hermes media cache or paths allowed by `HERMES_MEDIA_ALLOW_DIRS`.
+Hermes uploads the file through Canon and sends it as an image, audio, video, or
+document attachment. When text is sent with one or more files, Canon uses the
+text as the first attachment's caption.
 
 ## Deployment Note
 

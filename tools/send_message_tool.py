@@ -13,7 +13,8 @@ import re
 import ssl
 import time
 from email.utils import formatdate
-from typing import Dict, Optional
+from pathlib import Path
+from typing import Awaitable, Callable, Dict, Optional
 
 from agent.redact import redact_sensitive_text
 
@@ -70,6 +71,28 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+async def _await_on_adapter_loop(runner, coro_factory: Callable[[], Awaitable[object]]):
+    """Run a live gateway adapter coroutine on the loop that owns it.
+
+    ``send_message`` is a synchronous tool, so its async helper usually runs on
+    model_tools' tool loop, not the gateway loop.  Live adapters often own
+    httpx/anyio/asyncio primitives created during ``adapter.connect()`` on the
+    gateway loop.  Awaiting those adapters from the tool loop can fail with
+    "bound to a different event loop".
+    """
+    target_loop = getattr(runner, "_gateway_loop", None)
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    if target_loop and target_loop.is_running() and target_loop is not current_loop:
+        future = asyncio.run_coroutine_threadsafe(coro_factory(), target_loop)
+        return await asyncio.wrap_future(future)
+
+    return await coro_factory()
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -502,7 +525,68 @@ async def _send_via_adapter(
         if adapter is not None:
             try:
                 metadata = {"thread_id": thread_id} if thread_id else None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                if media_files:
+                    from gateway.platforms.base import should_send_media_as_audio
+
+                    last_result = None
+                    caption = chunk
+                    for media_path, is_voice in media_files:
+                        ext = Path(str(media_path)).suffix.lower()
+
+                        def _send_media_item(
+                            media_path=media_path,
+                            is_voice=is_voice,
+                            ext=ext,
+                            caption=caption,
+                        ):
+                            if should_send_media_as_audio(platform, ext, is_voice=is_voice):
+                                return adapter.send_voice(
+                                    chat_id=chat_id,
+                                    audio_path=media_path,
+                                    caption=caption or None,
+                                    metadata=metadata,
+                                )
+                            if ext in _VIDEO_EXTS and not force_document:
+                                return adapter.send_video(
+                                    chat_id=chat_id,
+                                    video_path=media_path,
+                                    caption=caption or None,
+                                    metadata=metadata,
+                                )
+                            if ext in _IMAGE_EXTS and not force_document:
+                                return adapter.send_image_file(
+                                    chat_id=chat_id,
+                                    image_path=media_path,
+                                    caption=caption or None,
+                                    metadata=metadata,
+                                )
+                            return adapter.send_document(
+                                chat_id=chat_id,
+                                file_path=media_path,
+                                caption=caption or None,
+                                metadata=metadata,
+                            )
+
+                        last_result = await _await_on_adapter_loop(runner, _send_media_item)
+                        if not last_result.success:
+                            return {"error": f"Adapter media send failed: {last_result.error}"}
+                        # Only the first attachment gets the text as a caption.
+                        caption = ""
+
+                    if last_result is not None:
+                        return {
+                            "success": True,
+                            "message_id": last_result.message_id,
+                        }
+
+                result = await _await_on_adapter_loop(
+                    runner,
+                    lambda: adapter.send(
+                        chat_id=chat_id,
+                        content=chunk,
+                        metadata=metadata,
+                    ),
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -750,7 +834,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         )
 
     last_result = None
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
+        is_last = i == len(chunks) - 1
         if platform == Platform.SLACK:
             result = await _send_slack(pconfig.token, chat_id, chunk)
         elif platform == Platform.WHATSAPP:
@@ -786,7 +871,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chat_id,
                 chunk,
                 thread_id=thread_id,
-                media_files=media_files,
+                media_files=media_files if is_last else [],
                 force_document=force_document,
             )
 

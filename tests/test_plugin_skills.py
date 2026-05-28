@@ -388,3 +388,44 @@ class TestBundleContextBanner:
         self._setup_bundle(tmp_path)
         result = json.loads(skill_view("myplugin:foo"))
         assert "foo body." in result["content"]
+
+
+# ── Safe skill index traversal ─────────────────────────────────────────────
+
+
+class TestIterSkillIndexFilesSymlinks:
+    def test_skips_recursive_directory_symlink(self, tmp_path):
+        from agent.skill_utils import iter_skill_index_files
+
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text("---\nname: loop\n---\n")
+        os.symlink(tmp_path, tmp_path / "loop")
+
+        assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [skill_file]
+
+    def test_skips_directory_symlink_outside_skills_tree(self, tmp_path):
+        from agent.skill_utils import iter_skill_index_files
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "SKILL.md").write_text("---\nname: outside\n---\n")
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        os.symlink(outside, skills_dir / "outside")
+
+        assert list(iter_skill_index_files(skills_dir, "SKILL.md")) == []
+
+    def test_scans_when_skills_dir_itself_is_a_symlink(self, tmp_path):
+        from agent.skill_utils import iter_skill_index_files
+
+        real_skills = tmp_path / "real-skills"
+        real_skills.mkdir()
+        (real_skills / "SKILL.md").write_text("---\nname: linked-root\n---\n")
+
+        linked_skills = tmp_path / "linked-skills"
+        os.symlink(real_skills, linked_skills)
+
+        assert list(iter_skill_index_files(linked_skills, "SKILL.md")) == [
+            linked_skills / "SKILL.md"
+        ]

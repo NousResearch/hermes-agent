@@ -37,7 +37,7 @@ description: Description for {name}.
 
 
 def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Path:
-    """Create a category symlink under skills_dir pointing outside the tree."""
+    """Create a category symlink under skills_dir with an in-tree target."""
     external_category = linked_root / category
     external_category.mkdir(parents=True, exist_ok=True)
     symlink_path = skills_dir / category
@@ -112,9 +112,9 @@ class TestScanSkillCommands:
         assert "/disabled-skill" not in result
 
     def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
-        external_root = tmp_path / "repo"
         skills_root = tmp_path / "skills"
         skills_root.mkdir()
+        external_root = skills_root / ".targets"
 
         external_category = _symlink_category(skills_root, external_root, "linked")
         _make_skill(external_category.parent, "knowledge-brain", category="linked")

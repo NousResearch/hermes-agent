@@ -482,17 +482,64 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
 # ── File iteration ────────────────────────────────────────────────────────
 
 
+def _is_relative_to(path: Path, base: Path) -> bool:
+    """Return whether *path* resolves beneath *base*."""
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
+def _directory_visit_key(path: Path) -> Optional[Tuple[int, int]]:
+    """Return a stable identity for a directory, following symlinks."""
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return None
+    return (stat_result.st_dev, stat_result.st_ino)
+
+
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
     Excludes ``.git``, ``.github``, ``.hub``, ``.archive`` directories.
+    Directory symlinks are followed only when they resolve inside the skills
+    tree, and already-visited directories are skipped to avoid symlink cycles.
     """
+    base = Path(skills_dir)
+    try:
+        resolved_base = base.resolve(strict=True)
+    except OSError:
+        return
+
+    root_key = _directory_visit_key(base)
+    if root_key is None:
+        return
+
+    visited = {root_key}
     matches = []
-    for root, dirs, files in os.walk(skills_dir, followlinks=True):
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
+    for root, dirs, files in os.walk(base, followlinks=True):
+        safe_dirs = []
+        for dirname in sorted(dirs):
+            if dirname in EXCLUDED_SKILL_DIRS:
+                continue
+            child = Path(root) / dirname
+            try:
+                resolved_child = child.resolve(strict=True)
+            except OSError:
+                continue
+            if not _is_relative_to(resolved_child, resolved_base):
+                continue
+            visit_key = _directory_visit_key(child)
+            if visit_key is None or visit_key in visited:
+                continue
+            visited.add(visit_key)
+            safe_dirs.append(dirname)
+        dirs[:] = safe_dirs
         if filename in files:
             matches.append(Path(root) / filename)
-    for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):
+    for path in sorted(matches, key=lambda p: str(p.relative_to(base))):
         yield path
 
 

@@ -7661,6 +7661,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        reply_to_message_id=getattr(event, "reply_to_message_id", None),
+                        reply_to_text=getattr(event, "reply_to_text", None),
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
@@ -7688,6 +7690,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
+                            reply_to_message_id=getattr(event, "reply_to_message_id", None),
+                            reply_to_text=getattr(event, "reply_to_text", None),
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
@@ -7710,6 +7714,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        reply_to_message_id=getattr(event, "reply_to_message_id", None),
+                        reply_to_text=getattr(event, "reply_to_text", None),
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."

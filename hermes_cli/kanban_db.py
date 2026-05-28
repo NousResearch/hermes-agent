@@ -134,6 +134,34 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     return DEFAULT_CLAIM_TTL_SECONDS
 
 
+# Grace period after a task transitions to ``running`` during which
+# ``detect_crashed_workers`` skips the ``_pid_alive`` check. Covers the
+# fork() → /proc-visibility window where liveness can transiently report
+# False for a freshly-spawned worker. The 15-minute claim TTL still
+# catches genuinely-crashed workers; this only suppresses false positives
+# during the launch window.
+DEFAULT_CRASH_GRACE_SECONDS = 30
+
+
+def _resolve_crash_grace_seconds() -> int:
+    """Return the crash-detection grace period in seconds.
+
+    Reads ``HERMES_KANBAN_CRASH_GRACE_SECONDS`` from the environment;
+    falls back to ``DEFAULT_CRASH_GRACE_SECONDS`` when absent, empty,
+    non-integer, or negative. A value of 0 restores immediate-reclaim
+    behaviour (useful for tests).
+    """
+    raw = os.environ.get("HERMES_KANBAN_CRASH_GRACE_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_CRASH_GRACE_SECONDS
+
+
 # Worker-context caps so build_worker_context() stays bounded on
 # pathological boards (retry-heavy tasks, comment storms, giant
 # summaries). Values chosen to fit a typical 100k-char LLM prompt with
@@ -1181,8 +1209,17 @@ def connect(
             # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
             from hermes_state import apply_wal_with_fallback
             apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            conn.execute("PRAGMA synchronous=NORMAL")
+            # FULL (was NORMAL): fsync before each checkpoint to narrow the
+            # crash window that can leave a b-tree page header torn.
+            conn.execute("PRAGMA synchronous=FULL")
+            conn.execute("PRAGMA wal_autocheckpoint=100")
             conn.execute("PRAGMA foreign_keys=ON")
+            # Zero freed pages so a later torn write cannot expose stale
+            # cell content; persisted in the DB header for new DBs.
+            conn.execute("PRAGMA secure_delete=ON")
+            # Surface corrupt cells as read errors instead of silent
+            # wrong-data returns.
+            conn.execute("PRAGMA cell_size_check=ON")
             needs_init = resolved not in _INITIALIZED_PATHS
             if needs_init:
                 # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
@@ -1466,6 +1503,45 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         )
 
 
+def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
+    """Read the SQLite header page_count and compare against actual file size.
+
+    Raises sqlite3.DatabaseError if the file is shorter than the header claims
+    (torn-extend corruption).
+    """
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        if row is None:
+            return
+        path_str = row[2]  # column 2 is the file path; empty for in-memory DBs
+        if not path_str:
+            return  # in-memory or unnamed DB; skip
+        path = path_str
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        file_size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(28)
+            header_bytes = f.read(4)
+        if len(header_bytes) < 4:
+            return  # can't read header; skip
+        header_page_count = int.from_bytes(header_bytes, "big")
+        if header_page_count == 0:
+            return  # new/empty DB; skip
+        actual_pages = file_size // page_size
+        if actual_pages < header_page_count:
+            raise sqlite3.DatabaseError(
+                f"torn-extend detected: page count mismatch on {path}: "
+                f"header claims {header_page_count} pages, "
+                f"file has {actual_pages} pages "
+                f"(missing {header_page_count - actual_pages} pages, "
+                f"file_size={file_size}, page_size={page_size})"
+            )
+    except sqlite3.DatabaseError:
+        raise
+    except Exception:
+        pass  # I/O errors during check are non-fatal; let normal ops continue
+
+
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
     """Context manager for an IMMEDIATE write transaction.
@@ -1473,15 +1549,28 @@ def write_txn(conn: sqlite3.Connection):
     Use for any multi-statement write (creating a task + link, claiming a
     task + recording an event, etc.).  A claim CAS inside this context is
     atomic -- at most one concurrent writer can succeed.
+
+    The explicit ROLLBACK on exception is wrapped in try/except so that
+    a SQLite auto-rollback (which leaves no active transaction) does not
+    shadow the original exception with a spurious rollback error.
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
     except Exception:
-        conn.execute("ROLLBACK")
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            # SQLite has already auto-rolled-back the transaction (typical
+            # under EIO, lock contention, or corruption). Nothing to undo;
+            # do not let this secondary failure shadow the real one.
+            pass
         raise
     else:
         conn.execute("COMMIT")
+        # Post-commit file-length check: header page_count must match actual file pages.
+        # A discrepancy means a torn-extend — raise now rather than silently corrupt.
+        _check_file_length_invariant(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -4169,6 +4258,30 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     return ("unknown", None)
 
 
+def reap_worker_zombies() -> "list[int]":
+    """Reap all zombie children of this process without blocking.
+
+    Returns the list of reaped PIDs. Safe to call when there are no
+    children (returns []). No-op on Windows.
+    """
+    if os.name == "nt":
+        return []
+    reaped: "list[int]" = []
+    try:
+        while True:
+            try:
+                pid, status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if pid == 0:
+                break
+            _record_worker_exit(pid, status)
+            reaped.append(pid)
+    except Exception:
+        pass
+    return reaped
+
+
 def _pid_alive(pid: Optional[int]) -> bool:
     """Return True if ``pid`` is still running on this host.
 
@@ -4635,7 +4748,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -4644,6 +4757,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             lock = row["claim_lock"] or ""
             if not lock.startswith(host_prefix):
                 continue
+            # Skip liveness check inside the launch-window grace period
+            # so a freshly-spawned worker isn't reclaimed before its PID
+            # is visible on /proc.
+            started_at = row["started_at"] if "started_at" in row.keys() else None
+            if started_at is not None:
+                grace = _resolve_crash_grace_seconds()
+                if time.time() - started_at < grace:
+                    continue
             if _pid_alive(row["worker_pid"]):
                 continue
 
@@ -5125,38 +5246,9 @@ def dispatch_once(
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
-    # Reap zombie children from previously spawned workers.
-    # The gateway-embedded dispatcher is the parent of every worker spawned
-    # via _default_spawn (start_new_session=True only detaches the
-    # controlling tty, not the parent). Without an explicit waitpid, each
-    # completed worker becomes a <defunct> entry that lingers until gateway
-    # exit. WNOHANG keeps this non-blocking; ChildProcessError means no
-    # children to reap. Bounded: at most one tick's worth of completions
-    # can be in <defunct> at once.
-    #
-    # We also record the exit status keyed by pid, so
-    # ``detect_crashed_workers`` can distinguish a worker that exited
-    # cleanly without calling ``kanban_complete`` / ``kanban_block``
-    # (protocol violation — auto-block) from a real crash (OOM killer,
-    # SIGKILL, non-zero exit — existing counter behavior).
-    #
-    # Windows has no zombies / no os.WNOHANG — subprocess.Popen handles
-    # are freed when the Python object is garbage-collected or .wait() is
-    # called explicitly.  The kanban dispatcher discards the Popen handle
-    # after spawn (``_default_spawn`` → abandon), so on Windows there's
-    # nothing to reap here — skip the whole block.
-    if os.name != "nt":
-        try:
-            while True:
-                try:
-                    _pid, _status = os.waitpid(-1, os.WNOHANG)
-                except ChildProcessError:
-                    break
-                if _pid == 0:
-                    break
-                _record_worker_exit(_pid, _status)
-        except Exception:
-            pass
+    # Reap zombie children from previously spawned workers. See
+    # reap_worker_zombies() for the full rationale.
+    reap_worker_zombies()
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)

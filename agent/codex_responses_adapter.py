@@ -23,6 +23,38 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 
+def _classify_responses_issuer(
+    *,
+    is_xai_responses: bool = False,
+    is_github_responses: bool = False,
+    is_codex_backend: bool = False,
+    base_url: Optional[str] = None,
+) -> str:
+    """Stable identifier for the Responses endpoint that mints encrypted_content.
+
+    ``reasoning.encrypted_content`` is sealed to the endpoint that issued it:
+    replaying a Codex-minted blob against xAI (or vice versa) deterministically
+    returns HTTP 400 ``invalid_encrypted_content``. Stamping the issuer on
+    persisted reasoning items and filtering at replay time lets a single
+    conversation switch models without poisoning history with un-decryptable
+    reasoning blocks.
+    """
+    if is_xai_responses:
+        return "xai_responses"
+    if is_github_responses:
+        return "github_responses"
+    if is_codex_backend:
+        return "codex_backend"
+    if base_url:
+        return f"other:{base_url}"
+    return "other"
+
+
+# Throttle the per-process cross-issuer skip warning so we don't flood logs
+# when a long history contains many stale-issuer reasoning blocks.
+_CROSS_ISSUER_WARN_EMITTED = False
+
+
 # Matches Codex/Harmony tool-call serialization that occasionally leaks into
 # assistant-message content when the model fails to emit a structured
 # ``function_call`` item.  Accepts the common forms:
@@ -285,17 +317,41 @@ def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]],
     *,
     is_xai_responses: bool = False,
+    replay_encrypted_reasoning: bool = True,
+    current_issuer_kind: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
     ``is_xai_responses`` is kept for transport signature compatibility but
     no longer suppresses encrypted reasoning replay.  Earlier (PR #26644,
     May 2026) we believed xAI's OAuth/SuperGrok ``/v1/responses`` surface
-    rejected replayed ``encrypted_content`` reasoning items minted by prior
-    turns, and we stripped them.  That decision was wrong: xAI relies on
-    Hermes threading encrypted reasoning back across turns for cross-turn
-    coherence.  Replay encrypted reasoning and native Codex compaction items
-    on every Responses transport unless a backend explicitly rejects them.
+    rejected replayed ``encrypted_content`` reasoning items minted by
+    prior turns, and we stripped them.  That decision was wrong — xAI
+    explicitly relies on Hermes threading encrypted reasoning back across
+    turns for cross-turn coherence.  We now replay encrypted reasoning and
+    native Codex compaction summaries on Responses transports unless a
+    backend explicitly rejects them.
+
+    ``replay_encrypted_reasoning`` is the per-session kill switch.  Some
+    OpenAI-compatible relays accept the request but later reject the
+    replayed encrypted blob with HTTP 400 ``invalid_encrypted_content``;
+    when that happens the retry loop calls
+    ``AIAgent._disable_codex_reasoning_replay`` which both strips cached
+    items from the conversation history and threads ``replay_enabled=False``
+    through this converter so subsequent turns send no reasoning items.
+
+    ``current_issuer_kind`` enables a per-item cross-issuer guard. The
+    Responses API's ``encrypted_content`` blob is decryptable only by the
+    endpoint that minted it — replaying a Codex-issued blob against xAI
+    (or vice versa) always yields HTTP 400 ``invalid_encrypted_content``
+    and breaks every subsequent turn in the same session.  When this
+    argument is provided and a reasoning item carries an ``_issuer_kind``
+    stamp from a different endpoint, the item is dropped from the replayed
+    input.  Legacy items without a stamp are still replayed
+    (backwards-compatible).  The two guards compose:
+    ``replay_encrypted_reasoning=False`` is the session-wide kill switch
+    (drops ALL replay); ``current_issuer_kind`` is the per-item filter
+    that runs only when replay is still enabled.
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
@@ -320,21 +376,42 @@ def _chat_messages_to_responses_input(
                 content_text = str(content) if content is not None else ""
 
             if role == "assistant":
-                # Replay encrypted reasoning and compaction items from
-                # previous turns so the API can maintain coherent state.
+                # Replay encrypted reasoning and compaction-summary items from
+                # previous turns so Responses backends can maintain coherent
+                # opaque state. This applies to xAI too, but reasoning items
+                # are filtered by issuer when the current endpoint is known.
                 has_opaque_codex_state = False
-                for field_name in ("codex_reasoning_items", "codex_compaction_items"):
-                    raw_items = msg.get(field_name)
-                    if not isinstance(raw_items, list):
-                        continue
-                    for raw_item in raw_items:
-                        if not isinstance(raw_item, dict):
+                if replay_encrypted_reasoning:
+                    for field_name in ("codex_reasoning_items", "codex_compaction_items"):
+                        raw_items = msg.get(field_name)
+                        if not isinstance(raw_items, list):
                             continue
-                        replay_item = _normalize_codex_opaque_item(raw_item, seen_ids=seen_item_ids)
-                        if replay_item is None:
-                            continue
-                        items.append(replay_item)
-                        has_opaque_codex_state = True
+                        for raw_item in raw_items:
+                            if not isinstance(raw_item, dict):
+                                continue
+                            if raw_item.get("type") == "reasoning":
+                                item_issuer = raw_item.get("_issuer_kind")
+                                if (
+                                    current_issuer_kind is not None
+                                    and item_issuer is not None
+                                    and item_issuer != current_issuer_kind
+                                ):
+                                    global _CROSS_ISSUER_WARN_EMITTED
+                                    if not _CROSS_ISSUER_WARN_EMITTED:
+                                        logger.warning(
+                                            "Dropping reasoning item minted by %s while "
+                                            "calling %s — encrypted_content is sealed to "
+                                            "its issuer. This happens when a session "
+                                            "switches model providers mid-conversation.",
+                                            item_issuer, current_issuer_kind,
+                                        )
+                                        _CROSS_ISSUER_WARN_EMITTED = True
+                                    continue
+                            replay_item = _normalize_codex_opaque_item(raw_item, seen_ids=seen_item_ids)
+                            if replay_item is None:
+                                continue
+                            items.append(replay_item)
+                            has_opaque_codex_state = True
 
                 # Replay exact assistant message items (with id/phase) from
                 # previous turns so the API can maintain prefix-cache hits.
@@ -838,6 +915,26 @@ def _preflight_codex_api_kwargs(
     elif "stream" in api_kwargs:
         raise ValueError("Codex Responses stream flag is only allowed in fallback streaming requests.")
 
+    # Safety-net sanitization for xAI Responses (#28490): defense-in-depth
+    # for the same slash-enum strip that ``chat_completion_helpers`` and
+    # ``auxiliary_client`` apply at request-build time.  If a future code
+    # path forgets to sanitize before calling us, this catches the bypass
+    # so xAI doesn't 400 with ``Invalid arguments passed to the model``
+    # (HuggingFace IDs like ``Qwen/Qwen3.5-0.8B`` from MCP tool schemas).
+    #
+    # Gated on the model name pattern because native Codex (OpenAI) DOES
+    # accept slash-containing enum values — stripping them there would
+    # silently degrade tool-schema constraints.  xAI is the only
+    # Responses-API surface that rejects the shape.
+    model_name_for_provider_check = str(api_kwargs.get("model") or "").lower()
+    is_xai_model = model_name_for_provider_check.startswith(("grok-", "x-ai/grok-"))
+    if is_xai_model and normalized.get("tools"):
+        try:
+            from tools.schema_sanitizer import strip_slash_enum
+            normalized["tools"], _ = strip_slash_enum(normalized["tools"])
+        except Exception:
+            pass  # Best-effort — the caller-level sanitization should have handled it
+
     unexpected = sorted(key for key in api_kwargs if key not in allowed_keys)
     if unexpected:
         raise ValueError(
@@ -889,8 +986,18 @@ def _extract_responses_reasoning_text(item: Any) -> str:
 # Full response normalization
 # ---------------------------------------------------------------------------
 
-def _normalize_codex_response(response: Any) -> tuple[Any, str]:
-    """Normalize a Responses API object to an assistant_message-like object."""
+def _normalize_codex_response(
+    response: Any,
+    *,
+    issuer_kind: Optional[str] = None,
+) -> tuple[Any, str]:
+    """Normalize a Responses API object to an assistant_message-like object.
+
+    ``issuer_kind`` (when provided) is stamped onto each reasoning item the
+    response yields, so future replays can detect when the active endpoint
+    differs from the one that minted the encrypted_content blob and drop
+    the item instead of triggering HTTP 400 invalid_encrypted_content.
+    """
     output = getattr(response, "output", None)
     if not isinstance(output, list) or not output:
         # The Codex backend can return empty output when the answer was
@@ -932,6 +1039,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
     saw_commentary_phase = False
     saw_final_answer_phase = False
+    saw_reasoning_item = False
 
     for item in output:
         item_type = getattr(item, "type", None)
@@ -969,6 +1077,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                     raw_message_item["phase"] = normalized_phase
                 message_items_raw.append(raw_message_item)
         elif item_type == "reasoning":
+            saw_reasoning_item = True
             reasoning_text = _extract_responses_reasoning_text(item)
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
@@ -978,7 +1087,19 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             encrypted = getattr(item, "encrypted_content", None)
             if isinstance(encrypted, str) and encrypted:
                 raw_item = {"type": "reasoning", "encrypted_content": encrypted}
+                # Stamp the issuer so future turns can detect when a
+                # model swap moved the conversation to an endpoint that
+                # cannot decrypt this blob — see _chat_messages_to_responses_input
+                # cross-issuer guard.
+                if issuer_kind:
+                    raw_item["_issuer_kind"] = issuer_kind
                 item_id = getattr(item, "id", None)
+                if isinstance(item_id, str) and item_id.startswith("rs_tmp_"):
+                    logger.debug(
+                        "Skipping transient Codex reasoning item during normalization: %s",
+                        item_id,
+                    )
+                    continue
                 if isinstance(item_id, str) and item_id:
                     raw_item["id"] = item_id
                 # Capture summary — required by the API when replaying reasoning items
@@ -1089,13 +1210,13 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         finish_reason = "incomplete"
     elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
         finish_reason = "incomplete"
-    elif reasoning_items_raw and not final_text:
-        # Response contains only reasoning (encrypted thinking state) with
-        # no visible content or tool calls.  The model is still thinking and
-        # needs another turn to produce the actual answer.  Marking this as
-        # "stop" would send it into the empty-content retry loop which burns
-        # 3 retries then fails — treat it as incomplete instead so the Codex
-        # continuation path handles it correctly.
+    elif (reasoning_items_raw or reasoning_parts or saw_reasoning_item) and not final_text:
+        # Response contains only reasoning (encrypted thinking state and/or
+        # human-readable summary) with no visible content or tool calls. The
+        # model is still thinking and needs another turn to produce the actual
+        # answer. Marking this as "stop" would send it into the empty-content
+        # retry loop which burns retries then fails — treat it as incomplete so
+        # the Codex continuation path handles it correctly.
         finish_reason = "incomplete"
     else:
         finish_reason = "stop"

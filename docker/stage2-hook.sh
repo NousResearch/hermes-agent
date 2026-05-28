@@ -20,6 +20,18 @@ set -eu
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
+# --- Bootstrap HERMES_HOME as root ---
+# Create the directory (and any missing parents) while we still have root
+# privileges so the chown checks below see real metadata and the later
+# `s6-setuidgid hermes mkdir -p` block doesn't EACCES on root-owned
+# ancestors. Without this, custom HERMES_HOME paths whose parents only
+# root can create (e.g. `HERMES_HOME=/home/hermes/.hermes` in a Compose
+# file, or any path under a fresh / not pre-populated by the image)
+# fail on first boot with `mkdir: cannot create directory '/...': Permission
+# denied` and the cont-init hook exits non-zero. Idempotent — `mkdir -p`
+# is a no-op if the dir already exists. (#18482, salvages #18488)
+mkdir -p "$HERMES_HOME"
+
 # --- UID/GID remap ---
 if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
     echo "[stage2] Changing hermes UID to $HERMES_UID"
@@ -33,6 +45,14 @@ if [ -n "${HERMES_GID:-}" ] && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
 fi
 
 # --- Fix ownership of data volume ---
+# When HERMES_UID is remapped or the top-level $HERMES_HOME isn't owned by
+# the runtime hermes UID, restore ownership to hermes — but ONLY for the
+# directories hermes actually writes to. The full $HERMES_HOME may be a
+# host-mounted bind containing unrelated user files; `chown -R` would
+# silently destroy host ownership of those (see issue #19788).
+#
+# The canonical list of hermes-owned subdirs is the same one the s6-setuidgid
+# mkdir -p block below seeds. Keep them in sync if the seed list changes.
 actual_hermes_uid=$(id -u hermes)
 needs_chown=false
 if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "10000" ]; then
@@ -41,16 +61,45 @@ elif [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; the
     needs_chown=true
 fi
 if [ "$needs_chown" = true ]; then
-    echo "[stage2] Fixing ownership of $HERMES_HOME to hermes ($actual_hermes_uid)"
+    echo "[stage2] Fixing ownership of $HERMES_HOME (targeted) to hermes ($actual_hermes_uid)"
     # In rootless Podman the container's "root" is mapped to an
     # unprivileged host UID — chown will fail. That's fine: the volume
     # is already owned by the mapped user on the host side.
-    chown -R hermes:hermes "$HERMES_HOME" 2>/dev/null || \
-        echo "[stage2] Warning: chown failed (rootless container?) — continuing"
-    # The .venv must also be re-chowned when UID is remapped, otherwise
-    # lazy_deps.py cannot install platform packages (discord.py, etc.).
-    chown -R hermes:hermes "$INSTALL_DIR/.venv" 2>/dev/null || \
-        echo "[stage2] Warning: chown .venv failed (rootless container?) — continuing"
+    #
+    # Top-level $HERMES_HOME: chown the directory itself (not its contents)
+    # so hermes can mkdir new subdirs but bind-mounted host files keep
+    # their existing ownership.
+    chown hermes:hermes "$HERMES_HOME" 2>/dev/null || \
+        echo "[stage2] Warning: chown $HERMES_HOME failed (rootless container?) — continuing"
+    # Hermes-owned subdirs: recursive chown is safe here because these are
+    # created and managed exclusively by hermes (see the s6-setuidgid mkdir
+    # -p block below for the canonical list).
+    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles; do
+        if [ -e "$HERMES_HOME/$sub" ]; then
+            chown -R hermes:hermes "$HERMES_HOME/$sub" 2>/dev/null || \
+                echo "[stage2] Warning: chown $HERMES_HOME/$sub failed (rootless container?) — continuing"
+        fi
+    done
+    # Hermes-owned trees under $INSTALL_DIR must be re-chowned when the UID
+    # is remapped — otherwise:
+    #   - .venv: lazy_deps.py cannot install platform packages (discord.py,
+    #     telegram, slack, etc.) with EACCES (#15012, #21100)
+    #   - ui-tui: esbuild rebuilds dist/entry.js on every TUI launch (when
+    #     the source mtime is newer than dist/ or when HERMES_TUI_FORCE_BUILD
+    #     is set) and writes to ui-tui/dist/. Without this chown the new
+    #     hermes UID can't write the build output (#28851).
+    #   - node_modules: root-level dependencies (puppeteer, web tooling)
+    #     that runtime code may walk/update.
+    # The set mirrors the build-time `chown -R hermes:hermes` line in the
+    # Dockerfile — keep them in sync if the Dockerfile chown set changes.
+    # These are under $INSTALL_DIR (not $HERMES_HOME), so the bind-mount
+    # concern doesn't apply — recursive is fine.
+    chown -R hermes:hermes \
+        "$INSTALL_DIR/.venv" \
+        "$INSTALL_DIR/ui-tui" \
+        "$INSTALL_DIR/node_modules" \
+        2>/dev/null || \
+        echo "[stage2] Warning: chown of build trees failed (rootless container?) — continuing"
 fi
 
 # Always reset ownership of $HERMES_HOME/profiles to hermes on every
@@ -137,6 +186,49 @@ fi
 if [ -d "$INSTALL_DIR/skills" ]; then
     s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" \
         || echo "[stage2] Warning: skills_sync.py failed; continuing"
+fi
+
+# --- Discover agent-browser's Chromium binary ---
+# The image's Dockerfile runs `npx playwright install chromium`, which
+# populates ``$PLAYWRIGHT_BROWSERS_PATH`` (=/opt/hermes/.playwright) with
+# a ``chromium_headless_shell-<build>/chrome-headless-shell-linux64/``
+# directory. agent-browser (the runtime CLI Hermes spawns for the
+# browser tool) doesn't recognise this layout in its own cache scan and
+# fails with "Auto-launch failed: Chrome not found" — even though the
+# binary is right there (#15697).
+#
+# Fix: locate the binary at boot and export ``AGENT_BROWSER_EXECUTABLE_PATH``
+# via /run/s6/container_environment so the `with-contenv` shebang on
+# main-wrapper.sh propagates it into the supervised ``hermes`` process
+# and thence to agent-browser subprocesses.
+#
+# - Skipped when the user has already set ``AGENT_BROWSER_EXECUTABLE_PATH``
+#   (lets users override with a system Chrome install).
+# - Filename-matched (not path-matched): the chromium dir contains many
+#   shared libraries (libGLESv2.so, libEGL.so, ...) which inherit the
+#   executable bit from Playwright's tarball but are NOT browser binaries.
+#   We only accept files whose basename is chrome / chromium /
+#   chrome-headless-shell / chromium-browser. Compare PR #18635's earlier
+#   ``find | grep -Ei 'chrome|chromium'`` which would match the path
+#   ``.../chrome-headless-shell-linux64/libGLESv2.so`` and pick a .so.
+# - Quietly skipped when $PLAYWRIGHT_BROWSERS_PATH doesn't exist (e.g.
+#   custom builds that strip Playwright).
+if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
+        [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ] && \
+        [ -d "$PLAYWRIGHT_BROWSERS_PATH" ]; then
+    browser_bin=$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f -executable \
+        \( -name 'chrome' -o -name 'chromium' \
+           -o -name 'chrome-headless-shell' -o -name 'chromium-browser' \) \
+        2>/dev/null | head -n 1)
+    if [ -n "$browser_bin" ]; then
+        echo "[stage2] Found agent-browser Chromium binary: $browser_bin"
+        # Write to s6's container_environment so with-contenv picks it
+        # up for all supervised services (main-hermes, dashboard, etc.).
+        # Idempotent: each boot overwrites with the current path.
+        printf '%s' "$browser_bin" > /run/s6/container_environment/AGENT_BROWSER_EXECUTABLE_PATH
+    else
+        echo "[stage2] Warning: no Chromium binary under $PLAYWRIGHT_BROWSERS_PATH; browser tool may fail"
+    fi
 fi
 
 echo "[stage2] Setup complete; starting user services"

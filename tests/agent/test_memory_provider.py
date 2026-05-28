@@ -403,6 +403,85 @@ class TestPluginMemoryDiscovery:
         assert load_memory_provider("nonexistent_provider") is None
 
 
+
+class TestHolographicHrrDegradedWarning:
+    """Regression tests for #34084: silent numpy degradation warning."""
+
+    def test_system_prompt_with_numpy(self, monkeypatch, tmp_path):
+        """When numpy is available, prompt does not mention HRR disabled."""
+        from plugins.memory.holographic import HolographicMemoryProvider
+        from plugins.memory.holographic import holographic as _hrr
+
+        monkeypatch.setattr(_hrr, "_HAS_NUMPY", True)
+
+        provider = HolographicMemoryProvider({"db_path": str(tmp_path / "test.db")})
+        provider.initialize(session_id="test")
+
+        prompt = provider.system_prompt_block()
+        assert "HRR disabled" not in prompt
+        assert "Active" in prompt
+
+    def test_system_prompt_without_numpy(self, monkeypatch, tmp_path):
+        """When numpy is missing, prompt reflects degraded state."""
+        from plugins.memory.holographic import HolographicMemoryProvider
+        from plugins.memory.holographic import holographic as _hrr
+
+        monkeypatch.setattr(_hrr, "_HAS_NUMPY", False)
+
+        provider = HolographicMemoryProvider({"db_path": str(tmp_path / "test.db")})
+        provider.initialize(session_id="test")
+
+        prompt = provider.system_prompt_block()
+        # Should not show degraded state when fact store is empty
+        # (no facts = nothing to degrade)
+        assert "HRR disabled" not in prompt or "Empty" in prompt
+
+    def test_system_prompt_degraded_with_facts(self, monkeypatch, tmp_path):
+        """With facts present but no numpy, prompt shows degraded state."""
+        from plugins.memory.holographic import HolographicMemoryProvider
+        from plugins.memory.holographic import holographic as _hrr
+
+        monkeypatch.setattr(_hrr, "_HAS_NUMPY", False)
+
+        provider = HolographicMemoryProvider({"db_path": str(tmp_path / "test.db")})
+        provider.initialize(session_id="test")
+
+        # Add a fact so the store is non-empty
+        provider._store.add_fact("test content", category="general")
+
+        prompt = provider.system_prompt_block()
+        assert "HRR disabled" in prompt
+        assert "install numpy" in prompt.lower()
+
+    def test_warning_log_on_init_without_numpy(self, monkeypatch, tmp_path, caplog):
+        """WARNING log is emitted when numpy is unavailable during init."""
+        import logging
+        from plugins.memory.holographic import HolographicMemoryProvider
+        from plugins.memory.holographic import holographic as _hrr
+
+        monkeypatch.setattr(_hrr, "_HAS_NUMPY", False)
+
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.holographic"):
+            provider = HolographicMemoryProvider({"db_path": str(tmp_path / "test.db")})
+            provider.initialize(session_id="test")
+
+        assert any("numpy not installed" in r.message for r in caplog.records)
+
+    def test_no_warning_log_with_numpy(self, monkeypatch, tmp_path, caplog):
+        """No WARNING log when numpy is available."""
+        import logging
+        from plugins.memory.holographic import HolographicMemoryProvider
+        from plugins.memory.holographic import holographic as _hrr
+
+        monkeypatch.setattr(_hrr, "_HAS_NUMPY", True)
+
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.holographic"):
+            provider = HolographicMemoryProvider({"db_path": str(tmp_path / "test.db")})
+            provider.initialize(session_id="test")
+
+        assert not any("numpy not installed" in r.message for r in caplog.records)
+
+
 class TestUserInstalledProviderDiscovery:
     """Memory providers installed to $HERMES_HOME/plugins/ should be found.
 

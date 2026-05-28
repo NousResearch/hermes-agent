@@ -26,6 +26,10 @@ from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 from .store import MemoryStore
 from .retrieval import FactRetriever
+try:
+    from . import holographic as _hrr
+except ImportError:
+    from . import holographic as _hrr  # type: ignore[no-redef]
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
@@ -180,6 +184,13 @@ class HolographicMemoryProvider(MemoryProvider):
         )
         self._session_id = session_id
 
+        if not _hrr._HAS_NUMPY:
+            logger.warning(
+                "holographic memory: numpy not installed — "
+                "probe/related/reason/contradict actions will use keyword fallback. "
+                "Install numpy for full HRR compositional retrieval."
+            )
+
     def system_prompt_block(self) -> str:
         if not self._store:
             return ""
@@ -196,9 +207,12 @@ class HolographicMemoryProvider(MemoryProvider):
                 "Use fact_store(action='add') to store durable structured facts about people, projects, preferences, decisions.\n"
                 "Use fact_feedback to rate facts after using them (trains trust scores)."
             )
+        hrr_status = ""
+        if not _hrr._HAS_NUMPY:
+            hrr_status = " HRR disabled (install numpy for compositional queries)."
         return (
             f"# Holographic Memory\n"
-            f"Active. {total} facts stored with entity resolution and trust scoring.\n"
+            f"Active.{hrr_status} {total} facts stored with entity resolution and trust scoring.\n"
             f"Use fact_store to search, probe entities, reason across entities, or add facts.\n"
             f"Use fact_feedback to rate facts after using them (trains trust scores)."
         )

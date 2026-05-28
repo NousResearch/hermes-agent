@@ -1,6 +1,9 @@
 import { useEffect, useLayoutEffect, useState, useMemo } from "react";
 import {
+  ChevronDown,
+  ChevronRight,
   Package,
+  PowerOff,
   Search,
   Wrench,
   X,
@@ -100,7 +103,13 @@ export default function SkillsPage() {
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"skills" | "toolsets">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(
+    new Set(),
+  );
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
+  const [bulkTogglingCategories, setBulkTogglingCategories] = useState<
+    Set<string>
+  >(new Set());
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -113,7 +122,7 @@ export default function SkillsPage() {
       })
       .catch(() => showToast(t.common.loading, "error"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [showToast, t.common.loading]);
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
@@ -135,6 +144,74 @@ export default function SkillsPage() {
       setTogglingSkills((prev) => {
         const next = new Set(prev);
         next.delete(skill.name);
+        return next;
+      });
+    }
+  };
+
+  const handleDisableSkillGroup = async (
+    groupKey: string,
+    groupName: string,
+    groupSkills: SkillInfo[],
+  ) => {
+    const enabledSkills = groupSkills.filter((skill) => skill.enabled);
+    if (enabledSkills.length === 0) return;
+
+    setBulkTogglingCategories((prev) => new Set(prev).add(groupKey));
+    setTogglingSkills((prev) => {
+      const next = new Set(prev);
+      for (const skill of enabledSkills) next.add(skill.name);
+      return next;
+    });
+
+    try {
+      const results = await Promise.allSettled(
+        enabledSkills.map(async (skill) => {
+          await api.toggleSkill(skill.name, false);
+          return skill.name;
+        }),
+      );
+      const disabledNames = new Set(
+        results
+          .filter((result): result is PromiseFulfilledResult<string> =>
+            result.status === "fulfilled",
+          )
+          .map((result) => result.value),
+      );
+      const failedCount = results.length - disabledNames.size;
+
+      if (disabledNames.size > 0) {
+        setSkills((prev) =>
+          prev.map((skill) =>
+            disabledNames.has(skill.name) ? { ...skill, enabled: false } : skill,
+          ),
+        );
+      }
+
+      if (failedCount > 0) {
+        showToast(
+          `Disabled ${disabledNames.size} skill${
+            disabledNames.size === 1 ? "" : "s"
+          } in ${groupName}; ${failedCount} failed`,
+          "error",
+        );
+      } else {
+        showToast(
+          `Disabled ${disabledNames.size} skill${
+            disabledNames.size === 1 ? "" : "s"
+          } in ${groupName}`,
+          "success",
+        );
+      }
+    } finally {
+      setBulkTogglingCategories((prev) => {
+        const next = new Set(prev);
+        next.delete(groupKey);
+        return next;
+      });
+      setTogglingSkills((prev) => {
+        const next = new Set(prev);
+        for (const skill of enabledSkills) next.delete(skill.name);
         return next;
       });
     }
@@ -185,6 +262,49 @@ export default function SkillsPage() {
         count,
       }));
   }, [skills, t]);
+
+  const skillGroups = useMemo(() => {
+    const groups = new Map<string, SkillInfo[]>();
+    for (const skill of activeSkills) {
+      const key = skill.category || "__none__";
+      const group = groups.get(key) ?? [];
+      group.push(skill);
+      groups.set(key, group);
+    }
+
+    return [...groups.entries()]
+      .sort((a, b) => {
+        if (a[0] === "__none__") return -1;
+        if (b[0] === "__none__") return 1;
+        return a[0].localeCompare(b[0]);
+      })
+      .map(([key, groupSkills]) => ({
+        key,
+        name: prettyCategory(key === "__none__" ? null : key, t.common.general),
+        skills: groupSkills.sort((a, b) => a.name.localeCompare(b.name)),
+      }));
+  }, [activeSkills, t]);
+
+  const visibleGroupKeys = useMemo(
+    () => skillGroups.map((group) => group.key),
+    [skillGroups],
+  );
+
+  const handleCollapseAllSkillGroups = () => {
+    setCollapsedCategories((prev) => {
+      const next = new Set(prev);
+      for (const key of visibleGroupKeys) next.add(key);
+      return next;
+    });
+  };
+
+  const handleExpandAllSkillGroups = () => {
+    setCollapsedCategories((prev) => {
+      const next = new Set(prev);
+      for (const key of visibleGroupKeys) next.delete(key);
+      return next;
+    });
+  };
 
   const enabledCount = skills.filter((s) => s.enabled).length;
 
@@ -384,11 +504,31 @@ export default function SkillsPage() {
                         )
                       : t.skills.all}
                   </CardTitle>
-                  <Badge tone="secondary" className="text-[10px]">
-                    {t.skills.skillCount
-                      .replace("{count}", String(activeSkills.length))
-                      .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
-                  </Badge>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    {!activeCategory && skillGroups.length > 1 && (
+                      <>
+                        <Button
+                          ghost
+                          size="sm"
+                          onClick={handleCollapseAllSkillGroups}
+                        >
+                          {t.common.collapse} {t.skills.all}
+                        </Button>
+                        <Button
+                          ghost
+                          size="sm"
+                          onClick={handleExpandAllSkillGroups}
+                        >
+                          {t.common.expand} {t.skills.all}
+                        </Button>
+                      </>
+                    )}
+                    <Badge tone="secondary" className="text-[10px]">
+                      {t.skills.skillCount
+                        .replace("{count}", String(activeSkills.length))
+                        .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
+                    </Badge>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="px-4 pb-4">
@@ -399,16 +539,36 @@ export default function SkillsPage() {
                       : t.skills.noSkillsMatch}
                   </p>
                 ) : (
-                  <div className="grid gap-1">
-                    {activeSkills.map((skill) => (
-                      <SkillRow
-                        key={skill.name}
-                        skill={skill}
-                        toggling={togglingSkills.has(skill.name)}
-                        onToggle={() => handleToggleSkill(skill)}
-                        noDescriptionLabel={t.skills.noDescription}
-                      />
-                    ))}
+                  <div className="grid gap-3">
+                    {skillGroups.map((group) => {
+                      const collapsed = collapsedCategories.has(group.key);
+                      return (
+                        <SkillGroupCard
+                          key={group.key}
+                          collapsed={collapsed}
+                          disabling={bulkTogglingCategories.has(group.key)}
+                          group={group}
+                          noDescriptionLabel={t.skills.noDescription}
+                          onDisable={() =>
+                            handleDisableSkillGroup(
+                              group.key,
+                              group.name,
+                              group.skills,
+                            )
+                          }
+                          onToggleCollapsed={() => {
+                            setCollapsedCategories((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(group.key)) next.delete(group.key);
+                              else next.add(group.key);
+                              return next;
+                            });
+                          }}
+                          onToggleSkill={handleToggleSkill}
+                          togglingSkills={togglingSkills}
+                        />
+                      );
+                    })}
                   </div>
                 )}
               </CardContent>
@@ -497,6 +657,64 @@ export default function SkillsPage() {
   );
 }
 
+function SkillGroupCard({
+  collapsed,
+  disabling,
+  group,
+  noDescriptionLabel,
+  onDisable,
+  onToggleCollapsed,
+  onToggleSkill,
+  togglingSkills,
+}: SkillGroupCardProps) {
+  const enabledCount = group.skills.filter((skill) => skill.enabled).length;
+  const totalCount = group.skills.length;
+  const Chevron = collapsed ? ChevronRight : ChevronDown;
+
+  return (
+    <div className="rounded-none border border-border bg-background/40">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          aria-expanded={!collapsed}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <Chevron className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary uppercase">
+            {group.name}
+          </span>
+          <Badge tone="secondary" className="text-xs tabular-nums">
+            {enabledCount}/{totalCount} enabled
+          </Badge>
+        </button>
+        <Button
+          ghost
+          size="sm"
+          disabled={disabling || enabledCount === 0}
+          onClick={onDisable}
+        >
+          <PowerOff className="h-3.5 w-3.5" />
+          Turn off
+        </Button>
+      </div>
+      {!collapsed && (
+        <div className="grid gap-1">
+          {group.skills.map((skill) => (
+            <SkillRow
+              key={skill.name}
+              skill={skill}
+              toggling={togglingSkills.has(skill.name)}
+              onToggle={() => onToggleSkill(skill)}
+              noDescriptionLabel={noDescriptionLabel}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SkillRow({
   skill,
   toggling,
@@ -559,4 +777,21 @@ interface SkillRowProps {
   onToggle: () => void;
   skill: SkillInfo;
   toggling: boolean;
+}
+
+interface SkillGroup {
+  key: string;
+  name: string;
+  skills: SkillInfo[];
+}
+
+interface SkillGroupCardProps {
+  collapsed: boolean;
+  disabling: boolean;
+  group: SkillGroup;
+  noDescriptionLabel: string;
+  onDisable: () => void;
+  onToggleCollapsed: () => void;
+  onToggleSkill: (skill: SkillInfo) => void;
+  togglingSkills: Set<string>;
 }

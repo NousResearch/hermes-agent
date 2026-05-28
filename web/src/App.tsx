@@ -515,7 +515,7 @@ export default function App() {
               "transition-[transform] duration-200 ease-out",
               mobileOpen ? "translate-x-0" : "-translate-x-full",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
-              "lg:transition-[width] lg:duration-[450ms] lg:ease-[cubic-bezier(0.33,1.35,0.62,1)]",
+              "lg:transition-[width] lg:duration-[600ms] lg:ease-[cubic-bezier(0.33,1.35,0.62,1)]",
               collapsed && "lg:w-14",
             )}
             style={{
@@ -526,11 +526,9 @@ export default function App() {
           >
             <div
               className={cn(
-                "flex h-14 shrink-0 items-center gap-2 px-4",
+                "flex h-14 shrink-0 items-center gap-2",
                 "border-b border-current/20",
-                collapsed
-                  ? "lg:justify-center lg:px-0"
-                  : "justify-between",
+                collapsed ? "lg:justify-center lg:px-0" : "px-4 justify-between",
               )}
             >
               <div
@@ -641,14 +639,14 @@ export default function App() {
                 "px-3 py-2",
                 "border-t border-current/20",
                 isDesktopCollapsed
-                  ? "lg:flex-col lg:justify-center lg:gap-3 lg:px-0 lg:py-3"
+                  ? "lg:flex-col lg:items-start lg:gap-3 lg:py-3"
                   : "justify-between",
               )}
             >
               <div
                 className={cn(
                   "flex min-w-0 items-center gap-2",
-                  isDesktopCollapsed && "lg:flex-col",
+                  isDesktopCollapsed && "lg:flex-col lg:items-start",
                 )}
               >
                 <PluginSlot name="header-right" />
@@ -792,7 +790,6 @@ function SidebarNavLink({
             isActive
               ? "text-midground"
               : "text-text-secondary hover:text-midground",
-            collapsed && "lg:justify-center lg:gap-0 lg:px-0",
           )
         }
         style={{
@@ -804,7 +801,10 @@ function SidebarNavLink({
             <Icon className="h-3.5 w-3.5 shrink-0" />
 
             <span
-              className={cn("truncate", collapsed && "lg:hidden")}
+              className={cn(
+                "truncate transition-opacity duration-300",
+                collapsed ? "lg:opacity-0" : "lg:opacity-100",
+              )}
             >
               {navLabel}
             </span>
@@ -889,7 +889,7 @@ function SidebarSystemActions({
         <SidebarStatusStrip status={status} />
       </div>
 
-      {collapsed && <GatewayDot status={status} tooltipWarmRef={tooltipWarmRef} />}
+      <GatewayDot collapsed={collapsed} status={status} tooltipWarmRef={tooltipWarmRef} />
 
       <ul className="flex flex-col">
         {items.map((item) => (
@@ -948,7 +948,6 @@ function SystemActionButton({
             ? "text-midground"
             : "text-text-secondary hover:text-midground",
           "disabled:text-text-disabled disabled:cursor-not-allowed",
-          collapsed && "lg:justify-center lg:gap-0 lg:px-0",
         )}
       >
         {isPending ? (
@@ -964,7 +963,10 @@ function SystemActionButton({
           />
         )}
 
-        <span className={cn("truncate", collapsed && "lg:hidden")}>
+        <span className={cn(
+          "truncate transition-opacity duration-300",
+          collapsed ? "lg:opacity-0" : "lg:opacity-100",
+        )}>
           {displayLabel}
         </span>
 
@@ -1024,7 +1026,7 @@ function SidebarIconWithTooltip({
   );
 }
 
-function GatewayDot({ status, tooltipWarmRef }: GatewayDotProps) {
+function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
   const { t } = useI18n();
   const ref = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState(false);
@@ -1051,14 +1053,17 @@ function GatewayDot({ status, tooltipWarmRef }: GatewayDotProps) {
   return (
     <div
       ref={ref}
-      className="hidden lg:flex justify-center py-3"
+      className={cn(
+        "hidden lg:flex py-3 pl-[1.625rem] transition-opacity duration-300",
+        collapsed ? "lg:opacity-100" : "lg:opacity-0 lg:h-0 lg:py-0 lg:overflow-hidden",
+      )}
       role="status"
       aria-label={label}
-      tabIndex={0}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onFocus={() => setHovered(true)}
-      onBlur={() => setHovered(false)}
+      tabIndex={collapsed ? 0 : -1}
+      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
+      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+      onFocus={collapsed ? () => setHovered(true) : undefined}
+      onBlur={collapsed ? () => setHovered(false) : undefined}
     >
       <span
         aria-hidden
@@ -1111,6 +1116,7 @@ function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
 type TooltipWarmRef = React.RefObject<number>;
 
 interface GatewayDotProps {
+  collapsed: boolean;
   status: StatusResponse | null;
   tooltipWarmRef: TooltipWarmRef;
 }

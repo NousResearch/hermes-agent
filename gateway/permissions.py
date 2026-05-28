@@ -39,6 +39,25 @@ def _bool_value(raw: Any, default: bool = False) -> bool:
     return bool(raw)
 
 
+def _extra_or_env_set(extra: Mapping[str, Any], key: str, env_name: str) -> frozenset[str]:
+    """Use explicit config values over env fallback, even when empty.
+
+    ``load_gateway_config`` bridges YAML values into ``os.environ`` for legacy
+    callers. During hot reload, those bridged env vars can be stale after an
+    operator removes an allowlist entry from YAML. Presence in ``extra`` means
+    the config loader saw an explicit current value, so do not union the env.
+    """
+    if key in extra:
+        return _string_set(extra.get(key))
+    return _string_set(os.getenv(env_name))
+
+
+def _extra_or_env_value(extra: Mapping[str, Any], key: str, env_name: str) -> Any:
+    if key in extra:
+        return extra.get(key)
+    return os.getenv(env_name)
+
+
 def _pattern_values(raw: Any) -> tuple[str, ...]:
     """Normalize mention pattern config, including JSON env values."""
     if raw is None:
@@ -254,29 +273,29 @@ class PermissionManager:
         extra: dict[str, Any],
         approved_users: frozenset[str],
     ) -> PlatformPermissionSnapshot:
+        group_allowed_users = _extra_or_env_set(
+            extra, "group_allow_from", "TELEGRAM_GROUP_ALLOWED_USERS"
+        )
         return PlatformPermissionSnapshot(
             platform=Platform.TELEGRAM,
             approved_users=approved_users,
             allowed_users=(
-                _string_set(extra.get("allow_from"))
-                | _string_set(os.getenv("TELEGRAM_ALLOWED_USERS"))
+                _extra_or_env_set(extra, "allow_from", "TELEGRAM_ALLOWED_USERS")
                 | _string_set(os.getenv("GATEWAY_ALLOWED_USERS"))
             ),
-            group_allowed_users=_string_set(extra.get("group_allow_from")) | _string_set(os.getenv("TELEGRAM_GROUP_ALLOWED_USERS")),
-            allowed_chats=_string_set(extra.get("allowed_chats")) | _string_set(os.getenv("TELEGRAM_ALLOWED_CHATS")),
+            group_allowed_users=group_allowed_users,
+            allowed_chats=_extra_or_env_set(extra, "allowed_chats", "TELEGRAM_ALLOWED_CHATS"),
             group_allowed_chats=(
-                _string_set(extra.get("group_allowed_chats"))
-                | _string_set(os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"))
-                | frozenset(
-                    value for value in _string_set(os.getenv("TELEGRAM_GROUP_ALLOWED_USERS")) if value.startswith("-")
-                )
+                _extra_or_env_set(extra, "group_allowed_chats", "TELEGRAM_GROUP_ALLOWED_CHATS")
+                | frozenset(value for value in group_allowed_users if value.startswith("-"))
             ),
-            allowed_topics=_string_set(extra.get("allowed_topics")) | _string_set(os.getenv("TELEGRAM_ALLOWED_TOPICS")),
-            free_response_chats=_string_set(extra.get("free_response_chats")) | _string_set(os.getenv("TELEGRAM_FREE_RESPONSE_CHATS")),
-            mention_patterns=extra.get("mention_patterns") or os.getenv("TELEGRAM_MENTION_PATTERNS"),
+            allowed_topics=_extra_or_env_set(extra, "allowed_topics", "TELEGRAM_ALLOWED_TOPICS"),
+            free_response_chats=_extra_or_env_set(
+                extra, "free_response_chats", "TELEGRAM_FREE_RESPONSE_CHATS"
+            ),
+            mention_patterns=_extra_or_env_value(extra, "mention_patterns", "TELEGRAM_MENTION_PATTERNS"),
             allow_all=(
-                _bool_value(extra.get("allow_all_users"), False)
-                or _bool_value(os.getenv("TELEGRAM_ALLOW_ALL_USERS"), False)
+                _bool_value(_extra_or_env_value(extra, "allow_all_users", "TELEGRAM_ALLOW_ALL_USERS"), False)
                 or _bool_value(os.getenv("GATEWAY_ALLOW_ALL_USERS"), False)
             ),
             allow_bots=_bool_value(extra.get("allow_bots"), False),

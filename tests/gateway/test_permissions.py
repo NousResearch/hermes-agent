@@ -144,6 +144,18 @@ def test_permission_manager_loads_telegram_allowed_chats_from_config():
     assert telegram.extra["require_mention"] is True
 
 
+def test_permission_manager_uses_explicit_empty_config_over_stale_env(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
+    manager = PermissionManager(
+        config_loader=lambda: _config({"allow_from": []}),
+        pairing_store=_PairingStore(),
+    )
+
+    assert manager.reload().ok is True
+    telegram = manager.snapshot.platforms[Platform.TELEGRAM]
+    assert "42" not in telegram.allowed_users
+
+
 def test_permission_manager_rejects_invalid_mention_regex_and_keeps_old_snapshot():
     good = _config({"mention_patterns": ["rei"]})
     bad = _config({"mention_patterns": ["["]})

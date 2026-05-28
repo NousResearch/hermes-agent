@@ -913,49 +913,94 @@ class DockerEnvironment(BaseEnvironment):
                 running = (cid, state)
         return running or first
 
-    def cleanup(self):
-        """Stop (and optionally remove) the container.
+    def cleanup(self, *, force_remove: bool = False):
+        """Tear down the container according to persist mode and *force_remove*.
 
-        Behavior depends on ``persist_across_processes`` (init kwarg):
+        Persist-mode (``persist_across_processes=True``, the default) leaves the
+        container **running** untouched. The docs promise "ONE long-lived
+        container shared across sessions" and stopping it on every Hermes exit
+        breaks that promise:
 
-        * **True** (default) — only ``docker stop`` so the container is
-          available for reuse by the next Hermes process. The orphan-reaper
-          eventually removes it if no subsequent process picks it up.
-        * **False** — ``docker stop`` followed by ``docker rm -f``, regardless
-          of ``persistent_filesystem``. The previous ``rm`` path was gated on
-          ``not self._persistent`` which meant ``container_persistent: true``
-          users (the default) leaked Exited containers forever (issue #20561).
+        * Background processes inside the container (``npm run dev``, watchers,
+          long-running pytest) get killed every time the user runs ``/quit``.
+        * Every reuse requires ``docker start`` + waiting for the container to
+          come back up, adding 1–2s to the first tool call of the new session.
+        * The user-visible difference between "ONE long-lived container" and
+          "a new container that happens to share state" is exactly this:
+          processes survive in the former, die in the latter.
 
-        Cleanup runs on a daemon thread with bounded ``subprocess.run`` calls,
-        not the previous fire-and-forget ``Popen(... &)`` shell construct.
-        That pattern raced with parent-process exit and silently dropped
-        cleanup work when the parent didn't outlive the detached shell — the
-        primary mechanism behind Exited-container accumulation under SIGTERM
-        / ``hermes /quit`` / dead terminals.
+        Resource reclamation for the persist-mode case lives in the
+        ``reap_orphan_containers()`` path (see issue #20561 commit 3): if no
+        Hermes process touches a labeled container for ``2 × lifetime_seconds``
+        it gets ``docker rm -f``'d at the next Hermes startup. That covers the
+        SIGKILL / OOM / abandoned-laptop cases without us needing to stop the
+        container on every graceful exit.
+
+        Opt-out mode (``persist_across_processes=False``) still does
+        ``docker stop`` + ``docker rm -f`` on every cleanup, matching the
+        pre-PR behavior for users who explicitly want per-process isolation.
+
+        ``force_remove=True`` overrides persist mode and always tears the
+        container down (``docker stop`` + ``docker rm -f``). This is the
+        explicit-teardown path for ``/reset``, ``cleanup_vm(task_id)``-driven
+        resets, or any caller that wants a guaranteed fresh container on next
+        ``DockerEnvironment(task_id=...)``. No current caller passes
+        ``force_remove=True``; the parameter is here so the explicit-teardown
+        semantics can be wired up later without changing this method's
+        signature.
+
+        Cleanup runs on a daemon thread with bounded ``subprocess.run`` calls
+        (not the racy ``Popen(... &)`` pattern from before PR #33645). The
+        atexit hook in ``tools/terminal_tool.py`` waits up to 15s for the
+        thread to finish before the interpreter exits, so ``docker stop`` /
+        ``docker rm`` actually completes when we do trigger it.
         """
         container_id = self._container_id
         if not container_id:
-            # Still drop the bind-mount dirs if any were allocated.
+            # Still drop the bind-mount dirs if any were allocated and we're
+            # NOT in persist mode (persist mode preserves them).
             if not self._persistent:
                 for d in (self._workspace_dir, self._home_dir):
                     if d:
                         shutil.rmtree(d, ignore_errors=True)
             return
 
+        # Decide what to actually do. Three cases:
+        #
+        #   force_remove=True             → stop + rm (explicit teardown)
+        #   persist_across_processes=True → no-op (leave container running)
+        #   persist_across_processes=False → stop + rm (per-process isolation)
+        #
+        # The persist-mode no-op is the issue-#20561 contract: the container
+        # outlives Hermes processes, processes inside it stay alive, and
+        # reuse on next startup is instant.
+        if force_remove:
+            should_stop = True
+            should_remove = True
+        elif self._persist_across_processes:
+            # No-op for the container. Drop the in-process handle so a fresh
+            # __init__ will re-probe via labels (and find the running
+            # container) instead of trying to reuse a stale Python reference.
+            self._container_id = None
+            return
+        else:
+            should_stop = True
+            should_remove = True
+
         # Capture state needed by the worker before we null out the attrs —
         # the worker thread can outlive ``self``.
         docker_exe = self._docker_exe
-        should_remove = not self._persist_across_processes
         log_id = container_id[:12]
 
         def _do_cleanup() -> None:
-            try:
-                subprocess.run(
-                    [docker_exe, "stop", "-t", "10", container_id],
-                    capture_output=True, timeout=30,
-                )
-            except (subprocess.TimeoutExpired, OSError) as e:
-                logger.warning("docker stop %s timed out / failed: %s", log_id, e)
+            if should_stop:
+                try:
+                    subprocess.run(
+                        [docker_exe, "stop", "-t", "10", container_id],
+                        capture_output=True, timeout=30,
+                    )
+                except (subprocess.TimeoutExpired, OSError) as e:
+                    logger.warning("docker stop %s timed out / failed: %s", log_id, e)
             if should_remove:
                 try:
                     subprocess.run(
@@ -977,7 +1022,10 @@ class DockerEnvironment(BaseEnvironment):
         self._cleanup_thread = t
         self._container_id = None
 
-        if not self._persistent:
+        # Bind-mount dir teardown only runs when we actually removed the
+        # container (the dirs are the container's filesystem state; keeping
+        # them around with no container would orphan the data on disk).
+        if should_remove and not self._persistent:
             for d in (self._workspace_dir, self._home_dir):
                 if d:
                     shutil.rmtree(d, ignore_errors=True)

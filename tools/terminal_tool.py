@@ -1426,8 +1426,21 @@ def cleanup_all_environments():
     return cleaned
 
 
-def cleanup_vm(task_id: str):
-    """Manually clean up a specific environment by task_id."""
+def cleanup_vm(task_id: str, *, force_remove: bool = True):
+    """Manually clean up a specific environment by task_id.
+
+    *force_remove* (default True) is forwarded to backends that accept it
+    — currently only ``DockerEnvironment``. The default of True matches the
+    semantics callers expect from this function: ``cleanup_vm(task_id)`` is
+    the explicit-teardown path (called from ``/reset``-style flows,
+    ``AIAgent.close()``, and the idle reaper after a long inactivity window),
+    so the container should be removed regardless of persist mode.
+
+    The idle reaper passes the env through ``env.cleanup()`` directly (not
+    via this function), so persist-mode idle envs are NOT removed by idle
+    reaping — only by explicit ``cleanup_vm()`` or the orphan reaper at next
+    startup. See ``_cleanup_inactive_envs()`` for the idle path.
+    """
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
     # so other tool calls aren't blocked.
@@ -1452,7 +1465,14 @@ def cleanup_vm(task_id: str):
 
     try:
         if hasattr(env, 'cleanup'):
-            env.cleanup()
+            # Pass force_remove only if the env's cleanup() accepts it
+            # (DockerEnvironment after issue #20561; other backends don't).
+            import inspect
+            sig = inspect.signature(env.cleanup)
+            if "force_remove" in sig.parameters:
+                env.cleanup(force_remove=force_remove)
+            else:
+                env.cleanup()
         elif hasattr(env, 'stop'):
             env.stop()
         elif hasattr(env, 'terminate'):

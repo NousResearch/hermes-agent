@@ -148,6 +148,7 @@ def _task_dict(
     task: kanban_db.Task,
     *,
     latest_summary: Optional[str] = None,
+    gate_state: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
@@ -161,6 +162,7 @@ def _task_dict(
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
     # ``tasks.result``. ``None`` when no run has produced a summary yet.
     d["latest_summary"] = latest_summary
+    d["gate_state"] = gate_state
     # Keep body short on list endpoints; full body comes from /tasks/:id.
     return d
 
@@ -431,14 +433,40 @@ def get_board(
         # window-function query (avoids N+1 ``latest_summary`` calls
         # for boards with hundreds of tasks). Truncated to a card-size
         # preview here — the full text is available via /tasks/:id.
-        summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        task_ids = [t.id for t in tasks]
+        summary_map = kanban_db.latest_summaries(conn, task_ids)
+        events_by_task: dict[str, list[kanban_db.Event]] = {tid: [] for tid in task_ids}
+        if task_ids:
+            placeholders = ",".join(["?"] * len(task_ids))
+            for row in conn.execute(
+                f"SELECT * FROM task_events WHERE task_id IN ({placeholders}) ORDER BY created_at ASC, id ASC",
+                tuple(task_ids),
+            ).fetchall():
+                try:
+                    payload = json.loads(row["payload"]) if row["payload"] else None
+                except Exception:
+                    payload = None
+                events_by_task.setdefault(row["task_id"], []).append(
+                    kanban_db.Event(
+                        id=row["id"],
+                        task_id=row["task_id"],
+                        kind=row["kind"],
+                        payload=payload,
+                        created_at=row["created_at"],
+                        run_id=(int(row["run_id"]) if "run_id" in row.keys() and row["run_id"] is not None else None),
+                    )
+                )
 
         for t in tasks:
             full = summary_map.get(t.id)
             preview = (
                 full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
             )
-            d = _task_dict(t, latest_summary=preview)
+            d = _task_dict(
+                t,
+                latest_summary=preview,
+                gate_state=kanban_db.summarize_gate_state(events_by_task.get(t.id, [])),
+            )
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -519,7 +547,11 @@ def get_task(
         # operators can read the complete worker handoff without making
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
-        task_d = _task_dict(task, latest_summary=full_summary)
+        task_d = _task_dict(
+            task,
+            latest_summary=full_summary,
+            gate_state=kanban_db.latest_gate_state(conn, task_id),
+        )
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])

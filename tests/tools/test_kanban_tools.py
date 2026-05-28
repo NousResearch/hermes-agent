@@ -57,6 +57,9 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     expected = {
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_plan_propose", "kanban_plan_approve", "kanban_plan_changes",
+        "kanban_request_verification", "kanban_mark_verified",
+        "kanban_rework_required", "kanban_effective_check",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -138,6 +141,9 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
+        "kanban_plan_propose", "kanban_plan_approve", "kanban_plan_changes",
+        "kanban_request_verification", "kanban_mark_verified",
+        "kanban_rework_required", "kanban_effective_check",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -288,6 +294,117 @@ def test_list_rejects_bad_include_archived(monkeypatch, worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_list({"include_archived": "sometimes"})
     assert "include_archived must be" in json.loads(out).get("error", "")
+
+
+
+
+def test_soft_gate_worker_tools_append_executor_events_and_comments(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    assert json.loads(kt._handle_plan_propose({"note": "two-step plan", "actor": "spoof"}))["ok"] is True
+    assert json.loads(kt._handle_request_verification({"note": "artifact ready", "actor": "spoof"}))["ok"] is True
+
+    # Executor workers cannot approve/verify themselves or spoof actors.
+    assert "not authorized" in json.loads(kt._handle_plan_approve({"note": "approve item 1"}))["error"]
+    assert "not authorized" in json.loads(kt._handle_mark_verified({"note": "runtime checked"}))["error"]
+    assert "not authorized" in json.loads(kt._handle_rework_required({"note": "restart missing", "proof_required": "status OK"}))["error"]
+    assert "not authorized" in json.loads(kt._handle_effective_check({
+        "passed": False,
+        "checks": ["runtime_loaded"],
+        "note": "runtime stale",
+        "proof_required": "reload and show status",
+    }))["error"]
+
+    conn = kb.connect()
+    try:
+        events = kb.list_events(conn, worker_env)
+        comments = kb.list_comments(conn, worker_env)
+    finally:
+        conn.close()
+
+    assert [e.kind for e in events[-2:]] == [
+        "plan_proposed",
+        "verification_requested",
+    ]
+    payloads = [e.payload for e in events[-2:]]
+    assert payloads[0]["proposed_by"] == "test-worker"
+    assert payloads[1]["requested_by"] == "test-worker"
+    bodies = "\n".join(c.body for c in comments)
+    assert "PLAN_PROPOSED: two-step plan" in bodies
+    assert "VERIFICATION_REQUESTED: artifact ready" in bodies
+
+
+def test_soft_gate_tools_can_target_original_task_from_verifier_task(worker_env):
+    """Verifier workers need to mark/reject the original task, not their own card."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        original = kb.create_task(conn, title="original implementation", assignee="executor")
+        kb._append_event(
+            conn,
+            original,
+            "verifier_task_created",
+            {"verifier_task_id": worker_env, "assignee": "test-worker"},
+        )
+    finally:
+        conn.close()
+
+    out = json.loads(kt._handle_mark_verified({"task_id": original, "note": "checked externally", "actor": "spoof"}))
+    assert out["ok"] is True
+    assert out["task_id"] == original
+    assert json.loads(kt._handle_effective_check({
+        "task_id": original,
+        "passed": True,
+        "checks": ["artifact_exists"],
+        "note": "artifact checked",
+        "actor": "spoof",
+    }))["ok"] is True
+
+    conn = kb.connect()
+    try:
+        events = kb.list_events(conn, original)
+        own_events = kb.list_events(conn, worker_env)
+    finally:
+        conn.close()
+
+    assert events[-2].kind == "verified"
+    assert events[-2].payload["verified_by"] == "test-worker"
+    assert events[-1].kind == "effective_state_passed"
+    assert events[-1].payload["checked_by"] == "test-worker"
+    assert all(ev.kind not in {"verified", "effective_state_passed"} for ev in own_events)
+
+
+def test_worker_cannot_verify_unlinked_foreign_task(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        original = kb.create_task(conn, title="unlinked original", assignee="executor")
+    finally:
+        conn.close()
+
+    out = json.loads(kt._handle_mark_verified({"task_id": original, "note": "checked", "actor": "spoof"}))
+    assert "not authorized" in out["error"]
+
+    conn = kb.connect()
+    try:
+        events = [e.kind for e in kb.list_events(conn, original)]
+    finally:
+        conn.close()
+    assert "verified" not in events
+
+
+def test_soft_gate_tools_validate_required_notes(worker_env):
+    from tools import kanban_tools as kt
+
+    assert "note is required" in json.loads(kt._handle_plan_propose({}))["error"]
+    assert "passed must be a boolean" in json.loads(kt._handle_effective_check({"note": "x"}))["error"]
+    assert "proof_required" in kt.KANBAN_REWORK_REQUIRED_SCHEMA["parameters"]["properties"]
+    assert "checks" in kt.KANBAN_EFFECTIVE_CHECK_SCHEMA["parameters"]["properties"]
 
 
 def test_complete_happy_path(worker_env):

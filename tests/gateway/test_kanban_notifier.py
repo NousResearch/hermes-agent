@@ -232,4 +232,61 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"Second crashed event should also notify; got {len(adapter.sent)} "
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
-    assert "crashed" in adapter.sent[1]["text"].lower()
+    assert "crashed" in adapter.sent[1]["text"].lower() or "краш" in adapter.sent[1]["text"].lower()
+
+
+
+def test_kanban_notifier_delivers_soft_gate_events(tmp_path, monkeypatch):
+    """Soft workflow-gate events are routed to subscribed operator chats."""
+    db_path = tmp_path / "soft-gates.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="soft gate routing", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.propose_plan(conn, tid, note="implement in two steps", proposed_by="worker")
+        kb.approve_plan(conn, tid, note="go with step 1", approved_by="initiator")
+        kb.request_plan_changes(conn, tid, note="narrow scope", requested_by="initiator")
+        kb.request_verification(conn, tid, note="artifact ready", requested_by="worker")
+        kb.mark_verified(conn, tid, note="runtime checked", verified_by="verifier")
+        kb.require_rework(conn, tid, note="restart missing", requested_by="verifier", proof_required="show status OK")
+        kb.record_effective_state_check(
+            conn,
+            tid,
+            passed=False,
+            checks=["runtime_loaded"],
+            note="gateway still stale",
+            checked_by="verifier",
+            proof_required="reload and show status",
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    texts = [item["text"] for item in adapter.sent]
+    assert len(texts) == 7
+    joined = "\n---\n".join(texts)
+    for event_code in [
+        "plan_proposed",
+        "plan_approved",
+        "plan_changes_requested",
+        "verification_requested",
+        "verified",
+        "rework_required",
+        "effective_state_failed",
+    ]:
+        assert event_code in joined
+    assert "implement in two steps" in joined
+    assert "runtime checked" in joined
+    assert "show status OK" in joined
+    assert "gateway still stale" in joined
+    assert "runtime_loaded" in joined
+    assert "KANBAN: ПЛАН" in joined
+    assert "KANBAN: ПРОВЕРКА" in joined
+    assert "KANBAN: ДОРАБОТКА" in joined
+    assert "KANBAN: EFFECTIVE STATE" in joined

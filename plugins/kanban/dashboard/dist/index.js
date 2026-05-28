@@ -2423,6 +2423,47 @@
     return "";
   }
 
+  function gateStateSummary(gate) {
+    if (!gate) return null;
+    if (gate.effective_state) {
+      const eff = gate.effective_state;
+      const checks = eff.checks && eff.checks.length ? ` [${eff.checks.join(", ")}]` : "";
+      return { label: `effective-state: ${eff.status}${checks}`, title: eff.note || eff.kind || "effective-state" };
+    }
+    if (gate.verification) {
+      const v = gate.verification;
+      return { label: `verification: ${v.status}`, title: v.note || v.kind || "verification" };
+    }
+    if (gate.plan) {
+      const p = gate.plan;
+      return { label: `plan: ${p.status}`, title: p.note || p.kind || "plan" };
+    }
+    return null;
+  }
+
+  function GateStateSection(props) {
+    const gate = props.gate || {};
+    const rows = [];
+    if (gate.plan) rows.push(["Plan", gate.plan.status, gate.plan.actor, gate.plan.note]);
+    if (gate.verification) rows.push(["Verification", gate.verification.status, gate.verification.actor, gate.verification.note]);
+    if (gate.effective_state) {
+      const eff = gate.effective_state;
+      rows.push(["Effective state", eff.status, eff.actor, (eff.checks || []).join(", ") + (eff.note ? ` — ${eff.note}` : "")]);
+    }
+    if (rows.length === 0) return null;
+    return h("div", { className: "hermes-kanban-section hermes-kanban-gate-state" },
+      h("div", { className: "hermes-kanban-section-head" }, "Gate state"),
+      rows.map(function (row) {
+        return h("div", { key: row[0], className: "hermes-kanban-gate-row" },
+          h("span", { className: "hermes-kanban-gate-label" }, row[0]),
+          h("span", { className: "hermes-kanban-gate-status" }, row[1] || "-"),
+          row[2] ? h("span", { className: "hermes-kanban-gate-actor" }, `@${row[2]}`) : null,
+          row[3] ? h("span", { className: "hermes-kanban-gate-note" }, row[3]) : null,
+        );
+      }),
+    );
+  }
+
   function TaskCard(props) {
     const { t: i18n } = useI18n();
     const t = props.task;
@@ -2476,6 +2517,7 @@
     };
 
     const progress = t.progress;
+    const gateSummary = gateStateSummary(t.gate_state);
     const needsAssignee = t.status === "ready" && !t.assignee;
 
     return h("div", {
@@ -2545,6 +2587,9 @@
                   ),
                   title: `${progress.done} of ${progress.total} child tasks done`,
                 }, `${progress.done}/${progress.total}`)
+              : null,
+            gateSummary
+              ? h("span", { className: "hermes-kanban-gate-chip", title: gateSummary.title }, gateSummary.label)
               : null,
             needsAssignee
               ? h(Badge, {
@@ -3013,6 +3058,7 @@
         onSpecify: props.onSpecify,
         onDecompose: props.onDecompose,
       }),
+      h(GateStateSection, { gate: t.gate_state }),
       h(DiagnosticsSection, {
         task: t,
         boardSlug: props.boardSlug,

@@ -4883,7 +4883,16 @@ class GatewayRunner:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
 
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        # Notify on start + terminal/intervention states. Keep this compact:
+        # `claimed` is the first reliable "worker started" event; we skip
+        # `spawned` to avoid duplicate running pings for the same attempt.
+        TERMINAL_KINDS = (
+            "claimed", "heartbeat", "completed", "blocked",
+            "gave_up", "crashed", "timed_out",
+            "plan_proposed", "plan_approved", "plan_changes_requested",
+            "verification_requested", "verified", "rework_required",
+            "effective_state_passed", "effective_state_failed",
+        )
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -4955,6 +4964,16 @@ class GatewayRunner:
                             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
                             continue
                         try:
+                            integrity_ok, integrity_detail = _kb.check_db_integrity(conn)
+                            if not integrity_ok:
+                                logger.error(
+                                    "kanban notifier: board %s database %s failed "
+                                    "integrity_check (%s); skipping notification tick",
+                                    slug,
+                                    resolved_db_path,
+                                    integrity_detail,
+                                )
+                                continue
                             # `connect()` runs the schema + idempotent migration
                             # on first open per process, so an explicit
                             # `init_db()` here would be redundant. Worse:
@@ -5049,7 +5068,29 @@ class GatewayRunner:
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
-                        if kind == "completed":
+                        if kind == "claimed":
+                            run_id = ""
+                            if ev.payload and ev.payload.get("run_id"):
+                                run_id = f" / run #{ev.payload.get('run_id')}"
+                            msg = (
+                                "▶ **KANBAN: СТАРТ**\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`{run_id}\n"
+                                "Статус: **В РАБОТЕ**\n"
+                                f"Название: {title}"
+                            )
+                        elif kind == "heartbeat":
+                            note = "обновление прогресса"
+                            if ev.payload and ev.payload.get("note"):
+                                note = str(ev.payload["note"]).strip()[:220]
+                            msg = (
+                                "💓 **KANBAN: ПРОГРЕСС**\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`\n"
+                                "Статус: **В РАБОТЕ**\n"
+                                f"Сейчас: {note}"
+                            )
+                        elif kind == "completed":
                             # Prefer the run's summary (the worker's
                             # intentional human-facing handoff, carried
                             # in the event payload), then fall back to
@@ -5072,28 +5113,120 @@ class GatewayRunner:
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                                reason = str(ev.payload["reason"]).strip()[:260]
+                            msg = (
+                                "⏸ **KANBAN: ОСТАНОВЛЕНО**\n"
+                                "Event: blocked\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`\n"
+                                "Статус: **ЗАБЛОКИРОВАНО — НЕ ГОТОВО**\n"
+                                f"Название: {title}\n"
+                                f"Причина: {reason}\n"
+                                "Дальше: initiator/Vitaliy проверяет, затем разблокировка или новая задача на доработку."
+                            )
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
+                                "✖ **KANBAN: СБОЙ**\n"
+                                "Event: gave up\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`\n"
+                                "Статус: **СБОЙ — НЕ ГОТОВО**\n"
+                                f"Название: {title}\n"
+                                f"Ошибка: {err}"
                             )
                         elif kind == "crashed":
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
+                                "✖ **KANBAN: КРАШ**\n"
+                                "Event: crashed\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`\n"
+                                "Статус: **КРАШ — ОЖИДАЕТСЯ ПОВТОР**\n"
+                                f"Название: {title}\n"
+                                "Причина: процесс worker исчез."
                             )
                         elif kind == "timed_out":
                             limit = 0
                             if ev.payload and ev.payload.get("limit_seconds"):
                                 limit = int(ev.payload["limit_seconds"])
                             msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
+                                "⏱ **KANBAN: ТАЙМАУТ**\n"
+                                "Event: timed out\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`\n"
+                                "Статус: **ТАЙМАУТ — ОЖИДАЕТСЯ ПОВТОР**\n"
+                                f"Название: {title}\n"
+                                f"Лимит: {limit}s"
+                            )
+                        elif kind in {
+                            "plan_proposed", "plan_approved", "plan_changes_requested",
+                            "verification_requested", "verified", "rework_required",
+                            "effective_state_passed", "effective_state_failed",
+                        }:
+                            payload = ev.payload or {}
+                            note = str(payload.get("note") or "").strip()[:260]
+                            if not note:
+                                note = "подробности в комментариях Kanban"
+                            actor = (
+                                payload.get("proposed_by")
+                                or payload.get("approved_by")
+                                or payload.get("requested_by")
+                                or payload.get("verified_by")
+                                or payload.get("checked_by")
+                                or tag.strip()
+                                or "не указан"
+                            )
+                            proof = str(payload.get("proof_required") or "").strip()[:220]
+                            checks = payload.get("checks") or []
+                            if isinstance(checks, (list, tuple)):
+                                checks_text = ", ".join(str(c) for c in checks if str(c).strip())[:220]
+                            else:
+                                checks_text = str(checks).strip()[:220]
+                            if kind == "plan_proposed":
+                                header = "📝 **KANBAN: ПЛАН**"
+                                status = "ПЛАН НА СОГЛАСОВАНИИ"
+                                role_line = f"Executor: {actor}"
+                            elif kind == "plan_approved":
+                                header = "✅ **KANBAN: ПЛАН ОДОБРЕН**"
+                                status = "МОЖНО ИСПОЛНЯТЬ"
+                                role_line = f"Initiator: {actor}"
+                            elif kind == "plan_changes_requested":
+                                header = "↩ **KANBAN: ПЛАН НА ПРАВКУ**"
+                                status = "НУЖНЫ ИЗМЕНЕНИЯ ПЛАНА"
+                                role_line = f"Initiator: {actor}"
+                            elif kind == "verification_requested":
+                                header = "🔎 **KANBAN: ПРОВЕРКА**"
+                                status = "НУЖНА ВЕРИФИКАЦИЯ"
+                                role_line = f"Executor: {actor}"
+                            elif kind == "verified":
+                                header = "✅ **KANBAN: ПРОВЕРЕНО**"
+                                status = "ВЕРИФИЦИРОВАНО"
+                                role_line = f"Verifier: {actor}"
+                            elif kind == "effective_state_passed":
+                                header = "🧪 **KANBAN: EFFECTIVE STATE OK**"
+                                status = "EFFECTIVE STATE ПРОЙДЕН"
+                                role_line = f"Verifier: {actor}"
+                            elif kind == "effective_state_failed":
+                                header = "🧪 **KANBAN: EFFECTIVE STATE FAIL**"
+                                status = "EFFECTIVE STATE НЕ ПРОЙДЕН"
+                                role_line = f"Verifier: {actor}"
+                            else:
+                                header = "🛠 **KANBAN: ДОРАБОТКА**"
+                                status = "НУЖНА ДОРАБОТКА"
+                                role_line = f"Verifier: {actor}"
+                            proof_line = f"\nProof required: {proof}" if proof else ""
+                            checks_line = f"\nChecks: {checks_text}" if checks_text else ""
+                            msg = (
+                                f"{header}\n"
+                                f"Event: {kind}\n"
+                                f"{role_line}\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`\n"
+                                f"Статус: **{status}**\n"
+                                f"Название: {title}\n"
+                                f"Заметка: {note}{checks_line}{proof_line}"
                             )
                         else:
                             continue
@@ -5517,6 +5650,17 @@ class GatewayRunner:
                         max_in_progress_per_profile,
                     )
 
+        dispatcher_owner = self._active_profile_name()
+        dispatcher_lock = _kb.acquire_dispatcher_lock(dispatcher_owner)
+        if not dispatcher_lock.acquired:
+            logger.warning(
+                "kanban dispatcher: another gateway owns the dispatcher lock %s; "
+                "current profile %s entering passive mode",
+                dispatcher_lock.path,
+                dispatcher_owner,
+            )
+            return
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -5595,12 +5739,36 @@ class GatewayRunner:
                 disabled_corrupt_boards.pop(slug, None)
             try:
                 conn = _kb.connect(board=slug)
+                integrity_ok, integrity_detail = _kb.check_db_integrity(conn)
+                if not integrity_ok:
+                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
+                    logger.error(
+                        "kanban dispatcher: board %s database %s failed "
+                        "integrity_check (%s); disabling dispatch for this board "
+                        "until the file changes or the gateway restarts.",
+                        slug,
+                        fingerprint[0],
+                        integrity_detail,
+                    )
+                    return None
                 # `connect()` runs the schema + idempotent migration on
                 # first open per process; the previous explicit
                 # `init_db()` call here busted the per-process cache and
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
+                try:
+                    created_verifiers = _kb.ensure_verifier_tasks_for_requests(conn)
+                    if created_verifiers:
+                        logger.info(
+                            "kanban dispatcher [%s]: ensured %d verifier task(s)",
+                            slug, len(created_verifiers),
+                        )
+                except Exception:
+                    logger.exception(
+                        "kanban dispatcher: verifier-task router failed on board %s",
+                        slug,
+                    )
                 return _kb.dispatch_once(
                     conn,
                     board=slug,
@@ -5796,70 +5964,74 @@ class GatewayRunner:
         logger.info(
             "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
         )
-        while self._running:
-            try:
-                # Reap zombie children before per-board work so a board DB
-                # failure cannot block cleanup of unrelated workers.
-                pids = await asyncio.to_thread(_kb.reap_worker_zombies)
-                if pids:
-                    logger.info(
-                        "kanban dispatcher: reaped %d zombie worker(s), pids=%s",
-                        len(pids),
-                        pids,
-                    )
-            except Exception:
-                logger.exception("kanban dispatcher: zombie reaper failed")
-
-            try:
-                if auto_decompose_enabled:
-                    await asyncio.to_thread(_auto_decompose_tick)
-                results = await asyncio.to_thread(_tick_once)
-                any_spawned = False
-                for slug, res in (results or []):
-                    if res is not None and getattr(res, "spawned", None):
-                        any_spawned = True
-                        # Quiet by default — only log when something actually
-                        # happened, so an idle gateway stays silent.
+        try:
+            while self._running:
+                try:
+                    # Reap zombie children before per-board work so a board DB
+                    # failure cannot block cleanup of unrelated workers.
+                    pids = await asyncio.to_thread(_kb.reap_worker_zombies)
+                    if pids:
                         logger.info(
-                            "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
-                            slug,
-                            len(res.spawned),
-                            res.reclaimed,
-                            len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
-                            len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
-                            res.promoted,
-                            len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            "kanban dispatcher: reaped %d zombie worker(s), pids=%s",
+                            len(pids),
+                            pids,
                         )
-                # Health telemetry (aggregate across boards)
-                ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
-                    bad_ticks += 1
-                else:
-                    bad_ticks = 0
-                if bad_ticks >= HEALTH_WINDOW:
-                    now = int(time.time())
-                    if now - last_warn_at >= 300:
-                        logger.warning(
-                            "kanban dispatcher stuck: ready queue non-empty for "
-                            "%d consecutive ticks but 0 workers spawned. Check "
-                            "profile health (venv, PATH, credentials) and "
-                            "`hermes kanban list --status ready`.",
-                            bad_ticks,
-                        )
-                        last_warn_at = now
-            except asyncio.CancelledError:
-                logger.debug("kanban dispatcher: cancelled")
-                raise
-            except Exception:
-                logger.exception("kanban dispatcher: unexpected watcher error")
+                except Exception:
+                    logger.exception("kanban dispatcher: zombie reaper failed")
 
-            # Sleep in 1s slices so shutdown is snappy — otherwise a stop()
-            # waits up to `interval` seconds for the current sleep to finish.
-            slept = 0.0
-            while slept < interval and self._running:
-                await asyncio.sleep(min(1.0, interval - slept))
-                slept += 1.0
+                try:
+                    if auto_decompose_enabled:
+                        await asyncio.to_thread(_auto_decompose_tick)
+                    results = await asyncio.to_thread(_tick_once)
+                    any_spawned = False
+                    for slug, res in (results or []):
+                        if res is not None and getattr(res, "spawned", None):
+                            any_spawned = True
+                            # Quiet by default — only log when something actually
+                            # happened, so an idle gateway stays silent.
+                            logger.info(
+                                "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
+                                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                                slug,
+                                len(res.spawned),
+                                res.reclaimed,
+                                len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
+                                len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
+                                res.promoted,
+                                len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            )
+                    # Health telemetry (aggregate across boards)
+                    ready_pending = await asyncio.to_thread(_ready_nonempty)
+                    if ready_pending and not any_spawned:
+                        bad_ticks += 1
+                    else:
+                        bad_ticks = 0
+                    if bad_ticks >= HEALTH_WINDOW:
+                        now = int(time.time())
+                        if now - last_warn_at >= 300:
+                            logger.warning(
+                                "kanban dispatcher stuck: ready queue non-empty for "
+                                "%d consecutive ticks but 0 workers spawned. Check "
+                                "profile health (venv, PATH, credentials) and "
+                                "`hermes kanban list --status ready`.",
+                                bad_ticks,
+                            )
+                            last_warn_at = now
+                except asyncio.CancelledError:
+                    logger.debug("kanban dispatcher: cancelled")
+                    raise
+                except Exception:
+                    logger.exception("kanban dispatcher: unexpected watcher error")
+
+                # Sleep in 1s slices so shutdown is snappy — otherwise a stop()
+                # waits up to `interval` seconds for the current sleep to finish.
+                slept = 0.0
+                while slept < interval and self._running:
+                    await asyncio.sleep(min(1.0, interval - slept))
+                    slept += 1.0
+        finally:
+            dispatcher_lock.close()
+
 
     async def _platform_reconnect_watcher(self) -> None:
         """Background task that periodically retries connecting failed platforms.
@@ -9313,10 +9485,48 @@ class GatewayRunner:
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
             # compression decisions.
+            _last_prompt_tokens = int(agent_result.get("last_prompt_tokens", 0) or 0)
             self.session_store.update_session(
                 session_entry.session_key,
-                last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+                last_prompt_tokens=_last_prompt_tokens,
             )
+
+            # Optional active-context warning before auto-compression. This is
+            # deliberately separate from compression.threshold: it gives the
+            # user a visible chance to run /compress or ask the agent to save
+            # notes before the higher auto-compact threshold is reached.
+            try:
+                _compression_cfg = (_load_gateway_config().get("compression") or {})
+                _warn_tokens = int(_compression_cfg.get("warning_tokens") or 0)
+                _already_warned_at = int(getattr(session_entry, "context_warning_tokens_sent", 0) or 0)
+                if _warn_tokens > 0 and _last_prompt_tokens >= _warn_tokens and _already_warned_at < _warn_tokens:
+                    _warn_adapter = self.adapters.get(source.platform)
+                    if _warn_adapter:
+                        _threshold_tokens = int(_compression_cfg.get("threshold_tokens") or 0)
+                        if not _threshold_tokens:
+                            _threshold_pct = float(_compression_cfg.get("threshold") or 0.0)
+                            _ctx_len = int(agent_result.get("context_length", 0) or 0)
+                            if _ctx_len and _threshold_pct:
+                                _threshold_tokens = int(_ctx_len * _threshold_pct)
+                        _remaining = max(0, _threshold_tokens - _last_prompt_tokens) if _threshold_tokens else 0
+                        _message = (
+                            f"⚠️ Context: ~{_last_prompt_tokens:,} tokens. "
+                            "Близко к автокомпакту — если нужно, скажи сохранить важное или отправь /compress."
+                        )
+                        if _remaining:
+                            _message += f" До авто-компакта примерно {_remaining:,} tokens."
+                        await _warn_adapter.send(
+                            source.chat_id,
+                            _message,
+                            metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                        )
+                        self.session_store.update_session(
+                            session_entry.session_key,
+                            context_warning_tokens_sent=_warn_tokens,
+                        )
+                        session_entry.context_warning_tokens_sent = _warn_tokens
+            except Exception as _e:
+                logger.debug("context warning send failed: %s", _e)
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))

@@ -181,6 +181,29 @@
   color: var(--color-muted-foreground);
   letter-spacing: 0.02em;
 }
+.hermes-kanban-gate-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: rgb(147, 197, 253);
+  font-size: 11px;
+  line-height: 16px;
+}
+.hermes-kanban-gate-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  padding: 2px 0;
+}
+.hermes-kanban-gate-label { min-width: 96px; color: rgb(148, 163, 184); }
+.hermes-kanban-gate-status { font-weight: 600; }
+.hermes-kanban-gate-actor { color: rgb(147, 197, 253); }
+.hermes-kanban-gate-note { color: rgb(203, 213, 225); }
+
 .hermes-kanban-progress--full {
   background: color-mix(in srgb, #3fb97d 22%, transparent);
   border-color: color-mix(in srgb, #3fb97d 45%, transparent);

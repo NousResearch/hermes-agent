@@ -118,15 +118,16 @@ class MemoryProvider(ABC):
         assistant_content: str,
         *,
         session_id: str = "",
-        trace: Optional[Dict[str, Any]] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Persist a completed turn to the backend.
 
         Called after each turn. Should be non-blocking — queue for
         background processing if the backend has latency.
 
-        ``trace`` is optional structured execution metadata for the
-        completed turn. Providers that do not need tool traces can ignore it.
+        ``messages`` is the OpenAI-style conversation message list as of the
+        completed turn, including any assistant tool calls and tool results.
+        Providers that do not need raw turn context can ignore it.
         """
 
     @abstractmethod

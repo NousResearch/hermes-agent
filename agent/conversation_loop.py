@@ -462,7 +462,6 @@ def run_conversation(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
-    agent._turn_tool_trace = []
     # True until the server rejects an image_url content part with an error
     # like "Only 'text' content type is supported."  Set to False on first
     # rejection and kept False for the rest of the session so we never re-send

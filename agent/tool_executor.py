@@ -62,13 +62,6 @@ def _ra():
     return run_agent
 
 
-def _record_turn_tool_trace(agent, **entry: Any) -> None:
-    """Record trace data when the agent supports per-turn tool tracing."""
-    recorder = getattr(agent, "_record_turn_tool_trace", None)
-    if callable(recorder):
-        recorder(**entry)
-
-
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -82,31 +75,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if agent._interrupt_requested:
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         for tc in tool_calls:
-            try:
-                skipped_args = json.loads(tc.function.arguments)
-            except json.JSONDecodeError:
-                skipped_args = {}
-            if not isinstance(skipped_args, dict):
-                skipped_args = {}
-            skipped_content = (
-                f"[Tool execution cancelled — {tc.function.name} was skipped "
-                "due to user interrupt]"
-            )
             messages.append(make_tool_result_message(
                 tc.function.name,
-                skipped_content,
+                f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
                 tc.id,
             ))
-            _record_turn_tool_trace(
-                agent,
-                tool_call_id=tc.id,
-                name=tc.function.name,
-                arguments=skipped_args,
-                result_content=skipped_content,
-                duration=0.0,
-                is_error=True,
-                cancelled=True,
-            )
         return
 
     # ── Parse args + pre-execution bookkeeping ───────────────────────
@@ -376,19 +349,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         r = results[i]
         blocked = False
-        trace_is_error = True
-        cancelled = False
         if r is None:
             # Tool was cancelled (interrupt) or thread didn't return
             if agent._interrupt_requested:
                 function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
-                cancelled = True
             else:
                 function_result = f"Error executing tool '{name}': thread did not return a result"
             tool_duration = 0.0
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked = r
-            trace_is_error = is_error
 
             if not blocked:
                 function_result = agent._append_guardrail_observation(
@@ -481,17 +450,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # Same as the sequential path: drain between each collected
         # result so the steer lands as early as possible.
         agent._apply_pending_steer_to_tool_results(messages, 1)
-        _record_turn_tool_trace(
-            agent,
-            tool_call_id=tc.id,
-            name=name,
-            arguments=args,
-            result_content=str(_tool_content or ""),
-            duration=tool_duration,
-            is_error=trace_is_error,
-            blocked=blocked,
-            cancelled=cancelled,
-        )
 
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools = len(parsed_calls)
@@ -520,33 +478,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
             for skipped_tc in remaining_calls:
                 skipped_name = skipped_tc.function.name
-                try:
-                    skipped_args = json.loads(skipped_tc.function.arguments)
-                except json.JSONDecodeError:
-                    skipped_args = {}
-                if not isinstance(skipped_args, dict):
-                    skipped_args = {}
-                skipped_content = (
-                    f"[Tool execution cancelled — {skipped_name} was skipped "
-                    "due to user interrupt]"
-                )
                 skip_msg = {
                     "role": "tool",
                     "name": skipped_name,
-                    "content": skipped_content,
+                    "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
                     "tool_call_id": skipped_tc.id,
                 }
                 messages.append(skip_msg)
-                _record_turn_tool_trace(
-                    agent,
-                    tool_call_id=skipped_tc.id,
-                    name=skipped_name,
-                    arguments=skipped_args,
-                    result_content=skipped_content,
-                    duration=0.0,
-                    is_error=True,
-                    cancelled=True,
-                )
             break
 
         function_name = tool_call.function.name
@@ -929,16 +867,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # injection lands as soon as a tool finishes — not after the
         # entire batch.  The model sees it on the next API iteration.
         agent._apply_pending_steer_to_tool_results(messages, 1)
-        _record_turn_tool_trace(
-            agent,
-            tool_call_id=tool_call.id,
-            name=function_name,
-            arguments=function_args,
-            result_content=str(_tool_content or ""),
-            duration=tool_duration,
-            is_error=_is_error_result,
-            blocked=_execution_blocked,
-        )
 
         if not agent.quiet_mode:
             if agent.verbose_logging:
@@ -954,31 +882,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
             for skipped_tc in assistant_message.tool_calls[i:]:
                 skipped_name = skipped_tc.function.name
-                try:
-                    skipped_args = json.loads(skipped_tc.function.arguments)
-                except json.JSONDecodeError:
-                    skipped_args = {}
-                if not isinstance(skipped_args, dict):
-                    skipped_args = {}
-                skipped_content = (
-                    f"[Tool execution skipped — {skipped_name} was not started. "
-                    "User sent a new message]"
-                )
                 messages.append(make_tool_result_message(
                     skipped_name,
-                    skipped_content,
+                    f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
                     skipped_tc.id,
                 ))
-                _record_turn_tool_trace(
-                    agent,
-                    tool_call_id=skipped_tc.id,
-                    name=skipped_name,
-                    arguments=skipped_args,
-                    result_content=skipped_content,
-                    duration=0.0,
-                    is_error=True,
-                    cancelled=True,
-                )
             break
 
         if agent.tool_delay > 0 and i < len(assistant_message.tool_calls):

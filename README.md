@@ -175,7 +175,7 @@ See `hermes claw migrate --help` for all options, or use the `openclaw-migration
 
 ## Community Plugins
 
-- [hermes-memori](https://pypi.org/project/hermes-memori/) — Memori Cloud memory provider with structured long-term memory, agent trace capture, and explicit recall tools. Install with `pip install hermes-memori`, then run `hermes-memori install`.
+- [hermes-memori](https://pypi.org/project/hermes-memori/) — Memori Cloud memory provider with structured long-term memory, completed-turn capture, and explicit recall tools. Install with `pip install hermes-memori`, then run `hermes-memori install`.
 
 ---
 

@@ -94,7 +94,6 @@ class TestResolveVerifyFallback:
 
         monkeypatch.delenv("HERMES_CA_BUNDLE", raising=False)
         monkeypatch.delenv("SSL_CERT_FILE", raising=False)
-        monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
         result = _resolve_verify(auth_state={"tls": {}})
         assert result is True
 

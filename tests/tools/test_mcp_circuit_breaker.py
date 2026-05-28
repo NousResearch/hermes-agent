@@ -179,17 +179,8 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
         _cleanup(mcp_tool, "srv")
 
 
-def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
-    """When the auth-recovery path successfully reconnects the server,
-    the breaker should be cleared so subsequent calls aren't gated on a
-    stale failure count — even if the post-reconnect retry itself fails.
-
-    This locks in the fix-#2 contract: a successful reconnect is
-    sufficient evidence that the server is viable again. Under the old
-    implementation, reset only happened on retry *success*, so a
-    reconnect+retry-failure left the counter pinned above threshold
-    forever.
-    """
+def test_repeated_oauth_recovery_failures_trip_breaker(monkeypatch, tmp_path):
+    """A recoverable 401 is not a success signal until the retry succeeds."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
@@ -204,14 +195,6 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
     _install_stub_server(mcp_tool, "srv", _call_tool_unused)
     mcp_tool._ensure_mcp_loop()
 
-    # Open the breaker well above threshold, with a recent open-time so
-    # it would short-circuit everything without a reset.
-    mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 2
-    if hasattr(mcp_tool, "_server_breaker_opened_at"):
-        import time as _time
-        mcp_tool._server_breaker_opened_at["srv"] = _time.monotonic()
-
-    # Force handle_401 to claim recovery succeeded.
     mgr = get_manager()
 
     async def _h401(name, token=None):
@@ -220,33 +203,21 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
     monkeypatch.setattr(mgr, "handle_401", _h401)
 
     try:
-        # Retry fails *after* the successful reconnect. Under the old
-        # implementation this bumps an already-tripped counter even
-        # higher. Under fix #2 the reset happens on successful
-        # reconnect, and the post-retry bump only raises the fresh
-        # count to 1 — still below threshold.
         def _retry_call():
-            raise OAuthFlowError("still failing post-reconnect")
+            raise OAuthFlowError("still failing after recovery was deemed viable")
 
-        result = mcp_tool._handle_auth_error_and_retry(
-            "srv",
-            OAuthFlowError("initial"),
-            _retry_call,
-            "tools/call test",
-        )
-        # The call as a whole still surfaces needs_reauth because the
-        # retry itself didn't succeed, but the breaker state must
-        # reflect the successful reconnect.
-        assert result is not None
-        parsed = json.loads(result)
-        assert parsed.get("needs_reauth") is True, parsed
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD):
+            result = mcp_tool._handle_auth_error_and_retry(
+                "srv",
+                OAuthFlowError("initial"),
+                _retry_call,
+                "tools/call test",
+            )
+            parsed = json.loads(result)
+            assert parsed.get("needs_reauth") is True, parsed
 
-        # Post-reconnect count was reset to 0, then the failing retry
-        # bumped it to exactly 1 — well below threshold.
         count = mcp_tool._server_error_counts.get("srv", 0)
-        assert count < mcp_tool._CIRCUIT_BREAKER_THRESHOLD, (
-            f"successful reconnect must reset the breaker below threshold; "
-            f"got count={count}, threshold={mcp_tool._CIRCUIT_BREAKER_THRESHOLD}"
-        )
+        assert count >= mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+        assert "srv" in mcp_tool._server_breaker_opened_at
     finally:
         _cleanup(mcp_tool, "srv")

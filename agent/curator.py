@@ -894,6 +894,27 @@ def _reconcile_classification(
     return {"consolidated": consolidated, "pruned": pruned}
 
 
+def _cron_rewrite_consolidations_from_audit(
+    heuristic: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, str]:
+    """Return cron-safe consolidation targets backed by tool-call audit evidence.
+
+    Curator report classification can include model-only summary claims for
+    human-readable reporting. Persistent cron job mutation must be stricter:
+    only rewrite a skill to an umbrella when deterministic tool-call evidence
+    links the removed skill to that target.
+    """
+    safe_map: Dict[str, str] = {}
+    for entry in heuristic.get("consolidated", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        target = entry.get("into")
+        if isinstance(name, str) and name and isinstance(target, str) and target:
+            safe_map[name] = target
+    return safe_map
+
+
 def _build_rename_summary(
     *,
     before_names: Set[str],
@@ -1090,15 +1111,12 @@ def _write_run_report(
     # break the curator.
     cron_rewrites: Dict[str, Any] = {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
     try:
-        consolidated_map = {
-            e["name"]: e["into"]
-            for e in consolidated
-            if isinstance(e, dict) and e.get("name") and e.get("into")
-        }
-        pruned_names = [
-            e["name"] for e in pruned
-            if isinstance(e, dict) and e.get("name")
-        ]
+        consolidated_map = _cron_rewrite_consolidations_from_audit(heuristic)
+        # Dropping references to removed skills is based on the before/after
+        # filesystem diff, not on model-declared pruning intent. This keeps
+        # cron jobs from loading archived skills without letting the LLM
+        # choose a replacement skill persistently.
+        pruned_names = [name for name in removed if name not in consolidated_map]
         if consolidated_map or pruned_names:
             from cron.jobs import rewrite_skill_refs as _rewrite_cron_refs
             cron_rewrites = _rewrite_cron_refs(

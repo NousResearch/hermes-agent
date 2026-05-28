@@ -68,6 +68,7 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 from datetime import datetime
 from pathlib import Path
 
+from agent.redact import redact_sensitive_text
 from hermes_constants import get_hermes_home
 
 
@@ -10307,8 +10308,14 @@ class AIAgent:
             # and get recovered by retrying on main?  Surface that so users
             # know their auxiliary.compression.model setting is broken even
             # though compression succeeded.
-            _aux_fail_model = getattr(self.context_compressor, "_last_aux_model_failure_model", None)
-            _aux_fail_err = getattr(self.context_compressor, "_last_aux_model_failure_error", None)
+            _aux_fail_model = redact_sensitive_text(
+                getattr(self.context_compressor, "_last_aux_model_failure_model", None),
+                force=True,
+            )
+            _aux_fail_err = redact_sensitive_text(
+                getattr(self.context_compressor, "_last_aux_model_failure_error", None),
+                force=True,
+            )
             if _aux_fail_model:
                 # Dedup on (model, error) so we don't spam on every compaction
                 _aux_key = (_aux_fail_model, _aux_fail_err)

@@ -1001,6 +1001,36 @@ def run_conversation(
                 native_anthropic=agent._use_native_cache_layout,
             )
 
+        # Artifact-aware compaction: large OpenQP logs, Molden files, JSON
+        # dumps, and parser output are stored by content hash under
+        # $HERMES_HOME/artifacts and replaced in the active LLM request by a
+        # compact summary card.  This is API-boundary only: transcripts keep
+        # their normal history, while the model avoids replaying 200K+ raw
+        # tokens.  Details remain recoverable with artifact_retrieve.
+        try:
+            from agent.artifact_compaction import compact_artifacts_in_messages
+            _artifact_min_chars = int(getattr(agent, "artifact_compaction_min_chars", 8000) or 8000)
+            _artifact_min_tokens = int(getattr(agent, "artifact_compaction_min_tokens", 2000) or 2000)
+            _artifact_max_summary_tokens = int(getattr(agent, "artifact_compaction_max_summary_tokens", 800) or 800)
+            api_messages, _artifact_report = compact_artifacts_in_messages(
+                api_messages,
+                min_chars=_artifact_min_chars,
+                min_tokens=_artifact_min_tokens,
+                max_summary_tokens=_artifact_max_summary_tokens,
+            )
+            agent._last_context_profiler_report = _artifact_report.get("context_budget_after", {})
+            logger.info("context budget profile: %s", agent._last_context_profiler_report)
+            if _artifact_report.get("artifact_count"):
+                agent._last_artifact_compaction_report = _artifact_report
+                logger.info("artifact compaction: %s", _artifact_report)
+                if not getattr(agent, "_artifact_compaction_notice_sent", False):
+                    agent._artifact_compaction_notice_sent = True
+                    agent._emit_status(
+                        "📦 Compacted large raw artifact(s) into summary cards; raw content saved under ~/.hermes/artifacts."
+                    )
+        except Exception as _artifact_exc:
+            logger.debug("artifact compaction skipped: %s", _artifact_exc)
+
         # Safety net: strip orphaned tool results / add stubs for missing
         # results before sending to the API.  Runs unconditionally — not
         # gated on context_compressor — so orphans from session loading or

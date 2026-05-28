@@ -944,6 +944,14 @@ DEFAULT_CONFIG = {
                                       # Default False matches historical behavior; set to
                                       # True if you'd rather pause than silently lose
                                       # context turns when your aux model is flaky.
+        "artifact_min_chars": 8_000,  # raw artifact payloads above this size are stored under ~/.hermes/artifacts and replaced with summary cards at the API boundary
+        "artifact_min_tokens": 2_000,  # also require this rough token estimate before artifact externalization
+        "artifact_max_summary_tokens": 800,  # maximum rough tokens for each artifact summary card
+        "artifact_retrieve_max_chars": 12_000,  # default focused raw slice returned by artifact_retrieve
+        "target_active_context_tokens": 60_000,  # source-aware context profiler target budget
+        "warning_tokens": 80_000,  # profiler warning threshold
+        "emergency_compaction_tokens": 120_000,  # profiler emergency threshold
+        "raw_generated_artifact_budget_fraction": 0.20,  # raw logs/generated artifacts should stay below this fraction of the target context
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).

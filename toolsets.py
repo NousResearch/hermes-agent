@@ -34,7 +34,7 @@ _HERMES_CORE_TOOLS = [
     # Terminal + process management
     "terminal", "process",
     # File manipulation
-    "read_file", "write_file", "patch", "search_files",
+    "read_file", "write_file", "patch", "search_files", "artifact_retrieve",
     # Vision + image generation
     "vision_analyze", "image_generate",
     # Skills

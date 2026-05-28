@@ -1240,6 +1240,23 @@ def init_agent(
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
+    def _artifact_int_config(key: str, default: int) -> int:
+        try:
+            value = int(_compression_cfg.get(key, default))
+            if value <= 0:
+                raise ValueError
+            return value
+        except (TypeError, ValueError):
+            return default
+
+    agent.artifact_compaction_min_chars = _artifact_int_config("artifact_min_chars", 8_000)
+    agent.artifact_compaction_min_tokens = _artifact_int_config("artifact_min_tokens", 2_000)
+    agent.artifact_compaction_max_summary_tokens = _artifact_int_config("artifact_max_summary_tokens", 800)
+    agent.artifact_retrieve_max_chars = _artifact_int_config("artifact_retrieve_max_chars", 12_000)
+    agent.context_budget_target_tokens = _artifact_int_config("target_active_context_tokens", 60_000)
+    agent.context_budget_warning_tokens = _artifact_int_config("warning_tokens", 80_000)
+    agent.context_budget_emergency_tokens = _artifact_int_config("emergency_compaction_tokens", 120_000)
+    agent.raw_generated_artifact_budget_fraction = float(_compression_cfg.get("raw_generated_artifact_budget_fraction", 0.20) or 0.20)
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1440,6 +1457,9 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        agent.context_compressor.artifact_min_chars = agent.artifact_compaction_min_chars
+        agent.context_compressor.artifact_min_tokens = agent.artifact_compaction_min_tokens
+        agent.context_compressor.artifact_max_summary_tokens = agent.artifact_compaction_max_summary_tokens
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
@@ -1457,6 +1477,9 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            artifact_min_chars=agent.artifact_compaction_min_chars,
+            artifact_min_tokens=agent.artifact_compaction_min_tokens,
+            artifact_max_summary_tokens=agent.artifact_compaction_max_summary_tokens,
         )
     agent.compression_enabled = compression_enabled
 

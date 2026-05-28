@@ -31,6 +31,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.artifact_compaction import compact_artifacts_in_messages
 
 logger = logging.getLogger(__name__)
 
@@ -524,6 +525,9 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
+        artifact_min_chars: int = 8_000,
+        artifact_min_tokens: int = 2_000,
+        artifact_max_summary_tokens: int = 800,
     ):
         self.model = model
         self.base_url = base_url
@@ -540,6 +544,9 @@ class ContextCompressor(ContextEngine):
         # When False (default = historical behavior), insert a static
         # "summary unavailable" placeholder and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
+        self.artifact_min_chars = artifact_min_chars
+        self.artifact_min_tokens = artifact_min_tokens
+        self.artifact_max_summary_tokens = artifact_max_summary_tokens
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -598,6 +605,7 @@ class ContextCompressor(ContextEngine):
         # this flag to know "compression was attempted but aborted, freeze
         # the chat until the user manually retries via /compress".
         self._last_compress_aborted: bool = False
+        self._last_artifact_profile: Dict[str, Any] = {}
         # When a user-configured summary model fails and we recover by
         # retrying on the main model, record the failure so gateway /
         # CLI callers can still warn the user even though compression
@@ -1522,12 +1530,39 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_artifact_profile = {}
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
         # this, /compress would silently no-op for 30-60s after a failure.
         if force and self._summary_failure_cooldown_until > 0.0:
             self._summary_failure_cooldown_until = 0.0
+
+        # Phase 0: Externalize large reproducible artifacts before any
+        # head/tail decisions. This prevents a single fresh OpenQP log,
+        # Molden file, JSON dump, or parser output from remaining verbatim in
+        # the protected tail and keeping active context above threshold.
+        messages, artifact_profile = compact_artifacts_in_messages(
+            messages,
+            min_chars=getattr(self, "artifact_min_chars", 8_000),
+            min_tokens=getattr(self, "artifact_min_tokens", 2_000),
+            max_summary_tokens=getattr(self, "artifact_max_summary_tokens", 800),
+        )
+        self._last_artifact_profile = artifact_profile
+        if artifact_profile.get("artifact_count") and not self.quiet_mode:
+            logger.info(
+                "Artifact compaction: %d artifact(s), ~%d tokens -> ~%d tokens (saved ~%d)",
+                artifact_profile.get("artifact_count", 0),
+                artifact_profile.get("before_total_tokens", 0),
+                artifact_profile.get("after_total_tokens", 0),
+                artifact_profile.get("saved_tokens", 0),
+            )
+            logger.info(
+                "Artifact compaction largest messages before=%s after=%s",
+                artifact_profile.get("largest_before", []),
+                artifact_profile.get("largest_after", []),
+            )
+
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1

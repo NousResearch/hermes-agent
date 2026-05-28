@@ -5,6 +5,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
+import type { Theme } from '../theme.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
@@ -16,6 +17,15 @@ import { SessionPicker } from './sessionPicker.js'
 import { SkillsHub } from './skillsHub.js'
 
 const COMPLETION_WINDOW = 16
+
+export function completionRowStyle(active: boolean, theme: Theme) {
+  return {
+    commandColor: active ? theme.color.primary : theme.color.label,
+    markerColor: active ? theme.color.primary : theme.color.muted,
+    metaColor: active ? theme.color.text : theme.color.muted,
+    rowBackground: active ? theme.color.statusBg : undefined
+  }
+}
 
 export function PromptZone({
   cols,
@@ -217,10 +227,11 @@ export function FloatingOverlays({
           <Box flexDirection="column" width={Math.max(28, cols - 6)}>
             {completions.slice(start, start + viewportSize).map((item, i) => {
               const active = start + i === compIdx
+              const style = completionRowStyle(active, theme)
 
               return (
                 <Box
-                  backgroundColor={active ? theme.color.completionCurrentBg : theme.color.completionBg}
+                  backgroundColor={style.rowBackground}
                   flexDirection="row"
                   key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
                   width="100%"
@@ -229,16 +240,14 @@ export function FloatingOverlays({
                       otherwise shaves the last char off the display column
                       (e.g. /goal renders as /goa). */}
                   <Box flexShrink={0}>
-                    <Text bold color={theme.color.label}>
+                    <Text color={style.markerColor}>{active ? ' ❯ ' : '   '}</Text>
+                    <Text bold={active} color={style.commandColor}>
                       {' '}
                       {item.display}
                     </Text>
                   </Box>
                   {item.meta ? (
-                    <Text
-                      backgroundColor={active ? theme.color.completionMetaCurrentBg : theme.color.completionMetaBg}
-                      color={theme.color.muted}
-                    >
+                    <Text color={style.metaColor} dimColor={!active}>
                       {' '}
                       {item.meta}
                     </Text>

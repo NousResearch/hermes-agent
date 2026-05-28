@@ -132,7 +132,7 @@ Aliases resolving to `cursor`: `cursor-agent`, `cursor-cli`, `cursor-sub`, `curs
    The default flipped from `ask` to `agent` on 2026-05-28 to remove a silent demotion that made cursor feel "broken" out of the box (users coming from `cursor-agent` directly expected full power). Hermes' own `approvals.mode` config (manual/smart/off) gates dangerous tool execution on top of this, identical to every other provider.
 
 5. **I/O.** prompt written to stdin (avoids argv length limits); stdout read line-by-line in a background thread; stderr drained concurrently for auth/flag diagnostics.
-6. **Timeout.** default 600 s; process terminated on expiry.
+6. **Timeout.** event-driven idle deadline (default 1800 s); resets on every stream-json event; process terminated on expiry.
 7. **Termination.** after the terminal `result` event, the client waits up to 700 ms for cursor-agent's natural exit before SIGTERM (Node.js shutdown hooks otherwise delay the exit it was already about to do). Force-kill fallback after 1.5 s.
 8. **Session-level conversation continuity.** Hermes is the source of truth for conversation history (transcript sent fresh every turn). cursor's own `--resume [chatId]` / `--continue` flags are deliberately NOT used; splitting that authority would desync `/clear`, `/new`, `/compress`, and switch_model. Files cursor wrote on turn N remain in the session workspace for turn N+1 (workspace reuse, item 2 above).
 
@@ -240,7 +240,7 @@ Completed internal events also populate `response.cursor_internal_tools` / `mess
 | `HERMES_CURSOR_MODE` | `agent` | `agent` (default, full power) / `ask` (read-only) / `plan` (read-only planning) |
 | `HERMES_CURSOR_WORKSPACE` | session-scoped temp dir | Pin workspace directory (reused across all turns of one session by default) |
 | `HERMES_CURSOR_BASE_URL` | `cursor://agent` | Provider marker (not HTTP) |
-| `HERMES_CURSOR_TIMEOUT_SECONDS` | `600` | Idle threshold (not wall-clock). Resets on every stream-json event from cursor-agent. A turn may run arbitrarily long in total provided events keep arriving; only true subprocess hangs trigger termination. Hermes' outer 90s stale-call detector is disabled for cursor so this is the only timeout in effect. |
+| `HERMES_CURSOR_TIMEOUT_SECONDS` | `1800` | Idle threshold (not wall-clock). Resets on every stream-json event from cursor-agent. A turn may run arbitrarily long in total provided events keep arriving; only true subprocess hangs trigger termination. Default is 30 minutes; cursor-agent's own internal shell ceiling is 10 min so chained long operations can routinely exceed 15 min. Hermes' outer 90s stale-call detector is disabled for cursor so this is the only timeout in effect. |
 
 ## Turn-Level Timeout Semantics
 
@@ -260,8 +260,8 @@ deliberately split into two layers:
   stream-json event received from cursor-agent (text deltas, tool_calls,
   tool_results, thinking, system messages). Total wall-clock can be
   arbitrary; only a true hang (no events for the threshold) raises
-  `TimeoutError` and force-kills the subprocess. Default 600s, override
-  via `HERMES_CURSOR_TIMEOUT_SECONDS`.
+  `TimeoutError` and force-kills the subprocess. Default 1800s (30 min),
+  override via `HERMES_CURSOR_TIMEOUT_SECONDS`.
 
 This means a turn that spends 20 minutes inside a single `shell` command
 (say, a long test suite) will complete normally as long as cursor-agent

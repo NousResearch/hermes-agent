@@ -1447,7 +1447,9 @@ class TimeoutTests(unittest.TestCase):
     (inner cursor client). The semantics are now: the deadline resets on
     every stream-json event, so total wall-clock can be arbitrary as long
     as events keep flowing. Only true subprocess hangs (no events for the
-    threshold) trigger termination.
+    threshold) trigger termination. Default idle threshold is 1800s
+    (30 min) to comfortably cover cursor-agent's internal 10-min shell
+    ceiling plus chained long operations.
     """
 
     def setUp(self) -> None:
@@ -1473,17 +1475,17 @@ class TimeoutTests(unittest.TestCase):
         os.environ["HERMES_CURSOR_TIMEOUT_SECONDS"] = "not-a-number"
         client = CursorAgentClient()
         try:
-            self.assertEqual(client._timeout_seconds, 600.0)
+            self.assertEqual(client._timeout_seconds, 1800.0)
         finally:
             client.close()
 
     def test_env_var_zero_value_falls_back_to_default(self) -> None:
         # Zero or negative would mean "kill the subprocess instantly on
-        # arrival" which is never useful — fall back to the default.
+        # arrival" which is never useful; fall back to the default.
         os.environ["HERMES_CURSOR_TIMEOUT_SECONDS"] = "0"
         client = CursorAgentClient()
         try:
-            self.assertEqual(client._timeout_seconds, 600.0)
+            self.assertEqual(client._timeout_seconds, 1800.0)
         finally:
             client.close()
 

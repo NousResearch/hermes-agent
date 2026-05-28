@@ -82,10 +82,13 @@ _CURSOR_CLI_MODES = frozenset({"ask", "plan"})
 # this in total wall-clock; what matters is that events keep arriving. If
 # nothing arrives for this long, the subprocess is presumed hung and is
 # force-killed with a clear TimeoutError. Override via
-# ``HERMES_CURSOR_TIMEOUT_SECONDS`` env var when running workloads that
-# legitimately include very long internal operations (e.g. multi-minute
-# shell commands inside the subprocess).
-_DEFAULT_TIMEOUT_SECONDS = 600.0
+# ``HERMES_CURSOR_TIMEOUT_SECONDS`` env var. Default is 30 minutes; cursor-
+# agent's own internal shell ceiling is 10 minutes so a single shell call
+# can chew up that much idle time, and chained internal operations (deep
+# greps, large reads after a long shell) routinely push past 15 minutes
+# without emitting events. 30 min gives comfortable headroom while still
+# catching genuine hangs.
+_DEFAULT_TIMEOUT_SECONDS = 1800.0
 
 # Sentinels that mean "no real api key — use the cursor-agent CLI's own login
 # session". Hermes's external_process auth path injects these as placeholders;

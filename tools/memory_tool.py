@@ -101,6 +101,15 @@ _IMPERATIVE_VERBS: List[str] = [
     "update", "open", "close", "enable", "disable", "delete", "insert",
 ]
 
+_SQL_PATTERNS: List[str] = [
+    r"UPDATE\s+\w+\s+SET\b",
+    r"DELETE\s+FROM\b",
+    r"INSERT\s+INTO\b",
+    r"CREATE\s+TABLE\b",
+    r"ALTER\s+TABLE\b",
+    r"SELECT\s+.+\s+FROM\b",
+]
+
 # Words whose presence is a strong signal that the entry is procedural.
 _PROCEDURAL_SIGNALS: List[str] = [
     "via", "use", "run", "flow:", "recipe", "procedure",
@@ -130,7 +139,9 @@ def _detect_procedural_content(content: str) -> Optional[str]:
         return _PROCEDURAL_REJECTION_MSG
 
     # --- Heuristic 2: SQL, code blocks, shell commands ---
-    if re.search(r"\b(SELECT|INSERT|UPDATE|DELETE|CREATE\s+TABLE|ALTER\s+TABLE)\b", content, re.IGNORECASE):
+    # Require SQL-like context (verb + structural keyword) to avoid false
+    # positives on prose like "Sahil prefers to update the dashboard".
+    if any(re.search(p, content, re.IGNORECASE | re.DOTALL) for p in _SQL_PATTERNS):
         return _PROCEDURAL_REJECTION_MSG
     if "```" in content:
         return _PROCEDURAL_REJECTION_MSG
@@ -164,6 +175,21 @@ def _detect_procedural_content(content: str) -> Optional[str]:
             pos = lower.find(signal, pos + 1)
 
     return None
+
+
+def _to_bool(val: Any) -> bool:
+    """Coerce a value to bool, treating string '0'/'no'/'false' as False.
+
+    ``bool('0')`` and ``bool('no')`` are both truthy in Python — this helper
+    provides semantically correct string→bool coercion for tool-call arguments
+    that may arrive as strings from non-schema-validated callers (scripts,
+    tests, integrations).
+    """
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in {"true", "1", "yes", "y", "t"}
+    return bool(val)
 
 
 def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
@@ -972,7 +998,7 @@ def memory_tool(
     old_text: str = None,
     operations: Optional[List[Dict[str, Any]]] = None,
     store: Optional[MemoryStore] = None,
-    bypass_procedural_check: bool = False,
+    bypass_procedural_check: Any = False,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -983,7 +1009,14 @@ def memory_tool(
                    atomically against the final char budget in ONE call.
 
     Returns JSON string with results.
+
+    ``bypass_procedural_check`` accepts bool or string ('true'/'1'/'yes' → True;
+    '0'/'no'/'false' → False).  String coercion is applied here so callers that
+    arrive from non-schema-validated paths (scripts, tests, integrations) get
+    correct semantics — ``bool('0')`` is True in Python, which would silently
+    bypass the gate.
     """
+    bypass: bool = _to_bool(bypass_procedural_check)
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
@@ -1024,10 +1057,10 @@ def memory_tool(
         return gate_result
 
     if action == "add":
-        result = store.add(target, content, bypass_procedural_check=bypass_procedural_check)
+        result = store.add(target, content, bypass_procedural_check=bypass)
 
     elif action == "replace":
-        result = store.replace(target, old_text, content, bypass_procedural_check=bypass_procedural_check)
+        result = store.replace(target, old_text, content, bypass_procedural_check=bypass)
 
     elif action == "remove":
         result = store.remove(target, old_text)
@@ -1161,7 +1194,8 @@ registry.register(
         content=args.get("content"),
         old_text=args.get("old_text"),
         operations=args.get("operations"),
-        bypass_procedural_check=bool(args.get("bypass_procedural_check", False)),        store=kw.get("store")),
+        bypass_procedural_check=_to_bool(args.get("bypass_procedural_check", False)),
+        store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )

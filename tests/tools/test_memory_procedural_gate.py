@@ -10,6 +10,7 @@ import pytest
 from tools.memory_tool import (
     MemoryStore,
     _detect_procedural_content,
+    _to_bool,
     memory_tool,
     _PROCEDURAL_REJECTION_MSG,
 )
@@ -138,13 +139,16 @@ class TestProceduralGateBypass:
     """bypass_procedural_check=True lets env facts with path patterns through."""
 
     def test_bypass_env_fact_with_path(self):
-        # A stable env fact that happens to contain a file path
+        # A stable env fact that happens to contain a file path — but NOT an
+        # .md path or /references/ path, so the gate should let it through
+        # WITHOUT a bypass flag.  Confirms the env-fact pattern does not
+        # over-trigger.
         result = _detect_procedural_content(
             "AWS_PROFILE=mcp-hive points at ~/.aws/credentials"
         )
-        # This does NOT contain .md or /references/ — should not trigger
-        # (Testing that bypass isn't needed for this particular fact)
-        # But we test the bypass mechanism via MemoryStore below
+        assert result is None, (
+            "env fact without .md / /references/ path should not trigger detection"
+        )
 
     @pytest.fixture()
     def store(self, tmp_path, monkeypatch):
@@ -319,3 +323,185 @@ class TestProceduralGateFalsePositives:
             )
             is None
         )
+
+
+# =========================================================================
+# SQL regex narrowing — false-positive safety (prose with SQL-ish verbs)
+# =========================================================================
+
+
+class TestSQLRegexNarrowing:
+    """Bare SQL-ish verbs in prose must NOT trigger the SQL heuristic.
+
+    The old regex matched any word-boundary occurrence of UPDATE / DELETE /
+    INSERT which caused false positives on legitimate user-preference memories.
+    The narrowed regex requires SQL structural context (e.g. UPDATE x SET,
+    DELETE FROM, INSERT INTO) to fire.
+    """
+
+    # --- Positive cases (should still be rejected) ---
+
+    def test_sql_update_set_rejected(self):
+        """Full UPDATE … SET … form is rejected."""
+        result = _detect_procedural_content("UPDATE memory SET active=1 WHERE id=42;")
+        assert result == _PROCEDURAL_REJECTION_MSG
+
+    def test_sql_delete_from_rejected(self):
+        result = _detect_procedural_content("DELETE FROM tasks WHERE id='t_abc'")
+        assert result == _PROCEDURAL_REJECTION_MSG
+
+    def test_sql_insert_into_rejected(self):
+        result = _detect_procedural_content("INSERT INTO logs VALUES ('x', 'y')")
+        assert result == _PROCEDURAL_REJECTION_MSG
+
+    def test_sql_create_table_rejected(self):
+        result = _detect_procedural_content("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+        assert result == _PROCEDURAL_REJECTION_MSG
+
+    def test_sql_select_from_rejected(self):
+        result = _detect_procedural_content("SELECT id, status FROM tasks WHERE status='ready'")
+        assert result == _PROCEDURAL_REJECTION_MSG
+
+    # --- Negative cases (prose with SQL-ish verbs — must NOT be rejected) ---
+
+    def test_prose_update_passes(self):
+        """'update' in prose (no SET clause) must not trigger the SQL heuristic."""
+        result = _detect_procedural_content(
+            "Sahil prefers to update the dashboard before standup"
+        )
+        assert result is None, (
+            "bare 'update' in prose should not be rejected as SQL"
+        )
+
+    def test_prose_delete_passes(self):
+        result = _detect_procedural_content("Delete the old draft after merging")
+        assert result is None, (
+            "bare 'delete' in prose should not be rejected as SQL"
+        )
+
+    def test_prose_insert_passes(self):
+        result = _detect_procedural_content("insert custom branding into the export")
+        assert result is None, (
+            "bare 'insert' in prose should not be rejected as SQL"
+        )
+
+    def test_prose_select_passes(self):
+        # Note: "Select ... from" is ambiguous enough that the narrowed regex
+        # may still fire (SELECT + content + FROM matches the pattern even in
+        # prose). The important false-positive cases are UPDATE/DELETE/INSERT.
+        # Test a clearly-prose sentence without FROM to confirm no over-trigger
+        # on bare "select" alone.
+        result = _detect_procedural_content("Select the right model for the job")
+        assert result is None, (
+            "bare 'select' in prose without FROM should not be rejected"
+        )
+
+
+# =========================================================================
+# _to_bool helper — string bypass arg hardening
+# =========================================================================
+
+
+class TestToBoolHardening:
+    """bypass_procedural_check must treat string '0'/'no'/'false' as False.
+
+    ``bool('0')`` is True in Python — a raw bool() coercion would silently
+    bypass the procedural gate for any caller that passes a string value.
+    _to_bool() provides correct semantics.
+    """
+
+    # --- _to_bool unit tests ---
+
+    def test_to_bool_false_values(self):
+        for val in ("0", "no", "false", "False", "FALSE", "n", "f"):
+            assert _to_bool(val) is False, f"_to_bool({val!r}) should be False"
+
+    def test_to_bool_true_values(self):
+        for val in ("1", "yes", "true", "True", "TRUE", "y", "t"):
+            assert _to_bool(val) is True, f"_to_bool({val!r}) should be True"
+
+    def test_to_bool_bool_passthrough(self):
+        assert _to_bool(True) is True
+        assert _to_bool(False) is False
+
+    def test_to_bool_int(self):
+        assert _to_bool(1) is True
+        assert _to_bool(0) is False
+
+    # --- Integration: string bypass args via MemoryStore ---
+
+    @pytest.fixture()
+    def store(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        s = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        s.load_from_disk()
+        return s
+
+    def test_bypass_string_zero_does_not_bypass(self, store):
+        """bypass_procedural_check='0' must NOT bypass the gate."""
+        result = json.loads(
+            memory_tool(
+                action="add",
+                target="memory",
+                content="See SKILL.md for the recipe",
+                store=store,
+                bypass_procedural_check="0",
+            )
+        )
+        assert result["success"] is False, (
+            "bypass_procedural_check='0' (string) should NOT bypass the procedural gate"
+        )
+
+    def test_bypass_string_no_does_not_bypass(self, store):
+        """bypass_procedural_check='no' must NOT bypass the gate."""
+        result = json.loads(
+            memory_tool(
+                action="add",
+                target="memory",
+                content="See SKILL.md for the recipe",
+                store=store,
+                bypass_procedural_check="no",
+            )
+        )
+        assert result["success"] is False, (
+            "bypass_procedural_check='no' (string) should NOT bypass the procedural gate"
+        )
+
+    def test_bypass_string_true_does_bypass(self, store):
+        """bypass_procedural_check='true' (string) SHOULD bypass the gate."""
+        result = json.loads(
+            memory_tool(
+                action="add",
+                target="memory",
+                content="Project conventions in AGENTS.md govern all contributors",
+                store=store,
+                bypass_procedural_check="true",
+            )
+        )
+        assert result["success"] is True, (
+            "bypass_procedural_check='true' (string) should bypass the procedural gate"
+        )
+
+    def test_bypass_true_roundtrip(self, store):
+        """bypass=True round-trip: entry persists in the store after add."""
+        content = "Project root is ~/Desktop/work/myapp (stable env fact)"
+        add_result = json.loads(
+            memory_tool(
+                action="add",
+                target="memory",
+                content=content,
+                store=store,
+                bypass_procedural_check=True,
+            )
+        )
+        assert add_result["success"] is True
+        # The add response carries the live entries list — confirm the entry is there
+        assert any(content in entry for entry in add_result.get("entries", [])), (
+            "bypassed entry should be present in the store's entries after add"
+        )
+        # Also confirm via the MemoryStore object directly
+        assert content in store._entries_for("memory"), (
+            "bypassed entry should be persisted in the in-memory store"
+        )
+
+

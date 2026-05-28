@@ -1120,3 +1120,5 @@ Do NOT use the bypass to force procedures or recipes into memory. Those belong i
 Memory bloat follows a pattern: the tool gate is the hard layer, the skill rule is the soft
 layer, and the weekly watchdog (cron job `memory-audit-watchdog`) catches drift that slips
 through both. If memory reaches >70% of the 2200-char cap, the watchdog pings for a manual audit.
+Aim to keep each individual entry ≤800 chars so the fixed 2200-char total can hold several
+distinct facts without hitting the limit unexpectedly.

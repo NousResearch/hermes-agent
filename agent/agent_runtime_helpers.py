@@ -1330,6 +1330,39 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""))
         if keepalive_http is not None:
+            # ai.centos.hk rejects OpenAI-compatible requests that include
+            # httpx's default ``User-Agent`` header.  The OpenAI SDK does not
+            # expose a per-request hook here, so wrap the base transport and
+            # strip only that auto-added header at send time while preserving
+            # the keepalive/proxy transport installed above.
+            _base_url = str(client_kwargs.get("base_url", "") or "")
+            if "ai.centos.hk" in _base_url:
+                try:
+                    import httpx as _httpx
+
+                    _inner_transport = getattr(keepalive_http, "_transport", None)
+                    if _inner_transport is not None:
+
+                        class _StripUserAgentTransport(_httpx.BaseTransport):
+                            def __init__(self, transport):
+                                self._transport = transport
+
+                            def handle_request(self, request):
+                                request.headers.pop("user-agent", None)
+                                return self._transport.handle_request(request)
+
+                            def close(self):
+                                self._transport.close()
+
+                            @property
+                            def _pool(self):
+                                return getattr(self._transport, "_pool", None)
+
+                        keepalive_http._transport = _StripUserAgentTransport(
+                            _inner_transport
+                        )
+                except Exception:
+                    pass
             client_kwargs["http_client"] = keepalive_http
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.

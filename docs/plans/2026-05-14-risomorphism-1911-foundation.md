@@ -2,7 +2,7 @@
 
 > **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
 
-**Goal:** Turn the current `ascii-art-pipeline` into a publishable foundation: a standalone GitHub-ready package with flagship showcase examples, plus a clean in-repo Hermes skill suitable for upstreaming to `NousResearch/hermes-agent`.
+**Goal:** Turn the current `risomorphism-1911` into a publishable foundation: a standalone GitHub-ready package with flagship showcase examples, plus a clean in-repo Hermes skill suitable for upstreaming to `NousResearch/hermes-agent`.
 
 **Architecture:** Use a dual-track structure. Track A is a standalone repo focused on reusable tooling, presets, diagnostics, examples, and gallery output. Track B is a bundled Hermes skill that teaches the workflow, references the canonical presets, and ships concise supporting scripts/references into the Hermes repo.
 
@@ -14,7 +14,7 @@
 
 ### Track A — standalone public repo
 Target repo root:
-- `/Users/johann/projects/ascii-art-pipeline/`
+- `/Users/johann/projects/risomorphism-1911/`
 
 Purpose:
 - reusable CLI/tooling
@@ -25,9 +25,9 @@ Purpose:
 
 ### Track B — Hermes built-in skill
 Target Hermes repo paths:
-- `/Users/johann/.hermes/hermes-agent/skills/creative/ascii-art-pipeline/SKILL.md`
-- `/Users/johann/.hermes/hermes-agent/skills/creative/ascii-art-pipeline/references/*.md`
-- `/Users/johann/.hermes/hermes-agent/skills/creative/ascii-art-pipeline/scripts/*.py`
+- `/Users/johann/.hermes/hermes-agent/skills/creative/risomorphism-1911/SKILL.md`
+- `/Users/johann/.hermes/hermes-agent/skills/creative/risomorphism-1911/references/*.md`
+- `/Users/johann/.hermes/hermes-agent/skills/creative/risomorphism-1911/scripts/*.py`
 
 Purpose:
 - concise agent-usable operating manual
@@ -72,7 +72,7 @@ Canonical presets to freeze:
 - `presets/` definitions for named modes
 
 ### Hermes repo deliverables
-- new bundled skill under `skills/creative/ascii-art-pipeline/`
+- new bundled skill under `skills/creative/risomorphism-1911/`
 - supporting `references/` and `scripts/`
 - generated docs via:
   - `/Users/johann/.hermes/hermes-agent/website/scripts/generate-skill-docs.py`
@@ -177,10 +177,10 @@ Acceptance bar for showcase examples:
 **Objective:** Separate reusable core from session-specific experiments.
 
 **Files:**
-- Review: `/Users/johann/.hermes/profiles/museah/skills/creative/ascii-art-pipeline/SKILL.md`
+- `/Users/johann/.hermes/profiles/museah/skills/creative/risomorphism-1911/SKILL.md`
 - Review: `/Users/johann/projects/herm/scripts/generate_eikon_scratch.py`
 - Review: current local comparison/render helpers used during eikon work
-- Output doc: `/Users/johann/projects/ascii-art-pipeline/docs/canonical-foundation.md`
+- Output doc: `/Users/johann/projects/risomorphism-1911/docs/canonical-foundation.md`
 
 **Steps:**
 1. List all pipeline components currently in use.

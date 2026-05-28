@@ -260,8 +260,8 @@ def test_nous_adapter_quarantines_terminal_refresh_failure(tmp_path, monkeypatch
     assert stored.get("credential_pool", {}).get("nous") == []
 
 
-def test_nous_adapter_get_credential_raises_when_no_agent_key_returned(tmp_path, monkeypatch):
-    """If the refresh helper succeeds but produces no agent_key, we surface a clear error."""
+def test_nous_adapter_get_credential_raises_when_no_jwt_returned(tmp_path, monkeypatch):
+    """If the refresh helper succeeds but produces no JWT, we surface a clear error."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "access-tok",
@@ -273,7 +273,7 @@ def test_nous_adapter_get_credential_raises_when_no_agent_key_returned(tmp_path,
         return_value={"access_token": "a", "refresh_token": "r"},
     ):
         adapter = NousPortalAdapter()
-        with pytest.raises(RuntimeError, match="did not return a usable agent_key"):
+        with pytest.raises(RuntimeError, match="did not return a usable inference JWT"):
             adapter.get_credential()
 
 

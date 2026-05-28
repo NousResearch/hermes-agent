@@ -146,6 +146,38 @@ class TestApproveAndCheckSession:
         assert is_approved(key, "rm") is True
 
 
+class TestApprovalIntentPayload:
+    def test_gateway_payload_carries_explicit_approval_description(self):
+        session_key = "intent_payload_session"
+        _clear_session(session_key)
+        seen = []
+
+        def notify(data):
+            seen.append(data)
+            approval_module.resolve_gateway_approval(session_key, "deny")
+
+        with mock_patch.dict("os.environ", {"HERMES_EXEC_ASK": "1"}, clear=False), \
+             mock_patch.object(approval_module, "_get_approval_mode", return_value="manual"), \
+             mock_patch.object(approval_module, "detect_hardline_command", return_value=(False, None)), \
+             mock_patch.object(approval_module, "_check_sudo_stdin_guard", return_value=(False, None)), \
+             mock_patch.object(approval_module, "detect_dangerous_command", return_value=(True, "launchctl", "launchctl kickstart/bootstrap")), \
+             mock_patch.object(approval_module, "_is_gateway_approval_context", return_value=True):
+            token = approval_module.set_current_session_key(session_key)
+            approval_module.register_gateway_notify(session_key, notify)
+            try:
+                approval_module.check_all_command_guards(
+                    "launchctl kickstart -k gui/501/com.crucible.agent",
+                    "local",
+                    approval_description="Restart the local Crucible LaunchAgent to activate the new wrapper/runtime",
+                )
+            finally:
+                approval_module.unregister_gateway_notify(session_key)
+                approval_module.reset_current_session_key(token)
+
+        assert seen
+        assert seen[0]["approval_description"] == "Restart the local Crucible LaunchAgent to activate the new wrapper/runtime"
+
+
 class TestSessionKeyContext:
     def test_context_session_key_overrides_process_env(self):
         token = approval_module.set_current_session_key("alice")

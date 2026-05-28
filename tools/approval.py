@@ -698,7 +698,8 @@ def save_permanent_allowlist(patterns: set):
 def prompt_dangerous_approval(command: str, description: str,
                               timeout_seconds: int | None = None,
                               allow_permanent: bool = True,
-                              approval_callback=None) -> str:
+                              approval_callback=None,
+                              approval_data: dict | None = None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     Args:
@@ -717,7 +718,20 @@ def prompt_dangerous_approval(command: str, description: str,
     if approval_callback is not None:
         try:
             return approval_callback(command, description,
-                                     allow_permanent=allow_permanent)
+                                     allow_permanent=allow_permanent,
+                                     approval_data=approval_data)
+        except TypeError as e:
+            # Backward compatibility for tests/plugins with the pre-brief
+            # callback signature: (command, description, *, allow_permanent).
+            if "approval_data" not in str(e):
+                logger.error("Approval callback failed: %s", e, exc_info=True)
+                return "deny"
+            try:
+                return approval_callback(command, description,
+                                         allow_permanent=allow_permanent)
+            except Exception as inner:
+                logger.error("Approval callback failed: %s", inner, exc_info=True)
+                return "deny"
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
@@ -756,8 +770,14 @@ def prompt_dangerous_approval(command: str, description: str,
         from agent.i18n import t
         while True:
             print()
-            print(f"  {t('approval.dangerous_header', description=description)}")
-            print(f"      {command}")
+            try:
+                from gateway.approval_brief import format_exec_approval_brief_text
+                brief_text = format_exec_approval_brief_text(command, description, approval_data)
+            except Exception:
+                brief_text = f"Intent: {description}\nCommand summary: {command}"
+            print("  Approval requested")
+            for line in brief_text.splitlines():
+                print(f"      {line}")
             print()
             if allow_permanent:
                 print(t("approval.choose_long"))
@@ -1041,7 +1061,9 @@ def _format_tirith_description(tirith_result: dict) -> str:
 
 
 def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+                             approval_callback=None,
+                             approval_description: str | None = None,
+                             approval_reason: str | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
@@ -1198,6 +1220,10 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
             }
+            if approval_description:
+                approval_data["approval_description"] = approval_description
+            if approval_reason:
+                approval_data["approval_reason"] = approval_reason
             entry = _ApprovalEntry(approval_data)
             with _lock:
                 _gateway_queues.setdefault(session_key, []).append(entry)
@@ -1345,12 +1371,17 @@ def check_all_command_guards(command: str, env_type: str,
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
         # Return approval_required for backward compat.
-        submit_pending(session_key, {
+        pending_data = {
             "command": command,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
             "description": combined_desc,
-        })
+        }
+        if approval_description:
+            pending_data["approval_description"] = approval_description
+        if approval_reason:
+            pending_data["approval_reason"] = approval_reason
+        submit_pending(session_key, pending_data)
         return {
             "approved": False,
             "pattern_key": primary_key,
@@ -1358,6 +1389,8 @@ def check_all_command_guards(command: str, env_type: str,
             "approval_pending": True,
             "command": command,
             "description": combined_desc,
+            "approval_description": approval_description or "",
+            "approval_reason": approval_reason or "",
             "message": (
                 f"⚠️ {combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
             ),
@@ -1365,6 +1398,11 @@ def check_all_command_guards(command: str, env_type: str,
 
     # CLI interactive: single combined prompt
     # Hide [a]lways when any tirith warning is present
+    approval_data = {}
+    if approval_description:
+        approval_data["approval_description"] = approval_description
+    if approval_reason:
+        approval_data["approval_reason"] = approval_reason
     _fire_approval_hook(
         "pre_approval_request",
         command=command,
@@ -1376,7 +1414,8 @@ def check_all_command_guards(command: str, env_type: str,
     )
     choice = prompt_dangerous_approval(command, combined_desc,
                                        allow_permanent=not has_tirith,
-                                       approval_callback=approval_callback)
+                                       approval_callback=approval_callback,
+                                       approval_data=approval_data)
     _fire_approval_hook(
         "post_approval_response",
         command=command,

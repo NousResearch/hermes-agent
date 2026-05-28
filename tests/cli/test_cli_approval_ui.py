@@ -151,10 +151,35 @@ class TestCliApprovalUi:
         lines = rendered.splitlines()
 
         assert lines[0].startswith("╭")
-        assert "Dangerous Command" not in lines[0]
-        assert any("Dangerous Command" in line for line in lines[1:3])
+        assert "Approve:" not in lines[0]
+        assert any("Approve:" in line for line in lines[1:3])
         assert "Show full command" in rendered
         assert "githubcli-archive-keyring.gpg" not in rendered
+
+    def test_approval_display_surfaces_human_readable_intent(self):
+        cli = _make_cli_stub()
+        cli._approval_state = {
+            "command": "launchctl kickstart -k gui/501/com.crucible.agent",
+            "description": "launchctl kickstart/bootstrap",
+            "approval_data": {
+                "approval_description": "Restart the local LaunchAgent com.crucible.agent",
+                "approval_reason": "Activate the updated Crucible wrapper/runtime",
+            },
+            "choices": ["once", "session", "always", "deny"],
+            "selected": 0,
+            "response_queue": queue.Queue(),
+        }
+
+        fragments = cli._get_approval_display_fragments()
+        rendered = "".join(text for _style, text in fragments)
+
+        assert "Dangerous Command" not in rendered
+        assert "Approve: Restart the local LaunchAgent com.crucible.agent" in rendered
+        assert "Intent: Restart the local LaunchAgent com.crucible.agent" in rendered
+        assert "Command summary: launchctl kickstart" in rendered
+        assert "Scope:" in rendered
+        assert "Risks:" in rendered
+        assert "Stop/rollback plan:" in rendered
 
     def test_approval_display_shows_full_command_after_view(self):
         cli = _make_cli_stub()

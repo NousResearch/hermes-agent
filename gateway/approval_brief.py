@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from typing import Any, Mapping
@@ -11,6 +12,16 @@ _SCRIPT_FLAG_RE = re.compile(
     r"(?:^|[;&|()\s])(?P<interp>python\d*(?:\.\d+)?|node|ruby|perl|php|bash|sh|zsh)\b[^\n]*\s-(?P<flag>[ce])(?:\s|=|$)",
     re.IGNORECASE,
 )
+
+
+_DETECTOR_ONLY_DESCRIPTIONS = {
+    "dangerous command",
+    "command flagged",
+    "flagged as dangerous",
+    "launchctl kickstart/bootstrap",
+    "script execution via -c flag",
+    "script execution via -e flag",
+}
 
 
 def _first_nonempty(*values: Any) -> str:
@@ -31,8 +42,177 @@ def _truncate(value: str, limit: int = 220) -> str:
     return value[: max(0, limit - 1)].rstrip() + "…"
 
 
+def _argv(command: str) -> list[str]:
+    try:
+        return shlex.split(command or "")
+    except ValueError:
+        return []
+
+
+def _cmd_base(argv: list[str]) -> str:
+    if not argv:
+        return ""
+    return os.path.basename(argv[0])
+
+
+def _find_launchd_label(argv: list[str]) -> str:
+    for token in reversed(argv):
+        if token.startswith("-"):
+            continue
+        if "/" in token:
+            token = token.rsplit("/", 1)[-1]
+        if token and token not in {"launchctl", "bootstrap", "bootout", "kickstart"}:
+            return token
+    return "the selected LaunchAgent/LaunchDaemon"
+
+
+def _launchd_scope(argv: list[str]) -> str:
+    joined = " ".join(argv).lower()
+    if " system/" in f" {joined}" or any(t.startswith("/library/launchdaemons") for t in joined.split()):
+        return "system launchd service"
+    if " gui/" in f" {joined}" or "~/library/launchagents" in joined:
+        return "local user LaunchAgent"
+    return "local launchd service"
+
+
+def _summarize_launchctl(argv: list[str]) -> tuple[str, str, str, str]:
+    subcmd = argv[1] if len(argv) > 1 else ""
+    label = _find_launchd_label(argv)
+    scope = _launchd_scope(argv)
+    if subcmd == "kickstart":
+        return (
+            f"Restart the local LaunchAgent {label}" if "LaunchAgent" in scope else f"Restart {label} with launchd",
+            "Stops and restarts a macOS launchd job so its latest configuration/runtime is active.",
+            scope,
+            "Can interrupt that local service and may run the service with updated code or environment immediately.",
+        )
+    if subcmd == "bootstrap":
+        return (
+            f"Load the LaunchAgent {label} into launchd" if "LaunchAgent" in scope else f"Load {label} into launchd",
+            "Uses launchctl bootstrap to register/start a macOS launchd job from the referenced plist.",
+            scope,
+            "Can start a persistent background service and apply new launchd configuration.",
+        )
+    if subcmd == "bootout":
+        return (
+            f"Unload the LaunchAgent {label} from launchd" if "LaunchAgent" in scope else f"Unload {label} from launchd",
+            "Uses launchctl bootout to stop/unregister a macOS launchd job.",
+            scope,
+            "Can stop a background service until it is loaded again.",
+        )
+    return (
+        "Manage a local launchd service",
+        "Runs launchctl to inspect or modify a macOS launchd job.",
+        scope,
+        "May affect background services on this machine.",
+    )
+
+
+def _summarize_command(command: str, description: str = "") -> dict[str, str]:
+    argv = _argv(command)
+    base = _cmd_base(argv)
+    desc_l = (description or "").lower()
+    command_l = (command or "").lower()
+
+    if base == "launchctl":
+        intent, what, scope, risks = _summarize_launchctl(argv)
+        return {"intent": intent, "what": what, "scope": scope, "risks": risks}
+
+    if base == "git" and len(argv) > 1:
+        sub = argv[1]
+        if sub == "push":
+            return {
+                "intent": "Push local commits to the remote git repository",
+                "what": "Uploads local commits/refs to the configured remote named in the command.",
+                "scope": "project git repository and configured remote",
+                "risks": "Can publish commits or branch updates that affect collaborators or automation.",
+            }
+        if sub in {"commit", "reset", "clean", "checkout", "restore", "rebase", "merge"}:
+            return {
+                "intent": f"Run git {sub} in the current repository",
+                "what": "Changes repository history, index, working tree files, or branch state as shown in the command.",
+                "scope": "project git repository",
+                "risks": "May discard local work or alter history; remote impact occurs if later pushed.",
+            }
+
+    if base in {"rm", "unlink", "shred"} or re.search(r"\brm\b|\bunlink\b|\bshred\b", command_l):
+        return {
+            "intent": "Remove files or directories named in the command",
+            "what": "Remove files or directories matching the target paths/globs shown in the command.",
+            "scope": "local filesystem paths referenced by the command",
+            "risks": "Data loss if a target path, glob, or recursive flag is broader than intended.",
+        }
+
+    if base in {"curl", "wget"}:
+        return {
+            "intent": "Fetch content from a remote URL",
+            "what": "Contacts the remote URL and downloads or sends data according to the command flags.",
+            "scope": "network request plus any local output path named in the command",
+            "risks": "Remote content may be untrusted; uploads or headers could expose credentials if present.",
+        }
+
+    if base in {"npm", "pnpm", "yarn"}:
+        sub = argv[1] if len(argv) > 1 else "command"
+        return {
+            "intent": f"Run {base} {sub} for the project",
+            "what": "Runs the package-manager action shown in the command.",
+            "scope": "project dependencies/scripts and local filesystem",
+            "risks": "Package scripts can execute arbitrary code with this session's filesystem and credential access.",
+        }
+
+    if base.startswith("python") or base in {"node", "ruby", "perl", "php", "bash", "sh", "zsh"}:
+        inline = _SCRIPT_FLAG_RE.search(command or "") or "script execution via -c" in desc_l or "script execution via -e" in desc_l
+        return {
+            "intent": f"Run {'inline ' if inline else ''}{base} code",
+            "what": "Runs code with the arguments shown in the command block.",
+            "scope": "current execution environment and referenced files/services",
+            "risks": "Code can read/write files, spawn processes, or use credentials available to this session.",
+        }
+
+    if base in {"sudo", "systemctl"} or "/etc/" in command_l or "/private/etc/" in command_l:
+        return {
+            "intent": "Modify local system configuration or services",
+            "what": "Runs a system-level command or touches system configuration paths shown above.",
+            "scope": "local system",
+            "risks": "May affect all users, services, or network/system behavior on this machine.",
+        }
+
+    if argv:
+        return {
+            "intent": f"Run {base} with the shown arguments",
+            "what": f"Executes `{base}` exactly as shown in the command block.",
+            "scope": "current execution environment and referenced resources",
+            "risks": "May have side effects beyond read-only inspection depending on the command arguments.",
+        }
+    return {
+        "intent": "Run the shown shell command",
+        "what": "Executes the shell command shown in the command block.",
+        "scope": "current execution environment",
+        "risks": "May have side effects depending on the command.",
+    }
+
+
+def _command_summary(command: str) -> str:
+    return _truncate(command, 240) if command else "(empty command)"
+
+
+def _explicit_intent(data: Mapping[str, Any], nested: Mapping[str, Any]) -> str:
+    return _first_nonempty(
+        nested.get("intent"),
+        nested.get("approval_description"),
+        nested.get("approval_reason"),
+        nested.get("purpose"),
+        nested.get("goal"),
+        data.get("intent"),
+        data.get("approval_description"),
+        data.get("approval_reason"),
+        data.get("purpose"),
+        data.get("goal"),
+    )
+
+
 def command_category(command: str, description: str = "") -> str:
-    """Return a concise category for an approval-triggering command."""
+    """Return a legacy concise category for approval-triggering command."""
     command_l = (command or "").lower()
     desc_l = (description or "").lower()
     match = _SCRIPT_FLAG_RE.search(command or "")
@@ -40,6 +220,8 @@ def command_category(command: str, description: str = "") -> str:
         interp = match.group("interp") if match else "interpreter"
         flag = match.group("flag") if match else ("e" if "-e" in desc_l else "c")
         return f"Inline script execution ({interp} -{flag})"
+    if "launchctl" in command_l:
+        return "macOS launchd service management"
     if re.search(r"\brm\b|\bunlink\b|\bshred\b", command_l):
         return "File deletion/destructive filesystem operation"
     if re.search(r"\bmv\b|\bcp\b|\bchmod\b|\bchown\b|\btee\b|>|\bpatch\b", command_l):
@@ -53,86 +235,33 @@ def command_category(command: str, description: str = "") -> str:
     return "Shell command flagged by safety detector"
 
 
-def _what_it_does(command: str, description: str, category: str) -> str:
-    if category.startswith("Inline script execution"):
-        return (
-            "Runs code embedded directly on the command line; the exact inline script is in the command block above."
-        )
-    if "deletion" in category.lower():
-        return "May remove files or directories named in the command."
-    if "filesystem" in category.lower():
-        return "May create, overwrite, move, or change permissions on files referenced by the command."
-    if "network" in category.lower():
-        return "May contact remote hosts or execute content obtained over the network."
-    if "git" in category.lower():
-        return "May change repository history, working tree files, or remote repository state."
-    if description and description != "dangerous command":
-        return f"Matches safety detector: {description}."
-    try:
-        argv = shlex.split(command or "")
-    except ValueError:
-        argv = []
-    if argv:
-        return f"Runs `{argv[0]}` with the arguments shown above."
-    return "Runs the shell command shown above."
-
-
-def _risks(description: str, category: str) -> str:
-    desc = description.strip() if description else ""
-    if category.startswith("Inline script execution"):
-        base = "Inline code can read/write files, spawn processes, or use credentials available to this session."
-    elif "deletion" in category.lower():
-        base = "Data loss if the target path or glob is broader than intended."
-    elif "filesystem" in category.lower():
-        base = "Accidental overwrite or permission changes may be hard to undo."
-    elif "network" in category.lower():
-        base = "Remote content or hosts may be untrusted; secrets could be exposed."
-    elif "git" in category.lower():
-        base = "Repository changes may discard work or affect collaborators if pushed."
-    else:
-        base = "May have side effects beyond normal read-only inspection."
-    if desc and desc not in base:
-        return _truncate(f"{base} Detector reason: {desc}.", 260)
-    return base
-
-
 def build_exec_approval_brief(
     command: str,
     description: str = "dangerous command",
     approval_data: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
-    """Build a structured approval brief with sensible fallbacks.
+    """Build a structured approval brief centered on human intent.
 
-    ``approval_data`` may contain richer fields produced by future tool callers
-    (goal, command_category/category, what_it_does, scope, risks,
-    stop_rollback_plan/rollback_plan). Missing fields are inferred from the
-    command and detector description so messaging popups never show only an
-    opaque detector label.
+    Explicit caller-provided intent/purpose fields win. Otherwise a best-effort
+    command-family summarizer produces an action title, command summary, scope,
+    and risk so UIs do not expose only low-level detector categories.
     """
     data = _as_mapping(approval_data)
     nested = _as_mapping(data.get("approval_brief") or data.get("brief"))
-    category = _first_nonempty(
-        nested.get("command_category"),
-        nested.get("category"),
-        data.get("command_category"),
-        data.get("category"),
-    ) or command_category(command, description)
-    goal = _first_nonempty(nested.get("goal"), data.get("goal"))
-    if not goal:
-        if category.startswith("Inline script execution"):
-            goal = "Decide whether Hermes should run the inline script command."
-        else:
-            goal = "Decide whether Hermes should run this flagged command."
+    summary = _summarize_command(command, description)
+    explicit_intent = _explicit_intent(data, nested)
+
+    intent = explicit_intent or summary["intent"]
     what = _first_nonempty(
-        nested.get("what_it_does"),
-        nested.get("what"),
-        data.get("what_it_does"),
-        data.get("what"),
-    ) or _what_it_does(command, description, category)
-    scope = _first_nonempty(nested.get("scope"), data.get("scope"))
-    if not scope:
-        scope = "Current execution environment and any files, services, or accounts referenced by the command."
-    risks = _first_nonempty(nested.get("risks"), data.get("risks")) or _risks(description, category)
+        nested.get("what_it_does"), nested.get("what"), data.get("what_it_does"), data.get("what")
+    ) or summary["what"]
+    scope = _first_nonempty(nested.get("scope"), data.get("scope")) or summary["scope"]
+    risks = _first_nonempty(nested.get("risks"), data.get("risks")) or summary["risks"]
+
+    detector_reason = (description or "").strip()
+    if detector_reason and detector_reason.lower() not in _DETECTOR_ONLY_DESCRIPTIONS:
+        risks = _truncate(f"{risks} Detector reason: {detector_reason}.", 280)
+
     rollback = _first_nonempty(
         nested.get("stop_rollback_plan"),
         nested.get("rollback_plan"),
@@ -140,15 +269,13 @@ def build_exec_approval_brief(
         data.get("stop_rollback_plan"),
         data.get("rollback_plan"),
         data.get("stop_plan"),
-    )
-    if not rollback:
-        rollback = "Deny to stop before execution; if approved and changes occur, use checkpoints/backups/git restore where applicable."
+    ) or "Deny to stop before execution; if approved and changes occur, use checkpoints/backups/git restore or service rollback where applicable."
 
     return {
-        "Goal": _truncate(goal),
-        "Command category": _truncate(category),
-        "What it does": _truncate(what, 260),
+        "Intent": _truncate(intent),
+        "Command summary": _command_summary(command),
         "Scope": _truncate(scope, 240),
+        "What it does": _truncate(what, 260),
         "Risks": _truncate(risks, 280),
         "Stop/rollback plan": _truncate(rollback, 260),
     }

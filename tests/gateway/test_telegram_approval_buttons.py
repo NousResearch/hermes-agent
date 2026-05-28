@@ -231,8 +231,8 @@ class TestTelegramExecApproval:
         )
 
         text = adapter._bot.send_message.call_args[1]["text"]
-        assert "Goal:" in text
-        assert "Command category: Inline script execution" in text
+        assert "Intent: Run inline python code" in text
+        assert "Command summary: python -c" in text
         assert "What it does:" in text
         assert "Scope:" in text
         assert "Risks:" in text
@@ -264,8 +264,8 @@ class TestTelegramExecApproval:
         )
 
         text = adapter._bot.send_message.call_args[1]["text"]
-        assert "Goal: Inspect generated report files" in text
-        assert "Command category: Report inspection script" in text
+        assert "Intent: Inspect generated report files" in text
+        assert "Command summary: python -c" in text
         assert "What it does: Reads report files and prints a summary" in text
         assert "Scope: Current repository only" in text
         assert "Risks: Should be read-only unless the inline code is wrong" in text

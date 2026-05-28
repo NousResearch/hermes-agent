@@ -2791,6 +2791,18 @@ def save_config_value(key_path: str, value: any) -> bool:
 # HermesCLI Class
 # ============================================================================
 
+def _approval_display_model(command: str, description: str, approval_data: dict | None = None) -> dict:
+    """Return human-readable approval prompt content for CLI rendering."""
+    from gateway.approval_brief import build_exec_approval_brief
+
+    brief = build_exec_approval_brief(command, description, approval_data)
+    intent = brief.get("Intent") or "Run the shown command"
+    return {
+        "title": f"Approve: {intent}",
+        "brief": brief,
+    }
+
+
 class HermesCLI:
     """
     Interactive CLI for the Hermes Agent.
@@ -11086,7 +11098,8 @@ class HermesCLI:
         return ""
 
     def _approval_callback(self, command: str, description: str,
-                           *, allow_permanent: bool = True) -> str:
+                           *, allow_permanent: bool = True,
+                           approval_data: dict | None = None) -> str:
         """
         Prompt for dangerous command approval through the prompt_toolkit UI.
 
@@ -11109,6 +11122,7 @@ class HermesCLI:
             self._approval_state = {
                 "command": command,
                 "description": description,
+                "approval_data": approval_data or {},
                 "choices": self._approval_choices(command, allow_permanent=allow_permanent),
                 "selected": 0,
                 "response_queue": response_queue,
@@ -11235,11 +11249,15 @@ class HermesCLI:
 
         command = state["command"]
         description = state["description"]
+        approval_data = state.get("approval_data") or {}
         choices = state["choices"]
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
 
-        title = "⚠️  Dangerous Command"
+        display_model = _approval_display_model(command, description, approval_data)
+        title = display_model["title"]
+        if len(title) > 72:
+            title = title[:71].rstrip() + "…"
         cmd_display = command if show_full or len(command) <= 70 else command[:70] + '...'
         choice_labels = {
             "once": "Allow once",
@@ -11249,7 +11267,13 @@ class HermesCLI:
             "view": "Show full command",
         }
 
-        preview_lines = _wrap_panel_text(description, 60)
+        brief = dict(display_model["brief"])
+        brief["Command summary"] = cmd_display
+        detail_text = "\n".join(f"{label}: {value}" for label, value in brief.items() if value)
+
+        preview_lines = []
+        for detail_line in detail_text.splitlines():
+            preview_lines.extend(_wrap_panel_text(detail_line, 60))
         preview_lines.extend(_wrap_panel_text(cmd_display, 60))
         for i, choice in enumerate(choices):
             prefix = '❯ ' if i == selected else '  '
@@ -11323,7 +11347,13 @@ class HermesCLI:
         # Even on huge terminals, cap description height so the panel stays compact.
         available_for_desc = max(0, min(available_for_desc, 10))
 
-        desc_wrapped = _wrap_panel_text(description, inner_text_width) if description else []
+        desc_wrapped = []
+        if detail_text:
+            for detail_line in detail_text.splitlines():
+                if len(detail_line) > inner_text_width:
+                    desc_wrapped.append(detail_line[: max(0, inner_text_width - 1)].rstrip() + "…")
+                else:
+                    desc_wrapped.append(detail_line)
         if available_for_desc < 1 or not desc_wrapped:
             desc_wrapped = []
         elif len(desc_wrapped) > available_for_desc:

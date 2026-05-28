@@ -25,6 +25,10 @@ class TestTavilyRequest:
         """No TAVILY_API_KEY → ValueError with guidance."""
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TAVILY_API_KEY", None)
+            os.environ.pop("TAVILY_API_KEYS", None)
+            os.environ.pop("TAVILY_API_KEY_BACKUP", None)
+            for i in range(2, 11):
+                os.environ.pop(f"TAVILY_API_KEY_{i}", None)
             from tools.web_tools import _tavily_request
             with pytest.raises(ValueError, match="TAVILY_API_KEY"):
                 _tavily_request("search", {"query": "test"})
@@ -35,7 +39,7 @@ class TestTavilyRequest:
         mock_response.json.return_value = {"results": []}
         mock_response.raise_for_status = MagicMock()
 
-        with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test-key"}):
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test-key", "TAVILY_API_KEYS": ""}):
             with patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post:
                 from tools.web_tools import _tavily_request
                 result = _tavily_request("search", {"query": "hello"})
@@ -55,7 +59,7 @@ class TestTavilyRequest:
             "401 Unauthorized", request=MagicMock(), response=mock_response
         )
 
-        with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-bad-key"}):
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-bad-key", "TAVILY_API_KEYS": ""}):
             with patch("tools.web_tools.httpx.post", return_value=mock_response):
                 from tools.web_tools import _tavily_request
                 with pytest.raises(_httpx.HTTPStatusError):
@@ -182,7 +186,7 @@ class TestWebSearchTavily:
         mock_response.raise_for_status = MagicMock()
 
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
-             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "TAVILY_API_KEYS": ""}), \
              patch("tools.web_tools.httpx.post", return_value=mock_response), \
              patch("tools.interrupt.is_interrupted", return_value=False):
             from tools.web_tools import web_search_tool
@@ -214,7 +218,7 @@ class TestWebExtractTavily:
         mock_response.raise_for_status = MagicMock()
 
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
-             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "TAVILY_API_KEYS": ""}), \
              patch("tools.web_tools.httpx.post", return_value=mock_response), \
              patch("tools.web_tools.process_content_with_llm", return_value=None):
             from tools.web_tools import web_extract_tool
@@ -251,7 +255,7 @@ class TestWebCrawlTavily:
         mock_response.raise_for_status = MagicMock()
 
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
-             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "TAVILY_API_KEYS": ""}), \
              patch("tools.web_tools.httpx.post", return_value=mock_response), \
              patch("tools.web_tools.check_website_access", return_value=None), \
              patch("tools.web_tools.is_safe_url", return_value=True), \
@@ -271,7 +275,7 @@ class TestWebCrawlTavily:
         mock_response.raise_for_status = MagicMock()
 
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
-             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "TAVILY_API_KEYS": ""}), \
              patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post, \
              patch("tools.web_tools.check_website_access", return_value=None), \
              patch("tools.web_tools.is_safe_url", return_value=True), \

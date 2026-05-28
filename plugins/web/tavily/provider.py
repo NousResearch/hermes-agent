@@ -22,7 +22,8 @@ Config keys this provider responds to::
 
 Env vars::
 
-    TAVILY_API_KEY=...           # https://app.tavily.com/home (required)
+    TAVILY_API_KEY=...           # legacy/single-key path
+    TAVILY_API_KEYS=key1,key2    # optional key pool with rotation/failover
     TAVILY_BASE_URL=...          # optional override of https://api.tavily.com
 
 Auth note: Tavily uses ``api_key`` in the JSON body for /search and
@@ -34,11 +35,81 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import threading
 from typing import Any, Dict, List
+
+import httpx
 
 from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
+
+_TAVILY_KEY_LOCK = threading.Lock()
+_TAVILY_KEY_CURSOR = 0
+
+
+def _split_tavily_keys(value: str) -> List[str]:
+    """Split comma/semicolon/whitespace separated Tavily keys."""
+    if not value:
+        return []
+    return [part.strip() for part in re.split(r"[,;\s]+", value) if part.strip()]
+
+
+def _get_tavily_api_keys() -> List[str]:
+    """Return configured Tavily API keys in priority order.
+
+    Backward compatible with the original single-key ``TAVILY_API_KEY`` while
+    allowing a higher-volume setup to provide a pool via
+    ``TAVILY_API_KEYS=key1,key2,...``. Backup aliases are accepted so
+    operational key swaps do not require code changes.
+    """
+    keys: List[str] = []
+    keys.extend(_split_tavily_keys(os.getenv("TAVILY_API_KEYS", "")))
+
+    for name in ("TAVILY_API_KEY", "TAVILY_API_KEY_BACKUP"):
+        value = os.getenv(name, "").strip()
+        if value:
+            keys.append(value)
+
+    for idx in range(2, 11):
+        value = os.getenv(f"TAVILY_API_KEY_{idx}", "").strip()
+        if value:
+            keys.append(value)
+
+    deduped: List[str] = []
+    seen = set()
+    for key in keys:
+        if key not in seen:
+            deduped.append(key)
+            seen.add(key)
+    return deduped
+
+
+def _ordered_tavily_keys_for_request() -> List[str]:
+    """Return keys rotated per request, preserving deterministic fallback."""
+    global _TAVILY_KEY_CURSOR
+    keys = _get_tavily_api_keys()
+    if len(keys) <= 1:
+        return keys
+    with _TAVILY_KEY_LOCK:
+        start = _TAVILY_KEY_CURSOR % len(keys)
+        _TAVILY_KEY_CURSOR = (_TAVILY_KEY_CURSOR + 1) % len(keys)
+    return keys[start:] + keys[:start]
+
+
+def _is_tavily_key_retryable(exc: Exception) -> bool:
+    """Return True when trying the next key could plausibly succeed."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = getattr(exc.response, "status_code", None)
+        if status in {401, 402, 403, 429, 432}:
+            return True
+        try:
+            body = exc.response.text.lower()
+        except Exception:
+            body = ""
+        return any(token in body for token in ("quota", "rate limit", "rate_limit", "limit exceeded"))
+    return False
 
 
 def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -48,28 +119,44 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     when ``TAVILY_API_KEY`` is unset; the caller catches and surfaces as
     a typed error response.
     """
-    import httpx
-
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
+    api_keys = _ordered_tavily_keys_for_request()
+    if not api_keys:
         raise ValueError(
-            "TAVILY_API_KEY environment variable not set. "
+            "TAVILY_API_KEY or TAVILY_API_KEYS environment variable not set. "
             "Get your API key at https://app.tavily.com/home"
         )
 
     base_url = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com")
-    payload = dict(payload)  # don't mutate caller's dict
-    payload["api_key"] = api_key
     url = f"{base_url}/{endpoint.lstrip('/')}"
     logger.info("Tavily %s request to %s", endpoint, url)
 
-    # Tavily /crawl requires Bearer header auth in addition to body auth;
-    # /search and /extract are body-only.
-    headers = {"Authorization": f"Bearer {api_key}"} if endpoint.strip("/") == "crawl" else {}
+    last_exc: Exception | None = None
+    for idx, api_key in enumerate(api_keys):
+        request_payload = dict(payload)  # don't mutate caller's dict
+        request_payload["api_key"] = api_key
 
-    response = httpx.post(url, json=payload, headers=headers, timeout=60)
-    response.raise_for_status()
-    return response.json()
+        # Tavily /crawl requires Bearer header auth in addition to body auth;
+        # /search and /extract are body-only.
+        headers = {"Authorization": f"Bearer {api_key}"} if endpoint.strip("/") == "crawl" else {}
+
+        try:
+            response = httpx.post(url, json=request_payload, headers=headers, timeout=60)
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:  # noqa: BLE001 — preserve last concrete error
+            last_exc = exc
+            if idx < len(api_keys) - 1 and _is_tavily_key_retryable(exc):
+                logger.warning(
+                    "Tavily %s key #%d failed with retryable auth/quota status; trying next key",
+                    endpoint,
+                    idx + 1,
+                )
+                continue
+            raise
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Tavily request failed before any request was attempted")
 
 
 def _normalize_tavily_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
@@ -150,8 +237,8 @@ class TavilyWebSearchProvider(WebSearchProvider):
         return "Tavily"
 
     def is_available(self) -> bool:
-        """Return True when ``TAVILY_API_KEY`` is set to a non-empty value."""
-        return bool(os.getenv("TAVILY_API_KEY", "").strip())
+        """Return True when at least one Tavily API key is configured."""
+        return bool(_get_tavily_api_keys())
 
     def supports_search(self) -> bool:
         return True
@@ -279,6 +366,11 @@ class TavilyWebSearchProvider(WebSearchProvider):
                 {
                     "key": "TAVILY_API_KEY",
                     "prompt": "Tavily API key",
+                    "url": "https://app.tavily.com/home",
+                },
+                {
+                    "key": "TAVILY_API_KEYS",
+                    "prompt": "Optional Tavily key pool (comma-separated)",
                     "url": "https://app.tavily.com/home",
                 },
             ],

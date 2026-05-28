@@ -10,6 +10,7 @@ Built-in TTS providers:
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - xAI TTS: Grok voices, uses xAI Grok OAuth credentials or XAI_API_KEY
+- Volcengine / Doubao TTS: Chinese TTS, needs VOLCENGINE_TTS_API_KEY/VOLC_ACCESS_KEY and VOLC_APP_ID
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
 - Piper (local, free, no API key): OHF-Voice/piper1-gpl neural VITS, 44 languages
@@ -172,6 +173,11 @@ DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_VOLCENGINE_TTS_BASE_URL = "https://openspeech.bytedance.com/api/v1/tts"
+DEFAULT_VOLCENGINE_TTS_CLUSTER = "volcano_tts"
+DEFAULT_VOLCENGINE_TTS_VOICE = "zh_female_vv_uranus_bigtts"
+DEFAULT_VOLCENGINE_TTS_RESOURCE_ID = "seed-tts-2.0"
+DEFAULT_VOLCENGINE_TTS_SAMPLE_RATE = 24000
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -197,6 +203,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
+    "volcengine": 5000,   # conservative sync HTTP v1 cap for Doubao TTS
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
@@ -344,6 +351,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "xai",
     "mistral",
     "gemini",
+    "volcengine",
     "neutts",
     "kittentts",
     "piper",
@@ -1336,6 +1344,115 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # ===========================================================================
+# Provider: Volcengine / Doubao TTS
+# ===========================================================================
+def _generate_volcengine_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Volcengine / Doubao TTS HTTP v1 API."""
+    import requests
+
+    api_key = (
+        get_env_value("VOLC_ACCESS_KEY")
+        or get_env_value("VOLCENGINE_TTS_API_KEY")
+        or ""
+    ).strip()
+    if not api_key:
+        raise ValueError(
+            "VOLCENGINE_TTS_API_KEY / VOLC_ACCESS_KEY not set. Configure one in ~/.hermes/.env or the environment."
+        )
+
+    vc_config = tts_config.get("volcengine", {})
+    app_id = str(
+        vc_config.get("app_id")
+        or get_env_value("VOLCENGINE_TTS_APP_ID")
+        or get_env_value("VOLC_APP_ID")
+        or ""
+    ).strip()
+    if not app_id:
+        raise ValueError(
+            "VOLCENGINE_TTS_APP_ID (or VOLC_APP_ID) not set. Volcengine HTTP v1 requires an appid."
+        )
+
+    voice = str(vc_config.get("voice", DEFAULT_VOLCENGINE_TTS_VOICE)).strip() or DEFAULT_VOLCENGINE_TTS_VOICE
+    cluster = str(vc_config.get("cluster", DEFAULT_VOLCENGINE_TTS_CLUSTER)).strip() or DEFAULT_VOLCENGINE_TTS_CLUSTER
+    sample_rate = int(vc_config.get("sample_rate", DEFAULT_VOLCENGINE_TTS_SAMPLE_RATE))
+    base_url = str(vc_config.get("base_url", DEFAULT_VOLCENGINE_TTS_BASE_URL)).strip() or DEFAULT_VOLCENGINE_TTS_BASE_URL
+
+    speed = vc_config.get("speed", tts_config.get("speed", 1.0))
+    try:
+        speed_ratio = max(0.2, min(3.0, float(speed)))
+    except (TypeError, ValueError):
+        speed_ratio = 1.0
+
+    if output_path.endswith(".ogg"):
+        audio_format = "ogg_opus"
+    elif output_path.endswith(".wav"):
+        audio_format = "wav"
+    elif output_path.endswith(".pcm"):
+        audio_format = "pcm"
+    else:
+        audio_format = "mp3"
+
+    audio_payload: Dict[str, Any] = {
+        "voice_type": voice,
+        "encoding": audio_format,
+        "rate": sample_rate,
+        "speed_ratio": speed_ratio,
+        "volume_ratio": 1.0,
+        "pitch_ratio": 1.0,
+    }
+    if audio_format == "ogg_opus":
+        audio_payload["compression_rate"] = int(vc_config.get("compression_rate", 1))
+
+    payload = {
+        "app": {
+            "appid": app_id,
+            "token": str(vc_config.get("token", "hermes")).strip() or "hermes",
+            "cluster": cluster,
+        },
+        "user": {"uid": "hermes"},
+        "audio": audio_payload,
+        "request": {
+            "reqid": str(uuid.uuid4()),
+            "text": text,
+            "text_type": "plain",
+            "operation": "query",
+            "silence_duration": str(vc_config.get("silence_duration", 800)),
+            "pure_english_opt": "1",
+            "extra_param": json.dumps({"disable_emoji_filter": True}),
+        },
+    }
+
+    response = requests.post(
+        base_url,
+        headers={
+            "Authorization": f"Bearer;{api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=60,
+    )
+    response.raise_for_status()
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"Volcengine TTS returned invalid JSON: {response.text[:300]}") from exc
+
+    code = data.get("code")
+    if code not in (3000, 0, None):
+        raise RuntimeError(data.get("message") or f"Volcengine TTS API error (code {code})")
+
+    audio_b64 = data.get("data")
+    if not audio_b64:
+        raise RuntimeError("Volcengine TTS returned no audio data")
+
+    with open(output_path, "wb") as f:
+        f.write(base64.b64decode(audio_b64))
+
+    return output_path
+
+
+# ===========================================================================
 # Provider: Google Gemini TTS
 # ===========================================================================
 def _wrap_pcm_as_wav(
@@ -1885,7 +2002,7 @@ def text_to_speech_tool(
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini", "volcengine"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -1969,6 +2086,10 @@ def text_to_speech_tool(
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
+
+        elif provider == "volcengine":
+            logger.info("Generating speech with Volcengine / Doubao TTS...")
+            _generate_volcengine_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -2078,7 +2199,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
+        elif provider in {"elevenlabs", "openai", "mistral", "gemini", "volcengine"}:
             voice_compatible = want_opus and file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -2158,6 +2279,10 @@ def check_tts_requirements() -> bool:
     except Exception:
         pass
     if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
+        return True
+    volcengine_api_key = get_env_value("VOLCENGINE_TTS_API_KEY") or get_env_value("VOLC_ACCESS_KEY")
+    volcengine_app_id = get_env_value("VOLCENGINE_TTS_APP_ID") or get_env_value("VOLC_APP_ID")
+    if volcengine_api_key and volcengine_app_id:
         return True
     try:
         _import_mistral_client()

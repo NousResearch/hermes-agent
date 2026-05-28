@@ -36,6 +36,7 @@ from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
     _auto_continue_freshness_window,
+    _coerce_agent_result,
     _coerce_gateway_timestamp,
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
@@ -68,6 +69,16 @@ def test_resume_pending_is_cleared_only_after_successful_turn():
     assert _should_clear_resume_pending_after_turn({"failed": True}) is False
     assert _should_clear_resume_pending_after_turn({"partial": True}) is False
     assert _should_clear_resume_pending_after_turn({"error": "boom"}) is False
+
+
+def test_non_dict_agent_result_is_coerced_to_failed_result():
+    result = _coerce_agent_result("timeout fallback", history_len=3)
+
+    assert result["final_response"] == "timeout fallback"
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert result["history_offset"] == 3
+    assert "str" in result["error"]
 
 
 def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):

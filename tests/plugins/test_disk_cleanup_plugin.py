@@ -277,6 +277,19 @@ class TestPostToolCallHook:
         data = json.loads(tracked_file.read_text())
         assert any(Path(i["path"]) == p.resolve() for i in data)
 
+    def test_terminal_ignores_escaped_multiline_root_path(self, _isolate_env):
+        pi = _load_plugin_init()
+
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={"command": "ssh host 'cd /root/LiveTalking'"},
+            result="Welcome\\n+ cd /root/LiveTalking\\n+ mkdir -p models",
+            task_id="t-root", session_id="s-root",
+        )
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
+
     def test_ignores_unrelated_tool(self, _isolate_env):
         pi = _load_plugin_init()
         pi._on_post_tool_call(

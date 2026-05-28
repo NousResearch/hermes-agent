@@ -945,7 +945,14 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    -- Persisted ``hermes chat`` session id, captured by the worker via
+    -- ``kanban_register_session`` on startup. Used by the dispatcher on
+    -- the next respawn (after unblock or reclaim) to launch with
+    -- ``--resume <session_id>`` so the new worker continues from the
+    -- prior conversation instead of starting fresh. NULL while the
+    -- worker has not registered, or for runs predating this column.
+    session_id          TEXT
 );
 
 -- Subscription from a gateway source (platform + chat + thread) to a
@@ -1531,6 +1538,28 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
+
+    # task_runs gained a per-run ``session_id`` column for the worker's
+    # ``hermes chat`` session — distinct from ``tasks.session_id`` which
+    # records the *originating* agent session that created the task.
+    # Captured by the worker via ``kanban_register_session`` on startup;
+    # consumed by the dispatcher on next respawn to launch with
+    # ``--resume <session_id>`` so the worker continues from the prior
+    # conversation. NULL on legacy runs and any run where the worker
+    # never called the registration tool. See issue #33873.
+    runs_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='task_runs'"
+    ).fetchone() is not None
+    if runs_table_exists:
+        runs_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        if "session_id" not in runs_cols:
+            _add_column_if_missing(
+                conn, "task_runs", "session_id", "session_id TEXT"
+            )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -2353,6 +2382,59 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
         "SELECT current_run_id FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
+
+
+def set_run_session_id(
+    conn: sqlite3.Connection, run_id: int, session_id: str
+) -> bool:
+    """Persist a worker's ``hermes chat`` session id on its run row.
+
+    Called by the ``kanban_register_session`` MCP tool on worker startup.
+    Idempotent: re-calling with the same value is a no-op; overwriting
+    with a different value is allowed (a worker that crashes and is
+    auto-resumed registers afresh; we want the latest one).
+
+    Returns ``True`` if the row was updated, ``False`` if no row matched
+    (unknown ``run_id``). The caller should treat ``False`` as a hard
+    error — registering a session against an absent run is a worker
+    misconfiguration, not a transient state.
+    """
+    cleaned = (session_id or "").strip()
+    if not cleaned:
+        return False
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE task_runs SET session_id = ? WHERE id = ?",
+            (cleaned, int(run_id)),
+        )
+        return cur.rowcount == 1
+
+
+def latest_session_id_for_task(
+    conn: sqlite3.Connection, task_id: str
+) -> Optional[str]:
+    """Return the most recent non-NULL ``session_id`` across runs of a task.
+
+    Used by the dispatcher on respawn (after unblock or reclaim) to look
+    up the prior worker's session and launch the new worker with
+    ``--resume <session_id>``. ``None`` means there is no prior session
+    to resume — either the task has never run, every prior run predates
+    the column, or no prior worker called ``kanban_register_session``.
+
+    Ordering by ``started_at DESC`` (not ``id DESC``) so manual reseats
+    of runs preserve dispatch ordering — see the manual-resume recipe
+    discussion in issue #33873.
+    """
+    row = conn.execute(
+        "SELECT session_id FROM task_runs "
+        "WHERE task_id = ? AND session_id IS NOT NULL "
+        "ORDER BY started_at DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    val = row["session_id"]
+    return str(val) if val else None
 
 
 def _synthesize_ended_run(

@@ -207,6 +207,11 @@ class GatewayAuthorizationMixin:
         if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
             return True
 
+        # Adapter-verified role auth: the Discord adapter already confirmed the
+        # user holds a role in DISCORD_ALLOWED_ROLES before dispatching the message.
+        if getattr(source, "role_authorized", False):
+            return True
+
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
             if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:

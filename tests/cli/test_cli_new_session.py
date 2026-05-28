@@ -276,7 +276,32 @@ def test_new_session_with_duplicate_title_surfaces_error(capsys):
     assert "already in use" in joined
     assert "session started untitled" in joined
 
-    # The success banner must NOT claim the rejected title as the session name.
     captured = capsys.readouterr()
     assert "New session started: Dup" not in captured.out
     assert "New session started!" in captured.out
+
+
+def test_new_command_prints_resume_footer(tmp_path, capsys):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    cli.process_command("/new")
+
+    captured = capsys.readouterr()
+    assert f"hermes --resume {old_session_id}" in captured.out
+    assert "Resume this session with:" in captured.out
+    assert "Session:" in captured.out
+    assert "Duration:" in captured.out
+    assert "Messages:" in captured.out
+
+
+def test_new_command_prints_session_title_in_footer(tmp_path, capsys):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+    cli._session_db.set_session_title(old_session_id, "my-test-session")
+
+    cli.process_command("/new")
+
+    captured = capsys.readouterr()
+    assert f'hermes -c "my-test-session"' in captured.out
+    assert "my-test-session" in captured.out

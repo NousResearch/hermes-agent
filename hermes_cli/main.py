@@ -12656,6 +12656,11 @@ Examples:
         ],
     )
     skills_search.add_argument("--limit", type=int, default=10, help="Max results")
+    skills_search.add_argument(
+        "--json",
+        action="store_true",
+        help="Output JSON instead of a table (full identifiers, scripting-friendly)",
+    )
 
     skills_install = skills_subparsers.add_parser("install", help="Install a skill")
     skills_install.add_argument(

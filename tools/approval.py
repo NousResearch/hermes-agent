@@ -426,6 +426,18 @@ DANGEROUS_PATTERNS_COMPILED = [
     for pattern, description in DANGEROUS_PATTERNS
 ]
 
+# Descriptions of patterns that kill the gateway process itself. When any of
+# these fire inside a gateway session, the approving process IS the target,
+# so we hard-block to prevent an infinite approval->crash->restart loop (#18693).
+_GATEWAY_SELF_TERMINATION_DESCRIPTIONS: frozenset = frozenset([
+    "stop/restart hermes gateway (kills running agents)",
+    "hermes update (restarts gateway, kills running agents)",
+    "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')",
+    "kill hermes/gateway process (self-termination)",
+    "kill process via pgrep expansion (self-termination)",
+    "kill process via backtick pgrep expansion (self-termination)",
+])
+
 
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
@@ -1148,6 +1160,16 @@ def check_all_command_guards(command: str, env_type: str,
             warnings.append((tirith_key, tirith_desc, True))
 
     if is_dangerous:
+        if is_gateway and description in _GATEWAY_SELF_TERMINATION_DESCRIPTIONS:
+            return {
+                "approved": False,
+                "message": (
+                    f"Self-termination blocked: '{description}'. "
+                    "This command would kill the gateway process. "
+                    "Run hermes gateway stop or hermes gateway restart "
+                    "from a separate terminal instead."
+                ),
+            }
         if not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
 

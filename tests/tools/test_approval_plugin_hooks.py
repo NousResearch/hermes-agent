@@ -12,12 +12,13 @@ import pytest
 
 import tools.approval as approval_module
 from tools.approval import (
+    _GATEWAY_SELF_TERMINATION_DESCRIPTIONS,
     check_all_command_guards,
+    clear_session,
     register_gateway_notify,
-    unregister_gateway_notify,
     resolve_gateway_approval,
     set_current_session_key,
-    clear_session,
+    unregister_gateway_notify,
 )
 
 
@@ -152,4 +153,74 @@ class TestGatewayPathFiresHooks:
     approval event until resolve_gateway_approval() is called from another
     thread."""
 
+class TestGatewaySelfTerminationBlock:
+    """Gateway self-termination hard-block (issue #18693).
 
+    Commands that kill the gateway process itself (pkill hermes,
+    killall hermes, hermes gateway stop/restart, hermes update, etc.)
+    are hard-blocked inside gateway sessions to prevent an infinite
+    approval -> crash -> restart -> approval loop.
+    """
+
+    def test_gateway_blocks_pkill_hermes(self, isolated_session, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+
+        result = check_all_command_guards("pkill -f hermes", "local")
+
+        assert result["approved"] is False
+        assert "Self-termination blocked" in result["message"]
+
+    def test_gateway_blocks_hermes_gateway_stop(self, isolated_session, monkeypatch):
+        """hermes gateway stop restarts the gateway, killing running agents."""
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+
+        result = check_all_command_guards(
+            "hermes gateway stop --replace", "local"
+        )
+
+        assert result["approved"] is False
+        assert "Self-termination blocked" in result["message"]
+
+    def test_cli_does_not_block_pkill(self, isolated_session, monkeypatch):
+        """CLI path: self-termination goes through normal approval, not hard-block."""
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+
+        def cb(command, description, *, allow_permanent=True):
+            return "once"
+
+        result = check_all_command_guards(
+            "pkill -f hermes", "local", approval_callback=cb,
+        )
+
+        assert result["approved"] is True
+
+    def test_non_interactive_passes_through(self, isolated_session, monkeypatch):
+        """Non-CLI, non-gateway -> guard never reached, approved by fallthrough."""
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+
+        result = check_all_command_guards("pkill -f hermes", "local")
+
+        assert result["approved"] is True
+
+    def test_all_descriptions_in_dangerous_patterns(self):
+        """Invariant: every self-termination description exists in DANGEROUS_PATTERNS."""
+        dangerous_descs = {desc for _, desc in approval_module.DANGEROUS_PATTERNS}
+        for desc in _GATEWAY_SELF_TERMINATION_DESCRIPTIONS:
+            assert desc in dangerous_descs, (
+                f"{desc!r} not in DANGEROUS_PATTERNS — fix the frozenset or the pattern list"
+            )

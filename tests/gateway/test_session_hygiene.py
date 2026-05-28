@@ -537,8 +537,13 @@ async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(mo
                 _last_summary_fallback_used=False,
                 _last_summary_dropped_count=0,
                 _last_summary_error=None,
-                _last_aux_model_failure_model="gemini-3-flash-preview",
-                _last_aux_model_failure_error="404 model not found",
+                _last_aux_model_failure_model=(
+                    "gemini-3-flash-preview-sk-abcdefghijklmnopqrstuvwxyz1234567890"
+                ),
+                _last_aux_model_failure_error=(
+                    "404 model not found: Authorization: Bearer "
+                    "sk-abcdefghijklmnopqrstuvwxyz1234567890"
+                ),
             )
             type(self).last_instance = self
 
@@ -627,6 +632,7 @@ async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(mo
     note = aux_notes[0]
     assert "gemini-3-flash-preview" in note["content"]
     assert "404" in note["content"]
+    assert "sk-abcdefghijklmnopqrstuvwxyz1234567890" not in note["content"]
     assert "auxiliary.compression.model" in note["content"]
     # Note must land in the originating topic/thread.
     assert note["chat_id"] == "-1001"

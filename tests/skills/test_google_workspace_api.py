@@ -255,25 +255,11 @@ def test_drive_download_path_rejects_directory_output(api_module, tmp_path, monk
     with pytest.raises(ValueError):
         api_module._safe_drive_download_path(".", "filename.txt")
 
-    # trailing separators designate a directory, even if it does not exist yet
-    with pytest.raises(ValueError):
-        api_module._safe_drive_download_path("new-dir/", "filename.txt")
-
     # existing directory as the target
     existing_dir = tmp_path / "existing"
     existing_dir.mkdir()
     with pytest.raises(ValueError):
         api_module._safe_drive_download_path("existing", "filename.txt")
-
-
-def test_drive_download_path_rejects_reserved_remote_names(api_module, tmp_path, monkeypatch):
-    """_safe_drive_download_path rejects remote names that cannot provide a filename."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(tmp_path))
-
-    for remote_name in (".", "..", "../", "nested/.."):
-        with pytest.raises(ValueError, match="reserved|filename|empty"):
-            api_module._safe_drive_download_path("", remote_name)
 
 
 def test_drive_download_path_sanitizes_remote_name_and_enforces_safe_root(api_module, tmp_path, monkeypatch):

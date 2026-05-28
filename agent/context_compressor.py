@@ -792,8 +792,11 @@ class ContextCompressor(ContextEngine):
             "Falling back to main model '%s' for compression.",
             self.summary_model, reason, e, self.model,
         )
-        self._last_aux_model_failure_error = _redacted_error_preview(e)
-        self._last_aux_model_failure_model = self.summary_model
+        _err_text = redact_sensitive_text(str(e).strip() or e.__class__.__name__, force=True)
+        if len(_err_text) > 220:
+            _err_text = _err_text[:217].rstrip() + "..."
+        self._last_aux_model_failure_error = _err_text
+        self._last_aux_model_failure_model = redact_sensitive_text(self.summary_model or "", force=True)
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
 

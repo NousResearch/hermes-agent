@@ -262,11 +262,12 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
     agent_instance.context_compressor._last_summary_dropped_count = 0
     agent_instance.context_compressor._last_summary_error = None
     # But the configured aux model DID fail before the retry succeeded.
+    raw_token = "sk-abcdefghijklmnopqrstuvwxyz1234567890"
     agent_instance.context_compressor._last_aux_model_failure_model = (
-        "gemini-3-flash-preview"
+        f"gemini-3-flash-preview-{raw_token}"
     )
     agent_instance.context_compressor._last_aux_model_failure_error = (
-        "404 model not found: gemini-3-flash-preview"
+        f"404 model not found: Authorization: Bearer {raw_token}"
     )
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
@@ -294,6 +295,7 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
     assert "ℹ️" in result
     assert "gemini-3-flash-preview" in result
     assert "404" in result
+    assert raw_token not in result
     assert "auxiliary.compression.model" in result
     # The user's context is explicitly called out as intact
     assert "intact" in result

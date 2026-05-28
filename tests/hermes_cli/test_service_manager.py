@@ -536,6 +536,7 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
     assert run_path.is_file()
     assert run_path.stat().st_mode & 0o111  # executable
     run_text = run_path.read_text()
+    assert "export HOME=/opt/data" in run_text
     assert "hermes -p coder gateway run" in run_text
     assert "s6-setuidgid hermes" in run_text
     # Sentinel marking this as the supervised-child invocation. Without
@@ -584,6 +585,15 @@ def test_s6_register_extra_env_is_quoted(s6_scandir, fake_subprocess_run) -> Non
     # shlex.quote should have wrapped both values
     assert "export FOO='bar baz'" in run_text
     assert "export QUOTED='a'\"'\"'b'" in run_text
+
+
+def test_render_run_script_resets_home_before_exec() -> None:
+    from hermes_cli.service_manager import S6ServiceManager
+
+    run_text = S6ServiceManager._render_run_script("coder", {})
+
+    assert "export HOME=/opt/data" in run_text
+    assert "exec s6-setuidgid hermes hermes -p coder gateway run" in run_text
 
 
 def test_s6_register_rejects_invalid_profile_name(s6_scandir) -> None:

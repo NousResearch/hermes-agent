@@ -566,8 +566,11 @@ class S6ServiceManager:
           1. Sources HERMES_HOME (and any extra env) via with-contenv —
              so e.g. ``-e HERMES_HOME=/data/hermes`` is honored at run
              time, not Python-substituted at registration time (OQ8-C).
-          2. Activates the bundled venv.
-          3. Drops to the hermes user and exec's
+          2. Resets ``HOME`` to ``/opt/data`` before the privilege drop
+             so with-contenv's root HOME does not leak into the
+             unprivileged gateway process.
+          3. Activates the bundled venv.
+          4. Drops to the hermes user and exec's
              ``hermes -p <profile> gateway run`` (or just ``hermes
              gateway run`` for the default profile — see below).
 
@@ -597,6 +600,7 @@ class S6ServiceManager:
             "#!/command/with-contenv sh",
             "# shellcheck shell=sh",
             "set -e",
+            "export HOME=/opt/data",
             "cd /opt/data",
             ". /opt/hermes/.venv/bin/activate",
         ]

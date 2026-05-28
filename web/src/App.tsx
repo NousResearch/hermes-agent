@@ -122,7 +122,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/profiles": ProfilesPage,
   "/config": ConfigPage,
   "/env": EnvPage,
-  "/docs": DocsPage,
+  "/documentation": DocsPage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -166,7 +166,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   {
-    path: "/docs",
+    path: "/documentation",
     labelKey: "documentation",
     label: "Documentation",
     icon: BookOpen,

@@ -1193,13 +1193,19 @@ class MessageEvent:
     # trigger message alone, then prepend this context afterward.
     channel_context: Optional[str] = None
     
+    # Target Hermes profile override — set by the gateway when profile_routing
+    # config maps this user to a specific profile.  When set, the gateway
+    # switches to this profile for the duration of the message processing,
+    # then restores the original profile afterward.
+    target_profile: Optional[str] = None
+
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
-    
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.text.startswith("/")

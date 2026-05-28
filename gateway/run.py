@@ -1695,6 +1695,7 @@ class GatewayRunner:
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
+        self._profile_routing = self._load_profile_routing()
         self._fallback_model = self._load_fallback_model()
 
         # Wire process registry into session store for reset protection
@@ -3014,6 +3015,45 @@ class GatewayRunner:
         except Exception:
             pass
         return {}
+
+    @staticmethod
+    def _load_profile_routing() -> dict:
+        """Load per-user profile routing from config.yaml.
+
+        ``profile_routing`` is a dict mapping user identity strings
+        (Telegram UID, Discord snowflake, etc.) to Hermes profile names.
+
+        Example config.yaml snippet::
+
+            profile_routing:
+              "7165055445": palantir       # Telegram UID → palantir profile
+              "123456789": arien          # Discord ID → arien profile
+
+        Returns an empty dict when the key is absent or unreadable.
+        """
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return cfg.get("profile_routing", {}) or {}
+        except Exception:
+            pass
+        return {}
+
+    @staticmethod
+    def _resolve_profile_for_user(user_id: str | None, profile_routing: dict) -> str | None:
+        """Resolve the Hermes profile for a given user.
+
+        Looks up *user_id* in the *profile_routing* mapping.  Returns the
+        target profile name when found, or None to fall through to the
+        current profile.  Unknown/unmapped users keep whatever profile
+        is active — routing only overrides when explicitly configured.
+        """
+        if not user_id or not profile_routing:
+            return None
+        return profile_routing.get(str(user_id))
 
     @staticmethod
     def _load_fallback_model() -> list | None:
@@ -6858,7 +6898,24 @@ class GatewayRunner:
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
-        
+
+        # --- Per-user profile routing ---------------------------------------
+        # If profile_routing is configured, check whether this user's ID maps
+        # to a specific Hermes profile.  When matched, attach the target profile
+        # to the MessageEvent so downstream agent initialization picks it up.
+        if self._profile_routing and source.user_id:
+            _routed_profile = self._resolve_profile_for_user(
+                str(source.user_id), self._profile_routing
+            )
+            if _routed_profile and _routed_profile != self._active_profile_name():
+                logger.info(
+                    "Profile routing: user %s → profile '%s' (was '%s')",
+                    source.user_id,
+                    _routed_profile,
+                    self._active_profile_name(),
+                )
+                event.target_profile = _routed_profile
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via

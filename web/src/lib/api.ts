@@ -863,12 +863,14 @@ export interface AgentConsoleMessage {
   role: "user" | "assistant";
   content: string;
   created_at: string;
+  mode?: "light" | "task" | string | null;
   status?: string | null;
   error?: string | null;
   duration_seconds?: number | null;
   api_calls?: number | null;
   usage?: Record<string, number>;
   model?: string | null;
+  model_ref?: string | null;
 }
 
 export interface AgentConsoleSession {
@@ -879,7 +881,14 @@ export interface AgentConsoleSession {
   workspace: string;
   risk_level: string;
   model_ref: string;
+  mode?: "light" | "task" | string | null;
   status: string;
+  status_detail?: {
+    mode?: string;
+    model_ref?: string | null;
+    started_at?: string;
+    description?: string;
+  } | null;
   created_at: string;
   updated_at: string;
   messages: AgentConsoleMessage[];
@@ -893,12 +902,14 @@ export interface AgentConsoleSessionsResponse {
 export interface AgentConsoleSessionCreateRequest {
   workspace?: string;
   risk_level?: string;
+  mode?: "light" | "task";
 }
 
 export interface AgentConsoleMessageCreateRequest {
   prompt: string;
   workspace?: string;
   risk_level?: string;
+  mode?: "light" | "task";
 }
 
 export interface DelegationEvent {

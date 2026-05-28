@@ -10,15 +10,15 @@ agents:
   - 技术参谋
   - nesta
   role_summary: 技术中间层、需求拆解、策略判断，承接原 nesta 职责。
-  model_ref: deepseek_pro
+  model_ref: opencode_go_glm51
   model_strategy:
     mode: fallback
-    primary: deepseek_pro
+    primary: opencode_go_glm51
     chain:
-    - deepseek_pro
-    - opencode_go_deepseek_pro
     - opencode_go_glm51
+    - opencode_go_deepseek_pro
     - opencode_go_qwen37_max
+    - deepseek_pro
     fallback_on:
     - quota_exceeded
     - rate_limited
@@ -113,14 +113,14 @@ agents:
   - deepseek
   role_summary: 小改、小测试、低风险机械执行；不负责复杂重构和高风险操作。外部搜索遵循 DeepSeek Worker Search Policy：本地优先，必要时用
     anysearch-lite，已知 URL 用 scrapling-fetch。
-  model_ref: deepseek_pro
+  model_ref: opencode_go_deepseek_pro
   model_strategy:
     mode: fallback
-    primary: deepseek_pro
+    primary: opencode_go_deepseek_pro
     chain:
-    - deepseek_pro
     - opencode_go_deepseek_pro
     - opencode_go_deepseek_flash
+    - deepseek_pro
     - deepseek_flash
     fallback_on:
     - quota_exceeded
@@ -204,13 +204,13 @@ agents:
   - 竞品研究
   - intelligence
   role_summary: 调研、竞品、资料收集、信息核验。
-  model_ref: opencode_go_qwen36
+  model_ref: opencode_go_qwen37_max
   model_strategy:
     mode: fallback
-    primary: opencode_go_qwen36
+    primary: opencode_go_qwen37_max
     chain:
-    - opencode_go_qwen36
     - opencode_go_qwen37_max
+    - opencode_go_qwen36
     - opencode_go_kimi26
     - deepseek_flash
     fallback_on:
@@ -249,13 +249,13 @@ agents:
   - 提案策划
   - pirlo
   role_summary: 商业方案、PPT 提案、内容结构。
-  model_ref: opencode_go_kimi25
+  model_ref: opencode_go_kimi26
   model_strategy:
     mode: fallback
-    primary: opencode_go_kimi25
+    primary: opencode_go_kimi26
     chain:
-    - opencode_go_kimi25
     - opencode_go_kimi26
+    - opencode_go_kimi25
     - opencode_go_minimax27
     - deepseek_pro
     fallback_on:
@@ -298,15 +298,15 @@ agents:
   - 截图员
   - tars
   role_summary: 桌面、浏览器 GUI、截图、视觉验证。
-  model_ref: tars_gpt54
+  model_ref: opencode_go_mimo25_pro
   model_strategy:
     mode: fallback
-    primary: tars_gpt54
+    primary: opencode_go_mimo25_pro
     chain:
-    - tars_gpt54
     - opencode_go_mimo25_pro
     - opencode_go_mimo2_omni
     - opencode_go_qwen37_max
+    - tars_gpt54
     fallback_on:
     - quota_exceeded
     - rate_limited
@@ -349,15 +349,15 @@ agents:
   - 风险审核
   - ambrosini
   role_summary: 高风险验收、最终质量门；可只读查询 CodeGraph 验证影响面。
-  model_ref: deepseek_pro
+  model_ref: opencode_go_glm51
   model_strategy:
     mode: fallback
-    primary: deepseek_pro
+    primary: opencode_go_glm51
     chain:
-    - deepseek_pro
-    - opencode_go_deepseek_pro
     - opencode_go_glm51
+    - opencode_go_deepseek_pro
     - opencode_go_qwen37_max
+    - deepseek_pro
     fallback_on:
     - quota_exceeded
     - rate_limited

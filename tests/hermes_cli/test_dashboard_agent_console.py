@@ -2,6 +2,7 @@ import json
 import sqlite3
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -317,7 +318,7 @@ def test_agent_console_session_sends_message_and_stores_reply(tmp_path, monkeypa
     created = client.post(
         "/api/agents/pirlo/console/sessions",
         headers=_headers(),
-        json={"workspace": str(tmp_path), "risk_level": "R0"},
+        json={"workspace": str(tmp_path), "risk_level": "R0", "mode": "task"},
     )
     assert created.status_code == 200, created.text
     session_id = created.json()["session_id"]
@@ -341,6 +342,164 @@ def test_agent_console_session_sends_message_and_stores_reply(tmp_path, monkeypa
     assert deleted.status_code == 200, deleted.text
     stored_after_delete = json.loads((tmp_path / "agent-console-sessions.json").read_text(encoding="utf-8"))
     assert stored_after_delete["sessions"] == []
+
+
+def test_agent_console_light_mode_uses_direct_chat_not_delegate(tmp_path, monkeypatch):
+    monkeypatch.setattr(ws, "_AGENT_CONSOLE_SESSIONS_PATH", tmp_path / "agent-console-sessions.json")
+    monkeypatch.setattr(ws, "_valid_agent_ids", None)
+    monkeypatch.setattr(ws, "_external_runtime_agent_ids", None)
+
+    def forbidden_delegate(*_args, **_kwargs):  # pragma: no cover - failure path
+        raise AssertionError("light console chat must not call delegate_task")
+
+    def fake_light(session, prompt):
+        assert session["mode"] == "light"
+        assert prompt == "hello"
+        return {
+            "content": "quick reply",
+            "status": "completed",
+            "duration_seconds": 0.02,
+            "api_calls": 1,
+            "usage": {"input_tokens": 3, "output_tokens": 4},
+            "model": "kimi-k2.5",
+            "model_ref": "opencode_go_kimi25",
+            "mode": "light",
+        }
+
+    monkeypatch.setattr(ws, "_run_agent_console_turn", forbidden_delegate)
+    monkeypatch.setattr(ws, "_run_agent_console_light_turn", fake_light)
+    client = _client()
+
+    created = client.post(
+        "/api/agents/pirlo/console/sessions",
+        headers=_headers(),
+        json={"workspace": str(tmp_path), "risk_level": "R0", "mode": "light"},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["mode"] == "light"
+
+    sent = client.post(
+        f"/api/agents/console/sessions/{created.json()['session_id']}/messages",
+        headers=_headers(),
+        json={"prompt": "hello", "mode": "light"},
+    )
+    assert sent.status_code == 200, sent.text
+    body = sent.json()
+    assert body["status"] == "idle"
+    assert body["mode"] == "light"
+    assert body["messages"][0]["mode"] == "light"
+    assert body["messages"][1]["content"] == "quick reply"
+    assert body["messages"][1]["mode"] == "light"
+    assert body["messages"][1]["model_ref"] == "opencode_go_kimi25"
+
+
+def test_agent_console_task_mode_keeps_delegate_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(ws, "_AGENT_CONSOLE_SESSIONS_PATH", tmp_path / "agent-console-sessions.json")
+    monkeypatch.setattr(ws, "_valid_agent_ids", None)
+    monkeypatch.setattr(ws, "_external_runtime_agent_ids", None)
+
+    called = {"delegate": False}
+
+    def fake_delegate(session, prompt):
+        called["delegate"] = True
+        assert session["mode"] == "task"
+        assert prompt == "make a plan"
+        return {
+            "content": "delegated reply",
+            "status": "completed",
+            "duration_seconds": 1.2,
+            "api_calls": 2,
+            "usage": {},
+            "model": "task-model",
+            "model_ref": "opencode_go_kimi25",
+            "mode": "task",
+        }
+
+    monkeypatch.setattr(ws, "_run_agent_console_turn", fake_delegate)
+    client = _client()
+    created = client.post(
+        "/api/agents/pirlo/console/sessions",
+        headers=_headers(),
+        json={"workspace": str(tmp_path), "risk_level": "R1", "mode": "task"},
+    )
+    assert created.status_code == 200, created.text
+
+    sent = client.post(
+        f"/api/agents/console/sessions/{created.json()['session_id']}/messages",
+        headers=_headers(),
+        json={"prompt": "make a plan", "mode": "task"},
+    )
+    assert sent.status_code == 200, sent.text
+    assert called["delegate"] is True
+    assert sent.json()["messages"][1]["mode"] == "task"
+
+
+def test_agent_console_light_turn_resolves_model_and_extracts_text(monkeypatch):
+    agent = SimpleNamespace(
+        name="Pirlo 商业策划师",
+        role_summary="商业方案。",
+        model_ref="opencode_go_kimi25",
+        model_strategy={},
+    )
+    monkeypatch.setattr(ws, "_resolve_console_agent", lambda _agent_id: ("pirlo", agent))
+    monkeypatch.setattr(ws, "_resolve_profile_model_ref", lambda ref: {
+        "model_ref": ref,
+        "provider": "opencode-go",
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "model": "kimi-k2.5",
+    })
+
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="hello from model"))],
+                usage=SimpleNamespace(prompt_tokens=5, completion_tokens=6, total_tokens=11),
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(ws, "OpenAI", FakeOpenAI)
+    session = {
+        "session_id": "acs-test",
+        "agent_id": "pirlo",
+        "display_name": "Pirlo 商业策划师",
+        "workspace": "/tmp",
+        "model_ref": "opencode_go_kimi25",
+        "messages": [],
+    }
+
+    result = ws._run_agent_console_light_turn(session, "say hi")
+
+    assert result["content"] == "hello from model"
+    assert result["mode"] == "light"
+    assert result["model"] == "kimi-k2.5"
+    assert result["model_ref"] == "opencode_go_kimi25"
+    assert captured["model"] == "kimi-k2.5"
+    assert captured["client_kwargs"]["base_url"] == "https://opencode.ai/zen/go/v1"
+
+
+def test_console_chat_messages_do_not_duplicate_current_prompt():
+    agent = SimpleNamespace(name="Pirlo 商业策划师", role_summary="商业方案。")
+    session = {
+        "messages": [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "current question"},
+        ]
+    }
+
+    messages = ws._console_chat_messages(session, agent, "current question")
+
+    user_contents = [msg["content"] for msg in messages if msg["role"] == "user"]
+    assert user_contents == ["old question", "current question"]
 
 
 def test_delegations_api_groups_subagent_events(tmp_path, monkeypatch):

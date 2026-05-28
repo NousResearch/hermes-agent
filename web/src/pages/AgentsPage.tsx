@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent } from "react";
 import {
   AlertTriangle,
+  Bot,
   ChevronDown,
   ChevronUp,
+  Clock,
   MessageSquare,
   X,
   ExternalLink,
@@ -395,7 +397,10 @@ export default function AgentsPage() {
   const [consoleWorkspace, setConsoleWorkspace] = useState("");
   const [defaultWorkspace, setDefaultWorkspace] = useState("");
   const [consoleRisk, setConsoleRisk] = useState("R0");
+  const [consoleMode, setConsoleMode] = useState<"light" | "task">("light");
   const [consoleBusy, setConsoleBusy] = useState(false);
+  const [consoleStartedAt, setConsoleStartedAt] = useState<number | null>(null);
+  const [consoleElapsed, setConsoleElapsed] = useState(0);
   const [consoleError, setConsoleError] = useState<string | null>(null);
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -452,6 +457,17 @@ export default function AgentsPage() {
       });
   }, []);
 
+  useEffect(() => {
+    if (!consoleBusy || consoleStartedAt === null) {
+      setConsoleElapsed(0);
+      return;
+    }
+    const updateElapsed = () => setConsoleElapsed(Math.max(0, Math.floor((Date.now() - consoleStartedAt) / 1000)));
+    updateElapsed();
+    const id = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(id);
+  }, [consoleBusy, consoleStartedAt]);
+
   const activeConsoleSession = useMemo(
     () => consoleSessions.find((session) => session.session_id === activeConsoleSessionId) || null,
     [consoleSessions, activeConsoleSessionId],
@@ -464,6 +480,7 @@ export default function AgentsPage() {
       const session = await api.createAgentConsoleSession(agent.agent_id, {
         workspace: consoleWorkspace,
         risk_level: consoleRisk,
+        mode: consoleMode,
       });
       setConsoleSessions((prev) => [session, ...prev.filter((item) => item.session_id !== session.session_id)]);
       setActiveConsoleSessionId(session.session_id);
@@ -499,12 +516,14 @@ export default function AgentsPage() {
     const prompt = consolePrompt.trim();
     if (!prompt) return;
     setConsoleBusy(true);
+    setConsoleStartedAt(Date.now());
     setConsoleError(null);
     try {
       if (!session) {
         session = await api.createAgentConsoleSession(consoleAgent.agent_id, {
           workspace: consoleWorkspace,
           risk_level: consoleRisk,
+          mode: consoleMode,
         });
         setConsoleSessions((prev) => [session!, ...prev]);
         setActiveConsoleSessionId(session.session_id);
@@ -513,16 +532,19 @@ export default function AgentsPage() {
         prompt,
         workspace: consoleWorkspace,
         risk_level: consoleRisk,
+        mode: consoleMode,
       });
       setConsolePrompt("");
       setConsoleSessions((prev) => [updated, ...prev.filter((item) => item.session_id !== updated.session_id)]);
       setActiveConsoleSessionId(updated.session_id);
       setConsoleWorkspace(updated.workspace || consoleWorkspace);
       setConsoleRisk(updated.risk_level || consoleRisk);
+      setConsoleMode(updated.mode === "task" ? "task" : consoleMode);
     } catch (e) {
       setConsoleError(e instanceof Error ? e.message : String(e));
     } finally {
       setConsoleBusy(false);
+      setConsoleStartedAt(null);
     }
   };
 
@@ -731,12 +753,25 @@ export default function AgentsPage() {
                 <div className="mt-1 text-sm text-muted-foreground">
                   {consoleAgent ? (
                     <>
-                      Chatting with <span className="font-medium text-foreground">{consoleAgent.display_name}</span> · {consoleAgent.model_ref}
+                      Chatting with <span className="font-medium text-foreground">{consoleAgent.display_name}</span> · {activeConsoleSession?.model_ref || consoleAgent.model_ref}
                     </>
                   ) : (
                     "Choose an editable agent to start a console session."
                   )}
                 </div>
+                {consoleBusy ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span className="inline-flex items-center gap-1 border border-border bg-muted/20 px-2 py-1">
+                      <Clock className="h-3 w-3" /> {consoleElapsed}s
+                    </span>
+                    <span className="inline-flex items-center gap-1 border border-border bg-muted/20 px-2 py-1">
+                      <Bot className="h-3 w-3" /> {consoleMode === "light" ? "Light Chat" : "Task Run"}
+                    </span>
+                    <span className="inline-flex items-center gap-1 border border-border bg-muted/20 px-2 py-1">
+                      {activeConsoleSession?.model_ref || consoleAgent?.model_ref || "model pending"}
+                    </span>
+                  </div>
+                ) : null}
               </div>
               <Button
                 size="sm"
@@ -767,6 +802,7 @@ export default function AgentsPage() {
                           setActiveConsoleSessionId(session.session_id);
                           setConsoleWorkspace(session.workspace || defaultWorkspace);
                           setConsoleRisk(session.risk_level || "R0");
+                          setConsoleMode(session.mode === "task" ? "task" : "light");
                         }}
                       >
                         {session.title || session.display_name}
@@ -826,11 +862,13 @@ export default function AgentsPage() {
                         <div className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
                           {message.role === "user" ? "You" : activeConsoleSession.display_name}
                           {message.status ? ` · ${message.status}` : ""}
+                          {message.mode ? ` · ${message.mode === "task" ? "Task Run" : "Light Chat"}` : ""}
                         </div>
                         <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
                         {message.duration_seconds !== undefined && message.duration_seconds !== null ? (
                           <div className="mt-2 text-[11px] text-muted-foreground">
                             {message.duration_seconds}s{message.api_calls ? ` · ${message.api_calls} calls` : ""}
+                            {message.model_ref ? ` · ${message.model_ref}` : message.model ? ` · ${message.model}` : ""}
                           </div>
                         ) : null}
                       </div>
@@ -839,7 +877,7 @@ export default function AgentsPage() {
                   {consoleBusy ? (
                     <div className="flex justify-start">
                       <div className="border border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
-                        <Spinner /> Thinking...
+                        <Spinner /> {consoleMode === "light" ? "Light Chat" : "Task Run"} running · {consoleElapsed}s
                       </div>
                     </div>
                   ) : null}
@@ -849,6 +887,24 @@ export default function AgentsPage() {
 
             <div className="border-t border-border p-4">
               <div className="mb-2 flex flex-wrap gap-2">
+                <div className="flex border border-border text-xs">
+                  <button
+                    type="button"
+                    className={`px-3 py-1.5 ${consoleMode === "light" ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                    disabled={!consoleAgent || consoleBusy}
+                    onClick={() => setConsoleMode("light")}
+                  >
+                    Light Chat
+                  </button>
+                  <button
+                    type="button"
+                    className={`border-l border-border px-3 py-1.5 ${consoleMode === "task" ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                    disabled={!consoleAgent || consoleBusy}
+                    onClick={() => setConsoleMode("task")}
+                  >
+                    Task Run
+                  </button>
+                </div>
                 <input
                   className="h-8 min-w-0 flex-1 border border-border bg-background px-2 text-xs"
                   value={consoleWorkspace}
@@ -885,7 +941,7 @@ export default function AgentsPage() {
                 </Button>
               </div>
               <div className="mt-2 text-xs text-muted-foreground">
-                Press Enter to send. Shift+Enter inserts a new line.
+                Press Enter to send. Shift+Enter inserts a new line. {consoleMode === "light" ? "Light Chat skips tools for faster replies." : "Task Run uses the full delegate path with tools."}
               </div>
               {consoleError ? <div className="mt-2 text-xs text-destructive">{consoleError}</div> : null}
             </div>

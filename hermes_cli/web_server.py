@@ -30,6 +30,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+try:
+    from openai import OpenAI
+except Exception:  # pragma: no cover - optional dependency is installed in normal runtime
+    OpenAI = None  # type: ignore[assignment]
+
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -3224,12 +3229,14 @@ class AgentRunCreate(BaseModel):
 class AgentConsoleSessionCreate(BaseModel):
     workspace: str = ""
     risk_level: str = "R0"
+    mode: str = "light"
 
 
 class AgentConsoleMessageCreate(BaseModel):
     prompt: str
     workspace: Optional[str] = None
     risk_level: Optional[str] = None
+    mode: Optional[str] = None
 
 
 def _utc_iso(ts: Optional[float] = None) -> str:
@@ -3265,6 +3272,13 @@ def _find_console_session_index(sessions: list, session_id: str) -> int:
     return -1
 
 
+def _normalize_console_mode(value: Any) -> str:
+    mode = str(value or "light").strip().lower()
+    if mode in {"task", "delegate", "run"}:
+        return "task"
+    return "light"
+
+
 def _resolve_console_agent(agent_id: str):
     from agent.managed_agents.registry import load_agent_registry
 
@@ -3291,7 +3305,7 @@ def _resolve_console_agent(agent_id: str):
     return resolved_agent_id, agent
 
 
-def _new_console_session(agent_id: str, agent: Any, workspace: str, risk_level: str) -> dict:
+def _new_console_session(agent_id: str, agent: Any, workspace: str, risk_level: str, mode: str = "light") -> dict:
     now = _utc_iso()
     resolved_workspace = workspace or str(get_hermes_home())
     return {
@@ -3302,7 +3316,9 @@ def _new_console_session(agent_id: str, agent: Any, workspace: str, risk_level: 
         "workspace": resolved_workspace,
         "risk_level": risk_level or "R0",
         "model_ref": agent.model_ref,
+        "mode": _normalize_console_mode(mode),
         "status": "idle",
+        "status_detail": None,
         "created_at": now,
         "updated_at": now,
         "messages": [],
@@ -3322,6 +3338,149 @@ def _console_history_context(session: dict, max_messages: int = 12) -> str:
         if content:
             lines.append(f"{role}: {content}")
     return "\n".join(lines)
+
+
+def _console_chat_messages(session: dict, agent: Any, prompt: str, max_messages: int = 10) -> list[dict]:
+    history = session.get("messages") if isinstance(session.get("messages"), list) else []
+    previous = history[:-1] if history and history[-1].get("role") == "user" else history
+    tail = previous[-max_messages:]
+    messages: list[dict] = [
+        {
+            "role": "system",
+            "content": (
+                f"You are {agent.name}. {getattr(agent, 'role_summary', '')}\n"
+                "This is a lightweight direct chat inside the Hermes Agent Console. "
+                "Answer conversationally and concisely. Do not claim to use tools, files, "
+                "terminal, browser, or desktop automation in this mode. If the request needs "
+                "tools or durable execution, say it should be run in Task Run mode."
+            ),
+        }
+    ]
+    for msg in tail:
+        role = msg.get("role")
+        content = str(msg.get("content") or "").strip()
+        if role in {"user", "assistant"} and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": prompt})
+    return messages
+
+
+def _namespace_to_usage_dict(usage: Any) -> dict:
+    if usage is None:
+        return {}
+    if isinstance(usage, dict):
+        return {str(k): v for k, v in usage.items() if isinstance(v, (int, float))}
+    result: dict[str, Any] = {}
+    for attr in ("prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens"):
+        value = getattr(usage, attr, None)
+        if isinstance(value, (int, float)):
+            result[attr] = value
+    return result
+
+
+def _extract_openai_text(response: Any) -> str:
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return ""
+    message = getattr(choices[0], "message", None)
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text") or block.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts).strip()
+    return str(content or "").strip()
+
+
+def _extract_anthropic_text(response: Any) -> str:
+    content = getattr(response, "content", None) or []
+    parts = []
+    for block in content:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+        elif isinstance(block, dict) and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+    return "\n".join(parts).strip()
+
+
+def _resolve_console_model(agent: Any) -> tuple[str, dict]:
+    strategy = getattr(agent, "model_strategy", None) or {}
+    ref = str(strategy.get("active_primary") or strategy.get("primary") or getattr(agent, "model_ref", "") or "").strip()
+    if not ref:
+        raise RuntimeError("Agent has no model_ref configured")
+    creds = _resolve_profile_model_ref(ref)
+    if not creds.get("provider") or not creds.get("model"):
+        raise RuntimeError(f"Model ref '{ref}' is missing provider/model configuration")
+    return ref, creds
+
+
+def _resolve_profile_model_ref(model_ref: str) -> dict:
+    from tools.delegate_tool import _resolve_profile_model_ref as _delegate_resolve_profile_model_ref
+
+    return _delegate_resolve_profile_model_ref(model_ref)
+
+
+def _run_agent_console_light_turn(session: dict, prompt: str) -> dict:
+    resolved_agent_id, agent = _resolve_console_agent(str(session.get("agent_id") or ""))
+    start = time.monotonic()
+    model_ref, creds = _resolve_console_model(agent)
+    model = str(creds.get("model") or "").strip()
+    api_key = str(creds.get("api_key") or "").strip()
+    base_url = str(creds.get("base_url") or "").strip() or None
+    api_mode = str(creds.get("api_mode") or "chat_completions").strip() or "chat_completions"
+    if not api_key:
+        raise RuntimeError(f"Model ref '{model_ref}' has no API key available")
+
+    messages = _console_chat_messages(session, agent, prompt)
+    if api_mode == "anthropic_messages":
+        from agent.anthropic_adapter import build_anthropic_client
+
+        system = messages[0]["content"] if messages and messages[0].get("role") == "system" else ""
+        anthropic_messages = [m for m in messages if m.get("role") != "system"]
+        client = build_anthropic_client(api_key=api_key, base_url=base_url, timeout=120)
+        response = client.messages.create(
+            model=model,
+            system=system,
+            messages=anthropic_messages,
+            max_tokens=2048,
+        )
+        content = _extract_anthropic_text(response)
+        usage = _namespace_to_usage_dict(getattr(response, "usage", None))
+    else:
+        if OpenAI is None:
+            raise RuntimeError("The 'openai' package is required for light console chat")
+        client_kwargs = {"api_key": api_key, "timeout": 120.0}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = OpenAI(**client_kwargs)
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=2048,
+            temperature=0.3,
+        )
+        content = _extract_openai_text(response)
+        usage = _namespace_to_usage_dict(getattr(response, "usage", None))
+
+    if not content:
+        raise RuntimeError("Light chat model returned empty final content. Try Task Run mode or another model.")
+    return {
+        "content": content,
+        "status": "completed",
+        "duration_seconds": round(time.monotonic() - start, 2),
+        "api_calls": 1,
+        "usage": usage,
+        "model": model,
+        "model_ref": model_ref,
+        "mode": "light",
+        "agent_id": resolved_agent_id,
+    }
 
 
 def _build_console_parent(agent: Any, workspace: str, session_id: str):
@@ -3392,6 +3551,8 @@ def _run_agent_console_turn(session: dict, prompt: str) -> dict:
         "api_calls": entry.get("api_calls"),
         "usage": entry.get("usage") or entry.get("tokens") or {},
         "model": entry.get("model"),
+        "model_ref": entry.get("model_ref") or session.get("model_ref"),
+        "mode": "task",
     }
 
 
@@ -3409,7 +3570,7 @@ async def get_agent_console_sessions(agent_id: Optional[str] = None, limit: int 
 async def create_agent_console_session(agent_id: str, body: AgentConsoleSessionCreate):
     resolved_agent_id, agent = _resolve_console_agent(agent_id)
     sessions = _load_console_sessions()
-    session = _new_console_session(resolved_agent_id, agent, body.workspace, body.risk_level)
+    session = _new_console_session(resolved_agent_id, agent, body.workspace, body.risk_level, body.mode)
     sessions.append(session)
     _save_console_sessions(sessions)
     return session
@@ -3429,19 +3590,29 @@ async def send_agent_console_message(session_id: str, body: AgentConsoleMessageC
         session["workspace"] = body.workspace or session.get("workspace") or str(get_hermes_home())
     if body.risk_level is not None:
         session["risk_level"] = body.risk_level or session.get("risk_level") or "R0"
+    mode = _normalize_console_mode(body.mode or session.get("mode"))
+    session["mode"] = mode
     user_message = {
         "message_id": f"msg-{uuid.uuid4().hex[:12]}",
         "role": "user",
         "content": prompt,
         "created_at": _utc_iso(),
+        "mode": mode,
     }
     session.setdefault("messages", []).append(user_message)
     session["status"] = "running"
+    session["status_detail"] = {
+        "mode": mode,
+        "model_ref": session.get("model_ref"),
+        "started_at": _utc_iso(),
+        "description": "Direct model chat" if mode == "light" else "Full delegate_task run",
+    }
     session["updated_at"] = _utc_iso()
     _save_console_sessions(sessions)
 
     try:
-        result = await asyncio.to_thread(_run_agent_console_turn, session, prompt)
+        runner = _run_agent_console_light_turn if mode == "light" else _run_agent_console_turn
+        result = await asyncio.to_thread(runner, session, prompt)
         assistant_message = {
             "message_id": f"msg-{uuid.uuid4().hex[:12]}",
             "role": "assistant",
@@ -3452,9 +3623,12 @@ async def send_agent_console_message(session_id: str, body: AgentConsoleMessageC
             "api_calls": result.get("api_calls"),
             "usage": result.get("usage") or {},
             "model": result.get("model"),
+            "model_ref": result.get("model_ref") or session.get("model_ref"),
+            "mode": result.get("mode") or mode,
         }
         session.setdefault("messages", []).append(assistant_message)
         session["status"] = "idle"
+        session["status_detail"] = None
         session["updated_at"] = _utc_iso()
         if session.get("title", "").endswith(" chat"):
             session["title"] = prompt[:40]
@@ -3466,9 +3640,12 @@ async def send_agent_console_message(session_id: str, body: AgentConsoleMessageC
             "created_at": _utc_iso(),
             "status": "failed",
             "error": str(exc),
+            "mode": mode,
+            "model_ref": session.get("model_ref"),
         }
         session.setdefault("messages", []).append(assistant_message)
         session["status"] = "failed"
+        session["status_detail"] = None
         session["updated_at"] = _utc_iso()
     sessions[idx] = session
     _save_console_sessions(sessions)

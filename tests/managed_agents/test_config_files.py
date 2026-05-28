@@ -62,12 +62,12 @@ def test_managed_agents_model_refs_are_declared_in_models_config():
 
     expected = {
         "claude": "claude_opus",
-        "deepseek-tui": "deepseek_pro",
-        "intelligence": "opencode_go_qwen36",
-        "pirlo": "opencode_go_kimi25",
-        "ambrosini": "deepseek_pro",
-        "hermes-internal": "deepseek_pro",
-        "agent-tars": "tars_gpt54",
+        "deepseek-tui": "opencode_go_deepseek_pro",
+        "intelligence": "opencode_go_qwen37_max",
+        "pirlo": "opencode_go_kimi26",
+        "ambrosini": "opencode_go_glm51",
+        "hermes-internal": "opencode_go_glm51",
+        "agent-tars": "opencode_go_mimo25_pro",
         "codex": "codex_cli",
     }
     for agent_id, model_ref in expected.items():
@@ -78,7 +78,34 @@ def test_managed_agents_model_refs_are_declared_in_models_config():
         for chain_ref in strategy.get("chain") or []:
             assert chain_ref in models, (agent.id, chain_ref)
     assert registry.get("agent-tars").model_ref != "tars_glm"
+    assert registry.get("agent-tars").model_strategy["chain"][-1] == "tars_gpt54"
     assert models["tars_gpt54"]["model"] == "gpt-5.4"
+
+
+def test_managed_agent_model_strategies_prefer_subscription_pool_before_api_fallback():
+    registry = load_agent_registry(CONFIG_DIR / "agents.yaml")
+
+    subscription_primary = {
+        "hermes-internal",
+        "deepseek-tui",
+        "intelligence",
+        "pirlo",
+        "agent-tars",
+        "ambrosini",
+    }
+    api_fallbacks = {"deepseek_pro", "deepseek_flash", "tars_gpt54"}
+
+    for agent_id in subscription_primary:
+        agent = registry.get(agent_id)
+        strategy = agent.model_strategy or {}
+        chain = strategy.get("chain") or []
+        assert agent.model_ref.startswith("opencode_go_"), agent_id
+        assert strategy.get("primary") == agent.model_ref, agent_id
+        assert chain[0] == agent.model_ref, agent_id
+        assert any(ref in api_fallbacks for ref in chain[1:]), agent_id
+
+    assert registry.get("claude").model_strategy["mode"] == "external"
+    assert registry.get("codex").model_strategy["mode"] == "external"
 
 
 def test_codegraph_is_scoped_to_code_understanding_agents():

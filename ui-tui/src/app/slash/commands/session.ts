@@ -93,6 +93,19 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['switch'],
+    help: 'switch between live TUI sessions',
+    name: 'sessions',
+    run: (arg, ctx) => {
+      if (arg.trim().toLowerCase() === 'new') {
+        return ctx.session.newLiveSession()
+      }
+
+      patchOverlayState({ sessions: true })
+    }
+  },
+
+  {
     help: 'attach an image',
     name: 'image',
     run: (arg, ctx) => {
@@ -109,7 +122,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'switch or reset personality (history reset on set)',
+    help: 'switch personality for this session',
     name: 'personality',
     run: (arg, ctx) => {
       if (!arg) {
@@ -199,7 +212,6 @@ export const sessionCommands: SlashCommand[] = [
           void ctx.session.closeSession(prevSid)
           patchUiState({ sid: r.session_id })
           ctx.session.setSessionStartedAt(Date.now())
-          ctx.transcript.setHistoryItems([])
           ctx.transcript.sys(`branched → ${r.title ?? ''}`)
         })
       )
@@ -220,6 +232,7 @@ export const sessionCommands: SlashCommand[] = [
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
+          ctx.voice.setVoiceTts(!!r.tts)
 
           // Render the configured record key (config.yaml ``voice.record_key``)
           // instead of hardcoded "Ctrl+B" — the gateway response carries the

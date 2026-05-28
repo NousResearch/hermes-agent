@@ -8,6 +8,8 @@ import sys
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_state import SessionDB
 from tools.todo_tool import TodoStore
 
@@ -130,7 +132,21 @@ def _prepare_cli_with_active_session(tmp_path):
     old_session_start = cli.session_start - timedelta(seconds=1)
     cli.session_start = old_session_start
     cli.agent.session_start = old_session_start
+
+    # Bypass the destructive-slash confirmation gate — these tests focus on
+    # the new-session mechanics, not the confirm prompt itself (covered in
+    # tests/cli/test_destructive_slash_confirm.py).
+    cli._confirm_destructive_slash = lambda *_a, **_kw: "once"
     return cli
+
+
+@pytest.fixture(autouse=True)
+def _reset_session_id_context():
+    from gateway.session_context import _UNSET, _VAR_MAP
+
+    yield
+    os.environ.pop("HERMES_SESSION_ID", None)
+    _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
 
 
 def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path):
@@ -157,6 +173,21 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     assert cli.session_start > old_session_start
     assert cli.agent.session_start == cli.session_start
     cli.agent._invalidate_system_prompt.assert_called_once()
+
+
+def test_new_command_rotates_hermes_session_id_env_and_context(tmp_path):
+    from gateway.session_context import _VAR_MAP, get_session_env
+
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+    os.environ["HERMES_SESSION_ID"] = old_session_id
+    _VAR_MAP["HERMES_SESSION_ID"].set(old_session_id)
+
+    cli.process_command("/new")
+
+    assert cli.session_id != old_session_id
+    assert os.environ["HERMES_SESSION_ID"] == cli.session_id
+    assert get_session_env("HERMES_SESSION_ID") == cli.session_id
 
 
 def test_reset_command_is_alias_for_new_session(tmp_path):

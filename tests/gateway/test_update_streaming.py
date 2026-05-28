@@ -45,6 +45,14 @@ def _make_runner(hermes_home=None):
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._failed_platforms = {}
+    # config is accessed by _check_slash_access and quick_commands lookup;
+    # None makes policy_for_source return a disabled (allow-all) policy.
+    runner.config = None
+    # Bypass the destructive-slash confirm gate — this test exercises
+    # update-prompt interception, not the confirm prompt.
+    runner._read_user_config = lambda: {
+        "approvals": {"destructive_slash_confirm": False}
+    }
     return runner
 
 
@@ -229,6 +237,8 @@ class TestUpdateCommandGatewayFlag:
         cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
         assert "--gateway" in cmd_string
         assert "PYTHONUNBUFFERED" in cmd_string
+        assert "rc=$?" in cmd_string
+        assert "status=$?" not in cmd_string
         assert "stream progress" in result
 
 

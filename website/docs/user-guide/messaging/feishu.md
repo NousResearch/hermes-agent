@@ -93,7 +93,7 @@ FEISHU_WEBHOOK_PORT=8765         # default: 8765
 FEISHU_WEBHOOK_PATH=/feishu/webhook  # default: /feishu/webhook
 ```
 
-When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console.
+When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console. The challenge response is gated on `FEISHU_VERIFICATION_TOKEN` when set — challenge requests with a missing or mismatched token are rejected so an unauthenticated remote cannot prove endpoint control by echoing attacker-controlled challenge data.
 
 ## Step 3: Configure Hermes
 
@@ -248,6 +248,8 @@ When users click buttons or interact with interactive cards sent by the bot, the
 - Button clicks become: `/card button {"key": "value", ...}`
 - The action's `value` payload from the card definition is included as JSON.
 - Card actions are deduplicated with a 15-minute window to prevent double processing.
+
+Gateway-driven update prompts use a native Feishu `Yes` / `No` card instead of falling back to plain text replies. When `hermes update --gateway` needs confirmation, the adapter records the selected answer in Hermes's `.update_response` file and replaces the card inline with a resolved state.
 
 Card action events are dispatched with `MessageType.COMMAND`, so they flow through the normal command processing pipeline.
 

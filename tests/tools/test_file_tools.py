@@ -211,6 +211,45 @@ class TestPatchHandler:
         assert "error" in result
         assert "Unknown mode" in result["error"]
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_rejects_traversal_in_update_header(self, mock_get):
+        """V4A '*** Update File:' headers come from patch content, which can
+        carry prompt-injection-controlled paths (skill content, web extract).
+        ``..`` traversal in the header must be rejected before the patch is
+        applied, even though the explicit ``path=`` arg is allowed to use
+        ``..`` for legitimate cross-worktree edits."""
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Update File: ../../../etc/shadow\n"
+                "@@ -1,3 +1,3 @@\n"
+                "-old\n"
+                "+new\n"
+                "*** End Patch\n"
+            ),
+        ))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+        # patch_v4a must not be invoked when the header is rejected
+        mock_get.return_value.patch_v4a.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_rejects_traversal_in_add_header(self, mock_get):
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Add File: ../../../tmp/dropped.py\n"
+                "+print('pwned')\n"
+                "*** End Patch\n"
+            ),
+        ))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+
 
 class TestSearchHandler:
     @patch("tools.file_tools._get_file_ops")
@@ -361,4 +400,28 @@ class TestSearchHints:
         assert "offset=100" in raw
 
 
+# ---------------------------------------------------------------------------
+# PATCH_SCHEMA shape tests (issue #15524)
+# ---------------------------------------------------------------------------
 
+class TestPatchSchemaShape:
+    """PATCH_SCHEMA must advertise per-mode required params via description
+    text (not JSON-schema ``required``), so strict models like kimi-k2.x stop
+    silently omitting old_string / new_string / patch content."""
+
+    def test_per_mode_required_params_documented_in_descriptions(self):
+        desc = PATCH_SCHEMA["description"]
+        assert "REQUIRED PARAMETERS: mode, path, old_string, new_string" in desc
+        assert "REQUIRED PARAMETERS: mode, patch" in desc
+        props = PATCH_SCHEMA["parameters"]["properties"]
+        for name in ("path", "old_string", "new_string"):
+            assert "REQUIRED when mode='replace'" in props[name]["description"]
+        assert "REQUIRED when mode='patch'" in props["patch"]["description"]
+
+    def test_no_anyof_required_stays_mode_only(self):
+        # anyOf/oneOf at parameters level break Anthropic, Fireworks, and the
+        # Moonshot/Kimi schema sanitizer — description-level guidance is the
+        # only provider-safe signalling mechanism.
+        params = PATCH_SCHEMA["parameters"]
+        assert params["required"] == ["mode"]
+        assert "anyOf" not in params and "oneOf" not in params

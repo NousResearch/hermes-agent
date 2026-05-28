@@ -8,7 +8,7 @@ description: "Background maintenance for agent-created skills — usage tracking
 
 The curator is a background maintenance pass for **agent-created skills**. It tracks how often each skill is viewed, used, and patched, moves long-unused skills through `active → stale → archived` states, and periodically spawns a short auxiliary-model review that proposes consolidations or patches drift.
 
-It exists so that skills created via the [self-improvement loop](/docs/user-guide/features/skills#agent-managed-skills-skill_manage-tool) don't pile up forever. Every time the agent solves a novel problem and saves a skill, that skill lands in `~/.hermes/skills/`. Without maintenance, you end up with dozens of narrow near-duplicates that pollute the catalog and waste tokens.
+It exists so that skills created via the [self-improvement loop](/user-guide/features/skills#agent-managed-skills-skill_manage-tool) don't pile up forever. Every time the agent solves a novel problem and saves a skill, that skill lands in `~/.hermes/skills/`. Without maintenance, you end up with dozens of narrow near-duplicates that pollute the catalog and waste tokens.
 
 The curator **never touches** bundled skills (shipped with the repo) or hub-installed skills (from [agentskills.io](https://agentskills.io)). It only reviews skills the agent itself authored. It also **never auto-deletes** — the worst outcome is archival into `~/.hermes/skills/.archive/`, which is recoverable.
 
@@ -32,7 +32,7 @@ If you want to see what the curator *would* do before it runs for real, run `her
 A run has two phases:
 
 1. **Automatic transitions** (deterministic, no LLM). Skills unused for `stale_after_days` (30) become `stale`; skills unused for `archive_after_days` (90) are moved to `~/.hermes/skills/.archive/`.
-2. **LLM review** (single aux-model pass, `max_iterations=8`). The forked agent surveys the agent-created skills, can read any of them with `skill_view`, and decides per-skill whether to keep, patch (via `skill_manage`), consolidate overlapping ones, or archive via the terminal tool.
+2. **LLM review** (single aux-model pass, `max_iterations=8`). The forked agent surveys the agent-created skills, can read any of them with `skill_view`, and decides per-skill whether to keep, patch (via `skill_manage`), consolidate overlapping ones, or archive via the terminal tool. Consolidation treats a skill as a full package: if a skill has `references/`, `templates/`, `scripts/`, `assets/`, or relative links to those paths, the curator must either keep it standalone, re-home the needed support files and rewrite paths, or archive the entire package unchanged — not flatten only `SKILL.md` into another skill's `references/` file.
 
 Pinned skills are off-limits to both the curator's auto-transitions and the agent's own `skill_manage` tool. See [Pinning a skill](#pinning-a-skill) below.
 
@@ -217,6 +217,10 @@ Every curator run writes a timestamped directory under `~/.hermes/logs/curator/`
 
 `REPORT.md` is a quick way to see what a given run did — which skills transitioned, what the LLM reviewer said, which skills it patched. Good for auditing without having to grep `agent.log`.
 
+### Rename map in the summary
+
+If a run consolidated multiple skills under an umbrella (or merged near-duplicates), the user-visible summary printed at the end of the run includes an explicit rename map showing every `old-name → new-name` pair the curator applied. This is in addition to per-skill transition lines, so when a wave of renames lands you can spot them at a glance without diffing the JSON report. The hint also surfaces under `hermes curator pin` so you can pin the umbrella name immediately if you want to lock the new label in.
+
 ## Restoring an archived skill
 
 If the curator archived something you still want:
@@ -238,7 +242,7 @@ The curator also refuses to run if `min_idle_hours` hasn't elapsed, so on an act
 
 ## See also
 
-- [Skills System](/docs/user-guide/features/skills) — how skills work in general and the self-improvement loop that creates them
-- [Memory](/docs/user-guide/features/memory) — a parallel background review that maintains long-term memory
-- [Bundled Skills Catalog](/docs/reference/skills-catalog)
+- [Skills System](/user-guide/features/skills) — how skills work in general and the self-improvement loop that creates them
+- [Memory](/user-guide/features/memory) — a parallel background review that maintains long-term memory
+- [Bundled Skills Catalog](/reference/skills-catalog)
 - [Issue #7816](https://github.com/NousResearch/hermes-agent/issues/7816) — original proposal and design discussion

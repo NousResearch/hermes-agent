@@ -53,7 +53,7 @@ class TestCloudEndpointsLive:
         url = resolve_url("https://cloud.comfy.org", "/object_info")
         r = http_get(url, headers={"X-API-Key": cloud_key})
         # Should be either 200 (paid) or 403 (free) — not 404 / 500
-        assert r.status in (200, 403)
+        assert r.status in {200, 403}
         if r.status == 403:
             # Body should mention the limitation
             assert "free tier" in r.text().lower() or "subscription" in r.text().lower()

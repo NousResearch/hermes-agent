@@ -48,7 +48,16 @@ Pick the row that matches your goal:
 
 ## 1. Install Hermes Agent
 
-Run the one-line installer:
+**Option A — pip (simplest):**
+
+```bash
+pip install hermes-agent
+hermes postinstall     # optional: installs Node.js, browser, ripgrep, ffmpeg + runs setup
+```
+
+PyPI releases track tagged versions (major/minor releases), not every commit on `main`. For bleeding-edge, use Option B.
+
+**Option B — git installer (tracks main branch):**
 
 ```bash
 # Linux / macOS / WSL2 / Android (Termux)
@@ -79,6 +88,16 @@ The single most important setup step. Use `hermes model` to walk through the cho
 hermes model
 ```
 
+:::tip Easiest path: Nous Portal
+One subscription covers 300+ models plus the [Tool Gateway](../user-guide/features/tool-gateway.md) (web search, image generation, TTS, cloud browser). On a fresh install:
+
+```bash
+hermes setup --portal
+```
+
+That logs you in, sets Nous as your provider, and turns on the Tool Gateway in one command.
+:::
+
 Good defaults:
 
 | Provider | What it is | How to set up |
@@ -87,17 +106,29 @@ Good defaults:
 | **OpenAI Codex** | ChatGPT OAuth, uses Codex models | Device code auth via `hermes model` |
 | **Anthropic** | Claude models directly — Max plan + extra usage credits (OAuth), or API key for pay-per-token | `hermes model` → OAuth login (requires Max + extra credits), or an Anthropic API key |
 | **OpenRouter** | Multi-provider routing across many models | Enter your API key |
-| **Z.AI** | GLM / Zhipu-hosted models | Set `GLM_API_KEY` / `ZAI_API_KEY` |
-| **Kimi / Moonshot** | Moonshot-hosted coding and chat models | Set `KIMI_API_KEY` |
+| **Z.AI** | GLM / Zhipu-hosted models | Set `GLM_API_KEY` / `ZAI_API_KEY` (also accepts `Z_AI_API_KEY`) |
+| **Kimi / Moonshot** | Moonshot-hosted coding and chat models | Set `KIMI_API_KEY` (or the Kimi-Coding-specific `KIMI_CODING_API_KEY`) |
 | **Kimi / Moonshot China** | China-region Moonshot endpoint | Set `KIMI_CN_API_KEY` |
 | **Arcee AI** | Trinity models | Set `ARCEEAI_API_KEY` |
 | **GMI Cloud** | Multi-model direct API | Set `GMI_API_KEY` |
-| **MiniMax (OAuth)** | MiniMax-M2.7 via browser OAuth — no API key needed | `hermes model` → MiniMax (OAuth) |
+| **MiniMax (OAuth)** | MiniMax frontier model via browser OAuth — no API key needed (model name in `hermes_cli/models.py` may change between releases) | `hermes model` → MiniMax (OAuth) |
 | **MiniMax** | International MiniMax endpoint | Set `MINIMAX_API_KEY` |
 | **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_API_KEY` |
-| **Alibaba Cloud** | Qwen models via DashScope | Set `DASHSCOPE_API_KEY` |
+| **Alibaba Cloud** | Qwen models via DashScope | Set `DASHSCOPE_API_KEY` (Qwen Coding Plan also accepts `ALIBABA_CODING_PLAN_API_KEY`) |
 | **Hugging Face** | 20+ open models via unified router (Qwen, DeepSeek, Kimi, etc.) | Set `HF_TOKEN` |
 | **AWS Bedrock** | Claude, Nova, Llama, DeepSeek via native Converse API | IAM role or `aws configure` ([guide](../guides/aws-bedrock.md)) |
+| **Azure Foundry** | Azure AI Foundry-hosted models | Set `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
+| **Google AI Studio** | Gemini models via direct API | Set `GOOGLE_API_KEY` / `GEMINI_API_KEY` |
+| **Google Gemini (OAuth)** | Gemini via the `google-gemini-cli` OAuth flow — no key needed | `hermes model` → Google Gemini (OAuth) |
+| **xAI** | Grok models via direct API | Set `XAI_API_KEY` |
+| **xAI Grok OAuth** | SuperGrok / Premium+ subscription, no API key needed | `hermes model` → xAI Grok OAuth |
+| **NovitaAI** | Multi-model API gateway | Set `NOVITA_API_KEY` |
+| **StepFun** | Step Plan models | Set `STEPFUN_API_KEY` |
+| **Xiaomi MiMo** | Xiaomi-hosted models | Set `XIAOMI_API_KEY` |
+| **Tencent TokenHub** | Tencent-hosted models | Set `TOKENHUB_API_KEY` |
+| **Ollama Cloud** | Managed Ollama-hosted models | Set `OLLAMA_API_KEY` |
+| **LM Studio** | Local desktop app exposing an OpenAI-compatible API | Set `LM_API_KEY` (and `LM_BASE_URL` if non-default) |
+| **Qwen OAuth** | Qwen Portal browser OAuth — no API key needed | `hermes model` → Qwen OAuth |
 | **Kilo Code** | KiloCode-hosted models | Set `KILOCODE_API_KEY` |
 | **OpenCode Zen** | Pay-as-you-go access to curated models | Set `OPENCODE_ZEN_API_KEY` |
 | **OpenCode Go** | $10/month subscription for open models | Set `OPENCODE_GO_API_KEY` |
@@ -105,7 +136,6 @@ Good defaults:
 | **NVIDIA NIM** | Nemotron models via build.nvidia.com or local NIM | Set `NVIDIA_API_KEY` (optional: `NVIDIA_BASE_URL`) |
 | **GitHub Copilot** | GitHub Copilot subscription (GPT-5.x, Claude, Gemini, etc.) | OAuth via `hermes model`, or `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` |
 | **GitHub Copilot ACP** | Copilot ACP agent backend (spawns local `copilot` CLI) | `hermes model` (requires `copilot` CLI + `copilot login`) |
-| **Vercel AI Gateway** | Vercel AI Gateway routing | Set `AI_GATEWAY_API_KEY` |
 | **Custom Endpoint** | VLLM, SGLang, Ollama, or any OpenAI-compatible API | Set base URL + API key |
 
 For most first-time users: choose a provider, accept the defaults unless you know why you're changing them. The full provider catalog with env vars and setup steps lives on the [Providers](../integrations/providers.md) page.
@@ -204,7 +234,7 @@ Type `/` to see an autocomplete dropdown of all commands:
 
 ### Multi-line input
 
-Press `Alt+Enter` or `Ctrl+J` to add a new line. Great for pasting code or writing detailed prompts.
+Press `Alt+Enter`, `Ctrl+J`, or `Shift+Enter` to add a new line. `Shift+Enter` requires a terminal that sends it as a distinct sequence (Kitty / foot / WezTerm / Ghostty by default; iTerm2 / Alacritty / VS Code terminal once the Kitty keyboard protocol is enabled). `Alt+Enter` and `Ctrl+J` work in every terminal.
 
 ### Interrupt the agent
 
@@ -220,7 +250,7 @@ Only after the base chat works. Pick what you need:
 hermes gateway setup    # Interactive platform configuration
 ```
 
-Connect [Telegram](/docs/user-guide/messaging/telegram), [Discord](/docs/user-guide/messaging/discord), [Slack](/docs/user-guide/messaging/slack), [WhatsApp](/docs/user-guide/messaging/whatsapp), [Signal](/docs/user-guide/messaging/signal), [Email](/docs/user-guide/messaging/email), or [Home Assistant](/docs/user-guide/messaging/homeassistant), or [Microsoft Teams](/docs/user-guide/messaging/teams).
+Connect [Telegram](/user-guide/messaging/telegram), [Discord](/user-guide/messaging/discord), [Slack](/user-guide/messaging/slack), [WhatsApp](/user-guide/messaging/whatsapp), [Signal](/user-guide/messaging/signal), [Email](/user-guide/messaging/email), or [Home Assistant](/user-guide/messaging/homeassistant), or [Microsoft Teams](/user-guide/messaging/teams).
 
 ### Automation and tools
 
@@ -240,7 +270,10 @@ hermes config set terminal.backend ssh       # Remote server
 ### Voice mode
 
 ```bash
-pip install "hermes-agent[voice]"
+# From the Hermes install directory (the curl installer placed it at
+# ~/.hermes/hermes-agent on Linux/macOS or %LOCALAPPDATA%\hermes\hermes-agent on Windows):
+cd ~/.hermes/hermes-agent
+uv pip install -e ".[voice]"
 # Includes faster-whisper for free local speech-to-text
 ```
 
@@ -269,10 +302,13 @@ mcp_servers:
 
 ### Editor integration (ACP)
 
+ACP support ships with the standard `[all]` extras, so the curl installer already includes it. Just run:
+
 ```bash
-pip install -e '.[acp]'
 hermes acp
 ```
+
+(If you installed without `[all]`, run `cd ~/.hermes/hermes-agent && uv pip install -e ".[acp]"` first.)
 
 See [ACP Editor Integration](../user-guide/features/acp.md).
 

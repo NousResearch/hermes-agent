@@ -7,7 +7,18 @@ sidebar_position: 2
 
 # Windows (WSL2) Guide
 
-Hermes Agent is developed and tested on **Linux** and **macOS**. Native Windows is not supported — on Windows you run Hermes inside **WSL2** (Windows Subsystem for Linux, version 2). That means there are effectively two computers in play: your Windows host, and a Linux VM managed by WSL. Most confusion comes from not being sure which one you're on at any moment.
+Hermes Agent now supports **both** native Windows and WSL2.  This page covers the WSL2 path; for the native PowerShell install see the dedicated **[Windows (Native) Guide](./windows-native.md)**.
+
+**When to pick WSL2 over native:**
+- You want to use the dashboard's embedded terminal (`/chat` tab) — that pane requires a POSIX PTY and is WSL2-only.
+- You're doing POSIX-heavy development work and want your Hermes sessions to share the same filesystem / paths as your dev tools.
+- You already have a WSL2 environment and don't want to maintain a second install.
+
+**When native is fine (or better):**
+- Interactive chat, gateway (Telegram/Discord/etc.), cron scheduler, browser tool, MCP servers, and most Hermes features all run natively on Windows.
+- You don't want to think about crossing the WSL↔Windows boundary every time you reference a file or open a URL.
+
+In WSL2 there are effectively two computers in play: your Windows host, and a Linux VM managed by WSL.  Most confusion comes from not being sure which one you're on at any moment.
 
 This guide covers the parts of that split that specifically affect Hermes: installing WSL2, getting files back and forth between Windows and Linux, networking in both directions, and the pitfalls people actually hit.
 
@@ -15,11 +26,13 @@ This guide covers the parts of that split that specifically affect Hermes: insta
 A Chinese-language walkthrough of the minimum install path is maintained on this same page — switch via the **language** menu (top right) and select **简体中文**.
 :::
 
-## Why WSL2 (and not "just Windows")
+## Why WSL2 (vs. native Windows)
 
-Hermes assumes a POSIX environment: `fork`, `/tmp`, UNIX sockets, signal semantics, PTY-backed terminals, shells like `bash`/`zsh`, and tools like `rg`, `git`, `ffmpeg` that behave the way they do on Linux. Rewriting that for native Windows would be a full port — WSL2 gives you a real Linux kernel in a lightweight VM instead, and Hermes inside it is essentially identical to running on Ubuntu.
+The native Windows install runs in Windows directly: your Windows terminal (PowerShell, Windows Terminal, etc.), Windows filesystem paths (`C:\Users\…`), and Windows processes.  Hermes uses Git Bash to run shell commands, which is how Claude Code and other agents handle Windows today — it sidesteps the POSIX-vs-Windows gap without a full rewrite.
 
-Practical consequences of this choice:
+WSL2 runs a real Linux kernel in a lightweight VM, so Hermes inside it is essentially identical to running on Ubuntu.  That's valuable when you want a real POSIX environment: `fork`, `/tmp`, UNIX sockets, signal semantics, PTY-backed terminals, shells like `bash`/`zsh`, and tools like `rg`, `git`, `ffmpeg` that behave the way they do on Linux.
+
+Practical consequences of WSL2:
 
 - The Hermes CLI, gateway, sessions, memory, skills, and tool runtimes all live inside the Linux VM.
 - Windows programs (browsers, native apps, Chrome with your logged-in profile) live outside it.
@@ -52,7 +65,7 @@ Hermes does not work reliably on WSL1 — WSL1 translates Linux syscalls on the 
 
 ### Distro choice
 
-Ubuntu (LTS) is what we test against. Debian works. Arch and NixOS work for people who want them, but the one-line installer assumes a Debian-derived `apt` system — see the [Nix setup guide](/docs/getting-started/nix-setup) for that path.
+Ubuntu (LTS) is what we test against. Debian works. Arch and NixOS work for people who want them, but the one-line installer assumes a Debian-derived `apt` system — see the [Nix setup guide](/getting-started/nix-setup) for that path.
 
 ### Enable systemd (recommended)
 
@@ -92,7 +105,7 @@ source ~/.bashrc
 hermes
 ```
 
-The installer treats WSL2 as plain Linux — nothing WSL-specific is needed. See [Installation](/docs/getting-started/installation) for the full layout.
+The installer treats WSL2 as plain Linux — nothing WSL-specific is needed. See [Installation](/getting-started/installation) for the full layout.
 
 ## Filesystem: crossing the Windows ↔ WSL2 boundary
 
@@ -175,7 +188,7 @@ dos2unix path/to/script.sh
 
 Clone inside WSL. Always, unless you have a specific reason not to. A typical Hermes workflow (`hermes chat`, tool calls that `rg`/`ripgrep` the repo, file watchers, background gateway) will be dramatically faster and more reliable against `~/code/myrepo` than `/mnt/c/Users/you/myrepo`.
 
-One exception: **MCP bridges that launch Windows binaries.** If you're using `chrome-devtools-mcp` through `cmd.exe` (see [MCP guide: WSL → Windows Chrome](/docs/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)), Windows may complain with a `UNC` warning if Hermes's current working directory is `~`. In that case, start Hermes from somewhere under `/mnt/c/` so the Windows process has a drive-letter cwd.
+One exception: **MCP bridges that launch Windows binaries.** If you're using `chrome-devtools-mcp` through `cmd.exe` (see [MCP guide: WSL → Windows Chrome](/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)), Windows may complain with a `UNC` warning if Hermes's current working directory is `~`. In that case, start Hermes from somewhere under `/mnt/c/` so the Windows process has a drive-letter cwd.
 
 ## Networking: WSL ↔ Windows
 
@@ -187,7 +200,7 @@ Two cases come up constantly.
 
 Most common: you're running **Ollama, LM Studio, or a llama-server on Windows**, and Hermes (inside WSL) needs to hit it.
 
-The canonical how-to for this lives in the providers guide: **[WSL2 Networking for Local Models →](/docs/integrations/providers#wsl2-networking-windows-users)**
+The canonical how-to for this lives in the providers guide: **[WSL2 Networking for Local Models →](/integrations/providers#wsl2-networking-windows-users)**
 
 Short version:
 
@@ -201,7 +214,7 @@ For the full table (Ollama / LM Studio / vLLM / SGLang bind addresses, firewall 
 This is the reverse direction and is less documented elsewhere, but it's what you need for:
 
 - Using the Hermes **web dashboard** from a Windows browser.
-- Using the **API server** (`hermes api`) from a Windows-side tool.
+- Using the **OpenAI-compatible API server** (exposed by `hermes gateway` when `API_SERVER_ENABLED=true`) from a Windows-side tool. See the [API Server feature page](/user-guide/features/api-server).
 - Testing a **messaging gateway** (Telegram, Discord, etc.) where the platform pings a local webhook URL — usually you'd use `cloudflared`/`ngrok` rather than raw port forwarding.
 
 #### Subcase 2a: from the Windows host itself
@@ -241,11 +254,11 @@ This is the real pain. Traffic flows **LAN device → Windows host → WSL VM**,
 
 Because the WSL VM IP drifts on each restart in NAT mode, a one-shot rule survives only until the next `wsl --shutdown`. For anything persistent, either use mirrored mode or put the port-proxy step in a script that runs at Windows login.
 
-For webhooks from cloud messaging providers (Telegram `setWebhook`, Slack events, etc.), don't fight port-forwarding — use `cloudflared` tunnels. See the [webhooks guide](/docs/user-guide/messaging/webhooks).
+For webhooks from cloud messaging providers (Telegram `setWebhook`, Slack events, etc.), don't fight port-forwarding — use `cloudflared` tunnels. See the [webhooks guide](/user-guide/messaging/webhooks).
 
 ## Running Hermes services long-term on Windows
 
-The Hermes [Tool Gateway](/docs/user-guide/features/tool-gateway) and the API server are long-lived processes. In WSL2 you have a few options for keeping them up.
+The Hermes [Tool Gateway](/user-guide/features/tool-gateway) and the API server are long-lived processes. In WSL2 you have a few options for keeping them up.
 
 ### Inside WSL with systemd (recommended)
 
@@ -279,7 +292,7 @@ If you're running a **Windows-native** local-model server (Ollama for Windows, L
 ## Common pitfalls
 
 **"Connection refused" to my Windows-hosted Ollama / LM Studio.**
-See [WSL2 Networking](/docs/integrations/providers#wsl2-networking-windows-users). Ninety percent of the time the server is bound to `127.0.0.1` and needs `0.0.0.0` (Ollama: `OLLAMA_HOST=0.0.0.0`), or you're missing a firewall rule.
+See [WSL2 Networking](/integrations/providers#wsl2-networking-windows-users). Ninety percent of the time the server is bound to `127.0.0.1` and needs `0.0.0.0` (Ollama: `OLLAMA_HOST=0.0.0.0`), or you're missing a firewall rule.
 
 **Massive slowness on `git status` / `hermes chat` in a repo.**
 You're probably working under `/mnt/c/...`. Move the repo to `~/code/...` (Linux side). Order-of-magnitude faster.
@@ -313,7 +326,7 @@ WSL2 stores its VM disk as a sparse VHDX under `%LOCALAPPDATA%\Packages\...`. It
 
 ## Where to go next
 
-- **[Installation](/docs/getting-started/installation)** — actual install steps (Linux/WSL2/Termux all use the same installer).
-- **[Integrations → Providers → WSL2 Networking](/docs/integrations/providers#wsl2-networking-windows-users)** — the canonical networking deep-dive for local model servers.
-- **[MCP guide → WSL → Windows Chrome](/docs/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)** — controlling your signed-in Windows Chrome from Hermes in WSL.
-- **[Tool Gateway](/docs/user-guide/features/tool-gateway)** and **[Web Dashboard](/docs/user-guide/features/web-dashboard)** — the long-lived services you'll most often want to expose from WSL to the rest of your network.
+- **[Installation](/getting-started/installation)** — actual install steps (Linux/WSL2/Termux all use the same installer).
+- **[Integrations → Providers → WSL2 Networking](/integrations/providers#wsl2-networking-windows-users)** — the canonical networking deep-dive for local model servers.
+- **[MCP guide → WSL → Windows Chrome](/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)** — controlling your signed-in Windows Chrome from Hermes in WSL.
+- **[Tool Gateway](/user-guide/features/tool-gateway)** and **[Web Dashboard](/user-guide/features/web-dashboard)** — the long-lived services you'll most often want to expose from WSL to the rest of your network.

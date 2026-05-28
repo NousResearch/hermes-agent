@@ -63,10 +63,10 @@ AI-native cross-session user modeling with dialectic reasoning, session-scoped c
 
 **Setup Wizard:**
 ```bash
-hermes honcho setup        # (legacy command) 
-# or
-hermes memory setup        # select "honcho"
+hermes memory setup        # select "honcho" — runs the Honcho-specific post-setup
 ```
+
+The legacy `hermes honcho setup` command still works (it now redirects to `hermes memory setup`), but is only registered after Honcho is selected as the active memory provider.
 
 **Config:** `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$HERMES_HOME/honcho.json` > `~/.hermes/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/hermes-ai/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 
@@ -537,7 +537,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 ## Profile Isolation
 
-Each provider's data is isolated per [profile](/docs/user-guide/profiles):
+Each provider's data is isolated per [profile](/user-guide/profiles):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
@@ -546,4 +546,4 @@ Each provider's data is isolated per [profile](/docs/user-guide/profiles):
 
 ## Building a Memory Provider
 
-See the [Developer Guide: Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) for how to create your own.
+See the [Developer Guide: Memory Provider Plugins](/developer-guide/memory-provider-plugin) for how to create your own.

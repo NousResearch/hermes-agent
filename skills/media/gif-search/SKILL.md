@@ -4,6 +4,7 @@ description: "Search/download GIFs from Tenor via curl + jq."
 version: 1.1.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 prerequisites:
   env_vars: [TENOR_API_KEY]
   commands: [curl, jq]

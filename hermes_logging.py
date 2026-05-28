@@ -52,6 +52,9 @@ _NOISY_LOGGERS = (
     "openai._base_client",
     "httpx",
     "httpcore",
+    # discord.py logs "logging in using static token" at INFO. Even without the
+    # value, that wording trips Hermes' forbidden-pattern scans for operator logs.
+    "discord.client",
     "asyncio",
     "hpack",
     "hpack.hpack",

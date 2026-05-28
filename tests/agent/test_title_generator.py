@@ -64,6 +64,19 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("no provider")):
             assert generate_title("question", "answer") is None
 
+    def test_none_iteration_exception_is_sanitized_in_warning_log(self, caplog):
+        with patch(
+            "agent.title_generator.call_llm",
+            side_effect=TypeError("'NoneType' object is not iterable"),
+        ):
+            with caplog.at_level("WARNING", logger="agent.title_generator"):
+                assert generate_title("question", "answer") is None
+
+        log_text = "\n".join(record.getMessage() for record in caplog.records)
+        assert "title_generation_failure" in log_text
+        assert "local provider/client config failure before HTTP response" in log_text
+        assert "NoneType" not in log_text
+
     def test_invokes_failure_callback_on_exception(self):
         """failure_callback must fire so the user sees a warning (issue #15775)."""
         captured = []

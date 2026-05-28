@@ -9,6 +9,7 @@ import threading
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
+from agent.provider_errors import sanitize_provider_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,10 @@ def generate_title(
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.
         # Full detail at debug level for operators who need the stack.
-        logger.warning("Title generation failed: %s", e)
+        logger.warning(
+            "Title generation failed: error_class=title_generation_failure detail=%s",
+            sanitize_provider_error_text(e),
+        )
         logger.debug("Title generation traceback", exc_info=True)
         if failure_callback is not None:
             try:

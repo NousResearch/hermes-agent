@@ -90,6 +90,13 @@ class TestSetupLogging:
         assert len(error_handlers) == 1
         assert error_handlers[0].level == logging.WARNING
 
+    def test_suppresses_discord_static_token_info_log(self, hermes_home):
+        logging.getLogger("discord.client").setLevel(logging.INFO)
+
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        assert logging.getLogger("discord.client").level == logging.WARNING
+
     def test_idempotent_no_duplicate_handlers(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home)
         hermes_logging.setup_logging(hermes_home=hermes_home)  # second call — should be no-op

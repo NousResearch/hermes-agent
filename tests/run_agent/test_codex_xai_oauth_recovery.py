@@ -142,6 +142,70 @@ def test_codex_stream_unrelated_runtimeerror_still_raises():
     mock_fallback.assert_not_called()
 
 
+def test_codex_stream_none_iteration_typeerror_falls_back_to_create_stream():
+    """The SDK can raise a local NoneType iteration error before HTTP response handling."""
+    agent = _make_codex_agent()
+
+    mock_client = MagicMock()
+    mock_client.responses.stream.side_effect = TypeError("'NoneType' object is not iterable")
+
+    fallback_response = SimpleNamespace(output=[], status="completed")
+    with patch.object(
+        agent, "_run_codex_create_stream_fallback", return_value=fallback_response
+    ) as mock_fallback:
+        result = agent._run_codex_stream({}, client=mock_client)
+
+    assert result is fallback_response
+    mock_fallback.assert_called_once_with({}, client=mock_client)
+
+
+def test_codex_stream_unrelated_typeerror_still_raises():
+    """Only the SDK-local NoneType iteration failure is converted to the fallback path."""
+    agent = _make_codex_agent()
+
+    mock_client = MagicMock()
+    mock_client.responses.stream.side_effect = TypeError("bad test setup")
+
+    with patch.object(agent, "_run_codex_create_stream_fallback") as mock_fallback:
+        with pytest.raises(TypeError, match="bad test setup"):
+            agent._run_codex_stream({}, client=mock_client)
+
+    mock_fallback.assert_not_called()
+
+
+def test_codex_create_stream_fallback_backfills_none_terminal_output():
+    """Codex backend terminal events can carry output=None despite streamed items."""
+    agent = _make_codex_agent()
+
+    output_item = SimpleNamespace(
+        type="message",
+        content=[SimpleNamespace(type="output_text", text="fallback output")],
+    )
+    terminal_response = SimpleNamespace(output=None, status="completed")
+    events = [
+        SimpleNamespace(type="response.output_item.done", item=output_item),
+        SimpleNamespace(type="response.completed", response=terminal_response),
+    ]
+
+    class _FakeCreateStream:
+        def __iter__(self):
+            return iter(events)
+
+        def close(self):
+            return None
+
+    mock_client = MagicMock()
+    mock_client.responses.create.return_value = _FakeCreateStream()
+
+    result = agent._run_codex_create_stream_fallback(
+        {"model": "gpt-5.5", "instructions": "hi", "input": []},
+        client=mock_client,
+    )
+
+    assert result is terminal_response
+    assert result.output == [output_item]
+
+
 def test_codex_stream_postlude_error_still_falls_back():
     """Existing ``response.completed`` fallback must not regress."""
     agent = _make_codex_agent()

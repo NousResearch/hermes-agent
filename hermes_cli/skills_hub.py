@@ -1082,7 +1082,11 @@ def do_repair_official(name: str, restore: bool = False,
     c = console or _console
     if restore and not skip_confirm:
         c.print(f"\n[bold]Restore official optional skill '{name}' from repo source?[/]")
-        c.print("[dim]Existing matching active copies will be moved to a restore backup before copying the official source.[/]")
+        c.print(
+            "[dim]Any existing copies at the canonical path or elsewhere "
+            "that do not match the official source will be moved to a "
+            "backup directory under ~/.hermes/skills/.restore-backups/.[/]"
+        )
         try:
             answer = input("Confirm [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):

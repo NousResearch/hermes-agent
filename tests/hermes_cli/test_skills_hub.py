@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_install, do_list, do_repair_official, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -144,6 +144,28 @@ def test_do_list_filter_hub(three_source_env):
     assert "hub-skill" in output
     assert "builtin-skill" not in output
     assert "local-skill" not in output
+
+
+def test_repair_official_restore_prompt_names_canonical_and_noncanonical_backups(monkeypatch):
+    import tools.skills_sync as skills_sync
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    monkeypatch.setattr(
+        skills_sync,
+        "restore_official_optional_skill",
+        lambda *_args, **_kwargs: pytest.fail("cancelled prompt should not repair"),
+    )
+
+    do_repair_official("trl-fine-tuning", restore=True, console=console)
+    output = sink.getvalue()
+
+    assert "canonical path or elsewhere" in output
+    assert "do not match" in output
+    assert "official source" in output
+    assert "~/.hermes/skills/.restore-backups/" in output
 
 
 def test_do_list_filter_builtin(three_source_env):

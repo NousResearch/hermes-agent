@@ -2366,7 +2366,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_model = str(cfg.get("model") or "").strip() or None
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
-    configured_api_key = str(cfg.get("api_key") or "").strip() or None
+    configured_api_key = os.path.expandvars(str(cfg.get("api_key") or "").strip()) or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
     if configured_base_url:

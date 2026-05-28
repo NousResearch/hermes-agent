@@ -2870,7 +2870,7 @@ def _try_configured_fallback_chain(
             continue
         fb_model = str(entry.get("model", "")).strip() or None
         fb_base_url = str(entry.get("base_url", "")).strip() or None
-        fb_api_key = str(entry.get("api_key", "")).strip() or None
+        fb_api_key = os.path.expandvars(str(entry.get("api_key", "")).strip()) or None
 
         label = f"fallback_chain[{i}]({fb_provider})"
 
@@ -4459,7 +4459,8 @@ def _resolve_task_provider_model(
         cfg_provider = str(task_config.get("provider", "")).strip() or None
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
-        cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        raw_api_key = str(task_config.get("api_key", "")).strip()
+        cfg_api_key = os.path.expandvars(raw_api_key) if raw_api_key else None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
     resolved_model = model or cfg_model

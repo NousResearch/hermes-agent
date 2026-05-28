@@ -3093,6 +3093,22 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             include_disabled = request.query.get("include_disabled", "").lower() in {"true", "1"}
             jobs = _cron_list(include_disabled=include_disabled)
+            # Enrich with active cron session info so callers can tell
+            # which jobs are currently running without reading state.db.
+            try:
+                session_db = self._ensure_session_db()
+                if session_db:
+                    active = session_db.get_active_cron_sessions()
+                    for job in jobs:
+                        job_id = job.get("id")
+                        if job_id in active:
+                            job["is_running"] = True
+                            job["current_session_id"] = active[job_id]["session_id"]
+                            job["current_started_at"] = active[job_id]["started_at"]
+                        else:
+                            job["is_running"] = False
+            except Exception:
+                pass  # enrichment is best-effort; list is still valid
             return web.json_response({"jobs": jobs})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)

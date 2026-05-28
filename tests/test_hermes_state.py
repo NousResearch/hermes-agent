@@ -138,6 +138,52 @@ class TestSessionLifecycle:
 
 
 # =========================================================================
+# Active cron sessions
+# =========================================================================
+
+class TestActiveCronSessions:
+    def test_no_cron_sessions(self, db):
+        """No cron sessions -> empty dict."""
+        assert db.get_active_cron_sessions() == {}
+
+    def test_active_cron_session_returned(self, db):
+        """An un-ended cron session shows up in the results."""
+        db.create_session(session_id="cron_abc123def456_20260528_120000", source="cron")
+        active = db.get_active_cron_sessions()
+        assert "abc123def456" in active
+        assert active["abc123def456"]["session_id"] == "cron_abc123def456_20260528_120000"
+        assert isinstance(active["abc123def456"]["started_at"], float)
+
+    def test_ended_cron_session_not_included(self, db):
+        """Sessions with ended_at set are excluded."""
+        sid = "cron_abc123def456_20260528_120000"
+        db.create_session(session_id=sid, source="cron")
+        db.end_session(sid, "cron_complete")
+        assert db.get_active_cron_sessions() == {}
+
+    def test_non_cron_sessions_ignored(self, db):
+        """Non-cron sessions (no cron_ prefix) are not included."""
+        db.create_session(session_id="cli_abc123_20260528", source="cli")
+        assert db.get_active_cron_sessions() == {}
+
+    def test_multiple_active_cron_sessions(self, db):
+        """Multiple active cron jobs each appear keyed by job_id."""
+        db.create_session(session_id="cron_job1_20260528_120000", source="cron")
+        db.create_session(session_id="cron_job2_20260528_120100", source="cron")
+        active = db.get_active_cron_sessions()
+        assert set(active.keys()) == {"job1", "job2"}
+
+    def test_mixed_active_and_completed_cron_sessions(self, db):
+        """Only un-ended cron sessions are returned."""
+        db.create_session(session_id="cron_job1_20260528_120000", source="cron")
+        sid2 = "cron_job2_20260528_120100"
+        db.create_session(session_id=sid2, source="cron")
+        db.end_session(sid2, "cron_complete")
+        active = db.get_active_cron_sessions()
+        assert set(active.keys()) == {"job1"}
+
+
+# =========================================================================
 # Message storage
 # =========================================================================
 

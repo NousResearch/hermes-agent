@@ -791,6 +791,37 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def get_active_cron_sessions(self) -> dict[str, dict[str, str | float]]:
+        """Return active cron sessions keyed by job_id.
+
+        Active cron sessions have IDs matching ``cron_{job_id}_{timestamp}``
+        with a NULL ``ended_at``. Returns ``{job_id: {"session_id": str,
+        "started_at": float}}``.
+        """
+        import logging as _logging
+
+        result: dict[str, dict[str, str | float]] = {}
+        try:
+            with self._lock:
+                cursor = self._conn.execute(
+                    "SELECT id, started_at FROM sessions "
+                    "WHERE id LIKE 'cron_%' AND ended_at IS NULL"
+                )
+                rows = cursor.fetchall()
+        except Exception as _exc:
+            _logging.getLogger(__name__).debug(
+                "Failed to query active cron sessions: %s", _exc
+            )
+            return result
+        for row in rows:
+            sid: str = row["id"]
+            # Parse job_id from cron_{job_id}_{YYYYMMDD_HHMMSS}
+            parts = sid.split("_")
+            if len(parts) >= 3:
+                job_id = parts[1]
+                result[job_id] = {"session_id": sid, "started_at": row["started_at"]}
+        return result
+
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
         """Store the full assembled system prompt snapshot."""
         def _do(conn):

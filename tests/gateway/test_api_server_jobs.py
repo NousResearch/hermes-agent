@@ -131,6 +131,58 @@ class TestListJobs:
                 assert resp.status == 200
                 mock_list.assert_called_once_with(include_disabled=False)
 
+    # -------------------------------------------------------------------
+    # 3-5. test_list_jobs_is_running enrichment
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_list_jobs_sets_is_running_false(self, adapter):
+        """Jobs not in active cron sessions get is_running=False."""
+        app = _create_app(adapter)
+        mock_session_db = MagicMock()
+        mock_session_db.get_active_cron_sessions.return_value = {}
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_list", return_value=[SAMPLE_JOB]
+            ), patch.object(
+                adapter, "_ensure_session_db", return_value=mock_session_db
+            ):
+                resp = await cli.get("/api/jobs")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["jobs"][0]["is_running"] is False
+                assert "current_session_id" not in data["jobs"][0]
+                assert "current_started_at" not in data["jobs"][0]
+
+    @pytest.mark.asyncio
+    async def test_list_jobs_sets_is_running_true(self, adapter):
+        """Jobs with active cron sessions get is_running=True and metadata."""
+        app = _create_app(adapter)
+        mock_session_db = MagicMock()
+        mock_session_db.get_active_cron_sessions.return_value = {
+            "aabbccddeeff": {
+                "session_id": "cron_aabbccddeeff_20260528_120000",
+                "started_at": 1748443200.0,
+            }
+        }
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_list", return_value=[SAMPLE_JOB]
+            ), patch.object(
+                adapter, "_ensure_session_db", return_value=mock_session_db
+            ):
+                resp = await cli.get("/api/jobs")
+                assert resp.status == 200
+                data = await resp.json()
+                job = data["jobs"][0]
+                assert job["is_running"] is True
+                assert job["current_session_id"] == "cron_aabbccddeeff_20260528_120000"
+                assert job["current_started_at"] == 1748443200.0
+
 
 # ---------------------------------------------------------------------------
 # 3-7. test_create_job and validation

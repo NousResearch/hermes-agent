@@ -337,6 +337,68 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_create_agent_dedupes_model_when_runtime_kwargs_carry_model(self, monkeypatch):
+        """Regression test for #27540.
+
+        When the primary provider fails mid-session (e.g. credential pool
+        exhausted), ``_resolve_runtime_agent_kwargs()`` falls back to a chain
+        entry whose runtime bundle includes its own ``model`` key.  Splatting
+        that dict into ``AIAgent(model=..., **runtime_kwargs, ...)`` without
+        deduplication raises ``TypeError: AIAgent() got multiple values for
+        keyword argument 'model'`` on the next turn.  The adapter must pop
+        the runtime-supplied model and prefer it as the effective override
+        instead of crashing.
+        """
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        # Simulate a fallback provider bundle that ALSO carries `model`,
+        # exactly as _try_resolve_fallback_provider() returns it.
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "api_key": "sk-fallback",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": None,
+                "model": "openai/gpt-5",
+            },
+        )
+        monkeypatch.setattr(
+            "gateway.run._resolve_gateway_model", lambda: "claude-opus-4-7"
+        )
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config", lambda: {}
+        )
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: None),
+        )
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_fallback_model",
+            staticmethod(lambda: None),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools", lambda *_: set()
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        # Must not raise TypeError("multiple values for keyword argument 'model'").
+        agent = adapter._create_agent(session_id="api-session")
+
+        assert isinstance(agent, FakeAgent)
+        # The runtime-supplied fallback model wins (matches the native
+        # gateway path in _resolve_session_agent_runtime).
+        assert captured["model"] == "openai/gpt-5"
+        assert captured["provider"] == "openrouter"
+        assert captured["api_key"] == "sk-fallback"
+
 
 # ---------------------------------------------------------------------------
 # Auth checking

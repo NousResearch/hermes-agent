@@ -738,7 +738,7 @@ async def _resolve_wiki_nodes(
     Mutates entries in *links* in-place: replaces ``doc_type`` and ``token``
     with the resolved values for wiki links.  Non-wiki links are unchanged.
     """
-    wiki_links = [l for l in links if l["doc_type"] == "wiki"]
+    wiki_links = [link for link in links if link["doc_type"] == "wiki"]
     if not wiki_links:
         return links
 

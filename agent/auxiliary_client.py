@@ -299,9 +299,15 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
 # api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
 # describe as having no image_in capability. Vision lives on the separate
 # Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
+#
+# google-gemini-cli: the Cloud Code Assist / Gemini CLI adapter currently
+# accepts OpenAI-shaped chat messages but intentionally drops image_url parts
+# before calling the Gemini CLI.  Do not auto-route vision there; fall through
+# to known multimodal backends instead.
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
     "kimi-coding",
     "kimi-coding-cn",
+    "google-gemini-cli",
 })
 
 # OpenRouter app attribution headers (base — always sent).
@@ -2255,6 +2261,7 @@ def _is_payment_error(exc: Exception) -> bool:
             "not available on the free tier",
             # Daily / monthly / weekly quota exhaustion keywords
             "quota exceeded", "quota_exceeded",
+            "quota exhausted", "capacity exhausted",
             "too many tokens per day", "daily limit",
             "tokens per day", "daily quota",
             "resource exhausted",  # Vertex AI / gRPC quota errors
@@ -2352,12 +2359,17 @@ def _is_connection_error(exc: Exception) -> bool:
 
 
 def _is_auth_error(exc: Exception) -> bool:
-    """Detect auth failures that should trigger provider-specific refresh."""
+    """Detect auth failures that should trigger provider-specific refresh/fallback."""
     status = getattr(exc, "status_code", None)
     if status == 401:
         return True
     err_lower = str(exc).lower()
-    return "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower()
+    err_type = type(exc).__name__.lower()
+    return (
+        "error code: 401" in err_lower
+        or "authenticationerror" in err_type
+        or "googleoautherror" in err_type
+    )
 
 
 def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
@@ -2414,13 +2426,7 @@ def _evict_cached_clients(provider: str) -> None:
         for key in stale_keys:
             client = _client_cache.get(key, (None, None, None))[0]
             if client is not None:
-                _force_close_async_httpx(client)
-                try:
-                    close_fn = getattr(client, "close", None)
-                    if callable(close_fn):
-                        close_fn()
-                except Exception:
-                    pass
+                _close_cached_client(client)
             _client_cache.pop(key, None)
 
 
@@ -2454,6 +2460,7 @@ def _evict_cached_client_instance(target: Any) -> bool:
                 continue
             real = getattr(cached, "_real_client", None)
             if cached is target or real is target:
+                _close_cached_client(cached)
                 del _client_cache[key]
                 evicted = True
     return evicted
@@ -3035,6 +3042,48 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
 # below — never look up auth env vars ad-hoc.
 
 
+class _AsyncGeminiCloudCodeCompletions:
+    """Async facade for Gemini Cloud Code's sync completions adapter."""
+
+    def __init__(self, sync_client: Any):
+        self._sync_client = sync_client
+
+    async def create(self, **kwargs: Any) -> Any:
+        import asyncio
+
+        return await asyncio.to_thread(
+            self._sync_client.chat.completions.create,
+            **kwargs,
+        )
+
+
+class _AsyncGeminiCloudCodeChat:
+    def __init__(self, sync_client: Any):
+        self.completions = _AsyncGeminiCloudCodeCompletions(sync_client)
+
+
+class _AsyncGeminiCloudCodeClient:
+    """Async-compatible wrapper preserving Gemini CLI Cloud Code OAuth routing."""
+
+    def __init__(self, sync_client: Any):
+        self._real_client = sync_client
+        self.api_key = getattr(sync_client, "api_key", "google-oauth")
+        self.base_url = getattr(sync_client, "base_url", "cloudcode-pa://google")
+        self.chat = _AsyncGeminiCloudCodeChat(sync_client)
+
+    @property
+    def is_closed(self) -> bool:
+        return bool(getattr(self._real_client, "is_closed", False))
+
+    def close(self) -> None:
+        close_fn = getattr(self._real_client, "close", None)
+        if callable(close_fn):
+            close_fn()
+
+    async def aclose(self) -> None:
+        self.close()
+
+
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Convert a sync client to its async counterpart, preserving Codex routing.
 
@@ -3054,6 +3103,13 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
 
         if isinstance(sync_client, GeminiNativeClient):
             return AsyncGeminiNativeClient(sync_client), model
+    except ImportError:
+        pass
+    try:
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+
+        if isinstance(sync_client, GeminiCloudCodeClient):
+            return _AsyncGeminiCloudCodeClient(sync_client), model
     except ImportError:
         pass
     try:
@@ -3739,6 +3795,20 @@ def resolve_provider_client(
             return resolve_provider_client("openai-codex", model, async_mode)
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
+        if provider == "google-gemini-cli":
+            # Gemini CLI / Cloud Code Assist uses Google OAuth, not an API key.
+            # Its adapter exposes the same .chat.completions.create() surface
+            # as OpenAI clients, so text-only auxiliary tasks (compression,
+            # title generation, etc.) can use it directly when explicitly
+            # selected via auxiliary.<task>.provider.
+            from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+
+            final_model = _normalize_resolved_model(
+                model or "gemini-3-flash-preview", provider
+            )
+            client = GeminiCloudCodeClient()
+            return (_to_async_client(client, final_model, is_vision=is_vision)
+                    if async_mode else (client, final_model))
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)
@@ -3874,7 +3944,12 @@ def get_available_vision_backends() -> List[str]:
     # 1. Active provider — if the user configured a provider, try it first.
     main_provider = _read_main_provider()
     if main_provider and main_provider not in {"auto", ""}:
-        if main_provider in _VISION_AUTO_PROVIDER_ORDER:
+        if main_provider in _PROVIDERS_WITHOUT_VISION:
+            logger.debug(
+                "Vision backend list: skipping main provider %s (no vision support)",
+                main_provider,
+            )
+        elif main_provider in _VISION_AUTO_PROVIDER_ORDER:
             if _strict_vision_backend_available(main_provider):
                 available.append(main_provider)
         else:
@@ -4126,13 +4201,7 @@ def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[
     with _client_cache_lock:
         old_entry = _client_cache.get(cache_key)
         if old_entry is not None and old_entry[0] is not client:
-            _force_close_async_httpx(old_entry[0])
-            try:
-                close_fn = getattr(old_entry[0], "close", None)
-                if callable(close_fn):
-                    close_fn()
-            except Exception:
-                pass
+            _close_cached_client(old_entry[0])
         _client_cache[cache_key] = (client, default_model, bound_loop)
 
 
@@ -4233,30 +4302,31 @@ def _force_close_async_httpx(client: Any) -> None:
         pass
 
 
+def _close_cached_client(client: Any) -> None:
+    """Best-effort close for clients removed from the auxiliary cache."""
+    import inspect
+
+    _force_close_async_httpx(client)
+    try:
+        close_fn = getattr(client, "close", None)
+        if close_fn and not inspect.iscoroutinefunction(close_fn):
+            close_fn()
+    except (OSError, RuntimeError, TypeError, AttributeError):
+        logger.debug("Auxiliary: cached client close failed", exc_info=True)
+
+
 def shutdown_cached_clients() -> None:
     """Close all cached clients (sync and async) to prevent event-loop errors.
 
     Call this during CLI shutdown, *before* the event loop is closed, to
     avoid ``AsyncHttpxClientWrapper.__del__`` raising on a dead loop.
     """
-    import inspect
-
     with _client_cache_lock:
         for key, entry in list(_client_cache.items()):
             client = entry[0]
             if client is None:
                 continue
-            # Mark any async httpx transport as closed first (prevents __del__
-            # from scheduling aclose() on a dead event loop).
-            _force_close_async_httpx(client)
-            # Sync clients: close the httpx connection pool cleanly.
-            # Async clients: skip — we already neutered __del__ above.
-            try:
-                close_fn = getattr(client, "close", None)
-                if close_fn and not inspect.iscoroutinefunction(close_fn):
-                    close_fn()
-            except Exception:
-                pass
+            _close_cached_client(client)
         _client_cache.clear()
 
 
@@ -4273,7 +4343,7 @@ def cleanup_stale_async_clients() -> None:
         for key, entry in _client_cache.items():
             client, _default, cached_loop = entry
             if cached_loop is not None and cached_loop.is_closed():
-                _force_close_async_httpx(client)
+                _close_cached_client(client)
                 stale_keys.append(key)
         for key in stale_keys:
             del _client_cache[key]
@@ -4366,7 +4436,7 @@ def _get_cached_client(
                     effective = _compat_model(cached_client, model, cached_default)
                     return cached_client, effective
                 # Stale — evict and fall through to create a new client.
-                _force_close_async_httpx(cached_client)
+                _close_cached_client(cached_client)
                 del _client_cache[cache_key]
             else:
                 effective = _compat_model(cached_client, model, cached_default)
@@ -4404,7 +4474,7 @@ def _get_cached_client(
                 # the oldest entries (FIFO — dict preserves insertion order).
                 while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
                     evict_key, evict_entry = next(iter(_client_cache.items()))
-                    _force_close_async_httpx(evict_entry[0])
+                    _close_cached_client(evict_entry[0])
                     del _client_cache[evict_key]
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
@@ -5112,6 +5182,7 @@ def call_llm(
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_auth_error(first_err)
         )
         # Respect explicit provider choice for transient errors (auth, request
         # validation, etc.) but allow fallback when the provider clearly cannot
@@ -5135,6 +5206,8 @@ def call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif _is_auth_error(first_err):
+                reason = "auth error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -5158,6 +5231,12 @@ def call_llm(
                         resolved_provider, task, reason=reason)
 
             if fb_client is not None:
+                if _is_connection_error(first_err):
+                    try:
+                        _evict_cached_client_instance(client)
+                    except Exception:
+                        logger.debug("Auxiliary: cache eviction before fallback failed",
+                                     exc_info=True)
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
@@ -5520,6 +5599,7 @@ async def async_call_llm(
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_auth_error(first_err)
         )
         # Capacity errors (payment/quota/connection) bypass the explicit-provider
         # gate — the provider cannot serve the request regardless of user intent.
@@ -5534,6 +5614,8 @@ async def async_call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif _is_auth_error(first_err):
+                reason = "auth error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
@@ -5556,6 +5638,12 @@ async def async_call_llm(
                         resolved_provider, task, reason=reason)
 
             if fb_client is not None:
+                if _is_connection_error(first_err):
+                    try:
+                        _evict_cached_client_instance(client)
+                    except Exception:
+                        logger.debug("Auxiliary (async): cache eviction before fallback failed",
+                                     exc_info=True)
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,

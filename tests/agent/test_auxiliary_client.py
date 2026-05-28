@@ -23,6 +23,7 @@ from agent.auxiliary_client import (
     _get_provider_chain,
     _is_payment_error,
     _is_rate_limit_error,
+    _is_auth_error,
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
@@ -92,6 +93,129 @@ class TestNormalizeAuxProvider:
     def test_maps_github_copilot_acp_aliases(self):
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
+
+
+class TestGeminiCliAuxiliaryProvider:
+    def test_explicit_google_gemini_cli_returns_cloudcode_client(self):
+        fake_client = MagicMock()
+        with patch(
+            "agent.gemini_cloudcode_adapter.GeminiCloudCodeClient",
+            return_value=fake_client,
+        ) as mock_client:
+            client, model = resolve_provider_client(
+                "google-gemini-cli",
+                model="gemini-3-flash-preview",
+            )
+
+        assert client is fake_client
+        assert model == "gemini-3-flash-preview"
+        mock_client.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_async_google_gemini_cli_preserves_cloudcode_adapter(self):
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient, MARKER_BASE_URL
+
+        client, model = resolve_provider_client(
+            "google-gemini-cli",
+            model="gemini-3-flash-preview",
+            async_mode=True,
+        )
+        assert client is not None
+        try:
+            assert model == "gemini-3-flash-preview"
+            assert client.base_url == MARKER_BASE_URL
+            assert isinstance(client._real_client, GeminiCloudCodeClient)
+
+            response = SimpleNamespace(choices=[])
+            client._real_client.chat.completions.create = MagicMock(return_value=response)
+            result = await client.chat.completions.create(model=model, messages=[])
+
+            assert result is response
+            client._real_client.chat.completions.create.assert_called_once_with(
+                model=model,
+                messages=[],
+            )
+        finally:
+            client.close()
+
+    def test_stale_async_cleanup_closes_wrapped_cloudcode_client(self):
+        import asyncio
+        from agent.auxiliary_client import (
+            _AsyncGeminiCloudCodeClient,
+            _client_cache,
+            _client_cache_key,
+            _client_cache_lock,
+            cleanup_stale_async_clients,
+        )
+
+        closed_loop = asyncio.new_event_loop()
+        closed_loop.close()
+        sync_client = SimpleNamespace(
+            api_key="google-oauth",
+            base_url="cloudcode-pa://google",
+            close=MagicMock(),
+        )
+        wrapper = _AsyncGeminiCloudCodeClient(sync_client)
+        cache_key = _client_cache_key("google-gemini-cli", async_mode=True)
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[cache_key] = (wrapper, "gemini-3-flash-preview", closed_loop)
+        try:
+            cleanup_stale_async_clients()
+
+            sync_client.close.assert_called_once_with()
+            assert cache_key not in _client_cache
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+    def test_stale_async_cache_hit_closes_wrapped_cloudcode_client(self):
+        import asyncio
+        import agent.auxiliary_client as aux
+        from agent.auxiliary_client import (
+            _AsyncGeminiCloudCodeClient,
+            _client_cache,
+            _client_cache_key,
+            _client_cache_lock,
+        )
+
+        closed_loop = asyncio.new_event_loop()
+        closed_loop.close()
+        sync_client = SimpleNamespace(
+            api_key="google-oauth",
+            base_url="cloudcode-pa://google",
+            close=MagicMock(),
+        )
+        stale_wrapper = _AsyncGeminiCloudCodeClient(sync_client)
+        fresh_wrapper = MagicMock(name="fresh_async_cloudcode_wrapper")
+        cache_key = _client_cache_key("google-gemini-cli", async_mode=True)
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[cache_key] = (stale_wrapper, "gemini-3-flash-preview", closed_loop)
+        try:
+            with patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fresh_wrapper, "gemini-3-flash-preview"),
+            ) as mock_resolve:
+                client, model = aux._get_cached_client(
+                    "google-gemini-cli",
+                    "gemini-3-flash-preview",
+                    async_mode=True,
+                )
+
+            sync_client.close.assert_called_once_with()
+            assert client is fresh_wrapper
+            assert model == "gemini-3-flash-preview"
+            mock_resolve.assert_called_once()
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+    def test_google_oauth_error_is_auth_error_for_fallback(self):
+        class GoogleOAuthError(Exception):
+            pass
+
+        assert _is_auth_error(GoogleOAuthError("Google OAuth credentials not found"))
 
 
 class TestReadCodexAccessToken:
@@ -1197,6 +1321,13 @@ class TestIsPaymentError:
         """Cloud provider quota exhaustion (e.g. Vertex AI) is a payment error."""
         exc = Exception("RESOURCE_EXHAUSTED: quota exceeded for project")
         exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
+    @pytest.mark.parametrize("message", ["Gemini quota exhausted", "Gemini capacity exhausted"])
+    def test_429_gemini_cli_quota_capacity_exhausted(self, message):
+        """Gemini CLI quota/capacity exhaustion should bypass explicit-provider fallback gate."""
+        exc = Exception(message)
+        setattr(exc, "status_code", 429)
         assert _is_payment_error(exc) is True
 
     def test_429_too_many_tokens_per_day(self):
@@ -2579,6 +2710,7 @@ class TestVisionAutoSkipsKimiCoding:
         assert _PROVIDERS_WITHOUT_VISION == frozenset({
             "kimi-coding",
             "kimi-coding-cn",
+            "google-gemini-cli",
         })
 
 
@@ -2962,6 +3094,93 @@ class TestAuxiliaryClientPoisonedCacheEviction:
                         task="compression",
                         messages=[{"role": "user", "content": "x"}],
                     )
+            assert cache_key not in _client_cache
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+    def test_call_llm_evicts_before_successful_connection_fallback(self):
+        from agent.auxiliary_client import _client_cache, _client_cache_lock
+
+        poisoned = MagicMock(name="poisoned_client")
+        poisoned.base_url = "https://cloudcode-pa.googleapis.com"
+        poisoned.chat.completions.create.side_effect = TimeoutError("timed out")
+        fallback = MagicMock(name="fallback_client")
+        fallback.base_url = "https://fallback.example/v1"
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+        fallback.chat.completions.create.return_value = response
+
+        cache_key = ("google-gemini-cli", False, None, None, None)
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[cache_key] = (poisoned, "gemini-3-flash-preview", None)
+
+        try:
+            with patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("google-gemini-cli", "gemini-3-flash-preview", None, None, None),
+            ), patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(poisoned, "gemini-3-flash-preview"),
+            ), patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(fallback, "fallback-model", "fallback_chain[0](openrouter)"),
+            ), patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(None, None, ""),
+            ):
+                assert call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "x"}],
+                ) is response
+            assert cache_key not in _client_cache
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_evicts_before_successful_connection_fallback(self):
+        from agent.auxiliary_client import _client_cache, _client_cache_lock
+
+        poisoned = MagicMock(name="poisoned_async_client")
+        poisoned.base_url = "https://cloudcode-pa.googleapis.com"
+        poisoned.chat.completions.create = AsyncMock(side_effect=TimeoutError("timed out"))
+        fallback = MagicMock(name="fallback_client")
+        fallback.base_url = "https://fallback.example/v1"
+        async_fallback = MagicMock(name="async_fallback_client")
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+        async_fallback.chat.completions.create = AsyncMock(return_value=response)
+
+        cache_key = ("google-gemini-cli", True, None, None, None)
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[cache_key] = (poisoned, "gemini-3-flash-preview", None)
+
+        try:
+            with patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("google-gemini-cli", "gemini-3-flash-preview", None, None, None),
+            ), patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(poisoned, "gemini-3-flash-preview"),
+            ), patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(fallback, "fallback-model", "fallback_chain[0](openrouter)"),
+            ), patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(None, None, ""),
+            ), patch(
+                "agent.auxiliary_client._to_async_client",
+                return_value=(async_fallback, "fallback-model"),
+            ):
+                assert await async_call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "x"}],
+                ) is response
             assert cache_key not in _client_cache
         finally:
             with _client_cache_lock:

@@ -954,6 +954,61 @@ class TestGeminiCloudCodeClient:
         finally:
             client.close()
 
+    def test_forwards_timeout_to_non_stream_request(self):
+        from agent import gemini_cloudcode_adapter as adapter
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        from agent.google_code_assist import ProjectContext
+
+        fake_response = MagicMock(status_code=200)
+        fake_response.json.return_value = {
+            "response": {
+                "candidates": [
+                    {"content": {"parts": [{"text": "ok"}], "role": "model"}}
+                ]
+            }
+        }
+        http = MagicMock()
+        http.post.return_value = fake_response
+        client = GeminiCloudCodeClient(api_key="dummy")
+        client._http = http
+        client._project_context = ProjectContext(project_id="proj")
+        try:
+            with patch.object(adapter.google_oauth, "get_valid_access_token", return_value="tok"):
+                client.chat.completions.create(
+                    model="gemini-2.5-flash",
+                    messages=[{"role": "user", "content": "hi"}],
+                    timeout=7.5,
+                )
+        finally:
+            client.close()
+
+        assert http.post.call_args.kwargs["timeout"] == 7.5
+
+    def test_forwards_timeout_to_stream_request(self):
+        from agent import gemini_cloudcode_adapter as adapter
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        from agent.google_code_assist import ProjectContext
+
+        http = MagicMock()
+        client = GeminiCloudCodeClient(api_key="dummy")
+        client._http = http
+        client._project_context = ProjectContext(project_id="proj")
+        try:
+            with patch.object(adapter.google_oauth, "get_valid_access_token", return_value="tok"):
+                stream = client.chat.completions.create(
+                    model="gemini-2.5-flash",
+                    messages=[{"role": "user", "content": "hi"}],
+                    stream=True,
+                    timeout=3.25,
+                )
+                # Force the lazy generator to enter the HTTP stream context.
+                with pytest.raises(Exception):
+                    next(iter(stream))
+        finally:
+            client.close()
+
+        assert http.stream.call_args.kwargs["timeout"] == 3.25
+
 
 class TestGeminiHttpErrorParsing:
     """Regression coverage for _gemini_http_error Google-envelope parsing.

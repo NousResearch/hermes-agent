@@ -1183,6 +1183,14 @@ def run_conversation(
 
             try:
                 agent._reset_stream_delivery_tracking()
+                # api_messages is built once, before this retry loop, while the
+                # primary provider is active.  A mid-conversation fallback can
+                # switch to a require-side provider (DeepSeek / Kimi / MiMo) that
+                # rejects assistant turns lacking reasoning_content.  Re-apply the
+                # echo-back pad for the *current* provider here (idempotent no-op
+                # unless the active provider needs it) so the fallback request
+                # isn't sent with stale, primary-shaped reasoning fields.
+                agent._reapply_reasoning_echo_for_provider(api_messages)
                 api_kwargs = agent._build_api_kwargs(api_messages)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)

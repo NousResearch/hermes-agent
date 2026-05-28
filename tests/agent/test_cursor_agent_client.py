@@ -1502,6 +1502,88 @@ class TimeoutTests(unittest.TestCase):
         finally:
             client2.close()
 
+    @staticmethod
+    def _patch_popen(fake_proc):
+        def _fake_popen(argv, **kwargs):
+            fake_proc.argv_seen = list(argv)
+            fake_proc.cwd_seen = kwargs.get("cwd")
+            fake_proc.env_seen = kwargs.get("env")
+            return fake_proc
+
+        return patch("agent.cursor_agent_client.subprocess.Popen", side_effect=_fake_popen)
+
+    def test_context_estimate_callback_fires_before_subprocess(self) -> None:
+        # Regression: the status bar sat at 0/200K throughout a long
+        # in-flight first turn because the compressor only learns about
+        # prompt_tokens from the response usage at end-of-turn. The
+        # context_estimate_callback fires with the messages-based token
+        # estimate before the subprocess spawns so the bar reflects
+        # input context immediately.
+        proc = _FakeProcess(SUCCESS_STREAM)
+        observed: list[int] = []
+        client = CursorAgentClient(
+            context_estimate_callback=lambda tokens: observed.append(tokens),
+        )
+        try:
+            with self._patch_popen(proc):
+                client.chat.completions.create(
+                    model="composer-2.5",
+                    messages=[
+                        {"role": "system", "content": "y" * 4000},
+                        {"role": "user", "content": "x" * 4000},
+                    ],
+                )
+            self.assertEqual(len(observed), 1,
+                             "callback should fire exactly once per turn")
+            self.assertGreater(observed[0], 0,
+                               "estimate should be > 0 for non-empty messages")
+        finally:
+            client.close()
+
+    def test_context_estimate_callback_is_optional(self) -> None:
+        # Sanity: not passing the callback must not break anything.
+        proc = _FakeProcess(SUCCESS_STREAM)
+        client = CursorAgentClient()
+        try:
+            with self._patch_popen(proc):
+                resp = client.chat.completions.create(
+                    model="composer-2.5",
+                    messages=[{"role": "user", "content": "Hi"}],
+                )
+            self.assertEqual(resp.choices[0].finish_reason, "stop")
+        finally:
+            client.close()
+
+    def test_high_water_bumps_before_subprocess_for_long_first_turn_visibility(self) -> None:
+        # Even without an external callback, the internal high-water mark
+        # must be bumped before the subprocess spawns so that
+        # ``_estimate_per_round_context`` and the final usage shape don't
+        # regress against the input-side estimate.
+        proc = _FakeProcess(SUCCESS_STREAM)
+        client = CursorAgentClient()
+        observed_high_water_at_subprocess_start: list[int] = []
+        real_run = client._run_prompt
+
+        def _wrap_run(*args, **kwargs):
+            observed_high_water_at_subprocess_start.append(client._context_high_water)
+            return real_run(*args, **kwargs)
+
+        client._run_prompt = _wrap_run  # type: ignore[method-assign]
+        try:
+            with self._patch_popen(proc):
+                client.chat.completions.create(
+                    model="composer-2.5",
+                    messages=[
+                        {"role": "system", "content": "y" * 4000},
+                        {"role": "user", "content": "x" * 4000},
+                    ],
+                )
+            self.assertGreater(observed_high_water_at_subprocess_start[0], 0,
+                               "high-water must be bumped before subprocess "
+                               "spawn, not after the result event")
+        finally:
+            client.close()
+
     def test_idle_deadline_resets_on_each_stream_event(self) -> None:
         # Slow-stream regression: emit a handful of events with per-event
         # delays that, in aggregate, exceed the idle threshold. The old

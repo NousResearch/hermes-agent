@@ -1074,6 +1074,7 @@ class CursorAgentClient:
         mode: str | None = None,
         timeout_seconds: float | None = None,
         tool_progress_callback: Any = None,
+        context_estimate_callback: Any = None,
         **_: Any,
     ):
         candidate_key = (api_key or os.getenv("CURSOR_API_KEY", "") or "").strip()
@@ -1103,6 +1104,12 @@ class CursorAgentClient:
                 pass
 
         self._tool_progress_callback = tool_progress_callback
+        # Optional hook invoked with the rough messages-based token estimate
+        # *before* the subprocess spawns. Used by the host agent to bump
+        # the status-bar (``compressor.last_prompt_tokens``) so the input
+        # context is visible during long in-flight turns instead of the
+        # bar sitting at 0 until the result event arrives.
+        self._context_estimate_callback = context_estimate_callback
 
         # High-water mark for the Hermes status bar. Updated on every
         # call with ``max(prev, new_estimate, cursor_reported)`` so the
@@ -1191,6 +1198,21 @@ class CursorAgentClient:
             )
         except Exception:
             self._last_messages_estimate = 0
+
+        # Bump the high-water mark NOW (before subprocess spawn) so the
+        # status bar reflects input context immediately. Without this the
+        # bar shows 0/200K throughout a long in-flight FIRST turn because
+        # the compressor only learns about prompt_tokens from the final
+        # response. Subsequent turns are fine (they inherit the previous
+        # turn's value while in-flight).
+        if self._last_messages_estimate > self._context_high_water:
+            self._context_high_water = self._last_messages_estimate
+        if callable(self._context_estimate_callback) and self._last_messages_estimate > 0:
+            try:
+                self._context_estimate_callback(self._last_messages_estimate)
+            except Exception:
+                # Never let a UI hook break the actual request.
+                pass
 
         prompt_text = _format_messages_as_prompt(
             messages or [],

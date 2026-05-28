@@ -304,6 +304,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("GMI_API_KEY",),
         base_url_env_var="GMI_BASE_URL",
     ),
+    "digitalocean": ProviderConfig(
+        id="digitalocean",
+        name="DigitalOcean Gradient AI",
+        auth_type="api_key",
+        inference_base_url="https://inference.do-ai.run/v1",
+        # CUSTOM_API_KEY kept first for backward compat with users migrating from
+        # a generic `custom` provider pointed at DO; DIGITALOCEAN_ACCESS_TOKEN is
+        # the upstream convention (models.dev `env` field).
+        api_key_env_vars=("CUSTOM_API_KEY", "DIGITALOCEAN_ACCESS_TOKEN"),
+        base_url_env_var="DIGITALOCEAN_BASE_URL",
+    ),
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",

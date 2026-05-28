@@ -202,6 +202,18 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://ollama.com/v1",
         base_url_env_var="OLLAMA_BASE_URL",
     ),
+    # DigitalOcean Gradient AI Platform — OpenAI-compatible inference at
+    # https://inference.do-ai.run/v1.  models.dev publishes the catalog
+    # (76+ models incl. Anthropic, OpenAI, Mistral, DeepSeek) so we don't
+    # need to ship a model list.  Two env vars accepted: the upstream
+    # convention (DIGITALOCEAN_ACCESS_TOKEN) and CUSTOM_API_KEY for users
+    # migrating from a generic `custom` provider config.
+    "digitalocean": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("CUSTOM_API_KEY",),
+        base_url_override="https://inference.do-ai.run/v1",
+        base_url_env_var="DIGITALOCEAN_BASE_URL",
+    ),
     # Azure Foundry: supports both OpenAI-style and Anthropic-style endpoints.
     # The transport is determined at runtime from config.yaml model.api_mode.
     "azure-foundry": HermesOverlay(

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -171,6 +172,46 @@ def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'b' --assignee bob")
     out = kc.run_slash("dispatch --dry-run")
     assert "Spawned:" in out
+
+
+def test_cmd_dispatch_honors_config_max_in_progress(kanban_home, monkeypatch):
+    from hermes_cli import config as hermes_config
+
+    seen_kwargs = {}
+
+    def fake_dispatch_once(conn, **kwargs):
+        seen_kwargs.update(kwargs)
+        return SimpleNamespace(
+            reclaimed=[],
+            crashed=[],
+            timed_out=[],
+            stale=[],
+            auto_blocked=[],
+            promoted=0,
+            spawned=[],
+            skipped_unassigned=[],
+            skipped_nonspawnable=[],
+        )
+
+    monkeypatch.setattr(kb, "dispatch_once", fake_dispatch_once)
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"kanban": {"max_in_progress": 2}},
+    )
+
+    rc = kc._cmd_dispatch(
+        argparse.Namespace(
+            dry_run=True,
+            max=None,
+            failure_limit=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
+            json=True,
+        )
+    )
+
+    assert rc == 0
+    assert seen_kwargs["max_in_progress"] == 2
+    assert seen_kwargs["max_spawn"] is None
 
 
 def test_run_slash_context_output_format(kanban_home):

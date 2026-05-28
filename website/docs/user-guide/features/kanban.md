@@ -642,6 +642,8 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
         [--log-retention-days N]
 ```
 
+The CLI dispatch command also honors `kanban.max_in_progress` from `config.yaml`, matching the gateway dispatcher’s running-task cap.
+
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.

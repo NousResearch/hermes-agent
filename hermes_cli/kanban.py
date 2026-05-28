@@ -184,6 +184,34 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
     )
 
 
+def _load_dispatch_max_in_progress() -> Optional[int]:
+    """Return ``kanban.max_in_progress`` from config.yaml, if valid.
+
+    The gateway dispatcher already honors this knob. Manual CLI dispatch
+    should mirror it so local runs respect the configured running-task cap.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return None
+
+    raw_max_in_progress = (cfg.get("kanban", {}) or {}).get("max_in_progress")
+    if raw_max_in_progress is None:
+        return None
+
+    try:
+        max_in_progress = int(raw_max_in_progress)
+    except (TypeError, ValueError):
+        return None
+
+    if max_in_progress < 1:
+        return None
+
+    return max_in_progress
+
+
 # ---------------------------------------------------------------------------
 # Argparse builder
 # ---------------------------------------------------------------------------
@@ -2092,6 +2120,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             conn,
             dry_run=args.dry_run,
             max_spawn=args.max,
+            max_in_progress=_load_dispatch_max_in_progress(),
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
         )
     if getattr(args, "json", False):

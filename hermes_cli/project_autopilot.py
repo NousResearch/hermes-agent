@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -235,6 +236,105 @@ def load_project_doc(project_home: Path) -> dict[str, Any]:
     return doc
 
 
+def _git_output(args: list[str], *, cwd: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def _infer_current_repo_context() -> dict[str, Any]:
+    cwd = Path.cwd().resolve()
+    git_root = _git_output(["rev-parse", "--show-toplevel"], cwd=cwd)
+    checkout = Path(git_root).resolve() if git_root else cwd
+    try:
+        rel_parts = checkout.relative_to(Path("/Users/vsletten/src")).parts
+    except ValueError as exc:
+        raise ProjectAutopilotError(
+            "cannot adopt legacy project.json outside /Users/vsletten/src"
+        ) from exc
+    if len(rel_parts) < 2:
+        raise ProjectAutopilotError(
+            "cannot infer repo org/name for legacy project.json adoption"
+        )
+    branch = _git_output(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout)
+    if not branch or branch == "HEAD":
+        branch_parts = rel_parts[2:]
+        branch = "/".join(branch_parts) if branch_parts else None
+    if not branch:
+        raise ProjectAutopilotError(
+            "cannot infer current branch for legacy project.json adoption"
+        )
+    return {
+        "repo_org": rel_parts[0],
+        "repo_name": rel_parts[1],
+        "canonical_checkout": checkout,
+        "final_branch": branch,
+    }
+
+
+def _normalize_legacy_project_doc(
+    doc: dict[str, Any],
+    *,
+    project_home: Path,
+) -> dict[str, Any]:
+    missing = [
+        key
+        for key in (
+            "slug",
+            "title",
+            "goal",
+            "board_slug",
+            "root_task_id",
+            "project_home",
+        )
+        if not doc.get(key)
+    ]
+    if missing:
+        raise ProjectAutopilotError(
+            f"cannot adopt legacy project.json missing fields: {', '.join(missing)}"
+        )
+    if str(project_home) != doc["project_home"]:
+        raise InvariantError("legacy project.json project_home does not match actual path")
+
+    repo_context = _infer_current_repo_context()
+    adopted = normalize_project_doc(
+        slug=doc["slug"],
+        title=doc["title"],
+        goal=doc["goal"],
+        board_slug=doc["board_slug"],
+        root_task_id=doc["root_task_id"],
+        project_home=project_home,
+        **repo_context,
+    )
+    adopted["state"] = doc.get("state") or adopted["state"]
+    if isinstance(doc.get("created_at"), int):
+        adopted["created_at"] = doc["created_at"]
+    if isinstance(doc.get("pr_url"), str):
+        adopted["pr_url"] = doc["pr_url"]
+    validate_project_doc(adopted)
+    return adopted
+
+
+def load_project_doc_for_sync(project_home: Path) -> dict[str, Any]:
+    doc = json.loads((project_home / "project.json").read_text(encoding="utf-8"))
+    if doc.get("schema_version") == SCHEMA_VERSION:
+        validate_project_doc(doc)
+        return doc
+    return _normalize_legacy_project_doc(doc, project_home=project_home)
+
+
 def render_project_md(doc: dict[str, Any]) -> str:
     return f"""# {doc["title"]}
 
@@ -442,7 +542,7 @@ def sync_project_home(
 ) -> dict[str, Any]:
     from hermes_cli import kanban_db
 
-    doc = load_project_doc(project_home)
+    doc = load_project_doc_for_sync(project_home)
     conn = kanban_db.connect(db_path, board=board or doc["board_slug"])
     try:
         graph_with_contracts = derive_task_graph(conn, doc["root_task_id"])

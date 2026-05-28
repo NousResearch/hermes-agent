@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from hermes_cli import kanban_db
 from hermes_cli.project_autopilot import bootstrap_project_home, sync_project_home
 
@@ -111,6 +113,70 @@ def test_sync_project_home_rewrites_project_files_from_board_truth(tmp_path):
         )
         assert "Reconcile `TASKS.md` and `STATUS.md` from board truth" in handoff_md
         assert "Task graph snapshot" in handoff_md
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("schema_version", [None, "legacy-project/v0"])
+def test_sync_project_home_upgrades_legacy_project_json_before_validation(
+    tmp_path, schema_version
+):
+    db_path = tmp_path / "kanban.db"
+    conn = kanban_db.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO tasks (
+                id, title, body, assignee, status, priority, created_by,
+                created_at, workspace_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "t_root",
+                "Root project",
+                "Project root body",
+                "codexapp",
+                "ready",
+                0,
+                "tester",
+                1,
+                "scratch",
+            ),
+        )
+
+        project_home = _bootstrap_demo_project(tmp_path)
+        legacy_doc = {
+            "slug": "demo",
+            "title": "Demo",
+            "goal": "Make demo restartable",
+            "board_slug": "demo-board",
+            "root_task_id": "t_root",
+            "project_home": str(project_home),
+            "project_type": "Hermes feature project",
+            "state": "PLANNED",
+            "created_at": 123,
+            "updated_at": 456,
+        }
+        if schema_version is not None:
+            legacy_doc["schema_version"] = schema_version
+        (project_home / "project.json").write_text(
+            json.dumps(legacy_doc, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        doc = sync_project_home(project_home, db_path=db_path)
+
+        saved = json.loads((project_home / "project.json").read_text())
+        assert saved["schema_version"] == "project-autopilot/v0"
+        assert saved["project_mode"] == "stacked-slices-one-pr"
+        assert saved["slug"] == "demo"
+        assert saved["state"] == "PLANNED"
+        assert saved["root_task_id"] == "t_root"
+        assert saved["task_graph"]["nodes"][0]["id"] == "t_root"
+        assert saved["branch_strategy"]["final_branch"]
+        assert saved["repo"]["org"]
+        assert saved["repo"]["name"]
+        assert doc == saved
     finally:
         conn.close()
 

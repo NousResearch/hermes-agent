@@ -933,6 +933,48 @@ class TestKillProcess:
         assert s.trusted_completion is True
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group fallback")
+    def test_process_tool_force_false_string_does_not_bypass_codex_guard(self, registry, monkeypatch):
+        from tools.process_registry import _handle_process
+        import tools.process_registry as process_registry_module
+
+        s = _make_session(sid="proc_force_false_string", command="codex-yuna exec --full-auto task")
+        s.last_wait_timeout_at = time.time()
+        s.last_wait_timeout_seconds = 60
+        registry._running[s.id] = s
+        monkeypatch.setattr(process_registry_module, "process_registry", registry)
+
+        result = json.loads(_handle_process({"action": "kill", "session_id": s.id, "force": "false"}))
+
+        assert result["status"] == "refused"
+        assert result["requires_force"] is True
+        assert s.exited is False
+        assert s.kill_attempted is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group fallback")
+    def test_process_tool_force_true_string_bypasses_codex_guard(self, registry, monkeypatch):
+        from tools.process_registry import _handle_process
+        import tools.process_registry as process_registry_module
+
+        proc = MagicMock()
+        proc.pid = 45679
+        s = _make_session(sid="proc_force_true_string", command="codex-yuna exec --full-auto task")
+        s.process = proc
+        s.pid = proc.pid
+        s.pgid = proc.pid
+        s.last_wait_timeout_at = time.time()
+        s.last_wait_timeout_seconds = 60
+        registry._running[s.id] = s
+        monkeypatch.setattr(process_registry_module, "process_registry", registry)
+        monkeypatch.setattr(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            staticmethod(lambda *args, **kwargs: {"method": "os.killpg", "fallback_used": True}),
+        )
+
+        result = json.loads(_handle_process({"action": "kill", "session_id": s.id, "force": "true"}))
+
+        assert result["status"] == "killed"
+        assert s.kill_attempted is True
+
     def test_codex_kill_after_wait_timeout_allows_explicit_force(self, registry, monkeypatch):
         """Explicit stop/hard-deadline paths can still terminate Codex."""
         proc = MagicMock()
@@ -1050,6 +1092,34 @@ class TestWaitTimeoutMetadata:
 
     def test_codex_command_detection_handles_quoted_wrapper_path(self):
         assert ProcessRegistry._is_codex_command('"$HOME/.local/bin/codex" exec --full-auto task')
+
+    def test_codex_command_detection_does_not_match_plain_text_mentions(self):
+        assert not ProcessRegistry._is_codex_command("echo codex-yuna")
+        assert not ProcessRegistry._is_codex_command("python -c 'print(\"codex-yuna\")'")
+
+    def test_wait_returns_exited_if_process_finishes_at_deadline_boundary(self, registry, monkeypatch):
+        s = _make_session(sid="proc_wait_boundary", command="codex-yuna exec --full-auto task")
+        registry._running[s.id] = s
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "1")
+
+        monotonic_values = iter([0.0, 0.0, 2.0])
+        monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values))
+
+        def finish_during_sleep(_seconds):
+            with s._lock:
+                s.output_buffer = "done\n"
+                s.exited = True
+                s.exit_code = 0
+
+        monkeypatch.setattr(time, "sleep", finish_during_sleep)
+
+        result = registry.wait(s.id, timeout=1)
+
+        assert result["status"] == "exited"
+        assert result["exit_code"] == 0
+        assert result["output"] == "done\n"
+        assert "process_still_running" not in result
+        assert not s.last_wait_timeout_at
 
     def test_wait_timeout_is_marked_as_wait_window_not_failure(self, registry, monkeypatch):
         s = _make_session(sid="proc_wait_window", command="codex-yuna exec --full-auto task")

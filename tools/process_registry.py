@@ -431,17 +431,34 @@ class ProcessRegistry:
         model/provider strings. It protects tracked Codex background processes
         from being killed just because a Hermes wait window expired.
         """
-        command_lower = (command or "").lower()
-        if "codex-yuna" in command_lower:
-            return True
         try:
-            tokens = shlex.split(command or "")
-        except ValueError:
-            tokens = (command or "").replace(";", " ").split()
+            lexer = shlex.shlex(command or "", posix=True, punctuation_chars=";&|")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except (TypeError, ValueError):
+            tokens = shlex.split(command or "") if command else []
+
+        command_position = True
         for index, token in enumerate(tokens):
-            exe = os.path.basename(token.strip("'\""))
-            if exe == "codex" and any(t.strip("'\"") == "exec" for t in tokens[index + 1:index + 4]):
-                return True
+            stripped = token.strip("'\"")
+            if stripped in {";", "&", "&&", "|", "||"}:
+                command_position = True
+                continue
+
+            # Skip common environment prefixes without losing command position.
+            if command_position and (stripped == "env" or "=" in stripped and not stripped.startswith(("/", "./", "../"))):
+                continue
+
+            if command_position:
+                exe = os.path.basename(stripped)
+                if exe in {"codex-yuna", "codex-yuna.exe"}:
+                    return True
+                if exe in {"codex", "codex.exe"} and any(
+                    t.strip("'\"") == "exec" for t in tokens[index + 1:index + 4]
+                ):
+                    return True
+
+            command_position = False
         return False
 
     @staticmethod
@@ -1297,6 +1314,21 @@ class ProcessRegistry:
 
             time.sleep(1)
 
+        session = self._refresh_detached_session(session)
+        self._reconcile_local_exit(session)
+        if session.exited:
+            self._completion_consumed.add(session_id)
+            result = {
+                "status": "exited",
+                "exit_code": session.exit_code,
+                "output": strip_ansi(session.output_buffer[-2000:]),
+            }
+            result.update(timeout_metadata)
+            result.update(self._process_state_metadata(session))
+            if timeout_note:
+                result["timeout_note"] = timeout_note
+            return result
+
         result = {
             "status": "timeout",
             "output": strip_ansi(session.output_buffer[-1000:]),
@@ -1839,6 +1871,30 @@ PROCESS_SCHEMA = {
 }
 
 
+def _coerce_process_bool(value) -> bool:
+    """Safely parse boolean-ish process tool arguments.
+
+    Tool schema coercion normally provides real booleans. This defensive parser
+    protects internal/direct handler calls where strings like "false" would
+    otherwise be truthy under bool("false"). Unknown strings are treated as
+    False to avoid accidentally enabling destructive force behavior.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off", ""}:
+            return False
+        return False
+    return False
+
+
 def _handle_process(args, **kw):
     task_id = kw.get("task_id")
     action = args.get("action", "")
@@ -1860,7 +1916,7 @@ def _handle_process(args, **kw):
         elif action == "kill":
             return json.dumps(process_registry.kill_process(
                 session_id,
-                force=bool(args.get("force", False)),
+                force=_coerce_process_bool(args.get("force", False)),
                 reason=str(args.get("reason", "")),
             ), ensure_ascii=False)
         elif action == "write":

@@ -1153,6 +1153,12 @@ def _resolve_explicit_runtime(
         env_url = ""
         if pconfig.base_url_env_var:
             env_url = os.getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
+        # MeshBoard stream-tap launcher sets HERMES_LLM_BASE_URL to a local
+        # proxy URL.  Honour it when the provider-specific env var is absent
+        # so the tap proxy actually receives inference traffic instead of
+        # being silently bypassed in favour of the default upstream URL.
+        if not env_url:
+            env_url = os.getenv("HERMES_LLM_BASE_URL", "").strip().rstrip("/")
 
         base_url = explicit_base_url
         if not base_url:

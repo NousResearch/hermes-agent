@@ -193,7 +193,11 @@ Cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or le
 
 ### Test coverage
 
-See `tests/test_fallback_model.py` for comprehensive tests covering all supported providers, one-shot semantics, and edge cases.
+Fallback behavior is exercised across several suites:
+
+- `tests/run_agent/test_fallback_credential_isolation.py` — credential isolation between primary and fallback
+- `tests/hermes_cli/test_fallback_cmd.py` — the `/fallback` CLI command
+- `tests/gateway/test_fallback_eviction.py` — gateway eviction of failed providers
 
 ## Related docs
 

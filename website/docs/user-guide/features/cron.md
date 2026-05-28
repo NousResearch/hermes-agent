@@ -21,6 +21,10 @@ Cron jobs can:
 
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
+:::tip
+Cron jobs use whatever provider `hermes model` selected. `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
+:::
+
 :::warning
 Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
 :::
@@ -204,10 +208,11 @@ Cron jobs now have a fuller lifecycle than just create/remove.
 
 ```bash
 hermes cron list
-hermes cron pause <job_id>
-hermes cron resume <job_id>
-hermes cron run <job_id>
-hermes cron remove <job_id>
+hermes cron pause <job_id_or_name>
+hermes cron resume <job_id_or_name>
+hermes cron run <job_id_or_name>
+hermes cron remove <job_id_or_name>
+hermes cron edit <job_id_or_name> [...flags]
 hermes cron status
 hermes cron tick
 ```
@@ -218,6 +223,9 @@ What they do:
 - `resume` — re-enable the job and compute the next future run
 - `run` — trigger the job on the next scheduler tick
 - `remove` — delete it entirely
+- `edit` — modify schedule, prompt, profile, delivery, etc.
+
+**Name-based lookup.** All four mutating verbs (`pause`, `resume`, `run`, `remove`, `edit`) plus the agent's `cronjob` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
 
 ## How it works
 

@@ -10,6 +10,10 @@ In this tutorial, you'll build a personal briefing bot that wakes up every morni
 
 By the end, you'll have a fully automated workflow combining **web search**, **cron scheduling**, **delegation**, and **messaging delivery** — no code required.
 
+:::tip
+This recipe hits web search, summarization, and optional TTS — all bundled in a Portal subscription. The fastest setup is `hermes setup --portal`. See [Nous Portal](/integrations/nous-portal).
+:::
+
 ## What We're Building
 
 Here's the flow:

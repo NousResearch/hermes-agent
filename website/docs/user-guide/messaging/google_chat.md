@@ -13,6 +13,8 @@ process does not need a public URL, a tunnel, or a TLS certificate. It connects,
 authenticates, and listens on a subscription — the same way a Telegram bot listens
 on a token.
 
+> Run `hermes gateway setup` and pick **Google Chat** for a guided walk-through.
+
 :::note Workspace edition
 Google Chat is part of Google Workspace. You can use this integration with a
 personal Workspace (`@yourdomain.com` registered through Google) or a work
@@ -237,7 +239,7 @@ specifically, as the user who asked for the file.
 4. On the host, register the client with Hermes:
 
 ```bash
-python -m gateway.platforms.google_chat_user_oauth \
+python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 
@@ -330,7 +332,7 @@ The one-time host setup wasn't done. From a terminal on the host that runs
 Hermes:
 
 ```bash
-python -m gateway.platforms.google_chat_user_oauth \
+python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 

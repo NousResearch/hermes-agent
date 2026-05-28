@@ -146,11 +146,26 @@ class _HeartbeatCaptureAdapter(BasePlatformAdapter):
                 "content": content,
                 "reply_to": reply_to,
                 "metadata": metadata,
+                "message_id": "heartbeat-1",
             }
         )
         return SendResult(success=True, message_id="heartbeat-1")
 
     async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        for message in reversed(self.sent):
+            if message.get("message_id") == message_id:
+                message["content"] = content
+                break
+        else:
+            self.sent.append(
+                {
+                    "chat_id": chat_id,
+                    "content": content,
+                    "reply_to": None,
+                    "metadata": None,
+                    "message_id": message_id,
+                }
+            )
         return SendResult(success=True, message_id=message_id)
 
     async def send_typing(self, chat_id, metadata=None) -> None:
@@ -226,7 +241,11 @@ class TestStillWorkingRuntime:
         adapter, result = await _run_agent_with_heartbeat(
             monkeypatch,
             tmp_path,
-            "display:\n  still_working_interval: 0.01\n",
+            "display:\n"
+            "  still_working_interval: 0.01\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      busy_ack_detail: true\n",
             activity_summary={
                 "current_tool": None,
                 "last_activity_desc": "waiting on provider response",

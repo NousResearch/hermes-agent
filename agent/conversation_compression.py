@@ -421,6 +421,7 @@ def compress_context(
                 agent.session_id or "",
                 boundary_reason="compression",
                 old_session_id=_old_sid,
+                conversation_id=getattr(agent, "_gateway_session_key", None),
             )
     except Exception as _ce_err:
         logger.debug("context engine on_session_start (compression): %s", _ce_err)

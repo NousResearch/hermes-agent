@@ -120,8 +120,8 @@ def _validate_skill_name(name: str) -> str:
     return _normalize_bundle_path(name, field_name="skill name", allow_nested=False)
 
 
-def _validate_category_name(category: str) -> str:
-    return _normalize_bundle_path(category, field_name="category", allow_nested=False)
+def _validate_install_parent_path(category: str) -> str:
+    return _normalize_bundle_path(category, field_name="install parent path", allow_nested=True)
 
 
 def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
@@ -134,8 +134,10 @@ def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
     let ``rmtree`` wipe either the entire ``skills/`` tree or content
     outside it.
 
-    Enforce that ``install_path`` is exactly ``<skill_name>`` or
-    ``<category>/<skill_name>``. Reject anything else.
+    Enforce that ``install_path`` ends with ``<skill_name>``. Nested
+    official optional skills may legitimately install below paths such as
+    ``mlops/training/<skill_name>``; traversal, absolute paths, empty paths,
+    and mismatched final components are still rejected.
     """
     safe_skill_name = _validate_skill_name(skill_name)
     normalized = _normalize_bundle_path(
@@ -144,7 +146,7 @@ def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
         allow_nested=True,
     )
     parts = normalized.split("/")
-    if len(parts) not in {1, 2} or parts[-1] != safe_skill_name:
+    if not parts or parts[-1] != safe_skill_name:
         raise ValueError(f"Unsafe install path: {install_path}")
     return normalized
 
@@ -1857,8 +1859,18 @@ class ClawHubSource(SkillSource):
             results = self._search_catalog(query, limit=limit)
             if results:
                 return results
+        else:
+            # Empty query: route through the paginating catalog walker so the
+            # full ClawHub catalog (20k+ skills) lands in the index. The
+            # single-request listing path below caps at one page (200 items)
+            # regardless of `limit`, which silently truncates the public
+            # skills index. The catalog walker follows `nextCursor`.
+            catalog = self._load_catalog_index()
+            if catalog:
+                return self._dedupe_results(catalog)[:limit] if limit > 0 else self._dedupe_results(catalog)
 
-        # Empty query or catalog fallback failure: use the lightweight listing API.
+        # Non-empty query catalog miss, or catalog walker failure: fall back to
+        # the lightweight listing API for a best-effort response.
         cache_key = f"clawhub_search_listing_v1_{hashlib.md5(query.encode()).hexdigest()}_{limit}"
         cached = _read_index_cache(cache_key)
         if cached is not None:
@@ -1987,7 +1999,12 @@ class ClawHubSource(SkillSource):
         cursor: Optional[str] = None
         results: List[SkillMeta] = []
         seen: set[str] = set()
-        max_pages = 50
+        # ClawHub has 50k+ skills as of May 2026 (live E2E walked 49,698 with
+        # an active cursor still pending); 750 pages * 200/page = 150k ceiling
+        # leaves room for catalog growth. Walk-to-exhaustion typically
+        # terminates well before this on `nextCursor` going None — the cap is
+        # a safety rail against an infinite-cursor loop.
+        max_pages = 750
 
         for _ in range(max_pages):
             params: Dict[str, Any] = {"limit": 200}
@@ -3008,7 +3025,7 @@ def install_from_quarantine(
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
     safe_skill_name = _validate_skill_name(skill_name)
-    safe_category = _validate_category_name(category) if category else ""
+    safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
     quarantine_root = QUARANTINE_DIR.resolve()
     if not quarantine_resolved.is_relative_to(quarantine_root):
@@ -3095,9 +3112,9 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     # the destructive boundary — anything that falls through to the rmtree
     # below MUST be inside SKILLS_DIR and MUST NOT be SKILLS_DIR itself
     # (an empty/"."/"/" install_path would otherwise wipe the entire tree).
-    # _resolve_lock_install_path enforces shape (<skill_name> or
-    # <category>/<skill_name>), rejects absolute/traversal paths, and walks
-    # the path component-by-component refusing symlink/junction redirects.
+    # _resolve_lock_install_path enforces a relative path ending in
+    # <skill_name>, rejects absolute/traversal paths, and walks the path
+    # component-by-component refusing symlink/junction redirects.
     try:
         install_path = _resolve_lock_install_path(
             entry.get("install_path", ""), skill_name

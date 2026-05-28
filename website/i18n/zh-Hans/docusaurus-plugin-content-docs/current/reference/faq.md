@@ -19,7 +19,7 @@ Hermes Agent 可与任何兼容 OpenAI 的 API 配合使用。支持的提供商
 - **[OpenRouter](https://openrouter.ai/)** — 通过一个 API key 访问数百个模型（推荐，灵活性强）
 - **Nous Portal** — Nous Research 自有推理端点
 - **OpenAI** — GPT-5.4、GPT-5-codex、GPT-4.1、GPT-4o 等
-- **Anthropic** — Claude 模型（直接 API、通过 `hermes login anthropic` 进行 OAuth、OpenRouter 或任何兼容代理）
+- **Anthropic** — Claude 模型（直接 API、通过 `hermes auth add anthropic` 进行 OAuth、OpenRouter 或任何兼容代理）
 - **Google** — Gemini 模型（通过 `gemini` 提供商直接调用 API、`google-gemini-cli` OAuth 提供商、OpenRouter 或兼容代理）
 - **z.ai / ZhipuAI** — GLM 模型
 - **Kimi / Moonshot AI** — Kimi 模型

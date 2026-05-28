@@ -992,6 +992,47 @@ class TestAuxiliaryPoolAwareness:
         assert stale_client.chat.completions.create.call_count == 1
         assert fresh_client.chat.completions.create.call_count == 1
 
+    def test_call_llm_refreshes_nous_after_free_tier_block_when_account_paid(self):
+        from hermes_cli.nous_account import NousPortalAccountInfo
+
+        class _Payment404(Exception):
+            status_code = 404
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://inference-api.nousresearch.com/v1"
+        stale_client.chat.completions.create.side_effect = _Payment404(
+            "model_not_supported_on_free_tier: model is not available on the free tier"
+        )
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://inference-api.nousresearch.com/v1"
+        fresh_client.chat.completions.create.return_value = {"ok": True}
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
+            patch("agent.auxiliary_client.OpenAI", return_value=fresh_client),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
+            patch(
+                "hermes_cli.nous_account.get_nous_portal_account_info",
+                return_value=NousPortalAccountInfo(
+                    logged_in=True,
+                    source="account_api",
+                    fresh=True,
+                    paid_service_access=True,
+                ),
+            ),
+        ):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == {"ok": True}
+        assert stale_client.chat.completions.create.call_count == 1
+        assert fresh_client.chat.completions.create.call_count == 1
+
     @pytest.mark.asyncio
     async def test_async_call_llm_retries_nous_after_401(self):
         class _Auth401(Exception):
@@ -1011,6 +1052,48 @@ class TestAuxiliaryPoolAwareness:
             patch("agent.auxiliary_client._to_async_client", return_value=(fresh_async_client, "nous-model")),
             patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
             patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == {"ok": True}
+        assert stale_client.chat.completions.create.await_count == 1
+        assert fresh_async_client.chat.completions.create.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_refreshes_nous_after_free_tier_block_when_account_paid(self):
+        from hermes_cli.nous_account import NousPortalAccountInfo
+
+        class _Payment404(Exception):
+            status_code = 404
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://inference-api.nousresearch.com/v1"
+        stale_client.chat.completions.create = AsyncMock(side_effect=_Payment404(
+            "model_not_supported_on_free_tier: model is not available on the free tier"
+        ))
+
+        fresh_async_client = MagicMock()
+        fresh_async_client.base_url = "https://inference-api.nousresearch.com/v1"
+        fresh_async_client.chat.completions.create = AsyncMock(return_value={"ok": True})
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
+            patch("agent.auxiliary_client._to_async_client", return_value=(fresh_async_client, "nous-model")),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
+            patch(
+                "hermes_cli.nous_account.get_nous_portal_account_info",
+                return_value=NousPortalAccountInfo(
+                    logged_in=True,
+                    source="account_api",
+                    fresh=True,
+                    paid_service_access=True,
+                ),
+            ),
         ):
             result = await async_call_llm(
                 task="session_search",
@@ -1075,6 +1158,19 @@ class TestIsPaymentError:
         exc = Exception("insufficient credits remaining")
         exc.status_code = 429
         assert _is_payment_error(exc) is True
+
+    def test_404_free_tier_model_block_is_payment(self):
+        exc = Exception(
+            "Model 'gpt-5' is not available on the Free Tier. "
+            "Upgrade at https://portal.nousresearch.com or pick a free model."
+        )
+        exc.status_code = 404
+        assert _is_payment_error(exc) is True
+
+    def test_404_generic_not_found_is_not_payment(self):
+        exc = Exception("Not Found")
+        exc.status_code = 404
+        assert _is_payment_error(exc) is False
 
     def test_429_without_credits_message_is_not_payment(self):
         """Normal rate limits should NOT be treated as payment errors."""
@@ -2222,34 +2318,45 @@ class TestCodexAdapterReasoningTranslation:
 
     @staticmethod
     def _build_adapter():
-        """Build a _CodexCompletionsAdapter with a mocked responses.stream()."""
+        """Build a _CodexCompletionsAdapter with a mocked responses.create()."""
         from agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
 
-        # Mock the stream context manager: yields no events, get_final_response
-        # returns a minimal empty-output response.
-        fake_final = SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="hi")],
-            )],
-            usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        # The event-driven path consumes ``responses.create(stream=True)`` as a
+        # raw iterable of SSE events.  Emit a minimal stream containing one
+        # ``response.output_item.done`` (message) and a ``response.completed``
+        # terminal frame.
+        message_item = SimpleNamespace(
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text="hi")],
         )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed",
+                    id="resp_test",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                ),
+            ),
+        ]
 
-        class _FakeStream:
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def __iter__(self): return iter([])
-            def get_final_response(self): return fake_final
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
 
         captured_kwargs = {}
 
-        def _stream(**kwargs):
+        def _create(**kwargs):
             captured_kwargs.update(kwargs)
-            return _FakeStream()
+            return _FakeCreateStream()
 
         real_client = MagicMock()
-        real_client.responses.stream = _stream
+        real_client.responses.create = _create
         adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
         return adapter, captured_kwargs
 
@@ -2476,33 +2583,29 @@ class TestVisionAutoSkipsKimiCoding:
 
 
 class TestCodexAuxiliaryAdapterTimeout:
-    def test_forwards_timeout_to_responses_stream(self):
-        class FakeStream:
-            def __enter__(self):
-                return self
+    def test_forwards_timeout_to_responses_create(self):
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="summary")],
+        )
+        events = [
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                status="completed", id="r1", usage=None,
+            )),
+        ]
 
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def __iter__(self):
-                return iter(())
-
-            def get_final_response(self):
-                return SimpleNamespace(
-                    output=[SimpleNamespace(
-                        type="message",
-                        content=[SimpleNamespace(type="output_text", text="summary")],
-                    )],
-                    usage=None,
-                )
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
 
         class FakeResponses:
             def __init__(self):
                 self.kwargs = None
 
-            def stream(self, **kwargs):
+            def create(self, **kwargs):
                 self.kwargs = kwargs
-                return FakeStream()
+                return _FakeCreateStream()
 
         fake_client = SimpleNamespace(responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
@@ -2513,33 +2616,21 @@ class TestCodexAuxiliaryAdapterTimeout:
         )
 
         assert fake_client.responses.kwargs["timeout"] == 12.5
+        assert fake_client.responses.kwargs["stream"] is True
         assert response.choices[0].message.content == "summary"
 
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
-        class SlowAliveStream:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
+        class _SlowAliveCreateStream:
             def __iter__(self):
                 for _ in range(5):
                     time.sleep(0.03)
                     yield SimpleNamespace(type="response.in_progress")
 
-            def get_final_response(self):
-                return SimpleNamespace(
-                    output=[SimpleNamespace(
-                        type="message",
-                        content=[SimpleNamespace(type="output_text", text="late")],
-                    )],
-                    usage=None,
-                )
+            def close(self): pass
 
         class FakeResponses:
-            def stream(self, **kwargs):
-                return SlowAliveStream()
+            def create(self, **kwargs):
+                return _SlowAliveCreateStream()
 
         fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
@@ -2552,6 +2643,106 @@ class TestCodexAuxiliaryAdapterTimeout:
             )
 
         assert time.monotonic() - started < 0.14
+
+
+class TestCodexAuxiliaryAdapterNullOutputRecovery:
+    def test_recovers_output_item_when_terminal_event_has_null_output(self):
+        """Regression for #11179 in auxiliary calls.
+
+        The wire shape that broke the SDK is ``response.completed`` with
+        ``response.output = null``.  The event-driven path is structurally
+        immune because it reconstructs from ``response.output_item.done``
+        events and never reads the terminal event's ``output`` field for
+        content.  Assert the auxiliary path returns the streamed item even
+        when the terminal frame's output is ``null``.
+        """
+        output_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="aux survived")],
+        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=output_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                status="completed",
+                id="resp_null_output",
+                # This is the field the SDK helper would have iterated and crashed on:
+                output=None,
+                usage=None,
+            )),
+        ]
+
+        class _NullOutputCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                return _NullOutputCreateStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
+        assert response.choices[0].message.content == "aux survived"
+
+    def test_handles_final_output_is_none_after_consumer(self):
+        """Regression for #33368 — defense against ``final.output`` being ``None``.
+
+        The event-driven consumer always sets ``final.output`` to a list, so this
+        shape can't come from our own path. But a mocked client / compatibility
+        shim that returns a typed Response with ``output=None`` directly (or a
+        future code path that wraps a different consumer) would crash on
+        ``for item in getattr(final, "output", [])`` because ``getattr`` returns
+        ``None`` (not the default) when the attribute exists but is ``None``.
+        Coerce with ``or []`` to handle this defensively.
+        """
+        # Stream that returns no items but a terminal with output=None.
+        # The consumer assembles an empty list. We then mock the consumer's
+        # return to simulate a third-party path that returns final.output=None.
+        empty_events = [
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                status="completed", id="r", output=None, usage=None,
+            )),
+        ]
+
+        class _Stream:
+            def __iter__(self): return iter(empty_events)
+            def close(self): pass
+
+        # Monkey-patch the consumer to return a final whose .output is None
+        # (mimics third-party shim behavior the defensive guard protects against).
+        from agent import codex_runtime
+        original_consume = codex_runtime._consume_codex_event_stream
+
+        def _consume_returning_none_output(*args, **kwargs):
+            return SimpleNamespace(
+                output=None,  # the defensive guard target
+                output_text="",
+                usage=None,
+                status="completed",
+                id="r",
+                model=kwargs.get("model"),
+                incomplete_details=None,
+                error=None,
+            )
+
+        codex_runtime._consume_codex_event_stream = _consume_returning_none_output
+        try:
+            class FakeResponses:
+                def create(self, **kwargs):
+                    return _Stream()
+
+            fake_client = SimpleNamespace(responses=FakeResponses())
+            adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+            # Should not raise TypeError: 'NoneType' object is not iterable
+            response = adapter.create(messages=[{"role": "user", "content": "x"}])
+            assert response.choices[0].message.content is None
+            assert response.choices[0].finish_reason == "stop"
+        finally:
+            codex_runtime._consume_codex_event_stream = original_consume
 
 
 # ---------------------------------------------------------------------------
@@ -2657,26 +2848,19 @@ class TestAuxiliaryClientPoisonedCacheEviction:
             _CodexCompletionsAdapter, CodexAuxiliaryClient,
         )
 
-        class SlowAliveStream:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
+        class _SlowAliveCreateStream:
             def __iter__(self):
                 for _ in range(20):
                     time.sleep(0.01)
                     yield SimpleNamespace(type="response.in_progress")
 
-            def get_final_response(self):  # pragma: no cover — timeout fires first
-                return SimpleNamespace(output=[], usage=None)
+            def close(self): pass
 
         closed = {"flag": False}
 
         class FakeClient:
             def __init__(self):
-                self.responses = SimpleNamespace(stream=lambda **k: SlowAliveStream())
+                self.responses = SimpleNamespace(create=lambda **k: _SlowAliveCreateStream())
                 self.api_key = "k"
                 self.base_url = "https://chatgpt.com/backend-api/codex"
 

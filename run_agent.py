@@ -394,6 +394,7 @@ class AIAgent:
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         user_id: str = None,
+        user_id_alt: str = None,
         user_name: str = None,
         chat_id: str = None,
         chat_name: str = None,
@@ -463,6 +464,7 @@ class AIAgent:
             prefill_messages=prefill_messages,
             platform=platform,
             user_id=user_id,
+            user_id_alt=user_id_alt,
             user_name=user_name,
             chat_id=chat_id,
             chat_name=chat_name,
@@ -525,7 +527,81 @@ class AIAgent:
                 "Session DB creation failed (will retry next turn): %s", e
             )
 
-    def reset_session_state(self):
+    def _transition_context_engine_session(
+        self,
+        *,
+        old_session_id: Optional[str] = None,
+        new_session_id: Optional[str] = None,
+        previous_messages: Optional[list] = None,
+        carry_over_context: bool = False,
+        reset_engine: bool = True,
+        **extra_context,
+    ) -> None:
+        """Notify the active context engine about a host session transition.
+
+        Generic host-side lifecycle helper. The built-in compressor keeps its
+        existing reset behavior; plugin engines that implement richer hooks
+        (``on_session_end``, ``on_session_reset``, ``on_session_start``,
+        ``carry_over_new_session_context``) can flush old-session state,
+        reset runtime counters, bind to the new session, and optionally
+        carry retained context forward.
+        """
+        engine = getattr(self, "context_compressor", None)
+        if not engine:
+            return
+
+        if old_session_id and previous_messages is not None and hasattr(engine, "on_session_end"):
+            try:
+                engine.on_session_end(old_session_id, previous_messages)
+            except Exception as exc:
+                logger.debug("context engine on_session_end during transition: %s", exc)
+
+        if reset_engine and hasattr(engine, "on_session_reset"):
+            try:
+                engine.on_session_reset()
+            except Exception as exc:
+                logger.debug("context engine on_session_reset during transition: %s", exc)
+
+        should_start = bool(
+            old_session_id
+            or previous_messages is not None
+            or carry_over_context
+            or extra_context
+        )
+        target_session_id = new_session_id or getattr(self, "session_id", "") or ""
+        if should_start and target_session_id and hasattr(engine, "on_session_start"):
+            start_context = {
+                "old_session_id": old_session_id,
+                "carry_over_context": carry_over_context,
+                "platform": getattr(self, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                "model": getattr(self, "model", ""),
+                "context_length": getattr(engine, "context_length", None),
+                "conversation_id": getattr(self, "_gateway_session_key", None),
+            }
+            start_context.update(extra_context)
+            start_context = {k: v for k, v in start_context.items() if v not in (None, "")}
+            try:
+                engine.on_session_start(target_session_id, **start_context)
+            except Exception as exc:
+                logger.debug("context engine on_session_start during transition: %s", exc)
+
+        if (
+            carry_over_context
+            and old_session_id
+            and target_session_id
+            and hasattr(engine, "carry_over_new_session_context")
+        ):
+            try:
+                engine.carry_over_new_session_context(old_session_id, target_session_id)
+            except Exception as exc:
+                logger.debug("context engine carry_over_new_session_context during transition: %s", exc)
+
+    def reset_session_state(
+        self,
+        previous_messages: Optional[list] = None,
+        old_session_id: Optional[str] = None,
+        carry_over_context: bool = False,
+    ):
         """Reset all session-scoped token counters to 0 for a fresh session.
         
         This method encapsulates the reset logic for all session-level metrics
@@ -539,9 +615,12 @@ class AIAgent:
         
         The method safely handles optional attributes (e.g., context compressor)
         using ``hasattr`` checks.
-        
-        This keeps the counter reset logic DRY and maintainable in one place
-        rather than scattering it across multiple methods.
+
+        When ``previous_messages`` / ``old_session_id`` / ``carry_over_context``
+        are provided, the active context engine is notified through the
+        full transition lifecycle (``_transition_context_engine_session``)
+        instead of a bare reset. Default callers pass nothing and keep the
+        existing reset-only behavior.
         """
         # Token usage counters
         self.session_total_tokens = 0
@@ -560,9 +639,14 @@ class AIAgent:
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
-        # Context engine reset (works for both built-in compressor and plugins)
-        if hasattr(self, "context_compressor") and self.context_compressor:
-            self.context_compressor.on_session_reset()
+        # Context engine reset/transition (works for built-in compressor and plugins)
+        self._transition_context_engine_session(
+            old_session_id=old_session_id,
+            new_session_id=getattr(self, "session_id", None),
+            previous_messages=previous_messages,
+            carry_over_context=carry_over_context,
+            reset_engine=True,
+        )
 
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
@@ -716,6 +800,116 @@ class AIAgent:
                 self.status_callback("warn", message)
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
+
+    # ── Buffered retry/fallback status ────────────────────────────────────
+    # Retry and fallback chains were flooding the CLI/gateway with status
+    # noise that users found confusing: a single transient 429 could produce
+    # 10+ "Provider/Endpoint/Retrying in 5s..." lines before the request
+    # eventually succeeded.  The buffered helpers below capture these
+    # status messages instead of emitting them immediately.  They are
+    # flushed (shown to the user) ONLY when every retry and fallback has
+    # been exhausted; on success they are silently dropped.  Backend logs
+    # (agent.log) are unaffected — every individual emission site still
+    # writes to ``logger.warning`` / ``logger.info`` for diagnosis.
+
+    def _buffer_status(self, message: str) -> None:
+        """Buffer a retry/fallback status message.
+
+        Stored as a (kind, text) tuple where ``kind`` is one of:
+        - ``"status"``  -> replays via ``_emit_status``
+        - ``"vprint"``  -> replays via ``_vprint(force=True)``
+        - ``"warn"``    -> replays via ``_emit_warning``
+        Used to defer noisy retry chatter until we know whether the
+        turn ultimately recovered or failed.
+        """
+        try:
+            buf = getattr(self, "_retry_status_buffer", None)
+            if buf is None:
+                buf = []
+                self._retry_status_buffer = buf
+            buf.append(("status", message))
+        except Exception:
+            # Never break the retry loop on a buffer hiccup.
+            pass
+
+    def _buffer_vprint(self, message: str) -> None:
+        """Buffer a vprint(force=True) retry/fallback line."""
+        try:
+            buf = getattr(self, "_retry_status_buffer", None)
+            if buf is None:
+                buf = []
+                self._retry_status_buffer = buf
+            buf.append(("vprint", message))
+        except Exception:
+            pass
+
+    def _clear_status_buffer(self) -> None:
+        """Drop buffered retry messages — call on successful recovery."""
+        try:
+            buf = getattr(self, "_retry_status_buffer", None)
+            if buf:
+                buf.clear()
+        except Exception:
+            pass
+
+    def _flush_status_buffer(self) -> None:
+        """Emit buffered retry messages — call on terminal failure.
+
+        Surfaces the full retry/fallback trace so the user can see what
+        was tried before the turn gave up.
+        """
+        try:
+            buf = getattr(self, "_retry_status_buffer", None)
+            if not buf:
+                return
+            # Drain first so a callback exception doesn't double-emit.
+            messages = list(buf)
+            buf.clear()
+            for kind, msg in messages:
+                try:
+                    if kind == "status":
+                        self._emit_status(msg)
+                    elif kind == "warn":
+                        self._emit_warning(msg)
+                    else:
+                        self._vprint(f"{self.log_prefix}{msg}", force=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _disable_codex_reasoning_replay(
+        self,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, int]:
+        """Disable Responses encrypted reasoning replay and strip cached state.
+
+        Called from the conversation_loop retry path when the provider
+        rejects a replayed ``codex_reasoning_items`` blob with HTTP 400
+        ``invalid_encrypted_content``.  Sets ``self._codex_reasoning_replay_enabled``
+        to ``False`` (consumed by ``codex_responses_adapter._chat_messages_to_responses_input``
+        and ``transports/codex.py`` to drop ``reasoning.encrypted_content``
+        from subsequent requests) and pops ``codex_reasoning_items`` from
+        every assistant message in ``messages`` so they cannot be replayed
+        again later in the session.
+
+        Returns a small stats dict ``{"messages": int, "items": int}``
+        counting what was stripped — purely for diagnostic logging.
+        """
+        stripped_messages = 0
+        stripped_items = 0
+        target_messages = messages if isinstance(messages, list) else []
+
+        for msg in target_messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            items = msg.pop("codex_reasoning_items", None)
+            if isinstance(items, list) and items:
+                stripped_messages += 1
+                stripped_items += len(items)
+
+        self._codex_reasoning_replay_enabled = False
+        return {"messages": stripped_messages, "items": stripped_items}
 
     # Stream-diagnostic class header preserved for backward compat —
     # actual list lives in ``agent.stream_diag.STREAM_DIAG_HEADERS``.
@@ -973,8 +1167,9 @@ class AIAgent:
             "on chatgpt.com/backend-api/codex (no stream events, no error). "
             "This is a known backend-side pattern that has affected ChatGPT "
             "Plus accounts intermittently. "
-            "Workaround: try `gpt-5.4-codex` on the same OAuth profile, "
+            "Workaround: try `gpt-5.4` on the same OAuth profile, or `gpt-5.3-codex`, "
             "or switch to a different model/provider in your fallback chain. "
+            "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`. "
             "See hermes-agent#21444 for symptom history."
         )
 
@@ -2811,7 +3006,12 @@ class AIAgent:
 
         return True
 
-    def _try_refresh_nous_client_credentials(self, *, force: bool = True) -> bool:
+    def _try_refresh_nous_client_credentials(
+        self,
+        *,
+        force: bool = True,
+        inference_auth_mode: str | None = None,
+    ) -> bool:
         if self.api_mode != "chat_completions" or self.provider != "nous":
             return False
 
@@ -2822,14 +3022,15 @@ class AIAgent:
                 resolve_nous_runtime_credentials,
             )
 
+            selected_auth_mode = inference_auth_mode or (
+                NOUS_INFERENCE_AUTH_MODE_LEGACY
+                if force
+                else NOUS_INFERENCE_AUTH_MODE_AUTO
+            )
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-                inference_auth_mode=(
-                    NOUS_INFERENCE_AUTH_MODE_LEGACY
-                    if force
-                    else NOUS_INFERENCE_AUTH_MODE_AUTO
-                ),
+                inference_auth_mode=selected_auth_mode,
             )
         except Exception as exc:
             logger.debug("Nous credential refresh failed: %s", exc)
@@ -2942,15 +3143,12 @@ class AIAgent:
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
         from agent.auxiliary_client import (
-            _AI_GATEWAY_HEADERS,
             build_nvidia_nim_headers,
             build_or_headers,
         )
 
         if base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = build_or_headers()
-        elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
-            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             self._client_kwargs["default_headers"] = build_nvidia_nim_headers(base_url)
         elif base_url_host_matches(base_url, "api.routermint.com"):
@@ -3755,8 +3953,6 @@ class AIAgent:
         """
         if base_url_host_matches(self._base_url_lower, "nousresearch.com"):
             return True
-        if base_url_host_matches(self._base_url_lower, "ai-gateway.vercel.sh"):
-            return True
         if (
             base_url_host_matches(self._base_url_lower, "models.github.ai")
             or base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
@@ -3956,6 +4152,11 @@ class AIAgent:
         """Forwarder — see ``agent.agent_runtime_helpers.copy_reasoning_content_for_api``."""
         from agent.agent_runtime_helpers import copy_reasoning_content_for_api
         return copy_reasoning_content_for_api(self, source_msg, api_msg)
+
+    def _reapply_reasoning_echo_for_provider(self, api_messages: list) -> int:
+        """Forwarder — see ``agent.agent_runtime_helpers.reapply_reasoning_echo_for_provider``."""
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+        return reapply_reasoning_echo_for_provider(self, api_messages)
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:

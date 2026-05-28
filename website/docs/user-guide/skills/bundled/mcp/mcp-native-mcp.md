@@ -21,7 +21,7 @@ MCP client: connect servers, register tools (stdio/HTTP).
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `MCP`, `Tools`, `Integrations` |
-| Related skills | [`mcporter`](/user-guide/skills/optional/mcp/mcp-mcporter) |
+| Related skills | [`mcporter`](/docs/user-guide/skills/optional/mcp/mcp-mcporter) |
 
 ## Reference: full SKILL.md
 

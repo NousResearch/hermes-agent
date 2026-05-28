@@ -120,6 +120,7 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/model/info",
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
+    "/api/active-profile",
 })
 
 
@@ -3070,6 +3071,23 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     return {"ok": True}
 
 
+@app.post("/api/profiles/{name}/activate")
+async def activate_profile_endpoint(name: str):
+    """Activate a profile persistently (sticky across restarts)."""
+    from hermes_cli import profiles as profiles_mod
+    try:
+        profiles_mod.set_active_profile(name)
+    except HTTPException:
+        raise
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("POST /api/profiles/%s/activate failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    canon = profiles_mod.normalize_profile_name(name)
+    return {"ok": True, "name": canon}
+
+
 # ---------------------------------------------------------------------------
 # Skills & Tools endpoints
 # ---------------------------------------------------------------------------
@@ -3518,6 +3536,23 @@ def _resolve_chat_argv(
         if latest_resume:
             resume = latest_resume
         env["HERMES_TUI_RESUME"] = resume
+
+    # Use the sticky active profile (may differ from dashboard startup profile)
+    from pathlib import Path as _Path
+    _sticky = _Path.home() / ".hermes" / "active_profile"
+    if _sticky.exists():
+        _active = _sticky.read_text().strip()
+    else:
+        _active = "default"
+    if _active == "default":
+        env["HERMES_HOME"] = str(_Path.home() / ".hermes")
+    elif _active:
+        _pd = (_Path.home() / ".hermes" / "profiles" / _active).resolve()
+        _profiles_root = (_Path.home() / ".hermes" / "profiles").resolve()
+        if _pd.is_dir() and str(_pd).startswith(
+            str(_profiles_root) + _pd._flavour.sep
+        ):
+            env["HERMES_HOME"] = str(_pd)
 
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
@@ -4821,6 +4856,12 @@ _mount_plugin_api_routes()
 # not whether the routes exist.
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
 app.include_router(_dashboard_auth_router)
+
+@app.get("/api/active-profile")
+async def _get_active_profile():
+    from pathlib import Path
+    p = Path.home() / ".hermes" / "active_profile"
+    return {"name": p.read_text().strip() if p.exists() else "default"}
 
 mount_spa(app)
 

@@ -153,7 +153,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |
 | `HINDSIGHT_TIMEOUT` | Timeout in seconds for Hindsight memory-provider API calls (default: `60`). Bump this if your Hindsight instance is slow to respond during `/sync` or `on_session_switch` and you're seeing timeouts in `errors.log`. |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
-| `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
+| `DAYTONA_API_KEY` | Required for Daytona backend. Set in `.env`, never in `config.yaml`. See [Daytona Backend](#daytona-backend) below |
 
 ### Langfuse Observability
 
@@ -194,13 +194,50 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 | `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | Advanced opt-in: mount the launch cwd into Docker `/workspace` (`true`/`false`, default: `false`) |
 | `TERMINAL_SINGULARITY_IMAGE` | Singularity image or `.sif` path |
 | `TERMINAL_MODAL_IMAGE` | Modal container image |
-| `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image |
+| `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
 | `TERMINAL_CWD` | Working directory for terminal sessions (gateway/cron only; CLI uses launch dir) |
 | `SUDO_PASSWORD` | Enable sudo without interactive prompt |
 
 For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETIME_SECONDS` controls when Hermes cleans up an idle terminal session, and later resumes may recreate the sandbox rather than keep the same live processes running.
+
+## Daytona Backend
+
+| Variable | Description |
+|----------|-------------|
+| `DAYTONA_API_KEY` | Daytona API key (**required**, set in `.env` — never in `config.yaml`) |
+| `TERMINAL_DAYTONA_IMAGE` | Docker image for image mode (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
+| `TERMINAL_DAYTONA_CREATE_MODE` | Creation mode: `image` (default) or `snapshot` |
+| `TERMINAL_DAYTONA_SNAPSHOT` | Snapshot name or ID (required when create mode is `snapshot`) |
+| `TERMINAL_DAYTONA_LANGUAGE` | Sandbox language hint (`python`, `javascript`, `typescript`, `go`, `rust`, `java`, `csharp`, `ruby`) |
+| `TERMINAL_DAYTONA_NAME_PREFIX` | Sandbox name prefix (default: `hermes`) |
+| `TERMINAL_DAYTONA_NAME_SCOPE` | Name scope: `task` (default), `profile`, `global`, or `legacy` |
+| `TERMINAL_DAYTONA_LABELS` | Custom labels as JSON object (default: `{}`) |
+| `TERMINAL_DAYTONA_AUTO_STOP_INTERVAL` | Auto-stop after N minutes of inactivity (default: `0`, disabled) |
+| `TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL` | Auto-archive after N minutes (default: `0`, disabled) |
+| `TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL` | Auto-delete after N minutes (default: `0`, disabled) |
+| `TERMINAL_DAYTONA_EPHEMERAL` | Mark sandbox as short-lived (`true`/`false`, default: `false`) |
+| `TERMINAL_DAYTONA_ENV_VARS` | Environment variables for sandbox as JSON object (default: `{}`) |
+| `TERMINAL_DAYTONA_NETWORK_BLOCK_ALL` | Request Daytona outbound network blocking (`true`/`false`, default: `false`; enforcement is platform-dependent) |
+| `TERMINAL_DAYTONA_NETWORK_ALLOW_LIST` | Comma-separated CIDR ranges allowed when `NETWORK_BLOCK_ALL=true` (for a single IP, use `/32`; hostnames and bare IPs are rejected by the Daytona API) |
+| `TERMINAL_DAYTONA_VOLUME_MOUNTS` | Volume mounts as JSON array (default: `[]`). Each entry: `{"volume_id":"...", "mount_path":"/mnt/data"}` (optional `subpath`) |
+| `TERMINAL_DAYTONA_GPU` | Number of GPUs (default: `0`). When >0, Hermes forwards `autoDeleteInterval=0` because Daytona rejects GPU sandbox creation unless that field is explicit; unsupported account/region capacity surfaces as a Daytona API error rather than CPU fallback. |
+| `TERMINAL_DAYTONA_SYNC_CWD` | Sync host project CWD to sandbox `/workspace` (`true`/`false`, default: `false`) |
+
+:::caution
+Never place `DAYTONA_API_KEY` or other secrets in `config.yaml`. Use `.env` for all secret values.
+:::
+
+## SSH Backend
+
+| Variable | Description |
+|----------|-------------|
+| `TERMINAL_SSH_HOST` | Remote server hostname |
+| `TERMINAL_SSH_USER` | SSH username |
+| `TERMINAL_SSH_PORT` | SSH port (default: 22) |
+| `TERMINAL_SSH_KEY` | Path to private key |
+| `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH (default: follows `TERMINAL_PERSISTENT_SHELL`) |
 
 ## SSH Backend
 

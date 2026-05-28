@@ -110,7 +110,7 @@ For cloud sandboxes such as Modal and Daytona, `container_persistent: true` mean
 | **docker** | Single persistent Docker container (shared across session, `/new`, subagents) | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
-| **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
+| **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments, snapshot/image modes, profile-scoped naming, lifecycle controls, network isolation, and CWD sync |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -279,22 +279,244 @@ terminal:
 
 ### Daytona Backend
 
-Runs commands in a [Daytona](https://daytona.io) managed workspace. Supports stop/resume for persistence.
+Runs commands in a [Daytona](https://daytona.io) managed cloud workspace. Supports two creation modes (image and snapshot), profile-scoped naming, lifecycle controls, network isolation, volume mounts, and optional project-directory syncing.
+
+#### Basic Configuration
 
 ```yaml
 terminal:
   backend: daytona
+  daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"   # Container image (image mode)
   container_cpu: 1                 # CPU cores
   container_memory: 5120           # MB → converted to GiB
-  container_disk: 10240            # MB → converted to GiB (max 10 GiB)
-  container_persistent: true       # Stop/resume instead of delete
+  container_disk: 10240             # MB → converted to GiB (max 10 GiB)
+  container_persistent: true        # Stop/resume instead of delete
 ```
 
-**Required:** `DAYTONA_API_KEY` environment variable.
-
-**Persistence:** When enabled, sandboxes are stopped (not deleted) on cleanup and resumed on next session. Sandbox names follow the pattern `hermes-{task_id}`.
+**Required:** `DAYTONA_API_KEY` environment variable (in `.env`, never in `config.yaml`).
 
 **Disk limit:** Daytona enforces a 10 GiB maximum. Requests above this are capped with a warning.
+
+#### Image vs Snapshot Mode
+
+Daytona supports two sandbox creation modes:
+
+| Mode | Config key | Description |
+|------|-----------|-------------|
+| **image** (default) | `daytona_create_mode: "image"` | Creates a sandbox from a Docker image. Use `daytona_image` to specify the image. |
+| **snapshot** | `daytona_create_mode: "snapshot"` | Creates a sandbox from an existing Daytona snapshot. Use `daytona_snapshot` to specify the snapshot name or ID. |
+
+```yaml
+# Image mode (default) — fresh sandbox from a Docker image
+terminal:
+  backend: daytona
+  daytona_create_mode: image
+  daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+
+# Snapshot mode — reuse a pre-configured sandbox state
+terminal:
+  backend: daytona
+  daytona_create_mode: snapshot
+  daytona_snapshot: "my-preconfigured-snapshot"
+```
+
+**Snapshot mode notes:**
+- `daytona_snapshot` is required when `daytona_create_mode` is `snapshot`. Hermes validates this at startup and will fail with a clear error if the snapshot value is missing.
+- Snapshot-owned resources take precedence. CPU, memory, and disk settings from `container_cpu`/`container_memory`/`container_disk` are **not** forwarded to the SDK in snapshot mode because the snapshot already defines its own resources. The Daytona SDK (≥0.155.0) does not expose a `resources` field on `CreateSandboxFromSnapshotParams`.
+- You can optionally set `daytona_image` as a fallback image name in `daytona_create_mode: "snapshot"` — it won't be used for creation but helps `hermes status` and `hermes doctor` display what image the snapshot is based on.
+
+#### Profile-Scoped Naming
+
+Sandbox names control how Hermes identifies and reuses Daytona workspaces. The `daytona_name_scope` setting determines the naming pattern:
+
+| Scope | Name pattern | Use case |
+|-------|-------------|----------|
+| `task` (default) | `{name_prefix}-{task_id}` | One sandbox per task — the default, isolates tasks from each other |
+| `profile` | `{name_prefix}-{profile_id}-{task_id}` | Profile-scoped — different Hermes profiles sharing the same Daytona account get separate sandbox namespaces |
+| `global` | `{name_prefix}` | Single shared sandbox — all tasks share one workspace |
+| `legacy` | `hermes-{task_id}` | Backward-compatible — identical to `task` scope, preserved for migrations |
+
+```yaml
+# Profile-scoped naming (recommended for multi-profile setups)
+terminal:
+  daytona_name_prefix: "myproject"
+  daytona_name_scope: profile    # myproject-{8-char-profile-hash}-{task_id}
+```
+
+The `profile_id` is a stable 8-character hash derived from the profile's `HERMES_HOME` path. It ensures different profiles (e.g., `~/.hermes` vs `~/.hermes/profiles/dev-docker`) produce different sandbox namespaces without revealing the full path.
+
+#### Lifecycle Controls
+
+Control when Daytona sandboxes are automatically stopped, archived, or deleted:
+
+```yaml
+terminal:
+  backend: daytona
+  daytona_auto_stop_interval: 0      # Minutes of inactivity before auto-stop (0 = disabled)
+  daytona_auto_archive_interval: 0   # Minutes before auto-archive (0 = disabled)
+  daytona_auto_delete_interval: 0   # Minutes before auto-delete (0 = disabled)
+  daytona_ephemeral: false           # Mark sandbox as short-lived (forwards ephemeral=true to SDK)
+```
+
+- Intervals are in **minutes**. A value of `0` means the lifecycle action is disabled.
+- `daytona_ephemeral: true` signals that the sandbox is intended for short-lived, disposable work. When set, Hermes forwards `ephemeral=True` to the Daytona SDK and forces `auto_delete_interval` to `0` (the sandbox persists until explicitly cleaned up; the flag signals intent, not auto-destruction).
+
+#### Environment Variables in Sandboxes
+
+Pass environment variables into the Daytona sandbox at creation time:
+
+```yaml
+terminal:
+  backend: daytona
+  daytona_env_vars:
+    NODE_ENV: "production"
+    DATABASE_URL: "postgres://example"
+```
+
+Or via `.env`:
+```bash
+TERMINAL_DAYTONA_ENV_VARS='{"NODE_ENV":"production","DATABASE_URL":"postgres://example"}'
+```
+
+:::caution
+Never place secrets like API keys in `daytona_env_vars` or `config.yaml`. Use `.env` for secrets, or inject them through the host's environment at runtime.
+:::
+
+#### Network Configuration
+
+Restrict network access for Daytona sandboxes:
+
+```yaml
+terminal:
+  backend: daytona
+  daytona_network_block_all: false                     # true = request Daytona network blocking
+  daytona_network_allow_list: "1.1.1.1/32,10.0.0.0/8"     # Comma-separated CIDR ranges (only used if block_all=true)
+```
+
+When `daytona_network_block_all` is `true`:
+- Hermes forwards `network_block_all=true` to Daytona. Enforcement is platform-dependent; treat it as a Daytona policy request, not as a Hermes-side security boundary.
+- `daytona_network_allow_list` is a comma-separated list of CIDR ranges. Use `/32` for a single IPv4 address. Hostnames and bare IPs are rejected by the Daytona API.
+- Live validation in the current Daytona platform accepted `network_block_all` and `network_allow_list` create params, but raw IP socket egress remained open; verify the behavior in your own account before relying on it for isolation.
+
+When `daytona_network_block_all` is `false` (default):
+- The sandbox has unrestricted outbound network access.
+- `daytona_network_allow_list` is ignored.
+
+#### Volume Mounts
+
+Attach persistent storage volumes to the Daytona sandbox:
+
+```yaml
+terminal:
+  backend: daytona
+  daytona_volume_mounts:
+    - volume_id: vol_abc123
+      mount_path: /mnt/persistent-data
+```
+
+Or via `.env`:
+```bash
+TERMINAL_DAYTONA_VOLUME_MOUNTS='[{"volume_id":"vol_abc123","mount_path":"/mnt/persistent-data"}]'
+```
+
+#### GPU Support
+
+Allocate GPU resources for GPU-accelerated workloads:
+
+```yaml
+terminal:
+  backend: daytona
+  daytona_gpu: 1    # Number of GPUs (0 = no GPU, default)
+```
+
+GPU requests are forwarded to Daytona as `Resources(gpu=...)`. Daytona's
+current API requires GPU sandboxes to include `autoDeleteInterval: 0`; Hermes
+sets that explicitly whenever `daytona_gpu > 0`, even if you did not configure
+`daytona_auto_delete_interval`. If your Daytona account, region, or plan cannot
+provision GPU capacity, sandbox creation fails with the live Daytona API error
+rather than silently falling back to CPU.
+
+#### Language Hint
+
+Set the sandbox language hint (used by Daytona for runtime environment setup):
+
+```yaml
+terminal:
+  backend: daytona
+  daytona_language: "python"    # python, javascript, typescript, go, rust, java, csharp, ruby
+```
+
+#### CWD Sync (Project Directory Upload)
+
+By default, Daytona sandboxes start empty. Enable `daytona_sync_cwd` to automatically sync the host project directory into the sandbox:
+
+```yaml
+terminal:
+  backend: daytona
+  daytona_sync_cwd: true    # Sync host CWD → /workspace in the sandbox
+```
+
+:::warning Security and cost
+`daytona_sync_cwd` is **disabled by default** because uploading host directories to cloud sandboxes has security and cost implications. You must consciously enable it. The sync applies exclusion rules (`.git`, `node_modules`, `.venv`, `__pycache__`, etc.) and enforces a fixed total-size cap before any project files are uploaded. If the post-exclusion project exceeds the cap, Hermes aborts the entire CWD sync, leaves `/workspace` empty, and logs a warning instead of uploading a partial project.
+:::
+
+#### Full Daytona Configuration Reference
+
+| Config key | Env variable | Default | Description |
+|-----------|-------------|---------|-------------|
+| `daytona_image` | `TERMINAL_DAYTONA_IMAGE` | `nikolaik/python-nodejs:python3.11-nodejs20` | Docker image for image mode |
+| `daytona_create_mode` | `TERMINAL_DAYTONA_CREATE_MODE` | `image` | Creation mode: `image` or `snapshot` |
+| `daytona_snapshot` | `TERMINAL_DAYTONA_SNAPSHOT` | _(empty)_ | Snapshot name or ID (required in snapshot mode) |
+| `daytona_language` | `TERMINAL_DAYTONA_LANGUAGE` | _(empty)_ | Sandbox language hint |
+| `daytona_name_prefix` | `TERMINAL_DAYTONA_NAME_PREFIX` | `hermes` | Sandbox name prefix |
+| `daytona_name_scope` | `TERMINAL_DAYTONA_NAME_SCOPE` | `task` | Name scope: `task`, `profile`, `global`, `legacy` |
+| `daytona_labels` | `TERMINAL_DAYTONA_LABELS` | `{}` | Custom labels (JSON object) |
+| `daytona_auto_stop_interval` | `TERMINAL_DAYTONA_AUTO_STOP_INTERVAL` | `0` | Auto-stop interval in minutes (0 = disabled) |
+| `daytona_auto_archive_interval` | `TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL` | `0` | Auto-archive interval in minutes (0 = disabled) |
+| `daytona_auto_delete_interval` | `TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL` | `0` | Auto-delete interval in minutes (0 = disabled) |
+| `daytona_ephemeral` | `TERMINAL_DAYTONA_EPHEMERAL` | `false` | Mark sandbox as short-lived |
+| `daytona_env_vars` | `TERMINAL_DAYTONA_ENV_VARS` | `{}` | Environment variables (JSON object) |
+| `daytona_network_block_all` | `TERMINAL_DAYTONA_NETWORK_BLOCK_ALL` | `false` | Request Daytona outbound network blocking |
+| `daytona_network_allow_list` | `TERMINAL_DAYTONA_NETWORK_ALLOW_LIST` | _(empty)_ | Comma-separated allowed CIDR ranges (when block_all=true) |
+| `daytona_volume_mounts` | `TERMINAL_DAYTONA_VOLUME_MOUNTS` | `[]` | Volume mounts (JSON array) |
+| `daytona_gpu` | `TERMINAL_DAYTONA_GPU` | `0` | Number of GPUs |
+| `daytona_sync_cwd` | `TERMINAL_DAYTONA_SYNC_CWD` | `false` | Sync host CWD to sandbox /workspace |
+
+#### Migration from `daytona_image`-Only Configuration
+
+If you were using Daytona before the expansion (only `daytona_image` and basic resource settings), your configuration is **fully backward-compatible**. The new keys all have safe defaults that preserve existing behavior:
+
+- `daytona_create_mode` defaults to `"image"`, so existing `daytona_image` configurations continue to work unchanged.
+- `daytona_name_scope` defaults to `"task"`, producing `{name_prefix}-{task_id}`. With the default `daytona_name_prefix: "hermes"`, this preserves the existing `hermes-{task_id}` naming pattern.
+- `daytona_ephemeral`, `daytona_env_vars`, `daytona_network_block_all`, `daytona_volume_mounts`, and `daytona_gpu` all default to off/empty/zero.
+- `daytona_sync_cwd` defaults to `false`, so project uploads do not happen unless explicitly enabled.
+
+No changes are required to existing `config.yaml` or `.env` files. Add new keys only when you need the new features.
+
+#### Profile-Specific Daytona Configuration
+
+Different Hermes profiles can use different Daytona settings. This is useful for isolating workspaces by environment (e.g., production vs development):
+
+```yaml
+# ~/.hermes/config.yaml (default profile)
+terminal:
+  backend: daytona
+  daytona_create_mode: snapshot
+  daytona_snapshot: "prod-base-v2"
+  daytona_name_scope: profile
+  daytona_network_block_all: true
+  daytona_network_allow_list: "203.0.113.10/32"
+
+# ~/.hermes/profiles/dev-docker/config.yaml (dev profile)
+terminal:
+  backend: daytona
+  daytona_create_mode: image
+  daytona_image: "nikolaik/python-nodejs:python3.12-nodejs22"
+  daytona_name_scope: profile
+  daytona_ephemeral: true
+```
+
+Because `daytona_name_scope: profile` includes the profile hash in the sandbox name, each profile gets its own namespace — no naming collisions between `hermes` (default) and `hermes/profiles/dev-docker`.
 
 ### Singularity/Apptainer Backend
 

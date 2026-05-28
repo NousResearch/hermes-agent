@@ -26,6 +26,20 @@ mirrors the pattern used in tests/hermes_cli/test_config_drift.py.
 import ast
 import inspect
 
+import pytest
+
+
+def skip_if_no_prompt_toolkit():
+    """Skip tests requiring cli.py import if prompt_toolkit isn't installed.
+
+    The Docker test environment doesn't have prompt_toolkit, so tests that
+    import cli.py (which pulls in prompt_toolkit) need this guard.
+    """
+    try:
+        import cli  # noqa: F401
+    except ImportError:
+        pytest.skip("cli.py requires prompt_toolkit (not installed)")
+
 
 def _extract_dict_values(source: str, dict_name: str) -> set[str]:
     """Return the set of *value* strings in `dict_name = { "k": "VALUE", ... }`.
@@ -72,8 +86,11 @@ def _extract_dict_keys(source: str, dict_name: str) -> set[str]:
 
 def _cli_env_map_keys() -> set[str]:
     """terminal config keys bridged by cli.load_cli_config()."""
-    import cli
-    source = inspect.getsource(cli.load_cli_config)
+    try:
+        import cli
+        source = inspect.getsource(cli.load_cli_config)
+    except ImportError:
+        pytest.skip("cli.py requires prompt_toolkit (not installed)")
     return _extract_dict_keys(source, "env_mappings")
 
 
@@ -260,3 +277,339 @@ def test_docker_orphan_reaper_is_bridged_everywhere():
     assert "docker_orphan_reaper" in _gateway_env_map_keys()
     assert "docker_orphan_reaper" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_ORPHAN_REAPER" in _terminal_tool_env_var_names()
+
+
+# ===========================================================================
+# EXPANSION TESTS: Daytona-specific config/env bridge parity
+# ===========================================================================
+# These tests verify that new terminal.daytona_* keys from the Daytona
+# expansion plan are properly bridged in ALL THREE code paths:
+# 1. hermes_cli/config.py::_config_to_env_sync (hermes config set)
+# 2. cli.py (CLI/TUI startup)
+# 3. gateway/run.py::_terminal_env_map (gateway startup)
+# 4. terminal_tool.py::_get_env_config() (runtime reads env vars)
+#
+# They are RED tests — the keys don't exist yet and should FAIL until
+# the implementation adds them.
+
+class TestDaytonaSnapshotBridge:
+    """terminal.daytona_snapshot must be bridged everywhere.
+
+    NOTE: The old test class used the stale key name `daytona_snapshot_id`.
+    The expansion plan normalized it to `daytona_snapshot`. The parametrized
+    expansion tests in _EXPANSION_KEYS also cover this key, but these
+    explicit tests serve as named regression guards.
+    """
+
+    def test_snapshot_in_set_config_env_sync(self):
+        """``hermes config set terminal.daytona_snapshot`` must sync to
+        TERMINAL_DAYTONA_SNAPSHOT in .env."""
+        save_keys = _save_config_env_sync_keys()
+        assert "daytona_snapshot" in save_keys, (
+            "terminal.daytona_snapshot missing from _config_to_env_sync. "
+            "Add it so `hermes config set terminal.daytona_snapshot snap-123` "
+            "propagates to $TERMINAL_DAYTONA_SNAPSHOT."
+        )
+
+    def test_snapshot_in_cli_env_mappings(self):
+        """CLI startup must bridge terminal.daytona_snapshot."""
+        skip_if_no_prompt_toolkit()
+        cli_keys = _cli_env_map_keys()
+        assert "daytona_snapshot" in cli_keys, (
+            "daytona_snapshot missing from cli.py env_mappings"
+        )
+
+    def test_snapshot_in_gateway_env_map(self):
+        """Gateway startup must bridge terminal.daytona_snapshot."""
+        gw_keys = _gateway_env_map_keys()
+        assert "daytona_snapshot" in gw_keys, (
+            "daytona_snapshot missing from gateway/run.py _terminal_env_map"
+        )
+
+    def test_snapshot_in_terminal_tool_env_vars(self):
+        """terminal_tool must read TERMINAL_DAYTONA_SNAPSHOT."""
+        env_vars = _terminal_tool_env_var_names()
+        assert "TERMINAL_DAYTONA_SNAPSHOT" in env_vars, (
+            "TERMINAL_DAYTONA_SNAPSHOT not consumed by terminal_tool"
+        )
+
+
+class TestDaytonaAutoStopIntervalBridge:
+    """terminal.daytona_auto_stop_interval must be bridged everywhere."""
+
+    def test_auto_stop_interval_in_set_config_env_sync(self):
+        save_keys = _save_config_env_sync_keys()
+        assert "daytona_auto_stop_interval" in save_keys, (
+            "terminal.daytona_auto_stop_interval missing from _config_to_env_sync"
+        )
+
+    def test_auto_stop_interval_in_cli_env_mappings(self):
+        skip_if_no_prompt_toolkit()
+        cli_keys = _cli_env_map_keys()
+        assert "daytona_auto_stop_interval" in cli_keys, (
+            "daytona_auto_stop_interval missing from cli.py env_mappings"
+        )
+
+    def test_auto_stop_interval_in_gateway_env_map(self):
+        gw_keys = _gateway_env_map_keys()
+        assert "daytona_auto_stop_interval" in gw_keys, (
+            "daytona_auto_stop_interval missing from gateway/run.py _terminal_env_map"
+        )
+
+    def test_auto_stop_interval_in_terminal_tool_env_vars(self):
+        env_vars = _terminal_tool_env_var_names()
+        assert "TERMINAL_DAYTONA_AUTO_STOP_INTERVAL" in env_vars, (
+            "TERMINAL_DAYTONA_AUTO_STOP_INTERVAL not consumed by terminal_tool"
+        )
+
+
+class TestDaytonaVolumeMountsBridge:
+    """terminal.daytona_volume_mounts must be bridged everywhere.
+
+    NOTE: The old test class used the stale key name `daytona_volumes`.
+    The expansion plan normalized it to `daytona_volume_mounts` to match
+    the Daytona SDK's VolumeMount parameter name.
+    """
+
+    def test_volume_mounts_in_set_config_env_sync(self):
+        save_keys = _save_config_env_sync_keys()
+        assert "daytona_volume_mounts" in save_keys, (
+            "terminal.daytona_volume_mounts missing from _config_to_env_sync"
+        )
+
+    def test_volume_mounts_in_cli_env_mappings(self):
+        skip_if_no_prompt_toolkit()
+        cli_keys = _cli_env_map_keys()
+        assert "daytona_volume_mounts" in cli_keys, (
+            "daytona_volume_mounts missing from cli.py env_mappings"
+        )
+
+    def test_volume_mounts_in_gateway_env_map(self):
+        gw_keys = _gateway_env_map_keys()
+        assert "daytona_volume_mounts" in gw_keys, (
+            "daytona_volume_mounts missing from gateway/run.py _terminal_env_map"
+        )
+
+    def test_volume_mounts_in_terminal_tool_env_vars(self):
+        env_vars = _terminal_tool_env_var_names()
+        assert "TERMINAL_DAYTONA_VOLUME_MOUNTS" in env_vars, (
+            "TERMINAL_DAYTONA_VOLUME_MOUNTS not consumed by terminal_tool"
+        )
+
+
+class TestDaytonaNetworkBridges:
+    """terminal.daytona_network_block_all and daytona_network_allow_list
+    must be bridged everywhere.
+
+    NOTE: The old test class used the stale key name `daytona_public_ip`.
+    The expansion plan replaced it with two normalized keys:
+    `daytona_network_block_all` (boolean) and `daytona_network_allow_list`
+    (CIDR list), matching the Daytona SDK's CreateSandboxParams fields.
+    """
+
+    def test_network_block_all_in_set_config_env_sync(self):
+        save_keys = _save_config_env_sync_keys()
+        assert "daytona_network_block_all" in save_keys, (
+            "terminal.daytona_network_block_all missing from _config_to_env_sync"
+        )
+
+    def test_network_block_all_in_cli_env_mappings(self):
+        skip_if_no_prompt_toolkit()
+        cli_keys = _cli_env_map_keys()
+        assert "daytona_network_block_all" in cli_keys, (
+            "daytona_network_block_all missing from cli.py env_mappings"
+        )
+
+    def test_network_block_all_in_gateway_env_map(self):
+        gw_keys = _gateway_env_map_keys()
+        assert "daytona_network_block_all" in gw_keys, (
+            "daytona_network_block_all missing from gateway/run.py _terminal_env_map"
+        )
+
+    def test_network_block_all_in_terminal_tool_env_vars(self):
+        env_vars = _terminal_tool_env_var_names()
+        assert "TERMINAL_DAYTONA_NETWORK_BLOCK_ALL" in env_vars, (
+            "TERMINAL_DAYTONA_NETWORK_BLOCK_ALL not consumed by terminal_tool"
+        )
+
+    def test_network_allow_list_in_set_config_env_sync(self):
+        save_keys = _save_config_env_sync_keys()
+        assert "daytona_network_allow_list" in save_keys, (
+            "terminal.daytona_network_allow_list missing from _config_to_env_sync"
+        )
+
+    def test_network_allow_list_in_cli_env_mappings(self):
+        skip_if_no_prompt_toolkit()
+        cli_keys = _cli_env_map_keys()
+        assert "daytona_network_allow_list" in cli_keys, (
+            "daytona_network_allow_list missing from cli.py env_mappings"
+        )
+
+    def test_network_allow_list_in_gateway_env_map(self):
+        gw_keys = _gateway_env_map_keys()
+        assert "daytona_network_allow_list" in gw_keys, (
+            "daytona_network_allow_list missing from gateway/run.py _terminal_env_map"
+        )
+
+    def test_network_allow_list_in_terminal_tool_env_vars(self):
+        env_vars = _terminal_tool_env_var_names()
+        assert "TERMINAL_DAYTONA_NETWORK_ALLOW_LIST" in env_vars, (
+            "TERMINAL_DAYTONA_NETWORK_ALLOW_LIST not consumed by terminal_tool"
+        )
+
+
+class TestDaytonaAutoDeleteIntervalBridge:
+    """terminal.daytona_auto_delete_interval must be bridged everywhere.
+
+    NOTE: The old test class used the stale key name `daytona_auto_delete_after`.
+    The expansion plan normalized it to `daytona_auto_delete_interval` to
+    align with the Daytona SDK's autoStopInterval/autoDeleteInterval naming.
+    """
+
+    def test_auto_delete_interval_in_set_config_env_sync(self):
+        save_keys = _save_config_env_sync_keys()
+        assert "daytona_auto_delete_interval" in save_keys, (
+            "terminal.daytona_auto_delete_interval missing from _config_to_env_sync"
+        )
+
+    def test_auto_delete_interval_in_cli_env_mappings(self):
+        skip_if_no_prompt_toolkit()
+        cli_keys = _cli_env_map_keys()
+        assert "daytona_auto_delete_interval" in cli_keys, (
+            "daytona_auto_delete_interval missing from cli.py env_mappings"
+        )
+
+    def test_auto_delete_interval_in_gateway_env_map(self):
+        gw_keys = _gateway_env_map_keys()
+        assert "daytona_auto_delete_interval" in gw_keys, (
+            "daytona_auto_delete_interval missing from gateway/run.py _terminal_env_map"
+        )
+
+    def test_auto_delete_interval_in_terminal_tool_env_vars(self):
+        env_vars = _terminal_tool_env_var_names()
+        assert "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL" in env_vars, (
+            "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL not consumed by terminal_tool"
+        )
+
+
+class TestContainerResourceBridgesComplete:
+    """Pin the existing container_* bridges that were missing per bug #7362.
+
+    terminal.container_cpu, terminal.container_memory, and
+    terminal.container_disk were NOT in the CLI env_mappings (only in
+    _config_to_env_sync). This test class ensures they are now present
+    in ALL four bridging locations.
+    """
+
+    def test_container_cpu_in_all_bridges(self):
+        """container_cpu must be in all four bridge locations."""
+        save_keys = _save_config_env_sync_keys()
+        cli_keys = _cli_env_map_keys()
+        gw_keys = _gateway_env_map_keys()
+        env_vars = _terminal_tool_env_var_names()
+        assert "container_cpu" in save_keys, "container_cpu missing from _config_to_env_sync"
+        assert "TERMINAL_CONTAINER_CPU" in env_vars, "TERMINAL_CONTAINER_CPU not in terminal_tool"
+        assert "container_cpu" in cli_keys, "container_cpu missing from cli.py env_mappings"
+        assert "container_cpu" in gw_keys, "container_cpu missing from gateway/run.py _terminal_env_map"
+
+    def test_container_memory_in_all_bridges(self):
+        """container_memory must be in all four bridge locations."""
+        save_keys = _save_config_env_sync_keys()
+        env_vars = _terminal_tool_env_var_names()
+        assert "container_memory" in save_keys
+        assert "TERMINAL_CONTAINER_MEMORY" in env_vars
+
+    def test_container_disk_in_all_bridges(self):
+        """container_disk must be in all four bridge locations."""
+        save_keys = _save_config_env_sync_keys()
+        env_vars = _terminal_tool_env_var_names()
+        assert "container_disk" in save_keys
+        assert "TERMINAL_CONTAINER_DISK" in env_vars
+
+
+# ---------------------------------------------------------------------------
+# Additional P0 expansion keys (Daytona expansion plan)
+# ---------------------------------------------------------------------------
+# These keys are specified in the expansion plan but NOT yet covered by the
+# classes above.  Each must be bridged in all four locations.
+
+_EXPANSION_KEYS = {
+    # Config key            -> Env var name
+    "daytona_create_mode":           "TERMINAL_DAYTONA_CREATE_MODE",
+    "daytona_snapshot":              "TERMINAL_DAYTONA_SNAPSHOT",
+    "daytona_language":              "TERMINAL_DAYTONA_LANGUAGE",
+    "daytona_name_prefix":           "TERMINAL_DAYTONA_NAME_PREFIX",
+    "daytona_name_scope":            "TERMINAL_DAYTONA_NAME_SCOPE",
+    "daytona_labels":                "TERMINAL_DAYTONA_LABELS",
+    "daytona_auto_archive_interval": "TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL",
+    "daytona_ephemeral":             "TERMINAL_DAYTONA_EPHEMERAL",
+    "daytona_env_vars":              "TERMINAL_DAYTONA_ENV_VARS",
+    "daytona_network_block_all":     "TERMINAL_DAYTONA_NETWORK_BLOCK_ALL",
+    "daytona_network_allow_list":    "TERMINAL_DAYTONA_NETWORK_ALLOW_LIST",
+    "daytona_volume_mounts":         "TERMINAL_DAYTONA_VOLUME_MOUNTS",
+    "daytona_gpu":                   "TERMINAL_DAYTONA_GPU",
+    # P7: CWD sync pilot
+    "daytona_sync_cwd":             "TERMINAL_DAYTONA_SYNC_CWD",
+}
+
+
+@pytest.mark.parametrize("key,env_var", list(_EXPANSION_KEYS.items()),
+                         ids=[k for k in _EXPANSION_KEYS])
+def test_expansion_key_in_config_to_env_sync(key, env_var):
+    """``hermes config set terminal.{key}`` must propagate to $TERMINAL_DAYTONA_*."""
+    save_keys = _save_config_env_sync_keys()
+    assert key in save_keys, (
+        f"terminal.{key} missing from _config_to_env_sync. Add "
+        f"\"terminal.{key}\": \"{env_var}\" to _config_to_env_sync."
+    )
+
+
+@pytest.mark.parametrize("key,env_var", list(_EXPANSION_KEYS.items()),
+                         ids=[k for k in _EXPANSION_KEYS])
+def test_expansion_key_in_cli_env_mappings(key, env_var):
+    """CLI startup must bridge terminal.{key}."""
+    skip_if_no_prompt_toolkit()
+    cli_keys = _cli_env_map_keys()
+    assert key in cli_keys, (
+        f"{key} missing from cli.py env_mappings. Add "
+        f"\"{key}\": \"{env_var}\"."
+    )
+
+
+@pytest.mark.parametrize("key,env_var", list(_EXPANSION_KEYS.items()),
+                         ids=[k for k in _EXPANSION_KEYS])
+def test_expansion_key_in_gateway_env_map(key, env_var):
+    """Gateway startup must bridge terminal.{key}."""
+    gw_keys = _gateway_env_map_keys()
+    assert key in gw_keys, (
+        f"{key} missing from gateway/run.py _terminal_env_map. Add "
+        f"\"{key}\": \"{env_var}\"."
+    )
+
+
+@pytest.mark.parametrize("key,env_var", list(_EXPANSION_KEYS.items()),
+                         ids=[k for k in _EXPANSION_KEYS])
+def test_expansion_key_in_terminal_tool_env_vars(key, env_var):
+    """terminal_tool must read $TERMINAL_DAYTONA_*."""
+    env_vars = _terminal_tool_env_var_names()
+    assert env_var in env_vars, (
+        f"{env_var} (for terminal.{key}) not consumed by terminal_tool. "
+        f"Add os.getenv('{env_var}', ...) or _parse_env_var('{env_var}', ...) "
+        f"to _get_env_config()."
+    )
+
+
+class TestDaytonaImageBridgeStillWorks:
+    """Regression: terminal.daytona_image (existing key) must not regress."""
+
+    def test_daytona_image_in_all_bridges(self):
+        """daytona_image must still be in all bridge locations."""
+        save_keys = _save_config_env_sync_keys()
+        env_vars = _terminal_tool_env_var_names()
+        assert "daytona_image" in save_keys
+        assert "TERMINAL_DAYTONA_IMAGE" in env_vars
+        skip_if_no_prompt_toolkit()
+        cli_keys = _cli_env_map_keys()
+        gw_keys = _gateway_env_map_keys()
+        assert "daytona_image" in cli_keys
+        assert "daytona_image" in gw_keys

@@ -64,7 +64,7 @@ The terminal tool can execute commands in different environments:
 | `ssh` | Remote server | Sandboxing, keep agent away from its own code |
 | `singularity` | HPC containers | Cluster computing, rootless |
 | `modal` | Cloud execution | Serverless, scale |
-| `daytona` | Cloud sandbox workspace | Persistent remote dev environments |
+| `daytona` | Cloud sandbox workspace | Persistent remote dev environments with image/snapshot modes, profile-scoped naming, lifecycle controls, network isolation, and CWD sync |
 
 ### Configuration
 

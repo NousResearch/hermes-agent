@@ -11,7 +11,7 @@ import shutil
 import importlib.util
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import get_project_root, get_hermes_home, get_env_path, load_config
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 
@@ -435,6 +435,23 @@ def run_doctor(args):
     issues = []
     manual_issues = []  # issues that can't be auto-fixed
     fixed_count = 0
+    try:
+        doctor_config = load_config()
+    except Exception:
+        doctor_config = {}
+    terminal_cfg = doctor_config.get("terminal", {}) if isinstance(doctor_config, dict) else {}
+    if not isinstance(terminal_cfg, dict):
+        terminal_cfg = {}
+
+    def _terminal_cfg_value(key, default=""):
+        value = terminal_cfg.get(key, default)
+        return default if value is None else value
+
+    def _env_or_terminal_cfg(env_key, cfg_key, default=""):
+        raw = os.getenv(env_key)
+        if raw not in (None, ""):
+            return raw
+        return _terminal_cfg_value(cfg_key, default)
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
@@ -855,7 +872,6 @@ def run_doctor(args):
     _section("xAI Model Retirement (May 15, 2026)")
 
     try:
-        from hermes_cli.config import load_config
         from hermes_cli.xai_retirement import (
             MIGRATION_GUIDE_URL,
             find_retired_xai_refs,
@@ -1151,7 +1167,7 @@ def run_doctor(args):
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
     
     # Docker (optional)
-    terminal_env = os.getenv("TERMINAL_ENV", "local")
+    terminal_env = str(os.getenv("TERMINAL_ENV") or _terminal_cfg_value("backend", "local") or "local")
     try:
         from hermes_constants import is_container as _is_container
         running_in_container = _is_container()
@@ -1257,6 +1273,113 @@ def run_doctor(args):
                 "Install daytona SDK: pip install daytona",
                 issues,
             )
+
+        # --- Create mode & snapshot validation ---
+        create_mode = str(_env_or_terminal_cfg("TERMINAL_DAYTONA_CREATE_MODE", "daytona_create_mode", "image") or "image")
+        if create_mode not in ("image", "snapshot"):
+            _fail_and_issue(
+                f"Invalid daytona_create_mode: {create_mode!r}",
+                "(must be 'image' or 'snapshot')",
+                f"Set TERMINAL_DAYTONA_CREATE_MODE to 'image' or 'snapshot'",
+                issues,
+            )
+        elif create_mode == "snapshot":
+            snapshot = str(_env_or_terminal_cfg("TERMINAL_DAYTONA_SNAPSHOT", "daytona_snapshot", "") or "").strip()
+            if not snapshot:
+                _fail_and_issue(
+                    "Snapshot mode requires daytona_snapshot",
+                    "(daytona_create_mode='snapshot' but no snapshot name/ID set)",
+                    "Set TERMINAL_DAYTONA_SNAPSHOT to a snapshot name or ID",
+                    issues,
+                )
+            else:
+                check_ok("Daytona snapshot", f"({snapshot})")
+
+        # --- Language validation ---
+        language = str(_env_or_terminal_cfg("TERMINAL_DAYTONA_LANGUAGE", "daytona_language", "") or "").strip()
+        valid_languages = {"", "python", "javascript", "typescript", "go", "rust", "java", "csharp", "ruby"}
+        if language and language.lower() not in valid_languages:
+            check_warn(f"Unusual Daytona language: {language!r}", "(may not be supported by sandbox image)")
+        elif language:
+            check_ok("Daytona language", f"({language})")
+
+        # --- JSON fields validation ---
+        for json_var, json_label in [
+            ("TERMINAL_DAYTONA_LABELS", "daytona_labels"),
+            ("TERMINAL_DAYTONA_ENV_VARS", "daytona_env_vars"),
+            ("TERMINAL_DAYTONA_VOLUME_MOUNTS", "daytona_volume_mounts"),
+        ]:
+            raw_val = _env_or_terminal_cfg(json_var, json_label, "")
+            if raw_val:
+                try:
+                    import json as _json
+                    parsed = _json.loads(raw_val.strip()) if isinstance(raw_val, str) else raw_val
+                    if json_var == "TERMINAL_DAYTONA_VOLUME_MOUNTS":
+                        if not isinstance(parsed, list):
+                            _fail_and_issue(
+                                f"{json_label} must be a JSON array",
+                                f"(got {type(parsed).__name__})",
+                                f"Set {json_var} to a JSON array, e.g. '[{{\"volume_id\":\"...\",\"mount_path\":\"/mnt/data\"}}]'",
+                                issues,
+                            )
+                        else:
+                            check_ok(json_label, f"({len(parsed)} mount(s))")
+                    elif json_var == "TERMINAL_DAYTONA_LABELS":
+                        if not isinstance(parsed, dict):
+                            _fail_and_issue(
+                                f"{json_label} must be a JSON object",
+                                f"(got {type(parsed).__name__})",
+                                f"Set {json_var} to a JSON object, e.g. '{{\"key\":\"value\"}}'",
+                                issues,
+                            )
+                        else:
+                            check_ok(json_label, f"({len(parsed)} label(s))")
+                    elif json_var == "TERMINAL_DAYTONA_ENV_VARS":
+                        if not isinstance(parsed, dict):
+                            _fail_and_issue(
+                                f"{json_label} must be a JSON object",
+                                f"(got {type(parsed).__name__})",
+                                f"Set {json_var} to a JSON object, e.g. '{{\"KEY\":\"value\"}}'",
+                                issues,
+                            )
+                        else:
+                            check_ok(json_label, f"({len(parsed)} var(s))")
+                except (ValueError, TypeError) as exc:
+                    _fail_and_issue(
+                        f"Invalid JSON in {json_var}",
+                        f"({exc})",
+                        f"Fix the JSON value in {json_var}",
+                        issues,
+                    )
+
+        # --- Disk size guidance ---
+        disk_raw = _env_or_terminal_cfg("TERMINAL_CONTAINER_DISK", "container_disk", "")
+        disk_mb = str(disk_raw or "").strip()
+        if disk_mb:
+            try:
+                disk_gb = int(disk_mb) / 1024
+                if disk_gb > 10:
+                    check_warn(
+                        f"Daytona disk request ({disk_gb:.0f}GB) exceeds platform guidance",
+                        "(platform caps at 10GB; value will be capped automatically)",
+                    )
+            except ValueError:
+                pass
+
+        # --- CWD sync (P7 pilot) ---
+        sync_raw = _env_or_terminal_cfg("TERMINAL_DAYTONA_SYNC_CWD", "daytona_sync_cwd", "")
+        sync_cwd = str(sync_raw or "").strip().lower()
+        if sync_cwd in ("true", "1", "yes"):
+            check_ok(
+                "Daytona sync_cwd",
+                "(enabled — host project dir will sync to /workspace)",
+            )
+            # Warn if no TERMINAL_CWD set — sync needs a source directory
+            if not (os.getenv("TERMINAL_CWD") or _terminal_cfg_value("cwd", "")):
+                check_warn(
+                    "Daytona sync_cwd: TERMINAL_CWD not set",
+                    "(will fall back to os.getcwd() at runtime)",
+                )
 
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):

@@ -1014,6 +1014,30 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
         )
 
 
+def _parse_json_env_var(name: str, default: str, expected_type: type) -> object:
+    """Parse a JSON env var and validate its top-level type (dict or list)."""
+    raw = os.getenv(name, default)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError(
+            f"Invalid value for {name}: {raw!r} (expected valid JSON). "
+            f"Check ~/.hermes/.env or environment variables."
+        )
+    if not isinstance(parsed, expected_type):
+        type_name = (
+            "dict" if expected_type is dict
+            else "list" if expected_type is list
+            else expected_type.__name__
+        )
+        raise ValueError(
+            f"Invalid value for {name}: {raw!r} "
+            f"(expected JSON {type_name}, got {type(parsed).__name__}). "
+            f"Check ~/.hermes/.env or environment variables."
+        )
+    return parsed
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
@@ -1051,9 +1075,18 @@ def _get_env_config() -> Dict[str, Any]:
             host_cwd = candidate
             cwd = "/workspace"
     elif env_type in {"modal", "docker", "singularity", "daytona"} and cwd:
-        # Host paths and relative paths that won't work inside containers
+        # Host paths and relative paths that won't work inside containers.
+        # Daytona may still need an explicit host source for opt-in CWD
+        # sync, so capture it separately before replacing the remote cwd.
+        raw_terminal_cwd = os.getenv("TERMINAL_CWD")
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
+        if env_type == "daytona" and raw_terminal_cwd and raw_terminal_cwd not in {"~", ".", "auto", "cwd"}:
+            candidate = os.path.abspath(os.path.expanduser(raw_terminal_cwd))
+            if os.path.isdir(candidate):
+                host_cwd = candidate
+        elif env_type == "daytona":
+            host_cwd = os.getcwd()
         if (is_host_path or is_relative) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host/relative path won't work in sandbox). Using %r instead.",
@@ -1068,6 +1101,22 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "daytona_create_mode": os.getenv("TERMINAL_DAYTONA_CREATE_MODE", "image").strip() or "image",
+        "daytona_snapshot": os.getenv("TERMINAL_DAYTONA_SNAPSHOT", "").strip(),
+        "daytona_language": os.getenv("TERMINAL_DAYTONA_LANGUAGE", "").strip(),
+        "daytona_name_prefix": os.getenv("TERMINAL_DAYTONA_NAME_PREFIX", "hermes").strip() or "hermes",
+        "daytona_name_scope": os.getenv("TERMINAL_DAYTONA_NAME_SCOPE", "task").strip() or "task",
+        "daytona_labels": _parse_json_env_var("TERMINAL_DAYTONA_LABELS", "{}", dict),
+        "daytona_auto_stop_interval": _parse_env_var("TERMINAL_DAYTONA_AUTO_STOP_INTERVAL", "0"),
+        "daytona_auto_archive_interval": _parse_env_var("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL", "0"),
+        "daytona_auto_delete_interval": _parse_env_var("TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL", "0"),
+        "daytona_ephemeral": os.getenv("TERMINAL_DAYTONA_EPHEMERAL", "false").lower() in {"true", "1", "yes"},
+        "daytona_env_vars": _parse_json_env_var("TERMINAL_DAYTONA_ENV_VARS", "{}", dict),
+        "daytona_network_block_all": os.getenv("TERMINAL_DAYTONA_NETWORK_BLOCK_ALL", "false").lower() in {"true", "1", "yes"},
+        "daytona_network_allow_list": os.getenv("TERMINAL_DAYTONA_NETWORK_ALLOW_LIST", ""),
+        "daytona_volume_mounts": _parse_json_env_var("TERMINAL_DAYTONA_VOLUME_MOUNTS", "[]", list),
+        "daytona_gpu": _parse_env_var("TERMINAL_DAYTONA_GPU", "0"),
+        "daytona_sync_cwd": os.getenv("TERMINAL_DAYTONA_SYNC_CWD", "false").lower() in {"true", "1", "yes"},
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1253,6 +1302,23 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             image=image, cwd=cwd, timeout=timeout,
             cpu=int(cpu), memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
+            create_mode=cc.get("daytona_create_mode", "image"),
+            snapshot=cc.get("daytona_snapshot", ""),
+            language=cc.get("daytona_language", ""),
+            name_prefix=cc.get("daytona_name_prefix", "hermes"),
+            name_scope=cc.get("daytona_name_scope", "task"),
+            labels=cc.get("daytona_labels") or None,
+            auto_stop_interval=int(cc.get("daytona_auto_stop_interval", 0)),
+            auto_archive_interval=int(cc.get("daytona_auto_archive_interval", 0)),
+            auto_delete_interval=int(cc.get("daytona_auto_delete_interval", 0)),
+            ephemeral=cc.get("daytona_ephemeral", False),
+            env_vars=cc.get("daytona_env_vars") or None,
+            network_block_all=cc.get("daytona_network_block_all", False),
+            network_allow_list=cc.get("daytona_network_allow_list", ""),
+            volume_mounts=cc.get("daytona_volume_mounts") or None,
+            gpu=int(cc.get("daytona_gpu", 0)),
+            host_cwd=host_cwd,
+            sync_cwd=cc.get("daytona_sync_cwd", False),
         )
 
     elif env_type == "ssh":
@@ -1878,6 +1944,22 @@ def terminal_tool(
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),
+                                "daytona_create_mode": config.get("daytona_create_mode", "image"),
+                                "daytona_snapshot": config.get("daytona_snapshot", ""),
+                                "daytona_language": config.get("daytona_language", ""),
+                                "daytona_name_prefix": config.get("daytona_name_prefix", "hermes"),
+                                "daytona_name_scope": config.get("daytona_name_scope", "task"),
+                                "daytona_labels": config.get("daytona_labels", {}),
+                                "daytona_auto_stop_interval": config.get("daytona_auto_stop_interval", 0),
+                                "daytona_auto_archive_interval": config.get("daytona_auto_archive_interval", 0),
+                                "daytona_auto_delete_interval": config.get("daytona_auto_delete_interval", 0),
+                                "daytona_ephemeral": config.get("daytona_ephemeral", False),
+                                "daytona_env_vars": config.get("daytona_env_vars", {}),
+                                "daytona_network_block_all": config.get("daytona_network_block_all", False),
+                                "daytona_network_allow_list": config.get("daytona_network_allow_list", ""),
+                                "daytona_volume_mounts": config.get("daytona_volume_mounts", []),
+                                "daytona_gpu": config.get("daytona_gpu", 0),
+                                "daytona_sync_cwd": config.get("daytona_sync_cwd", False),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),

@@ -254,6 +254,20 @@ terminal:
 #   timeout: 180
 #   lifetime_seconds: 300
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   daytona_create_mode: "image"   # image or snapshot
+#   daytona_snapshot: ""           # required when create_mode=snapshot
+#   daytona_name_prefix: "hermes"
+#   daytona_name_scope: "task"     # task, profile, global, legacy
+#   daytona_auto_stop_interval: 0
+#   daytona_auto_archive_interval: 0
+#   daytona_auto_delete_interval: 0
+#   daytona_ephemeral: false
+#   daytona_env_vars: {}           # non-secret sandbox env vars
+#   daytona_network_block_all: false
+#   daytona_network_allow_list: "" # CIDR ranges if network blocking is enabled
+#   daytona_volume_mounts: []
+#   daytona_gpu: 0
+#   daytona_sync_cwd: false        # opt-in host cwd upload to /workspace
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
 #

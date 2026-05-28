@@ -358,3 +358,65 @@ class TestCoerceNumberInfNan:
         assert _coerce_number("42") == 42
         assert _coerce_number("3.14") == 3.14
         assert _coerce_number("1e3") == 1000
+
+class TestDisabledToolsetsPlatformBundle:
+    """Regression test for #33924: disabling a platform bundle (hermes-*)
+    must not remove core tools from other enabled toolsets."""
+
+    def test_disabling_platform_bundle_preserves_core_tools(self):
+        """Disabling hermes-yuanbao should not strip core tools from hermes-telegram."""
+        from model_tools import get_tool_definitions
+
+        tools_telegram = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            quiet_mode=True,
+        )
+        tools_telegram_no_yuanbao = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            disabled_toolsets=["hermes-yuanbao"],
+            quiet_mode=True,
+        )
+        names_telegram = {t["function"]["name"] for t in tools_telegram}
+        names_no_yuanbao = {t["function"]["name"] for t in tools_telegram_no_yuanbao}
+
+        # Disabling a *different* platform bundle must not remove any tools
+        assert names_telegram == names_no_yuanbao, (
+            f"Tools lost after disabling hermes-yuanbao: "
+            f"{names_telegram - names_no_yuanbao}"
+        )
+
+    def test_disabling_platform_bundle_removes_own_tools(self):
+        """Disabling hermes-discord should remove discord-specific tools."""
+        from model_tools import get_tool_definitions
+
+        tools = get_tool_definitions(
+            enabled_toolsets=["hermes-discord"],
+            disabled_toolsets=["hermes-discord"],
+            quiet_mode=True,
+        )
+        names = {t["function"]["name"] for t in tools}
+        assert "discord" not in names
+
+    def test_disabling_non_platform_toolset_still_works(self):
+        """Disabling a regular (non-hermes-) toolset still subtracts all tools."""
+        from model_tools import get_tool_definitions
+
+        tools_normal = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            quiet_mode=True,
+        )
+        tools_no_web = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            disabled_toolsets=["web"],
+            quiet_mode=True,
+        )
+        names_normal = {t["function"]["name"] for t in tools_normal}
+        names_no_web = {t["function"]["name"] for t in tools_no_web}
+
+        web_tools = {"web_search", "web_extract"}
+        removed = names_normal - names_no_web
+        # web tools should be removed (if they were present)
+        present_web = web_tools & names_normal
+        assert present_web <= removed, (
+            f"Web tools not removed: {present_web - removed}"
+        )

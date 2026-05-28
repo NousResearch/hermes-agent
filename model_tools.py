@@ -370,8 +370,31 @@ def _compute_tool_definitions(
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
-                resolved = resolve_toolset(toolset_name)
-                tools_to_include.difference_update(resolved)
+                # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS in
+                # their definition.  Subtracting them blindly removes core
+                # tools (terminal, read_file, …) from *other* enabled
+                # toolsets that also include those core tools (see #33924).
+                # For platform bundles, only subtract the platform-specific
+                # tools — leave core tools intact.
+                if toolset_name.startswith("hermes-"):
+                    from toolsets import get_toolset as _get_ts, _HERMES_CORE_TOOLS as _core_tools
+                    ts_def = _get_ts(toolset_name)
+                    to_remove: set = set()
+                    if ts_def and "tools" in ts_def:
+                        to_remove = set(ts_def["tools"]) - set(_core_tools)
+                        for _inc in ts_def.get("includes", []):
+                            _inc_def = _get_ts(_inc)
+                            if _inc_def and "tools" in _inc_def:
+                                to_remove.update(
+                                    set(_inc_def["tools"]) - set(_core_tools)
+                                )
+                    else:
+                        to_remove = set(resolve_toolset(toolset_name))
+                    tools_to_include.difference_update(to_remove)
+                    resolved = sorted(to_remove)
+                else:
+                    resolved = resolve_toolset(toolset_name)
+                    tools_to_include.difference_update(resolved)
                 if not quiet_mode:
                     print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:

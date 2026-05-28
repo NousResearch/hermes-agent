@@ -98,6 +98,41 @@ def _load_hermes_env_vars() -> dict[str, str]:
         return {}
 
 
+# Docker label values must match [a-zA-Z0-9_.-] and stay ≤63 chars to round-trip
+# safely through `docker ps --filter label=key=value`. Profile and task names
+# can technically contain other characters; sanitize defensively.
+_LABEL_VALUE_OK_RE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _sanitize_label_value(value: str) -> str:
+    """Coerce *value* into a Docker label-safe form (alnum + ``_.-``, ≤63 chars).
+
+    Empty or all-invalid inputs collapse to ``"unknown"`` so the resulting
+    label is always queryable. Used at container-create time; never round-trip
+    a sanitized value back into application logic.
+    """
+    if not isinstance(value, str) or not value:
+        return "unknown"
+    cleaned = _LABEL_VALUE_OK_RE.sub("_", value)
+    cleaned = cleaned[:63] or "unknown"
+    return cleaned
+
+
+def _get_active_profile_name() -> str:
+    """Return the active Hermes profile name, or ``"default"`` on any error.
+
+    Resolved at container-create time so a single container is permanently
+    tagged with the profile that created it. Profile switches inside the
+    same process don't retroactively relabel running containers.
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
 def find_docker() -> Optional[str]:
     """Locate the docker (or podman) CLI binary.
 
@@ -313,6 +348,7 @@ class DockerEnvironment(BaseEnvironment):
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
         self._container_id: Optional[str] = None
+        self._labels: dict[str, str] = {}
         logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
@@ -506,10 +542,30 @@ class DockerEnvironment(BaseEnvironment):
 
         # Start the container directly via `docker run -d`.
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
+        # Labels make hermes-created containers identifiable to:
+        #   * the orphan reaper (`hermes-agent=1` for the global sweep filter)
+        #   * future cross-process reuse (`hermes-task-id`, `hermes-profile`)
+        #   * operators running `docker ps --filter label=hermes-agent=1`
+        # Values are limited to the safe character set defined by
+        # _sanitize_label_value(); the active Hermes profile is captured at
+        # container-start time and never changes for the container's lifetime.
+        profile_name = _sanitize_label_value(_get_active_profile_name())
+        task_label = _sanitize_label_value(task_id)
+        label_args = [
+            "--label", "hermes-agent=1",
+            "--label", f"hermes-task-id={task_label}",
+            "--label", f"hermes-profile={profile_name}",
+        ]
+        self._labels = {
+            "hermes-agent": "1",
+            "hermes-task-id": task_label,
+            "hermes-profile": profile_name,
+        }
         run_cmd = [
             self._docker_exe, "run", "-d",
             "--init",           # tini/catatonit as PID 1 — reaps zombie children
             "--name", container_name,
+            *label_args,
             "-w", cwd,
             *all_run_args,
             image,

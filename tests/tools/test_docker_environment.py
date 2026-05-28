@@ -514,3 +514,111 @@ def test_run_as_host_user_warns_and_skips_when_no_posix_ids(monkeypatch, caplog)
         "does not expose POSIX uid/gid" in rec.getMessage()
         for rec in caplog.records
     ), "expected a warning when POSIX ids are unavailable"
+
+
+# ── Docker labels (issue #20561) ──────────────────────────────────
+
+
+def _run_args_from_calls(calls):
+    """Pull the argv list passed to the first ``docker run`` invocation."""
+    run_calls = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
+    assert run_calls, "docker run should have been called"
+    return run_calls[0][0]
+
+
+def _labels_in_run_args(run_args):
+    """Return the set of ``key=value`` strings passed via ``--label``."""
+    return {
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
+        if flag == "--label"
+    }
+
+
+def test_run_command_tags_hermes_agent_label(monkeypatch):
+    """Every container hermes-agent starts must carry the hermes-agent=1 label
+    so the orphan reaper (and external operators) can identify them with a
+    single ``docker ps --filter label=hermes-agent=1`` call. Regression test
+    for issue #20561 — without the label there is no global sweep target."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(task_id="my-task")
+
+    labels = _labels_in_run_args(_run_args_from_calls(calls))
+    assert "hermes-agent=1" in labels, (
+        f"hermes-agent=1 label missing; got labels: {sorted(labels)}"
+    )
+
+
+def test_run_command_tags_task_and_profile_labels(monkeypatch):
+    """task_id and the active profile name are surfaced as labels so future
+    cross-process reuse logic can filter to a specific (task, profile) pair
+    without parsing container names. Profile resolution uses the helper that
+    returns ``"default"`` for the root Hermes home."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "research-bot")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(task_id="kanban-42")
+
+    labels = _labels_in_run_args(_run_args_from_calls(calls))
+    assert "hermes-task-id=kanban-42" in labels, (
+        f"hermes-task-id=kanban-42 missing; got: {sorted(labels)}"
+    )
+    assert "hermes-profile=research-bot" in labels, (
+        f"hermes-profile=research-bot missing; got: {sorted(labels)}"
+    )
+
+
+def test_label_sanitizer_rejects_invalid_characters():
+    """Docker label values must be alnum + ``_.-`` and ≤63 chars. Profile or
+    task names containing slashes, colons, or unicode would otherwise emit
+    invalid labels that round-trip badly through ``docker ps --filter``."""
+    assert docker_env._sanitize_label_value("plain-name_1.0") == "plain-name_1.0"
+    assert docker_env._sanitize_label_value("with/slash") == "with_slash"
+    assert docker_env._sanitize_label_value("with:colon") == "with_colon"
+    assert docker_env._sanitize_label_value("emoji-😀-here") == "emoji-_-here"
+    # Empty / non-string inputs must collapse to a queryable token, not "".
+    assert docker_env._sanitize_label_value("") == "unknown"
+    assert docker_env._sanitize_label_value(None) == "unknown"  # type: ignore[arg-type]
+    # >63 chars must truncate, not error.
+    long_value = "x" * 100
+    assert len(docker_env._sanitize_label_value(long_value)) == 63
+
+
+def test_run_command_sanitizes_unsafe_task_id(monkeypatch):
+    """A task_id containing characters Docker rejects in label values must be
+    sanitized before reaching ``docker run --label``; otherwise the daemon
+    refuses the run with an inscrutable error and the agent's first command
+    blows up."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(task_id="task/with:weird*chars")
+
+    labels = _labels_in_run_args(_run_args_from_calls(calls))
+    # Each non-OK character becomes an underscore; the safe chars survive.
+    assert "hermes-task-id=task_with_weird_chars" in labels, (
+        f"sanitized task-id label missing; got: {sorted(labels)}"
+    )
+
+
+def test_labels_attribute_populated_after_init(monkeypatch):
+    """``self._labels`` must be set to the same key/value pairs that went onto
+    docker run, so subsequent reuse / reaper paths can match without re-running
+    the sanitizer or re-importing the profile module."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(task_id="abc")
+
+    assert env._labels == {
+        "hermes-agent": "1",
+        "hermes-task-id": "abc",
+        "hermes-profile": "default",
+    }

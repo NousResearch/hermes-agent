@@ -974,8 +974,33 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
         not importlib.util.find_spec("honcho"),
         reason="honcho SDK not installed"
     )
-    def test_cloud_base_url_not_modified(self):
-        """A non-local base_url must never have its path stripped."""
+    def test_cloud_base_url_without_version_unchanged(self):
+        """A cloud base_url with no version segment must pass through untouched."""
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="cloud-key",
+            base_url="https://api.honcho.dev",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            get_honcho_client(cfg)
+
+        mock_honcho.assert_called_once()
+        passed_base_url = mock_honcho.call_args.kwargs.get("base_url")
+        assert passed_base_url == "https://api.honcho.dev", (
+            f"Expected 'https://api.honcho.dev', got {passed_base_url!r}"
+        )
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_cloud_base_url_with_version_stripped(self):
+        """A version segment double-prefixes regardless of host, so a cloud
+        base_url that ends in '/v3' must also be stripped (the SDK re-adds it)."""
         fake_honcho = MagicMock(name="Honcho")
         cfg = HonchoClientConfig(
             api_key="cloud-key",
@@ -990,9 +1015,51 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
 
         mock_honcho.assert_called_once()
         passed_base_url = mock_honcho.call_args.kwargs.get("base_url")
-        # Cloud URLs are not local — no stripping should occur
-        assert passed_base_url == "https://api.honcho.dev/v3", (
-            f"Expected 'https://api.honcho.dev/v3', got {passed_base_url!r}"
+        assert passed_base_url == "https://api.honcho.dev", (
+            f"Expected 'https://api.honcho.dev', got {passed_base_url!r}"
+        )
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    @pytest.mark.parametrize(
+        "raw_url, expected",
+        [
+            # LAN IP self-host
+            ("http://10.0.0.5:8000/v3", "http://10.0.0.5:8000"),
+            ("http://192.168.1.20:38000/v3/", "http://192.168.1.20:38000"),
+            # Tailscale / custom-domain self-host
+            ("https://honcho.my.ts.net/v3", "https://honcho.my.ts.net"),
+            ("https://honcho.lab.internal/v3", "https://honcho.lab.internal"),
+            ("https://honcho.fly.dev/v3", "https://honcho.fly.dev"),
+            # higher version segments are also stripped
+            ("https://honcho.lab.internal/v12", "https://honcho.lab.internal"),
+            # self-host without a version segment is left unchanged
+            ("https://honcho.my.ts.net", "https://honcho.my.ts.net"),
+            ("http://10.0.0.5:8000", "http://10.0.0.5:8000"),
+        ],
+    )
+    def test_self_hosted_base_url_version_stripped(self, raw_url, expected):
+        """Non-loopback self-hosted instances (LAN IPs, Tailscale, custom
+        domains) must get the same version-segment stripping as localhost.
+        Regression for #20688 recurring on any non-loopback self-host."""
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="self-host-key",
+            base_url=raw_url,
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            get_honcho_client(cfg)
+
+        mock_honcho.assert_called_once()
+        passed_base_url = mock_honcho.call_args.kwargs.get("base_url")
+        assert passed_base_url == expected, (
+            f"Expected {expected!r}, got {passed_base_url!r}"
         )
 
     @pytest.mark.skipif(

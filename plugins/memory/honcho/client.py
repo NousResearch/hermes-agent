@@ -828,24 +828,28 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         or "::1" in resolved_base_url
     )
     if _is_local:
-        # Check if the host block has its own apiKey (explicit local auth)
+        # Check if the host block has its own apiKey (explicit local auth).
+        # Auth-skipping is loopback-only: a stored key is likely a cloud key
+        # that would break a no-auth local server, so we substitute the SDK's
+        # required-non-empty placeholder unless the host block opts in.
         _raw = config.raw or {}
         _host_block = (_raw.get("hosts") or {}).get(config.host, {})
         _host_has_key = bool(_host_block.get("apiKey"))
         effective_api_key = config.api_key if _host_has_key else "local"
-
-        # The Honcho SDK's route builders (e.g. routes.workspaces()) already
-        # include the version prefix (e.g. "/v3/workspaces").  When the user
-        # configures base_url as "http://localhost:38000/v3", concatenating the
-        # two produces "/v3/v3/workspaces" → 404 on every call.
-        # Strip any trailing API-version path segment from the base_url so the
-        # SDK can append its own versioned paths correctly.  Cloud base_urls do
-        # not end with a version path and are left unchanged.
-        if resolved_base_url:
-            import re as _re
-            resolved_base_url = _re.sub(r"/v\d+/*$", "", resolved_base_url).rstrip("/")
     else:
         effective_api_key = config.api_key
+
+    # The Honcho SDK's route builders (e.g. routes.workspaces()) already
+    # include the version prefix (e.g. "/v3/workspaces").  When a user-supplied
+    # base_url already ends in a version segment (e.g.
+    # "http://localhost:38000/v3", "https://honcho.my.ts.net/v3"), concatenating
+    # the two produces "/v3/v3/workspaces" → 404 on every call.  This is a pure
+    # routing concern independent of host, so strip a trailing version segment
+    # from ANY base_url — loopback, LAN, custom domain, or cloud alike.  The
+    # SDK then appends its own versioned paths correctly.
+    if resolved_base_url:
+        import re as _re
+        resolved_base_url = _re.sub(r"/v\d+/*$", "", resolved_base_url).rstrip("/")
 
     kwargs: dict = {
         "workspace_id": config.workspace_id,

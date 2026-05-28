@@ -5231,8 +5231,10 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) after at least one prior
+        worker run exists for the task.  A prior worker already opened a PR;
+        re-spawning risks a duplicate PR on the same task. Fresh tasks with
+        no runs are not guarded by comment PR URLs alone.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -5263,6 +5265,15 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "recent_success"
 
     # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # Fresh tasks with no worker run can legitimately mention related PRs in
+    # coordinator/reporting comments; do not let those comments suppress the
+    # first worker spawn.
+    if not conn.execute(
+        "SELECT id FROM task_runs WHERE task_id = ? LIMIT 1",
+        (task_id,),
+    ).fetchone():
+        return None
+
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",

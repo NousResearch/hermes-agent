@@ -1,5 +1,6 @@
 """Tests for banner toolset name normalization and skin color usage."""
 
+import os
 from unittest.mock import patch
 
 from rich.console import Console
@@ -68,6 +69,44 @@ def test_build_welcome_banner_uses_normalized_toolset_names():
     assert "homeassistant_tools:" not in output
     assert "honcho_tools:" not in output
     assert "web_tools:" not in output
+
+
+def test_build_welcome_banner_yolo_banner_uses_truthy_env_parsing():
+    with (
+        patch.object(
+            model_tools,
+            "check_tool_availability",
+            return_value=(["web"], []),
+        ),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+    ):
+        with patch.dict(os.environ, {"HERMES_YOLO_MODE": "false"}):
+            console = Console(
+                record=True, force_terminal=False, color_system=None, width=160
+            )
+            banner.build_welcome_banner(
+                console=console,
+                model="anthropic/test-model",
+                cwd="/tmp/project",
+                tools=[{"function": {"name": "read_file"}}],
+                get_toolset_for_tool=lambda name: "file",
+            )
+            assert "all approval prompts bypassed" not in console.export_text()
+
+        with patch.dict(os.environ, {"HERMES_YOLO_MODE": "1"}):
+            console = Console(
+                record=True, force_terminal=False, color_system=None, width=160
+            )
+            banner.build_welcome_banner(
+                console=console,
+                model="anthropic/test-model",
+                cwd="/tmp/project",
+                tools=[{"function": {"name": "read_file"}}],
+                get_toolset_for_tool=lambda name: "file",
+            )
+            assert "all approval prompts bypassed" in console.export_text()
 
 
 def test_build_welcome_banner_title_is_hyperlinked_to_release():

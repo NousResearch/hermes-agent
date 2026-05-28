@@ -272,6 +272,129 @@ class TestRmtreeWritableScopeGuard:
         assert not sub.exists()
 
 
+class TestExternalDirsIndexing:
+    """Tests for external_dirs awareness in sync_skills (#28126)."""
+
+    def _setup_bundled(self, tmp_path):
+        """Create a fake bundled skills directory."""
+        bundled = tmp_path / "bundled_skills"
+        (bundled / "devops" / "clair-qa").mkdir(parents=True)
+        (bundled / "devops" / "clair-qa" / "SKILL.md").write_text("# bundled clair")
+        (bundled / "creative" / "ascii-art").mkdir(parents=True)
+        (bundled / "creative" / "ascii-art" / "SKILL.md").write_text("# bundled ascii")
+        return bundled
+
+    def _setup_external(self, tmp_path):
+        """Create a fake external skills directory."""
+        ext_dir = tmp_path / "external_skills"
+        (ext_dir / "devops" / "clair-qa").mkdir(parents=True)
+        (ext_dir / "devops" / "clair-qa" / "SKILL.md").write_text("# external clair")
+        (ext_dir / "devops" / "clair-qa" / "main.py").write_text("print('ext')")
+        return ext_dir
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        return stack
+
+    def test_shadowed_skill_skipped_and_deferred(self, tmp_path):
+        """When external dir provides the skill, sync_skills should not write it locally."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        ext_dir = self._setup_external(tmp_path)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
+                result = sync_skills(quiet=True)
+
+        assert "clair-qa" in result["shadowed_by_external"]
+        assert "clair-qa" not in result["copied"]
+        assert "ascii-art" in result["copied"]
+        assert not (skills_dir / "devops" / "clair-qa").exists()
+
+    def test_shadowed_skill_not_recorded_in_manifest(self, tmp_path):
+        """A skill we never wrote locally must NOT be baselined in the manifest.
+
+        Recording bundled_hash for a deferred skill would later make the
+        loader misclassify the external copy as a user-deleted bundled skill
+        and poison update detection. The shadowed name stays out of the
+        manifest entirely.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        ext_dir = self._setup_external(tmp_path)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
+                sync_skills(quiet=True)
+                manifest = _read_manifest()
+
+        assert "clair-qa" not in manifest
+        # The non-shadowed skill is still synced and baselined normally.
+        assert "ascii-art" in manifest
+
+    def test_stale_shadow_self_healed(self, tmp_path):
+        """A byte-identical-to-bundled local shadow is removed when the same
+        skill is now provided by external_dirs (heals profiles broken by an
+        earlier sync that ran before external_dirs was configured)."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        ext_dir = self._setup_external(tmp_path)
+
+        # Pre-seed a shadow identical to the bundled source.
+        shadow = skills_dir / "devops" / "clair-qa"
+        shadow.mkdir(parents=True)
+        (shadow / "SKILL.md").write_text("# bundled clair")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
+                result = sync_skills(quiet=True)
+
+        assert "clair-qa" in result["shadowed_by_external"]
+        assert not shadow.exists()
+
+    def test_user_customized_shadow_preserved(self, tmp_path):
+        """A local skill that DIFFERS from bundled is the user's own — it must
+        never be deleted even when external_dirs provides the same name."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        ext_dir = self._setup_external(tmp_path)
+
+        custom = skills_dir / "devops" / "clair-qa"
+        custom.mkdir(parents=True)
+        (custom / "SKILL.md").write_text("# my own customized clair")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
+                result = sync_skills(quiet=True)
+
+        assert "clair-qa" in result["shadowed_by_external"]
+        assert custom.exists()
+        assert (custom / "SKILL.md").read_text() == "# my own customized clair"
+
+    def test_no_external_dirs_unchanged(self, tmp_path):
+        """Without external_dirs, all bundled skills should be copied normally."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[]):
+                result = sync_skills(quiet=True)
+
+        assert "clair-qa" in result["copied"]
+        assert "ascii-art" in result["copied"]
+        assert result["shadowed_by_external"] == []
+
+
 class TestSyncSkills:
     def _setup_bundled(self, tmp_path):
         """Create a fake bundled skills directory."""

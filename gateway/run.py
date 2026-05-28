@@ -260,6 +260,20 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_GATEWAY_INTERNAL_PROVIDER_STATUS_RE = re.compile(
+    r"("
+    r"non-retryable\s+error"
+    r"|\bhttp\s+none\b"
+    r"|trying\s+fallback"
+    r"|api\s+(?:call\s+)?failed"
+    r"|provider\s+traceback"
+    r"|traceback"
+    r"|request\s+(?:debug\s+)?dump"
+    r"|request_dump"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def _looks_like_gateway_provider_error(text: str) -> bool:
     """True when text is infrastructure/provider failure, not normal content.
@@ -307,11 +321,20 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
-        return text
 
     text = _redact_gateway_user_facing_secrets(text)
+    platform_value = _gateway_platform_value(platform)
+
+    if platform_value != "telegram":
+        if _GATEWAY_INTERNAL_PROVIDER_STATUS_RE.search(text):
+            return None
+        if _looks_like_gateway_provider_error(text):
+            return None
+        return text
+
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
+        return None
+    if _GATEWAY_INTERNAL_PROVIDER_STATUS_RE.search(text):
         return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
@@ -1666,6 +1689,9 @@ class GatewayRunner:
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._agent_turn_config_status = None
+        self._agent_turn_config_error = None
+        self._refresh_agent_turn_config_validation()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -3005,6 +3031,153 @@ class GatewayRunner:
         except Exception:
             pass
         return None
+
+    def _refresh_agent_turn_config_validation(self) -> None:
+        """Validate agent-turn provider config without blocking gateway startup."""
+        try:
+            from agent.provider_errors import sanitize_provider_error_text
+            from gateway.provider_guard import validate_gateway_agent_turn_config
+
+            cfg = _load_gateway_config()
+            runtime_with_model = self._resolve_agent_turn_validation_runtime(cfg)
+            status = validate_gateway_agent_turn_config(cfg, runtime_with_model)
+            self._agent_turn_config_status = status
+            self._agent_turn_config_error = None
+            logger.info(
+                "Gateway agent provider validation ok: provider=%s model=%s "
+                "base_url_class=%s fallback_status=%s fallback_count=%s",
+                status.provider,
+                status.model,
+                status.base_url_class,
+                status.fallback_status,
+                status.fallback_count,
+            )
+            for warning in status.warnings:
+                logger.warning(
+                    "Gateway agent provider validation warning: %s",
+                    sanitize_provider_error_text(warning),
+                )
+        except Exception as exc:
+            from agent.provider_errors import (
+                HermesProviderConfigError,
+                sanitize_provider_error_text,
+            )
+
+            self._agent_turn_config_status = None
+            if not hasattr(exc, "error_class"):
+                exc = HermesProviderConfigError(sanitize_provider_error_text(exc))
+            self._agent_turn_config_error = exc
+            logger.error(
+                "Gateway agent provider validation failed: error_class=%s error=%s",
+                getattr(exc, "error_class", "provider_config_or_fallback_failure"),
+                sanitize_provider_error_text(exc),
+            )
+
+    @staticmethod
+    def _resolve_agent_turn_validation_runtime(cfg: dict) -> dict:
+        """Build a read-only structural runtime snapshot for validation.
+
+        Do not call the normal runtime resolver here: OAuth-backed providers
+        may refresh tokens as part of resolution. Startup validation only
+        needs to know whether config/auth material exists structurally.
+        """
+        model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+        model = _resolve_gateway_model(cfg)
+        provider = str(model_cfg.get("provider") or "").strip().lower()
+        base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        api_key = str(model_cfg.get("api_key") or "").strip()
+        command = model_cfg.get("command")
+
+        if not provider:
+            provider = "custom" if base_url else "openrouter"
+
+        if provider == "openai":
+            base_url = base_url or "https://api.openai.com/v1"
+            api_key = api_key or os.getenv("OPENAI_API_KEY", "").strip()
+        elif provider == "custom":
+            if not api_key:
+                key_env = str(
+                    model_cfg.get("key_env") or model_cfg.get("api_key_env") or ""
+                ).strip()
+                if key_env:
+                    api_key = os.getenv(key_env, "").strip()
+            if base_url and not api_key:
+                api_key = "no-key-required"
+        else:
+            try:
+                from hermes_cli.auth import PROVIDER_REGISTRY, get_provider_auth_state
+
+                pconfig = PROVIDER_REGISTRY.get(provider)
+                if pconfig is not None:
+                    base_url = (
+                        base_url
+                        or (
+                            os.getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
+                            if pconfig.base_url_env_var
+                            else ""
+                        )
+                        or pconfig.inference_base_url
+                    )
+                    if pconfig.auth_type == "api_key":
+                        for env_name in pconfig.api_key_env_vars:
+                            api_key = api_key or os.getenv(env_name, "").strip()
+                            if api_key:
+                                break
+                    else:
+                        state = get_provider_auth_state(provider) or {}
+                        api_key = "configured" if state else api_key
+            except Exception:
+                pass
+
+        return {
+            "provider": provider,
+            "model": model,
+            "base_url": base_url,
+            "api_key": api_key,
+            "command": command,
+        }
+
+    @staticmethod
+    def _is_unsupported_gateway_process_request(event: MessageEvent) -> bool:
+        text = GatewayRunner._normalized_plain_gateway_text(event)
+        return text in {
+            "hermes gateway restart",
+            "hermes gateway start",
+            "hermes gateway stop",
+        }
+
+    @staticmethod
+    def _gateway_process_request_advisory() -> str:
+        return (
+            "Gateway process control is not available from natural-language chat. "
+            "Use the governed operator launcher or a supported status command."
+        )
+
+    @staticmethod
+    def _normalized_plain_gateway_text(event: MessageEvent) -> str:
+        text = str(getattr(event, "text", "") or "").strip()
+        if not text or text.startswith("/"):
+            return ""
+        text = re.sub(r"^<@!?\d+>\s*", "", text)
+        text = re.sub(r"^@\S+\s+", "", text)
+        return re.sub(r"\s+", " ", text).strip().lower()
+
+    @staticmethod
+    def _plain_safe_gateway_command(event: MessageEvent) -> str:
+        text = GatewayRunner._normalized_plain_gateway_text(event)
+        if text == "help":
+            return "help"
+        if text == "status":
+            return "status"
+        if text in {
+            "hermes gateway restart",
+            "hermes gateway start",
+            "hermes gateway stop",
+        }:
+            return "gateway-process"
+        return ""
 
     def _snapshot_running_agents(self) -> Dict[str, Any]:
         return {
@@ -6856,6 +7029,22 @@ class GatewayRunner:
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
+        # Plain-text Discord mentions like "@Hermes help" arrive without a
+        # slash command after the adapter strips the bot mention. Keep these
+        # safe control-plane requests local so they never touch the provider
+        # path or leak provider/fallback progress messages into chat.
+        _plain_safe_command = self._plain_safe_gateway_command(event)
+        if _plain_safe_command == "help":
+            return await self._handle_help_command(event)
+        if _plain_safe_command == "status":
+            return await self._handle_status_command(event)
+        if _plain_safe_command == "gateway-process":
+            logger.info(
+                "Refused natural-language gateway process request from platform=%s",
+                source.platform.value if source.platform else "unknown",
+            )
+            return self._gateway_process_request_advisory()
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -7667,6 +7856,31 @@ class GatewayRunner:
             if self._should_send_telegram_lobby_reminder(source):
                 return self._telegram_topic_root_lobby_message()
             return None
+
+        if self._is_unsupported_gateway_process_request(event):
+            logger.info(
+                "Refused natural-language gateway process request from platform=%s",
+                source.platform.value if source.platform else "unknown",
+            )
+            return self._gateway_process_request_advisory()
+
+        agent_config_error = getattr(self, "_agent_turn_config_error", None)
+        if agent_config_error is not None:
+            from agent.provider_errors import (
+                controlled_agent_turn_unavailable_message,
+                sanitize_provider_error_text,
+            )
+
+            logger.warning(
+                "Agent turn blocked by provider validation: error_class=%s error=%s",
+                getattr(
+                    agent_config_error,
+                    "error_class",
+                    "provider_config_or_fallback_failure",
+                ),
+                sanitize_provider_error_text(agent_config_error),
+            )
+            return controlled_agent_turn_unavailable_message(agent_config_error)
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -8990,6 +9204,23 @@ class GatewayRunner:
                 _err_adapter = self.adapters.get(source.platform)
                 if _err_adapter and hasattr(_err_adapter, "stop_typing"):
                     await _err_adapter.stop_typing(source.chat_id)
+            except Exception:
+                pass
+            try:
+                from agent.provider_errors import (
+                    controlled_agent_turn_unavailable_message,
+                    is_provider_failure_exception,
+                    sanitize_provider_error_text,
+                )
+
+                if is_provider_failure_exception(e):
+                    logger.error(
+                        "Agent provider failure in session %s: error_class=%s error=%s",
+                        session_key,
+                        getattr(e, "error_class", "provider_config_or_fallback_failure"),
+                        sanitize_provider_error_text(e),
+                    )
+                    return controlled_agent_turn_unavailable_message(e)
             except Exception:
                 pass
             logger.exception("Agent error in session %s", session_key)
@@ -16915,7 +17146,31 @@ class GatewayRunner:
                 }
                 if observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message
-                result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                try:
+                    result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                except Exception as exc:
+                    from agent.provider_errors import (
+                        is_provider_failure_exception,
+                        provider_failure_result,
+                    )
+
+                    if not is_provider_failure_exception(exc):
+                        raise
+                    _fallback_status = "no_valid_fallback_configured"
+                    _status = getattr(self, "_agent_turn_config_status", None)
+                    if _status is not None:
+                        _fallback_status = getattr(
+                            _status,
+                            "fallback_status",
+                            _fallback_status,
+                        )
+                    result = provider_failure_result(
+                        exc,
+                        provider=getattr(agent, "provider", None),
+                        model=getattr(agent, "model", None),
+                        base_url=getattr(agent, "base_url", None),
+                        fallback_status=_fallback_status,
+                    )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
@@ -16950,7 +17205,12 @@ class GatewayRunner:
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
-                error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
+                if result.get("error_class") == "provider_config_or_fallback_failure":
+                    from agent.provider_errors import controlled_agent_turn_unavailable_message
+
+                    error_msg = controlled_agent_turn_unavailable_message()
+                else:
+                    error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
                 return {
                     "final_response": error_msg,
                     "messages": result.get("messages", []),
@@ -16961,6 +17221,8 @@ class GatewayRunner:
                     "interrupted": result.get("interrupted", False),
                     "interrupt_message": result.get("interrupt_message"),
                     "error": result.get("error"),
+                    "error_class": result.get("error_class"),
+                    "fallback_status": result.get("fallback_status"),
                     "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
                     "history_offset": len(agent_history),

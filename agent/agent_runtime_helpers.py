@@ -1085,6 +1085,10 @@ def dump_api_request_debug(
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         dump_file = agent.logs_dir / f"request_dump_{agent.session_id}_{timestamp}.json"
         atomic_json_write(dump_file, dump_payload, default=str)
+        try:
+            os.chmod(dump_file, 0o600)
+        except OSError:
+            pass
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
 

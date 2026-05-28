@@ -2846,6 +2846,43 @@ def run_conversation(
                         compression_attempts = 0
                         primary_recovery_attempted = False
                         continue
+                    try:
+                        from agent.provider_errors import (
+                            is_provider_failure_exception,
+                            provider_failure_result,
+                        )
+                    except Exception:
+                        is_provider_failure_exception = None
+                        provider_failure_result = None
+                    if (
+                        is_provider_failure_exception is not None
+                        and provider_failure_result is not None
+                        and is_provider_failure_exception(api_error)
+                    ):
+                        failure = provider_failure_result(
+                            api_error,
+                            provider=_provider,
+                            model=_model,
+                            base_url=str(_base or ""),
+                            fallback_status="no_valid_fallback_configured",
+                        )
+                        logger.error(
+                            "%sProvider/client local failure: error_class=%s "
+                            "provider=%s model=%s base_url_class=%s "
+                            "fallback_status=%s",
+                            agent.log_prefix,
+                            failure.get("error_class"),
+                            failure.get("provider"),
+                            failure.get("model"),
+                            failure.get("base_url_class"),
+                            failure.get("fallback_status"),
+                        )
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            **failure,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                        }
                     if api_kwargs is not None:
                         agent._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,

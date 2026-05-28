@@ -8835,6 +8835,10 @@ class GatewayRunner:
                     "rephrase your question."
                 )
             agent_messages = agent_result.get("messages", [])
+            try:
+                await self._auto_subscribe_kanban_create_tool_results(source, agent_messages)
+            except Exception as _kanban_sub_exc:
+                logger.debug("kanban_create tool auto-subscribe failed: %s", _kanban_sub_exc)
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
@@ -9606,6 +9610,126 @@ class GatewayRunner:
             f"Slash commands you can run: {runnable_str}"
         )
 
+
+    async def _auto_subscribe_kanban_create_tool_results(
+        self,
+        source: Any,
+        messages: list[dict],
+    ) -> list[str]:
+        """Subscribe the current gateway chat to cards created by the tool path.
+
+        The `/kanban create` slash command already auto-subscribes the
+        originating chat/thread. Normal assistant tool use bypasses that slash
+        handler: the model calls `kanban_create`, the worker eventually
+        completes, but `kanban_notify_subs` has no row, so the user never hears
+        back. This helper scans the completed agent turn for successful
+        `kanban_create` tool calls and adds the same notification subscription
+        using the original gateway source.
+        """
+        platform = getattr(source, "platform", None)
+        platform_value = getattr(platform, "value", None)
+        platform_str = (platform_value if platform_value is not None else str(platform or "")).lower()
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        if not platform_str or not chat_id:
+            return []
+        thread_id = str(getattr(source, "thread_id", "") or "")
+        user_id = str(getattr(source, "user_id", "") or "") or None
+        notifier_profile = (
+            getattr(self, "_kanban_notifier_profile", None)
+            or self._active_profile_name()
+        )
+
+        kanban_calls: dict[str, Optional[str]] = {}
+        for msg in messages or []:
+            if msg.get("role") != "assistant":
+                continue
+            for call in msg.get("tool_calls") or []:
+                fn = call.get("function") or {}
+                if fn.get("name") != "kanban_create":
+                    continue
+                call_id = call.get("id")
+                if not call_id:
+                    continue
+                board = None
+                raw_args = fn.get("arguments") or "{}"
+                if isinstance(raw_args, str):
+                    try:
+                        args = json.loads(raw_args)
+                    except Exception:
+                        args = {}
+                elif isinstance(raw_args, dict):
+                    args = raw_args
+                else:
+                    args = {}
+                if isinstance(args, dict) and args.get("board"):
+                    board = str(args.get("board"))
+                kanban_calls[call_id] = board
+
+        if not kanban_calls:
+            return []
+
+        subscriptions: list[tuple[str, Optional[str]]] = []
+        for msg in messages or []:
+            if msg.get("role") != "tool":
+                continue
+            call_id = msg.get("tool_call_id")
+            if call_id not in kanban_calls:
+                continue
+            content = msg.get("content")
+            try:
+                payload = json.loads(content) if isinstance(content, str) else (content or {})
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            # `kanban_create` returns {"ok": true, "task_id": ...}; some
+            # older tool helpers use {"success": true}. Require an explicit
+            # success marker and ignore structured tool errors even if they
+            # happen to contain a task_id-like string.
+            if payload.get("error") or not (
+                payload.get("ok") is True or payload.get("success") is True
+            ):
+                continue
+            task_id = payload.get("task_id") or payload.get("id")
+            if not isinstance(task_id, str) or not task_id.startswith("t_"):
+                continue
+            result_board = payload.get("board")
+            board = str(result_board) if result_board else kanban_calls[call_id]
+            subscriptions.append((task_id, board))
+
+        if not subscriptions:
+            return []
+
+        deduped_subscriptions = list(dict.fromkeys(subscriptions))
+
+        def _subscribe_all() -> list[str]:
+            from hermes_cli import kanban_db as _kb
+
+            subscribed: list[str] = []
+            for task_id, board in deduped_subscriptions:
+                conn = _kb.connect(board=board)
+                try:
+                    _kb.add_notify_sub(
+                        conn,
+                        task_id=task_id,
+                        platform=platform_str,
+                        chat_id=chat_id,
+                        thread_id=thread_id or None,
+                        user_id=user_id,
+                        notifier_profile=notifier_profile,
+                    )
+                    subscribed.append(task_id)
+                finally:
+                    conn.close()
+            return subscribed
+
+        subscribed = await asyncio.to_thread(_subscribe_all)
+        if subscribed:
+            logger.info(
+                "kanban_create tool auto-subscribed %d task(s) for %s gateway chat",
+                len(subscribed), platform_str,
+            )
+        return subscribed
 
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.

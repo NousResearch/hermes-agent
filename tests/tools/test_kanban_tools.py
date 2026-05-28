@@ -758,6 +758,7 @@ def test_create_happy_path(worker_env):
     assert d["ok"] is True
     assert d["task_id"]
     assert d["status"] == "todo"  # parent isn't done yet
+    assert "board" in d
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:

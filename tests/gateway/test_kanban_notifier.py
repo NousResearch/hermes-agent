@@ -1,5 +1,7 @@
 import asyncio
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -234,3 +236,221 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
     assert "crashed" in adapter.sent[1]["text"].lower()
+
+
+def test_gateway_auto_subscribes_chat_for_kanban_create_tool_result(tmp_path, monkeypatch):
+    """Agent-created Kanban cards should notify the originating gateway chat.
+
+    `/kanban create` already auto-subscribes in the slash-command path. This
+    pins the normal agent-tool path: when the model calls `kanban_create` during
+    a Discord/Telegram turn, the gateway should subscribe the current source so
+    the user hears terminal events without manually polling the board.
+    """
+    db_path = tmp_path / "tool-create-autosub.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="tool-created", assignee="worker")
+    finally:
+        conn.close()
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "main"
+    source = SimpleNamespace(
+        platform=Platform.DISCORD,
+        chat_id="discord-chat",
+        thread_id="discord-thread",
+        user_id="user-1",
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "kanban_create",
+                        "arguments": json.dumps({"title": "tool-created", "assignee": "worker"}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": json.dumps({"ok": True, "task_id": tid}),
+        },
+    ]
+
+    subscribed = asyncio.run(
+        runner._auto_subscribe_kanban_create_tool_results(source, messages)
+    )
+
+    assert subscribed == [tid]
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "discord-chat"
+    assert subs[0]["thread_id"] == "discord-thread"
+    assert subs[0]["user_id"] == "user-1"
+    assert subs[0]["notifier_profile"] == "main"
+
+
+def test_gateway_does_not_subscribe_failed_kanban_create_tool_result(tmp_path, monkeypatch):
+    db_path = tmp_path / "tool-create-failed.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "main"
+    source = SimpleNamespace(
+        platform=Platform.DISCORD,
+        chat_id="discord-chat",
+        thread_id="discord-thread",
+        user_id="user-1",
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "kanban_create",
+                        "arguments": json.dumps({"title": "bad", "assignee": "worker"}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": json.dumps({"error": "kanban_create: bad board", "task_id": "t_deadbeef"}),
+        },
+    ]
+
+    subscribed = asyncio.run(
+        runner._auto_subscribe_kanban_create_tool_results(source, messages)
+    )
+
+    assert subscribed == []
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn) == []
+    finally:
+        conn.close()
+
+
+def test_gateway_auto_subscribes_tool_result_board_field(tmp_path, monkeypatch):
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    kb._INITIALIZED_PATHS.clear()
+
+    conn = kb.connect(board="custom-board")
+    try:
+        tid = kb.create_task(conn, title="tool-created", assignee="worker")
+    finally:
+        conn.close()
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "main"
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="telegram-chat",
+        thread_id="",
+        user_id="user-1",
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "kanban_create",
+                        "arguments": json.dumps({"title": "tool-created", "assignee": "worker"}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": json.dumps({"ok": True, "task_id": tid, "board": "custom-board"}),
+        },
+    ]
+
+    subscribed = asyncio.run(
+        runner._auto_subscribe_kanban_create_tool_results(source, messages)
+    )
+
+    assert subscribed == [tid]
+    default_conn = kb.connect()
+    custom_conn = kb.connect(board="custom-board")
+    try:
+        assert kb.list_notify_subs(default_conn) == []
+        subs = kb.list_notify_subs(custom_conn, tid)
+    finally:
+        default_conn.close()
+        custom_conn.close()
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "telegram-chat"
+    assert subs[0]["thread_id"] == ""
+
+
+def test_gateway_ignores_malformed_kanban_create_tool_content(tmp_path, monkeypatch):
+    db_path = tmp_path / "tool-create-malformed.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "main"
+    source = SimpleNamespace(
+        platform=Platform.DISCORD,
+        chat_id="discord-chat",
+        thread_id="discord-thread",
+        user_id="user-1",
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "kanban_create",
+                        "arguments": "{not-json",
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "{not-json",
+        },
+    ]
+
+    subscribed = asyncio.run(
+        runner._auto_subscribe_kanban_create_tool_results(source, messages)
+    )
+
+    assert subscribed == []
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn) == []
+    finally:
+        conn.close()

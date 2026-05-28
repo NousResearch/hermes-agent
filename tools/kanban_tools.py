@@ -710,6 +710,7 @@ def _handle_create(args: dict, **kw) -> str:
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                board=board,
             )
         finally:
             conn.close()

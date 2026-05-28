@@ -1426,20 +1426,26 @@ def cleanup_all_environments():
     return cleaned
 
 
-def cleanup_vm(task_id: str, *, force_remove: bool = True):
+def cleanup_vm(task_id: str, *, force_remove: bool = False):
     """Manually clean up a specific environment by task_id.
 
-    *force_remove* (default True) is forwarded to backends that accept it
-    — currently only ``DockerEnvironment``. The default of True matches the
-    semantics callers expect from this function: ``cleanup_vm(task_id)`` is
-    the explicit-teardown path (called from ``/reset``-style flows,
-    ``AIAgent.close()``, and the idle reaper after a long inactivity window),
-    so the container should be removed regardless of persist mode.
+    *force_remove* (default False) is forwarded to backends that accept it
+    — currently only ``DockerEnvironment``. The default of False matches
+    session-lifecycle semantics: this function is called from
+    ``AIAgent.close()`` (TUI session close, gateway session teardown) and the
+    per-turn cleanup branch for non-persistent envs, both of which should
+    honor the user's persist-mode preference. Stopping the container here
+    would defeat the "ONE long-lived container shared across sessions"
+    contract — exactly the bug Ben reported when the container was killed
+    on every TUI session close.
+
+    Pass ``force_remove=True`` for actual user-initiated teardown
+    (e.g. ``/reset``-style flows that haven't been wired yet, or future
+    "destroy my sandbox" commands).
 
     The idle reaper passes the env through ``env.cleanup()`` directly (not
-    via this function), so persist-mode idle envs are NOT removed by idle
-    reaping — only by explicit ``cleanup_vm()`` or the orphan reaper at next
-    startup. See ``_cleanup_inactive_envs()`` for the idle path.
+    via this function), so persist-mode idle envs are similarly no-op'd —
+    only the orphan reaper at next startup reclaims them.
     """
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock

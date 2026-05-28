@@ -921,6 +921,91 @@ def test_cleanup_force_remove_stops_and_rms_even_in_persist_mode(monkeypatch):
     assert rms, f"force_remove must docker rm; got: {cleanup_calls}"
 
 
+def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
+    """``cleanup_vm(task_id)`` without ``force_remove=True`` must be a no-op
+    for a persist-mode container.
+
+    Regression for the bug Ben caught after commit 4: ``AIAgent.close()``
+    (which is called from ``tui_gateway/server.py`` on session.close, from
+    ``gateway/run.py`` on per-session teardown, and from per-turn cleanup)
+    calls ``cleanup_vm(task_id)``. If that defaulted to ``force_remove=True``
+    we'd tear down the container on every TUI session close, defeating the
+    "ONE long-lived container shared across sessions" contract.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    _install_fake_thread(monkeypatch)
+
+    from tools import terminal_tool
+
+    env = _make_dummy_env(task_id="session-close-test")
+    container_id = env._container_id
+    terminal_tool._active_environments["session-close-test"] = env
+
+    cleanup_calls = []
+    real_run = docker_env.subprocess.run
+
+    def _capturing_run(cmd, **kwargs):
+        cleanup_calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _capturing_run)
+
+    try:
+        terminal_tool.cleanup_vm("session-close-test")
+    finally:
+        terminal_tool._active_environments.pop("session-close-test", None)
+
+    stops = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "stop"]
+    rms = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"]
+    assert not stops, (
+        f"cleanup_vm() default must not docker stop a persist-mode container; "
+        f"got: {stops}"
+    )
+    assert not rms, (
+        f"cleanup_vm() default must not docker rm a persist-mode container; "
+        f"got: {rms}"
+    )
+
+
+def test_cleanup_vm_force_remove_tears_down_persist_container(monkeypatch):
+    """``cleanup_vm(task_id, force_remove=True)`` tears down a persist-mode
+    container — the explicit-teardown path for ``/reset``-style flows.
+
+    Also pins the runtime-signature-inspection plumbing: the kwarg must
+    actually flow through ``cleanup_vm`` into the backend's ``cleanup()``.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    _install_fake_thread(monkeypatch)
+
+    from tools import terminal_tool
+
+    env = _make_dummy_env(task_id="explicit-teardown-test")
+    terminal_tool._active_environments["explicit-teardown-test"] = env
+
+    cleanup_calls = []
+    real_run = docker_env.subprocess.run
+
+    def _capturing_run(cmd, **kwargs):
+        cleanup_calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _capturing_run)
+
+    try:
+        terminal_tool.cleanup_vm("explicit-teardown-test", force_remove=True)
+    finally:
+        terminal_tool._active_environments.pop("explicit-teardown-test", None)
+
+    stops = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "stop"]
+    rms = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"]
+    assert stops, f"force_remove must reach docker stop; got: {cleanup_calls}"
+    assert rms, f"force_remove must reach docker rm; got: {cleanup_calls}"
+
+
 def test_cleanup_with_persist_disabled_stops_and_rms(monkeypatch):
     """``persist_across_processes=False`` cleanup must docker stop AND docker
     rm so containers don't leak. Crucially, this runs regardless of the

@@ -27,7 +27,7 @@ import os
 import shutil
 from pathlib import Path
 from hermes_constants import get_bundled_skills_dir, get_hermes_home
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
@@ -46,6 +46,35 @@ def _get_bundled_dir() -> Path:
     path from this source file.
     """
     return get_bundled_skills_dir(Path(__file__).parent.parent / "skills")
+
+
+def _build_external_skill_index() -> Set[str]:
+    """Index every skill available in external_dirs by name and directory path.
+
+    Returns a set of skill names that are already provided by external dirs.
+    Used to prevent sync_skills from shadowing externally-delegated skills.
+    """
+    try:
+        from agent.skill_utils import get_external_skills_dirs, _external_dirs_cache_clear
+    except ImportError:
+        return set()
+
+    # Clear the external dirs cache so our patch takes effect
+    _external_dirs_cache_clear()
+
+    external_names: Set[str] = set()
+    for ext_dir in get_external_skills_dirs():
+        for skill_md in ext_dir.rglob("SKILL.md"):
+            if "/.git/" in str(skill_md) or "/.github/" in str(skill_md):
+                continue
+            skill_dir = skill_md.parent
+            # Index by directory name (how _find_skill resolves skills)
+            external_names.add(skill_dir.name)
+            # Also index by frontmatter name (alternate identifier)
+            frontmatter_name = _read_skill_name(skill_md, "")
+            if frontmatter_name:
+                external_names.add(frontmatter_name)
+    return external_names
 
 
 def _read_manifest() -> Dict[str, str]:
@@ -191,6 +220,9 @@ def sync_skills(quiet: bool = False) -> dict:
     manifest = _read_manifest()
     bundled_skills = _discover_bundled_skills(bundled_dir)
     bundled_names = {name for name, _ in bundled_skills}
+    # Index of skills already provided by external_dirs (skip writing them)
+    external_index = _build_external_skill_index()
+    shadowed_by_external: List[str] = []
 
     copied = []
     updated = []
@@ -203,6 +235,30 @@ def sync_skills(quiet: bool = False) -> dict:
 
         if skill_name not in manifest:
             # ── New skill — never offered before ──
+            # If an external dir already provides this skill, skip writing
+            # to the local tree (avoids shadow collision at load time).
+            if skill_name in external_index:
+                shadowed_by_external.append(skill_name)
+                skipped += 1
+                if not quiet:
+                    print(
+                        f"  ⇢ {skill_name} (deferred to external_dirs, "
+                        "not written to local tree)"
+                    )
+                manifest[skill_name] = bundled_hash
+                # Self-healing: remove stale local shadow if it exists and
+                # was written by a prior buggy sync (origin_hash matches
+                # bundled — meaning we wrote it, not the user).
+                if dest.exists():
+                    origin_hash = manifest.get(skill_name, "")
+                    user_hash = _dir_hash(dest)
+                    if (origin_hash == bundled_hash == user_hash
+                            and skill_name in bundled_names):
+                        # We wrote it, user didn't touch it — clean it up.
+                        shutil.rmtree(dest, ignore_errors=True)
+                        if not quiet:
+                            print(f"  ✓ removed stale shadow of {skill_name}")
+                continue
             try:
                 if dest.exists():
                     # User already has a skill with the same name — don't overwrite.
@@ -313,6 +369,7 @@ def sync_skills(quiet: bool = False) -> dict:
         "user_modified": user_modified,
         "cleaned": cleaned,
         "total_bundled": len(bundled_skills),
+        "shadowed_by_external": shadowed_by_external,
     }
 
 

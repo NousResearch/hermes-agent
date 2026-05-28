@@ -4,18 +4,22 @@ import json
 import os
 import pytest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 
 @pytest.fixture(autouse=True)
 def reset_skin_state():
-    """Reset skin engine state between tests."""
-    from hermes_cli import skin_engine
-    skin_engine._active_skin = None
-    skin_engine._active_skin_name = "default"
-    yield
-    skin_engine._active_skin = None
-    skin_engine._active_skin_name = "default"
+        """Reset skin engine state between tests."""
+        from hermes_cli import skin_engine
+        skin_engine._active_skin = None
+        skin_engine._active_skin_name = "default"  
+        skin_engine._resolved_auto_skin_name = None
+        skin_engine.stop_appearance_watcher()
+        yield
+        skin_engine._active_skin = None
+        skin_engine._active_skin_name = "default"
+        skin_engine._resolved_auto_skin_name = None
+        skin_engine.stop_appearance_watcher()
 
 
 class TestSkinConfig:
@@ -392,3 +396,103 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
         assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"
+
+
+class TestAppearanceDetection:
+    """Tests for macOS appearance detection in _detect_terminal_is_light."""
+
+    def test_detect_macos_dark(self):
+        """macOS in dark mode should return False (not light)."""
+        from hermes_cli.skin_engine import _detect_terminal_is_light
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="Dark\n", returncode=0)
+            with patch("platform.system", return_value="Darwin"):
+                with patch.dict(os.environ, {}, clear=True):
+                    result = _detect_terminal_is_light()
+                    assert result is False
+
+    def test_detect_macos_light(self):
+        """macOS in light mode should return True (is light)."""
+        from hermes_cli.skin_engine import _detect_terminal_is_light
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=1)
+            with patch("platform.system", return_value="Darwin"):
+                with patch.dict(os.environ, {}, clear=True):
+                    result = _detect_terminal_is_light()
+                    assert result is True
+
+    def test_get_current_os_appearance_returns_light_or_dark(self):
+        """get_current_os_appearance should return 'light' or 'dark'."""
+        from hermes_cli.skin_engine import get_current_os_appearance
+        result = get_current_os_appearance()
+        assert result in ("light", "dark")
+
+
+class TestAppearanceWatcher:
+    """Tests for the AppearanceWatcher background thread."""
+
+    def test_watcher_is_daemon_thread(self):
+        """Watcher thread should be a daemon thread."""
+        import hermes_cli.skin_engine as se
+        callback = MagicMock()
+        se.start_appearance_watcher(callback, poll_interval=0.1)
+        assert se._appearance_watcher_thread is not None
+        assert se._appearance_watcher_thread.daemon is True
+        se.stop_appearance_watcher()
+
+    def test_watcher_detects_appearance_change(self):
+        """Watcher should fire callback when appearance changes."""
+        from hermes_cli.skin_engine import (
+            start_appearance_watcher, stop_appearance_watcher,
+            set_active_skin, _appearance_watcher_stop_event
+        )
+        callback = MagicMock()
+        set_active_skin("auto")
+        _appearance_watcher_stop_event.clear()
+        start_appearance_watcher(callback, poll_interval=0.1)
+
+        import time
+        time.sleep(0.3)
+
+        stop_appearance_watcher()
+
+    def test_watcher_does_not_fire_when_skin_not_auto(self):
+        """Watcher should not fire callback when skin is not 'auto'."""
+        from hermes_cli.skin_engine import (
+            start_appearance_watcher, stop_appearance_watcher,
+            set_active_skin, _appearance_watcher_stop_event
+        )
+        callback = MagicMock()
+        set_active_skin("default")
+        _appearance_watcher_stop_event.clear()
+        start_appearance_watcher(callback, poll_interval=0.1)
+
+        import time
+        time.sleep(0.3)
+
+        stop_appearance_watcher()
+        callback.assert_not_called()
+
+    def test_start_stop_watcher_lifecycle(self):
+        """start/stop should work cleanly."""
+        import hermes_cli.skin_engine as se
+        callback = MagicMock()
+        se.start_appearance_watcher(callback, poll_interval=0.1)
+        assert se._appearance_watcher_thread is not None
+        assert se._appearance_watcher_thread.is_alive()
+
+        se.stop_appearance_watcher()
+        assert se._appearance_watcher_thread is None
+
+    def test_start_watcher_is_idempotent(self):
+        """Starting watcher twice should not create two threads."""
+        import hermes_cli.skin_engine as se
+        callback = MagicMock()
+        se.start_appearance_watcher(callback, poll_interval=0.1)
+        thread1 = se._appearance_watcher_thread
+
+        se.start_appearance_watcher(callback, poll_interval=0.1)
+        thread2 = se._appearance_watcher_thread
+
+        assert thread1 is thread2
+        se.stop_appearance_watcher()

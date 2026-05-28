@@ -693,6 +693,16 @@ try:
 except Exception:
     pass  # Skin engine is optional — default skin used if unavailable
 
+# Start appearance watcher for auto-skin switching
+try:
+    from hermes_cli.skin_engine import start_appearance_watcher
+    def _on_appearance_change(new_skin_name: str):
+        from hermes_cli.skin_engine import set_active_skin
+        set_active_skin(new_skin_name)
+    start_appearance_watcher(_on_appearance_change)
+except Exception:
+    pass
+
 # Initialize tool preview length from config
 try:
     from agent.display import set_tool_preview_max_len

@@ -174,29 +174,62 @@ def run_oneshot(
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.
     real_stdout = sys.stdout
+    real_stderr = sys.stderr
     devnull = open(os.devnull, "w", encoding="utf-8")
 
+    response: str | None = None
+    failure: BaseException | None = None
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
-            response = _run_agent(
-                prompt,
-                model=model,
-                provider=provider,
-                toolsets=explicit_toolsets,
-                use_config_toolsets=use_config_toolsets,
-            )
+            try:
+                response = _run_agent(
+                    prompt,
+                    model=model,
+                    provider=provider,
+                    toolsets=explicit_toolsets,
+                    use_config_toolsets=use_config_toolsets,
+                )
+            except BaseException as exc:  # noqa: BLE001
+                # Capture *anything* that escapes the agent (including
+                # OSError from prompt_toolkit/Vt100 when stdout is a non-TTY
+                # pipe, KeyboardInterrupt, SystemExit, etc.) so we can
+                # surface it on the real stderr instead of exiting 0
+                # silently — a silent success in a cron / SSH / subprocess
+                # context is the worst-case failure mode for the caller.
+                # See #30623.
+                failure = exc
     finally:
         try:
             devnull.close()
         except Exception:
             pass
 
+    if failure is not None:
+        # Re-raise control-flow exceptions so the parent handles them as
+        # usual (Ctrl-C / explicit sys.exit() inside the agent).
+        if isinstance(failure, (KeyboardInterrupt, SystemExit)):
+            raise failure
+        real_stderr.write(f"hermes -z: agent failed: {failure}\n")
+        real_stderr.flush()
+        return 1
+
     if response:
         real_stdout.write(response)
         if not response.endswith("\n"):
             real_stdout.write("\n")
         real_stdout.flush()
-    return 0
+        return 0
+
+    # No exception, but also no content from the agent.  Without this guard
+    # the process would exit 0 with empty stdout, indistinguishable from
+    # success — see #30623 (SSH/cron callers had no way to detect failure).
+    real_stderr.write(
+        "hermes -z: agent returned no content (no API response). "
+        "Run `hermes chat` in a terminal to diagnose, or check "
+        "~/.hermes/logs/errors.log for details.\n"
+    )
+    real_stderr.flush()
+    return 1
 
 
 def _create_session_db_for_oneshot():

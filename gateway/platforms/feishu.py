@@ -949,7 +949,7 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
     if actions:
         lines.append(f"Actions: {', '.join(actions)}")
 
-    text_content = "\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT
+    text_content = "\n".join(lines[:100]).strip() or FALLBACK_INTERACTIVE_TEXT
     return FeishuNormalizedMessage(
         raw_type=message_type,
         text_content=text_content,
@@ -1050,6 +1050,7 @@ def _collect_text_segments(value: Any, *, in_rich_block: bool) -> List[str]:
         "button",
         "select_static",
         "date_picker",
+        "text",
     }
 
     segments: List[str] = []
@@ -4310,6 +4311,9 @@ class FeishuAdapter(BasePlatformAdapter):
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
+        # Force reply_in_thread=False: prevent replies from landing in topics
+        # when reply_to_message_id is set on a topic message.
+        reply_in_thread = False
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
@@ -4552,7 +4556,12 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_get_message_request(message_id: str) -> Any:
         if "GetMessageRequest" in globals():
-            return GetMessageRequest.builder().message_id(message_id).build()
+            return (
+                GetMessageRequest.builder()
+                .message_id(message_id)
+                .add_query("card_msg_content_type", "user_card_content")
+                .build()
+            )
         return SimpleNamespace(message_id=message_id)
 
     @staticmethod

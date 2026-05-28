@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import project_autopilot
 from hermes_cli import kanban_db
 from hermes_cli.project_autopilot import bootstrap_project_home, sync_project_home
 
@@ -184,6 +185,112 @@ def test_sync_project_home_includes_unlinked_live_board_tasks(tmp_path):
         status_md = (project_home / "STATUS.md").read_text(encoding="utf-8")
         assert "Tasks: 3 total" in status_md
         assert review_id in status_md
+    finally:
+        conn.close()
+
+
+def test_sync_project_home_blocks_when_terminal_non_root_task_missing_report(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    conn = kanban_db.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO tasks (
+                id, title, body, assignee, status, priority, created_by,
+                created_at, workspace_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "t_root",
+                "Root project",
+                "Project root body",
+                "codexapp",
+                "done",
+                0,
+                "tester",
+                1,
+                "scratch",
+            ),
+        )
+        child_id = kanban_db.create_task(
+            conn,
+            title="Completed implementation",
+            body="Implementation body",
+            assignee="codexapp",
+            created_by="tester",
+            parents=["t_root"],
+        )
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (child_id,))
+
+        project_home = _bootstrap_demo_project(tmp_path)
+
+        doc = sync_project_home(project_home, db_path=db_path)
+
+        assert doc["state"] == "BLOCKED_PROCESS"
+        assert project_autopilot.terminal_tasks_missing_reports(
+            project_home, doc["task_graph"]["nodes"]
+        ) == [child_id]
+        assert doc["invariant_failures"][-1] == {
+            "type": "terminal_tasks_missing_reports",
+            "task_ids": [child_id],
+        }
+
+        status_md = (project_home / "STATUS.md").read_text(encoding="utf-8")
+        assert f"Blocker: missing terminal task status reports: `{child_id}`" in status_md
+        assert status_md.index("Blocker:") < status_md.index("## Next action")
+    finally:
+        conn.close()
+
+
+def test_sync_project_home_accepts_non_empty_terminal_task_report(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    conn = kanban_db.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO tasks (
+                id, title, body, assignee, status, priority, created_by,
+                created_at, workspace_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "t_root",
+                "Root project",
+                "Project root body",
+                "codexapp",
+                "done",
+                0,
+                "tester",
+                1,
+                "scratch",
+            ),
+        )
+        child_id = kanban_db.create_task(
+            conn,
+            title="Completed implementation",
+            body="Implementation body",
+            assignee="codexapp",
+            created_by="tester",
+            parents=["t_root"],
+        )
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (child_id,))
+
+        project_home = _bootstrap_demo_project(tmp_path)
+        (project_home / "status" / f"{child_id}.md").write_text(
+            "# Completed implementation\n\nVerified and pushed.\n",
+            encoding="utf-8",
+        )
+
+        doc = sync_project_home(project_home, db_path=db_path)
+
+        assert project_autopilot.terminal_tasks_missing_reports(
+            project_home, doc["task_graph"]["nodes"]
+        ) == []
+        assert doc["state"] != "BLOCKED_PROCESS"
+        assert doc["invariant_failures"] == []
+        assert "Blocker: none" in (project_home / "STATUS.md").read_text(
+            encoding="utf-8"
+        )
     finally:
         conn.close()
 

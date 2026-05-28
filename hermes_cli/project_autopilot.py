@@ -420,12 +420,12 @@ def render_status_md(
     task_snapshot = "\n".join(task_lines) if task_lines else "- no tasks cached"
     return f"""# Status: {doc["title"]}
 
+Blocker: {blocker_text}
 State: {doc["state"]}
 Project home: `{doc["project_home"]}`
 Board: `{doc["board_slug"]}`
 Root task: `{doc["root_task_id"]}`
 PR: {doc.get("pr_url") or "not open"}
-Blocker: {blocker_text}
 {task_summary}
 
 ## Next action
@@ -568,6 +568,36 @@ def render_tasks_md(doc: dict[str, Any], task_graph: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _terminal_tasks_missing_reports_for_root(
+    project_home: Path,
+    nodes: list[dict[str, Any]],
+    *,
+    root_task_id: str,
+) -> list[str]:
+    missing: list[str] = []
+    for node in nodes:
+        task_id = node["id"]
+        if task_id == root_task_id:
+            continue
+        if node["status"] not in TERMINAL_TASK_STATES:
+            continue
+        report = project_home / "status" / f"{task_id}.md"
+        if not report.exists() or not report.read_text(encoding="utf-8").strip():
+            missing.append(task_id)
+    return missing
+
+
+def terminal_tasks_missing_reports(
+    project_home: Path,
+    nodes: list[dict[str, Any]],
+) -> list[str]:
+    return _terminal_tasks_missing_reports_for_root(
+        project_home,
+        nodes,
+        root_task_id=load_project_doc(project_home)["root_task_id"],
+    )
+
+
 def sync_project_home(
     project_home: Path,
     *,
@@ -590,6 +620,22 @@ def sync_project_home(
     doc["task_graph"] = task_graph
     doc["workspace_contracts"] = graph_with_contracts["workspace_contracts"]
     doc["updated_at"] = now_ts()
+    missing_reports = _terminal_tasks_missing_reports_for_root(
+        project_home,
+        task_graph["nodes"],
+        root_task_id=doc["root_task_id"],
+    )
+    blocker = None
+    if missing_reports:
+        doc["state"] = "BLOCKED_PROCESS"
+        doc.setdefault("invariant_failures", []).append(
+            {
+                "type": "terminal_tasks_missing_reports",
+                "task_ids": missing_reports,
+            }
+        )
+        task_list = ", ".join(f"`{task_id}`" for task_id in missing_reports)
+        blocker = f"missing terminal task status reports: {task_list}"
     validate_project_doc(doc)
 
     (project_home / "TASKS.md").write_text(
@@ -597,7 +643,7 @@ def sync_project_home(
         encoding="utf-8",
     )
     (project_home / "STATUS.md").write_text(
-        render_status_md(doc, task_graph=task_graph),
+        render_status_md(doc, blocker=blocker, task_graph=task_graph),
         encoding="utf-8",
     )
     (project_home / "SESSION-HANDOFF.md").write_text(

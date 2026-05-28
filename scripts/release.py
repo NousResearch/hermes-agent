@@ -1296,6 +1296,8 @@ AUTHOR_MAP = {
     "mail@sadiksaifi.dev": "sadiksaifi",
     "231588442+vynxevainglory-ai@users.noreply.github.com": "vynxevainglory-ai",  # PR #29233 salvage (kanban scrollbar + body overflow)
     "vynxevainglory@gmail.com": "vynxevainglory-ai",
+    "2693665+Jonnybooyy@users.noreply.github.com": "Jonnybooyy",  # #27178 (kanban checkpoint reminder co-author)
+    "jonlopez101@gmail.com": "Jonnybooyy",
     # batch salvage (May 2026 LHF run, group 8)
     "266824395+AceWattGit@users.noreply.github.com": "AceWattGit",  # PR #28159 salvage (_pool_may_recover NameError)
     "57024493+YuanHanzhong@users.noreply.github.com": "YuanHanzhong",  # PR #28032 salvage (x.com status link-like)

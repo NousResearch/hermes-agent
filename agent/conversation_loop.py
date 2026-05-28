@@ -710,6 +710,16 @@ def run_conversation(
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
+    # Kanban-worker checkpoint reminder: track whether the worker has already
+    # been nudged once this turn to call kanban_complete/kanban_block. If a
+    # text-response exit fires without the agent having called either tool,
+    # we inject ONE synthetic user message reminding the agent to checkpoint
+    # and continue the loop for one more iteration (#27178). The flag caps
+    # the nudge at one — if the agent ignores the reminder on the followup
+    # turn, we let the natural exit fire and the dispatcher's existing
+    # protocol_violation path handles it.
+    _kanban_checkpoint_reminder_sent = False
+
     # Per-turn file-mutation verifier state.  Keyed by resolved path;
     # each failed ``write_file`` / ``patch`` call records the error
     # preview.  Later successful writes to the same path remove the
@@ -4234,6 +4244,81 @@ def run_conversation(
                 messages.append(final_msg)
                 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
+
+                # Kanban-worker checkpoint nudge (#27178): if a dispatcher-
+                # spawned worker is about to exit naturally without having
+                # called kanban_complete/kanban_block, the dispatcher will
+                # flag it as a protocol_violation and immediately trip the
+                # failure breaker — even when the agent actually did
+                # substantive work but just forgot to checkpoint. Give the
+                # agent ONE more turn with an injected reminder before
+                # letting the worker exit; if it still doesn't checkpoint
+                # the existing protocol_violation path catches it.
+                #
+                # Scoped to dispatcher-spawned workers (HERMES_KANBAN_TASK
+                # env var); normal chat sessions never see this.
+                _kanban_task_env = os.environ.get("HERMES_KANBAN_TASK")
+                if (
+                    _kanban_task_env
+                    and not _kanban_checkpoint_reminder_sent
+                ):
+                    _called_kanban_terminal = False
+                    for _m in messages:
+                        if not (isinstance(_m, dict) and _m.get("role") == "assistant"):
+                            continue
+                        for _tc in (_m.get("tool_calls") or []):
+                            if not isinstance(_tc, dict):
+                                continue
+                            _fn = (_tc.get("function") or {}).get("name", "")
+                            if _fn in ("kanban_complete", "kanban_block"):
+                                _called_kanban_terminal = True
+                                break
+                        if _called_kanban_terminal:
+                            break
+                    if not _called_kanban_terminal:
+                        # Append a synthetic user-role reminder. This is the
+                        # only safe role at this position: the last message
+                        # is the assistant's text response (just appended
+                        # above), so the next message must be user or tool.
+                        # There's no pending tool_call to answer, so user
+                        # is correct and preserves role alternation.
+                        _reminder_text = (
+                            f"You ended your turn without calling "
+                            f"`kanban_complete` or `kanban_block` for task "
+                            f"`{_kanban_task_env}`. Every kanban worker run "
+                            f"MUST end with one of these tool calls so the "
+                            f"dispatcher knows the task outcome.\n\n"
+                            f"If your work is finished, call "
+                            f"`kanban_complete(task_id=\"{_kanban_task_env}\", "
+                            f"summary=\"...\", result=\"...\")`.\n\n"
+                            f"If you cannot finish without more input "
+                            f"(missing permissions, ambiguous requirements, "
+                            f"a dependency on a human decision), call "
+                            f"`kanban_block(task_id=\"{_kanban_task_env}\", "
+                            f"reason=\"...\")`.\n\n"
+                            f"Please make that call now."
+                        )
+                        messages.append({
+                            "role": "user",
+                            "content": _reminder_text,
+                            "_kanban_checkpoint_reminder": True,
+                        })
+                        _kanban_checkpoint_reminder_sent = True
+                        logger.info(
+                            "kanban worker: injected checkpoint reminder "
+                            "for task %s after text_response exit (turn %d)",
+                            _kanban_task_env, api_call_count,
+                        )
+                        if not agent.quiet_mode:
+                            agent._safe_print(
+                                "↺ kanban worker: prompting agent to "
+                                "checkpoint before exit"
+                            )
+                        # Re-enter the loop for one more iteration. Don't
+                        # print the "Conversation completed" banner; the
+                        # turn isn't done.
+                        continue
+
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                 break

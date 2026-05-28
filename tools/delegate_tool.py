@@ -1173,7 +1173,7 @@ def _build_child_agent(
             logger.debug("spawn_requested relay failed: %s", exc)
 
     try:
-        from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
         _invoke_hook(
             "subagent_start",
             parent_session_id=getattr(parent_agent, "session_id", None),
@@ -1183,7 +1183,6 @@ def _build_child_agent(
             child_subagent_id=subagent_id,
             child_role=effective_role,
             child_goal=goal,
-            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
         )
     except Exception:
         logger.debug("subagent_start hook invocation failed", exc_info=True)
@@ -2262,10 +2261,9 @@ def delegate_task(
     # child was closed.
     _parent_session_id = getattr(parent_agent, "session_id", None)
     try:
-        from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
     except Exception:
         _invoke_hook = None
-        OBSERVER_SCHEMA_VERSION = "hermes.observer.v1"
     # Aggregate child spend here so the parent's footer/UI reflect the true
     # cost of a subagent-heavy turn.  Port of Kilo-Org/kilocode#9448.  Each
     # child's cost was captured in _run_single_child before its AIAgent was
@@ -2298,7 +2296,6 @@ def delegate_task(
                 child_summary=entry.get("summary"),
                 child_status=entry.get("status"),
                 duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
-                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
         except Exception:
             logger.debug("subagent_stop hook invocation failed", exc_info=True)

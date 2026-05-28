@@ -992,13 +992,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
         _executor_owns_post_hook = (
             not _execution_blocked
-            and (
-                function_name in {"todo", "session_search", "memory", "clarify", "delegate_task"}
-                or bool(agent._context_engine_tool_names and function_name in agent._context_engine_tool_names)
-                or bool(agent._memory_manager and agent._memory_manager.has_tool(function_name))
-            )
+            and agent_runtime_owns_post_tool_hook(agent, function_name)
         )
         if _executor_owns_post_hook:
             _emit_terminal_post_tool_call(

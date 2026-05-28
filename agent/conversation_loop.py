@@ -158,13 +158,12 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # session is created (not on continuation).  Plugins can use this
     # to initialise session-scoped state (e.g. warm a memory cache).
     try:
-        from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
         _invoke_hook(
             "on_session_start",
             session_id=agent.session_id,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
-            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
         )
     except Exception as exc:
         logger.warning("on_session_start hook failed: %s", exc)
@@ -505,7 +504,7 @@ def run_conversation(
     # All injected context is ephemeral (not persisted to session DB).
     _plugin_user_context = ""
     try:
-        from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
@@ -517,7 +516,6 @@ def run_conversation(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
-            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
         )
         _ctx_parts: list[str] = []
         for r in _pre_results:
@@ -1000,7 +998,6 @@ def run_conversation(
 
                 try:
                     from hermes_cli.plugins import (
-                        OBSERVER_SCHEMA_VERSION,
                         has_hook,
                         invoke_hook as _invoke_hook,
                     )
@@ -1041,7 +1038,6 @@ def run_conversation(
                             max_tokens=agent.max_tokens,
                             started_at=api_start_time,
                             request=_request_payload,
-                            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                         )
                 except Exception:
                     pass
@@ -3009,7 +3005,6 @@ def run_conversation(
 
             try:
                 from hermes_cli.plugins import (
-                    OBSERVER_SCHEMA_VERSION,
                     has_hook,
                     invoke_hook as _invoke_hook,
                 )
@@ -3046,7 +3041,6 @@ def run_conversation(
                         assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
-                        telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                     )
             except Exception:
                 pass
@@ -4031,7 +4025,7 @@ def run_conversation(
     # to an external memory system).
     if final_response and not interrupted:
         try:
-            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
             _invoke_hook(
                 "post_llm_call",
                 session_id=agent.session_id,
@@ -4042,7 +4036,6 @@ def run_conversation(
                 conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
-                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
@@ -4149,7 +4142,7 @@ def run_conversation(
     # Fired at the very end of every run_conversation call.
     # Plugins can use this for cleanup, flushing buffers, etc.
     try:
-        from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
         _invoke_hook(
             "on_session_end",
             session_id=agent.session_id,
@@ -4159,7 +4152,6 @@ def run_conversation(
             interrupted=interrupted,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
-            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)

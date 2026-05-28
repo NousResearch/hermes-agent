@@ -29,7 +29,6 @@ def test_session_finalize_on_reset(mock_invoke_hook):
         c.args == ("on_session_finalize",)
         and c.kwargs["session_id"] == "test-session-id"
         and c.kwargs["platform"] == "cli"
-        and c.kwargs["telemetry_schema_version"] == "hermes.observer.v1"
         for c in mock_invoke_hook.call_args_list
     )
     # Check if on_session_reset was called for the new session
@@ -37,7 +36,6 @@ def test_session_finalize_on_reset(mock_invoke_hook):
         c.args == ("on_session_reset",)
         and c.kwargs["session_id"] == cli.session_id
         and c.kwargs["platform"] == "cli"
-        and c.kwargs["telemetry_schema_version"] == "hermes.observer.v1"
         for c in mock_invoke_hook.call_args_list
     )
 
@@ -59,7 +57,6 @@ def test_session_finalize_on_cleanup(mock_invoke_hook):
         and c.kwargs["session_id"] == "cleanup-session-id"
         and c.kwargs["platform"] == "cli"
         and c.kwargs["reason"] == "shutdown"
-        and c.kwargs["telemetry_schema_version"] == "hermes.observer.v1"
         for c in mock_invoke_hook.call_args_list
     )
 
@@ -92,7 +89,6 @@ def test_interrupted_session_end_helper_emits_observer_shape(mock_invoke_hook):
     assert call.kwargs["completed"] is False
     assert call.kwargs["interrupted"] is True
     assert call.kwargs["reason"] == "keyboard_interrupt"
-    assert call.kwargs["telemetry_schema_version"] == "hermes.observer.v1"
 
 
 @patch("hermes_cli.plugins.invoke_hook")

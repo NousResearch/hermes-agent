@@ -3223,13 +3223,12 @@ class GatewayRunner:
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
             try:
-                from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _invoke_hook(
                     "on_session_finalize",
                     session_id=getattr(agent, "session_id", None),
                     platform="gateway",
                     reason="shutdown",
-                    telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                 )
             except Exception:
                 pass
@@ -4367,7 +4366,7 @@ class GatewayRunner:
                 for key, entry in _expired_entries:
                     try:
                         try:
-                            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+                            from hermes_cli.plugins import invoke_hook as _invoke_hook
                             _parts = key.split(":")
                             _platform = _parts[2] if len(_parts) > 2 else ""
                             _invoke_hook(
@@ -4375,7 +4374,6 @@ class GatewayRunner:
                                 session_id=entry.session_id,
                                 platform=_platform,
                                 reason="session_expired",
-                                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                             )
                         except Exception:
                             pass
@@ -9051,7 +9049,7 @@ class GatewayRunner:
 
         # Fire plugin on_session_finalize hook (session boundary)
         try:
-            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
             _invoke_hook(
                 "on_session_finalize",
                 session_id=_old_sid,
@@ -9059,7 +9057,6 @@ class GatewayRunner:
                 reason="new_session",
                 old_session_id=_old_sid,
                 new_session_id=new_entry.session_id if new_entry else None,
-                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
         except Exception:
             pass
@@ -9127,7 +9124,7 @@ class GatewayRunner:
 
         # Fire plugin on_session_reset hook (new session guaranteed to exist)
         try:
-            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
             _new_sid = new_entry.session_id if new_entry else None
             _invoke_hook(
                 "on_session_reset",
@@ -9136,7 +9133,6 @@ class GatewayRunner:
                 reason="new_session",
                 old_session_id=_old_sid,
                 new_session_id=_new_sid,
-                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
         except Exception:
             pass

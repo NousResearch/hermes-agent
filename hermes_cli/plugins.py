@@ -1316,6 +1316,7 @@ class PluginManager:
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
         """
+        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
         for cb in callbacks:
@@ -1470,7 +1471,6 @@ def get_pre_tool_call_block_message(
         tool_call_id=tool_call_id,
         turn_id=turn_id,
         api_request_id=api_request_id,
-        telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
     )
 
     for result in hook_results:

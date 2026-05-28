@@ -87,7 +87,6 @@ async def test_reset_fires_finalize_hook(mock_invoke_hook):
         and c.kwargs["platform"] == "telegram"
         and c.kwargs["old_session_id"] == "sess-old"
         and c.kwargs["new_session_id"] == "sess-new"
-        and c.kwargs["telemetry_schema_version"] == "hermes.observer.v1"
         for c in mock_invoke_hook.call_args_list
     )
 
@@ -106,7 +105,6 @@ async def test_reset_fires_reset_hook(mock_invoke_hook):
         and c.kwargs["platform"] == "telegram"
         and c.kwargs["old_session_id"] == "sess-old"
         and c.kwargs["new_session_id"] == "sess-new"
-        and c.kwargs["telemetry_schema_version"] == "hermes.observer.v1"
         for c in mock_invoke_hook.call_args_list
     )
 

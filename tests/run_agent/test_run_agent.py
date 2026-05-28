@@ -2397,6 +2397,20 @@ class TestConcurrentToolExecution:
         assert post_call[1]["result"] == '{"ok":true}'
         assert post_call[1]["status"] == "ok"
 
+    def test_agent_runtime_post_hook_ownership_predicate_covers_agent_tools(self, agent):
+        """Sequential and concurrent agent-level paths share post-hook ownership."""
+        from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
+
+        for tool_name in ("todo", "session_search", "memory", "clarify", "delegate_task"):
+            assert agent_runtime_owns_post_tool_hook(agent, tool_name) is True
+
+        agent._context_engine_tool_names = {"context_query"}
+        assert agent_runtime_owns_post_tool_hook(agent, "context_query") is True
+
+        agent._memory_manager = SimpleNamespace(has_tool=lambda name: name == "memory_extra")
+        assert agent_runtime_owns_post_tool_hook(agent, "memory_extra") is True
+        assert agent_runtime_owns_post_tool_hook(agent, "web_search") is False
+
     def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
         """Blocked memory tool should not reset the nudge counter."""
         agent._turns_since_memory = 5

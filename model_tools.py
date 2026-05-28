@@ -754,7 +754,7 @@ def _emit_post_tool_call_hook(
     error_message: Optional[str] = None,
 ) -> None:
     try:
-        from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook
+        from hermes_cli.plugins import invoke_hook
         invoke_hook(
             "post_tool_call",
             tool_name=function_name,
@@ -769,7 +769,6 @@ def _emit_post_tool_call_hook(
             status=status,
             error_type=error_type,
             error_message=error_message,
-            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
         )
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)
@@ -958,7 +957,7 @@ def handle_function_call(
         # is appended back into conversation context. Fail-open; the first
         # valid string return wins; non-string returns are ignored.
         try:
-            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook
+            from hermes_cli.plugins import invoke_hook
             hook_results = invoke_hook(
                 "transform_tool_result",
                 tool_name=function_name,
@@ -973,7 +972,6 @@ def handle_function_call(
                 status=status,
                 error_type=error_type,
                 error_message=error_message,
-                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
             for hook_result in hook_results:
                 if isinstance(hook_result, str):

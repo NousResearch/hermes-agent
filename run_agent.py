@@ -1699,7 +1699,6 @@ class AIAgent:
     ) -> None:
         try:
             from hermes_cli.plugins import (
-                OBSERVER_SCHEMA_VERSION,
                 has_hook,
                 invoke_hook as _invoke_hook,
             )
@@ -1732,7 +1731,6 @@ class AIAgent:
                     "message": error_message,
                 },
                 request=self._api_request_payload_for_hook(api_kwargs),
-                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
         except Exception:
             pass

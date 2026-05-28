@@ -64,7 +64,6 @@ class TestHandleFunctionCall:
                 tool_call_id="call-1",
                 turn_id="",
                 api_request_id="",
-                telemetry_schema_version="hermes.observer.v1",
             ),
             call(
                 "post_tool_call",
@@ -80,7 +79,6 @@ class TestHandleFunctionCall:
                 status="ok",
                 error_type=None,
                 error_message=None,
-                telemetry_schema_version="hermes.observer.v1",
             ),
             call(
                 "transform_tool_result",
@@ -96,7 +94,6 @@ class TestHandleFunctionCall:
                 status="ok",
                 error_type=None,
                 error_message=None,
-                telemetry_schema_version="hermes.observer.v1",
             ),
         ]
 

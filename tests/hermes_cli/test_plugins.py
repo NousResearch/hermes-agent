@@ -376,6 +376,26 @@ class TestPluginHooks:
         # Should not raise
         mgr.invoke_hook("pre_tool_call", tool_name="test", args={}, task_id="t1")
 
+    def test_invoke_hook_adds_observer_schema_version(self, tmp_path, monkeypatch):
+        """invoke_hook() supplies the observer schema version for all hooks."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "schema_plugin",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: kw.get("telemetry_schema_version"))'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr.invoke_hook("pre_tool_call", tool_name="test", args={}) == [
+            "hermes.observer.v1"
+        ]
+
     def test_hook_exception_does_not_propagate(self, tmp_path, monkeypatch):
         """A hook callback that raises does NOT crash the caller."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

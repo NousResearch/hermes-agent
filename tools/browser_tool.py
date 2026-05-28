@@ -600,6 +600,27 @@ def _browser_install_hint() -> str:
     return "npm install -g agent-browser && agent-browser install --with-deps"
 
 
+def _browser_popen_extra() -> dict:
+    """Return subprocess isolation kwargs for agent-browser helper commands."""
+    if os.name != "nt":
+        # POSIX: keep agent-browser/Chromium in a separate session so signals
+        # sent to the Hermes parent process do not cascade into browser daemon
+        # grandchildren or feed back as parent process interruptions.
+        return {"start_new_session": True}
+
+    # Windows: CREATE_NO_WINDOW avoids a console for the .cmd shim.  Do NOT add
+    # CREATE_NEW_PROCESS_GROUP here: on Python 3.11 Windows it can cancel the
+    # running asyncio/proactor loop and surface as KeyboardInterrupt in the CLI.
+    flags = 0x08000000
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESTDHANDLES
+    return {
+        "creationflags": flags,
+        "close_fds": True,
+        "startupinfo": startupinfo,
+    }
+
+
 def _requires_real_termux_browser_install(browser_cmd: str) -> bool:
     return _is_termux_environment() and _is_local_mode() and browser_cmd.strip() == "npx agent-browser"
 
@@ -874,41 +895,10 @@ def _run_chrome_fallback_command(
         stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            # On Windows, launch the child in a new process group so parent
-            # console Ctrl+C doesn't kill it with STATUS_CONTROL_C_EXIT
-            # (0xC000013A = rc 3221225786), AND insulate its stdio + handle
-            # inheritance from the parent.
-            #
-            # Additional Windows hardening beyond CREATE_NEW_PROCESS_GROUP:
-            # * STARTF_USESTDHANDLES + explicit handles → CreateProcess hands
-            #   the child ONLY our three chosen handles (DEVNULL stdin +
-            #   temp-file stdout/stderr). Without this, some parents leak
-            #   console handles that break downstream grandchild spawns — the
-            #   agent-browser Rust binary spawns a detached daemon grandchild,
-            #   and that grandchild's CreateProcess dies silently
-            #   ("Daemon process exited during startup with no error output")
-            #   when inherited parent handles are in a weird state. Observed
-            #   in the Hermes CLI where sys.stdout and sys.stderr both report
-            #   fileno=1 (stderr dup'd onto stdout at the OS level).
-            # * close_fds=True → block inheritance of every other handle.
-            #   (Default on POSIX; must be explicit on Windows for stdio.)
-            _popen_extra: dict = {}
-            if os.name == "nt":
-                # CREATE_NO_WINDOW → don't attach a console (cmd.exe would
-                # otherwise briefly allocate one for the .cmd shim).
-                # Do NOT add CREATE_NEW_PROCESS_GROUP: on Python 3.11 Windows
-                # it interacts with asyncio's ProactorEventLoop such that the
-                # subprocess creation cancels the running loop task, which
-                # surfaces as KeyboardInterrupt in app.run() and tears down
-                # the CLI mid-turn. The agent thread's subprocess spawn
-                # unwound MainThread's prompt_toolkit loop that way — see
-                # diag log: "asyncio.CancelledError → KeyboardInterrupt".
-                _CREATE_NO_WINDOW = 0x08000000
-                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
-                _popen_extra["close_fds"] = True
-                _si = subprocess.STARTUPINFO()
-                _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
-                _popen_extra["startupinfo"] = _si
+            # Use platform-specific subprocess isolation.  On POSIX this
+            # starts a new session; on Windows it preserves the no-console /
+            # no-new-process-group behavior required by prompt_toolkit.
+            _popen_extra = _browser_popen_extra()
             proc = subprocess.Popen(
                 full, stdout=stdout_fd, stderr=stderr_fd,
                 stdin=subprocess.DEVNULL, env=browser_env,
@@ -2053,23 +2043,10 @@ def _run_browser_command(
         stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            # See matching comment at the other Popen site above — on
-            # Windows we put agent-browser in its own process group, force
-            # STARTF_USESTDHANDLES so CreateProcess hands the child ONLY our
-            # three explicit handles (no leaked parent-console handles to
-            # confuse the Rust binary's daemon-spawn), and close_fds=True to
-            # block inheritance of everything else.
-            _popen_extra: dict = {}
-            if os.name == "nt":
-                # See matching block at the other Popen site — CREATE_NO_WINDOW
-                # only, NO CREATE_NEW_PROCESS_GROUP (cancels asyncio loop task
-                # on Python 3.11 Windows → KeyboardInterrupt in CLI MainThread).
-                _CREATE_NO_WINDOW = 0x08000000
-                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
-                _popen_extra["close_fds"] = True
-                _si = subprocess.STARTUPINFO()
-                _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
-                _popen_extra["startupinfo"] = _si
+            # Use platform-specific subprocess isolation.  On POSIX this
+            # starts a new session; on Windows it preserves the no-console /
+            # no-new-process-group behavior required by prompt_toolkit.
+            _popen_extra = _browser_popen_extra()
             proc = subprocess.Popen(
                 cmd_parts,
                 stdout=stdout_fd,

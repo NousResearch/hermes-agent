@@ -785,6 +785,138 @@ def test_complete_records_result(kanban_home):
     assert task.completed_at is not None
 
 
+def test_finalizer_guard_blocks_unparented_blocked_live_gate(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="[operator-intake] Universe report",
+            body="Run the live report and send final handoff.",
+            assignee="ops",
+            workspace_kind="scratch",
+        )
+        assert kb.complete_task(conn, root, summary="intake routed")
+        live = kb.create_task(
+            conn,
+            title="[LIVE-RUN] Universe space report",
+            body="Run the actual live Universe report.",
+            assignee="ops",
+            workspace_kind="scratch",
+            parents=[root],
+        )
+        assert kb.block_task(conn, live, reason="blocked:subscription-routing missing")
+        finalizer = kb.create_task(
+            conn,
+            title="[finalizer] Universe report handoff",
+            body="Send Turbo the final report.",
+            assignee="ops",
+            workspace_kind="scratch",
+            parents=[root],
+            skills=["release-finalizer"],
+        )
+
+        with pytest.raises(kb.FinalizerGuardError) as excinfo:
+            kb.complete_task(conn, finalizer, summary="Ready for review.")
+
+        assert "related live/QA gates not done" in str(excinfo.value)
+        assert live in str(excinfo.value)
+        assert kb.get_task(conn, finalizer).status == "ready"
+
+
+def test_finalizer_guard_allows_done_live_gate_with_fresh_evidence(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="[operator-intake] SF Hunter verify live",
+            body="Verify live and send final handoff.",
+            assignee="ops",
+            workspace_kind="scratch",
+        )
+        assert kb.complete_task(conn, root, summary="intake routed")
+        live = kb.create_task(
+            conn,
+            title="[LIVE-RUN] SF Hunter production smoke",
+            body="Verify production.",
+            assignee="ops",
+            workspace_kind="scratch",
+            parents=[root],
+        )
+        assert kb.complete_task(
+            conn,
+            live,
+            summary="Live evidence: https://bigbrains.app/sf-hunter returned 200 and Playwright passed. SHA abc1234.",
+        )
+        finalizer = kb.create_task(
+            conn,
+            title="[finalizer] SF Hunter live handoff",
+            body="Send Turbo the final report.",
+            assignee="ops",
+            workspace_kind="scratch",
+            parents=[root, live],
+            skills=["release-finalizer"],
+        )
+
+        assert kb.complete_task(conn, finalizer, summary="Production live with evidence.")
+        assert kb.get_task(conn, finalizer).status == "done"
+
+
+def test_finalizer_guard_blocks_universe_local_only_override(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="[operator-intake] Universe report",
+            body="Run the SPACE niche universe report and send final handoff.",
+            assignee="ops",
+            workspace_kind="scratch",
+        )
+        assert kb.complete_task(conn, root, summary="intake routed")
+        run = kb.create_task(
+            conn,
+            title="[run] SPACE niche universe report",
+            body="Run the report.",
+            assignee="engineer",
+            workspace_kind="scratch",
+            parents=[root],
+        )
+        assert kb.complete_task(
+            conn,
+            run,
+            summary="Run completed with 40 findings and local artifacts under /root/tmp.",
+        )
+        finalizer = kb.create_task(
+            conn,
+            title="[finalizer] Universe report SPACE niche",
+            body="Send Turbo the final report.",
+            assignee="ops",
+            workspace_kind="scratch",
+            parents=[root, run],
+            skills=["release-finalizer"],
+        )
+        kb.add_comment(
+            conn,
+            finalizer,
+            author="ops",
+            body=(
+                "Finalizer guard override: Non-UI backend report rerun has no "
+                "browser QA/live deploy surface; fresh local artifacts prove completion."
+            ),
+        )
+
+        with pytest.raises(kb.FinalizerGuardError) as excinfo:
+            kb.complete_task(
+                conn,
+                finalizer,
+                summary=(
+                    "Live results. Link: "
+                    "http://localhost:5173/10x-hunter/runs/"
+                    "40f270d5-d12e-43fb-b917-e1b7afed8feb. "
+                    "Local only / no live surface."
+                ),
+            )
+
+        assert "production Big Brains live verification" in str(excinfo.value)
+        assert kb.get_task(conn, finalizer).status == "ready"
+
+
 def test_block_then_unblock(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")

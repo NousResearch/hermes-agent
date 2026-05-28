@@ -82,6 +82,7 @@ import sys
 import threading
 import logging
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -3066,6 +3067,410 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class FinalizerGuardError(ValueError):
+    """Raised when a release finalizer attempts to close an incomplete chain."""
+
+    def __init__(self, task_id: str, blockers: list[str]):
+        self.task_id = task_id
+        self.blockers = list(blockers)
+        super().__init__(
+            "finalizer guard blocked completion for "
+            f"{task_id}: " + "; ".join(blockers)
+        )
+
+
+_FINALIZER_TITLE_RE = re.compile(
+    r"^\s*\[finalizer\]|^\s*\[(?:final-report|closeout)\]|\b(final report|post-release closeout|release closeout)\b",
+    re.I,
+)
+_FINALIZER_OVERRIDE_RE = re.compile(
+    r"(?im)^\s*Finalizer guard override:\s*(\S.+)$"
+)
+_TRIVIAL_OVERRIDE_RE = re.compile(
+    r"^(?:\.|bypass|override|n/a|na|none|test|trust\s+me|looks\s+fine|"
+    r"(?:please\s+)?ship\s+it|go\s+ahead)$",
+    re.I,
+)
+_LOCAL_ONLY_RE = re.compile(
+    r"\b(local only|local-only|no live surface|no preview|no production surface)\b",
+    re.I,
+)
+_UNIVERSE_UI_REQUIRES_PROD_RE = re.compile(
+    r"\b(10x\s*hunter|10x-hunter|niche\s+universe|universe\s+report|"
+    r"research/10x/universe)\b",
+    re.I,
+)
+_UNIVERSE_LOCAL_REVIEW_RE = re.compile(
+    r"https?://(?:localhost|127\.0\.0\.1):\d+/(?:10x-hunter/runs|research/10x/universe)/"
+    r"[0-9a-f-]{32,}",
+    re.I,
+)
+_UNIVERSE_PROD_EVIDENCE_RE = re.compile(
+    r"(?im)^\s*(?:Production Universe live verification|Live evidence):"
+    r"(?=.*bigbrains\.app)"
+    r"(?=.*(?:/10x-hunter/runs|/research/10x/universe))"
+    r"(?=.*(?:pass(?:ed)?|200|2\d\d|verified|loads|rendered|candidates|findings))"
+    r".*$"
+)
+_LIVE_GATE_TITLE_RE = re.compile(
+    r"^\s*\[(?:live-run|browser-qa|post-release-audit|qa)\]",
+    re.I,
+)
+_LIVE_GATE_HINT_RE = re.compile(
+    r"\b(live|prod(?:uction)?|preview|vercel|playwright|browser|"
+    r"storagestate|smoke|qa|audit|verify|verification|run|report)\b",
+    re.I,
+)
+_LIVE_EVIDENCE_URL_RE = re.compile(r"https?://[^\s)>\]}\"']+", re.I)
+_LIVE_EVIDENCE_PROOF_RE = re.compile(
+    r"\b(pass(?:ed)?|200|2\d\d|exit\s*0|screenshot|playwright|curl|"
+    r"deployment|deployed|reachable|loads|verified|storageState|"
+    r"console errors?\s*0|network errors?\s*0)\b",
+    re.I,
+)
+_LIVE_EVIDENCE_LINE_HINT_RE = re.compile(
+    r"\b(live|prod(?:uction)?|preview|vercel|deployment|deployed|"
+    r"reachable|loads|curl|playwright|browser|smoke|health|200|2\d\d)\b",
+    re.I,
+)
+_LIVE_EVIDENCE_NEGATIVE_RE = re.compile(
+    r"\b(fail(?:ed|ing)?|error|blocked|not\s+(?:working|reachable|live|verified)|"
+    r"partial\s+pass|regression|still\s+(?:broken|failing))\b",
+    re.I,
+)
+_LOCAL_ONLY_EVIDENCE_RE = re.compile(
+    r"\b(pass(?:ed)?|exit\s*0|verified|pytest|playwright|screenshot|"
+    r"test-results|playwright-report|artifact|local smoke|npm\s+(?:test|run)|"
+    r"/root/|/tmp/|/Users/)\b",
+    re.I,
+)
+_FINALIZER_GATE_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+def _valid_finalizer_override_reason(reason: str) -> bool:
+    clean = re.sub(r"\s+", " ", reason or "").strip()
+    if len(clean) < 12:
+        return False
+    trivial_clean = clean
+    while trivial_clean and (
+        trivial_clean[-1].isspace()
+        or unicodedata.category(trivial_clean[-1]).startswith("P")
+    ):
+        trivial_clean = trivial_clean[:-1].rstrip()
+    while trivial_clean and (
+        trivial_clean[0].isspace()
+        or unicodedata.category(trivial_clean[0]).startswith("P")
+    ):
+        trivial_clean = trivial_clean[1:].lstrip()
+    return _TRIVIAL_OVERRIDE_RE.fullmatch(trivial_clean) is None
+
+
+def _task_skills_for_guard(task: Task) -> set[str]:
+    raw = task.skills
+    if isinstance(raw, list):
+        return {str(item) for item in raw if item}
+    return set()
+
+
+def _task_text_for_guard(
+    conn: sqlite3.Connection,
+    task: Task,
+    *,
+    extra: str = "",
+    include_comments: bool = True,
+) -> str:
+    parts = [
+        task.title or "",
+        task.body or "",
+        task.result or "",
+        extra or "",
+    ]
+    if include_comments:
+        try:
+            comments = list_comments(conn, task.id)
+        except Exception:
+            comments = []
+        parts.extend(comment.body or "" for comment in comments[-8:])
+    try:
+        runs = list_runs(conn, task.id, include_active=False)
+    except Exception:
+        runs = []
+    for run in runs[-3:]:
+        parts.append(run.summary or "")
+        if run.metadata:
+            try:
+                parts.append(json.dumps(run.metadata, sort_keys=True))
+            except Exception:
+                parts.append(str(run.metadata))
+    return "\n\n".join(part for part in parts if part)
+
+
+def _is_release_finalizer_for_guard(task: Task) -> bool:
+    return (
+        "release-finalizer" in _task_skills_for_guard(task)
+        or bool(_FINALIZER_TITLE_RE.search(task.title or ""))
+    )
+
+
+def _is_live_gate_for_guard(task: Task) -> bool:
+    title = task.title or ""
+    text = f"{title}\n{task.body or ''}"
+    if title.lower().startswith("[finalizer]"):
+        return False
+    if task.assignee == "local-claude-browser":
+        return True
+    if re.search(r"^\s*\[live-run\]", title, re.I):
+        return True
+    if _LIVE_GATE_TITLE_RE.search(title) and _LIVE_GATE_HINT_RE.search(text):
+        return True
+    return False
+
+
+def _parent_rows_for_guard(conn: sqlite3.Connection, task_id: str) -> list[Task]:
+    rows = conn.execute(
+        "SELECT p.* FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status != 'archived' "
+        "ORDER BY p.created_at ASC",
+        (task_id,),
+    ).fetchall()
+    return [Task.from_row(row) for row in rows]
+
+
+def _child_rows_for_guard(conn: sqlite3.Connection, task_id: str) -> list[Task]:
+    rows = conn.execute(
+        "SELECT c.* FROM task_links l "
+        "JOIN tasks c ON c.id = l.child_id "
+        "WHERE l.parent_id = ? AND c.status != 'archived' "
+        "ORDER BY c.created_at ASC",
+        (task_id,),
+    ).fetchall()
+    return [Task.from_row(row) for row in rows]
+
+
+def _ancestor_root_ids_for_guard(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    seen: set[str] = set()
+    roots: list[str] = []
+    queue = [task_id]
+    while queue:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        parents = _parent_rows_for_guard(conn, current)
+        if not parents:
+            roots.append(current)
+        else:
+            queue.extend(parent.id for parent in parents)
+    return roots
+
+
+def _descendant_rows_for_guard(conn: sqlite3.Connection, roots: Iterable[str]) -> list[Task]:
+    seen: set[str] = set()
+    rows: list[Task] = []
+    queue = list(roots)
+    while queue:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        task = get_task(conn, current)
+        if task:
+            rows.append(task)
+        queue.extend(child.id for child in _child_rows_for_guard(conn, current))
+    return rows
+
+
+def _has_fresh_live_evidence_for_guard(
+    conn: sqlite3.Connection,
+    task: Task,
+    *,
+    now: Optional[int] = None,
+) -> bool:
+    if task.status != "done":
+        return False
+    now = int(time.time()) if now is None else int(now)
+    # Freshness is based on the Kanban task's completed_at Unix timestamp.
+    # Hermes stores epoch seconds; the 24h window is a hard UTC cutoff.
+    if task.completed_at and now - int(task.completed_at) > _FINALIZER_GATE_MAX_AGE_SECONDS:
+        return False
+    text = _task_text_for_guard(conn, task)
+    if _LIVE_EVIDENCE_NEGATIVE_RE.search(text):
+        return False
+    has_proof = _LIVE_EVIDENCE_PROOF_RE.search(text) is not None
+    live_evidence_lines = "\n".join(
+        match.group(1)
+        for match in re.finditer(r"(?im)^\s*Live evidence:\s*(\S.+)$", text)
+    )
+    if live_evidence_lines and _LIVE_EVIDENCE_PROOF_RE.search(live_evidence_lines):
+        return True
+    for line in text.splitlines():
+        if (
+            _LIVE_EVIDENCE_URL_RE.search(line)
+            and _LIVE_EVIDENCE_PROOF_RE.search(line)
+            and _LIVE_EVIDENCE_LINE_HINT_RE.search(line)
+            and not _LIVE_EVIDENCE_NEGATIVE_RE.search(line)
+        ):
+            return True
+    if re.search(r"\b(test-results|screenshot|playwright-report|storage-state)\b", text, re.I) and has_proof:
+        return True
+    return False
+
+
+def _has_local_only_evidence_for_guard(text: str) -> bool:
+    if _LIVE_EVIDENCE_NEGATIVE_RE.search(text):
+        return False
+    return _LOCAL_ONLY_EVIDENCE_RE.search(text) is not None
+
+
+def _requires_universe_production_evidence_for_guard(text: str) -> bool:
+    """Universe report output is reviewable in the production app, not localhost."""
+    if not _UNIVERSE_UI_REQUIRES_PROD_RE.search(text):
+        return False
+    return bool(_LOCAL_ONLY_RE.search(text) or _UNIVERSE_LOCAL_REVIEW_RE.search(text))
+
+
+def _has_universe_production_evidence_for_guard(text: str) -> bool:
+    return _UNIVERSE_PROD_EVIDENCE_RE.search(text or "") is not None
+
+
+def _has_related_live_evidence_for_guard(conn: sqlite3.Connection, task_id: str) -> bool:
+    roots = _ancestor_root_ids_for_guard(conn, task_id)
+    related = _descendant_rows_for_guard(conn, roots)
+    return any(
+        row.id != task_id
+        and row.status == "done"
+        and _is_live_gate_for_guard(row)
+        and _has_fresh_live_evidence_for_guard(conn, row)
+        for row in related
+    )
+
+
+def validate_finalizer_completion_guard(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> None:
+    """Block release finalizers from closing before live gates are actually done.
+
+    The guard intentionally works from existing Kanban state instead of a new
+    schema column: parent links, task titles, task bodies, comments, results,
+    and completion timestamps. That makes it effective immediately on the live
+    board and avoids a migration for the first safety patch.
+    """
+    task = get_task(conn, task_id)
+    if task is None or not _is_release_finalizer_for_guard(task):
+        return
+
+    extra = "\n\n".join(
+        [
+            result or "",
+            summary or "",
+            json.dumps(metadata, sort_keys=True) if metadata else "",
+        ]
+    )
+    finalizer_text = _task_text_for_guard(conn, task, extra=extra)
+    if (
+        _requires_universe_production_evidence_for_guard(finalizer_text)
+        and not _has_universe_production_evidence_for_guard(finalizer_text)
+        and not _has_related_live_evidence_for_guard(conn, task_id)
+    ):
+        blockers = [
+            "Universe/10X report finalizer needs production Big Brains live verification; local-only/localhost review links are not enough"
+        ]
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task_id,
+                "completion_blocked_finalizer_guard",
+                {"blockers": blockers},
+            )
+        raise FinalizerGuardError(task_id, blockers)
+
+    override = _FINALIZER_OVERRIDE_RE.search(finalizer_text)
+    if override:
+        reason = override.group(1).strip()
+        if not _valid_finalizer_override_reason(reason):
+            blockers = [
+                "invalid Finalizer guard override reason; provide a specific non-trivial reason"
+            ]
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    task_id,
+                    "completion_blocked_finalizer_guard",
+                    {"blockers": blockers},
+                )
+            raise FinalizerGuardError(task_id, blockers)
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task_id,
+                "finalizer_guard_override",
+                {"reason": reason[:500]},
+            )
+        return
+
+    blockers: list[str] = []
+    parents = _parent_rows_for_guard(conn, task_id)
+    if not parents:
+        blockers.append("missing parent gates")
+    else:
+        not_done = [f"{parent.id}({parent.status})" for parent in parents if parent.status != "done"]
+        if not_done:
+            blockers.append("parent gates not done: " + ", ".join(not_done))
+
+    roots = _ancestor_root_ids_for_guard(conn, task_id)
+    related = _descendant_rows_for_guard(conn, roots)
+    live_gates = [
+        row
+        for row in related
+        if row.id != task_id and _is_live_gate_for_guard(row)
+    ]
+    unresolved_live_gates = [
+        f"{row.id}({row.status})" for row in live_gates if row.status != "done"
+    ]
+    if unresolved_live_gates:
+        blockers.append(
+            "related live/QA gates not done: " + ", ".join(unresolved_live_gates)
+        )
+
+    done_live_gates = [row for row in live_gates if row.status == "done"]
+    if done_live_gates:
+        evidenced = [
+            row for row in done_live_gates if _has_fresh_live_evidence_for_guard(conn, row)
+        ]
+        if not evidenced:
+            blockers.append(
+                "done live/QA gates lack fresh machine-checkable live evidence: "
+                + ", ".join(row.id for row in done_live_gates)
+            )
+    elif _LOCAL_ONLY_RE.search(finalizer_text):
+        if not _has_local_only_evidence_for_guard(finalizer_text):
+            blockers.append(
+                "local-only finalizer lacks local artifact/check evidence"
+            )
+    else:
+        blockers.append(
+            "missing upstream [LIVE-RUN]/[browser-qa]/[qa] gate with live evidence"
+        )
+
+    if not blockers:
+        return
+
+    with write_txn(conn):
+        _append_event(
+            conn,
+            task_id,
+            "completion_blocked_finalizer_guard",
+            {"blockers": blockers},
+        )
+    raise FinalizerGuardError(task_id, blockers)
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3105,6 +3510,14 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+
+    validate_finalizer_completion_guard(
+        conn,
+        task_id,
+        result=result,
+        summary=summary,
+        metadata=metadata,
+    )
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a

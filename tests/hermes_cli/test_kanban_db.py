@@ -858,6 +858,31 @@ def test_claim_rejects_when_parents_not_done(kanban_home):
     assert "claimed" not in kinds
 
 
+
+def test_claim_rejects_when_parent_archived(kanban_home):
+    """claim_task must reject a ready child whose parent was archived."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        assert kb.archive_task(conn, parent) is True
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        assert kb.get_task(conn, child).status == "todo"
+
+        # Simulate stale data from older versions or direct DB writes where
+        # archived parents counted as satisfied dependencies.
+        conn.execute(
+            "UPDATE tasks SET status='ready' WHERE id=?", (child,),
+        )
+        conn.commit()
+        assert kb.get_task(conn, child).status == "ready"
+
+        result = kb.claim_task(conn, child, claimer="host:1")
+
+    assert result is None
+    with kb.connect() as conn:
+        assert kb.get_task(conn, child).status == "todo"
+
 def test_claim_succeeds_once_parents_done(kanban_home):
     """After parents complete, recompute_ready -> claim_task must succeed."""
     with kb.connect() as conn:
@@ -2306,14 +2331,8 @@ def test_unlink_tasks_triggers_recompute_ready(kanban_home):
         )
 
 
-def test_archive_task_triggers_recompute_ready_for_dependents(kanban_home):
-    """Archiving a parent must immediately unblock its children.
-
-    ``recompute_ready()`` already treats ``archived`` parents as satisfied
-    dependencies, just like ``done``. Regression: ``archive_task()`` updated
-    the parent row but never ran the ready-promotion pass, so children stayed
-    stuck in ``todo`` until a later dispatcher tick.
-    """
+def test_archive_task_does_not_promote_dependents(kanban_home):
+    """Archiving cancels a parent; it must not satisfy child dependencies."""
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="obsolete parent")
         child = kb.create_task(conn, title="child", parents=[parent])
@@ -2321,10 +2340,12 @@ def test_archive_task_triggers_recompute_ready_for_dependents(kanban_home):
         assert kb.get_task(conn, child).status == "todo"
         assert kb.archive_task(conn, parent) is True
 
-        assert kb.get_task(conn, child).status == "ready", (
-            "child should promote to ready immediately after its last blocking "
-            "parent is archived"
+        assert kb.get_task(conn, child).status == "todo", (
+            "child must stay todo because archived parents are not "
+            "successful completions"
         )
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, child).status == "todo"
 
 # ---------------------------------------------------------------------------
 # _add_column_if_missing / _migrate_add_optional_columns idempotency (#21708)

@@ -904,9 +904,72 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
 
 
+class ToolCallStormBreaker:
+    """Detect and suppress repeated tool-call loops across turns.
+
+    When the model calls the same tool with identical arguments over and
+    over (often because it doesn't understand an error or keeps retrying
+    a read that returns unchanged data), this detects the pattern and
+    injects a suppression message, allowing the conversation to escape
+    the loop.
+
+    Ported from Reasonix's StormBreaker (repair/storm.ts).
+    """
+
+    # Tools whose execution changes the world — reset the storm window.
+    MUTATING_TOOLS: frozenset[str] = frozenset({
+        "write_file", "patch", "terminal", "delegate_task",
+        "memory", "skill_manage", "cronjob", "send_message",
+    })
+
+    # Cheap, side-effect-free read tools that should never trigger
+    # storm suppression (the model is expected to re-read after changes).
+    STORM_EXEMPT: frozenset[str] = frozenset({
+        "search_files", "read_file", "session_search",
+        "todo", "skills_list", "skill_view", "process",
+        "web_search", "browser_snapshot", "browser_console",
+    })
+
+    def __init__(self, window_size: int = 8, threshold: int = 3):
+        self._window: list[tuple[str, str]] = []  # (name, args_signature)
+        self._window_size = window_size
+        self._threshold = threshold
+
+    def inspect(self, name: str, args_str: str) -> tuple[bool, str | None]:
+        """Inspect a tool call before execution.
+
+        Returns (suppress, reason).  Callers should skip execution when
+        ``suppress`` is True and inject ``reason`` as a tool error result.
+        """
+        if name in self.STORM_EXEMPT:
+            return False, None
+
+        sig = (name, args_str)
+
+        self._window.append(sig)
+        if len(self._window) > self._window_size:
+            self._window.pop(0)
+
+        count = sum(1 for s in self._window if s == sig)
+        if count >= self._threshold:
+            return True, (
+                f"[StormBreaker] {name} called {count} times with identical "
+                f"arguments in the last {len(self._window)} calls — "
+                f"suppressed to break loop. Try a different approach."
+            )
+        return False, None
+
+    def on_executed(self, name: str) -> None:
+        """Notify the breaker that a tool WAS executed (not suppressed).
+
+        Mutating tools reset the storm window since they change the world.
+        """
+        if name in self.MUTATING_TOOLS:
+            self._window.clear()
 
 
 __all__ = [
     "execute_tool_calls_concurrent",
     "execute_tool_calls_sequential",
+    "ToolCallStormBreaker",
 ]

@@ -461,6 +461,10 @@ def run_conversation(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    # Per-conversation storm breaker — detects repeated tool-call loops
+    # across turns (Reasonix StormBreaker port).
+    from agent.tool_executor import ToolCallStormBreaker
+    agent._tool_storm = ToolCallStormBreaker()
     # True until the server rejects an image_url content part with an error
     # like "Only 'text' content type is supported."  Set to False on first
     # rejection and kept False for the rest of the session so we never re-send
@@ -3778,6 +3782,46 @@ def run_conversation(
                     assistant_message.tool_calls
                 )
 
+                # ── Storm breaker ─────────────────────────────────
+                # Detect repeated tool-call loops across turns — same
+                # (name, args) appearing ≥3 times in the last 8 calls
+                # is suppressed with an error result injected.
+                _storm = getattr(agent, "_tool_storm", None)
+                if _storm is not None and assistant_message.tool_calls:
+                    _ok_calls = []
+                    _suppressed = []
+                    for tc in assistant_message.tool_calls:
+                        args_str = (
+                            tc.function.arguments
+                            if isinstance(tc.function.arguments, str)
+                            else json.dumps(tc.function.arguments)
+                        )
+                        suppress, reason = _storm.inspect(tc.function.name, args_str)
+                        if suppress:
+                            _suppressed.append((tc, reason))
+                        else:
+                            _ok_calls.append(tc)
+
+                    if _suppressed:
+                        agent._vprint(
+                            f"{agent.log_prefix}⚡ StormBreaker: suppressing "
+                            f"{len(_suppressed)} repeated tool call(s)",
+                            force=True,
+                        )
+                        for tc, reason in _suppressed:
+                            messages.append({
+                                "role": "tool",
+                                "name": tc.function.name,
+                                "tool_call_id": tc.id,
+                                "content": reason,
+                            })
+                        if not _ok_calls:
+                            # All calls suppressed — nothing to execute.
+                            # Fall through to the next API iteration so
+                            # the model can recover.
+                            continue
+                        assistant_message.tool_calls = _ok_calls
+
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 
                 # If this turn has both content AND tool_calls, capture the content
@@ -3849,6 +3893,12 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                # Notify storm breaker of executed tools — mutating tools
+                # (write, patch, terminal, etc.) reset the storm window.
+                if _storm is not None:
+                    for tc in (assistant_message.tool_calls or []):
+                        _storm.on_executed(tc.function.name)
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision

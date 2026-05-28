@@ -7140,6 +7140,52 @@ class AIAgent:
                     )
                     return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
                 raise
+            except TypeError as exc:
+                err_text = str(exc)
+                output_none_parse_error = (
+                    "NoneType" in err_text
+                    and "not iterable" in err_text
+                    and (collected_output_items or self._codex_streamed_text_parts)
+                )
+                if output_none_parse_error:
+                    # ChatGPT Codex can emit valid output_item.done/text delta
+                    # events, then send a terminal response whose output is
+                    # null. The OpenAI SDK raises while parsing that final
+                    # response before get_final_response() is reachable.
+                    if collected_output_items:
+                        response = SimpleNamespace(
+                            output=list(collected_output_items),
+                            status="completed",
+                        )
+                        logger.debug(
+                            "Codex stream: recovered %d output items after SDK "
+                            "terminal response output=None parse error",
+                            len(collected_output_items),
+                        )
+                        return response
+                    if self._codex_streamed_text_parts and not has_tool_calls:
+                        assembled = "".join(self._codex_streamed_text_parts)
+                        response = SimpleNamespace(
+                            output=[
+                                SimpleNamespace(
+                                    type="message",
+                                    role="assistant",
+                                    status="completed",
+                                    content=[
+                                        SimpleNamespace(type="output_text", text=assembled)
+                                    ],
+                                )
+                            ],
+                            status="completed",
+                        )
+                        logger.debug(
+                            "Codex stream: synthesized output from %d text deltas "
+                            "after SDK terminal response output=None parse error (%d chars)",
+                            len(self._codex_streamed_text_parts),
+                            len(assembled),
+                        )
+                        return response
+                raise
 
     def _run_codex_create_stream_fallback(self, api_kwargs: dict, client: Any = None):
         """Fallback path for stream completion edge cases on Codex-style Responses backends."""

@@ -33,7 +33,13 @@ class _Adapter:
         self.apply_count += 1
 
 
-def _config(*, allow_from=None, group_allowed_chats=None, mention_patterns=None):
+def _config(
+    *,
+    allow_from=None,
+    group_allowed_chats=None,
+    mention_patterns=None,
+    allow_admin_from=None,
+):
     extra = {}
     if allow_from is not None:
         extra["allow_from"] = allow_from
@@ -41,6 +47,8 @@ def _config(*, allow_from=None, group_allowed_chats=None, mention_patterns=None)
         extra["group_allowed_chats"] = group_allowed_chats
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
+    if allow_admin_from is not None:
+        extra["allow_admin_from"] = allow_admin_from
     return GatewayConfig(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="test", extra=extra)}
     )
@@ -69,6 +77,19 @@ def test_gateway_runner_authorizes_telegram_user_from_permission_snapshot():
     source = SessionSource(platform=Platform.TELEGRAM, user_id="42", chat_id="42", chat_type="dm")
 
     assert GatewayRunner._is_user_authorized(runner, source) is True
+
+
+def test_gateway_runner_fails_closed_when_permission_snapshot_auth_errors():
+    runner = _runner(iter([_config(allow_from=["42"]), _config(allow_from=["42"])]))
+
+    class _BrokenPermissionManager:
+        def authorize(self, source):
+            raise RuntimeError("broken snapshot")
+
+    runner.permission_manager = _BrokenPermissionManager()
+    source = SessionSource(platform=Platform.TELEGRAM, user_id="42", chat_id="42", chat_type="dm")
+
+    assert GatewayRunner._is_user_authorized(runner, source) is False
 
 
 def test_permission_reload_adds_user_without_restarting_runner_or_adapter():
@@ -118,10 +139,36 @@ def test_permission_reload_invalid_config_keeps_previous_snapshot_and_runtime_co
     assert GatewayRunner._is_user_authorized(runner, source) is True
 
 
-def test_reload_permissions_command_reports_scope():
+def test_reload_permissions_command_requires_configured_admin():
     runner = _runner(iter([_config(), _config(), _config(allow_from=["42"])]))
+    event = type(
+        "Event",
+        (),
+        {"source": SessionSource(platform=Platform.TELEGRAM, user_id="1", chat_id="1", chat_type="dm")},
+    )()
 
-    response = asyncio.run(GatewayRunner._handle_reload_permissions_command(runner, object()))
+    response = asyncio.run(GatewayRunner._handle_reload_permissions_command(runner, event))
+
+    assert response.startswith("⛔ /reload-permissions is admin-only")
+
+
+def test_reload_permissions_command_reports_scope():
+    runner = _runner(
+        iter(
+            [
+                _config(allow_admin_from=["1"]),
+                _config(allow_admin_from=["1"]),
+                _config(allow_from=["42"], allow_admin_from=["1"]),
+            ]
+        )
+    )
+    event = type(
+        "Event",
+        (),
+        {"source": SessionSource(platform=Platform.TELEGRAM, user_id="1", chat_id="1", chat_type="dm")},
+    )()
+
+    response = asyncio.run(GatewayRunner._handle_reload_permissions_command(runner, event))
 
     assert response.startswith("GO: permissions reloaded without gateway restart.")
     assert "Scope: permissions only" in response

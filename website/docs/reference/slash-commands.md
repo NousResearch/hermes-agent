@@ -91,7 +91,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/curator` | Background skill maintenance — `status`, `run`, `pin`, `archive`. See [Curator](/user-guide/features/curator). |
 | `/kanban <action>` | Drive the multi-profile, multi-project collaboration board without leaving chat. Full `hermes kanban` surface is available: `/kanban list`, `/kanban show t_abc`, `/kanban create "title" --assignee X`, `/kanban comment t_abc "text"`, `/kanban unblock t_abc`, `/kanban dispatch`, etc. Multi-board support included: `/kanban boards list`, `/kanban boards create <slug>`, `/kanban boards switch <slug>`, `/kanban --board <slug> <action>`. See [Kanban slash command](/user-guide/features/kanban#kanban-slash-command). |
 | `/reload-mcp` (alias: `/reload_mcp`) | Reload MCP servers from config.yaml |
-| `/reload-permissions` (alias: `/reload_permissions`) | Reload gateway permission state without restarting the gateway; model, tools, system prompt, and sessions stay unchanged |
+| `/reload-permissions` (alias: `/reload_permissions`) | Admin-only. Reload gateway permission state without restarting the gateway; model, tools, system prompt, and sessions stay unchanged |
 | `/reload-skills` (alias: `/reload_skills`) | Re-scan `~/.hermes/skills/` for newly installed or removed skills |
 | `/reload` | Reload `.env` variables into the running session (picks up new API keys without restarting) |
 | `/plugins` | List installed plugins and their status |
@@ -222,7 +222,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/curator [status\|run\|pin\|archive]` | Background skill maintenance controls. |
 | `/kanban <action>` | Drive the multi-profile, multi-project collaboration board from chat — identical argument surface to the CLI. Bypasses the running-agent guard, so `/kanban unblock t_abc`, `/kanban comment t_abc "…"`, `/kanban list --mine`, `/kanban boards switch <slug>`, etc. work mid-turn. `/kanban create …` auto-subscribes the originating chat to the new task's terminal events. See [Kanban slash command](/user-guide/features/kanban#kanban-slash-command). |
 | `/reload-mcp` (alias: `/reload_mcp`) | Reload MCP servers from config. |
-| `/reload-permissions` (alias: `/reload_permissions`) | Reload gateway permissions without restarting the process. Invalid permission config is rejected and previous permissions stay active. |
+| `/reload-permissions` (alias: `/reload_permissions`) | Admin-only. Reload gateway permissions without restarting the process. Invalid permission config is rejected and previous permissions stay active. |
 | `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
 | `/commands [page]` | Browse all commands and skills (paginated). |
 | `/approve [session\|always]` | Approve and execute a pending dangerous command. `session` approves for this session only; `always` adds to permanent allowlist. |

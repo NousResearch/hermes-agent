@@ -6402,9 +6402,10 @@ class GatewayRunner:
                 return self.permission_manager.authorize(source).allowed
             except Exception as exc:
                 logger.warning(
-                    "Telegram permission snapshot auth failed; falling back to legacy auth: %s",
+                    "Telegram permission snapshot auth failed closed: %s",
                     exc,
                 )
+                return False
 
         user_id = source.user_id
 
@@ -6661,8 +6662,25 @@ class GatewayRunner:
             f"mention_patterns={len(telegram.mention_patterns)}"
         )
 
+    def _reload_permissions_admin_denial(self, source: SessionSource) -> Optional[str]:
+        """Return a denial message unless source is an explicitly configured admin."""
+        from gateway.slash_access import policy_for_source as _policy_for_source
+
+        policy = _policy_for_source(self.config, source)
+        if policy.enabled and policy.is_admin(source.user_id):
+            return None
+        if not policy.enabled:
+            return (
+                "⛔ /reload-permissions is admin-only. Configure allow_admin_from "
+                "for this platform/scope before using it."
+            )
+        return "⛔ /reload-permissions is admin-only here."
+
     async def _handle_reload_permissions_command(self, event: MessageEvent) -> str:
         """Handle /reload-permissions without restarting the gateway process."""
+        denied = self._reload_permissions_admin_denial(event.source)
+        if denied is not None:
+            return denied
         result = self._reload_gateway_permissions()
         if not result.ok:
             return (

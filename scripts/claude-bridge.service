@@ -1,0 +1,29 @@
+[Unit]
+Description=Claude Code Bridge — wraps claude -p as an OpenAI-compatible API
+Documentation=https://github.com/NousResearch/hermes-agent/blob/main/scripts/claude-bridge.py
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace <USER> with the user who owns the Claude OAuth credentials
+User=<USER>
+WorkingDirectory=<HERMES_HOME>/scripts
+ExecStart=/usr/bin/python3 <HERMES_HOME>/scripts/claude-bridge.py
+
+# Environment variables — adjust these to match your setup:
+Environment=HOME=<USER_HOME>/.hermes/profiles/main/home
+Environment=CLAUDE_BIN=<NPM_GLOBAL_PREFIX>/bin/claude
+Environment=CLAUDE_MODEL=sonnet
+# Optional: set to opus for max capability, haiku for speed/cost
+# Environment=CLAUDE_MODEL=opus
+Environment=PORT=8800
+Environment=TIMEOUT_SECONDS=300
+
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

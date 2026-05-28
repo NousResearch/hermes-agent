@@ -69,6 +69,7 @@ def _budget_for_agent(agent) -> BudgetConfig:
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
+_DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 # Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
 # guard does not preempt a slow-but-valid summarization attempt.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
@@ -128,6 +129,43 @@ def _flush_session_db_after_tool_progress(
         agent._flush_messages_to_session_db(messages)
     except Exception as exc:
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
+
+
+def _image_generate_parallel_limit() -> int:
+    """Return the configured image-generation parallelism cap.
+
+    Image-generation calls are slow enough that concurrent execution is useful,
+    but backend bursts can hit TTFB or rate-limit failures. Keep the default
+    intentionally conservative while allowing users to tune it per install.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        image_gen = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        value = (
+            image_gen.get("max_parallel_requests")
+            if isinstance(image_gen, dict)
+            else None
+        )
+    except Exception:
+        value = None
+
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = _DEFAULT_IMAGE_PARALLEL_REQUESTS
+    return max(1, min(limit, _MAX_TOOL_WORKERS))
+
+
+def _max_workers_for_tool_batch(runnable_calls) -> int:
+    """Return the worker cap for a concurrent tool batch."""
+    if not runnable_calls:
+        return 0
+    max_workers = _MAX_TOOL_WORKERS
+    if any(name == "image_generate" for _, _, name, _ in runnable_calls):
+        max_workers = min(max_workers, _image_generate_parallel_limit())
+    return min(len(runnable_calls), max_workers)
 
 
 def _ra():
@@ -667,7 +705,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         timeout_s = _resolve_concurrent_tool_timeout()
         deadline = time.monotonic() + timeout_s if timeout_s is not None else None
         if runnable_calls:
-            max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
+            max_workers = _max_workers_for_tool_batch(runnable_calls)
             # Daemon workers: an interrupted/timed-out batch is abandoned with
             # shutdown(wait=False), but stdlib ThreadPoolExecutor workers are
             # non-daemon and registered in concurrent.futures' atexit hook,

@@ -1,0 +1,75 @@
+{
+  "now": "2026-05-28T12:00:00+00:00",
+  "events": [
+    {
+      "id": "evt_acme",
+      "title": "Acme Advisory Intro",
+      "start": "2026-05-28T15:00:00+00:00",
+      "end": "2026-05-28T15:30:00+00:00",
+      "status": "confirmed",
+      "attendees": [
+        {"name": "Host", "email": "host@example.internal"},
+        {"name": "Sara Founder", "email": "sara@acme.example"}
+      ],
+      "location": "Video call",
+      "url": "https://meet.example/redacted"
+    },
+    {
+      "id": "evt_internal",
+      "title": "Internal ops sync",
+      "start": "2026-05-28T16:00:00+00:00",
+      "end": "2026-05-28T16:30:00+00:00",
+      "status": "confirmed",
+      "attendees": [
+        {"name": "Host", "email": "host@example.internal"},
+        {"name": "Ops", "email": "ops@example.internal"}
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "source": "notes",
+      "source_id": "raw_SYNTHETIC1234",
+      "label": "prior meeting note",
+      "timestamp": "2026-05-21T11:00:00+00:00",
+      "confidence": "clear",
+      "kind": "open_loop",
+      "text": "Host promised to send Sara an intro to a payments partner and ask for the updated deck before the next call.",
+      "people": ["sara@acme.example"],
+      "company": "Acme"
+    },
+    {
+      "source": "email",
+      "source_id": "raw_SYNTHETIC5678",
+      "label": "thread metadata",
+      "timestamp": "2026-05-27T09:30:00+00:00",
+      "confidence": "likely",
+      "kind": "last_touch",
+      "text": "Sara followed up asking whether the deck at https://docs.example.com/private had been reviewed and whether the intro can happen this week.",
+      "people": ["sara@acme.example"],
+      "company": "Acme"
+    },
+    {
+      "source": "chat",
+      "source_id": "raw_SYNTHETIC9999",
+      "label": "chat excerpt",
+      "timestamp": "2026-05-28T10:15:00+00:00",
+      "confidence": "possible",
+      "kind": "risk",
+      "text": "Sara shared mobile +971 50 123 4567 and asked if timing can be confirmed today. chat id 971501234567@s.whatsapp.net",
+      "people": ["Sara Founder"],
+      "company": "Acme"
+    },
+    {
+      "source": "email",
+      "source_id": "raw_UNRELATED",
+      "label": "unrelated thread",
+      "timestamp": "2026-05-28T08:00:00+00:00",
+      "confidence": "clear",
+      "kind": "context",
+      "text": "Unrelated note about another company.",
+      "people": ["other@example.com"],
+      "company": "OtherCo"
+    }
+  ]
+}

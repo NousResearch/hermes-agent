@@ -205,6 +205,7 @@ scripts/run_tests.sh
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+- 📦 [Hermes Desktop](https://github.com/sir1st/hermes-desktop) — Cross-platform desktop installer (.dmg / .exe / .AppImage / .deb) that bundles `hermes-agent` and `hermes-web-ui` into a single download — no Python or Node setup required.
 
 ---
 

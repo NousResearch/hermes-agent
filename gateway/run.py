@@ -15160,7 +15160,7 @@ class GatewayRunner:
         "honcho.runtime_peer_prefix",
         "honcho.user_peer_aliases",
     )
-    _HONCHO_CACHE_BUSTING_CONFIG_CACHE: Dict[tuple[str, int], Dict[str, Any]] = {}
+    _HONCHO_CACHE_BUSTING_CONFIG_CACHE: Dict[tuple[str, int, int], Dict[str, Any]] = {}
 
     @classmethod
     def _empty_honcho_cache_busting_config(cls) -> Dict[str, Any]:
@@ -15175,7 +15175,8 @@ class GatewayRunner:
             config_path = resolve_config_path()
             cache_key = None
             if config_path.exists():
-                cache_key = (str(config_path), config_path.stat().st_mtime_ns)
+                stat = config_path.stat()
+                cache_key = (str(config_path), stat.st_mtime_ns, stat.st_size)
                 cached = cls._HONCHO_CACHE_BUSTING_CONFIG_CACHE.get(cache_key)
                 if cached is not None:
                     return dict(cached)

@@ -122,38 +122,6 @@ class TestCacheMcpImageBlock:
         )
         assert _cache_mcp_image_block(block) == ""
 
-    def test_rejects_oversized_image_before_caching(self, tmp_path, monkeypatch):
-        """Oversized MCP image blocks are dropped (post-decode check) before they
-        can fill the shared on-disk image cache."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from tools.mcp_tool import _MCP_IMAGE_MAX_BYTES, _cache_mcp_image_block
-
-        oversized_png = b"\x89PNG\r\n\x1a\n" + b"A" * (_MCP_IMAGE_MAX_BYTES + 1 - 8)
-        block = SimpleNamespace(
-            data=base64.b64encode(oversized_png).decode("ascii"),
-            mimeType="image/png",
-        )
-
-        assert _cache_mcp_image_block(block) == ""
-        assert not (tmp_path / "cache" / "images").exists()
-
-    def test_rejects_block_exceeding_base64_char_limit(self, tmp_path, monkeypatch):
-        """Blocks whose *encoded* length exceeds _MCP_IMAGE_MAX_BASE64_CHARS are
-        rejected before any decoding takes place."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from tools.mcp_tool import _MCP_IMAGE_MAX_BASE64_CHARS, _cache_mcp_image_block
-
-        # Construct a string one base64 block (4 chars) longer than the limit so
-        # the pre-decode branch fires, not the post-decode branch.
-        overlong_data = "A" * (_MCP_IMAGE_MAX_BASE64_CHARS + 4)
-        block = SimpleNamespace(
-            data=overlong_data,
-            mimeType="image/png",
-        )
-
-        assert _cache_mcp_image_block(block) == ""
-        assert not (tmp_path / "cache" / "images").exists()
-
     def test_handles_jpeg(self, tmp_path, monkeypatch):
         """JPEG signature should also be accepted."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

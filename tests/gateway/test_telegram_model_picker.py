@@ -44,7 +44,7 @@ def _make_adapter():
 
 class TestTelegramModelPicker:
     @pytest.mark.asyncio
-    async def test_does_not_retry_without_thread_for_forum_topics(self):
+    async def test_retries_without_thread_when_thread_not_found(self):
         adapter = _make_adapter()
         providers = [{"slug": "openai", "name": "OpenAI", "total_models": 2, "is_current": True}]
         call_log = []
@@ -70,6 +70,7 @@ class TestTelegramModelPicker:
             metadata={"thread_id": "99999"},
         )
 
-        assert result.success is False
-        assert len(call_log) == 1
+        assert result.success is True
+        assert len(call_log) == 2
         assert call_log[0]["message_thread_id"] == 99999
+        assert "message_thread_id" not in call_log[1] or call_log[1]["message_thread_id"] is None

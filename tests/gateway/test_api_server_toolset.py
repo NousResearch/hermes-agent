@@ -30,7 +30,7 @@ class TestHermesApiServerToolset:
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze", "image_generate",
             "execute_code", "delegate_task",
-            "todo", "memory", "cronjob",
+            "todo", "memory", "session_search", "cronjob",
         ]
         for tool in expected:
             assert tool in tools, f"Missing expected tool: {tool}"
@@ -46,16 +46,6 @@ class TestHermesApiServerToolset:
         tools = resolve_toolset("hermes-api-server")
         for tool in ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"]:
             assert tool in tools, f"Missing HA tool: {tool}"
-
-    def test_toolset_excludes_session_search(self):
-        tools = resolve_toolset("hermes-api-server")
-        assert "session_search" not in tools
-
-    def test_default_api_server_toolsets_exclude_session_search(self):
-        from hermes_cli.tools_config import _get_platform_tools
-
-        toolsets = _get_platform_tools({}, "api_server")
-        assert "session_search" not in toolsets
 
     def test_toolset_excludes_clarify(self):
         tools = resolve_toolset("hermes-api-server")

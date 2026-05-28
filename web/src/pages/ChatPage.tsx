@@ -51,14 +51,11 @@ function buildWsUrl(
 // (subscriber).  Generated once per mount so a tab refresh starts a fresh
 // channel — the previous PTY child terminates with the old WS, and its
 // channel auto-evicts when no subscribers remain.
-function generateChannelId(scope: string | null = null): string {
-  const prefix = scope
-    ? `chat-${scope.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 64)}`
-    : "chat";
+function generateChannelId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
+    return crypto.randomUUID();
   }
-  return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+  return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 }
 
 // Colors for the terminal body.  Matches the dashboard's dark teal canvas
@@ -72,9 +69,6 @@ const TERMINAL_THEME = {
   cursorAccent: "#0d2626",
   selectionBackground: "#f0e6d244",
 };
-
-const OSC52_CLIPBOARD_ARM_MS = 1000;
-const OSC52_MAX_CLIPBOARD_BYTES = 256 * 1024;
 
 /**
  * CSS width for xterm font tiers.
@@ -128,7 +122,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const osc52ClipboardArmedUntilRef = useRef(0);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -162,7 +155,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(resumeParam), [resumeParam]);
+  const channel = useMemo(() => generateChannelId(), [resumeParam]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -323,28 +316,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     //
     // OSC 52 reads (terminal asking to read the clipboard) are not
     // supported — that would let any content the TUI renders exfiltrate
-    // the user's clipboard.  Writes are accepted only immediately after
-    // a local copy keypress, because all PTY output is otherwise untrusted
-    // (model/tool/command output can contain terminal escape sequences).
+    // the user's clipboard.
     term.parser.registerOscHandler(52, (data) => {
       // Format: "<targets>;<base64 | '?'>"
       const semi = data.indexOf(";");
-      if (semi < 0) return true;
+      if (semi < 0) return false;
       const payload = data.slice(semi + 1);
-      if (payload === "?" || payload === "") return true; // read/clear — ignore
-
-      const now = Date.now();
-      if (now > osc52ClipboardArmedUntilRef.current) {
-        return true;
-      }
-      osc52ClipboardArmedUntilRef.current = 0;
-
+      if (payload === "?" || payload === "") return false; // read/clear — ignore
       try {
         const binary = atob(payload);
-        if (binary.length > OSC52_MAX_CLIPBOARD_BYTES) {
-          console.warn("[dashboard clipboard] OSC 52 payload too large");
-          return true;
-        }
         const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
         const text = new TextDecoder("utf-8").decode(bytes);
         navigator.clipboard.writeText(text).catch((err) => {
@@ -353,7 +333,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch {
+      } catch (e) {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -374,14 +354,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
       const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
 
-      if ((isMac ? ev.metaKey : ev.ctrlKey) && ev.key.toLowerCase() === "c") {
-        osc52ClipboardArmedUntilRef.current = Date.now() + OSC52_CLIPBOARD_ARM_MS;
-      }
-
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
         if (sel) {
-          osc52ClipboardArmedUntilRef.current = 0;
           // Direct writeText inside the keydown handler preserves the user
           // gesture — async round-trips through OSC 52 can lose activation
           // and fail with "Document is not focused".

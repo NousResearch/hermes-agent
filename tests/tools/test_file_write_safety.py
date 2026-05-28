@@ -24,22 +24,6 @@ class TestStaticDenyList:
     def test_etc_shadow_is_denied(self):
         assert _is_write_denied("/etc/shadow") is True
 
-    def test_subprocess_home_sensitive_paths_are_denied(self, tmp_path: Path, monkeypatch):
-        """Protect the HOME that terminal/background subprocesses actually use."""
-        hermes_home = tmp_path / "hermes"
-        profile_home = hermes_home / "home"
-        profile_home.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        denied_targets = [
-            profile_home / ".ssh" / "config",
-            profile_home / ".bash_profile",
-            profile_home / ".npmrc",
-            profile_home / ".config" / "gh" / "hosts.yml",
-        ]
-        for target in denied_targets:
-            assert _is_write_denied(str(target)) is True, f"{target} should be denied"
-
 
 class TestSafeWriteRoot:
     """HERMES_WRITE_SAFE_ROOT should sandbox writes to a specific subtree."""

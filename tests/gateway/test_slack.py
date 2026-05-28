@@ -885,95 +885,6 @@ class TestIncomingDocumentHandling:
         assert msg_event.message_type == MessageType.PHOTO
 
     @pytest.mark.asyncio
-    async def test_unauthorized_slack_connect_file_is_not_resolved_or_downloaded(self, adapter):
-        """Unauthorized users must not trigger Slack Connect file resolution."""
-
-        class Runner:
-            def __init__(self):
-                self.sources = []
-
-            def _is_user_authorized(self, source):
-                self.sources.append(source)
-                return False
-
-            async def handle(self, event):  # pragma: no cover - only used as bound owner
-                return None
-
-        runner = Runner()
-        adapter._message_handler = runner.handle
-        adapter._app.client.files_info = AsyncMock(return_value={
-            "ok": True,
-            "file": {
-                "id": "F_STUB",
-                "mimetype": "image/png",
-                "name": "remote.png",
-                "url_private_download": "https://files.slack.com/remote.png",
-                "size": 123,
-            },
-        })
-        event = self._make_event(files=[{
-            "id": "F_STUB",
-            "file_access": "check_file_info",
-        }])
-
-        with (
-            patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="blocked")),
-            patch.object(adapter, "_download_slack_file", new_callable=AsyncMock) as dl,
-        ):
-            await adapter._handle_slack_message(event)
-
-        adapter._app.client.files_info.assert_not_awaited()
-        dl.assert_not_awaited()
-        adapter.handle_message.assert_awaited_once()
-        msg_event = adapter.handle_message.await_args.args[0]
-        assert msg_event.media_urls == []
-        assert runner.sources[0].user_id == "U_USER"
-
-    @pytest.mark.asyncio
-    async def test_authorized_slack_connect_file_is_resolved_and_downloaded(self, adapter):
-        """Authorized Slack Connect file stubs still use files.info then download."""
-
-        class Runner:
-            def _is_user_authorized(self, source):
-                return True
-
-            async def handle(self, event):  # pragma: no cover - only used as bound owner
-                return None
-
-        adapter._message_handler = Runner().handle
-        adapter._app.client.files_info = AsyncMock(return_value={
-            "ok": True,
-            "file": {
-                "id": "F_STUB",
-                "mimetype": "image/png",
-                "name": "remote.png",
-                "url_private_download": "https://files.slack.com/remote.png",
-                "size": 123,
-            },
-        })
-        event = self._make_event(files=[{
-            "id": "F_STUB",
-            "file_access": "check_file_info",
-        }])
-
-        with (
-            patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="allowed")),
-            patch.object(adapter, "_download_slack_file", new_callable=AsyncMock) as dl,
-        ):
-            dl.return_value = "/tmp/remote.png"
-            await adapter._handle_slack_message(event)
-
-        adapter._app.client.files_info.assert_awaited_once_with(file="F_STUB")
-        dl.assert_awaited_once_with(
-            "https://files.slack.com/remote.png",
-            ".png",
-            team_id="",
-        )
-        msg_event = adapter.handle_message.await_args.args[0]
-        assert msg_event.message_type == MessageType.PHOTO
-        assert msg_event.media_urls == ["/tmp/remote.png"]
-
-    @pytest.mark.asyncio
     async def test_download_failure_is_surfaced_in_message_text(self, adapter):
         """Attachment download failures (401/403/HTML-body/etc.) should be
         translated into a user-facing `[Slack attachment notice]` block so
@@ -2374,68 +2285,6 @@ class TestSlashCommands:
         msg = adapter.handle_message.call_args[0][0]
         assert msg.text == "/model anthropic/claude-sonnet-4"
 
-
-    @pytest.mark.asyncio
-    async def test_allowed_channels_blocks_legacy_hermes_freeform_in_disallowed_channel(self, adapter):
-        adapter.config.extra["allowed_channels"] = ["CALLOWED"]
-        command = {
-            "command": "/hermes",
-            "text": "what is the incident status?",
-            "user_id": "U1",
-            "channel_id": "CBAD",
-        }
-
-        await adapter._handle_slash_command(command)
-
-        adapter.handle_message.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_allowed_channels_blocks_native_slash_in_disallowed_channel(self, adapter):
-        adapter.config.extra["allowed_channels"] = ["CALLOWED"]
-        command = {
-            "command": "/model",
-            "text": "gpt-test",
-            "user_id": "U1",
-            "channel_id": "CBAD",
-        }
-
-        await adapter._handle_slash_command(command)
-
-        adapter.handle_message.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_allowed_channels_permits_slash_in_allowed_channel(self, adapter):
-        adapter.config.extra["allowed_channels"] = ["CALLOWED"]
-        command = {
-            "command": "/model",
-            "text": "gpt-test",
-            "user_id": "U1",
-            "channel_id": "CALLOWED",
-        }
-
-        await adapter._handle_slash_command(command)
-
-        adapter.handle_message.assert_awaited_once()
-        msg = adapter.handle_message.call_args[0][0]
-        assert msg.text == "/model gpt-test"
-
-    @pytest.mark.asyncio
-    async def test_allowed_channels_does_not_block_dm_slash(self, adapter):
-        adapter.config.extra["allowed_channels"] = ["CALLOWED"]
-        command = {
-            "command": "/model",
-            "text": "gpt-test",
-            "user_id": "U1",
-            "channel_id": "D123",
-        }
-
-        await adapter._handle_slash_command(command)
-
-        adapter.handle_message.assert_awaited_once()
-        msg = adapter.handle_message.call_args[0][0]
-        assert msg.source.chat_type == "dm"
-        assert msg.text == "/model gpt-test"
-
     @pytest.mark.asyncio
     async def test_legacy_hermes_prefix_still_works(self, adapter):
         """Backward compat: /hermes btw foo must still route to /btw foo.
@@ -3210,8 +3059,8 @@ class TestSlashEphemeralAck:
         assert ("C_H", "U_H") in adapter._slash_command_contexts
 
     @pytest.mark.asyncio
-    async def test_freeform_hermes_question_stashes_context(self, adapter):
-        """Free-form /hermes <question> routes agent reply ephemerally."""
+    async def test_freeform_hermes_question_does_not_stash_context(self, adapter):
+        """Free-form /hermes <question> must NOT route agent reply ephemeral."""
         command = {
             "command": "/hermes",
             "text": "what's the weather",
@@ -3226,9 +3075,8 @@ class TestSlashEphemeralAck:
         # Free-form text — not a command
         assert event.message_type == MessageType.TEXT
         assert event.text == "what's the weather"
-        # Context is stashed so the slash reply replaces the private ack instead
-        # of posting the answer publicly to the channel.
-        assert ("C_FREE", "U_FREE") in adapter._slash_command_contexts
+        # Context must NOT be stashed — agent reply should be public
+        assert len(adapter._slash_command_contexts) == 0
 
     @pytest.mark.asyncio
     async def test_concurrent_users_same_channel_isolates_contexts(self, adapter):

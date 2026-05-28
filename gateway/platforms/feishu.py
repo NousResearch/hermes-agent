@@ -2500,33 +2500,11 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
         return True
 
-    def _is_interactive_operator_authorized(self, open_id: str, *, chat_id: str = "") -> bool:
+    def _is_interactive_operator_authorized(self, open_id: str) -> bool:
         """Return whether this card-action operator may answer gated prompts."""
         normalized = str(open_id or "").strip()
         if not normalized:
             return False
-
-        runner = getattr(self, "gateway_runner", None)
-        if (runner is not None or chat_id in self._group_rules) and chat_id and not self._allow_group_message(
-            SimpleNamespace(open_id=normalized, user_id=None),
-            chat_id,
-        ):
-            return False
-
-        auth_fn = getattr(runner, "_is_user_authorized", None) if runner is not None else None
-        if callable(auth_fn):
-            try:
-                source = self.build_source(
-                    chat_id=chat_id or normalized,
-                    chat_type="group" if chat_id else "dm",
-                    user_id=normalized,
-                    user_name=self._get_cached_sender_name(normalized) or normalized,
-                )
-                return bool(auth_fn(source))
-            except Exception:
-                logger.warning("[Feishu] Failed to authorize interactive card operator", exc_info=True)
-                return False
-
         allowed_ids = set(self._admins) | set(self._allowed_group_users)
         if not allowed_ids:
             return True
@@ -2545,6 +2523,10 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return False
 
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
+            return False
+
         event_chat_id = self._event_open_chat_id(event)
         expected_chat_id = str(state.get("chat_id") or "").strip()
         if expected_chat_id and event_chat_id != expected_chat_id:
@@ -2552,10 +2534,6 @@ class FeishuAdapter(BasePlatformAdapter):
                 "[Feishu] Approval %s clicked from unexpected chat %s (expected %s)",
                 approval_id, event_chat_id or "<unknown>", expected_chat_id,
             )
-            return False
-
-        if not self._is_interactive_operator_authorized(open_id, chat_id=expected_chat_id):
-            logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
             return False
 
         return True
@@ -2597,8 +2575,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if prompt_id is None:
             logger.debug("[Feishu] Card action missing update_prompt_id, ignoring")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-        state = self._update_prompt_state.get(prompt_id)
-        if not state:
+        if prompt_id not in self._update_prompt_state:
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2607,18 +2584,9 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Card action has invalid update prompt answer=%r", answer)
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
-        expected_chat_id = str(state.get("chat_id") or "").strip()
-        event_chat_id = self._event_open_chat_id(event)
-        if expected_chat_id and event_chat_id != expected_chat_id:
-            logger.warning(
-                "[Feishu] Update prompt %s clicked from unexpected chat %s (expected %s)",
-                prompt_id, event_chat_id or "<unknown>", expected_chat_id,
-            )
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        if not self._is_interactive_operator_authorized(open_id, chat_id=expected_chat_id):
+        if not self._is_interactive_operator_authorized(open_id):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -3024,6 +2992,7 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
+            or getattr(message, "root_id", None)
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
@@ -3802,8 +3771,8 @@ class FeishuAdapter(BasePlatformAdapter):
         """Map Feishu's three-tier user IDs onto Hermes' SessionSource fields.
 
         Preference order for the primary ``user_id`` field:
-          1. open_id  (app-scoped, always available — different per bot app)
-          2. user_id  (tenant-scoped fallback — requires permission scope)
+          1. user_id  (tenant-scoped, most stable — requires permission scope)
+          2. open_id  (app-scoped, always available — different per bot app)
 
         ``user_id_alt`` carries the union_id (developer-scoped, stable across
         all apps by the same developer).  Session-key generation prefers
@@ -3813,9 +3782,8 @@ class FeishuAdapter(BasePlatformAdapter):
         open_id = getattr(sender_id, "open_id", None) or None
         user_id = getattr(sender_id, "user_id", None) or None
         union_id = getattr(sender_id, "union_id", None) or None
-        # Use the app-scoped open_id as the gateway authorization principal.
-        # Tenant-scoped user_id can collide across tenants in multi-tenant bot deployments.
-        primary_id = open_id or user_id
+        # Prefer tenant-scoped user_id; fall back to app-scoped open_id.
+        primary_id = user_id or open_id
         # bot/v3/bots/basic_batch only accepts open_id.
         name_lookup_id = open_id if is_bot else (primary_id or union_id)
         display_name = await self._resolve_sender_name_from_api(

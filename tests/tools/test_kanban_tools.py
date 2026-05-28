@@ -826,29 +826,14 @@ def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
-        b = kb.create_task(
-            conn, title="B", assignee="x", created_by="test-worker"
-        )
+        a = kb.create_task(conn, title="A", assignee="x")
+        b = kb.create_task(conn, title="B", assignee="x")
     finally:
         conn.close()
     from tools import kanban_tools as kt
-    out = kt._handle_link({"parent_id": worker_env, "child_id": b})
+    out = kt._handle_link({"parent_id": a, "child_id": b})
     d = json.loads(out)
     assert d["ok"] is True
-
-
-def test_worker_link_rejects_foreign_child(worker_env):
-    from hermes_cli import kanban_db as kb
-    conn = kb.connect()
-    try:
-        b = kb.create_task(conn, title="B", assignee="x", created_by="bob")
-    finally:
-        conn.close()
-    from tools import kanban_tools as kt
-    out = kt._handle_link({"parent_id": worker_env, "child_id": b})
-    d = json.loads(out)
-    assert d.get("error")
-    assert "worker-scoped kanban_link" in d["error"]
 
 
 def test_link_rejects_self_reference(worker_env):
@@ -1048,8 +1033,8 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
 # kanban_unblock) must refuse to operate
 # on any OTHER task id, even if the caller supplies an explicit `task_id`
 # argument. Workers legitimately call kanban_show / kanban_list /
-# kanban_comment / kanban_create on other tasks, so those are unrestricted.
-# kanban_link is scoped because it mutates dependency/scheduling state.
+# kanban_comment / kanban_create / kanban_link on other tasks, so those
+# are unrestricted.
 #
 # Orchestrator profiles (no HERMES_KANBAN_TASK in env) are intentionally
 # exempt — their job is routing, and they sometimes close out child

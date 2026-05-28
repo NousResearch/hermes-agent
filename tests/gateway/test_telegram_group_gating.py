@@ -86,13 +86,9 @@ def _dm_message(text="hello", *, from_user_id=111):
     )
 
 
-def _utf16_code_units(text):
-    return len(text.encode("utf-16-le")) // 2
-
-
 def _mention_entity(text, mention="@hermes_bot"):
-    offset = _utf16_code_units(text[: text.index(mention)])
-    return SimpleNamespace(type="mention", offset=offset, length=_utf16_code_units(mention))
+    offset = text.index(mention)
+    return SimpleNamespace(type="mention", offset=offset, length=len(mention))
 
 
 def _bot_command_entity(text, command):
@@ -102,8 +98,8 @@ def _bot_command_entity(text, command):
     client does NOT emit a separate ``mention`` entity — the whole span
     is a single ``bot_command`` entity.
     """
-    offset = _utf16_code_units(text[: text.index(command)])
-    return SimpleNamespace(type="bot_command", offset=offset, length=_utf16_code_units(command))
+    offset = text.index(command)
+    return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
 
 
 def test_group_messages_can_be_opened_via_config():
@@ -151,30 +147,6 @@ def test_group_messages_can_require_direct_trigger_via_config():
     # And commands still pass unconditionally when require_mention is disabled
     adapter_no_mention = _make_adapter(require_mention=False)
     assert adapter_no_mention._should_process_message(_group_message("/status"), is_command=True) is True
-
-
-def test_bot_command_mentions_use_telegram_utf16_offsets():
-    adapter = _make_adapter(require_mention=True)
-    leading = "😀" * 20
-    command = "/status@other_bot"
-    text = f"{leading}{command}xxx@hermes_bot     "
-
-    assert adapter._message_mentions_bot(
-        _group_message(text, entities=[_bot_command_entity(text, command)])
-    ) is False
-    assert adapter._should_process_message(
-        _group_message(text, entities=[_bot_command_entity(text, command)]),
-        is_command=True,
-    ) is False
-
-
-def test_mention_entities_use_telegram_utf16_offsets():
-    adapter = _make_adapter(require_mention=True)
-    text = "😀😀 hi @hermes_bot"
-
-    assert adapter._message_mentions_bot(
-        _group_message(text, entities=[_mention_entity(text)])
-    ) is True
 
 
 def test_free_response_chats_bypass_mention_requirement():

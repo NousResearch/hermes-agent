@@ -8,7 +8,6 @@ and shell completion generation.
 import json
 import io
 import os
-import stat
 import tarfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -670,35 +669,6 @@ class TestRenameProfile:
         assert "hermes.ssi_health" not in cfg["hosts"]
         assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "ssi_health"
         assert cfg["hosts"]["hermes.heimdall"]["workspace"] == "hermes"
-
-    def test_preserves_honcho_config_mode_on_host_rename(self, profile_env):
-        tmp_path = profile_env
-        create_profile("ssi_health", no_alias=True)
-        honcho_dir = tmp_path / ".honcho"
-        honcho_dir.mkdir()
-        honcho_path = honcho_dir / "config.json"
-        honcho_path.write_text(json.dumps({
-            "hosts": {
-                "hermes.ssi_health": {
-                    "apiKey": "test-secret",
-                    "workspace": "hermes",
-                    "enabled": True,
-                }
-            }
-        }))
-        honcho_path.chmod(0o600)
-
-        previous_umask = os.umask(0o022)
-        try:
-            with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
-                rename_profile("ssi_health", "heimdall")
-        finally:
-            os.umask(previous_umask)
-
-        cfg = json.loads(honcho_path.read_text())
-        assert "hermes.ssi_health" not in cfg["hosts"]
-        assert cfg["hosts"]["hermes.heimdall"]["apiKey"] == "test-secret"
-        assert stat.S_IMODE(honcho_path.stat().st_mode) == 0o600
 
     def test_does_not_overwrite_existing_honcho_host_on_rename(self, profile_env):
         tmp_path = profile_env

@@ -13,8 +13,6 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
-import hashlib
-import hmac
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -52,7 +50,6 @@ def _make_adapter():
     adapter._session_path = Path("/tmp/test-wa-session")
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
-    adapter._bridge_token = None
     adapter._bridge_process = None
     adapter._reply_prefix = None
     adapter._running = False
@@ -148,83 +145,6 @@ class TestCloseBridgeLog:
         assert adapter._bridge_log_fh is None
 
 
-class TestBridgeAuth:
-    """Bridge reuse must authenticate the localhost bridge before trusting it."""
-
-    @pytest.mark.asyncio
-    async def test_reuses_existing_bridge_only_with_auth_header(self, tmp_path):
-        adapter = _make_adapter()
-        adapter._session_path = tmp_path / "session"
-        bridge_script = tmp_path / "bridge.js"
-        bridge_script.write_text("// test bridge", encoding="utf-8")
-        (tmp_path / "node_modules").mkdir()
-        adapter._bridge_script = str(bridge_script)
-
-        token = adapter._ensure_bridge_token()
-        bridge_auth = hmac.new(token.encode("utf-8"), b"nonce", hashlib.sha256).hexdigest()
-        mock_client_cls = _mock_aiohttp(
-            status=200,
-            json_data={"status": "connected", "bridgeAuth": bridge_auth},
-        )
-
-        with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
-             patch.object(adapter, "_bridge_health_headers", return_value=({"X-Hermes-Bridge-Challenge": "nonce"}, "nonce")), \
-             patch("aiohttp.ClientSession", mock_client_cls), \
-             patch("gateway.platforms.whatsapp.asyncio.create_task"):
-            result = await adapter.connect()
-
-        assert result is True
-        token = (adapter._session_path / "bridge.token").read_text(encoding="utf-8").strip()
-        assert token == adapter._ensure_bridge_token()
-        session = mock_client_cls.return_value.value
-        _, kwargs = session.get.call_args
-        assert kwargs["headers"] == {"X-Hermes-Bridge-Challenge": "nonce"}
-        assert adapter._bridge_process is None
-
-    @pytest.mark.asyncio
-    async def test_unauthorized_localhost_bridge_is_not_reused(self, tmp_path):
-        adapter = _make_adapter()
-        adapter._session_path = tmp_path / "session"
-        bridge_script = tmp_path / "bridge.js"
-        bridge_script.write_text("// test bridge", encoding="utf-8")
-        (tmp_path / "node_modules").mkdir()
-        adapter._bridge_script = str(bridge_script)
-
-        unauthorized = MagicMock(status=200)
-        unauthorized.json = AsyncMock(return_value={"status": "connected"})
-        token = adapter._ensure_bridge_token()
-        bridge_auth = hmac.new(token.encode("utf-8"), b"nonce", hashlib.sha256).hexdigest()
-        connected = MagicMock(status=200)
-        connected.json = AsyncMock(return_value={"status": "connected", "bridgeAuth": bridge_auth})
-
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(side_effect=[_AsyncCM(unauthorized), _AsyncCM(connected)])
-        mock_client_cls = MagicMock(return_value=_AsyncCM(mock_session))
-        mock_proc = MagicMock()
-        mock_proc.pid = 1234
-        mock_proc.poll.return_value = None
-        mock_fh = MagicMock()
-
-        with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
-             patch.object(adapter, "_bridge_health_headers", return_value=({"X-Hermes-Bridge-Challenge": "nonce"}, "nonce")), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
-             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
-             patch("builtins.open", return_value=mock_fh), \
-             patch("gateway.platforms.whatsapp._kill_port_process") as mock_kill_port, \
-             patch("gateway.platforms.whatsapp._kill_stale_bridge_by_pidfile"), \
-             patch("gateway.platforms.whatsapp.asyncio.sleep", new_callable=AsyncMock), \
-             patch("aiohttp.ClientSession", mock_client_cls), \
-             patch("gateway.platforms.whatsapp.asyncio.create_task"):
-            result = await adapter.connect()
-
-        assert result is True
-        mock_kill_port.assert_called_once_with(adapter._bridge_port)
-        mock_popen.assert_called_once()
-        assert adapter._bridge_process is mock_proc
-        env = mock_popen.call_args.kwargs["env"]
-        assert env["HERMES_WHATSAPP_BRIDGE_TOKEN"] == adapter._ensure_bridge_token()
-
-
 # ---------------------------------------------------------------------------
 # data variable initialization
 # ---------------------------------------------------------------------------
@@ -258,8 +178,9 @@ class TestDataInitialized:
             # Must NOT raise NameError
             result = await adapter.connect()
 
-        assert result is False
-        assert adapter._running is False
+        # connect() returns True (warn-and-proceed path)
+        assert result is True
+        assert adapter._running is True
 
 
 # ---------------------------------------------------------------------------

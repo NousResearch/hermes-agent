@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 import yaml
@@ -80,13 +80,6 @@ MINIMAX_OAUTH_CN_BASE = "https://api.minimaxi.com"
 MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
 MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
 MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
-MINIMAX_OAUTH_REDIRECT_HOSTS = frozenset({
-    "api.minimax.io",
-    "account.minimax.io",
-    "api.minimaxi.com",
-    "account.minimaxi.com",
-})
-MINIMAX_OAUTH_MAX_REDIRECTS = 3
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
@@ -4728,8 +4721,7 @@ def _minimax_request_user_code(
     client: httpx.Client, *, portal_base_url: str, client_id: str,
     code_challenge: str, state: str,
 ) -> Dict[str, Any]:
-    response = _minimax_post_oauth_form(
-        client,
+    response = client.post(
         f"{portal_base_url}/oauth/code",
         data={
             "response_type": "code",
@@ -4765,49 +4757,6 @@ def _minimax_request_user_code(
     return payload
 
 
-def _minimax_redirect_target(url: str, location: str) -> Optional[str]:
-    """Return an allowed MiniMax OAuth redirect URL, or None if unsafe."""
-    target = urljoin(url, location)
-    parsed = urlparse(target)
-    host = (parsed.hostname or "").lower()
-    if parsed.scheme != "https" or host not in MINIMAX_OAUTH_REDIRECT_HOSTS:
-        return None
-    if not parsed.path.startswith("/oauth/"):
-        return None
-    return target
-
-
-def _minimax_post_oauth_form(
-    client: httpx.Client,
-    url: str,
-    *,
-    data: Dict[str, Any],
-    headers: Dict[str, str],
-) -> httpx.Response:
-    """POST MiniMax OAuth form data, following only allowlisted HTTPS redirects."""
-    current_url = url
-    for _ in range(MINIMAX_OAUTH_MAX_REDIRECTS + 1):
-        response = client.post(current_url, data=data, headers=headers)
-        if response.status_code not in (307, 308):
-            return response
-
-        location = response.headers.get("Location") if response.headers else None
-        if not location:
-            return response
-        redirect_url = _minimax_redirect_target(current_url, location)
-        if not redirect_url:
-            raise AuthError(
-                "MiniMax OAuth redirected to an untrusted endpoint.",
-                provider="minimax-oauth", code="unsafe_redirect",
-            )
-        current_url = redirect_url
-
-    raise AuthError(
-        "MiniMax OAuth exceeded the redirect limit.",
-        provider="minimax-oauth", code="too_many_redirects",
-    )
-
-
 def _minimax_poll_token(
     client: httpx.Client, *, portal_base_url: str, client_id: str,
     user_code: str, code_verifier: str, expired_in: int, interval_ms: Optional[int],
@@ -4825,8 +4774,7 @@ def _minimax_poll_token(
     interval = max(2.0, (interval_ms or 2000) / 1000.0)
 
     while _time.time() < deadline:
-        response = _minimax_post_oauth_form(
-            client,
+        response = client.post(
             f"{portal_base_url}/oauth/token",
             data={
                 "grant_type": MINIMAX_OAUTH_GRANT_TYPE,
@@ -4903,7 +4851,8 @@ def _minimax_oauth_login(
     print(f"Portal: {portal_base_url}")
 
     with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
-                      headers={"Accept": "application/json"}) as client:
+                      headers={"Accept": "application/json"},
+                      follow_redirects=True) as client:
         code_data = _minimax_request_user_code(
             client, portal_base_url=portal_base_url,
             client_id=pconfig.client_id,
@@ -4980,9 +4929,9 @@ def _refresh_minimax_oauth_state(
         return state
 
     portal_base_url = state["portal_base_url"]
-    with httpx.Client(timeout=httpx.Timeout(timeout_seconds)) as client:
-        response = _minimax_post_oauth_form(
-            client,
+    with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
+                      follow_redirects=True) as client:
+        response = client.post(
             f"{portal_base_url}/oauth/token",
             data={
                 "grant_type": "refresh_token",

@@ -1231,23 +1231,19 @@ class HermesACPAgent(acp.Agent):
         # still running, queue it instead of racing two AIAgent loops against
         # the same state.history. /steer and /queue are handled above and can
         # land immediately.
-        queued_depth = 0
         with state.runtime_lock:
             if state.is_running:
                 queued_text = user_text or "[Image attachment]"
                 state.queued_prompts.append(queued_text)
-                queued_depth = len(state.queued_prompts)
-            else:
-                state.is_running = True
-                state.current_prompt_text = user_text or "[Image attachment]"
-
-        if queued_depth:
-            if self._conn:
-                update = acp.update_agent_message_text(
-                    f"Queued for the next turn. ({queued_depth} queued)"
-                )
-                await self._conn.session_update(session_id, update)
-            return PromptResponse(stop_reason="end_turn")
+                depth = len(state.queued_prompts)
+                if self._conn:
+                    update = acp.update_agent_message_text(
+                        f"Queued for the next turn. ({depth} queued)"
+                    )
+                    await self._conn.session_update(session_id, update)
+                return PromptResponse(stop_reason="end_turn")
+            state.is_running = True
+            state.current_prompt_text = user_text or "[Image attachment]"
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
 
@@ -1296,17 +1292,18 @@ class HermesACPAgent(acp.Agent):
         # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
         # Set it INSIDE _run_agent so the TLS write happens in the executor
         # thread — setting it here would write to the event-loop thread's TLS,
-        # not the executor's. Bind interactive approval routing with a
-        # ContextVar so overlapping ACP sessions cannot clear each other's
-        # process-wide environment state while running concurrently
-        # (GHSA-96vc-wcxf-jjff). ACP's conn.request_permission maps cleanly
-        # to the interactive callback shape — not the gateway-queue
-        # HERMES_EXEC_ASK path, which requires a notify_cb registered in
-        # _gateway_notify_cbs.
+        # not the executor's. Also set HERMES_INTERACTIVE so approval.py
+        # takes the CLI-interactive path (which calls the registered
+        # callback via prompt_dangerous_approval) instead of the
+        # non-interactive auto-approve branch (GHSA-96vc-wcxf-jjff).
+        # ACP's conn.request_permission maps cleanly to the interactive
+        # callback shape — not the gateway-queue HERMES_EXEC_ASK path,
+        # which requires a notify_cb registered in _gateway_notify_cbs.
         previous_approval_cb = None
+        previous_interactive = None
 
         def _run_agent() -> dict:
-            nonlocal previous_approval_cb
+            nonlocal previous_approval_cb, previous_interactive
             # Bind HERMES_SESSION_KEY for this session so per-session caches
             # (e.g. the interactive sudo password cache in tools.terminal_tool)
             # scope to the ACP session rather than leaking across sessions
@@ -1332,8 +1329,8 @@ class HermesACPAgent(acp.Agent):
                     logger.debug("Could not set ACP approval callback", exc_info=True)
             # Signal to tools.approval that we have an interactive callback
             # and the non-interactive auto-approve path must not fire.
-            from tools.approval import reset_current_interactive, set_current_interactive
-            interactive_token = set_current_interactive(True)
+            previous_interactive = os.environ.get("HERMES_INTERACTIVE")
+            os.environ["HERMES_INTERACTIVE"] = "1"
             try:
                 result = agent.run_conversation(
                     user_message=user_content,
@@ -1346,7 +1343,11 @@ class HermesACPAgent(acp.Agent):
                 logger.exception("Agent error in session %s", session_id)
                 return {"final_response": f"Error: {e}", "messages": state.history}
             finally:
-                reset_current_interactive(interactive_token)
+                # Restore HERMES_INTERACTIVE.
+                if previous_interactive is None:
+                    os.environ.pop("HERMES_INTERACTIVE", None)
+                else:
+                    os.environ["HERMES_INTERACTIVE"] = previous_interactive
                 if approval_cb:
                     try:
                         from tools import terminal_tool as _terminal_tool

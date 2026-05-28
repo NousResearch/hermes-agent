@@ -22,12 +22,6 @@ class TestToOpenaiBaseUrl:
     def test_trailing_slash_stripped_before_replace(self):
         assert _to_openai_base_url("https://api.minimax.io/anthropic/") == "https://api.minimax.io/v1"
 
-    def test_zai_global_anthropic_suffix_replaced(self):
-        assert _to_openai_base_url("https://api.z.ai/api/anthropic") == "https://api.z.ai/api/paas/v4"
-
-    def test_zai_cn_anthropic_suffix_replaced(self):
-        assert _to_openai_base_url("https://open.bigmodel.cn/api/anthropic") == "https://open.bigmodel.cn/api/paas/v4"
-
     def test_v1_url_unchanged(self):
         assert _to_openai_base_url("https://api.openai.com/v1") == "https://api.openai.com/v1"
 

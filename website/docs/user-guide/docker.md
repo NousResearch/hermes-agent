@@ -212,7 +212,7 @@ services:
     command: gateway run
     ports:
       - "8642:8642"   # gateway API
-      - "127.0.0.1:9119:9119"   # dashboard (only reached when HERMES_DASHBOARD=1)
+      - "127.0.0.1:9119:9119"   # dashboard, host-loopback only
     volumes:
       - ~/.hermes:/opt/data
     environment:
@@ -325,8 +325,8 @@ services:
       --served-model-name my-model
       --host 0.0.0.0
       --port 8000
-    expose:
-      - "8000"  # available only to containers on hermes-net
+    ports:
+      - "8000:8000"
     networks:
       - hermes-net
     deploy:
@@ -365,9 +365,8 @@ model:
 :::tip Key points
 - Use the **container name** (`vllm`) as the hostname — not `localhost` or `127.0.0.1`, which refer to the Hermes container itself.
 - The `model` value must match the `--served-model-name` you passed to vLLM.
-- Set `api_key` to any non-empty string (vLLM requires the header but doesn't validate it by default). Configure vLLM authentication where supported before exposing it outside the Docker network.
+- Set `api_key` to any non-empty string (vLLM requires the header but doesn't validate it by default).
 - Do **not** include a trailing slash in `base_url`.
-- Do **not** publish the vLLM port to the host for Compose-based Hermes connectivity. If you need host access for local debugging, bind it to loopback only (for example, `127.0.0.1:8000:8000`) and do not use an unauthenticated public interface.
 :::
 
 ### Standalone Docker run (no Compose)

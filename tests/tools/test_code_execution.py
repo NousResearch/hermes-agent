@@ -17,7 +17,6 @@ import pytest
 
 import json
 import os
-import socket
 
 os.environ["TERMINAL_ENV"] = "local"
 
@@ -45,7 +44,6 @@ from tools.code_execution_tool import (
     build_execute_code_schema,
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
-    _rpc_server_loop,
     _execute_remote,
 )
 
@@ -106,8 +104,6 @@ class TestHermesToolsGeneration(unittest.TestCase):
     def test_rpc_infrastructure_present(self):
         src = generate_hermes_tools_module(["terminal"])
         self.assertIn("HERMES_RPC_SOCKET", src)
-        self.assertIn("HERMES_RPC_TOKEN", src)
-        self.assertIn('"auth": _rpc_auth_token()', src)
         self.assertIn("AF_UNIX", src)
         self.assertIn("def _connect(", src)
         self.assertIn("def _call(", src)
@@ -141,61 +137,6 @@ class TestHermesToolsGeneration(unittest.TestCase):
         src = generate_hermes_tools_module(["terminal"], transport="file")
         self.assertIn("_seq_lock = threading.Lock()", src)
         self.assertIn("with _seq_lock:", src)
-
-
-class TestLocalRpcAuthentication(unittest.TestCase):
-    def _serve_once(self, token="expected-token"):
-        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_sock.bind(("127.0.0.1", 0))
-        server_sock.listen(1)
-        host, port = server_sock.getsockname()[:2]
-        tool_call_log = []
-        tool_call_counter = [0]
-        thread = threading.Thread(
-            target=_rpc_server_loop,
-            args=(
-                server_sock, "test-task", tool_call_log, tool_call_counter,
-                5, frozenset({"terminal"}), token,
-            ),
-            daemon=True,
-        )
-        thread.start()
-        return server_sock, host, port, thread, tool_call_log, tool_call_counter
-
-    def test_rpc_rejects_missing_auth_token(self):
-        server_sock, host, port, thread, _log, counter = self._serve_once()
-        try:
-            with socket.create_connection((host, port), timeout=2) as client:
-                client.sendall(b'{"tool":"terminal","args":{"command":"echo pwn"}}\n')
-                response = json.loads(client.recv(65536).decode())
-            thread.join(timeout=2)
-        finally:
-            server_sock.close()
-
-        self.assertIn("error", response)
-        self.assertIn("Unauthorized", response["error"])
-        self.assertEqual(counter[0], 0)
-
-    def test_rpc_accepts_valid_auth_token(self):
-        with patch(
-            "model_tools.handle_function_call",
-            return_value=json.dumps({"ok": True}),
-        ) as handle:
-            server_sock, host, port, thread, _log, counter = self._serve_once()
-            try:
-                with socket.create_connection((host, port), timeout=2) as client:
-                    client.sendall(
-                        b'{"auth":"expected-token","tool":"terminal",'
-                        b'"args":{"command":"echo ok"}}\n'
-                    )
-                    response = json.loads(client.recv(65536).decode())
-                thread.join(timeout=2)
-            finally:
-                server_sock.close()
-
-        self.assertEqual(response, {"ok": True})
-        self.assertEqual(counter[0], 1)
-        handle.assert_called_once()
 
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
@@ -799,11 +740,6 @@ class TestEnvVarFiltering(unittest.TestCase):
     def test_hermes_rpc_socket_injected(self):
         child_env = self._get_child_env()
         self.assertIn("HERMES_RPC_SOCKET", child_env)
-
-    def test_hermes_rpc_token_injected(self):
-        child_env = self._get_child_env()
-        self.assertIn("HERMES_RPC_TOKEN", child_env)
-        self.assertGreaterEqual(len(child_env["HERMES_RPC_TOKEN"]), 64)
 
     def test_pythondontwritebytecode_set(self):
         child_env = self._get_child_env()

@@ -368,42 +368,6 @@ class SlackAdapter(BasePlatformAdapter):
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or normalized_user_id in allowed_ids
 
-    def _is_message_user_authorized_for_attachment_fetch(
-        self,
-        user_id: str,
-        *,
-        channel_id: str,
-        is_dm: bool,
-    ) -> bool:
-        """Return whether it is safe to fetch Slack file content for this sender."""
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        auth_fn = getattr(runner, "_is_user_authorized", None)
-        if not callable(auth_fn):
-            return True
-
-        normalized_user_id = str(user_id or "").strip()
-        if not normalized_user_id:
-            return False
-
-        try:
-            from gateway.session import SessionSource
-
-            source = SessionSource(
-                platform=Platform.SLACK,
-                chat_id=str(channel_id or "").strip() or normalized_user_id,
-                chat_type="dm" if is_dm else "group",
-                user_id=normalized_user_id,
-                user_name=None,
-            )
-            return bool(auth_fn(source))
-        except Exception:
-            logger.debug(
-                "[Slack] Could not pre-authorize attachment fetch for user %s",
-                normalized_user_id,
-                exc_info=True,
-            )
-            return True
-
     def _describe_slack_api_error(self, response: Any, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Convert Slack API auth/permission failures into actionable user-facing text."""
         if response is None or not hasattr(response, "get"):
@@ -2055,17 +2019,6 @@ class SlackAdapter(BasePlatformAdapter):
         media_types = []
         attachment_notices: List[str] = []
         files = event.get("files", [])
-        if files and not self._is_message_user_authorized_for_attachment_fetch(
-            user_id,
-            channel_id=channel_id,
-            is_dm=is_dm,
-        ):
-            logger.debug(
-                "[Slack] Skipping attachment fetch before authorization for user %s",
-                user_id,
-            )
-            files = []
-
         for f in files:
             # Slack Connect channels return stub file objects with
             # file_access="check_file_info" and no URL fields. We must
@@ -2807,12 +2760,6 @@ class SlackAdapter(BasePlatformAdapter):
         channel_id = command.get("channel_id", "")
         team_id = command.get("team_id", "")
 
-        is_dm = str(channel_id).startswith("D")
-        allowed_channels = self._slack_allowed_channels()
-        if not is_dm and allowed_channels and channel_id not in allowed_channels:
-            logger.debug("[Slack] Ignoring slash command in non-allowed channel: %s", channel_id)
-            return
-
         # Track which workspace owns this channel
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
@@ -2841,6 +2788,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Preserve DM semantics only for DM channel IDs; shared channels must
         # keep group semantics so different users do not collide into one
         # session key.
+        is_dm = str(channel_id).startswith("D")
         source = self.build_source(
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",
@@ -2854,14 +2802,14 @@ class SlackAdapter(BasePlatformAdapter):
             raw_message=command,
         )
 
-        # Stash the Slack response_url so the first reply for this slash
-        # invocation can be routed ephemerally (replaces the initial
-        # "Running /cmd…" ack shown by handle_hermes_command).  This applies
-        # to both command-shaped text and legacy free-form /hermes prompts,
-        # because slash-command interactions are initially acknowledged as
-        # private and may contain sensitive prompt or tool output.
+        # Stash the Slack response_url so the first reply for this
+        # channel+user can be routed ephemerally (replaces the initial
+        # "Running /cmd…" ack shown by handle_hermes_command).
+        # Only stash for COMMAND events (text starts with "/") — free-form
+        # questions via "/hermes <question>" must produce public replies so
+        # the whole channel can see the agent's answer.
         response_url = command.get("response_url", "")
-        if response_url and user_id and channel_id:
+        if response_url and user_id and channel_id and text.startswith("/"):
             self._slash_command_contexts[(channel_id, user_id)] = {
                 "response_url": response_url,
                 "ts": time.monotonic(),

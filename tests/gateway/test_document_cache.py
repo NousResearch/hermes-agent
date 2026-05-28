@@ -12,14 +12,10 @@ from pathlib import Path
 import pytest
 
 from gateway.platforms.base import (
-    MAX_VIDEO_BYTES,
     SUPPORTED_DOCUMENT_TYPES,
     cache_document_from_bytes,
-    cache_video_from_bytes,
     cleanup_document_cache,
-    cleanup_video_cache,
     get_document_cache_dir,
-    get_video_cache_dir,
 )
 
 # ---------------------------------------------------------------------------
@@ -31,9 +27,6 @@ def _redirect_cache(tmp_path, monkeypatch):
     """Point the module-level DOCUMENT_CACHE_DIR to a fresh tmp_path."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
-    )
-    monkeypatch.setattr(
-        "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
 
 
@@ -144,38 +137,6 @@ class TestCleanupDocumentCache:
 
     def test_empty_cache_dir(self):
         assert cleanup_document_cache(max_age_hours=24) == 0
-
-
-# ---------------------------------------------------------------------------
-# TestVideoCache
-# ---------------------------------------------------------------------------
-
-class TestVideoCache:
-    def test_video_cache_rejects_oversized_payload(self):
-        with pytest.raises(ValueError, match="20 MB"):
-            cache_video_from_bytes(b"x" * (MAX_VIDEO_BYTES + 1), ".mp4")
-
-    def test_cleanup_video_cache_removes_old_files(self):
-        cache_dir = get_video_cache_dir()
-        old_file = cache_dir / "old.mp4"
-        old_file.write_text("old")
-        old_mtime = time.time() - 48 * 3600
-        os.utime(old_file, (old_mtime, old_mtime))
-
-        removed = cleanup_video_cache(max_age_hours=24)
-
-        assert removed == 1
-        assert not old_file.exists()
-
-    def test_cleanup_video_cache_keeps_recent_files(self):
-        cache_dir = get_video_cache_dir()
-        recent = cache_dir / "recent.mp4"
-        recent.write_text("fresh")
-
-        removed = cleanup_video_cache(max_age_hours=24)
-
-        assert removed == 0
-        assert recent.exists()
 
 
 # ---------------------------------------------------------------------------

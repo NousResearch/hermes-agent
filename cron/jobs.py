@@ -15,7 +15,7 @@ import os
 import re
 import uuid
 from datetime import datetime, timedelta
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Union
 
@@ -44,34 +44,6 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 _jobs_file_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
-
-
-def _job_output_dir_for_cleanup(job_id: str) -> Optional[Path]:
-    """Return a contained per-job output directory path safe for deletion."""
-    job_id_text = str(job_id)
-    try:
-        if (
-            not job_id_text
-            or job_id_text in {".", ".."}
-            or Path(job_id_text).is_absolute()
-            or PureWindowsPath(job_id_text).is_absolute()
-            or "/" in job_id_text
-            or "\\" in job_id_text
-        ):
-            logger.warning("Skipping cron output cleanup for unsafe job id %r", job_id)
-            return None
-
-        output_root = OUTPUT_DIR.resolve()
-        candidate = (OUTPUT_DIR / job_id_text).resolve(strict=False)
-        candidate.relative_to(output_root)
-    except (OSError, ValueError) as exc:
-        logger.warning(
-            "Skipping cron output cleanup for job id %r due to invalid or non-contained path: %s",
-            job_id,
-            exc,
-        )
-        return None
-    return candidate
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -683,9 +655,6 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
-    updates = dict(updates)
-    updates.pop("id", None)
-
     jobs = load_jobs()
     for i, job in enumerate(jobs):
         if job["id"] != job_id:
@@ -788,15 +757,10 @@ def remove_job(job_id: str) -> bool:
     jobs = [j for j in jobs if j["id"] != job_id]
     if len(jobs) < original_len:
         save_jobs(jobs)
-        # Clean up output directory to prevent orphaned dirs accumulating.
-        # Jobs may come from legacy/crafted storage, so only delete a single
-        # contained path component under OUTPUT_DIR.
-        job_output_dir = _job_output_dir_for_cleanup(job_id)
-        if job_output_dir and job_output_dir.is_dir():
-            try:
-                shutil.rmtree(job_output_dir)
-            except OSError as exc:
-                logger.warning("Failed to remove cron job output directory %s: %s", job_output_dir, exc)
+        # Clean up output directory to prevent orphaned dirs accumulating
+        job_output_dir = OUTPUT_DIR / job_id
+        if job_output_dir.exists():
+            shutil.rmtree(job_output_dir)
         return True
     return False
 

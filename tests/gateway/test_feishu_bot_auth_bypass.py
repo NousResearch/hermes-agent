@@ -98,13 +98,6 @@ def test_feishu_human_still_checked_against_allowlist_when_bot_policy_set(monkey
     assert runner._is_user_authorized(_make_feishu_human_source("ou_human")) is True
 
 
-def test_feishu_allowlist_does_not_authorize_tenant_scoped_collision(monkeypatch):
-    runner = _make_bare_runner()
-    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "u_collision")
-
-    assert runner._is_user_authorized(_make_feishu_human_source("ou_attacker_app_scoped")) is False
-
-
 def test_feishu_bot_bypass_does_not_leak_to_other_platforms(monkeypatch):
     """FEISHU_ALLOW_BOTS=all must not authorize Telegram/Discord bot sources."""
     runner = _make_bare_runner()

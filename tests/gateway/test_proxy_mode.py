@@ -281,6 +281,11 @@ class TestRunAgentViaProxy:
         # Verify streaming is requested
         assert session.captured_json["stream"] is True
 
+        # Verify the originating platform scope is preserved for the remote API server.
+        proxy_scope = session.captured_json["hermes_proxy_scope"]
+        assert proxy_scope["origin_platform"] == "matrix"
+        assert "enabled_toolsets" in proxy_scope
+
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
 
@@ -288,7 +293,6 @@ class TestRunAgentViaProxy:
     @pytest.mark.asyncio
     async def test_forwards_resolved_platform_tool_scope(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
-        monkeypatch.setenv("GATEWAY_PROXY_SCOPE_KEY", "scope-secret")
         monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
         runner = _make_runner()
         source = _make_source()
@@ -548,13 +552,6 @@ class TestEnvVarRegistration:
         from hermes_cli.config import OPTIONAL_ENV_VARS
         assert "GATEWAY_PROXY_KEY" in OPTIONAL_ENV_VARS
         info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_KEY"]
-        assert info["category"] == "messaging"
-        assert info["password"] is True
-
-    def test_proxy_scope_key_in_optional_env_vars(self):
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert "GATEWAY_PROXY_SCOPE_KEY" in OPTIONAL_ENV_VARS
-        info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_SCOPE_KEY"]
         assert info["category"] == "messaging"
         assert info["password"] is True
 

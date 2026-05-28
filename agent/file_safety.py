@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import os
-import logging
 from pathlib import Path
-from typing import Iterable, Optional
-
-logger = logging.getLogger(__name__)
+from typing import Optional
 
 
 def _hermes_home_path() -> Path:
@@ -77,96 +74,26 @@ def get_safe_write_root() -> Optional[str]:
         return None
 
 
-def _candidate_write_denied_homes() -> Iterable[str]:
-    """Yield HOME roots whose credential/startup files must be protected."""
-    homes = [os.path.expanduser("~")]
+def is_write_denied(path: str, home: str | None = None) -> bool:
+    """Return True if path is blocked by the write denylist or safe root.
 
-    try:
-        from hermes_constants import get_subprocess_home  # local import to avoid cycles
-
-        subprocess_home = get_subprocess_home()
-        if subprocess_home:
-            homes.append(subprocess_home)
-    except Exception:
-        pass
-
-    seen: set[str] = set()
-    for home in homes:
-        if not home or home == "~":
-            continue
-        resolved = os.path.realpath(home)
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        yield resolved
-
-
-def _is_outside_root(candidate: str, root: str) -> bool:
-    """Return True when candidate is outside root (or incomparable)."""
-    try:
-        return os.path.commonpath([candidate, root]) != root
-    except ValueError:
-        # Mixed drives / invalid roots are always treated as outside.
-        return True
-
-
-def is_write_denied(
-    path: str,
-    home: str | None = None,
-    base_dir: str | None = None,
-) -> bool:
-    """Return True if path is blocked by denylist or root constraints.
-
-    Enforcement order is additive (most restrictive wins):
-    1) static denylist/prefixes
-    2) optional call-site ``base_dir`` sandbox
-    3) optional ``HERMES_WRITE_SAFE_ROOT`` sandbox
-
-    ``home`` selects which user-home denylist paths are evaluated.
+    Args:
+        path: Candidate write path.
+        home: Optional target-environment home directory. When file tools run
+            over SSH or another remote backend, this must be the remote home
+            rather than the local Hermes process home.
     """
     home = os.path.realpath(os.path.expanduser(home or "~"))
-    base_root = (
-        os.path.realpath(os.path.expanduser(str(base_dir)))
-        if base_dir
-        else None
-    )
-    path_str = os.path.expanduser(str(path))
-    if os.path.isabs(path_str):
-        resolved = os.path.realpath(path_str)
-    elif base_root:
-        resolved = os.path.realpath(os.path.join(base_root, path_str))
-        if _is_outside_root(resolved, base_root):
-            logger.debug(
-                "Denied write path outside base_dir: path=%r base_dir=%r",
-                path,
-                base_dir,
-            )
-            return True
-    else:
-        resolved = os.path.realpath(path_str)
+    resolved = os.path.realpath(os.path.expanduser(str(path)))
 
-    # Always protect the process home and subprocess home; also include any
-    # explicitly-provided remote home (e.g. SSH backend).
-    candidate_homes = list(_candidate_write_denied_homes())
-    if home:
-        explicit_home = os.path.realpath(os.path.expanduser(home))
-        if explicit_home not in candidate_homes:
-            candidate_homes.append(explicit_home)
-
-    for h in candidate_homes:
-        if resolved in build_write_denied_paths(h):
-            return True
-        for prefix in build_write_denied_prefixes(h):
-            if resolved.startswith(prefix):
-                return True
-
-    # Absolute paths skip the relative-join check above, so enforce base_root
-    # containment for both absolute and relative inputs here.
-    if base_root and _is_outside_root(resolved, base_root):
+    if resolved in build_write_denied_paths(home):
         return True
+    for prefix in build_write_denied_prefixes(home):
+        if resolved.startswith(prefix):
+            return True
 
     safe_root = get_safe_write_root()
-    if safe_root and _is_outside_root(resolved, safe_root):
+    if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
         return True
 
     return False

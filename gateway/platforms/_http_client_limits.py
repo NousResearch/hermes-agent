@@ -38,7 +38,6 @@ except ImportError:  # pragma: no cover — optional dep
 
 _DEFAULT_KEEPALIVE_EXPIRY_S = 2.0
 _DEFAULT_MAX_KEEPALIVE = 10
-_DEFAULT_MAX_CONNECTIONS = 100
 
 
 def platform_httpx_limits() -> "httpx.Limits | None":
@@ -78,10 +77,8 @@ def platform_httpx_limits() -> "httpx.Limits | None":
         "HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", _DEFAULT_MAX_KEEPALIVE
     )
 
-    max_connections = max(_DEFAULT_MAX_CONNECTIONS, max_keepalive)
-
     return httpx.Limits(
-        max_connections=max_connections,
         max_keepalive_connections=max_keepalive,
+        # Leave max_connections at httpx default (100) — plenty of headroom.
         keepalive_expiry=keepalive_expiry,
     )

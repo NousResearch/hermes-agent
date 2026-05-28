@@ -42,7 +42,6 @@ DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
-DEFAULT_MAX_OUTBOUND_TEXT_CHUNKS = 20
 
 # Tapback reaction codes (BlueBubbles associatedMessageType values)
 _TAPBACK_ADDED = {
@@ -102,7 +101,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     platform = Platform.BLUEBUBBLES
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH
-    MAX_OUTBOUND_TEXT_CHUNKS = DEFAULT_MAX_OUTBOUND_TEXT_CHUNKS
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.BLUEBUBBLES)
@@ -403,21 +401,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         chunks = BasePlatformAdapter.truncate_message(content, max_length)
         return [re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks]
 
-    def _split_text_chunks(self, text: str) -> List[str]:
-        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-        if len(paragraphs) > self.MAX_OUTBOUND_TEXT_CHUNKS:
-            chunks = self.truncate_message(text, max_length=self.MAX_MESSAGE_LENGTH)
-        else:
-            chunks = []
-            for para in (paragraphs or [text]):
-                if len(para) <= self.MAX_MESSAGE_LENGTH:
-                    chunks.append(para)
-                else:
-                    chunks.extend(
-                        self.truncate_message(para, max_length=self.MAX_MESSAGE_LENGTH)
-                    )
-        return chunks[: self.MAX_OUTBOUND_TEXT_CHUNKS]
-
     async def send(
         self,
         chat_id: str,
@@ -428,7 +411,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         text = self.format_message(content)
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
-        chunks = self._split_text_chunks(text)
+        # Split on paragraph breaks first (double newlines) so each thought
+        # becomes its own iMessage bubble, then truncate any that are still
+        # too long.
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
+        chunks: List[str] = []
+        for para in (paragraphs or [text]):
+            if len(para) <= self.MAX_MESSAGE_LENGTH:
+                chunks.append(para)
+            else:
+                chunks.extend(self.truncate_message(para, max_length=self.MAX_MESSAGE_LENGTH))
         last = SendResult(success=True)
         for chunk in chunks:
             guid = await self._resolve_chat_guid(chat_id)

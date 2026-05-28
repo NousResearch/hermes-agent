@@ -95,6 +95,12 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     input = ''
   }
 
+  // Strip meta if it's still remaining after `parseKeypress`
+  // TODO(vadimdemedes): remove this in the next major version.
+  if (input.startsWith('\u001B')) {
+    input = input.slice(1)
+  }
+
   // Track whether we've already processed this as a special sequence
   // that converted input to the key name (CSI u or application keypad mode).
   // For these, we don't want to clear input with nonAlphanumericKeys check.

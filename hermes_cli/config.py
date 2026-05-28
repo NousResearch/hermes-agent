@@ -544,11 +544,6 @@ DEFAULT_CONFIG = {
         # default is 1800s) plus runtime slack.  Set to 0 to disable the
         # gate and restore pre-fix behaviour (always inject).
         "gateway_auto_continue_freshness": 3600,
-        # Maximum number of pending /queue turns retained per gateway
-        # session. This bounds memory retention and downstream LLM/tool cost
-        # from repeated authorized queue requests while preserving FIFO
-        # behavior for normal use. Values below 1 are clamped to 1.
-        "gateway_queue_max_depth": 25,
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly
@@ -1233,9 +1228,6 @@ DEFAULT_CONFIG = {
         # Archive a skill (move to skills/.archive/) after this many days
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
-        # Maximum LLM/tool turns for the background review fork. Values above
-        # the built-in hard cap are clamped to keep background spend bounded.
-        "review_max_iterations": 100,
         # Pre-run backup: before every real curator pass (dry-run is
         # skipped), snapshot ~/.hermes/skills/ into
         # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
@@ -2564,14 +2556,6 @@ OPTIONAL_ENV_VARS = {
     "GATEWAY_PROXY_KEY": {
         "description": "Bearer token for authenticating with the remote Hermes API server (proxy mode). Must match the API_SERVER_KEY on the remote host.",
         "prompt": "Remote API server auth key",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "GATEWAY_PROXY_SCOPE_KEY": {
-        "description": "Shared secret used to sign hermes_proxy_scope metadata sent from the gateway proxy to the API server. Must match on both ends to allow the proxy to forward platform and toolset context.",
-        "prompt": "Gateway proxy scope signing key",
         "url": None,
         "password": True,
         "category": "messaging",

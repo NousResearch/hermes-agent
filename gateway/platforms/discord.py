@@ -3835,8 +3835,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
-                approval_id=(metadata or {}).get("approval_id"),
-                auth_callback=(metadata or {}).get("approval_auth_callback"),
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -4443,16 +4441,13 @@ class DiscordAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Sender-scoped key for pre-authorization text batching."""
+        """Session-scoped key for text message batching."""
         from gateway.session import build_session_key
-
-        session_key = build_session_key(
+        return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
-        sender_id = event.source.user_id_alt or event.source.user_id or "unknown"
-        return f"{session_key}:sender:{sender_id}"
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
@@ -4610,25 +4605,15 @@ if DISCORD_AVAILABLE:
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
-            approval_id: Optional[str] = None,
-            auth_callback: Optional[Callable[[Any], bool]] = None,
         ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
-            self.approval_id = approval_id
-            self.auth_callback = auth_callback
             self.resolved = False
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized."""
-            if self.auth_callback is not None:
-                try:
-                    return bool(self.auth_callback(interaction))
-                except Exception as exc:
-                    logger.warning("Discord exec approval auth callback failed: %s", exc)
-                    return False
             return _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids,
             )
@@ -4667,9 +4652,7 @@ if DISCORD_AVAILABLE:
             # Unblock the waiting agent thread via the gateway approval queue
             try:
                 from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(
-                    self.session_key, choice, approval_id=self.approval_id
-                )
+                count = resolve_gateway_approval(self.session_key, choice)
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, self.session_key, choice, interaction.user.display_name,

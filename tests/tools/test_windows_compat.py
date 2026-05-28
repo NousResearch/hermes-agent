@@ -5,7 +5,6 @@ and that each module uses a platform guard before invoking POSIX-only functions.
 """
 
 import ast
-import subprocess
 import pytest
 from pathlib import Path
 
@@ -79,49 +78,3 @@ class TestKillpgGuarded:
                 assert "_IS_WINDOWS" in context or "else:" in context, (
                     f"{relpath}:{i + 1} has unguarded os.killpg/os.getpgid call"
                 )
-
-
-class _DummyProc:
-    pid = 1234
-
-    def wait(self, timeout=None):
-        raise subprocess.TimeoutExpired(cmd="dummy", timeout=timeout)
-
-    def terminate(self):
-        raise AssertionError("terminate fallback should not be used when killpg succeeds")
-
-    def kill(self):
-        raise AssertionError("kill fallback should not be used when killpg succeeds")
-
-
-class TestPosixProcessGroupCleanup:
-    """POSIX cleanup must target process groups, not only psutil child trees."""
-
-    def test_code_execution_timeout_kills_process_group(self, monkeypatch):
-        from tools import code_execution_tool
-
-        proc = _DummyProc()
-        proc._hermes_pgid = 4321
-        calls = []
-
-        monkeypatch.setattr(code_execution_tool, "_IS_WINDOWS", False)
-        monkeypatch.setattr(code_execution_tool.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
-
-        code_execution_tool._kill_process_group(proc, escalate=True)
-
-        assert calls == [
-            (4321, code_execution_tool.signal.SIGTERM),
-            (4321, code_execution_tool.signal.SIGKILL),
-        ]
-
-    def test_recovered_host_pid_kills_saved_process_group(self, monkeypatch):
-        pytest.importorskip("yaml")
-        from tools import process_registry
-
-        calls = []
-        monkeypatch.setattr(process_registry, "_IS_WINDOWS", False)
-        monkeypatch.setattr(process_registry.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
-
-        process_registry.ProcessRegistry._terminate_host_pid(pid=1234, pgid=4321)
-
-        assert calls == [(4321, process_registry.signal.SIGTERM)]

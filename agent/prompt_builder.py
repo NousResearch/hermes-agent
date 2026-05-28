@@ -661,35 +661,6 @@ _WINDOWS_BASH_SHELL_HINT = (
 )
 
 
-def _prompt_literal(value: object) -> str:
-    """Return a single-line, quoted literal safe to embed in the system prompt."""
-    return json.dumps(str(value))
-
-
-def _format_backend_probe_output(output: str) -> str | None:
-    """Format backend probe output with untrusted values quoted and escaped."""
-    parsed: dict[str, str] = {}
-    for line in output.splitlines():
-        if "=" in line:
-            k, _, v = line.partition("=")
-            parsed[k.strip()] = v.strip()
-
-    pieces = []
-    os_bits = " ".join(x for x in (parsed.get("os"), parsed.get("kernel")) if x and x != "unknown")
-    if os_bits:
-        pieces.append(f"OS: {_prompt_literal(os_bits)}")
-    if parsed.get("user") and parsed["user"] != "unknown":
-        pieces.append(f"User: {_prompt_literal(parsed['user'])}")
-    if parsed.get("home"):
-        pieces.append(f"Home: {_prompt_literal(parsed['home'])}")
-    if parsed.get("cwd"):
-        pieces.append(f"Working directory: {_prompt_literal(parsed['cwd'])}")
-
-    if not pieces:
-        return None
-    return "\n".join(f"  {p}" for p in pieces)
-
-
 def _probe_remote_backend(env_type: str) -> str | None:
     """Run a tiny introspection command inside the active terminal backend.
 
@@ -739,13 +710,29 @@ def _probe_remote_backend(env_type: str) -> str | None:
         _BACKEND_PROBE_CACHE[cache_key] = ""
         return None
 
-    # Parse key=value lines back into a tidy summary. Quote all values because
-    # backend paths and usernames may contain prompt-like control text.
-    formatted = _format_backend_probe_output(output)
-    if not formatted:
+    # Parse key=value lines back into a tidy summary.
+    parsed: dict[str, str] = {}
+    for line in output.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            parsed[k.strip()] = v.strip()
+
+    pieces = []
+    os_bits = " ".join(x for x in (parsed.get("os"), parsed.get("kernel")) if x and x != "unknown")
+    if os_bits:
+        pieces.append(f"OS: {os_bits}")
+    if parsed.get("user") and parsed["user"] != "unknown":
+        pieces.append(f"User: {parsed['user']}")
+    if parsed.get("home"):
+        pieces.append(f"Home: {parsed['home']}")
+    if parsed.get("cwd"):
+        pieces.append(f"Working directory: {parsed['cwd']}")
+
+    if not pieces:
         _BACKEND_PROBE_CACHE[cache_key] = ""
         return None
 
+    formatted = "\n".join(f"  {p}" for p in pieces)
     _BACKEND_PROBE_CACHE[cache_key] = formatted
     return formatted
 
@@ -759,10 +746,10 @@ def build_environment_hints() -> str:
     """Return environment-specific guidance for the system prompt.
 
     Always emits a factual block describing the execution environment:
-    - For **local** terminal backends: the host OS plus guidance for discovering
-      user home/current working directory without embedding exact local paths
-      in the prompt (plus Windows-only notes about hostname != user and bash,
-      not PowerShell).
+    - For **local** terminal backends: the host OS, user home, current
+      working directory (plus a Windows-only note about hostname != user
+      and a Windows-only note that `terminal` shells out to bash, not
+      PowerShell).
     - For **remote / sandbox** terminal backends (docker, singularity,
       modal, daytona, ssh, vercel_sandbox): host info is **suppressed**
       because the agent's tools can't touch the host — only the backend
@@ -792,21 +779,18 @@ def build_environment_hints() -> str:
         else:
             host_lines.append(f"Host: {platform.system()} ({platform.release()})")
 
-        host_lines.append(
-            "User home directory: not embedded in this prompt for security; "
-            "use `$HOME` or run `printf %s \"$HOME\"` in the terminal if needed."
-        )
-        host_lines.append(
-            "Current working directory: not embedded in this prompt for security; "
-            "run `pwd` in the terminal if the exact path is needed."
-        )
+        host_lines.append(f"User home directory: {os.path.expanduser('~')}")
+        try:
+            host_lines.append(f"Current working directory: {os.getcwd()}")
+        except OSError:
+            pass
 
         if sys.platform == "win32" and not is_wsl():
             host_lines.append(
                 "Note: on Windows, the machine hostname (e.g. from `hostname` "
-                "or uname) is NOT the username. Use `$HOME` in terminal calls "
-                "or run `printf %s \"$HOME\"` before constructing paths under "
-                "C:\\Users\\<user>\\; never infer the username from the hostname."
+                "or uname) is NOT the username. Use the 'User home directory' "
+                "above to construct paths under C:\\Users\\<user>\\, never the "
+                "hostname."
             )
         hints.append("\n".join(host_lines))
 

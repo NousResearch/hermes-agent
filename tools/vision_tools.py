@@ -1075,7 +1075,6 @@ _VIDEO_MIME_TYPES = {
 
 _MAX_VIDEO_BASE64_BYTES = 50 * 1024 * 1024  # 50 MB hard cap
 _VIDEO_SIZE_WARN_BYTES = 20 * 1024 * 1024
-_VIDEO_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 def _detect_video_mime_type(video_path: Path) -> Optional[str]:
@@ -1084,33 +1083,12 @@ def _detect_video_mime_type(video_path: Path) -> Optional[str]:
     return _VIDEO_MIME_TYPES.get(ext)
 
 
-def _video_data_url_prefix(mime_type: str) -> str:
-    return f"data:{mime_type};base64,"
-
-
-def _max_video_raw_bytes(mime_type: str) -> int:
-    payload_budget = _MAX_VIDEO_BASE64_BYTES - len(_video_data_url_prefix(mime_type))
-    return max(0, (payload_budget // 4) * 3)
-
-
-def _reject_oversized_video(video_path: Path, mime_type: str) -> None:
-    raw_size = video_path.stat().st_size
-    max_raw_size = _max_video_raw_bytes(mime_type)
-    if raw_size > max_raw_size:
-        raise ValueError(
-            f"Video too large for API: raw file is {raw_size / (1024 * 1024):.1f} MB "
-            f"(base64 limit {_MAX_VIDEO_BASE64_BYTES / (1024 * 1024):.0f} MB). "
-            f"Compress or trim the video and retry."
-        )
-
-
 def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None) -> str:
     """Convert a video file to a base64-encoded data URL."""
-    mime = mime_type or _VIDEO_MIME_TYPES.get(video_path.suffix.lower(), "video/mp4")
-    _reject_oversized_video(video_path, mime)
     data = video_path.read_bytes()
     encoded = base64.b64encode(data).decode("ascii")
-    return f"{_video_data_url_prefix(mime)}{encoded}"
+    mime = mime_type or _VIDEO_MIME_TYPES.get(video_path.suffix.lower(), "video/mp4")
+    return f"data:{mime};base64,{encoded}"
 
 
 async def _download_video(video_url: str, destination: Path, max_retries: int = 3) -> Path:
@@ -1140,50 +1118,36 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
             ) as client:
-                async with client.stream(
-                    "GET",
+                response = await client.get(
                     video_url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         "Accept": "video/*,*/*;q=0.8",
                     },
-                ) as response:
-                    response.raise_for_status()
+                )
+                response.raise_for_status()
 
-                    final_url = str(response.url)
-                    blocked = check_website_access(final_url)
-                    if blocked:
-                        raise PermissionError(blocked["message"])
+                cl = response.headers.get("content-length")
+                if cl and int(cl) > _MAX_VIDEO_BASE64_BYTES:
+                    raise ValueError(
+                        f"Video too large ({int(cl)} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
+                    )
 
-                    max_raw_size = _max_video_raw_bytes("video/mp4")
-                    cl = response.headers.get("content-length")
-                    if cl and int(cl) > max_raw_size:
-                        raise ValueError(
-                            f"Video too large ({int(cl)} bytes, max {max_raw_size})"
-                        )
+                final_url = str(response.url)
+                blocked = check_website_access(final_url)
+                if blocked:
+                    raise PermissionError(blocked["message"])
 
-                    bytes_written = 0
-                    with destination.open("wb") as fh:
-                        async for chunk in response.aiter_bytes(
-                            chunk_size=_VIDEO_DOWNLOAD_CHUNK_BYTES
-                        ):
-                            bytes_written += len(chunk)
-                            if bytes_written > max_raw_size:
-                                raise ValueError(
-                                    f"Video too large ({bytes_written} bytes, max {max_raw_size})"
-                                )
-                            fh.write(chunk)
+                body = response.content
+                if len(body) > _MAX_VIDEO_BASE64_BYTES:
+                    raise ValueError(
+                        f"Video too large ({len(body)} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
+                    )
+                destination.write_bytes(body)
 
             return destination
         except Exception as e:
             last_error = e
-            if destination.exists():
-                try:
-                    destination.unlink()
-                except OSError:
-                    pass
-            if isinstance(e, (PermissionError, ValueError)):
-                raise
             if attempt < max_retries - 1:
                 wait_time = 2 ** (attempt + 1)
                 logger.warning("Video download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])
@@ -1266,8 +1230,6 @@ async def video_analyze_tool(
                 f"Unsupported video format: '{temp_video_path.suffix}'. "
                 f"Supported: {', '.join(sorted(_VIDEO_MIME_TYPES.keys()))}"
             )
-
-        _reject_oversized_video(temp_video_path, detected_mime)
 
         if video_size_bytes > _VIDEO_SIZE_WARN_BYTES:
             logger.warning("Video is %.1f MB — may be slow or rejected", video_size_mb)

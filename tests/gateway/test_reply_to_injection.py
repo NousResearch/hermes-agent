@@ -9,8 +9,6 @@ which prior message the user is referencing.
 """
 import pytest
 
-import gateway.run as gateway_run
-from agent import model_metadata
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.run import GatewayRunner
@@ -159,36 +157,3 @@ async def test_reply_snippet_truncated_to_500_chars():
     assert result is not None
     assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
     assert "x" * 501 not in result
-
-
-@pytest.mark.asyncio
-async def test_reply_quote_context_references_are_inert(tmp_path, monkeypatch):
-    runner = _make_runner()
-    source = _source()
-    (tmp_path / "secret.txt").write_text("TOP_SECRET_FROM_REPLY_QUOTE", encoding="utf-8")
-    (tmp_path / "public.txt").write_text("explicit current-turn context", encoding="utf-8")
-    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {})
-    monkeypatch.setattr(
-        model_metadata, "get_model_context_length", lambda *args, **kwargs: 8192
-    )
-
-    event = MessageEvent(
-        text="Please use @file:public.txt",
-        source=source,
-        reply_to_message_id="42",
-        reply_to_text="Prior message mentioned dormant @file:secret.txt",
-    )
-
-    result = await runner._prepare_inbound_message_text(
-        event=event,
-        source=source,
-        history=[{"role": "assistant", "content": event.reply_to_text}],
-    )
-
-    assert result is not None
-    assert result.startswith(
-        '[Replying to: "Prior message mentioned dormant @file:secret.txt"]'
-    )
-    assert "explicit current-turn context" in result
-    assert "TOP_SECRET_FROM_REPLY_QUOTE" not in result

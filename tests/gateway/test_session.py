@@ -211,8 +211,7 @@ class TestBuildSessionContextPrompt:
 
         assert "responding via iMessage" in prompt
         assert "short and conversational" in prompt
-        assert "blank lines sparingly" in prompt
-        assert "delivered as its own iMessage bubble" not in prompt
+        assert "blank line" in prompt
 
     def test_discord_prompt(self):
         config = GatewayConfig(

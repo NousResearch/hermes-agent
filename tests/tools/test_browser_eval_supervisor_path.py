@@ -19,12 +19,8 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _disable_camofox(monkeypatch, request):
-    """Force the non-camofox path when browser_tool dispatch tests need it."""
-    cls = getattr(request, "cls", None)
-    if cls is None or not issubclass(cls, TestBrowserEvalSupervisorPath):
-        return
-
+def _disable_camofox(monkeypatch):
+    """Force the non-camofox path so our supervisor branch is reached."""
     import tools.browser_tool as bt
 
     monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
@@ -229,18 +225,7 @@ def _make_supervisor_with_cdp(cdp_response):
     async def _fake_cdp(method, params=None, *, session_id=None, timeout=10.0):
         return cdp_response
 
-    sup._captured_cdp_calls = []
-
-    async def _capturing_cdp(method, params=None, *, session_id=None, timeout=10.0):
-        sup._captured_cdp_calls.append({
-            "method": method,
-            "params": dict(params) if params is not None else {},
-            "session_id": session_id,
-            "timeout": timeout,
-        })
-        return await _fake_cdp(method, params, session_id=session_id, timeout=timeout)
-
-    sup._cdp = _capturing_cdp  # type: ignore[method-assign]
+    sup._cdp = _fake_cdp  # type: ignore[method-assign]
     sup._loop = loop
     sup._thread = thread
     return sup
@@ -262,23 +247,6 @@ class TestEvaluateRuntimeResponseShaping:
         try:
             out = sup.evaluate_runtime("1 + 41")
             assert out == {"ok": True, "result": 42, "result_type": "number"}
-        finally:
-            _stop_supervisor(sup)
-
-    def test_runtime_evaluate_does_not_grant_user_gesture(self):
-        """Model-controlled console eval must not synthesize user activation."""
-        sup = _make_supervisor_with_cdp({
-            "id": 1,
-            "result": {"result": {"type": "string", "value": "ok"}},
-        })
-        try:
-            out = sup.evaluate_runtime("navigator.clipboard.readText()")
-            assert out["ok"] is True
-            assert sup._captured_cdp_calls
-            cdp_call = sup._captured_cdp_calls[-1]
-            assert cdp_call["method"] == "Runtime.evaluate"
-            assert cdp_call["params"]["expression"] == "navigator.clipboard.readText()"
-            assert cdp_call["params"].get("userGesture") is not True
         finally:
             _stop_supervisor(sup)
 

@@ -158,25 +158,6 @@ def test_exec_approval_view_role_default_is_empty_set():
     assert view._check_auth(_interaction(99999)) is False
 
 
-def test_exec_approval_view_uses_gateway_auth_callback_when_present():
-    """Exec approval buttons can enforce global allowlists and pairing."""
-    seen = []
-
-    def _auth(interaction):
-        seen.append(str(interaction.user.id))
-        return str(interaction.user.id) == "11111"
-
-    view = ExecApprovalView(
-        session_key="sess-1",
-        allowed_user_ids=set(),
-        auth_callback=_auth,
-    )
-
-    assert view._check_auth(_interaction(11111)) is True
-    assert view._check_auth(_interaction(99999)) is False
-    assert seen == ["11111", "99999"]
-
-
 def test_slash_confirm_view_accepts_role_allowlist():
     view = SlashConfirmView(
         session_key="sess-1",

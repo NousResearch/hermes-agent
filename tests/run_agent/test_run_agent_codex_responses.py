@@ -761,6 +761,49 @@ def test_run_codex_stream_parses_create_stream_events(monkeypatch):
     assert response.status == "completed"
 
 
+def test_run_codex_stream_recovers_when_sdk_iterator_parses_null_completed_output(monkeypatch):
+    """Regression: SDK event iterators may raise after useful output_item.done.
+
+    Even with ``responses.create(stream=True)``, the OpenAI SDK can still parse
+    ``response.completed.response.output=null`` internally and raise
+    ``TypeError: 'NoneType' object is not iterable`` while advancing the stream.
+    If Hermes already collected output_item.done content, the Codex runtime
+    should return that content instead of failing browser_vision/compression.
+    """
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="collected before sdk parse crash")],
+    )
+
+    class _RaisesAfterOutputItem:
+        closed = False
+
+        def __iter__(self):
+            yield SimpleNamespace(type="response.created")
+            yield SimpleNamespace(type="response.output_item.done", item=output_item)
+            raise TypeError("'NoneType' object is not iterable")
+
+        def close(self):
+            self.closed = True
+
+    create_stream = _RaisesAfterOutputItem()
+
+    def _fake_create(**kwargs):
+        assert kwargs.get("stream") is True
+        return create_stream
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.status == "completed"
+    assert response.output == [output_item]
+    assert create_stream.closed is True
+
+
 def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatch):
     """Regression: Codex may send response.completed.response.output=null.
 

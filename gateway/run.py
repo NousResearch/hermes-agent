@@ -1034,6 +1034,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    _MEDIA_EXTS,
     _reply_anchor_for_event,
     merge_pending_message_event,
 )
@@ -9165,6 +9166,19 @@ class GatewayRunner:
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
 
+            # Non-streaming path: extract and deliver MEDIA: files before
+            # returning the cleaned response text.  Streaming handles this
+            # via _deliver_media_from_response above (which also strips the
+            # tags from the already-streamed text — a best-effort cleanup).
+            _ns_adapter = self.adapters.get(source.platform)
+            if response and _ns_adapter:
+                await self._deliver_media_from_response(
+                    response, event, _ns_adapter,
+                )
+                # Strip MEDIA tags from the text we're about to return so
+                # the adapter doesn't send them as literal text.  _deliver_media
+                # already extracted and delivered the files.
+                response, _ = _ns_adapter.extract_media(response)
             return response
             
         except Exception as e:
@@ -16978,11 +16992,9 @@ class GatewayRunner:
                 if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
+                        _ext_part = '|'.join(e.lstrip('.') for e in _MEDIA_EXTS)
                         _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                            r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                            r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                            r'txt|csv|apk|ipa))',
+                            r'MEDIA:((?:/|~\/)\S+\.(?:' + _ext_part + r'))',
                             re.IGNORECASE
                         )
                         for _match in _TOOL_MEDIA_RE.finditer(_hc):
@@ -17284,11 +17296,9 @@ class GatewayRunner:
                     if msg.get("role") in {"tool", "function"}:
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
+                            _ext_part = '|'.join(e.lstrip('.') for e in _MEDIA_EXTS)
                             _TOOL_MEDIA_RE = re.compile(
-                                r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                                r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                                r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                                r'txt|csv|apk|ipa))',
+                                r'MEDIA:((?:/|~\/)\S+\.(?:' + _ext_part + r'))',
                                 re.IGNORECASE
                             )
                             for match in _TOOL_MEDIA_RE.finditer(content):

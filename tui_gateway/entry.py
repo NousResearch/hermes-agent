@@ -184,8 +184,32 @@ def _log_exit(reason: str) -> None:
     print(f"[gateway-exit] {reason}", file=sys.stderr, flush=True)
 
 
+def _prepare_tui_gateway_hooks() -> None:
+    """Register plugins and declarative shell hooks in the TUI gateway process.
+
+    The outer ``hermes --tui`` launcher is a different Python process from this
+    gateway subprocess.  Agent turns run here, so conversation hooks such as
+    ``post_llm_call`` must be registered here as well; registering them only in
+    the launcher leaves TUI responses with an empty hook manager.
+    """
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        pass
+
+
 def main():
     _install_sidecar_publisher()
+    _prepare_tui_gateway_hooks()
 
     # MCP tool discovery — inline is safe here: TUI entry is a plain
     # sync loop with no asyncio event loop to block.  Previously ran as

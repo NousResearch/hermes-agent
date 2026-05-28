@@ -101,8 +101,29 @@ The entrypoint starts `hermes dashboard` in the background (running as the non-r
 | `HERMES_DASHBOARD_HOST` | Bind address for the dashboard HTTP server | `127.0.0.1` |
 | `HERMES_DASHBOARD_PORT` | Port for the dashboard HTTP server | `9119` |
 | `HERMES_DASHBOARD_TUI` | Set to `1` to expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket) | *(unset)* |
+| `HERMES_DASHBOARD_INSECURE` | Set to `1` (or `true` / `yes`) to bind without the OAuth auth gate. Only use on trusted networks behind a reverse proxy without the OAuth contract — the dashboard exposes API keys and session data | *(unset — gate enforced when a `DashboardAuthProvider` is registered)* |
 
-By default, the dashboard stays on loopback to avoid exposing the unauthenticated web surface over the network. To publish it intentionally, set `HERMES_DASHBOARD_HOST=0.0.0.0` and configure your own trusted network boundary/reverse proxy. In that case you must explicitly add `--insecure` behavior by passing host/flags in your command path (the entrypoint no longer auto-enables insecure mode).
+By default, the dashboard stays on loopback (`127.0.0.1`) to avoid exposing
+the web surface over the network. To publish it intentionally, set
+`HERMES_DASHBOARD_HOST=0.0.0.0`. The dashboard's OAuth auth gate engages
+automatically whenever:
+
+1. The bind host is non-loopback, **and**
+2. A `DashboardAuthProvider` plugin is registered.
+
+The bundled `dashboard_auth/nous` provider activates whenever
+`HERMES_DASHBOARD_OAUTH_CLIENT_ID` is set (see
+[Web Dashboard → Authentication](features/web-dashboard.md)). With the
+gate engaged, browser callers are redirected to the configured portal's
+OAuth flow before they can reach any protected route.
+
+If no provider is registered and the bind is non-loopback, the dashboard
+**fails closed at startup** with a specific error pointing at the
+missing env var. To opt out of the gate explicitly — for a trusted-LAN
+deployment behind your own reverse proxy without the OAuth contract —
+set `HERMES_DASHBOARD_INSECURE=1`. This re-enables the legacy "no auth,
+loud warning" mode and is the only path that disables the gate; the bind
+host does not implicitly determine `--insecure` anymore.
 
 :::note
 The dashboard runs as a supervised s6 service inside the container. If

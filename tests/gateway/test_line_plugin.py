@@ -37,6 +37,7 @@ build_postback_button_message = _line.build_postback_button_message
 _resolve_chat = _line._resolve_chat
 _allowed_for_source = _line._allowed_for_source
 _is_system_bypass = _line._is_system_bypass
+_message_mentions_bot = _line._message_mentions_bot
 RequestCache = _line.RequestCache
 State = _line.State
 LineAdapter = _line.LineAdapter
@@ -150,6 +151,126 @@ class TestAllowlist:
     def test_unknown_type_rejected(self):
         src = {"type": "weird"}
         assert not _allowed_for_source(src, allow_all=False, user_ids=set(), group_ids=set(), room_ids=set())
+
+
+class TestMentionGate:
+
+    def _adapter(self, *, require_group_mention: bool = True):
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "channel_access_token": "tok",
+                "channel_secret": "sec",
+                "require_mention_in_groups": require_group_mention,
+            },
+        )
+        ad = LineAdapter(cfg)
+        ad._bot_user_id = "Ubot"
+        ad.handle_message = AsyncMock()
+        return ad
+
+    def test_message_mentions_bot_matches_bot_user_id(self):
+        msg = {
+            "type": "text",
+            "text": "@Hermes hello",
+            "mention": {
+                "mentionees": [
+                    {"type": "user", "userId": "Ubot", "index": 0, "length": 7}
+                ]
+            },
+        }
+        assert _message_mentions_bot(msg, "Ubot")
+        assert not _message_mentions_bot(msg, "Uother")
+
+    def test_message_mentions_bot_accepts_is_self(self):
+        msg = {
+            "type": "text",
+            "text": "@Hermes hello",
+            "mention": {
+                "mentionees": [
+                    {"type": "user", "isSelf": True, "index": 0, "length": 7}
+                ]
+            },
+        }
+        assert _message_mentions_bot(msg, None)
+
+    def test_group_message_without_mention_is_ignored(self):
+        ad = self._adapter(require_group_mention=True)
+        event = {
+            "type": "message",
+            "replyToken": "rt",
+            "source": {"type": "group", "groupId": "C1", "userId": "U1"},
+            "message": {"id": "m1", "type": "text", "text": "hello"},
+        }
+        asyncio.run(ad._handle_message_event(event))
+        ad.handle_message.assert_not_called()
+        assert "C1" not in ad._reply_tokens
+
+    def test_room_message_without_mention_is_ignored(self):
+        ad = self._adapter(require_group_mention=True)
+        event = {
+            "type": "message",
+            "replyToken": "rt",
+            "source": {"type": "room", "roomId": "R1", "userId": "U1"},
+            "message": {"id": "m1", "type": "text", "text": "hello"},
+        }
+        asyncio.run(ad._handle_message_event(event))
+        ad.handle_message.assert_not_called()
+        assert "R1" not in ad._reply_tokens
+
+    def test_group_message_with_bot_mention_is_handled(self):
+        ad = self._adapter(require_group_mention=True)
+        event = {
+            "type": "message",
+            "replyToken": "rt",
+            "source": {"type": "group", "groupId": "C1", "userId": "U1"},
+            "message": {
+                "id": "m1",
+                "type": "text",
+                "text": "@Hermes hello",
+                "mention": {
+                    "mentionees": [
+                        {"type": "user", "userId": "Ubot", "index": 0, "length": 7}
+                    ]
+                },
+            },
+        }
+        asyncio.run(ad._handle_message_event(event))
+        ad.handle_message.assert_awaited_once()
+        assert "C1" in ad._reply_tokens
+
+    def test_room_message_with_bot_mention_is_handled(self):
+        ad = self._adapter(require_group_mention=True)
+        event = {
+            "type": "message",
+            "replyToken": "rt",
+            "source": {"type": "room", "roomId": "R1", "userId": "U1"},
+            "message": {
+                "id": "m1",
+                "type": "text",
+                "text": "@Hermes hello",
+                "mention": {
+                    "mentionees": [
+                        {"type": "user", "userId": "Ubot", "index": 0, "length": 7}
+                    ]
+                },
+            },
+        }
+        asyncio.run(ad._handle_message_event(event))
+        ad.handle_message.assert_awaited_once()
+        assert "R1" in ad._reply_tokens
+
+    def test_dm_does_not_require_mention(self):
+        ad = self._adapter(require_group_mention=True)
+        event = {
+            "type": "message",
+            "replyToken": "rt",
+            "source": {"type": "user", "userId": "U1"},
+            "message": {"id": "m1", "type": "text", "text": "hello"},
+        }
+        asyncio.run(ad._handle_message_event(event))
+        ad.handle_message.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -629,10 +750,12 @@ class TestAdapterInit:
         monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
         monkeypatch.setenv("LINE_ALLOWED_USERS", "U1, U2,U3")
         monkeypatch.setenv("LINE_ALLOWED_GROUPS", "C1")
+        monkeypatch.setenv("LINE_REQUIRE_MENTION_IN_GROUPS", "true")
         from gateway.config import PlatformConfig
         ad = LineAdapter(PlatformConfig(enabled=True))
         assert ad.allowed_users == {"U1", "U2", "U3"}
         assert ad.allowed_groups == {"C1"}
+        assert ad.require_group_mention is True
 
     def test_get_chat_info_infers_type_from_prefix(self, monkeypatch):
         monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")

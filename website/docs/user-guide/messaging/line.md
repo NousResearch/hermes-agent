@@ -67,6 +67,7 @@ LINE_CHANNEL_SECRET=YOUR_CHANNEL_SECRET
 LINE_ALLOWED_USERS=U1234567890abcdef...           # comma-separated U-prefixed IDs
 LINE_ALLOWED_GROUPS=C1234567890abcdef...          # optional group IDs
 LINE_ALLOWED_ROOMS=R1234567890abcdef...           # optional room IDs
+LINE_REQUIRE_MENTION_IN_GROUPS=false              # optional: require @mention in groups
 
 # Required for image / audio / video sends — the public HTTPS base URL
 # the tunnel resolves to.  Without it, send_image/voice/video will refuse.
@@ -169,6 +170,7 @@ Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a
 | `LINE_ALLOWED_GROUPS` | one of | — | Comma-separated group IDs (C-prefixed) |
 | `LINE_ALLOWED_ROOMS` | one of | — | Comma-separated room IDs (R-prefixed) |
 | `LINE_ALLOW_ALL_USERS` | dev only | `false` | Skip allowlist entirely |
+| `LINE_REQUIRE_MENTION_IN_GROUPS` | no | `false` | In group/room chats, only relay messages that mention the bot |
 | `LINE_HOME_CHANNEL` | no | — | Default cron / notification delivery target |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | no | `45` | Seconds before the postback button fires (`0` = disabled) |
 | `LINE_PENDING_TEXT` | no | "🤔 Still thinking…" | Bubble text shown alongside the postback button |
@@ -183,6 +185,8 @@ Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a
 **"invalid signature" on webhook verify.** The `Channel secret` was copied wrong, or your tunnel rewrote the request body. Verify with `curl -i https://<tunnel>/line/webhook/health` first — that should return `{"status":"ok","platform":"line"}`.
 
 **Bot receives nothing in groups.** Check `LINE_ALLOWED_GROUPS` includes the `C...` group ID. To find a group ID, send a test message and grep `~/.hermes/logs/gateway.log` for `LINE: rejecting unauthorized source` — the rejected source dict has the IDs.
+
+**Bot replies to every group or room message.** Set `LINE_REQUIRE_MENTION_IN_GROUPS=true` so Hermes only relays group or room messages whose LINE mention metadata includes the bot user ID. Direct messages are unaffected.
 
 **`send_image` fails with "LINE_PUBLIC_URL must be set".** LINE's Messaging API does not accept binary uploads — images, audio, and video must be reachable HTTPS URLs. Set `LINE_PUBLIC_URL` to the tunnel's public hostname and the adapter will serve files from `/line/media/<token>/<filename>` automatically.
 

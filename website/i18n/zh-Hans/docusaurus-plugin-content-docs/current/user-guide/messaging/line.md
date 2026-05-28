@@ -65,6 +65,7 @@ LINE_CHANNEL_SECRET=YOUR_CHANNEL_SECRET
 LINE_ALLOWED_USERS=U1234567890abcdef...           # 逗号分隔的 U 开头 ID
 LINE_ALLOWED_GROUPS=C1234567890abcdef...          # 可选的群组 ID
 LINE_ALLOWED_ROOMS=R1234567890abcdef...           # 可选的房间 ID
+LINE_REQUIRE_MENTION_IN_GROUPS=false              # 可选：在群聊/房间中需要 @ 提及
 
 # 发送图片 / 音频 / 视频时必填 — 隧道解析到的公网 HTTPS 基础 URL
 # 未设置时，send_image/voice/video 将拒绝执行
@@ -167,6 +168,7 @@ LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # 默认推送目标
 | `LINE_ALLOWED_GROUPS` | 三选一 | — | 逗号分隔的群组 ID（C 开头） |
 | `LINE_ALLOWED_ROOMS` | 三选一 | — | 逗号分隔的房间 ID（R 开头） |
 | `LINE_ALLOW_ALL_USERS` | 仅开发环境 | `false` | 完全跳过白名单验证 |
+| `LINE_REQUIRE_MENTION_IN_GROUPS` | 否 | `false` | 在群聊/房间中，仅转发提及 bot 的消息 |
 | `LINE_HOME_CHANNEL` | 否 | — | 默认 cron / 通知推送目标 |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | 否 | `45` | 触发 postback 按钮的等待秒数（`0` = 禁用） |
 | `LINE_PENDING_TEXT` | 否 | "🤔 Still thinking…" | postback 按钮旁显示的气泡文本 |
@@ -181,6 +183,8 @@ LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # 默认推送目标
 **webhook 验证时提示"invalid signature"。** `Channel secret` 复制有误，或隧道重写了请求体。请先用 `curl -i https://<tunnel>/line/webhook/health` 验证 — 应返回 `{"status":"ok","platform":"line"}`。
 
 **机器人在群组中收不到消息。** 检查 `LINE_ALLOWED_GROUPS` 是否包含对应的 `C...` 群组 ID。如需查找群组 ID，发送一条测试消息后在 `~/.hermes/logs/gateway.log` 中搜索 `LINE: rejecting unauthorized source` — 被拒绝的 source 字典中包含相关 ID。
+
+**机器人在群聊或房间中对每条消息都进行回复。** 设置 `LINE_REQUIRE_MENTION_IN_GROUPS=true` 以使 Hermes 只转发其 LINE 提及元数据中包含机器人用户 ID 的群聊/房间消息。私信不受影响。
 
 **`send_image` 报错"LINE_PUBLIC_URL must be set"。** LINE Messaging API 不接受二进制上传 — 图片、音频和视频必须是可访问的 HTTPS URL。将 `LINE_PUBLIC_URL` 设置为隧道的公网主机名，适配器会自动从 `/line/media/<token>/<filename>` 提供文件服务。
 

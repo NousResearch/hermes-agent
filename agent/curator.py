@@ -1760,6 +1760,233 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 # Public entrypoint for the session-start hook
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Graduation-candidate detector (Stage 1 — kn79130 card)
+# ---------------------------------------------------------------------------
+#
+# ALE data source: /Users/TJ/.hermes/workspace/agents/ale/ale.db  (SQLite)
+# Table: runs  -- columns used: run_id, agent, task_type, status, started_at
+#
+# Workflow-signature key: "agent::task_type"
+# Rationale: skill_code is always NULL in production data; task_prompt_hash
+# changes per unique prompt, making it too narrow for stability tracking
+# (most signatures have <=1 run). agent::task_type is the stable, meaningful
+# workflow identifier that a future skill would capture.
+#
+# Output: writes ~/.hermes/curator/graduation-queue.jsonl (one JSON object
+# per line, sorted deterministically by workflow_signature).  The file is
+# rewritten atomically on every call so the same input always produces the
+# same output (idempotent).  Content is also printed to stdout when invoked
+# via the CLI subcommand.
+#
+# Each entry shape:
+#   {
+#     "workflow_signature": "agent::task_type",
+#     "run_count": int,          # total successful runs for this signature
+#     "last_3_run_ids": [str],   # run_ids of the 3 most recent runs (asc)
+#     "candidate_skill_name": str,  # proposed kebab-case skill name
+#     "detection_ts": str,       # ISO-8601 UTC timestamp of this detection
+#   }
+
+
+_ALE_DB_PATH = (
+    Path.home() / ".hermes" / "workspace" / "agents" / "ale" / "ale.db"
+)
+_GRADUATION_QUEUE_PATH = Path.home() / ".hermes" / "curator" / "graduation-queue.jsonl"
+
+
+def _bigram_similarity(a: str, b: str) -> float:
+    """Dice coefficient over character bigrams of lowercased a and b."""
+    a, b = a.lower(), b.lower()
+    if not a or not b:
+        return 0.0
+    # Build bigram multisets
+    def bigrams(s: str) -> List[str]:
+        return [s[i:i+2] for i in range(len(s) - 1)]
+    ba, bb = bigrams(a), bigrams(b)
+    if not ba or not bb:
+        return 1.0 if a == b else 0.0
+    set_a: Dict[str, int] = {}
+    for g in ba:
+        set_a[g] = set_a.get(g, 0) + 1
+    set_b: Dict[str, int] = {}
+    for g in bb:
+        set_b[g] = set_b.get(g, 0) + 1
+    intersection = sum(min(set_a.get(k, 0), set_b.get(k, 0)) for k in set_a)
+    return 2.0 * intersection / (len(ba) + len(bb))
+
+
+def _load_existing_skill_names(skills_root: Optional[Path] = None) -> List[str]:
+    """Return the 'name' field from every SKILL.md frontmatter under skills_root."""
+    if skills_root is None:
+        skills_root = get_hermes_home() / "skills"
+    names: List[str] = []
+    try:
+        for skill_md in skills_root.rglob("SKILL.md"):
+            try:
+                text = skill_md.read_text(encoding="utf-8", errors="replace")
+                # Parse YAML frontmatter between --- ... ---
+                m = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
+                if not m:
+                    continue
+                fm_text = m.group(1)
+                # Extract name: field without full YAML parser dependency
+                nm = re.search(r"^name:\s*['\"]?(.+?)['\"]?\s*$", fm_text, re.MULTILINE)
+                if nm:
+                    names.append(nm.group(1).strip())
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return names
+
+
+def _signature_to_skill_name(agent: str, task_type: str) -> str:
+    """Derive a kebab-case candidate skill name from a workflow signature."""
+    parts = [p.strip() for p in [agent, task_type] if p and p.strip()]
+    slug = "-".join(parts)
+    slug = re.sub(r"[^a-z0-9\-]", "-", slug.lower())
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    return slug or "unknown-skill"
+
+
+def detect_graduation_candidates(
+    ale_db_path: Optional[Path] = None,
+    skills_root: Optional[Path] = None,
+    min_runs: int = 2,
+    stability_window: int = 3,
+    similarity_threshold: float = 0.7,
+) -> List[Dict[str, Any]]:
+    """Scan ALE for workflow signatures that are ready to be promoted to skills.
+
+    Match conditions (all must hold):
+    1. signature = agent::task_type ran successfully >= min_runs times
+    2. The last stability_window runs of that signature all have status=success
+    3. No existing skill name has bigram similarity >= similarity_threshold to
+       the candidate_skill_name derived from the signature
+
+    Returns a list of candidate dicts, sorted by workflow_signature.
+    """
+    import sqlite3 as _sqlite3
+
+    if ale_db_path is None:
+        ale_db_path = _ALE_DB_PATH
+
+    if not ale_db_path.exists():
+        logger.debug("ALE db not found at %s; skipping graduation detection", ale_db_path)
+        return []
+
+    existing_skill_names = _load_existing_skill_names(skills_root)
+    detection_ts = datetime.now(timezone.utc).isoformat()
+
+    try:
+        conn = _sqlite3.connect(str(ale_db_path))
+        try:
+            conn.row_factory = _sqlite3.Row
+            # Fetch all successful runs grouped by signature, minimum 2 successes
+            cur = conn.execute("""
+                SELECT agent, task_type,
+                       COUNT(*) AS success_count
+                FROM runs
+                WHERE status = 'success'
+                  AND agent IS NOT NULL
+                  AND task_type IS NOT NULL
+                GROUP BY agent, task_type
+                HAVING COUNT(*) >= ?
+                ORDER BY agent, task_type
+            """, (min_runs,))
+            candidate_groups = cur.fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug("ALE db query failed: %s", e)
+        return []
+
+    candidates: List[Dict[str, Any]] = []
+
+    for row in candidate_groups:
+        agent = row["agent"]
+        task_type = row["task_type"]
+        success_count = row["success_count"]
+        workflow_signature = f"{agent}::{task_type}"
+
+        # Stability filter: fetch the last stability_window runs (success only)
+        # sorted ascending by started_at so last_3_run_ids is chronological.
+        try:
+            conn2 = _sqlite3.connect(str(ale_db_path))
+            try:
+                conn2.row_factory = _sqlite3.Row
+                cur2 = conn2.execute("""
+                    SELECT run_id, status
+                    FROM runs
+                    WHERE agent = ?
+                      AND task_type = ?
+                    ORDER BY started_at DESC
+                    LIMIT ?
+                """, (agent, task_type, stability_window))
+                last_n = cur2.fetchall()
+            finally:
+                conn2.close()
+        except Exception as e:
+            logger.debug("ALE stability check failed for %s: %s", workflow_signature, e)
+            continue
+
+        # Need exactly stability_window rows and all must be success
+        if len(last_n) < stability_window:
+            continue
+        if any(r["status"] != "success" for r in last_n):
+            continue
+
+        # last_3_run_ids in chronological order (oldest first)
+        last_3_run_ids = [r["run_id"] for r in reversed(last_n)]
+
+        # Skill-similarity gate
+        candidate_skill_name = _signature_to_skill_name(agent, task_type)
+        too_similar = any(
+            _bigram_similarity(candidate_skill_name, existing) >= similarity_threshold
+            for existing in existing_skill_names
+        )
+        if too_similar:
+            continue
+
+        candidates.append({
+            "workflow_signature": workflow_signature,
+            "run_count": success_count,
+            "last_3_run_ids": last_3_run_ids,
+            "candidate_skill_name": candidate_skill_name,
+            "detection_ts": detection_ts,
+        })
+
+    # Sort for determinism
+    candidates.sort(key=lambda c: c["workflow_signature"])
+    return candidates
+
+
+def write_graduation_queue(candidates: List[Dict[str, Any]]) -> Path:
+    """Write candidates to ~/.hermes/curator/graduation-queue.jsonl atomically.
+
+    Overwrites the file on every call — same input always produces the same
+    output (idempotent). Returns the path written.
+    """
+    out_path = _GRADUATION_QUEUE_PATH
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(out_path.parent), prefix=".grad-queue-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for entry in candidates:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, out_path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return out_path
+
+
 def maybe_run_curator(
     *,
     idle_for_seconds: Optional[float] = None,
@@ -1779,3 +2006,24 @@ def maybe_run_curator(
     except Exception as e:
         logger.debug("maybe_run_curator failed: %s", e, exc_info=True)
         return None
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point  (python3 curator.py detect-graduation)
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import sys as _sys
+
+    if len(_sys.argv) >= 2 and _sys.argv[1] == "detect-graduation":
+        logging.basicConfig(level=logging.WARNING)
+        candidates = detect_graduation_candidates()
+        queue_path = write_graduation_queue(candidates)
+        print(json.dumps(candidates, indent=2, ensure_ascii=False))
+        print(f"\n# {len(candidates)} candidate(s) written to {queue_path}", file=_sys.stderr)
+    else:
+        print(
+            "Usage: python3 curator.py detect-graduation",
+            file=_sys.stderr,
+        )
+        _sys.exit(1)

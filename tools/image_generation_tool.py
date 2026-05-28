@@ -317,6 +317,54 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    # Krea 2 — Krea's first foundation image model, day-0 partner launch on
+    # fal (2026-05-27). Same model family as our direct ``plugins/image_gen/krea``
+    # backend, exposed here for users who prefer to bill through their
+    # existing FAL key / Nous Portal subscription rather than register
+    # directly with Krea.  Both variants share the same parameter schema —
+    # only model id, price, and recommended use case differ.
+    "fal-ai/krea/v2/medium/text-to-image": {
+        "display": "Krea 2 Medium",
+        "speed": "~15-25s",
+        "strengths": "Illustration, anime, painting, expressive/artistic styles",
+        "price": "$0.030 (text) / $0.035 (style refs)",
+        "size_style": "aspect_ratio",
+        # Krea natively accepts 1:1, 4:3, 3:2, 16:9, 2.35:1, 4:5, 2:3, 9:16 —
+        # we map our 3 abstract ratios to the closest match.
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "creativity": "medium",
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "creativity", "seed",
+            "image_style_references",
+        },
+        "upscale": False,
+    },
+    "fal-ai/krea/v2/large/text-to-image": {
+        "display": "Krea 2 Large",
+        "speed": "~25-60s",
+        "strengths": "Photorealism, raw textured looks (motion blur, grain, film)",
+        "price": "$0.060 (text) / $0.065 (style refs)",
+        "size_style": "aspect_ratio",
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "creativity": "medium",
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "creativity", "seed",
+            "image_style_references",
+        },
+        "upscale": False,
+    },
 }
 
 # Default model is the fastest reasonable option. Kept cheap and sub-1s.

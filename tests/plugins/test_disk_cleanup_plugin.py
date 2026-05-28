@@ -129,11 +129,39 @@ class TestGuessCategory:
 
     def test_cron_subtree_categorised(self, _isolate_env):
         dg = _load_lib()
-        cron_dir = _isolate_env / "cron"
-        cron_dir.mkdir()
-        p = cron_dir / "job_output.md"
+        # Only files under ``cron/output/`` are disposable run artifacts.
+        output_dir = _isolate_env / "cron" / "output" / "job_123"
+        output_dir.mkdir(parents=True)
+        p = output_dir / "run.md"
         p.write_text("x")
         assert dg.guess_category(p) == "cron-output"
+
+    def test_cron_jobs_json_not_tracked(self, _isolate_env):
+        """Regression for #32164: the cron registry must never be tracked."""
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cron"
+        cron_dir.mkdir()
+        p = cron_dir / "jobs.json"
+        p.write_text("[]")
+        assert dg.guess_category(p) is None
+
+    def test_cron_tick_lock_not_tracked(self, _isolate_env):
+        """Regression for #32164: cron tick-lock is control-plane state."""
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cron"
+        cron_dir.mkdir()
+        p = cron_dir / ".tick.lock"
+        p.write_text("")
+        assert dg.guess_category(p) is None
+
+    def test_cronjobs_top_level_not_tracked(self, _isolate_env):
+        """The legacy ``cronjobs`` alias is also control-plane at the top."""
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cronjobs"
+        cron_dir.mkdir()
+        p = cron_dir / "jobs.json"
+        p.write_text("[]")
+        assert dg.guess_category(p) is None
 
     def test_ordinary_file_returns_none(self, _isolate_env):
         dg = _load_lib()

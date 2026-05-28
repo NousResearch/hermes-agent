@@ -481,7 +481,14 @@ def guess_category(path: Path) -> Optional[str]:
         }:
             return None
         if top == "cron" or top == "cronjobs":
-            return "cron-output"
+            # Only files under the disposable ``output/`` subtree are
+            # cleanup candidates. Top-level cron control-plane state
+            # (e.g. ``jobs.json``, ``.tick.lock``) must never be
+            # auto-tracked — deleting it wipes the live scheduler
+            # registry. See issue #32164.
+            if len(rel.parts) >= 2 and rel.parts[1] == "output":
+                return "cron-output"
+            return None
         if top == "cache":
             return "temp"
     except ValueError:

@@ -6897,6 +6897,10 @@ class GatewayRunner:
         try:
             from tools import clarify_gateway as _clarify_mod
             _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key)
+            if _pending_clarify is not None:
+                # Any user message while a clarify is pending proves the
+                # user is not AFK — reset the deadline.
+                _clarify_mod.touch_clarify_deadline(_pending_clarify.clarify_id)
         except Exception:
             _pending_clarify = None
         if _pending_clarify is not None:

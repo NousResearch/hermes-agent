@@ -11155,6 +11155,18 @@ class HermesCLI:
             "Use your best judgement to make the choice and proceed."
         )
 
+    def _clarify_touch_deadline(self) -> None:
+        """Reset the clarify timeout deadline on user activity.
+
+        Called whenever the user interacts during a clarify prompt
+        (keystroke, selection change, text input) — proves they are
+        not AFK and the timer should restart from now.
+        """
+        import time as _time
+        if self._clarify_state and self._clarify_deadline:
+            timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
+            self._clarify_deadline = _time.monotonic() + timeout
+
     def _sudo_password_callback(self) -> str:
         """
         Prompt for sudo password through the prompt_toolkit UI.
@@ -12852,6 +12864,7 @@ class HermesCLI:
             """Move selection up in clarify choices."""
             if self._clarify_state:
                 self._clarify_state["selected"] = max(0, self._clarify_state["selected"] - 1)
+                self._clarify_touch_deadline()
                 event.app.invalidate()
 
         @kb.add('down', filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))
@@ -12861,6 +12874,7 @@ class HermesCLI:
                 choices = self._clarify_state.get("choices") or []
                 max_idx = len(choices)  # last index is the "Other" option
                 self._clarify_state["selected"] = min(max_idx, self._clarify_state["selected"] + 1)
+                self._clarify_touch_deadline()
                 event.app.invalidate()
 
         # Number keys for quick clarify selection (1-9, 0 for 10th item)
@@ -12885,6 +12899,12 @@ class HermesCLI:
             # 1-9 select items 0-8, 0 selects item 9 (10thitem)
             _idx = 9 if _num == 0 else _num - 1
             kb.add(str(_num), filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))(_make_clarify_number_handler(_idx))
+
+        # Activity-aware clarify timeout: any keystroke during a pending
+        # clarify resets the deadline — proves the user is not AFK.
+        @kb.add('<any>', filter=Condition(lambda: bool(self._clarify_state)))
+        def clarify_activity(event):
+            self._clarify_touch_deadline()
 
         # --- Dangerous command approval: arrow-key navigation ---
 

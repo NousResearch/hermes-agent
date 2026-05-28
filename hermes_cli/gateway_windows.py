@@ -365,7 +365,9 @@ def _write_task_script() -> Path:
 
     content = _build_gateway_cmd_script(python_path, working_dir, hermes_home, profile_arg)
     script_path = get_task_script_path()
-    script_path.write_text(content, encoding="utf-8", newline="")
+    tmp = script_path.with_suffix(".tmp")
+    tmp.write_text(content, encoding="utf-8", newline="")
+    tmp.replace(script_path)
     return script_path
 
 
@@ -436,7 +438,9 @@ def _install_startup_entry(script_path: Path) -> Path:
     """Write the Startup-folder fallback launcher. Returns its path."""
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    entry.write_text(_build_startup_launcher(script_path), encoding="utf-8", newline="")
+    tmp = entry.with_suffix(".tmp")
+    tmp.write_text(_build_startup_launcher(script_path), encoding="utf-8", newline="")
+    tmp.replace(entry)
     return entry
 
 
@@ -1010,12 +1014,70 @@ def start() -> None:
     _report_gateway_start(f"direct spawn (PID {pid})")
 
 
-def stop() -> None:
-    """Stop the gateway. Tries /End on the scheduled task, then kills any stragglers."""
-    _assert_windows()
-    from hermes_cli.gateway import kill_gateway_processes
+def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
+    """Write the planned-stop marker and wait for the gateway PID to exit.
 
-    stopped_any = False
+    Windows cannot deliver POSIX signals to a Python asyncio loop
+    (``loop.add_signal_handler`` raises NotImplementedError), so writing
+    the marker is the ONLY way to ask a running gateway to drain
+    in-flight agents and persist ``resume_pending`` before exit. The
+    gateway's planned-stop watcher thread (gateway/run.py) polls for
+    the marker and drives the same shutdown path the SIGTERM handler
+    would have on POSIX.
+
+    Returns True if the PID exited within the timeout, False if it
+    didn't (caller should escalate to schtasks /End + taskkill).
+    """
+    if pid <= 0:
+        return False
+    try:
+        from gateway.status import write_planned_stop_marker, _pid_exists
+    except ImportError:
+        return False
+
+    try:
+        write_planned_stop_marker(pid)
+    except Exception:
+        # Best-effort: if the marker can't be written, we have no choice
+        # but to fall through to a hard kill.  Caller decides escalation.
+        pass
+
+    deadline = time.monotonic() + max(drain_timeout, 1.0)
+    while time.monotonic() < deadline:
+        if not _pid_exists(pid):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def stop() -> None:
+    """Stop the gateway.
+
+    Writes the planned-stop marker first so the gateway can drain
+    in-flight agents and persist ``resume_pending`` before exit (the
+    gateway's marker-watcher thread picks this up — Windows asyncio
+    can't deliver SIGTERM to the loop, so the marker is our only IPC).
+    Then escalates: ``schtasks /End`` (kills the scheduled-task tree)
+    + ``kill_gateway_processes(force=True)`` for any strays.
+    """
+    _assert_windows()
+    from hermes_cli.gateway import kill_gateway_processes, _get_restart_drain_timeout
+    from gateway.status import get_running_pid
+
+    # Phase 1: ask the running gateway (if any) to drain itself by writing
+    # the planned-stop marker, then wait briefly for it to exit cleanly.
+    # On clean exit, sessions land with resume_pending=True and the next
+    # boot will auto-resume them.
+    pid = get_running_pid()
+    drained = False
+    if pid is not None:
+        try:
+            drain_timeout = float(_get_restart_drain_timeout() or 30.0)
+        except Exception:
+            drain_timeout = 30.0
+        drained = _drain_gateway_pid(pid, drain_timeout)
+
+    stopped_any = drained
     if is_task_registered():
         code, _out, err = _exec_schtasks(["/End", "/TN", get_task_name()])
         # schtasks returns nonzero when the task isn't currently running — don't treat that as an error.
@@ -1024,12 +1086,19 @@ def stop() -> None:
         elif "not running" not in (err or "").lower():
             print(f"⚠ schtasks /End returned code {code}: {err.strip()}")
 
-    killed = kill_gateway_processes(all_profiles=False)
+    # Phase 3: hard-kill any strays.  When drain succeeded this is a no-op;
+    # when drain timed out this is the escalation that ensures the PID
+    # actually exits.  Use force=True on Windows so taskkill /T /F walks
+    # the descendant tree (browser helpers, etc.).
+    killed = kill_gateway_processes(all_profiles=False, force=not drained)
     if killed:
         stopped_any = True
         print(f"✓ Killed {killed} gateway process(es)")
     if stopped_any:
-        print("✓ Gateway stopped")
+        if drained:
+            print("✓ Gateway stopped (drained cleanly)")
+        else:
+            print("✓ Gateway stopped")
     else:
         print("✗ No gateway was running")
 

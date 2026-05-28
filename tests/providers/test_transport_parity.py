@@ -236,7 +236,7 @@ class TestQwenParity:
 
 
 class TestCustomOllamaParity:
-    """Custom/Ollama: num_ctx, think=false — now tested via profile."""
+    """Custom/Ollama: num_ctx, thinking controls — now tested via profile."""
 
     def test_ollama_num_ctx(self, transport):
         kw = transport.build_kwargs(

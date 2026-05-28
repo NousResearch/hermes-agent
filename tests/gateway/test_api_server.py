@@ -424,12 +424,20 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
 
 @pytest.fixture
 def adapter():
-    return _make_adapter()
+    adapter = _make_adapter()
+    try:
+        yield adapter
+    finally:
+        adapter.close()
 
 
 @pytest.fixture
 def auth_adapter():
-    return _make_adapter(api_key="sk-secret")
+    adapter = _make_adapter(api_key="sk-secret")
+    try:
+        yield adapter
+    finally:
+        adapter.close()
 
 
 # ---------------------------------------------------------------------------

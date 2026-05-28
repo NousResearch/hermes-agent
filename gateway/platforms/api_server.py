@@ -719,6 +719,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
+    def close(self) -> None:
+        """Release resources owned by the adapter."""
+        self._response_store.close()
+
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
         """Normalize configured CORS origins into a stable tuple."""
@@ -2059,7 +2063,8 @@ class APIServerAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
             while True:
                 try:
-                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                    queue_timeout = min(0.5, max(0.001, CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS))
+                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=queue_timeout))
                 except _q.Empty:
                     if agent_task.done():
                         # Drain any remaining items
@@ -4164,6 +4169,7 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        self.close()
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

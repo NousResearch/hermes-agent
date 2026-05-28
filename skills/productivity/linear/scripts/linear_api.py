@@ -34,7 +34,7 @@ Commands:
   search-documents <query>                Search documents by title
 
   raw <graphql_query> [variables_json]    Run an arbitrary GraphQL query
-                                          Use --vars '{"key":"value"}' for variables
+                                          Or use --vars '{"key":"value"}' for variables
 
 Auth:
   Set LINEAR_API_KEY environment variable (from Linear Settings -> API).
@@ -349,7 +349,11 @@ def cmd_search_documents(args: argparse.Namespace) -> None:
 
 
 def cmd_raw(args: argparse.Namespace) -> None:
-    variables = json.loads(args.vars) if args.vars else None
+    raw_vars = args.vars or args.variables_json
+    if args.vars and args.variables_json:
+        sys.stderr.write("Use either positional variables_json or --vars, not both.\n")
+        sys.exit(2)
+    variables = json.loads(raw_vars) if raw_vars else None
     emit(gql(args.query, variables))
 
 
@@ -429,6 +433,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("raw")
     r.add_argument("query")
+    r.add_argument("variables_json", nargs="?", help="JSON string of variables")
     r.add_argument("--vars", help="JSON string of variables")
     r.set_defaults(func=cmd_raw)
 

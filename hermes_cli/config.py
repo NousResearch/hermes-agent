@@ -643,6 +643,12 @@ DEFAULT_CONFIG = {
         # tools or receiving API responses.  Only fires when the agent has
         # been completely idle for this duration.  0 = unlimited.
         "gateway_timeout": 1800,
+        # Wall-clock safety guard for interactive gateway turns (seconds).
+        # This is separate from gateway_timeout: active long-running turns can
+        # continue until this limit, but the guard still prevents indefinite
+        # typing indicators if a turn keeps making progress forever.
+        # Values <= 0 are ignored by the agent so the guard remains enabled.
+        "interactive_turn_timeout": 900,
         # Graceful drain timeout for gateway stop/restart (seconds).
         # The gateway stops accepting new work, waits for running agents
         # to finish, then interrupts any remaining runs after the timeout.

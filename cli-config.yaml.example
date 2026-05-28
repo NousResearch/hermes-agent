@@ -569,6 +569,12 @@ agent:
   # API responses.  Only fires after the agent has been idle for this duration.
   # gateway_timeout: 1800
 
+  # Wall-clock safety guard for interactive gateway turns (seconds).
+  # This is separate from gateway_timeout: active long-running turns can
+  # continue until this limit, but the guard still prevents indefinite typing.
+  # Values <= 0 are ignored; the guard remains enabled.
+  # interactive_turn_timeout: 900
+
   # Staged warning: send a warning before escalating to full timeout.
   # Fires once per run when inactivity reaches this threshold (seconds).
   # Set to 0 to disable the warning.

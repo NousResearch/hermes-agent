@@ -73,7 +73,7 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
-_INTERACTIVE_TURN_WALL_SECONDS = 5 * 60
+_INTERACTIVE_TURN_WALL_SECONDS = 15 * 60
 _NON_INTERACTIVE_TURN_GUARD_PLATFORMS = {"", "cli", "cron", "scheduler"}
 
 
@@ -82,11 +82,48 @@ def _interactive_turn_guard_enabled(agent: Any) -> bool:
     return platform not in _NON_INTERACTIVE_TURN_GUARD_PLATFORMS
 
 
-def _interactive_wall_clock_guard_message(platform: str | None = None) -> str:
+def _interactive_turn_wall_seconds() -> float:
+    raw = os.environ.get("HERMES_INTERACTIVE_TURN_TIMEOUT", "").strip()
+    if not raw:
+        return float(_INTERACTIVE_TURN_WALL_SECONDS)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid HERMES_INTERACTIVE_TURN_TIMEOUT=%r; using default %.0fs",
+            raw,
+            _INTERACTIVE_TURN_WALL_SECONDS,
+        )
+        return float(_INTERACTIVE_TURN_WALL_SECONDS)
+    if value <= 0:
+        logger.warning(
+            "Ignoring non-positive HERMES_INTERACTIVE_TURN_TIMEOUT=%r; "
+            "interactive turn guard remains enabled at default %.0fs",
+            raw,
+            _INTERACTIVE_TURN_WALL_SECONDS,
+        )
+        return float(_INTERACTIVE_TURN_WALL_SECONDS)
+    return max(1.0, value)
+
+
+def _format_guard_duration(seconds: float) -> str:
+    if seconds >= 60 and seconds % 60 == 0:
+        minutes = int(seconds // 60)
+        return f"{minutes}-minute"
+    return f"{seconds:g}-second"
+
+
+def _interactive_wall_clock_guard_message(
+    platform: str | None = None,
+    timeout_seconds: float | None = None,
+) -> str:
     label = (platform or "gateway").strip().lower()
     display_platform = "Telegram" if label == "telegram" else "This interactive"
+    duration = _format_guard_duration(
+        timeout_seconds if timeout_seconds is not None else _interactive_turn_wall_seconds()
+    )
     return (
-        f"{display_platform} turn hit Hermes' 5-minute interactive safety guard. "
+        f"{display_platform} turn hit Hermes' {duration} interactive safety guard. "
         "Background jobs, if any, were not intentionally stopped by this message. "
         "I saved the turn state; ask for status and I will verify the live state "
         "before continuing."
@@ -730,6 +767,7 @@ def run_conversation(
     compression_attempts = 0
     _turn_started_at = time.monotonic()
     _interactive_turn_guard = _interactive_turn_guard_enabled(agent)
+    _interactive_turn_wall_limit_seconds = _interactive_turn_wall_seconds()
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
     # Per-turn file-mutation verifier state.  Keyed by resolved path;
@@ -806,11 +844,12 @@ def run_conversation(
             break
         if (
             _interactive_turn_guard
-            and time.monotonic() - _turn_started_at > _INTERACTIVE_TURN_WALL_SECONDS
+            and time.monotonic() - _turn_started_at > _interactive_turn_wall_limit_seconds
         ):
             _turn_exit_reason = "interactive_wall_clock_guard"
             final_response = _interactive_wall_clock_guard_message(
-                getattr(agent, "platform", "") or None
+                getattr(agent, "platform", "") or None,
+                _interactive_turn_wall_seconds,
             )
             logger.warning(
                 "Interactive %s turn stopped by wall-clock guard after %.1fs "

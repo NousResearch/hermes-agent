@@ -10,11 +10,14 @@ import androidx.lifecycle.viewModelScope
 import com.mobilefork.hermesagent.api.ChatCompletionRequest
 import com.mobilefork.hermesagent.api.ChatContentPart
 import com.mobilefork.hermesagent.api.ChatMessage
+import com.mobilefork.hermesagent.api.HermesEndpointUrl
 import com.mobilefork.hermesagent.api.HermesApiClient
 import com.mobilefork.hermesagent.api.HermesSseClient
 import com.mobilefork.hermesagent.backend.HermesRuntimeManager
 import com.mobilefork.hermesagent.backend.OnDeviceBackendManager
 import com.mobilefork.hermesagent.data.ConversationStore
+import com.mobilefork.hermesagent.data.AppSettings
+import com.mobilefork.hermesagent.data.AppSettingsStore
 import com.mobilefork.hermesagent.data.HermesNetworkPolicy
 import com.mobilefork.hermesagent.data.StoredConversationAttachment
 import com.mobilefork.hermesagent.data.StoredConversationMessage
@@ -297,9 +300,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 },
             )
+            val customSystemPrompt = AppSettingsStore(getApplication<Application>()).load().customSystemPrompt
             val request = ChatCompletionRequest(
                 model = endpoint.modelName,
-                messages = listOf(ChatMessage(role = "user", content = text, contentParts = userContentParts)),
+                messages = buildChatRequestMessages(
+                    userText = text,
+                    userContentParts = userContentParts,
+                    customSystemPrompt = customSystemPrompt,
+                ),
                 stream = true,
                 sessionId = sessionId,
             )
@@ -459,7 +467,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (nativeToolCalling || !clean.looksLikeEndpointDisconnect()) {
             return clean
         }
-        return "$clean If this is a custom endpoint, verify the Base URL includes /v1, the model name matches the server exactly, the phone network is stable, and the server keeps SSE streams open until [DONE]."
+        return "$clean Hermes normalizes raw hosts, /v1 URLs, and /v1/chat/completions URLs, but the host must still be reachable, the model name must match the server exactly, and streaming endpoints must stay open until [DONE]."
     }
 
     private fun ChatEndpoint.debugLabel(): String {
@@ -475,12 +483,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun endpointHostLabel(baseUrl: String): String {
+        val normalizedBaseUrl = runCatching { HermesEndpointUrl.normalizeBaseUrl(baseUrl) }.getOrDefault(baseUrl)
         return runCatching {
-            val uri = URI(baseUrl)
-            val host = uri.host.orEmpty().ifBlank { baseUrl }
+            val uri = URI(normalizedBaseUrl)
+            val host = uri.host.orEmpty().ifBlank { normalizedBaseUrl }
             val port = uri.port.takeIf { it > 0 }?.let { ":$it" }.orEmpty()
             "$host$port"
-        }.getOrDefault(baseUrl)
+        }.getOrDefault(normalizedBaseUrl)
             .replace("https://", "")
             .replace("http://", "")
             .take(64)
@@ -490,15 +499,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val localBackend = OnDeviceBackendManager.currentStatus()
         if (localBackend.started && localBackend.baseUrl.isNotBlank() && localBackend.modelName.isNotBlank()) {
             return ChatEndpoint(
-                baseUrl = localBackend.baseUrl.removeSuffix("/v1"),
+                baseUrl = HermesEndpointUrl.normalizeBaseUrl(localBackend.baseUrl),
                 apiKey = null,
                 modelName = localBackend.modelName,
                 nativeToolCalling = true,
             )
         }
         val runtimeBaseUrl = runtime.baseUrl?.takeIf { it.isNotBlank() } ?: return null
+        val normalizedRuntimeBaseUrl = runCatching {
+            HermesEndpointUrl.normalizeBaseUrl(runtimeBaseUrl)
+        }.getOrNull() ?: return null
         return ChatEndpoint(
-            baseUrl = runtimeBaseUrl,
+            baseUrl = normalizedRuntimeBaseUrl,
             apiKey = runtime.apiKey,
             modelName = runtime.modelName ?: "hermes-agent-android",
         )
@@ -661,6 +673,29 @@ internal fun extractAssistantContentFromChatCompletion(rawBody: String): String 
     val messageContent = choice.optJSONObject("message")?.opt("content")
     val deltaContent = choice.optJSONObject("delta")?.opt("content")
     return chatCompletionContentToText(messageContent ?: deltaContent).trim()
+}
+
+internal fun buildChatRequestMessages(
+    userText: String,
+    userContentParts: List<ChatContentPart> = emptyList(),
+    customSystemPrompt: String = "",
+): List<ChatMessage> {
+    val userMessage = ChatMessage(role = "user", content = userText, contentParts = userContentParts)
+    val persona = NativeToolContextCompressor.compactCustomSystemPrompt(
+        AppSettings.normalizeCustomSystemPrompt(customSystemPrompt),
+    )
+    if (persona.isBlank()) {
+        return listOf(userMessage)
+    }
+    return listOf(
+        ChatMessage(
+            role = "system",
+            content = "User-configured agent persona/system instructions. Apply them unless they conflict " +
+                "with the current user request, Android permissions, tool truthfulness, or safety constraints:\n" +
+                persona,
+        ),
+        userMessage,
+    )
 }
 
 private fun chatCompletionContentToText(value: Any?): String {

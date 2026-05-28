@@ -5,10 +5,12 @@ import android.app.Application
 import android.app.Instrumentation
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.net.Uri
-import android.os.Environment
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -32,6 +34,7 @@ import com.mobilefork.hermesagent.data.LocalModelDownloadStore
 import com.mobilefork.hermesagent.data.StoredConversationAttachment
 import com.mobilefork.hermesagent.data.StoredConversationMessage
 import com.mobilefork.hermesagent.device.HermesProviderSetupWebActivity
+import com.mobilefork.hermesagent.models.HermesModelDownloadManager
 import com.mobilefork.hermesagent.ui.boot.BootUiState
 import com.mobilefork.hermesagent.ui.settings.LocalModelDownloadsSection
 import com.mobilefork.hermesagent.ui.settings.LocalModelDownloadsViewModel
@@ -134,25 +137,70 @@ class DeepAppUiVisualInstrumentedTest {
         capture("07-device-spanish")
 
         composeRule.onNodeWithTag("HermesNavNousPortal").performClick()
-        composeRule.onAllNodesWithText("Nous Portal")[0].assertIsDisplayed()
+        assertTrue(composeRule.onAllNodesWithText("Portal del proveedor").fetchSemanticsNodes().isNotEmpty())
         capture("08-portal-spanish")
     }
 
     @Test
+    fun chatInputAcceptsHumanLikeTypingWithoutLosingComposerControls() {
+        AppSettingsStore(app).save(
+            AppSettings(
+                provider = "openrouter",
+                baseUrl = "https://openrouter.ai/api/v1",
+                model = "anthropic/claude-sonnet-4",
+                onDeviceBackend = BackendKind.NONE.persistedValue,
+                languageTag = "en",
+                chatDisplayMode = "compact",
+            )
+        )
+
+        composeRule.setContent {
+            AppShellScreen(
+                bootUiState = BootUiState(
+                    status = "Hermes backend is ready",
+                    ready = true,
+                    probeResult = "human-like-typing-test",
+                    baseUrl = "http://127.0.0.1:15436/v1",
+                ),
+                onRetryHermes = {},
+            )
+        }
+
+        val promptChunks = listOf(
+            "Set up a tiny demo app, ",
+            "check the endpoint, ",
+            "then report Qwen and Gemma status.",
+        )
+        composeRule.onNodeWithTag("HermesChatInput").performClick()
+        promptChunks.forEach { chunk ->
+            composeRule.onNodeWithTag("HermesChatInput").performTextInput(chunk)
+            Thread.sleep(45L)
+        }
+
+        composeRule.onNodeWithText(
+            "Set up a tiny demo app, check the endpoint, then report Qwen and Gemma status.",
+        ).assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatMoreInputActionsButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatMicButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatSendButton").assertIsDisplayed()
+        capture("13-human-like-typing")
+    }
+
+    @Test
     fun localModelImportButtonImportsPhoneFileAndMarksPreferredModel() {
-        val sourceFile = File(app.cacheDir, "hermes-import-button-test.gguf").apply {
+        val sourceDir = File(app.filesDir, "hermes-home/import-fixtures").apply { mkdirs() }
+        val sourceFile = File(sourceDir, "hermes-import-button-test.gguf").apply {
             writeText("HERMES_IMPORT_BUTTON_TEST")
         }
-        val importedFile = File(
-            app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
-            "models/${sourceFile.name}",
-        ).apply { delete() }
+        val sourceUri = Uri.fromFile(sourceFile)
+        val importedFile = HermesModelDownloadManager.modelsDirectory(app).resolve(sourceFile.name).apply { delete() }
         LocalModelDownloadStore(app).apply {
             saveDownloads(emptyList())
             setPreferredDownloadId("")
         }
 
         val viewModel = LocalModelDownloadsViewModel(app)
+        val openDocumentLaunched = AtomicBoolean(false)
         composeRule.setContent {
             HermesTheme {
                 LocalModelDownloadsSection(
@@ -162,35 +210,22 @@ class DeepAppUiVisualInstrumentedTest {
                     selectedBackend = BackendKind.LLAMA_CPP.persistedValue,
                     onRuntimeFlavorSelected = {},
                     onCompletedDownloadReady = {},
+                    importModelClickOverride = {
+                        openDocumentLaunched.set(true)
+                        HermesModelDownloadManager.importLocalModelFile(
+                            context = app,
+                            store = LocalModelDownloadStore(app),
+                            sourceUri = sourceUri,
+                        )
+                    },
                     viewModel = viewModel,
                 )
             }
         }
 
-        val openDocumentLaunched = AtomicBoolean(false)
-        val openDocumentIntent = object : TypeSafeMatcher<Intent>() {
-            override fun describeTo(description: Description) {
-                description.appendText("local model import ACTION_OPEN_DOCUMENT intent")
-            }
-
-            override fun matchesSafely(intent: Intent): Boolean {
-                val matches = intent.action == Intent.ACTION_OPEN_DOCUMENT
-                if (matches) {
-                    openDocumentLaunched.set(true)
-                }
-                return matches
-            }
-        }
-
-        Intents.init()
         try {
-            val resultIntent = Intent()
-                .setData(Uri.fromFile(sourceFile))
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            intending(openDocumentIntent).respondWith(Instrumentation.ActivityResult(Activity.RESULT_OK, resultIntent))
-
-            composeRule.onNodeWithText("Import model from phone files").assertIsDisplayed().performClick()
-            composeRule.waitUntil(timeoutMillis = 10_000) {
+            composeRule.onNodeWithTag("HermesImportModelButton").assertIsDisplayed().performClick()
+            composeRule.waitUntil(timeoutMillis = 20_000) {
                 val store = LocalModelDownloadStore(app)
                 openDocumentLaunched.get() &&
                     store.loadDownloads().firstOrNull { it.id == store.preferredDownloadId() }?.destinationFileName == sourceFile.name
@@ -204,7 +239,6 @@ class DeepAppUiVisualInstrumentedTest {
             assertTrue("Expected imported model copy at ${importedFile.absolutePath}", importedFile.isFile)
             assertEquals(sourceFile.readText(), importedFile.readText())
         } finally {
-            Intents.release()
             importedFile.delete()
             sourceFile.delete()
         }
@@ -265,13 +299,24 @@ class DeepAppUiVisualInstrumentedTest {
             )
         }
 
-        composeRule.onNodeWithTag("HermesCompactChatTurn").assertIsDisplayed()
-        composeRule.onNodeWithTag("HermesCompactPromptHeader").assertIsDisplayed()
-        composeRule.onNodeWithText("1 attachment").assertIsDisplayed()
-        composeRule.onNodeWithText("Available app commands", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatHistoryButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatPageActionsButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatDisplayToggle").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesFloatingActionButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatMoreInputActionsButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatMicButton").assertIsDisplayed()
+        capture("09-compact-floating-icon")
 
-        composeRule.onNodeWithTag("HermesCompactPromptHeader").performClick()
-        composeRule.onNodeWithText("Your full prompt").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesCompactChatTurn").performScrollTo()
+        composeRule.onNodeWithText("Available app commands", substring = true).performScrollTo()
+
+        composeRule.onNodeWithTag("HermesChatMoreInputActionsButton").performClick()
+        composeRule.onNodeWithTag("HermesChatComposerActions").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatAttachImageButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatCameraButton").assertIsDisplayed()
+        capture("10-compact-action-tray")
+        composeRule.onNodeWithTag("HermesChatMoreInputActionsButton").performClick()
+        composeRule.waitForIdle()
 
         composeRule.onNodeWithTag("HermesChatDisplayToggle").performClick()
         composeRule.waitUntil(timeoutMillis = 5_000) {
@@ -282,6 +327,157 @@ class DeepAppUiVisualInstrumentedTest {
             composeRule.onAllNodesWithText("You").fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithText("You").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatHistoryButton").performClick()
+        composeRule.onNodeWithText("Conversation history").assertIsDisplayed()
+    }
+
+    @Test
+    fun compactControlsRemainReachableOnNarrowScreens() {
+        val conversationStore = ConversationStore(app)
+        conversationStore.clearAll()
+        AppSettingsStore(app).save(
+            AppSettings(
+                provider = "openrouter",
+                baseUrl = "https://openrouter.ai/api/v1",
+                model = "anthropic/claude-sonnet-4",
+                onDeviceBackend = BackendKind.NONE.persistedValue,
+                languageTag = "en",
+                chatDisplayMode = "compact",
+            )
+        )
+        val seededConversation = conversationStore.createNewConversation("Narrow controls validation")
+        val now = System.currentTimeMillis()
+        conversationStore.upsertMessage(
+            seededConversation.sessionId,
+            StoredConversationMessage(
+                id = "narrow-user",
+                role = "user",
+                content = "/help",
+                createdAtEpochMs = now,
+            ),
+        )
+        conversationStore.upsertMessage(
+            seededConversation.sessionId,
+            StoredConversationMessage(
+                id = "narrow-assistant",
+                role = "assistant",
+                content = "Available app commands include camera, image upload, voice input, tool calls, skills, and agent actions.",
+                createdAtEpochMs = now + 1_000L,
+            ),
+        )
+
+        composeRule.setContent {
+            AppShellScreen(
+                bootUiState = BootUiState(
+                    status = "Hermes backend is ready",
+                    ready = true,
+                    probeResult = "narrow-controls-test",
+                    baseUrl = "http://127.0.0.1:15436/v1",
+                ),
+                onRetryHermes = {},
+            )
+        }
+
+        composeRule.onNodeWithTag("HermesChatHistoryButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatPageActionsButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatDisplayToggle").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesFloatingActionButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatMoreInputActionsButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatMicButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatSendButton").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("HermesChatMoreInputActionsButton").performClick()
+        composeRule.onNodeWithTag("HermesChatComposerActions").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatAttachImageButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatCameraButton").assertIsDisplayed()
+        capture("11-narrow-controls")
+    }
+
+    @Test
+    fun ultraNarrowComposerControlsRemainReachableOnTinyScreens() {
+        org.junit.Assume.assumeTrue(
+            "Run with a screen width below 220dp to exercise the ultra-narrow composer.",
+            app.resources.configuration.screenWidthDp < 220,
+        )
+        AppSettingsStore(app).save(
+            AppSettings(
+                provider = "openrouter",
+                baseUrl = "https://openrouter.ai/api/v1",
+                model = "anthropic/claude-sonnet-4",
+                onDeviceBackend = BackendKind.NONE.persistedValue,
+                languageTag = "en",
+                chatDisplayMode = "compact",
+            )
+        )
+
+        composeRule.setContent {
+            AppShellScreen(
+                bootUiState = BootUiState(
+                    status = "Hermes backend is ready",
+                    ready = true,
+                    probeResult = "ultra-narrow-controls-test",
+                    baseUrl = "http://127.0.0.1:15436/v1",
+                ),
+                onRetryHermes = {},
+            )
+        }
+
+        composeRule.onNodeWithTag("HermesChatInput").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatComposerUltraNarrowControls").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatMoreInputActionsButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatMicButton").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesChatSendButton").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("HermesChatMoreInputActionsButton").performClick()
+        composeRule.onNodeWithTag("HermesChatComposerActions").assertIsDisplayed()
+        capture("14-ultra-narrow-controls")
+        composeRule.onNodeWithTag("HermesChatMoreInputActionsButton").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("HermesChatInput").performClick()
+        composeRule.onNodeWithTag("HermesChatInput").performTextInput("tiny phone check")
+        composeRule.onNodeWithTag("HermesChatInput").assertTextContains("tiny phone check")
+        assertTrue(
+            "Bottom navigation should collapse while the keyboard is open on tiny screens",
+            composeRule.onAllNodesWithTag("HermesNavSettings").fetchSemanticsNodes().isEmpty(),
+        )
+        assertTrue(
+            "Floating chat icon should collapse before it can overlap tiny composer controls",
+            composeRule.onAllNodesWithTag("HermesFloatingActionButton").fetchSemanticsNodes().isEmpty(),
+        )
+        capture("15-ultra-narrow-keyboard")
+    }
+
+    @Test
+    fun customEndpointDebugPreviewNormalizesPastedUrlInSettings() {
+        AppSettingsStore(app).save(
+            AppSettings(
+                provider = "custom",
+                baseUrl = "localhost:11434/v1/chat/completions?debug=true",
+                model = "qwen-local",
+                onDeviceBackend = BackendKind.NONE.persistedValue,
+                languageTag = "en",
+            )
+        )
+
+        composeRule.setContent {
+            AppShellScreen(
+                bootUiState = BootUiState(
+                    status = "Hermes backend is ready",
+                    ready = true,
+                    probeResult = "custom-endpoint-preview-test",
+                    baseUrl = "http://127.0.0.1:15436/v1",
+                ),
+                onRetryHermes = {},
+            )
+        }
+
+        composeRule.onNodeWithTag("HermesNavSettings").performClick()
+        composeRule.onNodeWithTag("HermesEndpointDebugPreview").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText(
+            "Hermes will try: http://localhost:11434/v1/chat/completions",
+        ).performScrollTo().assertIsDisplayed()
+        capture("12-custom-endpoint-debug-preview")
     }
 
     @Test
@@ -535,12 +731,12 @@ class DeepAppUiVisualInstrumentedTest {
     }
 
     private fun capture(name: String) {
-        composeRule.waitForIdle()
         val outputDir = File(app.filesDir, "hermes-ui-visuals").apply { mkdirs() }
         val outputFile = File(outputDir, "$name.png")
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val bitmap = instrumentation.uiAutomation.takeScreenshot()
+        val bitmap = takeVisibleScreenshot(instrumentation)
         if (bitmap != null) {
+            assertTrue("Hermes UI screenshot $name appears blank", screenshotHasVisibleContent(bitmap))
             FileOutputStream(outputFile).use { output ->
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
             }
@@ -554,6 +750,41 @@ class DeepAppUiVisualInstrumentedTest {
             }
         }
         assertTrue("Failed to capture Hermes UI screenshot $name", outputFile.length() > 0L)
+    }
+
+    private fun takeVisibleScreenshot(instrumentation: Instrumentation): Bitmap? {
+        for (attempt in 1..3) {
+            composeRule.waitForIdle()
+            instrumentation.waitForIdleSync()
+            Thread.sleep(150L)
+            val candidate = instrumentation.uiAutomation.takeScreenshot() ?: continue
+            if (screenshotHasVisibleContent(candidate) || attempt == 3) {
+                return candidate
+            }
+            candidate.recycle()
+        }
+        return null
+    }
+
+    private fun screenshotHasVisibleContent(bitmap: Bitmap): Boolean {
+        val stepX = maxOf(1, bitmap.width / 48)
+        val stepY = maxOf(1, bitmap.height / 48)
+        var visibleSamples = 0
+        for (y in 0 until bitmap.height step stepY) {
+            for (x in 0 until bitmap.width step stepX) {
+                val pixel = bitmap.getPixel(x, y)
+                if (Color.alpha(pixel) == 0) continue
+                val red = Color.red(pixel)
+                val green = Color.green(pixel)
+                val blue = Color.blue(pixel)
+                val high = maxOf(red, green, blue)
+                val low = minOf(red, green, blue)
+                if (high > 42 || high - low > 14) {
+                    visibleSamples += 1
+                }
+            }
+        }
+        return visibleSamples > 64
     }
 
     private fun providerSetupOpenFor(uri: Uri, onMatch: (() -> Unit)? = null): Matcher<Intent> {

@@ -228,6 +228,32 @@ class HermesSseClientTest {
         assertNull(error)
     }
 
+    @Test
+    fun streamChatCompletion_normalizesPastedFullEndpointUrl() {
+        val body = """
+            data: {"choices":[{"delta":{"content":"hello"}}]}
+
+            data: [DONE]
+
+        """.trimIndent() + "\n"
+        val client = HermesSseClient(
+            baseUrl = "http://127.0.0.1:15436/proxy/v1/chat/completions",
+            httpClient = singleResponseClient(body),
+        )
+
+        val deltas = mutableListOf<String>()
+        var error: String? = null
+        client.streamChatCompletion(
+            request = sampleRequest(),
+            onDelta = { deltas += it },
+            onComplete = {},
+            onError = { error = it },
+        )
+
+        assertEquals(listOf("hello"), deltas)
+        assertNull(error)
+    }
+
     private fun sampleRequest(): ChatCompletionRequest {
         return ChatCompletionRequest(
             model = "gemma-4-local",

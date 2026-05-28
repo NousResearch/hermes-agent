@@ -2303,10 +2303,13 @@ class HermesAutomationInstrumentedTest {
         private val BROWSER_PACKAGES = setOf(
             "com.android.chrome",
             "com.chrome.beta",
+            "com.chrome.canary",
             "com.chrome.dev",
             "org.mozilla.firefox",
             "org.mozilla.firefox_beta",
             "com.brave.browser",
+            "com.brave.browser_beta",
+            "com.brave.browser_nightly",
             "com.microsoft.emmx",
         )
         private val FOCUS_PACKAGE_REGEX = Regex("""mCurrentFocus=Window\{[^ ]+ u\d+ ([^/\s]+)/""")

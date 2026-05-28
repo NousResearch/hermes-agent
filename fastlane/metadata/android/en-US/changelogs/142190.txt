@@ -1,0 +1,7 @@
+Hermes Agent Fork 0.13.121
+
+- Applies saved custom agent instructions to endpoint chat requests as a bounded system message.
+- Bounds native on-device custom instructions and promoted memory before local inference.
+- Retries local native chat after context-window overflow with compressed messages and tool schemas.
+- Updates the official LiteRT-LM Android runtime dependency and preserves physical-device validation coverage.
+- Keeps chat history, image attachments, camera, voice, TTS, quick actions, display modes, and native tool calling intact.

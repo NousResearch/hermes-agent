@@ -1,5 +1,7 @@
 package com.mobilefork.hermesagent.data
 
+import com.mobilefork.hermesagent.api.HermesEndpointUrl
+
 data class ProviderPreset(
     val id: String,
     val label: String,
@@ -233,11 +235,24 @@ object ProviderPresets {
     }
 
     fun runtimeConfigBaseUrl(providerId: String, baseUrl: String): String {
-        val normalized = baseUrl.trim().trimEnd('/')
+        val normalized = normalizeRuntimeBaseUrl(providerId, baseUrl)
         val presetDefault = find(providerId)?.baseUrl.orEmpty().trim().trimEnd('/')
         return when {
             providerId in setOf("zai", "zai-coding-plan") && normalized == presetDefault -> ""
             else -> normalized
+        }
+    }
+
+    private fun normalizeRuntimeBaseUrl(providerId: String, baseUrl: String): String {
+        val trimmed = baseUrl.trim()
+        if (trimmed.isBlank()) {
+            return ""
+        }
+        return if (providerId.trim().lowercase() == "custom") {
+            runCatching { HermesEndpointUrl.openAiRuntimeBaseUrl(trimmed) }
+                .getOrElse { trimmed.trimEnd('/') }
+        } else {
+            trimmed.trimEnd('/')
         }
     }
 

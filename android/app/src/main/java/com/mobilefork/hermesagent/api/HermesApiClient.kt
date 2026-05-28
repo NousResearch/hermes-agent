@@ -13,10 +13,10 @@ class HermesApiClient(
     private val httpClient: OkHttpClient = OkHttpClient(),
     private val networkGuard: (String) -> Unit = {},
 ) {
-    private val normalizedBaseUrl = baseUrl.trimEnd('/')
+    private val normalizedBaseUrl = HermesEndpointUrl.normalizeBaseUrl(baseUrl)
 
     fun getHealth(): HealthResponse {
-        val request = requestBuilder("$normalizedBaseUrl/health").get().build()
+        val request = requestBuilder(HermesEndpointUrl.healthUrl(normalizedBaseUrl)).get().build()
         httpClient.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             require(response.isSuccessful) { "Health request failed: ${response.code} $body" }
@@ -29,7 +29,7 @@ class HermesApiClient(
     }
 
     fun listModels(): ModelsResponse {
-        val request = requestBuilder("$normalizedBaseUrl/v1/models").get().build()
+        val request = requestBuilder(HermesEndpointUrl.modelsUrl(normalizedBaseUrl)).get().build()
         httpClient.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             require(response.isSuccessful) { "Models request failed: ${response.code} $body" }
@@ -57,7 +57,7 @@ class HermesApiClient(
                 }
             )
         }
-        val builder = requestBuilder("$normalizedBaseUrl/v1/chat/completions")
+        val builder = requestBuilder(HermesEndpointUrl.chatCompletionsUrl(normalizedBaseUrl))
             .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
         if (!request.sessionId.isNullOrBlank()) {
             builder.header(SESSION_HEADER, request.sessionId)

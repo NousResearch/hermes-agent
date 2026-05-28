@@ -3,6 +3,7 @@ package com.mobilefork.hermesagent.ui.shell
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -102,92 +103,101 @@ fun AppShellScreen(
         ),
     ) {
         CompositionLocalProvider(LocalHermesStrings provides strings) {
-            Scaffold(
-                modifier = Modifier.fillMaxSize(),
-                containerColor = MaterialTheme.colorScheme.background,
-                topBar = {
-                    HermesTopBar(
-                        section = currentSection,
-                        bootUiState = bootUiState,
-                    )
-                },
-                bottomBar = {
-                    HermesBottomNavigation(
-                        currentSection = currentSection,
-                        onSelect = ::navigateToSection,
-                    )
-                },
-                floatingActionButton = {
-                    if (currentActions.isNotEmpty() && currentSection != AppSection.Hermes) {
-                        FloatingActionButton(onClick = { showActionSheet = true }) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.ic_action_cog),
-                                contentDescription = strings.openPageActions,
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val tinyRuntimeViewport = maxHeight < 360.dp || maxWidth < 220.dp
+                val collapseBottomNavigation = currentSection == AppSection.Hermes && tinyRuntimeViewport
+                Scaffold(
+                    modifier = Modifier.fillMaxSize(),
+                    containerColor = MaterialTheme.colorScheme.background,
+                    topBar = {
+                        if (!collapseBottomNavigation) {
+                            HermesTopBar(
+                                section = currentSection,
+                                bootUiState = bootUiState,
+                            )
+                        }
+                    },
+                    bottomBar = {
+                        if (!collapseBottomNavigation) {
+                            HermesBottomNavigation(
+                                currentSection = currentSection,
+                                onSelect = ::navigateToSection,
+                            )
+                        }
+                    },
+                    floatingActionButton = {
+                        if (currentActions.isNotEmpty() && currentSection != AppSection.Hermes) {
+                            FloatingActionButton(onClick = { showActionSheet = true }) {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_action_cog),
+                                    contentDescription = strings.openPageActions,
+                                )
+                            }
+                        }
+                    },
+                ) { innerPadding ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding),
+                        color = MaterialTheme.colorScheme.background,
+                    ) {
+                        when (currentSection) {
+                            AppSection.Hermes -> {
+                                val authViewModel: AuthViewModel = viewModel()
+                                val chatViewModel: ChatViewModel = viewModel()
+                                ChatScreen(
+                                    modifier = Modifier.fillMaxSize(),
+                                    viewModel = chatViewModel,
+                                    settingsViewModel = settingsViewModel,
+                                    authViewModel = authViewModel,
+                                    onNavigateToSection = ::navigateToSection,
+                                    onContextActionsChanged = ::setActions,
+                                    onOpenContextActions = { showActionSheet = true },
+                                )
+                            }
+
+                            AppSection.Accounts -> {
+                                val authViewModel: AuthViewModel = viewModel()
+                                AuthScreen(
+                                    modifier = Modifier.fillMaxSize(),
+                                    viewModel = authViewModel,
+                                    extraBottomSpacing = pageBottomClearance,
+                                    onOpenSettings = { navigateToSection(AppSection.Settings) },
+                                    onContextActionsChanged = ::setActions,
+                                )
+                            }
+
+                            AppSection.NousPortal -> {
+                                val portalViewModel: NousPortalViewModel = viewModel()
+                                NousPortalScreen(
+                                    modifier = Modifier.fillMaxSize(),
+                                    viewModel = portalViewModel,
+                                    extraBottomSpacing = pageBottomClearance,
+                                    onContextActionsChanged = ::setActions,
+                                )
+                            }
+
+                            AppSection.Device -> {
+                                val deviceViewModel: DeviceViewModel = viewModel()
+                                DeviceScreen(
+                                    modifier = Modifier.fillMaxSize(),
+                                    viewModel = deviceViewModel,
+                                    extraBottomSpacing = pageBottomClearance,
+                                    onContextActionsChanged = ::setActions,
+                                )
+                            }
+
+                            AppSection.Settings -> SettingsScreen(
+                                modifier = Modifier.fillMaxSize(),
+                                viewModel = settingsViewModel,
+                                extraBottomSpacing = pageBottomClearance,
+                                onContextActionsChanged = ::setActions,
                             )
                         }
                     }
-                },
-            ) { innerPadding ->
-                Surface(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(innerPadding),
-                    color = MaterialTheme.colorScheme.background,
-                ) {
-                    when (currentSection) {
-                    AppSection.Hermes -> {
-                        val authViewModel: AuthViewModel = viewModel()
-                        val chatViewModel: ChatViewModel = viewModel()
-                        ChatScreen(
-                            modifier = Modifier.fillMaxSize(),
-                            viewModel = chatViewModel,
-                            settingsViewModel = settingsViewModel,
-                            authViewModel = authViewModel,
-                            onNavigateToSection = ::navigateToSection,
-                            onContextActionsChanged = ::setActions,
-                            onOpenContextActions = { showActionSheet = true },
-                        )
-                    }
-
-                    AppSection.Accounts -> {
-                        val authViewModel: AuthViewModel = viewModel()
-                        AuthScreen(
-                            modifier = Modifier.fillMaxSize(),
-                            viewModel = authViewModel,
-                            extraBottomSpacing = pageBottomClearance,
-                            onOpenSettings = { navigateToSection(AppSection.Settings) },
-                            onContextActionsChanged = ::setActions,
-                        )
-                    }
-
-                    AppSection.NousPortal -> {
-                        val portalViewModel: NousPortalViewModel = viewModel()
-                        NousPortalScreen(
-                            modifier = Modifier.fillMaxSize(),
-                            viewModel = portalViewModel,
-                            extraBottomSpacing = pageBottomClearance,
-                            onContextActionsChanged = ::setActions,
-                        )
-                    }
-
-                    AppSection.Device -> {
-                        val deviceViewModel: DeviceViewModel = viewModel()
-                        DeviceScreen(
-                            modifier = Modifier.fillMaxSize(),
-                            viewModel = deviceViewModel,
-                            extraBottomSpacing = pageBottomClearance,
-                            onContextActionsChanged = ::setActions,
-                        )
-                    }
-
-                    AppSection.Settings -> SettingsScreen(
-                        modifier = Modifier.fillMaxSize(),
-                        viewModel = settingsViewModel,
-                        extraBottomSpacing = pageBottomClearance,
-                        onContextActionsChanged = ::setActions,
-                    )
                 }
-            }
+                }
 
             if (showActionSheet && currentActions.isNotEmpty()) {
                 ContextActionSheet(
@@ -198,7 +208,6 @@ fun AppShellScreen(
             }
         }
     }
-}
 }
 
 @Composable

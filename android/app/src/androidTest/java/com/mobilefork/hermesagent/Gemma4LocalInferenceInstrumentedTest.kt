@@ -1,6 +1,8 @@
 package com.mobilefork.hermesagent
 
+import android.app.ActivityManager
 import android.content.Context
+import android.os.Build
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.mobilefork.hermesagent.backend.BackendKind
@@ -77,6 +79,24 @@ class Gemma4LocalInferenceInstrumentedTest {
         assertTrue(health.toString(), health.has("opencl_available"))
         assertTrue(health.toString(), health.has("hardware_identity"))
         assertTrue(health.toString(), health.has("mtp_policy"))
+        val mtpPolicy = health.optString("mtp_policy")
+        assertTrue(health.toString(), mtpPolicy.isNotBlank())
+        assertTrue(
+            health.toString(),
+            mtpPolicy.contains("enabled:") ||
+                mtpPolicy.contains("disabled:") ||
+                mtpPolicy.contains("failed"),
+        )
+        if (shouldRequireGemma4MtpEnabled()) {
+            assertTrue(
+                "Expected Gemma 4 MTP enabled on this ARM device with ${totalRamBytes()} bytes RAM: $health",
+                health.optBoolean("speculative_decoding", false),
+            )
+            assertTrue(
+                "Expected enabled Gemma 4 MTP policy on this ARM device: $health",
+                mtpPolicy.contains("enabled:"),
+            )
+        }
         if (health.optBoolean("multimodal_fallback", false)) {
             assertFalse(health.toString(), health.optBoolean("image_input_supported", true))
             assertFalse(health.toString(), health.optBoolean("audio_input_supported", true))
@@ -191,6 +211,16 @@ class Gemma4LocalInferenceInstrumentedTest {
         Thread.sleep(APP_STARTUP_SETTLE_MS)
     }
 
+    private fun shouldRequireGemma4MtpEnabled(): Boolean {
+        return Build.SUPPORTED_ABIS.any { it.equals("arm64-v8a", ignoreCase = true) } &&
+            totalRamBytes() >= GEMMA4_E2B_MTP_MIN_RAM_BYTES
+    }
+
+    private fun totalRamBytes(): Long {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        return ActivityManager.MemoryInfo().also(activityManager::getMemoryInfo).totalMem
+    }
+
     private companion object {
         private const val MODEL_ID = "gemma-4-E2B-it"
         private const val MODEL_REPO = "litert-community/gemma-4-E2B-it-litert-lm"
@@ -200,6 +230,7 @@ class Gemma4LocalInferenceInstrumentedTest {
             "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/7fa1d78473894f7e736a21d920c3aa80f950c0db/gemma-4-E2B-it.litertlm"
         private const val MODEL_REVISION = "7fa1d78473894f7e736a21d920c3aa80f950c0db"
         private const val MODEL_BYTES = 2_583_085_056L
+        private const val GEMMA4_E2B_MTP_MIN_RAM_BYTES = 8_000_000_000L
         private const val APP_STARTUP_SETTLE_MS = 10_000L
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }

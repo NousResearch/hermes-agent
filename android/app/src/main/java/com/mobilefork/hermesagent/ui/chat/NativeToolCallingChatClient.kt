@@ -67,9 +67,9 @@ class NativeToolCallingChatClient(
 
         var executedToolCalls = 0
         var latestToolResult = ""
-        val initialToolSpecs = compactToolSpecsFor(userText)
+        var activeToolSpecs = compactToolSpecsFor(userText)
         var messages = JSONArray()
-            .put(systemMessage(toolsEnabled = initialToolSpecs.length() > 0))
+            .put(systemMessage(toolsEnabled = activeToolSpecs.length() > 0))
             .put(
                 ChatMessage(
                     role = "user",
@@ -77,14 +77,17 @@ class NativeToolCallingChatClient(
                     contentParts = userContentParts,
                 ).toJsonObject()
             )
-        var assistant = postChatCompletion(
+        val initialResponse = postChatCompletionWithContextRecovery(
             normalizedBaseUrl = normalizedBaseUrl,
             modelName = modelName,
             sessionId = sessionId,
             messages = messages,
-            toolSpecs = initialToolSpecs,
+            toolSpecs = activeToolSpecs,
             maxTokens = NATIVE_TOOL_MAX_TOKENS,
         )
+        messages = initialResponse.messages
+        activeToolSpecs = initialResponse.toolSpecs ?: JSONArray()
+        var assistant = initialResponse.assistant
 
         repeat(MAX_NATIVE_TOOL_ROUNDS) {
             if (assistant.toolCalls.isEmpty()) {
@@ -114,14 +117,17 @@ class NativeToolCallingChatClient(
 
             messages = NativeToolContextCompressor.compactMessages(messages)
             val followUp = try {
-                postChatCompletion(
+                val response = postChatCompletionWithContextRecovery(
                     normalizedBaseUrl = normalizedBaseUrl,
                     modelName = modelName,
                     sessionId = sessionId,
                     messages = messages,
-                    toolSpecs = initialToolSpecs,
+                    toolSpecs = activeToolSpecs,
                     maxTokens = NATIVE_TOOL_MAX_TOKENS,
                 )
+                messages = response.messages
+                activeToolSpecs = response.toolSpecs ?: JSONArray()
+                response.assistant
             } catch (error: Exception) {
                 if (externalActivityHandoff) {
                     return Result(
@@ -469,6 +475,54 @@ class NativeToolCallingChatClient(
         return toolResult.ifBlank { "Tool call completed." }
     }
 
+    private data class NativeChatCompletionResponse(
+        val assistant: AssistantMessage,
+        val messages: JSONArray,
+        val toolSpecs: JSONArray?,
+    )
+
+    private fun postChatCompletionWithContextRecovery(
+        normalizedBaseUrl: String,
+        modelName: String,
+        sessionId: String,
+        messages: JSONArray,
+        toolSpecs: JSONArray?,
+        maxTokens: Int,
+    ): NativeChatCompletionResponse {
+        return try {
+            NativeChatCompletionResponse(
+                assistant = postChatCompletion(
+                    normalizedBaseUrl = normalizedBaseUrl,
+                    modelName = modelName,
+                    sessionId = sessionId,
+                    messages = messages,
+                    toolSpecs = toolSpecs,
+                    maxTokens = maxTokens,
+                ),
+                messages = messages,
+                toolSpecs = toolSpecs,
+            )
+        } catch (error: Exception) {
+            if (!isContextWindowError(error)) {
+                throw error
+            }
+            val recoveredMessages = NativeToolContextCompressor.recoverMessagesAfterContextOverflow(messages)
+            val recoveredToolSpecs = NativeToolContextCompressor.recoverToolSpecsAfterContextOverflow(toolSpecs)
+            NativeChatCompletionResponse(
+                assistant = postChatCompletion(
+                    normalizedBaseUrl = normalizedBaseUrl,
+                    modelName = modelName,
+                    sessionId = sessionId,
+                    messages = recoveredMessages,
+                    toolSpecs = recoveredToolSpecs,
+                    maxTokens = minOf(maxTokens, CONTEXT_RECOVERY_MAX_TOKENS),
+                ),
+                messages = recoveredMessages,
+                toolSpecs = recoveredToolSpecs,
+            )
+        }
+    }
+
     private fun postChatCompletion(
         normalizedBaseUrl: String,
         modelName: String,
@@ -519,8 +573,8 @@ class NativeToolCallingChatClient(
         }.getOrNull().orEmpty()
         val diagnostic = parsedMessage.ifBlank { body }.trim()
         val lower = diagnostic.lowercase()
-        if ("exceed_context_size" in lower || "exceeds the available context size" in lower) {
-            return "The local model ran out of context. Hermes now uses a compact Android tool prompt, but this model still could not fit the request. Start a new chat, clear history, or choose a model with a larger context window."
+        if (isContextWindowErrorMessage(lower)) {
+            return "The local model ran out of context. Hermes retried with a compressed system prompt, custom instructions, messages, and tool schema, but this model still could not fit the request. Start a new chat, shorten the prompt, or choose a model with a larger context window."
         }
         return if (diagnostic.isNotBlank()) {
             "Native chat request failed ($statusCode): ${diagnostic.take(MAX_NATIVE_ERROR_CHARS)}"
@@ -3208,8 +3262,10 @@ class NativeToolCallingChatClient(
             } else {
                 "You are Hermes running inside the native Android app. Keep replies brief and direct."
             }
-            val normalizedPersona = AppSettings.normalizeCustomSystemPrompt(customSystemPrompt)
-            val normalizedMemory = promotedMemoryContext.trim()
+            val normalizedPersona = NativeToolContextCompressor.compactCustomSystemPrompt(
+                AppSettings.normalizeCustomSystemPrompt(customSystemPrompt),
+            )
+            val normalizedMemory = NativeToolContextCompressor.compactPromotedMemoryContext(promotedMemoryContext)
             return buildString {
                 append(baseContent)
                 if (normalizedPersona.isNotBlank()) {
@@ -3221,6 +3277,21 @@ class NativeToolCallingChatClient(
                     append(normalizedMemory)
                 }
             }
+        }
+
+        internal fun isContextWindowError(error: Throwable): Boolean {
+            return isContextWindowErrorMessage(error.message.orEmpty())
+        }
+
+        internal fun isContextWindowErrorMessage(message: String): Boolean {
+            val lower = message.lowercase()
+            return "exceed_context_size" in lower ||
+                "exceeds the available context size" in lower ||
+                "context window" in lower ||
+                "ran out of context" in lower ||
+                "maximum context" in lower ||
+                "prompt is too long" in lower ||
+                "input is too long" in lower
         }
 
         fun shouldSkipNativeFollowUpAfterToolResult(toolResult: String): Boolean {
@@ -3768,6 +3839,7 @@ class NativeToolCallingChatClient(
         private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L
         private const val HTML_GENERATION_TIMEOUT_MS = 45_000L
         private const val NATIVE_TOOL_MAX_TOKENS = 1024
+        private const val CONTEXT_RECOVERY_MAX_TOKENS = 512
         private const val HTML_GENERATION_MAX_TOKENS = 768
         private const val MAX_NATIVE_TOOL_ROUNDS = 6
         private const val PRIVILEGED_TOOL_TIMEOUT_SECONDS = 30
@@ -4219,6 +4291,16 @@ class NativeToolCallingChatClient(
 internal object NativeToolContextCompressor {
     private const val MAX_TOOL_RESULT_CONTEXT_CHARS = 3_200
     private const val MAX_NATIVE_MESSAGE_CONTEXT_CHARS = 12_000
+    private const val MAX_CUSTOM_SYSTEM_PROMPT_CONTEXT_CHARS = 900
+    private const val MAX_PROMOTED_MEMORY_CONTEXT_CHARS = 1_200
+    private const val MAX_RECOVERED_TOTAL_MESSAGE_CONTEXT_CHARS = 8_000
+    private const val MAX_RECOVERED_SYSTEM_MESSAGE_CHARS = 3_600
+    private const val MAX_RECOVERED_USER_MESSAGE_CHARS = 2_400
+    private const val MAX_RECOVERED_ASSISTANT_MESSAGE_CHARS = 1_600
+    private const val MAX_RECOVERED_TOOL_MESSAGE_CHARS = 1_600
+    private const val MAX_RECOVERED_MESSAGE_CHARS = 1_200
+    private const val MAX_RECOVERED_TOOL_DESCRIPTION_CHARS = 240
+    private const val MAX_RECOVERED_TOOL_PROPERTY_DESCRIPTION_CHARS = 160
     private const val MAX_SUMMARY_CHARS = 2_400
     private const val STRING_FIELD_LIMIT = 600
     private const val OUTPUT_FIELD_LIMIT = 1_400
@@ -4262,6 +4344,162 @@ internal object NativeToolContextCompressor {
             compacted.put(messages.get(index))
         }
         return compacted
+    }
+
+    fun compactCustomSystemPrompt(customSystemPrompt: String): String {
+        return compactStringValue(customSystemPrompt.trim(), MAX_CUSTOM_SYSTEM_PROMPT_CONTEXT_CHARS)
+    }
+
+    fun compactPromotedMemoryContext(promotedMemoryContext: String): String {
+        return compactStringValue(promotedMemoryContext.trim(), MAX_PROMOTED_MEMORY_CONTEXT_CHARS)
+    }
+
+    fun recoverMessagesAfterContextOverflow(messages: JSONArray): JSONArray {
+        val recovered = compactMessagePayloads(compactMessages(messages))
+        if (recovered.toString().length <= MAX_RECOVERED_TOTAL_MESSAGE_CONTEXT_CHARS) {
+            return recovered
+        }
+        return latestTurnRecoveryMessages(recovered)
+    }
+
+    fun recoverToolSpecsAfterContextOverflow(toolSpecs: JSONArray?): JSONArray? {
+        if (toolSpecs == null || toolSpecs.length() == 0) {
+            return toolSpecs
+        }
+        val recovered = JSONArray()
+        for (index in 0 until toolSpecs.length()) {
+            val original = toolSpecs.optJSONObject(index) ?: continue
+            recovered.put(compactToolSpecForRecovery(original))
+        }
+        return recovered
+    }
+
+    private fun compactMessagePayloads(messages: JSONArray): JSONArray {
+        val recovered = JSONArray()
+        for (index in 0 until messages.length()) {
+            val message = messages.optJSONObject(index) ?: continue
+            recovered.put(compactMessageForRecovery(message, index))
+        }
+        return recovered
+    }
+
+    private fun compactMessageForRecovery(message: JSONObject, index: Int): JSONObject {
+        val copy = JSONObject(message.toString())
+        val limit = when (copy.optString("role")) {
+            "system" -> if (index == 0) MAX_RECOVERED_SYSTEM_MESSAGE_CHARS else MAX_RECOVERED_MESSAGE_CHARS
+            "user" -> MAX_RECOVERED_USER_MESSAGE_CHARS
+            "assistant" -> MAX_RECOVERED_ASSISTANT_MESSAGE_CHARS
+            "tool" -> MAX_RECOVERED_TOOL_MESSAGE_CHARS
+            else -> MAX_RECOVERED_MESSAGE_CHARS
+        }
+        if (copy.has("content") && !copy.isNull("content")) {
+            copy.put("content", compactMessageContent(copy.opt("content"), limit))
+        }
+        return copy
+    }
+
+    private fun compactMessageContent(content: Any?, limit: Int): Any {
+        return when (content) {
+            null, JSONObject.NULL -> ""
+            is String -> compactStringValue(content, limit)
+            is JSONArray -> compactContentParts(content, limit)
+            is JSONObject -> compactStringValue(content.toString(), limit)
+            else -> compactStringValue(content.toString(), limit)
+        }
+    }
+
+    private fun compactContentParts(parts: JSONArray, limit: Int): JSONArray {
+        val compacted = JSONArray()
+        var remainingTextChars = limit
+        for (index in 0 until parts.length()) {
+            val part = parts.optJSONObject(index) ?: continue
+            val type = part.optString("type")
+            if (type == "text") {
+                val text = part.optString("text")
+                val kept = compactStringValue(text, remainingTextChars.coerceAtLeast(240))
+                compacted.put(JSONObject(part.toString()).put("text", kept))
+                remainingTextChars -= kept.length
+            } else if (type == "image_url") {
+                compacted.put(
+                    JSONObject()
+                        .put("type", "text")
+                        .put("text", "[Hermes omitted an attached image during context-window recovery.]"),
+                )
+            } else {
+                compacted.put(
+                    JSONObject()
+                        .put("type", "text")
+                        .put("text", compactStringValue(part.toString(), 240)),
+                )
+            }
+        }
+        return compacted
+    }
+
+    private fun latestTurnRecoveryMessages(messages: JSONArray): JSONArray {
+        val recovered = JSONArray()
+        messages.optJSONObject(0)?.let { system ->
+            recovered.put(
+                JSONObject(system.toString())
+                    .put("content", compactStringValue(system.optString("content"), MAX_RECOVERED_SYSTEM_MESSAGE_CHARS / 2)),
+            )
+        }
+        recovered.put(
+            JSONObject()
+                .put("role", "system")
+                .put("content", "Hermes compressed earlier local chat turns after a context-window overflow and kept the latest actionable exchange."),
+        )
+        val tailStart = maxOf(1, messages.length() - 4)
+        var includedUser = false
+        for (index in tailStart until messages.length()) {
+            val message = messages.optJSONObject(index) ?: continue
+            if (message.optString("role") == "user") {
+                includedUser = true
+            }
+            recovered.put(compactMessageForRecovery(message, index))
+        }
+        if (!includedUser) {
+            messages.optJSONObject(1)?.let { user ->
+                val withUser = JSONArray()
+                for (index in 0 until minOf(2, recovered.length())) {
+                    withUser.put(recovered.get(index))
+                }
+                withUser.put(compactMessageForRecovery(user, 1))
+                for (index in 2 until recovered.length()) {
+                    withUser.put(recovered.get(index))
+                }
+                return withUser
+            }
+        }
+        return recovered
+    }
+
+    private fun compactToolSpecForRecovery(spec: JSONObject): JSONObject {
+        val copy = JSONObject(spec.toString())
+        val function = copy.optJSONObject("function") ?: return copy
+        function.put(
+            "description",
+            singleLine(function.optString("description"), MAX_RECOVERED_TOOL_DESCRIPTION_CHARS),
+        )
+        compactParameterDescriptions(function.optJSONObject("parameters"))
+        return copy
+    }
+
+    private fun compactParameterDescriptions(parameters: JSONObject?) {
+        val properties = parameters?.optJSONObject("properties") ?: return
+        for (key in properties.keys()) {
+            val property = properties.optJSONObject(key) ?: continue
+            if (property.has("description")) {
+                property.put(
+                    "description",
+                    singleLine(
+                        property.optString("description"),
+                        if (key == "action") MAX_RECOVERED_TOOL_DESCRIPTION_CHARS else MAX_RECOVERED_TOOL_PROPERTY_DESCRIPTION_CHARS,
+                    ),
+                )
+            }
+            compactParameterDescriptions(property)
+        }
     }
 
     private fun compactJsonToolResult(parsed: JSONObject, originalLength: Int): String {

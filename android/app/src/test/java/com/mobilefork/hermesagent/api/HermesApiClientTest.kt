@@ -104,4 +104,19 @@ class HermesApiClientTest {
         assertEquals("image_url", content.getJSONObject(1).getString("type"))
         assertEquals("data:image/png;base64,AA==", content.getJSONObject(1).getJSONObject("image_url").getString("url"))
     }
+
+    @Test
+    fun createChatCompletion_normalizesPastedFullEndpointUrl() {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{" + "\"ok\":true}"))
+
+        val client = HermesApiClient(server.url("/proxy/v1/chat/completions").toString())
+        client.createChatCompletion(
+            ChatCompletionRequest(
+                model = "custom-model",
+                messages = listOf(ChatMessage(role = "user", content = "hello")),
+            )
+        )
+
+        assertEquals("/proxy/v1/chat/completions", server.takeRequest().path)
+    }
 }

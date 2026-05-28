@@ -53,6 +53,93 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun systemPromptCompressesLongCustomPersonaAndMemoryContext() {
+        val content = NativeToolCallingChatClient.buildSystemPromptContent(
+            toolsEnabled = false,
+            customSystemPrompt = "persona ".repeat(400),
+            promotedMemoryContext = "memory ".repeat(500),
+        )
+
+        assertTrue(content.contains("User-configured agent persona"))
+        assertTrue(content.contains("Promoted local memory context"))
+        assertTrue(content.contains("hermes context compressed"))
+        assertFalse(content.contains("persona ".repeat(250)))
+        assertFalse(content.contains("memory ".repeat(300)))
+    }
+
+    @Test
+    fun contextRecoveryCompactsInitialSystemAndUserMessages() {
+        val messages = JSONArray()
+            .put(JSONObject().put("role", "system").put("content", "system ".repeat(1_500)))
+            .put(JSONObject().put("role", "user").put("content", "user ".repeat(1_800)))
+
+        val recovered = NativeToolContextCompressor.recoverMessagesAfterContextOverflow(messages)
+
+        assertEquals(2, recovered.length())
+        assertTrue(recovered.toString().length < messages.toString().length)
+        assertTrue(recovered.getJSONObject(0).getString("content").contains("hermes context compressed"))
+        assertTrue(recovered.getJSONObject(1).getString("content").contains("hermes context compressed"))
+    }
+
+    @Test
+    fun contextRecoveryCompactsToolSchemaDescriptions() {
+        val toolSpecs = JSONArray()
+            .put(
+                JSONObject()
+                    .put("type", "function")
+                    .put(
+                        "function",
+                        JSONObject()
+                            .put("name", "android_device_diagnostics_tool")
+                            .put("description", "diagnostics ".repeat(200))
+                            .put(
+                                "parameters",
+                                JSONObject()
+                                    .put("type", "object")
+                                    .put(
+                                        "properties",
+                                        JSONObject()
+                                            .put(
+                                                "action",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "status wifi bluetooth sensors ".repeat(200)),
+                                            ),
+                                    ),
+                            ),
+                    ),
+            )
+
+        val recovered = NativeToolContextCompressor.recoverToolSpecsAfterContextOverflow(toolSpecs)
+
+        requireNotNull(recovered)
+        val function = recovered.getJSONObject(0).getJSONObject("function")
+        val action = function.getJSONObject("parameters").getJSONObject("properties").getJSONObject("action")
+        assertTrue(function.getString("description").length < 320)
+        assertTrue(action.getString("description").length < 320)
+        assertTrue(recovered.toString().length < toolSpecs.toString().length)
+    }
+
+    @Test
+    fun contextWindowErrorsAreRecognizedForRecovery() {
+        assertTrue(
+            NativeToolCallingChatClient.isContextWindowError(
+                IllegalStateException("exceed_context_size: prompt exceeds the available context size"),
+            ),
+        )
+        assertTrue(
+            NativeToolCallingChatClient.isContextWindowError(
+                IllegalStateException("The local model ran out of context."),
+            ),
+        )
+        assertFalse(
+            NativeToolCallingChatClient.isContextWindowError(
+                IllegalStateException("HTTP 500 backend unavailable"),
+            ),
+        )
+    }
+
+    @Test
     fun skipsLocalFollowUpAfterExternalActivityHandoff() {
         val result = JSONObject()
             .put("success", true)

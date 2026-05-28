@@ -25,4 +25,15 @@ class HermesIntentBridgeTest {
             ),
         )
     }
+
+    @Test
+    fun selectPreferredBrowserPackageRecognizesBraveNightly() {
+        assertEquals(
+            "com.brave.browser_nightly",
+            HermesIntentBridge.selectPreferredBrowserPackage(
+                resolvedPackage = "android",
+                candidatePackages = listOf("com.example.viewer", "com.brave.browser_nightly"),
+            ),
+        )
+    }
 }

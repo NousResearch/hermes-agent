@@ -230,10 +230,13 @@ object HermesIntentBridge {
         val preferredPackages = listOf(
             "com.android.chrome",
             "com.chrome.beta",
+            "com.chrome.canary",
             "com.chrome.dev",
             "org.mozilla.firefox",
             "org.mozilla.firefox_beta",
             "com.brave.browser",
+            "com.brave.browser_beta",
+            "com.brave.browser_nightly",
             "com.microsoft.emmx",
         )
         return preferredPackages.firstOrNull { it in candidatePackages } ?: candidatePackages.firstOrNull()

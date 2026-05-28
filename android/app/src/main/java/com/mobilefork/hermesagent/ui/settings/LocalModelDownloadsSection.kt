@@ -30,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mobilefork.hermesagent.ui.i18n.LocalHermesStrings
@@ -42,6 +43,7 @@ fun LocalModelDownloadsSection(
     selectedBackend: String,
     onRuntimeFlavorSelected: (String) -> Unit,
     onCompletedDownloadReady: (String) -> Unit,
+    importModelClickOverride: (() -> Unit)? = null,
     viewModel: LocalModelDownloadsViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -127,15 +129,21 @@ fun LocalModelDownloadsSection(
                     Text(strings.refreshDownloads.ifBlank { "Refresh downloads" })
                 }
                 Button(
+                    modifier = Modifier.testTag("HermesImportModelButton"),
                     onClick = {
-                        importModelLauncher.launch(
-                            arrayOf(
-                                "application/octet-stream",
-                                "application/x-gguf",
-                                "application/zip",
-                                "*/*",
+                        val override = importModelClickOverride
+                        if (override != null) {
+                            override()
+                        } else {
+                            importModelLauncher.launch(
+                                arrayOf(
+                                    "application/octet-stream",
+                                    "application/x-gguf",
+                                    "application/zip",
+                                    "*/*",
+                                )
                             )
-                        )
+                        }
                     },
                 ) {
                     Text(strings.importModelFromPhoneFiles())

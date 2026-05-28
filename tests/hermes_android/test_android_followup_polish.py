@@ -178,7 +178,10 @@ def test_screenshot_reported_custom_endpoint_i18n_and_ime_layout_regressions_are
     assert 'provider == "custom"' not in settings_view_model.split("private fun loadApiKeyForProvider", 1)[1].split("fun updateOnDeviceBackend", 1)[0]
     assert 'strings.settingsSavedBackendRestarted()' in settings_view_model
     assert 'android:windowSoftInputMode="adjustResize"' in manifest
-    assert '.widthIn(max = 960.dp)\n                        .padding(horizontal = 12.dp, vertical = 8.dp),' in chat
+    assert 'val contentPadding = if (tinyRuntimeViewport)' in chat
+    assert 'PaddingValues(horizontal = 4.dp, vertical = 4.dp)' in chat
+    assert 'PaddingValues(horizontal = 12.dp, vertical = 8.dp)' in chat
+    assert '.widthIn(max = 960.dp)\n                        .padding(contentPadding),' in chat
     assert 'adding imePadding here double-lifts the composer on phones' in chat
     assert '.heightIn(max = 112.dp)\n            .testTag("HermesChatInput")' in chat
     assert 'maxLines = 4' in chat
@@ -186,7 +189,9 @@ def test_screenshot_reported_custom_endpoint_i18n_and_ime_layout_regressions_are
     assert 'strings = strings' in chat
     assert '.testTag("HermesChatComposerFrame")' in chat
     assert '.testTag("HermesChatComposerCompact")' in chat
+    assert 'val ultraNarrowComposer = maxWidth < 220.dp' in chat
     assert 'val stackedComposer = maxWidth < 340.dp' in chat
+    assert 'UltraNarrowComposerSendButton(' in chat
     assert 'strings.chatDisplayModeLabel(chatDisplayMode)' in chat
     assert 'strings.chatStatusText(text)' in chat
     assert 'isEndpointStatusText(displayText)' in chat
@@ -285,7 +290,7 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     assert 'Backend.GPU() to "gpu"' in litert_proxy
     assert 'Backend.CPU() to "cpu"' in litert_proxy
     assert 'put("accelerator", runtimeBackendLabel)' in litert_proxy
-    assert 'com.google.ai.edge.litertlm:litertlm-android:0.11.0' in gradle
+    assert 'com.google.ai.edge.litertlm:litertlm-android:0.12.0' in gradle
     assert 'ExperimentalFlags.enableSpeculativeDecoding' in litert_proxy
     assert 'SpeculativeDecodingMode' in litert_proxy
     assert 'liteRtLmSpeculativeDecodingMode' in app_settings
@@ -1928,6 +1933,112 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     assert 'ui_state_hash' in chat_client
     assert 'screen_hash' in chat_client
     assert 'android:canTakeScreenshot="true"' in accessibility_config
+    assert 'capture("09-compact-floating-icon")' in (
+        REPO_ROOT / "android/app/src/androidTest/java/com/mobilefork/hermesagent/DeepAppUiVisualInstrumentedTest.kt"
+    ).read_text(encoding="utf-8")
+
+
+def test_chat_endpoint_url_normalization_and_floating_icon_are_guarded():
+    endpoint_url = (
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/api/HermesEndpointUrl.kt"
+    ).read_text(encoding="utf-8")
+    api_client = (
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/api/HermesApiClient.kt"
+    ).read_text(encoding="utf-8")
+    sse_client = (
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/api/HermesSseClient.kt"
+    ).read_text(encoding="utf-8")
+    chat = (
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt"
+    ).read_text(encoding="utf-8")
+    endpoint_test = (
+        REPO_ROOT / "android/app/src/test/java/com/mobilefork/hermesagent/api/HermesEndpointUrlTest.kt"
+    ).read_text(encoding="utf-8")
+    provider_presets = (
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/ProviderPresets.kt"
+    ).read_text(encoding="utf-8")
+    provider_presets_test = (
+        REPO_ROOT / "android/app/src/test/java/com/mobilefork/hermesagent/ui/settings/ProviderPresetsTest.kt"
+    ).read_text(encoding="utf-8")
+    settings = (
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsScreen.kt"
+    ).read_text(encoding="utf-8")
+    strings = (
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt"
+    ).read_text(encoding="utf-8")
+
+    assert 'object HermesEndpointUrl' in endpoint_url
+    assert '"/v1/chat/completions"' in endpoint_url
+    assert '"/chat/completions"' in endpoint_url
+    assert 'candidate.startsWith("wss://", ignoreCase = true)' in endpoint_url
+    assert 'defaultSchemeFor(candidate)' in endpoint_url
+    assert 'fun openAiRuntimeBaseUrl(baseUrl: String)' in endpoint_url
+    assert 'HermesEndpointUrl.normalizeBaseUrl(baseUrl)' in api_client
+    assert 'HermesEndpointUrl.chatCompletionsUrl(normalizedBaseUrl)' in sse_client
+    assert 'HermesEndpointUrl.openAiRuntimeBaseUrl(trimmed)' in provider_presets
+    assert 'customRuntimeConfigNormalizesPastedFullEndpointForOpenAiSdk' in provider_presets_test
+    assert 'HermesEndpointUrl.chatCompletionsUrl(baseUrl)' in settings
+    assert '.testTag("HermesEndpointDebugPreview")' in settings
+    assert 'fun customEndpointPreview(url: String)' in strings
+    assert 'Hermes will try: $url' in strings
+    assert 'Hermes normalizes raw hosts, /v1 URLs, and /v1/chat/completions URLs' in (
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatViewModel.kt"
+    ).read_text(encoding="utf-8")
+    assert 'private fun HermesFloatingActionIcon(' in chat
+    assert 'Brush.linearGradient' in chat
+    floating_mark = (
+        REPO_ROOT / "android/app/src/main/res/drawable/ic_hermes_floating_mark.xml"
+    ).read_text(encoding="utf-8")
+    assert 'R.drawable.ic_hermes_floating_mark' in chat
+    assert 'xmlns:aapt="http://schemas.android.com/aapt"' in floating_mark
+    assert 'android:type="radial"' in floating_mark
+    assert 'android:type="linear"' in floating_mark
+    assert '#FF7EF4FF' in floating_mark
+    assert '#FFCBB7FF' in floating_mark
+    assert '#FFFFD77A' in floating_mark
+    assert '.testTag("HermesFloatingActionButton")' in chat
+    assert 'val actionMenuScrollState = rememberScrollState()' in chat
+    assert 'val ultraNarrowActionMenu = maxWidth < 220.dp' in chat
+    assert '.heightIn(max = if (ultraNarrowActionMenu) 64.dp else 220.dp)' in chat
+    assert '.verticalScroll(actionMenuScrollState)' in chat
+    assert 'compact = true' in chat
+    assert 'onActionMenuExpandedChange = { composerActionMenuOpen = it }' in chat
+    assert '&& !composerActionMenuOpen' in chat
+    assert 'containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)' in chat
+    assert 'val narrowHeader = maxWidth < 360.dp' in chat
+    assert 'val tinyVerticalViewport = maxHeight < 360.dp' in chat
+    assert 'if (!tinyVerticalViewport)' in chat
+    assert '.testTag("HermesChatComposerUltraNarrowControls")' in chat
+    assert 'private fun ChatHeaderDisplayModeButton(' in chat
+    assert '.testTag("HermesChatHistoryButton")' in chat
+    assert '.testTag("HermesChatPageActionsButton")' in chat
+    assert '.testTag("HermesChatMoreInputActionsButton")' in chat
+    assert '.testTag("HermesChatMicButton")' in chat
+    visual_test = (
+        REPO_ROOT / "android/app/src/androidTest/java/com/mobilefork/hermesagent/DeepAppUiVisualInstrumentedTest.kt"
+    ).read_text(encoding="utf-8")
+    assert 'onNodeWithTag("HermesFloatingActionButton").assertIsDisplayed()' in visual_test
+    assert 'onNodeWithTag("HermesChatMoreInputActionsButton").performClick()' in visual_test
+    assert 'onNodeWithTag("HermesChatAttachImageButton").assertIsDisplayed()' in visual_test
+    assert 'capture("10-compact-action-tray")' in visual_test
+    assert 'compactControlsRemainReachableOnNarrowScreens' in visual_test
+    assert 'capture("11-narrow-controls")' in visual_test
+    assert 'customEndpointDebugPreviewNormalizesPastedUrlInSettings' in visual_test
+    assert 'capture("12-custom-endpoint-debug-preview")' in visual_test
+    assert 'chatInputAcceptsHumanLikeTypingWithoutLosingComposerControls' in visual_test
+    assert 'promptChunks.forEach' in visual_test
+    assert 'Thread.sleep(45L)' in visual_test
+    assert 'capture("13-human-like-typing")' in visual_test
+    assert 'ultraNarrowComposerControlsRemainReachableOnTinyScreens' in visual_test
+    assert 'screenWidthDp < 220' in visual_test
+    assert 'onNodeWithTag("HermesChatComposerUltraNarrowControls").assertIsDisplayed()' in visual_test
+    assert 'capture("14-ultra-narrow-controls")' in visual_test
+    assert 'capture("15-ultra-narrow-keyboard")' in visual_test
+    assert 'screenshotHasVisibleContent(bitmap)' in visual_test
+    assert 'onNodeWithText("Conversation history").assertIsDisplayed()' in visual_test
+    assert 'normalizeBaseUrl_acceptsRawHttpsHostWithOpenAiPath' in endpoint_test
+    assert 'normalizeBaseUrl_usesHttpForLoopbackAndLanWithoutScheme' in endpoint_test
+    assert 'openAiRuntimeBaseUrl_preservesProxyPrefixAndKeepsV1ForSdkCalls' in endpoint_test
 
 
 def test_android_ui_tool_reviews_repeated_opengui_actions_before_execution():

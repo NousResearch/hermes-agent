@@ -15,7 +15,7 @@ class HermesSseClient(
     private val httpClient: OkHttpClient = DEFAULT_HTTP_CLIENT,
     private val networkGuard: (String) -> Unit = {},
 ) {
-    private val normalizedBaseUrl = baseUrl.trimEnd('/')
+    private val normalizedBaseUrl = HermesEndpointUrl.normalizeBaseUrl(baseUrl)
 
     fun streamChatCompletion(
         request: ChatCompletionRequest,
@@ -37,7 +37,7 @@ class HermesSseClient(
                     }
                 )
             }
-            val chatUrl = "$normalizedBaseUrl/v1/chat/completions"
+            val chatUrl = HermesEndpointUrl.chatCompletionsUrl(normalizedBaseUrl)
             onStatus("Opening endpoint stream at ${endpointLabel(chatUrl)}")
             networkGuard(chatUrl)
             val builder = Request.Builder()

@@ -110,8 +110,24 @@ object HermesModelDownloadManager {
     )
 
     fun modelsDirectory(context: Context): File {
-        return (context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            ?: File(context.filesDir, "downloads")).resolve("models").apply { mkdirs() }
+        val externalDirectory = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?.resolve("models")
+        if (externalDirectory != null && ensureWritableDirectory(externalDirectory)) {
+            return externalDirectory
+        }
+        return File(context.filesDir, "downloads/models").apply { mkdirs() }
+    }
+
+    private fun ensureWritableDirectory(directory: File): Boolean {
+        return runCatching {
+            directory.mkdirs()
+            if (!directory.isDirectory || !directory.canWrite()) {
+                return@runCatching false
+            }
+            val probe = File.createTempFile("hermes-write", ".tmp", directory)
+            probe.delete()
+            true
+        }.getOrDefault(false)
     }
 
     fun importLocalModelFile(

@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.mobilefork.hermesagent.api.HermesEndpointUrl
 import com.mobilefork.hermesagent.backend.BackendKind
 import com.mobilefork.hermesagent.data.AppSettings
 import com.mobilefork.hermesagent.data.ProviderPresets
@@ -459,6 +460,11 @@ private fun RemoteFallbackCard(
     strings: com.mobilefork.hermesagent.ui.i18n.HermesStrings,
 ) {
     val providerPreset = ProviderPresets.find(providerId)
+    val customEndpointPreview = if (providerId == "custom") {
+        runCatching { HermesEndpointUrl.chatCompletionsUrl(baseUrl) }.getOrNull()
+    } else {
+        null
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -524,6 +530,14 @@ private fun RemoteFallbackCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                customEndpointPreview?.let { preview ->
+                    Text(
+                        text = strings.customEndpointPreview(preview),
+                        modifier = Modifier.testTag("HermesEndpointDebugPreview"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
             providerPreset?.modelHint?.takeIf { it.isNotBlank() }?.let { modelHint ->
                 Button(onClick = { onModelChange(modelHint) }) {

@@ -13,6 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,7 +33,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -55,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -104,6 +108,7 @@ fun ChatScreen(
         }
     }
     var ttsController by remember(context) { mutableStateOf<HermesTtsController?>(null) }
+    var composerActionMenuOpen by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(context) {
         onDispose {
@@ -301,33 +306,48 @@ fun ChatScreen(
 
     MaterialTheme {
         Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+            BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                val tinyVerticalViewport = maxHeight < 360.dp
+                val tinyHorizontalViewport = maxWidth < 260.dp
+                val tinyRuntimeViewport = tinyVerticalViewport || tinyHorizontalViewport
+                val contentPadding = if (tinyRuntimeViewport) {
+                    PaddingValues(horizontal = 4.dp, vertical = 4.dp)
+                } else {
+                    PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                }
+                val contentSpacing = if (tinyRuntimeViewport) 4.dp else 8.dp
+                val showFloatingActionIcon = !uiState.isShowingHistory &&
+                    uiState.messages.isNotEmpty() && !composerActionMenuOpen &&
+                    !tinyVerticalViewport &&
+                    !tinyHorizontalViewport
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .widthIn(max = 960.dp)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                        .padding(contentPadding),
+                    verticalArrangement = Arrangement.spacedBy(contentSpacing),
                 ) {
-                ChatHeaderCard(
-                    title = uiState.activeConversationTitle,
-                    chatDisplayMode = settingsState.chatDisplayMode,
-                    onOpenHistory = viewModel::showHistory,
-                    onToggleDisplayMode = {
-                        settingsViewModel.updateChatDisplayMode(
-                            if (settingsState.chatDisplayMode == "compact") "expanded" else "compact",
-                        )
-                    },
-                    onOpenActions = if (shellActions.isNotEmpty() && onOpenContextActions != null) {
-                        {
-                            onContextActionsChanged(shellActions)
-                            onOpenContextActions()
-                        }
-                    } else {
-                        null
-                    },
-                )
-                if (uiState.status.isNotBlank()) {
+                if (!tinyVerticalViewport) {
+                    ChatHeaderCard(
+                        title = uiState.activeConversationTitle,
+                        chatDisplayMode = settingsState.chatDisplayMode,
+                        onOpenHistory = viewModel::showHistory,
+                        onToggleDisplayMode = {
+                            settingsViewModel.updateChatDisplayMode(
+                                if (settingsState.chatDisplayMode == "compact") "expanded" else "compact",
+                            )
+                        },
+                        onOpenActions = if (shellActions.isNotEmpty() && onOpenContextActions != null) {
+                            {
+                                onContextActionsChanged(shellActions)
+                                onOpenContextActions()
+                            }
+                        } else {
+                            null
+                        },
+                    )
+                }
+                if (uiState.status.isNotBlank() && !tinyRuntimeViewport) {
                     StatusBanner(text = uiState.status)
                 }
                 if (uiState.error.isNotBlank()) {
@@ -346,7 +366,7 @@ fun ChatScreen(
                             .weight(1f)
                             .fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(vertical = 8.dp),
+                        contentPadding = PaddingValues(top = 24.dp, bottom = 8.dp),
                     ) {
                         item {
                             EmptyChatHint(
@@ -426,9 +446,25 @@ fun ChatScreen(
                     onRemoveAttachment = viewModel::removeAttachment,
                     onMic = ::startVoiceInput,
                     onSend = ::handleSend,
+                    onActionMenuExpandedChange = { composerActionMenuOpen = it },
                     onSignalQuickAction = { action -> viewModel.sendQuickPrompt(action.prompt) },
                 )
             }
+                if (showFloatingActionIcon) {
+                    HermesFloatingActionIcon(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 16.dp, bottom = 92.dp),
+                        onClick = {
+                            if (shellActions.isNotEmpty() && onOpenContextActions != null) {
+                                onContextActionsChanged(shellActions)
+                                onOpenContextActions()
+                            } else {
+                                viewModel.showHistory()
+                            }
+                        },
+                    )
+                }
         }
     }
 }
@@ -450,74 +486,206 @@ private fun ChatHeaderCard(
         shape = MaterialTheme.shapes.medium,
         tonalElevation = 1.dp,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                painter = painterResource(id = R.drawable.ic_nav_hermes),
-                contentDescription = strings.sectionHermes,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(24.dp),
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = strings.chatTitle.ifBlank { "Hermes Chat" },
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = displayTitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onOpenHistory, modifier = Modifier.size(40.dp)) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.ic_action_history),
-                        contentDescription = strings.openHistory.ifBlank { "Open history" },
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-                Button(
-                    onClick = onToggleDisplayMode,
-                    modifier = Modifier.testTag("HermesChatDisplayToggle"),
-                    shape = MaterialTheme.shapes.small,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                        contentColor = MaterialTheme.colorScheme.primary,
-                    ),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp),
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val narrowHeader = maxWidth < 360.dp
+            if (narrowHeader) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 7.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Text(
-                        text = strings.chatDisplayModeLabel(chatDisplayMode),
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_nav_hermes),
+                            contentDescription = strings.sectionHermes,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp),
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = strings.chatTitle.ifBlank { "Hermes Chat" },
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = displayTitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        ChatHeaderHistoryButton(onOpenHistory = onOpenHistory)
+                        if (onOpenActions != null) {
+                            ChatHeaderPageActionsButton(onOpenActions = onOpenActions)
+                        }
+                    }
+                    ChatHeaderDisplayModeButton(
+                        chatDisplayMode = chatDisplayMode,
+                        onToggleDisplayMode = onToggleDisplayMode,
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                if (onOpenActions != null) {
-                    IconButton(onClick = onOpenActions, modifier = Modifier.size(40.dp)) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_action_cog),
-                            contentDescription = strings.openPageActions.ifBlank { "Open page actions" },
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp),
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_nav_hermes),
+                        contentDescription = strings.sectionHermes,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = strings.chatTitle.ifBlank { "Hermes Chat" },
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
+                        Text(
+                            text = displayTitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ChatHeaderHistoryButton(onOpenHistory = onOpenHistory)
+                        ChatHeaderDisplayModeButton(
+                            chatDisplayMode = chatDisplayMode,
+                            onToggleDisplayMode = onToggleDisplayMode,
+                        )
+                        if (onOpenActions != null) {
+                            ChatHeaderPageActionsButton(onOpenActions = onOpenActions)
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ChatHeaderHistoryButton(onOpenHistory: () -> Unit) {
+    val strings = LocalHermesStrings.current
+    IconButton(
+        onClick = onOpenHistory,
+        modifier = Modifier
+            .size(40.dp)
+            .testTag("HermesChatHistoryButton"),
+    ) {
+        Icon(
+            painter = painterResource(id = R.drawable.ic_action_history),
+            contentDescription = strings.openHistory.ifBlank { "Open history" },
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(20.dp),
+        )
+    }
+}
+
+@Composable
+private fun ChatHeaderDisplayModeButton(
+    chatDisplayMode: String,
+    onToggleDisplayMode: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val strings = LocalHermesStrings.current
+    Button(
+        onClick = onToggleDisplayMode,
+        modifier = modifier
+            .heightIn(min = 36.dp)
+            .testTag("HermesChatDisplayToggle"),
+        shape = MaterialTheme.shapes.small,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+            contentColor = MaterialTheme.colorScheme.primary,
+        ),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp),
+    ) {
+        Text(
+            text = strings.chatDisplayModeLabel(chatDisplayMode),
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun ChatHeaderPageActionsButton(onOpenActions: () -> Unit) {
+    val strings = LocalHermesStrings.current
+    IconButton(
+        onClick = onOpenActions,
+        modifier = Modifier
+            .size(40.dp)
+            .testTag("HermesChatPageActionsButton"),
+    ) {
+        Icon(
+            painter = painterResource(id = R.drawable.ic_action_cog),
+            contentDescription = strings.openPageActions.ifBlank { "Open page actions" },
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(20.dp),
+        )
+    }
+}
+
+@Composable
+private fun HermesFloatingActionIcon(
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val strings = LocalHermesStrings.current
+    Surface(
+        modifier = modifier
+            .size(52.dp)
+            .testTag("HermesFloatingActionButton")
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick),
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(18.dp),
+        tonalElevation = 5.dp,
+        shadowElevation = 4.dp,
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.linearGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.10f),
+                            MaterialTheme.colorScheme.surface,
+                        ),
+                    ),
+                )
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+                    shape = RoundedCornerShape(18.dp),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Image(
+                painter = painterResource(id = R.drawable.ic_hermes_floating_mark),
+                contentDescription = strings.openPageActions.ifBlank { "Open Hermes actions" },
+                modifier = Modifier.size(34.dp),
+                contentScale = ContentScale.Fit,
+            )
         }
     }
 }
@@ -1334,10 +1502,24 @@ private fun ChatComposer(
     onRemoveAttachment: (String) -> Unit,
     onMic: () -> Unit,
     onSend: () -> Unit,
+    onActionMenuExpandedChange: (Boolean) -> Unit,
     onSignalQuickAction: (SignalIntelligenceQuickAction) -> Unit,
 ) {
     val strings = LocalHermesStrings.current
     var actionMenuOpen by rememberSaveable { mutableStateOf(false) }
+    val actionMenuScrollState = rememberScrollState()
+    val compactActionButtonColors = ButtonDefaults.buttonColors(
+        containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+        contentColor = MaterialTheme.colorScheme.primary,
+        disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+        disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+    )
+    LaunchedEffect(actionMenuOpen) {
+        onActionMenuExpandedChange(actionMenuOpen)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onActionMenuExpandedChange(false) }
+    }
     Surface(
         modifier = modifier,
         color = MaterialTheme.colorScheme.surface,
@@ -1351,73 +1533,121 @@ private fun ChatComposer(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (actionMenuOpen) {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("HermesChatComposerActions"),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = MaterialTheme.shapes.medium,
-                ) {
-                    Column(
-                        modifier = Modifier.padding(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                    val ultraNarrowActionMenu = maxWidth < 220.dp
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = if (ultraNarrowActionMenu) 64.dp else 220.dp)
+                            .testTag("HermesChatComposerActions"),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.medium,
                     ) {
-                        SignalIntelligenceQuickActionGrid(
-                            enabled = !isSending && input.isBlank() && attachments.isEmpty(),
-                            onSignalQuickAction = { action ->
-                                actionMenuOpen = false
-                                onSignalQuickAction(action)
-                            },
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                        Column(
+                            modifier = Modifier
+                                .verticalScroll(actionMenuScrollState)
+                                .padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            Button(
-                                onClick = {
-                                    actionMenuOpen = false
-                                    onAttachImage()
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("HermesChatAttachImageButton"),
-                            ) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_action_image),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp),
+                            if (ultraNarrowActionMenu) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    UltraNarrowComposerIconButton(
+                                        iconRes = R.drawable.ic_action_image,
+                                        contentDescription = strings.attachImage(),
+                                        active = false,
+                                        onClick = {
+                                            actionMenuOpen = false
+                                            onAttachImage()
+                                        },
+                                        testTag = "HermesChatAttachImageButton",
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    UltraNarrowComposerIconButton(
+                                        iconRes = R.drawable.ic_action_image,
+                                        contentDescription = strings.camera(),
+                                        active = false,
+                                        onClick = {
+                                            actionMenuOpen = false
+                                            onCaptureImage()
+                                        },
+                                        testTag = "HermesChatCameraButton",
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            actionMenuOpen = false
+                                            onAttachImage()
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 36.dp)
+                                            .testTag("HermesChatAttachImageButton"),
+                                        shape = MaterialTheme.shapes.small,
+                                        colors = compactActionButtonColors,
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.ic_action_image),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Spacer(modifier = Modifier.size(6.dp))
+                                        Text(
+                                            text = strings.attachImage(),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    Button(
+                                        onClick = {
+                                            actionMenuOpen = false
+                                            onCaptureImage()
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 36.dp)
+                                            .testTag("HermesChatCameraButton"),
+                                        shape = MaterialTheme.shapes.small,
+                                        colors = compactActionButtonColors,
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.ic_action_image),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Spacer(modifier = Modifier.size(6.dp))
+                                        Text(
+                                            text = strings.camera(),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                                SignalIntelligenceQuickActionGrid(
+                                    compact = true,
+                                    enabled = !isSending && input.isBlank() && attachments.isEmpty(),
+                                    onSignalQuickAction = { action ->
+                                        actionMenuOpen = false
+                                        onSignalQuickAction(action)
+                                    },
                                 )
-                                Spacer(modifier = Modifier.size(6.dp))
-                                Text(
-                                    text = strings.attachImage(),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            Button(
-                                onClick = {
-                                    actionMenuOpen = false
-                                    onCaptureImage()
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("HermesChatCameraButton"),
-                            ) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_action_image),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                                Spacer(modifier = Modifier.size(6.dp))
-                                Text(
-                                    text = strings.camera(),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                QuietMetaText(text = strings.chatCommandsTip(isListening), color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
-                        QuietMetaText(text = strings.chatCommandsTip(isListening), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -1458,6 +1688,7 @@ private fun ChatComposer(
                     .fillMaxWidth()
                     .testTag("HermesChatComposerFrame"),
             ) {
+                val ultraNarrowComposer = maxWidth < 220.dp
                 val stackedComposer = maxWidth < 340.dp
                 if (stackedComposer) {
                     Column(
@@ -1471,28 +1702,62 @@ private fun ChatComposer(
                             onInputChange = onInputChange,
                             modifier = Modifier.fillMaxWidth(),
                         )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("HermesChatComposerRow"),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            ComposerActionsButton(
-                                actionMenuOpen = actionMenuOpen,
-                                onToggle = { actionMenuOpen = !actionMenuOpen },
-                            )
-                            ComposerMicButton(
-                                isListening = isListening,
-                                onMic = onMic,
-                            )
-                            Spacer(modifier = Modifier.weight(1f))
-                            ChatSendButton(
-                                input = input,
-                                attachments = attachments,
-                                isSending = isSending,
-                                onSend = onSend,
-                            )
+                        if (ultraNarrowComposer) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("HermesChatComposerUltraNarrowControls"),
+                                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                UltraNarrowComposerIconButton(
+                                    iconRes = R.drawable.ic_nav_settings,
+                                    contentDescription = strings.moreInputActions(),
+                                    active = actionMenuOpen,
+                                    onClick = { actionMenuOpen = !actionMenuOpen },
+                                    testTag = "HermesChatMoreInputActionsButton",
+                                    modifier = Modifier.weight(1f),
+                                )
+                                UltraNarrowComposerIconButton(
+                                    iconRes = R.drawable.ic_action_mic,
+                                    contentDescription = strings.voiceInputLabel(),
+                                    active = isListening,
+                                    onClick = onMic,
+                                    testTag = "HermesChatMicButton",
+                                    modifier = Modifier.weight(1f),
+                                )
+                                UltraNarrowComposerSendButton(
+                                    input = input,
+                                    attachments = attachments,
+                                    isSending = isSending,
+                                    onSend = onSend,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("HermesChatComposerRow"),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                ComposerActionsButton(
+                                    actionMenuOpen = actionMenuOpen,
+                                    onToggle = { actionMenuOpen = !actionMenuOpen },
+                                )
+                                ComposerMicButton(
+                                    isListening = isListening,
+                                    onMic = onMic,
+                                )
+                                Spacer(modifier = Modifier.weight(1f))
+                                ChatSendButton(
+                                    input = input,
+                                    attachments = attachments,
+                                    isSending = isSending,
+                                    onSend = onSend,
+                                )
+                            }
                         }
                     }
                 } else {
@@ -1533,9 +1798,15 @@ private fun ChatComposer(
 private fun ComposerActionsButton(
     actionMenuOpen: Boolean,
     onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val strings = LocalHermesStrings.current
-    IconButton(onClick = onToggle) {
+    IconButton(
+        onClick = onToggle,
+        modifier = modifier
+            .heightIn(min = 40.dp)
+            .testTag("HermesChatMoreInputActionsButton"),
+    ) {
         Icon(
             painter = painterResource(id = R.drawable.ic_nav_settings),
             contentDescription = strings.moreInputActions(),
@@ -1574,9 +1845,15 @@ private fun ComposerInputField(
 private fun ComposerMicButton(
     isListening: Boolean,
     onMic: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val strings = LocalHermesStrings.current
-    IconButton(onClick = onMic) {
+    IconButton(
+        onClick = onMic,
+        modifier = modifier
+            .heightIn(min = 40.dp)
+            .testTag("HermesChatMicButton"),
+    ) {
         Icon(
             painter = painterResource(id = R.drawable.ic_action_mic),
             contentDescription = strings.voiceInputLabel(),
@@ -1589,17 +1866,28 @@ private fun ComposerMicButton(
 @Composable
 private fun SignalIntelligenceQuickActionGrid(
     enabled: Boolean,
+    compact: Boolean = false,
     onSignalQuickAction: (SignalIntelligenceQuickAction) -> Unit,
 ) {
+    val buttonColors = if (compact) {
+        ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+            contentColor = MaterialTheme.colorScheme.primary,
+            disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+            disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+        )
+    } else {
+        ButtonDefaults.buttonColors()
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("HermesSignalQuickActions"),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp),
     ) {
         Text(
             text = LocalHermesStrings.current.signalIntelligence(),
-            style = MaterialTheme.typography.labelLarge,
+            style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -1607,7 +1895,7 @@ private fun SignalIntelligenceQuickActionGrid(
         SIGNAL_INTELLIGENCE_QUICK_ACTIONS.chunked(2).forEach { rowActions ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 rowActions.forEach { action ->
@@ -1616,18 +1904,23 @@ private fun SignalIntelligenceQuickActionGrid(
                         enabled = enabled,
                         modifier = Modifier
                             .weight(1f)
+                            .heightIn(min = if (compact) 34.dp else 40.dp)
                             .testTag("HermesSignalQuickAction_${action.id}"),
                         shape = MaterialTheme.shapes.small,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                        colors = buttonColors,
+                        contentPadding = PaddingValues(
+                            horizontal = if (compact) 6.dp else 8.dp,
+                            vertical = if (compact) 4.dp else 6.dp,
+                        ),
                     ) {
                         Icon(
                             painter = painterResource(id = action.iconRes),
                             contentDescription = null,
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(if (compact) 14.dp else 16.dp),
                         )
                         Text(
                             text = " ${action.label}",
-                            style = MaterialTheme.typography.labelMedium,
+                            style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -1647,9 +1940,10 @@ private fun ChatSendButton(
     attachments: List<ChatAttachment>,
     isSending: Boolean,
     onSend: () -> Unit,
+    modifier: Modifier = Modifier.widthIn(min = 64.dp, max = 88.dp),
 ) {
     val strings = LocalHermesStrings.current
-    Box(modifier = Modifier.widthIn(min = 64.dp, max = 88.dp)) {
+    Box(modifier = modifier) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = onSend,
@@ -1666,6 +1960,74 @@ private fun ChatSendButton(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun UltraNarrowComposerIconButton(
+    iconRes: Int,
+    contentDescription: String,
+    active: Boolean,
+    onClick: () -> Unit,
+    testTag: String,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .height(32.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .testTag(testTag),
+        color = if (active) {
+            MaterialTheme.colorScheme.secondary.copy(alpha = 0.22f)
+        } else {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        },
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Icon(
+                painter = painterResource(id = iconRes),
+                contentDescription = contentDescription,
+                tint = if (active) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun UltraNarrowComposerSendButton(
+    input: String,
+    attachments: List<ChatAttachment>,
+    isSending: Boolean,
+    onSend: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val strings = LocalHermesStrings.current
+    val enabled = !isSending && (input.isNotBlank() || attachments.isNotEmpty())
+    Surface(
+        modifier = modifier
+            .height(32.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(enabled = enabled, onClick = onSend)
+            .testTag("HermesChatSendButton"),
+        color = if (enabled) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)
+        },
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                text = if (isSending) "…" else strings.send.ifBlank { "Send" },
+                color = if (enabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

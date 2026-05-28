@@ -43,6 +43,16 @@ class ProviderPresetsTest {
     }
 
     @Test
+    fun customRuntimeConfigNormalizesPastedFullEndpointForOpenAiSdk() {
+        val configBaseUrl = ProviderPresets.runtimeConfigBaseUrl(
+            providerId = "custom",
+            baseUrl = "localhost:11434/v1/chat/completions?debug=true",
+        )
+
+        assertEquals("http://localhost:11434/v1", configBaseUrl)
+    }
+
+    @Test
     fun setupTargetsCycleThroughOfficialFallbacks() {
         val first = requireNotNull(ProviderPresets.setupTarget("qwen-oauth", 0))
         val second = requireNotNull(ProviderPresets.setupTarget("qwen-oauth", 1))

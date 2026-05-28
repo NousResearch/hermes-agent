@@ -1,7 +1,9 @@
 package com.mobilefork.hermesagent.ui.chat
 
+import com.mobilefork.hermesagent.api.ChatContentPart
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatViewModelTest {
@@ -55,5 +57,35 @@ class ChatViewModelTest {
         )
 
         assertEquals("First\nSecond", content)
+    }
+
+    @Test
+    fun buildChatRequestMessagesAddsSavedPersonaBeforeEndpointUserMessage() {
+        val messages = buildChatRequestMessages(
+            userText = "Check the local model",
+            customSystemPrompt = "Prefer local tools and keep replies short.",
+        )
+
+        assertEquals(2, messages.size)
+        assertEquals("system", messages[0].role)
+        assertTrue(messages[0].content.contains("User-configured agent persona"))
+        assertTrue(messages[0].content.contains("Prefer local tools"))
+        assertEquals("user", messages[1].role)
+        assertEquals("Check the local model", messages[1].content)
+    }
+
+    @Test
+    fun buildChatRequestMessagesPreservesAttachmentPartsAndBoundsPersona() {
+        val messages = buildChatRequestMessages(
+            userText = "Describe this",
+            userContentParts = listOf(ChatContentPart(type = "text", text = "Describe this")),
+            customSystemPrompt = "x".repeat(2_000),
+        )
+
+        assertEquals(2, messages.size)
+        assertTrue(messages[0].content.contains("hermes context compressed"))
+        assertTrue(messages[0].content.length < 1_200)
+        assertEquals(1, messages[1].contentParts.size)
+        assertEquals("text", messages[1].contentParts.single().type)
     }
 }

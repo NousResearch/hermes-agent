@@ -146,12 +146,21 @@ data class HermesStrings(
     }
 
     fun customEndpointConnectionHint(): String = when (language) {
-        AppLanguage.CHINESE -> "自定义 OpenAI 兼容端点应包含协议和 /v1 路径，并使用服务器上完全匹配的模型名称。如果流提前断开，Hermes 会在聊天中显示连接提示。"
-        AppLanguage.SPANISH -> "Los endpoints personalizados compatibles con OpenAI deben incluir el esquema y la ruta /v1, y usar el nombre exacto del modelo del servidor. Si el stream se corta antes de tiempo, Hermes mostrará una pista de conexión en el chat."
-        AppLanguage.GERMAN -> "Benutzerdefinierte OpenAI-kompatible Endpunkte sollten Schema und /v1-Pfad enthalten und den exakten Modellnamen des Servers verwenden. Wenn der Stream vorzeitig endet, zeigt Hermes im Chat einen Verbindungshinweis."
-        AppLanguage.PORTUGUESE -> "Endpoints personalizados compatíveis com OpenAI devem incluir o esquema e o caminho /v1, e usar o nome exato do modelo no servidor. Se o stream cair cedo, o Hermes mostrará uma dica de conexão no chat."
-        AppLanguage.FRENCH -> "Les endpoints personnalisés compatibles OpenAI doivent inclure le schéma et le chemin /v1, avec le nom exact du modèle côté serveur. Si le flux se ferme trop tôt, Hermes affichera une indication de connexion dans le chat."
-        AppLanguage.ENGLISH -> "Custom OpenAI-compatible endpoints should include the scheme and /v1 path, and use the exact model name from the server. If the stream closes early, Hermes will show a connection hint in chat."
+        AppLanguage.CHINESE -> "自定义 OpenAI 兼容端点可以是裸主机、/v1 URL 或完整 /v1/chat/completions URL；Hermes 会规范化它，并使用服务器上完全匹配的模型名称。"
+        AppLanguage.SPANISH -> "Los endpoints personalizados compatibles con OpenAI pueden ser un host sin esquema, una URL /v1 o una URL completa /v1/chat/completions; Hermes los normaliza y usa el nombre exacto del modelo del servidor."
+        AppLanguage.GERMAN -> "Benutzerdefinierte OpenAI-kompatible Endpunkte koennen ein Roh-Host, eine /v1-URL oder eine vollstaendige /v1/chat/completions-URL sein; Hermes normalisiert sie und nutzt den exakten Modellnamen des Servers."
+        AppLanguage.PORTUGUESE -> "Endpoints personalizados compativeis com OpenAI podem ser um host sem esquema, uma URL /v1 ou uma URL completa /v1/chat/completions; o Hermes normaliza e usa o nome exato do modelo do servidor."
+        AppLanguage.FRENCH -> "Les endpoints personnalises compatibles OpenAI peuvent etre un hote brut, une URL /v1 ou une URL complete /v1/chat/completions; Hermes les normalise et utilise le nom exact du modele cote serveur."
+        AppLanguage.ENGLISH -> "Custom OpenAI-compatible endpoints can be a raw host, a /v1 URL, or a full /v1/chat/completions URL; Hermes normalizes them and uses the exact model name from the server. If the stream closes early, Hermes shows connection diagnostics in chat."
+    }
+
+    fun customEndpointPreview(url: String): String = when (language) {
+        AppLanguage.CHINESE -> "Hermes 将尝试：$url"
+        AppLanguage.SPANISH -> "Hermes intentara: $url"
+        AppLanguage.GERMAN -> "Hermes versucht: $url"
+        AppLanguage.PORTUGUESE -> "Hermes tentara: $url"
+        AppLanguage.FRENCH -> "Hermes essaiera: $url"
+        AppLanguage.ENGLISH -> "Hermes will try: $url"
     }
 
     fun endpointStatusIndicatorLabel(): String = when (language) {

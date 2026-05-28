@@ -1151,7 +1151,7 @@ DEFAULT_CONFIG = {
         # when an exchange was tool-heavy. Set False to restore the legacy
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
-        "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        "busy_input_mode": "steer",  # interrupt | queue | steer
         # When true, `hermes --tui` auto-resumes the most recent human-
         # facing session on launch instead of forging a fresh one.
         # Mirrors `hermes -c` muscle memory.  Default off so existing

@@ -59,6 +59,7 @@ class TestFailoverReason:
             "invalid_encrypted_content",
             "multimodal_tool_content_unsupported",
             "provider_policy_blocked",
+            "content_policy_blocked",
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
@@ -465,6 +466,78 @@ class TestClassifyApiError:
         )
         result = classify_api_error(e)
         assert result.reason == FailoverReason.provider_policy_blocked
+
+    # ── Provider content-policy block (per-prompt safety filter) ──
+    #
+    # Distinct from ``provider_policy_blocked`` above — these are upstream
+    # model-provider safety refusals for THIS prompt, not OpenRouter
+    # account-level data policy. Recovery is fallback model, not config fix.
+    # See issue #18028 — OpenAI Codex was burning 3 retries on identical
+    # refusals before users saw "API failed after 3 retries" on Telegram.
+
+    def test_message_only_cyber_content_policy_blocked(self):
+        # OpenAI Codex returns this without an HTTP status. Retrying the
+        # same prompt three times only repeats the same policy decision, so
+        # the classifier must jump straight to fallback / abort instead of
+        # leaving it in the retryable ``unknown`` bucket.
+        e = Exception(
+            "This content was flagged for possible cybersecurity risk. If this "
+            "seems wrong, try rephrasing your request. To get authorized for "
+            "security work, join the Trusted Access for Cyber program."
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.5")
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_compress is False
+
+    def test_400_cyber_content_policy_blocked(self):
+        # When the SDK does attach a status (e.g. 400), the safety pattern
+        # must still beat the format_error fallthrough.
+        e = MockAPIError(
+            "This content was flagged for possible cybersecurity risk",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.5")
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_openai_usage_policy_violation_content_policy_blocked(self):
+        # OpenAI moderation refusal wording from chat completions / responses.
+        e = MockAPIError(
+            "Your request was flagged by the moderation system as potentially "
+            "violating OpenAI's usage policies.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai", model="gpt-4o")
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_anthropic_safety_system_content_policy_blocked(self):
+        # Anthropic safety refusal — distinct phrasing from OpenAI.
+        e = Exception(
+            "Your prompt was flagged by our safety system. Please rephrase "
+            "and try again."
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-3-5-sonnet")
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_azure_content_filter_content_policy_blocked(self):
+        # Azure OpenAI returns ``content_filter`` finish reason / error code
+        # and ``ResponsibleAIPolicyViolation`` in error bodies — both narrow
+        # tokens, not the generic English phrase.
+        e = MockAPIError(
+            "The response was filtered: ResponsibleAIPolicyViolation "
+            "(finish_reason=content_filter).",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="azure", model="gpt-4o")
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
 
     def test_404_model_not_found_still_works(self):
         # Regression guard: the new policy-block check must not swallow

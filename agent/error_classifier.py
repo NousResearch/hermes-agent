@@ -44,9 +44,10 @@ class FailoverReason(enum.Enum):
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
 
-    # Model
+    # Model / provider policy
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator (e.g. OpenRouter) blocked the only endpoint due to account data/privacy policy
+    content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — deterministic per-request, don't retry unchanged
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
@@ -289,6 +290,45 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = [
     "no endpoints found matching your data policy",
 ]
 
+# Provider content-policy / safety-filter blocks. Distinct from
+# ``provider_policy_blocked`` above (which is an OpenRouter *account*-level
+# data/privacy guardrail) — these are *per-prompt* safety decisions made by
+# the upstream model provider. They are deterministic for the unchanged
+# request, so retrying the same prompt three times just reproduces the same
+# block and burns paid attempts on a refusal. The recovery is to switch to a
+# configured fallback model/provider immediately, or surface the block to
+# the user with actionable guidance if no fallback exists.
+#
+# Patterns are intentionally narrow — each phrase is a verbatim string from
+# a specific provider's safety pipeline, not a generic word like "policy" or
+# "violation" that could collide with billing/auth/format errors:
+#   • OpenAI Codex cybersecurity refusal (gpt-5.5, the case from #18028)
+#   • OpenAI moderation refusal ("violates our usage policies", with
+#     "usage policies" disambiguating from billing's "exceeded ... policy")
+#   • Anthropic safety refusal ("prompt was flagged by ... safety system")
+#   • OpenAI Responses content filter
+_CONTENT_POLICY_BLOCKED_PATTERNS = [
+    # OpenAI Codex (#18028) — message may arrive without an HTTP status
+    "flagged for possible cybersecurity risk",
+    "trusted access for cyber",
+    # OpenAI moderation — chat completions / responses
+    "violates our usage policies",
+    "violates openai's usage policies",
+    "your request was flagged by",
+    # Anthropic safety system
+    "prompt was flagged by our safety",
+    "responses cannot be generated due to safety",
+    # Generic content-filter wording seen on Azure / OpenAI Responses.
+    # ``content_filter`` (underscore) is the OpenAI-standard error/finish
+    # token surfaced verbatim by their SDKs when a request is blocked.
+    # ``responsibleaipolicyviolation`` is Azure OpenAI's error code.
+    # Deliberately NOT matching the space variant ("content filter") — it
+    # appears in benign config descriptions and tooltip text that providers
+    # echo back; the underscore form is provider-specific enough.
+    "content_filter",
+    "responsibleaipolicyviolation",
+]
+
 # Auth patterns (non-status-code signals)
 _AUTH_PATTERNS = [
     "invalid api key",
@@ -491,6 +531,20 @@ def classify_api_error(
         return ClassifiedError(**defaults)
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
+
+    # Provider content-policy / safety-filter block. The provider has made a
+    # deterministic refusal decision about THIS prompt — retrying unchanged
+    # just reproduces the same refusal and burns paid attempts. Must run
+    # before status-based classification so a 400 safety block isn't
+    # downgraded to a generic ``format_error`` and a status-less block
+    # (OpenAI Codex SDK can raise without one) isn't left in the retryable
+    # ``unknown`` bucket. See issue #18028.
+    if any(p in error_msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
+        return _result(
+            FailoverReason.content_policy_blocked,
+            retryable=False,
+            should_fallback=True,
+        )
 
     # Anthropic thinking block signature invalid (400).
     # Don't gate on provider — OpenRouter proxies Anthropic errors, so the

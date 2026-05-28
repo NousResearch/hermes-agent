@@ -4445,6 +4445,19 @@ class GatewayRunner:
         # visible for manual recovery on the next user message.
         self._schedule_resume_pending_sessions()
 
+        try:
+            from gateway.issue_resolution import resume_issue_resolution_queue
+            resumed_issue_runs = await resume_issue_resolution_queue(
+                notify=self._notify_issue_resolution_home,
+            )
+            if resumed_issue_runs:
+                logger.info(
+                    "Issue-resolution queue resumed %d pending/interrupted run(s)",
+                    resumed_issue_runs,
+                )
+        except Exception as exc:
+            logger.warning("Issue-resolution queue resume failed: %s", exc)
+
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
             from tools.process_registry import process_registry
@@ -6887,6 +6900,28 @@ class GatewayRunner:
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    async def _notify_issue_resolution_home(self, content: str) -> None:
+        """Deliver issue-resolution lifecycle notices to configured home channels."""
+        delivered = False
+        for platform, adapter in list(getattr(self, "adapters", {}) or {}).items():
+            try:
+                home = self.config.get_home_channel(platform)
+            except Exception:
+                home = None
+            if not home:
+                continue
+            try:
+                result = await adapter.send(home.chat_id, content)
+                delivered = delivered or bool(getattr(result, "success", False))
+            except Exception:
+                logger.debug(
+                    "issue-resolution home notice failed for %s",
+                    getattr(platform, "value", platform),
+                    exc_info=True,
+                )
+        if not delivered:
+            logger.info("Issue-resolution notice: %s", content)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -7683,6 +7718,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "issue":
+            return await self._handle_issue_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -9924,6 +9962,27 @@ class GatewayRunner:
             logger.debug("build_recap failed in /status: %s", exc)
 
         return "\n".join(lines)
+
+    async def _handle_issue_command(self, event: MessageEvent) -> str:
+        """Handle /issue command by spawning the issue resolution lane."""
+        from gateway.issue_resolution import parse_issue_command_args, submit_issue_resolution
+
+        try:
+            request = parse_issue_command_args(event.get_command_args())
+        except ValueError as exc:
+            return f"Usage: /issue <owner/repo|issue-url> <number> [--workdir path]\nError: {exc}"
+
+        async def _notify(message: str) -> None:
+            await self._deliver_platform_notice(event.source, message)
+
+        try:
+            result = await submit_issue_resolution(request, notify=_notify)
+        except Exception as exc:
+            return f"Hermes: Issue #{request.issue_number} could not be queued: {exc}"
+        return (
+            f"Hermes: Issue #{request.issue_number} queued as run #{result.run_id}. "
+            "Local coder execution is single-flight."
+        )
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""

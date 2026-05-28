@@ -448,11 +448,20 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
-        # Format prompt from template
-        prompt_template = route_config.get("prompt", "")
-        prompt = self._render_prompt(
-            prompt_template, payload, event_type, route_name
-        )
+        # Format prompt from template, or synthesize an automation command.
+        if route_config.get("automation") == "github_issue_resolution":
+            from gateway.issue_resolution import github_issue_webhook_command
+
+            prompt = github_issue_webhook_command(payload)
+            if not prompt:
+                return web.json_response(
+                    {"status": "ignored", "event": event_type, "reason": "not a GitHub issue payload"}
+                )
+        else:
+            prompt_template = route_config.get("prompt", "")
+            prompt = self._render_prompt(
+                prompt_template, payload, event_type, route_name
+            )
 
         # Inject skill content if configured.
         # We call build_skill_invocation_message() directly rather than

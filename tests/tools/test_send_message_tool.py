@@ -29,6 +29,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _is_telegram_thread_not_found,
     _parse_target_ref,
+    _send_feishu,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
@@ -239,6 +240,94 @@ class TestSendMessageTool:
         assert "final response" in result["note"]
         send_mock.assert_not_awaited()
         mirror_mock.assert_not_called()
+
+    def test_send_feishu_routes_non_image_media_to_document(self, tmp_path, monkeypatch):
+        file_path = tmp_path / "report.md"
+        file_path.write_text("# Report\n", encoding="utf-8")
+        calls = []
+
+        class FakeFeishuAdapter:
+            def __init__(self, _config):
+                self._domain_name = "feishu"
+
+            def _build_lark_client(self, domain):
+                calls.append(("build_client", domain))
+                return object()
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message, metadata))
+                return SimpleNamespace(success=True, message_id="text")
+
+            async def send_image_file(self, chat_id, media_path, metadata=None):
+                calls.append(("send_image_file", chat_id, media_path, metadata))
+                return SimpleNamespace(success=True, message_id="image")
+
+            async def send_document(self, chat_id, media_path, metadata=None):
+                calls.append(("send_document", chat_id, media_path, metadata))
+                return SimpleNamespace(success=True, message_id="doc")
+
+        fake_module = SimpleNamespace(
+            FEISHU_AVAILABLE=True,
+            FEISHU_DOMAIN="https://open.feishu.cn",
+            LARK_DOMAIN="https://open.larksuite.com",
+            FeishuAdapter=FakeFeishuAdapter,
+        )
+        monkeypatch.setitem(sys.modules, "gateway.platforms.feishu", fake_module)
+
+        result = asyncio.run(
+            _send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_chat",
+                "attached",
+                media_files=[(str(file_path), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert ("send_document", "oc_chat", str(file_path), None) in calls
+        assert not any(call[0] == "send_image_file" for call in calls)
+
+    def test_send_feishu_routes_image_media_to_image_upload(self, tmp_path, monkeypatch):
+        image_path = tmp_path / "screenshot.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        calls = []
+
+        class FakeFeishuAdapter:
+            def __init__(self, _config):
+                self._domain_name = "feishu"
+
+            def _build_lark_client(self, domain):
+                calls.append(("build_client", domain))
+                return object()
+
+            async def send_image_file(self, chat_id, media_path, metadata=None):
+                calls.append(("send_image_file", chat_id, media_path, metadata))
+                return SimpleNamespace(success=True, message_id="image")
+
+            async def send_document(self, chat_id, media_path, metadata=None):
+                calls.append(("send_document", chat_id, media_path, metadata))
+                return SimpleNamespace(success=True, message_id="doc")
+
+        fake_module = SimpleNamespace(
+            FEISHU_AVAILABLE=True,
+            FEISHU_DOMAIN="https://open.feishu.cn",
+            LARK_DOMAIN="https://open.larksuite.com",
+            FeishuAdapter=FakeFeishuAdapter,
+        )
+        monkeypatch.setitem(sys.modules, "gateway.platforms.feishu", fake_module)
+
+        result = asyncio.run(
+            _send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_chat",
+                "",
+                media_files=[(str(image_path), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert ("send_image_file", "oc_chat", str(image_path), None) in calls
+        assert not any(call[0] == "send_document" for call in calls)
 
     def test_resolved_telegram_topic_name_preserves_thread_id(self):
         config, telegram_cfg = _make_config()

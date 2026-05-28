@@ -147,7 +147,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. To attach a local file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/report.md') in the message. Hermes extracts these tags and uploads attachments natively: images use image upload, video/audio use their native routes where supported, and Feishu/Lark non-image files (md/json/html/yaml/xml/tsv/pdf/csv/xlsx/etc.) are uploaded with native document upload (send_document). Do not send a Feishu/Lark file by pasting the path as ordinary text."
             }
         },
         "required": []

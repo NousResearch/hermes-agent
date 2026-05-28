@@ -121,6 +121,22 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
     adapter.send_document.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_base_adapter_preserves_unsupported_media_tag_in_visible_text():
+    adapter = _MediaRoutingAdapter()
+    event = _event()
+    adapter._message_handler = AsyncMock(return_value="Review MEDIA:/tmp/build.unknownext")
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text"))
+    adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.send.assert_awaited_once()
+    sent_text = adapter.send.await_args.kwargs["content"]
+    assert "MEDIA:/tmp/build.unknownext" in sent_text
+    adapter.send_document.assert_not_awaited()
+
+
 def _fake_runner(thread_meta):
     """Build a fake GatewayRunner-like object with the helper methods needed by
     _deliver_media_from_response."""

@@ -3615,9 +3615,17 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
-                            tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
-                            )
+                            # The session contextvar HERMES_SESSION_PLATFORM may be
+                            # cleared by the time adapter.send() runs (the gateway
+                            # handler clears it in its finally block before calling
+                            # send).  Re-inject the platform so text_to_speech_tool
+                            # picks the correct output format (OGG on Telegram).
+                            _tts_platform_val = self.platform.value
+                            def _tts_with_platform(_text=speech_text, _plat=_tts_platform_val):
+                                from gateway.session_context import set_session_vars as _ssv
+                                _ssv(platform=_plat)
+                                return text_to_speech_tool(text=_text)
+                            tts_result_str = await asyncio.to_thread(_tts_with_platform)
                             tts_data = _json.loads(tts_result_str)
                             _tts_path = tts_data.get("file_path")
                     except Exception as tts_err:

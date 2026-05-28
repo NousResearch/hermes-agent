@@ -264,7 +264,6 @@ def cmd_setup(args) -> None:
     if not isinstance(provider_config, dict):
         provider_config = {}
 
-    env_path = get_hermes_home() / ".env"
     env_writes = {}
 
     if schema:
@@ -340,7 +339,7 @@ def cmd_setup(args) -> None:
 
     # Write secrets to .env
     if env_writes:
-        _write_env_vars(env_path, env_writes)
+        _write_env_vars(env_writes)
 
     print(f"\n  Memory provider: {name}")
     print(f"  Activation saved to config.yaml")
@@ -351,35 +350,29 @@ def cmd_setup(args) -> None:
     print(f"\n  Start a new session to activate.\n")
 
 
-def _write_env_vars(env_path: Path, env_writes: dict) -> None:
-    """Append or update env vars in .env file."""
-    env_path.parent.mkdir(parents=True, exist_ok=True)
+def _write_env_vars(env_writes: dict) -> None:
+    """Persist memory-provider env vars through the canonical ``.env`` writer.
 
-    existing_lines = []
-    if env_path.exists():
-        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+    Delegates to ``hermes_cli.config.save_env_value`` so every key flows
+    through the same input-validation gate as the rest of Hermes: the
+    ``_ENV_VAR_NAME_RE`` regex (no malformed identifiers), the
+    ``_ENV_VAR_NAME_DENYLIST`` (no ``LD_PRELOAD`` / ``PYTHONPATH`` /
+    ``HERMES_HOME`` / etc.), and CR/LF stripping on the value. A
+    misconfigured provider plugin schema (``env_var: "LD_PRELOAD"``)
+    is therefore caught here too, not just at the dashboard
+    ``PUT /api/env`` boundary that #32277 hardened.
 
-    updated_keys = set()
-    new_lines = []
-    for line in existing_lines:
-        key_match = line.split("=", 1)[0].strip() if "=" in line else ""
-        if key_match in env_writes:
-            new_lines.append(f"{key_match}={env_writes[key_match]}")
-            updated_keys.add(key_match)
-        else:
-            new_lines.append(line)
+    Failures are surfaced and skipped rather than aborting the wizard
+    so a single denylisted/malformed key from one schema field doesn't
+    take down the rest of the batch.
+    """
+    from hermes_cli.config import save_env_value
 
     for key, val in env_writes.items():
-        if key not in updated_keys:
-            new_lines.append(f"{key}={val}")
-
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    # Restrict permissions — .env holds API keys and tokens.
-    try:
-        import stat
-        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    except OSError:
-        pass  # Windows or read-only FS
+        try:
+            save_env_value(key, val)
+        except ValueError as exc:
+            print(f"  Skipping {key}: {exc}")
 
 
 # ---------------------------------------------------------------------------

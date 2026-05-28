@@ -3820,12 +3820,12 @@ class TelegramAdapter(BasePlatformAdapter):
             # so without this the "...typing" bubble disappears mid-response
             # (especially noticeable when the agent sends intermediate progress
             # messages like "Checking:" before running tools).
-            # Skip this on the FINAL reply (metadata["notify"]): the gateway has
-            # already cancelled the typing refresh loop by the time the final
-            # send returns, so re-arming Telegram's ~5s timer here would leave
-            # the indicator lingering after the answer with nothing to cancel
-            # it (Telegram exposes no stop-typing API). See #48678.
-            if not (metadata or {}).get("notify"):
+            #
+            # Skip the refresh on terminal/final sends. Otherwise the final
+            # answer itself creates a brand-new typing bubble with no more work
+            # behind it, making the bot look stuck "typing" for a few seconds
+            # after it already replied.
+            if not (metadata or {}).get("suppress_post_send_typing"):
                 try:
                     await self.send_typing(chat_id, metadata=metadata)
                 except Exception:

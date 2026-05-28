@@ -5003,6 +5003,13 @@ class BasePlatformAdapter(ABC):
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
+                    # Telegram re-triggers typing after each send() to keep the
+                    # bubble alive across intermediate progress/status messages.
+                    # Mark the terminal reply so adapters can skip that post-send
+                    # refresh; otherwise users can receive the final answer while
+                    # the client still shows Hermes as typing for a few extra
+                    # seconds.
+                    _final_thread_metadata["suppress_post_send_typing"] = True
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,

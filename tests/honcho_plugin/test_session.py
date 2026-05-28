@@ -1237,7 +1237,6 @@ class TestDialecticCadenceAdvancesOnSuccess:
         return provider
 
     def test_empty_dialectic_result_does_not_advance_cadence(self):
-        import time as _time
         provider = self._make_provider()
         provider._session_key = "test"
         provider._manager.dialectic_query.return_value = ""  # silent failure

@@ -15,7 +15,6 @@ History:
 
 from __future__ import annotations
 
-import io
 import json
 from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse

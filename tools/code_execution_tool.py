@@ -35,7 +35,6 @@ import logging
 import os
 import platform
 import shlex
-import signal
 import socket
 import subprocess
 import sys

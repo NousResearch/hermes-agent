@@ -1,7 +1,5 @@
 """Tests for tools/skills_guard.py - security scanner for skills."""
 
-import os
-import stat
 import tempfile
 from pathlib import Path
 
@@ -33,8 +31,6 @@ from tools.skills_guard import (
     _resolve_trust_level,
     _check_structure,
     _unicode_char_name,
-    INSTALL_POLICY,
-    INVISIBLE_CHARS,
     MAX_FILE_COUNT,
     MAX_SINGLE_FILE_KB,
 )

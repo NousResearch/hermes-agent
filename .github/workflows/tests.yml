@@ -3,8 +3,14 @@ name: Tests
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
 
 permissions:
   contents: read
@@ -17,13 +23,35 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3, 4, 5, 6]
     steps:
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Restore duration cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: test_durations.json
+          # Single stable key. main always overwrites, PRs always find it.
+          key: test-durations
+
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          rg --version
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
@@ -37,22 +65,99 @@ jobs:
           source .venv/bin/activate
           uv pip install -e ".[all,dev]"
 
-      - name: Run tests
+      - name: Run tests (slice ${{ matrix.slice }}/6)
+        # Per-file isolation via scripts/run_tests_parallel.py: discovers
+        # every test_*.py file under tests/ (excluding integration/ + e2e/),
+        # then runs `python -m pytest <file>` in a freshly-spawned subprocess
+        # with bounded parallelism. No xdist, no shared workers, no
+        # module-level state leakage between files.
+        #
+        # Why per-file (not per-test): per-test spawn cost (~250ms × 17k
+        # tests = 70min CPU minimum) blew the wall-clock budget. Per-file
+        # spawn (~250ms × ~850 files = ~3.5min) fits while still giving
+        # every file a fresh interpreter — the only isolation boundary
+        # that matters in practice (cross-file leakage was the original
+        # flake source; intra-file is the test author's responsibility).
+        #
+        # Why drop xdist entirely: xdist's persistent workers accumulate
+        # state across files, which is exactly the leakage we wanted to
+        # fix. ThreadPoolExecutor + subprocess.run is ~60 lines and does
+        # the job with cleaner semantics.
+        #
+        # Matrix slicing (--slice I/N): files are distributed across 6
+        # jobs by cached duration (LPT algorithm) so each job gets
+        # roughly equal wall time. Without a cache, files default to 2s
+        # estimate and get split roughly evenly by count — still correct,
+        # just not perfectly balanced.
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto
+          python scripts/run_tests_parallel.py --slice ${{ matrix.slice }}/6
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
 
+      - name: Upload per-slice durations
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: test-durations-slice-${{ matrix.slice }}
+          path: test_durations.json
+          retention-days: 1
+
+  # Merge per-slice duration data into a single cache, so future runs
+  # (including PRs) get balanced slicing.
+  save-durations:
+    needs: test
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all slice durations
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: test-durations-slice-*
+          path: durations
+          merge-multiple: true
+
+      - name: Merge into single durations file
+        run: |
+          python3 -c "
+          import json, glob, os
+          merged = {}
+          for f in glob.glob('durations/*test_durations.json'):
+            with open(f) as fh:
+              merged.update(json.load(fh))
+          with open('test_durations.json', 'w') as fh:
+            json.dump(merged, fh, indent=2, sort_keys=True)
+          print(f'Merged {len(merged)} file durations')
+          "
+
+      - name: Save merged duration cache
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: test_durations.json
+          key: test-durations
+
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          rg --version
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5

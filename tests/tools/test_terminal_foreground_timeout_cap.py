@@ -48,6 +48,53 @@ class TestForegroundTimeoutCap:
         assert str(FOREGROUND_MAX_TIMEOUT) in result["error"]
         assert "background=true" in result["error"]
 
+    def test_foreground_rejects_shell_level_background_wrappers(self):
+        """Foreground nohup/disown/setsid commands should be redirected to background mode."""
+        from tools.terminal_tool import terminal_tool
+
+        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
+             patch("tools.terminal_tool._start_cleanup_thread"):
+
+            result = json.loads(terminal_tool(
+                command="nohup pnpm dev > /tmp/sg-server.log 2>&1 &",
+            ))
+
+        assert result["exit_code"] == -1
+        assert "background=true" in result["error"]
+        assert "nohup" in result["error"].lower()
+
+    def test_foreground_rejects_long_lived_server_command(self):
+        """Foreground dev server commands should be redirected to background mode."""
+        from tools.terminal_tool import terminal_tool
+
+        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
+             patch("tools.terminal_tool._start_cleanup_thread"):
+
+            result = json.loads(terminal_tool(command="pnpm dev"))
+
+        assert result["exit_code"] == -1
+        assert "long-lived" in result["error"].lower()
+        assert "background=true" in result["error"]
+
+    def test_foreground_allows_help_variant_for_server_command(self):
+        """Informational variants like '--help' should not be blocked."""
+        from tools.terminal_tool import terminal_tool
+
+        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
+             patch("tools.terminal_tool._start_cleanup_thread"):
+
+            mock_env = MagicMock()
+            mock_env.execute.return_value = {"output": "usage", "returncode": 0}
+
+            with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \
+                 patch("tools.terminal_tool._last_activity", {"default": 0}), \
+                 patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+                result = json.loads(terminal_tool(command="pnpm dev --help"))
+
+        assert result["error"] is None
+        call_kwargs = mock_env.execute.call_args
+        assert call_kwargs[0][0] == "pnpm dev --help"
+
     def test_foreground_timeout_within_max_executes(self):
         """When model requests timeout <= FOREGROUND_MAX_TIMEOUT, execute normally."""
         from tools.terminal_tool import terminal_tool

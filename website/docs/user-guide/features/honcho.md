@@ -45,7 +45,7 @@ memory:
 ```
 
 ```bash
-echo "HONCHO_API_KEY=*** >> ~/.hermes/.env
+echo 'HONCHO_API_KEY=***' >> ~/.hermes/.env
 ```
 
 Get an API key at [honcho.dev](https://honcho.dev).
@@ -77,7 +77,7 @@ Cost and depth are controlled by three independent knobs:
 | Knob | Controls | Default |
 |------|----------|---------|
 | `contextCadence` | Turns between `context()` API calls (base layer refresh) | `1` |
-| `dialecticCadence` | Turns between `peer.chat()` LLM calls (dialectic layer refresh) | `3` |
+| `dialecticCadence` | Turns between `peer.chat()` LLM calls (dialectic layer refresh) | `2` (recommended 1–5) |
 | `dialecticDepth` | Number of `.chat()` passes per dialectic invocation (1–3) | `1` |
 
 These are orthogonal — you can have frequent context refreshes with infrequent dialectic, or deep multi-pass dialectic at low frequency. Example: `contextCadence: 1, dialecticCadence: 5, dialecticDepth: 2` refreshes base context every turn, runs dialectic every 5 turns, and each dialectic run makes 2 passes.
@@ -94,6 +94,14 @@ Each pass uses a proportional reasoning level (lighter early passes, base level 
 
 Passes bail out early if the prior pass returned strong signal (long, structured output), so depth 3 doesn't always mean 3 LLM calls.
 
+### Session-Start Prewarm
+
+On session init, Honcho fires a dialectic call in the background at the full configured `dialecticDepth` and hands the result directly to turn 1's context assembly. A single-pass prewarm on a cold peer often returns thin output — multi-pass depth runs the audit/reconcile cycle before the user ever speaks. If prewarm hasn't landed by turn 1, turn 1 falls back to a synchronous call with a bounded timeout.
+
+### Query-Adaptive Reasoning Level
+
+The auto-injected dialectic scales `dialecticReasoningLevel` by query length: +1 level at ≥120 chars, +2 at ≥400, clamped at `reasoningLevelCap` (default `"high"`). Disable with `reasoningHeuristic: false` to pin every auto call to `dialecticReasoningLevel`. Available levels: `minimal`, `low`, `medium`, `high`, `max`.
+
 ## Configuration Options
 
 Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho.json` (profile-local). The setup wizard handles this for you.
@@ -104,7 +112,7 @@ Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho
 |-----|---------|-------------|
 | `contextTokens` | `null` (uncapped) | Token budget for auto-injected context per turn. Set to an integer (e.g. 1200) to cap. Truncates at word boundaries |
 | `contextCadence` | `1` | Minimum turns between `context()` API calls (base layer refresh) |
-| `dialecticCadence` | `3` | Minimum turns between `peer.chat()` LLM calls (dialectic layer). In `tools` mode, irrelevant — model calls explicitly |
+| `dialecticCadence` | `2` | Minimum turns between `peer.chat()` LLM calls (dialectic layer). Recommended 1–5. In `tools` mode, irrelevant — model calls explicitly |
 | `dialecticDepth` | `1` | Number of `.chat()` passes per dialectic invocation. Clamped to 1–3 |
 | `dialecticDepthLevels` | `null` | Optional array of reasoning levels per pass, e.g. `["minimal", "low", "medium"]`. Overrides proportional defaults |
 | `dialecticReasoningLevel` | `'low'` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |
@@ -142,6 +150,41 @@ Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho
 
 In `tools` mode, the model is fully in control — it calls `honcho_reasoning` when it wants, at whatever `reasoning_level` it picks. Cadence and budget settings only apply to modes with auto-injection (`hybrid` and `context`).
 
+## Observation (Directional vs. Unified)
+
+Honcho models a conversation as peers exchanging messages. Each peer has two observation toggles that map 1:1 to Honcho's `SessionPeerConfig`:
+
+| Toggle | Effect |
+|--------|--------|
+| `observeMe` | Honcho builds a representation of this peer from its own messages |
+| `observeOthers` | This peer observes the other peer's messages (feeds cross-peer reasoning) |
+
+Two peers × two toggles = four flags. `observationMode` is a shorthand preset:
+
+| Preset | User flags | AI flags | Semantics |
+|--------|-----------|----------|-----------|
+| `"directional"` (default) | me: on, others: on | me: on, others: on | Full mutual observation. Enables cross-peer dialectic — "what does the AI know about the user, based on what the user said and the AI replied." |
+| `"unified"` | me: on, others: off | me: off, others: on | Shared-pool semantics — the AI observes the user's messages only, the user peer only self-models. Single-observer pool. |
+
+Override the preset with an explicit `observation` block for per-peer control:
+
+```json
+"observation": {
+  "user": { "observeMe": true,  "observeOthers": true },
+  "ai":   { "observeMe": true,  "observeOthers": false }
+}
+```
+
+Common patterns:
+
+| Intent | Config |
+|--------|--------|
+| Full observation (most users) | `"observationMode": "directional"` |
+| AI shouldn't re-model the user from its own replies | `"ai": {"observeMe": true, "observeOthers": false}` |
+| Strong persona the AI peer shouldn't update from self-observation | `"ai": {"observeMe": false, "observeOthers": true}` |
+
+Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win over local defaults — Hermes syncs them back at session init.
+
 ## Tools
 
 When Honcho is active as the memory provider, five tools become available:
@@ -156,17 +199,23 @@ When Honcho is active as the memory provider, five tools become available:
 
 ## CLI Commands
 
+The `hermes honcho` subcommand is **only registered when Honcho is the active memory provider** (`memory.provider: honcho` in `config.yaml`). Run `hermes memory setup` and pick Honcho first; the subcommand appears on the next invocation.
+
 ```bash
 hermes honcho status          # Connection status, config, and key settings
-hermes honcho setup           # Interactive setup wizard
-hermes honcho strategy        # Show or set session strategy
-hermes honcho peer            # Update peer names for multi-agent setups
-hermes honcho mode            # Show or set recall mode
-hermes honcho tokens          # Show or set context token budget
-hermes honcho identity        # Show Honcho peer identity
-hermes honcho sync            # Sync host blocks for all profiles
-hermes honcho enable          # Enable Honcho
-hermes honcho disable         # Disable Honcho
+hermes honcho setup           # Redirects to `hermes memory setup`
+hermes honcho strategy        # Show or set session strategy (per-session/per-directory/per-repo/global)
+hermes honcho peer            # Show or update peer names + dialectic reasoning level
+hermes honcho mode            # Show or set recall mode (hybrid/context/tools)
+hermes honcho tokens          # Show or set token budget for context and dialectic
+hermes honcho identity        # Seed or show the AI peer's Honcho identity
+hermes honcho sync            # Sync Honcho config to all existing profiles
+hermes honcho peers           # Show peer identities across all profiles
+hermes honcho sessions        # List known Honcho session mappings
+hermes honcho map             # Map current directory to a Honcho session name
+hermes honcho enable          # Enable Honcho for the active profile
+hermes honcho disable         # Disable Honcho for the active profile
+hermes honcho migrate         # Step-by-step migration guide from openclaw-honcho
 ```
 
 ## Migrating from `hermes honcho`

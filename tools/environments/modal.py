@@ -80,11 +80,23 @@ def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> Non
         _save_snapshots(snapshots)
 
 
+def _ensure_modal_sdk() -> None:
+    """Lazy-install modal on demand. Idempotent — fast no-op once installed."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("terminal.modal", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
+
+
 def _resolve_modal_image(image_spec: Any) -> Any:
     """Convert registry references or snapshot ids into Modal image objects.
 
     Includes add_python support for ubuntu/debian images (absorbed from PR 4511).
     """
+    _ensure_modal_sdk()
     import modal as _modal
 
     if not isinstance(image_spec, str):
@@ -132,9 +144,14 @@ class _AsyncWorker:
         self._loop.run_forever()
 
     def run_coroutine(self, coro, timeout=600):
+        from agent.async_utils import safe_schedule_threadsafe
         if self._loop is None or self._loop.is_closed():
+            if asyncio.iscoroutine(coro):
+                coro.close()
             raise RuntimeError("AsyncWorker loop is not running")
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        future = safe_schedule_threadsafe(coro, self._loop)
+        if future is None:
+            raise RuntimeError("AsyncWorker loop is not running")
         return future.result(timeout=timeout)
 
     def stop(self):
@@ -183,6 +200,7 @@ class ModalEnvironment(BaseEnvironment):
             if restored_snapshot_id:
                 logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
 
+        _ensure_modal_sdk()
         import modal as _modal
 
         cred_mounts = []

@@ -35,7 +35,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
@@ -43,23 +43,29 @@ jobs:
           cache: npm
           cache-dependency-path: website/package-lock.json
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: '3.11'
 
       - name: Install PyYAML for skill extraction
         run: pip install pyyaml==6.0.2 httpx==0.28.1
 
-      - name: Extract skill metadata for dashboard
-        run: python3 website/scripts/extract-skills.py
-
-      - name: Build skills index (if not already present)
+      - name: Build skills index (unified multi-source catalog)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ ! -f website/static/api/skills-index.json ]; then
-            python3 scripts/build_skills_index.py || echo "Skills index build failed (non-fatal)"
-          fi
+          # Always rebuild — the file isn't committed (gitignored), so a
+          # fresh checkout starts without it and we want the freshest crawl
+          # in every deploy. Failure is non-fatal: extract-skills.py will
+          # fall back to the legacy snapshot cache and the Skills Hub page
+          # still renders, just without the latest community catalog.
+          python3 scripts/build_skills_index.py || echo "Skills index build failed (non-fatal)"
+
+      - name: Extract skill metadata for dashboard
+        run: python3 website/scripts/extract-skills.py
+
+      - name: Regenerate per-skill docs pages + catalogs
+        run: python3 website/scripts/generate-skill-docs.py
 
       - name: Install dependencies
         run: npm ci
@@ -73,6 +79,16 @@ jobs:
         run: |
           mkdir -p _site/docs
           cp -r website/build/* _site/docs/
+          # llms.txt / llms-full.txt are also published at the site root
+          # (https://hermes-agent.nousresearch.com/llms.txt) because some
+          # agents and IDE plugins probe the classic root-level path rather
+          # than /docs/llms.txt. Same file, two URLs, one source of truth.
+          if [ -f website/build/llms.txt ]; then
+            cp website/build/llms.txt _site/llms.txt
+          fi
+          if [ -f website/build/llms-full.txt ]; then
+            cp website/build/llms-full.txt _site/llms-full.txt
+          fi
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3

@@ -11,6 +11,7 @@ from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import pytest
+import cli as cli_mod
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -154,13 +155,33 @@ class TestDisplayResumedHistory:
         assert "Page content" not in output
 
     def test_tool_calls_shown_as_summary(self):
-        cli = _make_cli()
+        # Disable tool-only skip so the summary line is rendered for this fixture.
+        cli = _make_cli(config_overrides={"display": {"resume_skip_tool_only": False}})
         cli.conversation_history = _tool_call_history()
-        output = self._capture_display(cli)
+        import cli as _cli_mod
+        # CLI_CONFIG is read at call-time inside _display_resumed_history, so
+        # apply the override for the duration of the capture, not just at init.
+        with patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": {
+            "display": {"resume_skip_tool_only": False, "resume_display": "full"}
+        }}):
+            output = self._capture_display(cli)
 
         assert "2 tool calls" in output
         assert "web_search" in output
         assert "web_extract" in output
+
+    def test_tool_only_message_skipped_by_default(self):
+        """Assistant messages with only tool_calls (no text) are skipped when
+        resume_skip_tool_only=True (the default). The summary line is hidden.
+        """
+        cli = _make_cli()
+        cli.conversation_history = _tool_call_history()
+        output = self._capture_display(cli)
+
+        # The tool-only assistant entry should be skipped
+        assert "2 tool calls" not in output
+        # The final text reply should still appear
+        assert "Here are some great Python tutorials" in output
 
     def test_long_user_message_truncated(self):
         cli = _make_cli()
@@ -286,6 +307,21 @@ class TestDisplayResumedHistory:
 
         assert "Previous Conversation" in output
 
+    def test_panel_is_stored_as_resize_aware_history_entry(self):
+        cli = _make_cli()
+        cli.conversation_history = _simple_history()
+        cli_mod._configure_output_history(True, 10)
+        cli_mod._clear_output_history()
+
+        try:
+            output = self._capture_display(cli)
+
+            assert "Previous Conversation" in output
+            assert len(cli_mod._OUTPUT_HISTORY) == 1
+            assert callable(cli_mod._OUTPUT_HISTORY[0])
+        finally:
+            cli_mod._configure_output_history(True, 200)
+
     def test_assistant_with_no_content_no_tools_skipped(self):
         """Assistant messages with no visible output (e.g. pure reasoning)
         are skipped in the recap."""
@@ -343,6 +379,127 @@ class TestDisplayResumedHistory:
 
         assert "Just thinking" not in output
         assert "Hi there!" in output
+
+    def test_think_tags_stripped(self):
+        """<think>...</think> blocks should be stripped from display (#11316)."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Solve this"},
+            {
+                "role": "assistant",
+                "content": "<think>\nI need to reason carefully here.\n</think>\n\nThe answer is 7.",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<think>" not in output
+        assert "</think>" not in output
+        assert "I need to reason carefully here" not in output
+        assert "The answer is 7" in output
+
+    def test_thinking_tags_stripped(self):
+        """<thinking>...</thinking> blocks should be stripped from display."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "What is 2+2?"},
+            {
+                "role": "assistant",
+                "content": "<thinking>\nLet me compute: 2 + 2 = 4\n</thinking>\n\nThe answer is 4.",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<thinking>" not in output
+        assert "Let me compute" not in output
+        assert "The answer is 4" in output
+
+    def test_reasoning_tags_stripped(self):
+        """<reasoning>...</reasoning> blocks should be stripped from display."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Explain gravity"},
+            {
+                "role": "assistant",
+                "content": (
+                    "<reasoning>\nGravity is a fundamental force...\n</reasoning>\n\n"
+                    "Gravity pulls objects together."
+                ),
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<reasoning>" not in output
+        assert "fundamental force" not in output
+        assert "Gravity pulls objects together" in output
+
+    def test_thought_tags_stripped(self):
+        """<thought>...</thought> blocks (Gemma 4) should be stripped."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Say hello"},
+            {
+                "role": "assistant",
+                "content": "<thought>\nInternal thought here.\n</thought>\n\nHello!",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<thought>" not in output
+        assert "Internal thought here" not in output
+        assert "Hello!" in output
+
+    def test_unclosed_think_tag_stripped(self):
+        """Unclosed <think> (truncated generation) should not leak reasoning."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Truncated response"},
+            {
+                "role": "assistant",
+                "content": "Some text before.\n<think>\nUnfinished reasoning...",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<think>" not in output
+        assert "Unfinished reasoning" not in output
+        assert "Some text before" in output
+
+    def test_multiple_reasoning_blocks_all_stripped(self):
+        """Multiple interleaved reasoning blocks are all stripped."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Complex question"},
+            {
+                "role": "assistant",
+                "content": (
+                    "<think>\nFirst thought.\n</think>\n"
+                    "Partial text.\n"
+                    "<reasoning>\nSecond thought.\n</reasoning>\n"
+                    "Final answer."
+                ),
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "First thought" not in output
+        assert "Second thought" not in output
+        assert "Partial text" in output
+        assert "Final answer" in output
+
+    def test_orphan_closing_think_tag_stripped(self):
+        """A stray </think> with no matching open should not render to user."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Broken output"},
+            {
+                "role": "assistant",
+                "content": "some leftover reasoning</think>Visible answer.",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "</think>" not in output
+        assert "Visible answer" in output
 
     def test_assistant_with_text_and_tool_calls(self):
         """When an assistant message has both text content AND tool_calls."""
@@ -472,6 +629,55 @@ class TestPreloadResumedSession:
         output = buf.getvalue()
         assert "1 user message," in output
         assert "1 user messages" not in output
+
+
+# ── Tests for _handle_resume_command recap display ───────────────────
+
+
+class TestHandleResumeCommandRecap:
+    """In-session /resume should show the same recap panel as startup resume."""
+
+    def test_resume_command_displays_recap_when_messages_restored(self):
+        cli = _make_cli()
+        cli.session_id = "current_session"
+        messages = _simple_history()
+
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "target_session", "title": "Test Session"}
+        mock_db.get_messages_as_conversation.return_value = messages
+        # resolve_resume_session_id passes the id through when no compression chain.
+        mock_db.resolve_resume_session_id.return_value = "target_session"
+        cli._session_db = mock_db
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target_session"),
+            patch.object(cli, "_display_resumed_history") as display_mock,
+        ):
+            cli._handle_resume_command("/resume test session")
+
+        assert cli.session_id == "target_session"
+        assert cli.conversation_history == messages
+        mock_db.end_session.assert_called_once_with("current_session", "resumed_other")
+        mock_db.reopen_session.assert_called_once_with("target_session")
+        display_mock.assert_called_once_with()
+
+    def test_resume_command_skips_recap_when_session_has_no_messages(self):
+        cli = _make_cli()
+        cli.session_id = "current_session"
+
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "target_session", "title": None}
+        mock_db.get_messages_as_conversation.return_value = []
+        mock_db.resolve_resume_session_id.return_value = "target_session"
+        cli._session_db = mock_db
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target_session"),
+            patch.object(cli, "_display_resumed_history") as display_mock,
+        ):
+            cli._handle_resume_command("/resume target_session")
+
+        display_mock.assert_not_called()
 
 
 # ── Integration: _init_agent skips when preloaded ────────────────────

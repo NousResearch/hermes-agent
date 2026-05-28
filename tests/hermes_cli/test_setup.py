@@ -1,5 +1,6 @@
 """Tests for setup.py configuration flows."""
 import json
+import os
 import sys
 import types
 
@@ -162,11 +163,12 @@ def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch,
         "WEBHOOK_ENABLED": "",
     }
 
+    import hermes_cli.gateway as gateway_mod
+
     monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("platform.system", lambda: "Linux")
-
-    import hermes_cli.gateway as gateway_mod
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
@@ -200,11 +202,12 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
         "WEBHOOK_ENABLED": "",
     }
 
+    import hermes_cli.gateway as gateway_mod
+
     monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("platform.system", lambda: "Linux")
-
-    import hermes_cli.gateway as gateway_mod
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
@@ -339,6 +342,41 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
     assert "selected saved custom provider is no longer available" in out
 
 
+def test_select_provider_and_model_accepts_named_provider_from_providers_section(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    cfg = load_config()
+    cfg["model"] = {
+        "provider": "volcengine-plan",
+        "default": "doubao-seed-2.0-code",
+    }
+    cfg["providers"] = {
+        "volcengine-plan": {
+            "name": "volcengine-plan",
+            "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "default_model": "doubao-seed-2.0-code",
+            "models": {"doubao-seed-2.0-code": {}},
+        }
+    }
+    save_config(cfg)
+
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_provider_choice",
+        lambda choices, default=0: len(choices) - 1,
+    )
+
+    from hermes_cli.main import select_provider_and_model
+
+    select_provider_and_model()
+
+    out = capsys.readouterr().out
+    assert "Warning: Unknown provider 'volcengine-plan'" not in out
+    assert "Active provider:  volcengine-plan" in out
+
+
 def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, monkeypatch):
     """Codex model list fetching uses the runtime access token."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -445,50 +483,33 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
     assert config["terminal"]["modal_mode"] == "direct"
 
 
-def test_resolve_hermes_chat_argv_prefers_which(monkeypatch):
-    from hermes_cli import setup as setup_mod
+def test_setup_slack_saves_home_channel(monkeypatch):
+    """_setup_slack() saves SLACK_HOME_CHANNEL when the user provides one."""
+    saved = {}
+    prompts = iter(["xoxb-test-token", "xapp-test-token", "", "C01ABC2DE3F"])
 
-    monkeypatch.setattr(setup_mod.shutil, "which", lambda name: "/usr/local/bin/hermes" if name == "hermes" else None)
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: "")
+    monkeypatch.setattr(setup_mod, "save_env_value", lambda k, v: saved.update({k: v}))
+    monkeypatch.setattr(setup_mod, "prompt", lambda *_a, **_kw: next(prompts))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_a, **_kw: False)
+    monkeypatch.setattr(setup_mod, "_write_slack_manifest_and_instruct", lambda: None)
 
-    assert setup_mod._resolve_hermes_chat_argv() == ["/usr/local/bin/hermes", "chat"]
+    setup_mod._setup_slack()
 
-
-def test_resolve_hermes_chat_argv_falls_back_to_module(monkeypatch):
-    from hermes_cli import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(setup_mod.importlib.util, "find_spec", lambda name: object() if name == "hermes_cli" else None)
-
-    assert setup_mod._resolve_hermes_chat_argv() == [sys.executable, "-m", "hermes_cli.main", "chat"]
-
-
-def test_offer_launch_chat_execs_fresh_process(monkeypatch):
-    from hermes_cli import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: ["/usr/local/bin/hermes", "chat"])
-
-    exec_calls = []
-
-    def fake_execvp(path, argv):
-        exec_calls.append((path, argv))
-        raise SystemExit(0)
-
-    monkeypatch.setattr(setup_mod.os, "execvp", fake_execvp)
-
-    with pytest.raises(SystemExit):
-        setup_mod._offer_launch_chat()
-
-    assert exec_calls == [("/usr/local/bin/hermes", ["/usr/local/bin/hermes", "chat"])]
+    assert saved.get("SLACK_HOME_CHANNEL") == "C01ABC2DE3F"
 
 
-def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys):
-    from hermes_cli import setup as setup_mod
+def test_setup_slack_home_channel_empty_not_saved(monkeypatch):
+    """_setup_slack() does not save SLACK_HOME_CHANNEL when left blank."""
+    saved = {}
+    prompts = iter(["xoxb-test-token", "xapp-test-token", "", ""])
 
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: None)
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: "")
+    monkeypatch.setattr(setup_mod, "save_env_value", lambda k, v: saved.update({k: v}))
+    monkeypatch.setattr(setup_mod, "prompt", lambda *_a, **_kw: next(prompts))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_a, **_kw: False)
+    monkeypatch.setattr(setup_mod, "_write_slack_manifest_and_instruct", lambda: None)
 
-    setup_mod._offer_launch_chat()
+    setup_mod._setup_slack()
 
-    captured = capsys.readouterr()
-    assert "Run 'hermes chat' manually" in captured.out
+    assert "SLACK_HOME_CHANNEL" not in saved

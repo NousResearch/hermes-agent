@@ -26,7 +26,7 @@ The whole thing runs hands-free. You just read your briefing with your morning c
 
 Before starting, make sure you have:
 
-- **Hermes Agent installed** — see the [Installation guide](/docs/getting-started/installation)
+- **Hermes Agent installed** — see the [Installation guide](/getting-started/installation)
 - **Gateway running** — the gateway daemon handles cron execution:
   ```bash
   hermes gateway install   # Install as a user service
@@ -35,7 +35,7 @@ Before starting, make sure you have:
   hermes gateway           # Run in foreground
   ```
 - **Firecrawl API key** — set `FIRECRAWL_API_KEY` in your environment for web search
-- **Messaging configured** (optional but recommended) — [Telegram](/docs/user-guide/messaging/telegram) or Discord set up with a home channel
+- **Messaging configured** (optional but recommended) — [Telegram](/user-guide/messaging/telegram) or Discord set up with a home channel
 
 :::tip No messaging? No problem
 You can still follow this tutorial using `deliver: "local"`. Briefings will be saved to `~/.hermes/cron/output/` and you can read them anytime.
@@ -89,6 +89,8 @@ Try different prompts until you get output you love. Add instructions like "use 
 ## Step 2: Create the Cron Job
 
 Now let's schedule this to run automatically every morning. You can do this in two ways.
+
+Before creating cron jobs, ensure Hermes has a default model and provider configured globally. If you want a specific job to use different values, set explicit per-job model/provider overrides when creating it.
 
 ### Option A: Natural Language (in chat)
 
@@ -165,7 +167,7 @@ For faster briefings, tell Hermes to delegate each topic to a sub-agent:
 Collect all results and combine them into a single clean briefing with section headers, emoji formatting, and source links. Add today's date as a header."
 ```
 
-Each sub-agent searches independently and in parallel, then the main agent combines everything into one polished briefing. See the [Delegation docs](/docs/user-guide/features/delegation) for more on how this works.
+Each sub-agent searches independently and in parallel, then the main agent combines everything into one polished briefing. See the [Delegation docs](/user-guide/features/delegation) for more on how this works.
 
 ### Weekday-Only Schedule
 
@@ -186,7 +188,7 @@ Get a morning overview and an evening recap:
 
 ### Adding Personal Context with Memory
 
-If you have [memory](/docs/user-guide/features/memory) enabled, you can store preferences that persist across sessions. But remember — cron jobs run in fresh sessions without conversational memory. To add personal context, bake it directly into the prompt:
+If you have [memory](/user-guide/features/memory) enabled, you can store preferences that persist across sessions. But remember — cron jobs run in fresh sessions without conversational memory. To add personal context, bake it directly into the prompt:
 
 ```
 /cron add "0 8 * * *" "You are creating a briefing for a senior ML engineer who cares about: PyTorch ecosystem, transformer architectures, open-weight models, and AI regulation in the EU. Skip stories about product launches or funding rounds unless they involve open source.
@@ -255,11 +257,11 @@ sudo hermes gateway install --system
 
 You've built a working daily briefing bot. Here are some directions to explore next:
 
-- **[Scheduled Tasks (Cron)](/docs/user-guide/features/cron)** — Full reference for schedule formats, repeat limits, and delivery options
-- **[Delegation](/docs/user-guide/features/delegation)** — Deep dive into parallel sub-agent workflows
-- **[Messaging Platforms](/docs/user-guide/messaging)** — Set up Telegram, Discord, or other delivery targets
-- **[Memory](/docs/user-guide/features/memory)** — Persistent context across sessions
-- **[Tips & Best Practices](/docs/guides/tips)** — More prompt engineering advice
+- **[Scheduled Tasks (Cron)](/user-guide/features/cron)** — Full reference for schedule formats, repeat limits, and delivery options
+- **[Delegation](/user-guide/features/delegation)** — Deep dive into parallel sub-agent workflows
+- **[Messaging Platforms](/user-guide/messaging)** — Set up Telegram, Discord, or other delivery targets
+- **[Memory](/user-guide/features/memory)** — Persistent context across sessions
+- **[Tips & Best Practices](/guides/tips)** — More prompt engineering advice
 
 :::tip What else can you schedule?
 The briefing bot pattern works for anything: competitor monitoring, GitHub repo summaries, weather forecasts, portfolio tracking, server health checks, or even a daily joke. If you can describe it in a prompt, you can schedule it.

@@ -1,3 +1,4 @@
+.DS_Store
 /venv/
 /_pycache/
 *.pyc*
@@ -11,12 +12,21 @@ __pycache__/
 .env.production.local
 .env.development
 .env.test
+.hermes-docker/
+.notebooklm-home/
+.notebooklm-cli-venv/
+.notebooklm-playwright/
+.pip-cache/
+.uv-cache/
+compose.hermes.local.yml
 export*
 __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
 logs/
 data/
 .pytest_cache/
+test_durations.json
+.pytest-cache/
 tmp/
 temp_vision_images/
 hermes-*/*
@@ -54,11 +64,25 @@ environments/benchmarks/evals/
 # Web UI build output
 hermes_cli/web_dist/
 
+# Web UI assets — synced from @nous-research/ui at build time via
+# `npm run sync-assets` (see web/package.json).
+web/public/fonts/
+web/public/ds-assets/
+
 # Release script temp files
 .release_notes.md
 mini-swe-agent/
 
 # Nix
 .direnv/
+.nix-stamps/
 result
 website/static/api/skills-index.json
+models-dev-upstream/
+hermes_cli/tui_dist/*
+hermes_cli/scripts/
+docs/superpowers/*
+# Working directory for the Hermes Agent's session state (~/.hermes/ at runtime;
+# also created in-repo when an agent operates in this checkout). Plans, audit
+# logs, and per-session caches are never artifacts of the codebase.
+.hermes/

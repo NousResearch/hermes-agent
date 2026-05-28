@@ -1,12 +1,17 @@
 """Tests for the dangerous command approval module."""
 
 import ast
+import os
+import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
 import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
+    _smart_approve,
     approve_session,
     detect_dangerous_command,
     is_approved,
@@ -24,6 +29,21 @@ class TestApprovalModeParsing:
     def test_string_off_still_maps_to_off(self):
         with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "off"}}):
             assert _get_approval_mode() == "off"
+
+
+class TestSmartApproval:
+    def test_smart_approval_uses_call_llm(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
+        )
+        with mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
+            result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
+
+        assert result == "approve"
+        mock_call.assert_called_once()
+        assert mock_call.call_args.kwargs["task"] == "approval"
+        assert mock_call.call_args.kwargs["temperature"] == 0
+        assert mock_call.call_args.kwargs["max_tokens"] == 16
 
 
 class TestDetectDangerousRm:
@@ -416,6 +436,76 @@ class TestSensitiveRedirectPattern:
         dangerous, key, desc = detect_dangerous_command("echo hello > /tmp/output.txt")
         assert dangerous is False
         assert key is None
+
+    def test_redirect_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("echo TOKEN=x > .env")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_to_nested_config_yaml_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("echo mode: prod > deploy/config.yaml")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_from_local_dotenv_source_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cat .env > backup.txt")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
+class TestProjectSensitiveCopyPattern:
+    def test_cp_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("cp .env.local .env")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_cp_absolute_path_to_dotenv_requires_approval(self):
+        # Regression: the real-world bug report was `cp /opt/data/.env.local /opt/data/.env`.
+        # The regex must cover absolute paths, not just `./` / bare relative paths.
+        dangerous, key, desc = detect_dangerous_command(
+            "cp /opt/data/.env.local /opt/data/.env"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_absolute_path_to_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "cat /opt/data/.env.local > /opt/data/.env"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_mv_to_nested_config_yaml_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("mv tmp/generated.yaml config/config.yaml")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_install_to_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("install -m 600 template.env .env.production")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_cp_from_config_yaml_source_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cp config.yaml backup.yaml")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
+class TestProjectSensitiveTeePattern:
+    def test_tee_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("printenv | tee .env.local")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
 
 
 class TestPatternKeyUniqueness:
@@ -821,3 +911,562 @@ class TestChmodExecuteCombo:
         assert dangerous is False
 
 
+class TestFailClosedUnderPromptToolkit:
+    """Regression guard for #15216.
+
+    When prompt_toolkit owns the terminal and no approval callback is
+    registered on the calling thread, prompt_dangerous_approval() must
+    deny fast instead of falling through to the input() fallback -- which
+    deadlocks because the user's keystrokes go to prompt_toolkit's raw-mode
+    stdin capture, not to input().
+    """
+
+    def test_denies_when_prompt_toolkit_active_and_no_callback(self):
+        import threading
+        import prompt_toolkit.application.current as ptc
+
+        orig = ptc.get_app_or_none
+        ptc.get_app_or_none = lambda: object()  # pretend a pt app is running
+        result = []
+        try:
+            def run():
+                result.append(
+                    prompt_dangerous_approval(
+                        "rm -rf /",
+                        "test danger",
+                        timeout_seconds=30,
+                        approval_callback=None,
+                    )
+                )
+
+            t = threading.Thread(target=run, daemon=True)
+            t.start()
+            t.join(timeout=3)
+            assert not t.is_alive(), (
+                "prompt_dangerous_approval deadlocked under prompt_toolkit "
+                "with no callback -- fail-closed guard is broken"
+            )
+            assert result == ["deny"]
+        finally:
+            ptc.get_app_or_none = orig
+
+    def test_callback_path_still_wins_over_guard(self):
+        """Guard must not short-circuit a valid callback."""
+        import prompt_toolkit.application.current as ptc
+
+        orig = ptc.get_app_or_none
+        ptc.get_app_or_none = lambda: object()
+        try:
+            def cb(command, description, **kwargs):
+                return "once"
+
+            result = prompt_dangerous_approval(
+                "rm -rf /",
+                "test danger",
+                approval_callback=cb,
+            )
+            assert result == "once"
+        finally:
+            ptc.get_app_or_none = orig
+
+
+class TestDetectSudoStdin:
+    """Sudo with stdin / askpass / shell / list-privileges flags (#17873 cat 4).
+
+    An LLM-driven agent has no TTY, so the sudo invocations that succeed
+    without human interaction are those reading the password from stdin
+    (-S / --stdin) or via an askpass helper (-A / --askpass). The
+    shell-launch (-s) and list-privileges (-a) flags are also gated since
+    they are privilege-relevant invocations the agent can chain after
+    acquiring the password.
+
+    `_normalize_command_for_detection` lowercases input before pattern
+    matching, so -S/-s and -A/-a are indistinguishable at the regex
+    layer; both letter-pairs are gated.
+    """
+
+    # Positive cases (must match)
+
+    def test_canonical_pipe_to_sudo_S_detected(self):
+        is_dangerous, _, desc = detect_dangerous_command(
+            "echo pwd | sudo -S whoami"
+        )
+        assert is_dangerous is True
+        assert "sudo" in desc.lower()
+
+    def test_long_flag_stdin_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo --stdin id")
+        assert is_dangerous is True
+
+    def test_non_interactive_plus_stdin_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo -n -S id")
+        assert is_dangerous is True
+
+    def test_user_then_stdin_detected(self):
+        # Codex audit caught that the original "leading flags only" regex
+        # missed this form because `-u root` has a flag-argument (`root`)
+        # that broke the (?:\s+-[^\s]+)* loop. The lazy [^;|&\n]*? class
+        # consumes flag-args without spanning command separators.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo -u root -S whoami"
+        )
+        assert is_dangerous is True
+
+    def test_long_non_interactive_plus_stdin_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo --non-interactive -S whoami"
+        )
+        assert is_dangerous is True
+
+    def test_long_user_equals_stdin_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo --user=root -S id"
+        )
+        assert is_dangerous is True
+
+    def test_herestring_input_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo -S id <<< 'mypwd'"
+        )
+        assert is_dangerous is True
+
+    def test_combined_short_flags_nS_detected(self):
+        # `-nS` packs `-n` and `-S` into one arg; second pattern catches.
+        is_dangerous, _, _ = detect_dangerous_command("sudo -nS id")
+        assert is_dangerous is True
+
+    def test_printf_form_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            'printf "%s\\n" "$PW" | sudo -S id'
+        )
+        assert is_dangerous is True
+
+    def test_askpass_short_flag_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo -A id")
+        assert is_dangerous is True
+
+    def test_askpass_long_flag_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo --askpass id")
+        assert is_dangerous is True
+
+    def test_two_sudo_invocations_second_caught(self):
+        # The first sudo here is benign (no -S); the second has -S.
+        # Lazy [^;|&\n]*? does NOT span past `;`, so re.search anchors
+        # on the second sudo invocation independently.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo whoami; sudo -S id"
+        )
+        assert is_dangerous is True
+
+    # Negative cases (must NOT match)
+
+    def test_plain_sudo_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo whoami")
+        assert is_dangerous is False
+
+    def test_sudo_interactive_shell_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo -i")
+        assert is_dangerous is False
+
+    def test_sudo_with_user_no_stdin_flag_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo -u root -i")
+        assert is_dangerous is False
+
+    def test_man_sudo_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("man sudo")
+        assert is_dangerous is False
+
+    def test_which_sudo_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("which sudo")
+        assert is_dangerous is False
+
+    def test_sudo_user_env_reference_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "echo SUDO_USER=$SUDO_USER"
+        )
+        assert is_dangerous is False
+
+    def test_apt_install_sudo_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("apt install sudo")
+        assert is_dangerous is False
+
+    def test_ls_etc_sudoers_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("ls /etc/sudoers")
+        assert is_dangerous is False
+
+    def test_pseudosudo_safe_word_boundary(self):
+        # `\bsudo\b` requires a word boundary; `pseudosudo` has none
+        # before `sudo`, so should not trigger.
+        is_dangerous, _, _ = detect_dangerous_command("pseudosudo -S id")
+        assert is_dangerous is False
+
+    def test_unrelated_redirection_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "make 2>&1 | tee build.log"
+        )
+        assert is_dangerous is False
+
+
+class TestMacOSPrivateSystemPaths:
+    """Inspired by Claude Code 2.1.113 "dangerous path protection".
+
+    On macOS, /etc, /var, /tmp, /home are symlinks to
+    /private/{etc,var,tmp,home}. A command that writes to
+    /private/etc/sudoers works identically to /etc/sudoers but bypasses
+    a plain "/etc/" pattern check.  These tests guard the shared
+    _SYSTEM_CONFIG_PATH fragment used across redirect / tee / cp / mv /
+    install / sed -i patterns.
+    """
+
+    def test_private_etc_redirect(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "echo 'root ALL=NOPASSWD: ALL' > /private/etc/sudoers"
+        )
+        assert dangerous is True
+        assert "system config" in desc.lower()
+
+    def test_private_var_redirect(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "echo payload > /private/var/db/dslocal/nodes/x"
+        )
+        assert dangerous is True
+
+    def test_private_etc_via_tee(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "echo malicious | tee /private/etc/hosts"
+        )
+        assert dangerous is True
+        assert "tee" in desc.lower() or "system" in desc.lower()
+
+    def test_private_etc_cp(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "cp malicious.conf /private/etc/hosts"
+        )
+        assert dangerous is True
+        assert "copy" in desc.lower() or "system config" in desc.lower()
+
+    def test_private_etc_mv(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "mv evil /private/etc/ssh/sshd_config"
+        )
+        assert dangerous is True
+
+    def test_private_etc_install(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "install -m 600 key /private/etc/ssh/keys"
+        )
+        assert dangerous is True
+
+    def test_private_etc_sed_in_place(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "sed -i 's/root/pwned/' /private/etc/passwd"
+        )
+        assert dangerous is True
+        assert "in-place" in desc.lower() or "system config" in desc.lower()
+
+    def test_private_var_sed_long_flag(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "sed --in-place 's/x/y/' /private/var/log/wtmp"
+        )
+        assert dangerous is True
+
+    def test_private_tmp_cp(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "cp rootkit /private/tmp/payload"
+        )
+        assert dangerous is True
+
+    def test_ls_private_is_safe(self):
+        """Reading under /private/ must not trigger approval."""
+        dangerous, _, _ = detect_dangerous_command("ls /private")
+        assert dangerous is False
+
+    def test_echo_mentioning_private_path_is_safe(self):
+        """Literal mention of /private/etc in an echo string must not fire."""
+        dangerous, _, _ = detect_dangerous_command(
+            "echo 'the macOS path is /private/etc on disk'"
+        )
+        assert dangerous is False
+
+
+class TestKillallKillSignals:
+    """Inspired by Claude Code 2.1.113 expanded deny rules.
+
+    The existing pattern caught `pkill -9` but not the equivalent
+    `killall -9` / `-KILL` / `-s KILL` / `-r <regex>` broad sweeps that
+    can wipe out unrelated processes.
+    """
+
+    def test_killall_dash_9(self):
+        dangerous, _, desc = detect_dangerous_command("killall -9 firefox")
+        assert dangerous is True
+        assert "kill" in desc.lower()
+
+    def test_killall_dash_kill(self):
+        dangerous, _, _ = detect_dangerous_command("killall -KILL firefox")
+        assert dangerous is True
+
+    def test_killall_dash_sigkill(self):
+        dangerous, _, _ = detect_dangerous_command("killall -SIGKILL firefox")
+        assert dangerous is True
+
+    def test_killall_dash_s_kill(self):
+        dangerous, _, _ = detect_dangerous_command("killall -s KILL firefox")
+        assert dangerous is True
+
+    def test_killall_dash_s_signum(self):
+        dangerous, _, _ = detect_dangerous_command("killall -s 9 firefox")
+        assert dangerous is True
+
+    def test_killall_regex(self):
+        """killall -r <regex> is a broad sweep; require approval."""
+        dangerous, _, desc = detect_dangerous_command("killall -r 'fire.*'")
+        assert dangerous is True
+        assert "regex" in desc.lower() or "kill" in desc.lower()
+
+    def test_killall_combined_flags(self):
+        dangerous, _, _ = detect_dangerous_command("killall -9 -r 'herm.*'")
+        assert dangerous is True
+
+    def test_killall_list_signals_is_safe(self):
+        """`killall -l` lists signals and is harmless — must not fire."""
+        dangerous, _, _ = detect_dangerous_command("killall -l")
+        assert dangerous is False
+
+    def test_killall_version_is_safe(self):
+        dangerous, _, _ = detect_dangerous_command("killall -V")
+        assert dangerous is False
+
+
+class TestFindExecdir:
+    """Inspired by Claude Code 2.1.113 tightening of find rules.
+
+    `find -execdir rm` has the same destructive effect as `find -exec rm`
+    but ran in each match's directory. Previously missed because the
+    pattern required a literal `-exec ` followed by a space.
+    """
+
+    def test_find_execdir_rm(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "find . -execdir rm {} \\;"
+        )
+        assert dangerous is True
+        assert "find" in desc.lower() or "rm" in desc.lower()
+
+    def test_find_execdir_with_absolute_rm(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "find /var -execdir /bin/rm -rf {} \\;"
+        )
+        assert dangerous is True
+
+    def test_find_exec_rm_still_caught(self):
+        """Original -exec pattern must still fire (regression guard)."""
+        dangerous, _, _ = detect_dangerous_command(
+            "find . -exec rm {} \\;"
+        )
+        assert dangerous is True
+
+    def test_find_execdir_ls_is_safe(self):
+        """-execdir with a read-only command is not dangerous."""
+        dangerous, _, _ = detect_dangerous_command(
+            "find . -execdir ls {} \\;"
+        )
+        assert dangerous is False
+
+
+class TestEtcPatternsUnaffectedByRefactor:
+    """Regression guard: the /etc/ patterns were refactored to share the
+    _SYSTEM_CONFIG_PATH fragment with the /private/ mirror. Make sure the
+    existing /etc/ coverage remains identical.
+    """
+
+    def test_etc_redirect(self):
+        dangerous, _, _ = detect_dangerous_command("echo x > /etc/hosts")
+        assert dangerous is True
+
+    def test_etc_cp(self):
+        dangerous, _, _ = detect_dangerous_command("cp evil /etc/hosts")
+        assert dangerous is True
+
+    def test_etc_sed_inline(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "sed -i 's/a/b/' /etc/hosts"
+        )
+        assert dangerous is True
+
+    def test_etc_tee(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "echo x | tee /etc/hosts"
+        )
+        assert dangerous is True
+
+    def test_cat_etc_hostname_is_safe(self):
+        """Reading /etc/ files is safe — only writes require approval."""
+        dangerous, _, _ = detect_dangerous_command("cat /etc/hostname")
+        assert dangerous is False
+
+    def test_grep_etc_passwd_is_safe(self):
+        dangerous, _, _ = detect_dangerous_command("grep root /etc/passwd")
+        assert dangerous is False
+
+
+# =========================================================================
+# Gateway approval timeout = deny, NOT consent (#24912)
+#
+# A Slack user walked away mid-conversation; the agent requested approval
+# to run `rm -rf .git`; the prompt timed out; the agent ran the command
+# anyway. Reported by @tofalck on 2026-05-13, corroborated by
+# @angry-programmer on Telegram. Silence is not consent.
+#
+# These tests pin:
+#   1. Gateway timeout → approved=False, with a message strong enough that
+#      a downstream agent reading "BLOCKED: ... Silence is not consent."
+#      treats it as a hard halt, not an invitation to rephrase.
+#   2. The structured outcome / user_consent fields are present so
+#      plugins, hooks, and audit pipelines can act on the timeout without
+#      string-parsing the message.
+#   3. Explicit /deny carries the same shape (treat-as-not-consented).
+# =========================================================================
+
+
+class TestApprovalTimeoutIsNotConsent:
+    """The gateway approval contract: silence is not consent (#24912)."""
+
+    SESSION_KEY = "test-no-consent-session"
+
+    def setup_method(self):
+        """Reset module state and force tight gateway_timeout for fast tests."""
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+        mod._pending.clear()
+
+        self._saved_env = {
+            k: os.environ.get(k)
+            for k in ("HERMES_GATEWAY_SESSION", "HERMES_YOLO_MODE",
+                      "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
+        }
+        os.environ.pop("HERMES_YOLO_MODE", None)
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+
+    def teardown_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _force_short_timeout(self, monkeypatch, seconds=1):
+        from tools import approval as mod
+        monkeypatch.setattr(
+            mod, "_get_approval_config",
+            lambda: {"mode": "manual", "gateway_timeout": seconds, "timeout": seconds},
+        )
+
+    def test_timeout_returns_approved_false_with_no_consent(self, monkeypatch):
+        """The reported #24912 scenario — user never responds, agent must see BLOCKED."""
+        from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=1)
+
+        # Slack-shaped: notify_cb registered, but user doesn't respond.
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+
+        assert result["approved"] is False
+        assert result.get("user_consent") is False
+        assert result.get("outcome") == "timeout"
+        # The notify_cb DID fire — we did try to ask the user.
+        assert len(notified) == 1
+
+    def test_timeout_message_is_emphatic_against_retry_and_rephrase(self, monkeypatch):
+        """The BLOCKED message must explicitly tell the agent not to rephrase.
+
+        Without this, the agent treats 'Do NOT retry this command' as
+        permission to try a different command achieving the same outcome.
+        """
+        from tools import approval as mod
+        self._force_short_timeout(monkeypatch, seconds=1)
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+
+        msg = result["message"]
+        # Explicit halt signals — these are the model-facing contract.
+        assert "BLOCKED" in msg
+        assert "NOT consented" in msg
+        assert "Silence is not consent" in msg
+        # Both forms of evasion must be named:
+        assert "do NOT retry" in msg.lower() or "Do NOT retry" in msg
+        assert "rephrase" in msg.lower()
+        assert "different command" in msg.lower()
+
+    def test_explicit_deny_carries_same_no_consent_shape(self):
+        """An explicit /deny must produce the same shape as timeout —
+        the agent should treat both identically."""
+        from tools import approval as mod
+
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        # Spawn the approval wait in a thread, then resolve it with "deny".
+        result_holder = {}
+        def _check():
+            result_holder["r"] = mod.check_all_command_guards("rm -rf .git", "local")
+        t = threading.Thread(target=_check)
+        t.start()
+
+        # Wait for the queue entry to appear, then resolve.
+        for _ in range(50):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.02)
+        mod.resolve_gateway_approval(self.SESSION_KEY, "deny")
+        t.join(timeout=5)
+        assert "r" in result_holder, "approval wait did not return after deny"
+
+        r = result_holder["r"]
+        assert r["approved"] is False
+        assert r.get("user_consent") is False
+        assert r.get("outcome") == "denied"
+        assert "Silence is not consent" not in r["message"]  # this one IS denied, not timed-out
+        assert "NOT consented" in r["message"]
+        assert "rephrase" in r["message"].lower()
+
+    def test_timeout_emits_post_hook_with_timeout_outcome(self, monkeypatch):
+        """Plugins must be able to distinguish timeout from explicit deny.
+
+        This is what an audit / notification plugin needs to alert
+        operators on 'agent asked, user never replied' incidents like #24912.
+        """
+        from tools import approval as mod
+        self._force_short_timeout(monkeypatch, seconds=1)
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+
+        hook_calls = []
+        original_fire = mod._fire_approval_hook
+
+        def _capture(event_name, **kwargs):
+            hook_calls.append((event_name, kwargs))
+            return original_fire(event_name, **kwargs)
+
+        monkeypatch.setattr(mod, "_fire_approval_hook", _capture)
+
+        mod.check_all_command_guards("rm -rf .git", "local")
+
+        # post_approval_response must be in the hook log with choice=timeout
+        posts = [c for c in hook_calls if c[0] == "post_approval_response"]
+        assert posts, "post_approval_response hook did not fire"
+        last_post = posts[-1][1]
+        assert last_post.get("choice") == "timeout", (
+            f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
+        )

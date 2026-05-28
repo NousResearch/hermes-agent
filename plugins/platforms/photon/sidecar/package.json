@@ -9,7 +9,7 @@
     "start": "node index.mjs"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=20.18.1"
   },
   "dependencies": {
     "spectrum-ts": "~1.7.2"

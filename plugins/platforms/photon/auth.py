@@ -29,10 +29,23 @@ import json
 import logging
 import os
 import re
+import threading
 import time
+from collections.abc import Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterator, Optional, Tuple
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    msvcrt = None  # type: ignore[assignment]
 
 try:
     import httpx
@@ -59,6 +72,8 @@ DEFAULT_POLL_INTERVAL = 5
 DEFAULT_POLL_TIMEOUT = 900  # 15 minutes is conservative; Photon returns expires_in
 
 E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+SETUP_LOCK_TIMEOUT_SECONDS = 30.0
+_setup_lock_holder = threading.local()
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +86,14 @@ def _auth_json_path() -> Path:
         return Path(get_hermes_home()) / "auth.json"
     except Exception:
         return Path(os.path.expanduser("~/.hermes")) / "auth.json"
+
+
+def _setup_lock_path() -> Path:
+    try:
+        from hermes_constants import get_hermes_home  # type: ignore
+        return Path(get_hermes_home()) / "photon-setup.lock"
+    except Exception:
+        return Path(os.path.expanduser("~/.hermes")) / "photon-setup.lock"
 
 
 def _load_auth() -> Dict[str, Any]:
@@ -150,6 +173,68 @@ def store_project_credentials(project_id: str, project_secret: str, **extra: Any
     record.update(extra)
     auth.setdefault("credential_pool", {})["photon_project"] = [record]
     _save_auth(auth)
+
+
+@contextmanager
+def setup_lock(
+    timeout_seconds: float = SETUP_LOCK_TIMEOUT_SECONDS,
+) -> Iterator[None]:
+    """Serialize setup flows that may create remote Photon projects."""
+    if getattr(_setup_lock_holder, "depth", 0) > 0:
+        _setup_lock_holder.depth += 1
+        try:
+            yield
+        finally:
+            _setup_lock_holder.depth -= 1
+        return
+
+    lock_path = _setup_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if fcntl is None and msvcrt is None:
+        _setup_lock_holder.depth = 1
+        try:
+            yield
+        finally:
+            _setup_lock_holder.depth = 0
+        return
+
+    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+        lock_path.write_text(" ", encoding="utf-8")
+
+    with lock_path.open("r+" if msvcrt else "a+", encoding="utf-8") as lock_file:
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        while True:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                break
+            except (BlockingIOError, OSError, PermissionError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        "another `hermes photon setup` process is already running"
+                    )
+                time.sleep(0.05)
+
+        _setup_lock_holder.depth = 1
+        try:
+            yield
+        finally:
+            _setup_lock_holder.depth = 0
+            if fcntl:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
+            elif msvcrt:
+                try:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +419,146 @@ def create_project(
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def list_projects(token: str) -> list[Dict[str, Any]]:
+    """Return Photon dashboard projects visible to the authenticated user."""
+    if httpx is None:
+        raise RuntimeError("httpx is required for Photon project listing")
+    url = f"{_dashboard_host()}/api/projects/"
+    resp = httpx.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    data = resp.json() or {}
+    return _project_items(data)
+
+
+def _project_items(data: Any) -> list[Dict[str, Any]]:
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        items = (
+            data.get("data")
+            or data.get("projects")
+            or data.get("items")
+            or data.get("results")
+            or []
+        )
+    else:
+        items = []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _first_string(*values: Any) -> Optional[str]:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _coerce_platforms(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        keys = [k for k, enabled in value.items() if enabled]
+        return [str(k) for k in keys]
+    if isinstance(value, Iterable):
+        platforms: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("type") or item.get("platform")
+                if name:
+                    platforms.append(str(name))
+            elif item is not None:
+                platforms.append(str(item))
+        return platforms
+    return []
+
+
+def normalize_project(project: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize dashboard project shapes across Photon API revisions."""
+    spectrum = project.get("spectrum") if isinstance(project.get("spectrum"), dict) else {}
+    credentials = project.get("credentials") if isinstance(project.get("credentials"), dict) else {}
+    platforms = _coerce_platforms(
+        project.get("platforms")
+        or project.get("enabledPlatforms")
+        or project.get("enabled_platforms")
+        or spectrum.get("platforms")
+    )
+    spectrum_project_id = _first_string(
+        project.get("spectrumProjectId"),
+        project.get("spectrum_project_id"),
+        spectrum.get("projectId"),
+        spectrum.get("project_id"),
+        credentials.get("projectId"),
+        credentials.get("project_id"),
+    )
+    project_secret = _first_string(
+        project.get("projectSecret"),
+        project.get("project_secret"),
+        project.get("spectrumProjectSecret"),
+        spectrum.get("projectSecret"),
+        spectrum.get("project_secret"),
+        credentials.get("projectSecret"),
+        credentials.get("project_secret"),
+    )
+    spectrum_enabled = bool(
+        project.get("spectrum") is True
+        or spectrum
+        or spectrum_project_id
+        or project.get("spectrumEnabled")
+        or project.get("spectrum_enabled")
+    )
+    lowered_platforms = {p.lower() for p in platforms}
+    imessage_enabled = not platforms or "imessage" in lowered_platforms
+    return {
+        "dashboard_project_id": _first_string(
+            project.get("id"),
+            project.get("dashboardProjectId"),
+            project.get("dashboard_project_id"),
+        ),
+        "spectrum_project_id": spectrum_project_id,
+        "project_secret": project_secret,
+        "name": _first_string(project.get("name"), project.get("displayName")),
+        "platforms": platforms,
+        "spectrum_enabled": spectrum_enabled,
+        "imessage_enabled": imessage_enabled,
+        "created_at": _first_string(
+            project.get("createdAt"),
+            project.get("created_at"),
+            project.get("created"),
+        ),
+        "raw": project,
+    }
+
+
+def reusable_projects(
+    projects: list[Dict[str, Any]],
+    *,
+    preferred_name: str = "Hermes Agent",
+) -> list[Dict[str, Any]]:
+    """Return compatible Spectrum/iMessage projects matching the setup name."""
+    normalized = [normalize_project(project) for project in projects]
+    compatible = [
+        project for project in normalized
+        if project["spectrum_enabled"] and project["imessage_enabled"]
+    ]
+    preferred = preferred_name.strip().lower()
+    if not preferred:
+        return compatible
+    named = [
+        project for project in compatible
+        if str(project.get("name") or "").strip().lower() == preferred
+    ]
+    return named
 
 
 # ---------------------------------------------------------------------------

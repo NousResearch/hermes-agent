@@ -59,7 +59,7 @@ without changing the Python gateway contract.
 # 1. Log in via the device-code flow (opens browser)
 hermes photon login
 
-# 2. Full setup: project, user, sidecar deps
+# 2. Full setup: reuse/adopt project, create user, install sidecar deps
 hermes photon setup --phone +15551234567
 
 # 3. Expose the local webhook listener to the public internet.
@@ -69,7 +69,7 @@ cloudflared tunnel --url http://127.0.0.1:8788
 # 4. Register that public tunnel URL with Photon.
 hermes photon webhook register https://YOUR-TUNNEL.trycloudflare.com/photon/webhook
 
-# 5. Save the signing secret it prints to ~/.hermes/.env
+# 5. Hermes saves the signing secret to ~/.hermes/.env
 #    as PHOTON_WEBHOOK_SECRET=...
 #    Photon only returns it ONCE.
 
@@ -81,6 +81,26 @@ hermes gateway run -v
 hermes gateway install --force
 hermes gateway start
 ```
+
+`hermes photon setup` is idempotent. It reuses local credentials first,
+then adopts a matching Photon dashboard project named `Hermes Agent` if
+one exists. If multiple matching projects are found, setup stops and asks
+you to choose instead of creating another dashboard project.
+
+Useful project-management commands:
+
+```bash
+hermes photon projects list
+hermes photon projects select <dashboard-or-spectrum-project-id>
+hermes photon setup --new-project
+```
+
+Use `--new-project` only when you intentionally want a separate Photon
+dashboard project. Webhook registration is also duplicate-aware: if the
+same URL is already registered and `PHOTON_WEBHOOK_SECRET` is present,
+`hermes photon webhook register ...` is a no-op. If the URL exists but
+the local secret is missing, delete or recreate the webhook in the Photon
+dashboard and save the new signing secret locally.
 
 ## Credentials
 

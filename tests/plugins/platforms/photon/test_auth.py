@@ -193,6 +193,67 @@ def test_create_user_posts_shared_type(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "/projects/proj-id/users/" in captured["url"]
 
 
+def test_list_projects_normalizes_collection_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: Dict[str, Any] = {}
+
+    def fake_get(url: str, *, headers: Dict[str, str], timeout: float) -> _FakeResponse:
+        captured["url"] = url
+        captured["headers"] = headers
+        return _FakeResponse(json_body={
+            "data": [
+                {
+                    "id": "dash-uuid",
+                    "name": "Hermes Agent",
+                    "spectrum": True,
+                    "platforms": ["imessage"],
+                    "spectrumProjectId": "spectrum-uuid",
+                    "projectSecret": "secret",
+                },
+            ],
+        })
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+
+    projects = photon_auth.list_projects("token-xyz")
+    normalized = photon_auth.normalize_project(projects[0])
+
+    assert "/api/projects/" in captured["url"]
+    assert captured["headers"]["Authorization"] == "Bearer token-xyz"
+    assert normalized["dashboard_project_id"] == "dash-uuid"
+    assert normalized["spectrum_project_id"] == "spectrum-uuid"
+    assert normalized["project_secret"] == "secret"
+    assert normalized["spectrum_enabled"] is True
+    assert normalized["imessage_enabled"] is True
+
+
+def test_reusable_projects_match_requested_name_only() -> None:
+    projects = [
+        {
+            "id": "unrelated",
+            "name": "Customer Project",
+            "spectrum": True,
+            "platforms": ["imessage"],
+            "spectrumProjectId": "other-spectrum",
+            "projectSecret": "secret",
+        },
+        {
+            "id": "hermes",
+            "name": "Hermes Agent",
+            "spectrum": True,
+            "platforms": ["imessage"],
+            "spectrumProjectId": "hermes-spectrum",
+            "projectSecret": "secret",
+        },
+    ]
+
+    reusable = photon_auth.reusable_projects(projects, preferred_name="Hermes Agent")
+
+    assert len(reusable) == 1
+    assert reusable[0]["dashboard_project_id"] == "hermes"
+
+
 def test_register_webhook_surfaces_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_post(url: str, *, json: Dict[str, Any], auth: tuple, timeout: float) -> _FakeResponse:
         return _FakeResponse(json_body={

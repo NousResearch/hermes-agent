@@ -46,7 +46,7 @@ when it needs to resolve an uncached outbound space.
 ## Prerequisites
 
 - A Photon account — sign up at [app.photon.codes][app]
-- **Node.js 18.17 or newer** on PATH (`node --version`)
+- **Node.js 20.18.1 or newer** on PATH (`node --version`)
 - A phone number that can receive iMessage (used to bind your account)
 - A publicly reachable URL for the webhook receiver — Cloudflare
   Tunnel, ngrok, or your own gateway hostname all work
@@ -61,10 +61,17 @@ hermes photon setup --phone +15551234567
 The wizard:
 
 1. Opens `https://app.photon.codes/` for device approval
-2. Creates a Spectrum-enabled project under your account
+2. Reuses local project credentials, adopts one matching Photon project
+   named `Hermes Agent`, or asks before creating a new dashboard project
 3. Calls the Spectrum `create-user` endpoint with `type: shared` so
    Photon allocates an iMessage line from the free pool
 4. Runs `npm install` inside the plugin's sidecar directory
+
+Running setup again is safe: Hermes will not silently create another
+Photon dashboard project. To intentionally make a replacement project,
+run `hermes photon setup --new-project`. To bind Hermes to an existing
+project, use `hermes photon projects list` and
+`hermes photon projects select <project-id>`.
 
 Credentials are stored in `~/.hermes/auth.json` under
 `credential_pool.photon` (bearer token) and
@@ -81,7 +88,7 @@ hermes photon webhook register https://YOUR-PUBLIC-URL/photon/webhook
 ```
 
 The response includes a `signingSecret` — **Photon only returns it
-once.** Save it to `~/.hermes/.env`:
+once.** Hermes saves it to `~/.hermes/.env`:
 
 ```bash
 PHOTON_WEBHOOK_SECRET=v0_64-char-hex...
@@ -89,6 +96,10 @@ PHOTON_WEBHOOK_SECRET=v0_64-char-hex...
 
 The plugin verifies every inbound `POST` against this secret and
 rejects deliveries with a timestamp drift greater than 5 minutes.
+If the same URL is already registered and `PHOTON_WEBHOOK_SECRET` is set
+locally, the command is a no-op. If the local secret is missing, delete
+or recreate the webhook in the Photon dashboard and save the new signing
+secret locally.
 
 ## Start the gateway
 

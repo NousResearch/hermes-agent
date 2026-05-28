@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -49,11 +50,19 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_setup.add_argument("--last-name", default=None)
     p_setup.add_argument("--email", default=None)
     p_setup.add_argument("--no-browser", action="store_true")
+    p_setup.add_argument("--new-project", action="store_true",
+                         help="Create a new Photon dashboard project instead of adopting an existing one")
     p_setup.add_argument("--skip-sidecar-install", action="store_true",
                          help="Skip `npm install` inside the sidecar directory")
 
     subs.add_parser("status", help="Show login + project + sidecar dep state")
     subs.add_parser("install-sidecar", help="Run npm install inside the sidecar directory")
+
+    p_projects = subs.add_parser("projects", help="List or select Photon projects")
+    project_subs = p_projects.add_subparsers(dest="photon_projects_command", required=True)
+    project_subs.add_parser("list", help="List Photon dashboard projects")
+    p_project_select = project_subs.add_parser("select", help="Bind Hermes to an existing Photon project")
+    p_project_select.add_argument("project_id", help="Dashboard or Spectrum project id")
 
     p_hook = subs.add_parser("webhook", help="Manage Photon webhook registrations")
     hook_subs = p_hook.add_subparsers(dest="photon_webhook_command", required=True)
@@ -82,6 +91,8 @@ def dispatch(args: argparse.Namespace) -> int:
         return _cmd_status(args)
     if sub == "install-sidecar":
         return _cmd_install_sidecar(args)
+    if sub == "projects":
+        return _cmd_projects(args)
     if sub == "webhook":
         return _cmd_webhook(args)
     print(f"unknown subcommand: {sub}", file=sys.stderr)
@@ -132,35 +143,15 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     else:
         print("[1/4] Reusing existing Photon token")
 
-    # 2. Create (or surface existing) project.
-    existing_id, existing_secret = photon_auth.load_project_credentials()
-    has_existing_project = bool(existing_id and existing_secret)
-    if has_existing_project:
-        project_id, project_secret = existing_id, existing_secret
-        # `project_id` is a Photon-assigned UUID, not a secret — but we
-        # keep the print terse to avoid CodeQL flow noise.
-        print("[2/4] Reusing existing Photon project")
-    else:
-        name = args.project_name or "Hermes Agent"
-        print(f"[2/4] Creating Photon project '{name}' (spectrum=true, imessage)...")
-        try:
-            data = photon_auth.create_project(token, name=name)
-        except Exception as e:
-            print(f"create-project failed: {e}", file=sys.stderr)
-            return 1
-        project_id = data.get("spectrumProjectId") or data.get("id") or ""
-        project_secret = data.get("projectSecret") or ""
-        if not project_id or not project_secret:
-            print(
-                "create-project did not return spectrumProjectId + "
-                "projectSecret. Re-run after enabling Spectrum on the "
-                "project, or open https://app.photon.codes/ to fetch the "
-                "secret manually.",
-                file=sys.stderr,
-            )
-            return 1
-        photon_auth.store_project_credentials(project_id, project_secret, name=name)
-        print("  ✓ project provisioned (run `hermes photon status` to see the id)")
+    # 2. Resolve a project without silently duplicating dashboard resources.
+    try:
+        with photon_auth.setup_lock():
+            project_id, project_secret = _resolve_setup_project(args, token)
+    except TimeoutError as e:
+        print(f"setup is already running: {e}", file=sys.stderr)
+        return 1
+    if not (project_id and project_secret):
+        return 1
 
     # 3. Create a Spectrum user for the operator.
     phone = args.phone or _prompt(
@@ -204,6 +195,152 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_setup_project(args: argparse.Namespace, token: str) -> tuple[str, str]:
+    name = args.project_name or "Hermes Agent"
+    if getattr(args, "new_project", False):
+        print(f"[2/4] Creating new Photon project '{name}' (spectrum=true, imessage)...")
+        return _create_and_store_project(token, name=name, source="explicit-new")
+
+    existing_id, existing_secret = photon_auth.load_project_credentials()
+    if existing_id and existing_secret:
+        print("[2/4] Reusing existing Photon project")
+        return existing_id, existing_secret
+
+    print("[2/4] Looking for an existing Photon project...")
+    try:
+        projects = photon_auth.list_projects(token)
+    except Exception as e:
+        print(
+            "could not list Photon projects, so no new project was created. "
+            f"Re-run with --new-project to create one explicitly. Details: {e}",
+            file=sys.stderr,
+        )
+        return "", ""
+
+    candidates = photon_auth.reusable_projects(projects, preferred_name=name)
+    if len(candidates) == 1:
+        candidate = candidates[0]
+        project_id = str(candidate.get("spectrum_project_id") or "")
+        project_secret = str(candidate.get("project_secret") or "")
+        if project_id and project_secret:
+            _store_selected_project(candidate, source="remote-adopted")
+            print("  ✓ adopted existing Photon project")
+            return project_id, project_secret
+        _print_project_choices(
+            candidates,
+            "Found an existing compatible Photon project, but Photon did not "
+            "return a project secret for it.",
+        )
+        print(
+            "No new project was created. Select a project whose credentials are "
+            "available, or re-run with --new-project to create a replacement.",
+            file=sys.stderr,
+        )
+        return "", ""
+
+    if len(candidates) > 1:
+        _print_project_choices(
+            candidates,
+            "Multiple compatible Photon projects were found.",
+        )
+        print(
+            "No new project was created. Run `hermes photon projects select <id>` "
+            "or re-run with --new-project.",
+            file=sys.stderr,
+        )
+        return "", ""
+
+    if not _confirm_new_project(name):
+        print(
+            "No Photon project configured. Re-run with --new-project to create one.",
+            file=sys.stderr,
+        )
+        return "", ""
+
+    print(f"[2/4] Creating Photon project '{name}' (spectrum=true, imessage)...")
+    return _create_and_store_project(token, name=name, source="confirmed-new")
+
+
+def _create_and_store_project(token: str, *, name: str, source: str) -> tuple[str, str]:
+    try:
+        data = photon_auth.create_project(token, name=name)
+    except Exception as e:
+        print(f"create-project failed: {e}", file=sys.stderr)
+        return "", ""
+
+    normalized = photon_auth.normalize_project(data)
+    project_id = str(normalized.get("spectrum_project_id") or data.get("id") or "")
+    project_secret = str(normalized.get("project_secret") or "")
+    if not project_id or not project_secret:
+        print(
+            "create-project did not return spectrumProjectId + "
+            "projectSecret. Re-run after enabling Spectrum on the "
+            "project, or open https://app.photon.codes/ to fetch the "
+            "secret manually.",
+            file=sys.stderr,
+        )
+        return "", ""
+
+    extra = {
+        "name": name,
+        "source": source,
+        "created_by": "hermes-agent",
+    }
+    dashboard_project_id = normalized.get("dashboard_project_id")
+    if dashboard_project_id and dashboard_project_id != project_id:
+        extra["dashboard_project_id"] = dashboard_project_id
+    platforms = normalized.get("platforms") or ["imessage"]
+    extra["platforms"] = platforms
+    photon_auth.store_project_credentials(project_id, project_secret, **extra)
+    print("  ✓ project provisioned (run `hermes photon status` to see the id)")
+    return project_id, project_secret
+
+
+def _store_selected_project(project: dict[str, Any], *, source: str) -> None:
+    project_id = str(project.get("spectrum_project_id") or "")
+    project_secret = str(project.get("project_secret") or "")
+    extra = {
+        "name": project.get("name") or "Photon Project",
+        "platforms": project.get("platforms") or [],
+        "source": source,
+        "selected_at": int(time.time()),
+        "created_by": "hermes-agent",
+    }
+    dashboard_project_id = project.get("dashboard_project_id")
+    if dashboard_project_id and dashboard_project_id != project_id:
+        extra["dashboard_project_id"] = dashboard_project_id
+    photon_auth.store_project_credentials(project_id, project_secret, **extra)
+
+
+def _confirm_new_project(name: str) -> bool:
+    if not sys.stdin.isatty():
+        return False
+    print()
+    print("No existing Photon project was found for this Hermes setup.")
+    print(f"Creating a new dashboard project named '{name}' may add another project to Photon.")
+    answer = _prompt("Type CREATE NEW to continue: ")
+    return answer == "CREATE NEW"
+
+
+def _print_project_choices(projects: list[dict[str, Any]], heading: str) -> None:
+    print()
+    print(heading)
+    for index, project in enumerate(projects, start=1):
+        print(f"  {index}. {_project_summary(project)}")
+
+
+def _project_summary(project: dict[str, Any]) -> str:
+    name = project.get("name") or "(unnamed)"
+    dashboard_id = project.get("dashboard_project_id") or "-"
+    spectrum_id = project.get("spectrum_project_id") or "-"
+    platforms = ",".join(project.get("platforms") or []) or "-"
+    credentials = "yes" if project.get("project_secret") else "no"
+    return (
+        f"{name}  dashboard={dashboard_id}  spectrum={spectrum_id}  "
+        f"platforms={platforms}  credentials={credentials}"
+    )
+
+
 def _cmd_status(_args: argparse.Namespace) -> int:
     # Defer the whole table to auth.print_credential_summary — its emit
     # callback is the only sink that sees credential-derived strings, so
@@ -212,7 +349,7 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     # The two non-credential rows live here so the helper stays purely
     # about credentials.
     node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
-    print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
+    print(f"  node binary         : {node_bin or '✗ missing (install Node 20.18.1+)'}")
     print(f"  sidecar deps        : {_sidecar_dependency_status()}")
     return 0
 
@@ -226,7 +363,7 @@ def _install_sidecar() -> int:
     npm = shutil.which("npm") or "npm"
     if not shutil.which(npm):
         print(
-            "npm is not on PATH. Install Node.js 18+ (https://nodejs.org/) "
+            "npm is not on PATH. Install Node.js 20.18.1+ (https://nodejs.org/) "
             "and re-run.",
             file=sys.stderr,
         )
@@ -307,6 +444,66 @@ def _parse_semver(version: str) -> Optional[tuple[int, int, int]]:
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
+def _cmd_projects(args: argparse.Namespace) -> int:
+    token = photon_auth.load_photon_token()
+    if not token:
+        print("not logged in — run `hermes photon login` first", file=sys.stderr)
+        return 1
+
+    sub = getattr(args, "photon_projects_command", None)
+    try:
+        projects = photon_auth.list_projects(token)
+    except Exception as e:
+        print(f"project list failed: {e}", file=sys.stderr)
+        return 1
+    normalized = [photon_auth.normalize_project(project) for project in projects]
+
+    if sub == "list":
+        if not normalized:
+            print("No Photon projects found.")
+            return 0
+        print("Photon projects")
+        for project in normalized:
+            print("  " + _project_summary(project))
+        return 0
+
+    if sub == "select":
+        requested = str(args.project_id)
+        matches = [
+            project for project in normalized
+            if requested in {
+                str(project.get("dashboard_project_id") or ""),
+                str(project.get("spectrum_project_id") or ""),
+            }
+        ]
+        if not matches:
+            print(f"project not found: {requested}", file=sys.stderr)
+            return 1
+        if len(matches) > 1:
+            _print_project_choices(matches, "Multiple projects matched that id.")
+            return 1
+        project = matches[0]
+        if not (project.get("spectrum_enabled") and project.get("imessage_enabled")):
+            print(
+                "selected project is not a Spectrum iMessage project",
+                file=sys.stderr,
+            )
+            return 1
+        if not (project.get("spectrum_project_id") and project.get("project_secret")):
+            print(
+                "selected project cannot be adopted because Photon did not "
+                "return spectrumProjectId + projectSecret for it",
+                file=sys.stderr,
+            )
+            return 1
+        _store_selected_project(project, source="manual-select")
+        print("✓ selected Photon project")
+        return 0
+
+    print(f"unknown projects subcommand: {sub}", file=sys.stderr)
+    return 2
+
+
 def _cmd_webhook(args: argparse.Namespace) -> int:
     sub = getattr(args, "photon_webhook_command", None)
     project_id, project_secret = photon_auth.load_project_credentials()
@@ -318,6 +515,32 @@ def _cmd_webhook(args: argparse.Namespace) -> int:
         return 1
 
     if sub == "register":
+        try:
+            existing_hooks = photon_auth.list_webhooks(project_id, project_secret)
+        except Exception as e:
+            print(
+                "could not check existing Photon webhooks, so no new webhook "
+                f"was registered. Details: {e}",
+                file=sys.stderr,
+            )
+            return 1
+        matching_hooks = [
+            hook for hook in existing_hooks
+            if _webhook_url(hook) == args.url
+        ]
+        if matching_hooks:
+            if os.getenv("PHOTON_WEBHOOK_SECRET"):
+                print("✓ webhook URL already registered; keeping existing local signing secret")
+                return 0
+            print(
+                "webhook URL is already registered, but PHOTON_WEBHOOK_SECRET "
+                "is not set locally. Photon only returns the signing secret at "
+                "registration time. Delete or recreate the webhook in the "
+                "Photon dashboard, then save the new signing secret locally.",
+                file=sys.stderr,
+            )
+            return 1
+
         try:
             data = photon_auth.register_webhook(
                 project_id, project_secret, webhook_url=args.url
@@ -363,6 +586,12 @@ def _cmd_webhook(args: argparse.Namespace) -> int:
 
     print(f"unknown webhook subcommand: {sub}", file=sys.stderr)
     return 2
+
+
+def _webhook_url(webhook: Any) -> str:
+    if not isinstance(webhook, dict):
+        return ""
+    return str(webhook.get("webhookUrl") or webhook.get("url") or "")
 
 
 # ---------------------------------------------------------------------------

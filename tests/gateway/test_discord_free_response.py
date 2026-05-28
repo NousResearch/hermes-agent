@@ -113,6 +113,7 @@ def adapter(monkeypatch):
         "DISCORD_IGNORED_CHANNELS",
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
+        "DISCORD_THREAD_CONTEXT_ISOLATION",
         "DISCORD_ALLOW_BOTS",
     ):
         monkeypatch.delenv(_var, raising=False)
@@ -688,6 +689,62 @@ async def test_fetch_channel_context_skips_other_bots_when_allow_bots_none(adapt
 
 
 @pytest.mark.asyncio
+async def test_fetch_channel_context_skips_thread_starter_messages(adapter, monkeypatch):
+    """Parent-channel backfill must not import starter messages from sibling threads."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+    adapter.config.extra["thread_context_isolation"] = True
+
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    starter = make_history_message(
+        author=human,
+        content="opening message for another thread",
+        msg_id=2,
+    )
+    starter.thread = SimpleNamespace(id=999)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="ordinary parent-channel note", msg_id=3),
+            starter,
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    assert result == "[Recent channel messages]\n[Alice] ordinary parent-channel note"
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_keeps_thread_starters_by_default(adapter, monkeypatch):
+    """Thread starter filtering is opt-in for compatibility."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    starter = make_history_message(
+        author=human,
+        content="opening message for another thread",
+        msg_id=2,
+    )
+    starter.thread = SimpleNamespace(id=999)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="ordinary parent-channel note", msg_id=3),
+            starter,
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    assert "opening message for another thread" in result
+    assert "ordinary parent-channel note" in result
+
+
+@pytest.mark.asyncio
 async def test_fetch_channel_context_uses_cache_to_narrow_window(adapter, monkeypatch):
     """When _last_self_message_id is cached, the fetch passes after= to skip old messages."""
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
@@ -823,6 +880,73 @@ async def test_discord_shared_channel_backfill_prepends_context(adapter, monkeyp
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello with mention"
     assert event.channel_context == "[Recent channel messages]\n[Alice] context"
+
+
+@pytest.mark.asyncio
+async def test_discord_auto_thread_does_not_backfill_parent_channel_into_new_thread(adapter, monkeypatch):
+    """A newly auto-created thread must not inherit parent-channel backfill.
+
+    The triggering message becomes the first turn in the new thread session;
+    messages from the parent channel belong to a different context and should
+    not be prepended to the thread.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    adapter.config.extra["history_backfill"] = True
+    adapter.config.extra["thread_context_isolation"] = True
+    adapter._fetch_channel_context = AsyncMock(return_value="[Recent channel messages]\n[Alice] parent context")
+
+    parent = FakeTextChannel(channel_id=321, name="agent-office")
+    new_thread = FakeThread(channel_id=654, name="isolated task", parent=parent)
+    adapter._auto_create_thread = AsyncMock(return_value=new_thread)
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=parent,
+        content=f"<@{bot_user.id}> start isolated task",
+        mentions=[bot_user],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter._fetch_channel_context.assert_not_awaited()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.chat_id == "654"
+    assert event.channel_context is None
+    assert event.text == "start isolated task"
+
+
+@pytest.mark.asyncio
+async def test_discord_auto_thread_backfills_parent_channel_by_default(adapter, monkeypatch):
+    """New auto-thread isolation is opt-in for compatibility."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    adapter.config.extra["history_backfill"] = True
+    adapter._fetch_channel_context = AsyncMock(return_value="[Recent channel messages]\n[Alice] parent context")
+
+    parent = FakeTextChannel(channel_id=321, name="agent-office")
+    new_thread = FakeThread(channel_id=654, name="isolated task", parent=parent)
+    adapter._auto_create_thread = AsyncMock(return_value=new_thread)
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=parent,
+        content=f"<@{bot_user.id}> start isolated task",
+        mentions=[bot_user],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter._fetch_channel_context.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.chat_id == "654"
+    assert event.channel_context == "[Recent channel messages]\n[Alice] parent context"
 
 
 @pytest.mark.asyncio

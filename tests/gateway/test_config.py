@@ -420,18 +420,21 @@ class TestLoadGatewayConfig:
         config_path.write_text(
             "discord:\n"
             "  history_backfill: true\n"
-            "  history_backfill_limit: 17\n",
+            "  history_backfill_limit: 17\n"
+            "  thread_context_isolation: true\n",
             encoding="utf-8",
         )
 
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.delenv("DISCORD_HISTORY_BACKFILL", raising=False)
         monkeypatch.delenv("DISCORD_HISTORY_BACKFILL_LIMIT", raising=False)
+        monkeypatch.delenv("DISCORD_THREAD_CONTEXT_ISOLATION", raising=False)
 
         load_gateway_config()
 
         assert os.getenv("DISCORD_HISTORY_BACKFILL") == "true"
         assert os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT") == "17"
+        assert os.getenv("DISCORD_THREAD_CONTEXT_ISOLATION") == "true"
 
     def test_bridges_telegram_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

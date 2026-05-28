@@ -315,6 +315,7 @@ discord:
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
+  thread_context_isolation: false # Keep new threads from inheriting parent/sibling thread context (default: false)
   channel_prompts: {}             # Per-channel ephemeral system prompts
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
@@ -482,6 +483,22 @@ Maximum number of messages to scan backwards when recovering channel context. In
 discord:
   history_backfill: true
   history_backfill_limit: 50
+```
+
+#### `discord.thread_context_isolation`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, Discord thread tasks stay isolated from parent-channel history backfill:
+
+- If `auto_thread` creates a new thread from a channel mention, that new thread starts with only the triggering message. Hermes does not prepend parent-channel scrollback to the new thread's first turn.
+- Parent-channel backfill skips Discord messages that have attached thread previews/starters, because those messages are the first turn of sibling threads rather than ordinary parent-channel context.
+
+The default is `false` for compatibility with existing deployments that expect legacy backfill to include all parent-channel messages.
+
+```yaml
+discord:
+  thread_context_isolation: true
 ```
 
 #### `group_sessions_per_user`

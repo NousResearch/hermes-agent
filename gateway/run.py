@@ -2504,6 +2504,20 @@ class GatewayRunner:
             )
         except Exception:
             pass
+        # Fan a notice out to OTHER connected platforms' home channels so
+        # the user actually finds out their platform circuit-broke. Without
+        # this, a paused platform fails silently — the platform that paused
+        # can't tell the user it paused (it's offline), so we have to use a
+        # sibling. Best-effort: any send failures here are swallowed.
+        try:
+            self._notify_other_platforms_of_pause(
+                platform, reason=info["pause_reason"]
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to fan out pause notification for %s: %s",
+                platform.value, exc,
+            )
         logger.warning(
             "%s paused after %d consecutive failures (%s) — "
             "fix the underlying issue then run `/platform resume %s` "
@@ -2511,6 +2525,85 @@ class GatewayRunner:
             platform.value, info.get("attempts", 0),
             info["pause_reason"], platform.value,
         )
+
+    def _notify_other_platforms_of_pause(self, paused_platform, *, reason: str) -> None:
+        """Send a best-effort heads-up to every OTHER connected platform's
+        home channel when ``paused_platform`` circuit-breaks.
+
+        The paused platform itself cannot deliver the message (it's offline),
+        so we fan out via sibling adapters. Skips:
+          - the paused platform's own adapter
+          - any sibling that is itself failed/paused
+          - any sibling whose home channel isn't configured
+          - any sibling whose ``gateway_restart_notification`` is False
+            (same opt-out as the startup notification — users who don't
+            want noisy lifecycle messages get one knob, not two)
+
+        Synchronous wrapper around an async fan-out — schedules the sends
+        onto the existing event loop and doesn't block the pause path. If
+        no loop is available (called outside the gateway runtime), this is
+        a no-op rather than a crash.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            return
+        if loop is None or not loop.is_running():
+            # We're being called from a synchronous code path with no loop.
+            # The pause site is itself called from an async watcher so this
+            # should be rare, but bail safely rather than block.
+            return
+
+        message = (
+            f"⚠️ Gateway platform `{paused_platform.value}` paused after "
+            f"repeated failures.\n"
+            f"Reason: {reason}\n"
+            f"Resume with `/platform resume {paused_platform.value}` once "
+            f"the underlying issue is fixed, or restart the gateway."
+        )
+
+        async def _fan_out() -> None:
+            failed = getattr(self, "_failed_platforms", {})
+            for platform, adapter in self.adapters.items():
+                if platform == paused_platform:
+                    continue
+                # Skip siblings that are themselves broken.
+                sibling_info = failed.get(platform)
+                if sibling_info is not None:
+                    continue
+                home = self.config.get_home_channel(platform)
+                if not home or not home.chat_id:
+                    continue
+                platform_cfg = self.config.platforms.get(platform)
+                if (
+                    platform_cfg is not None
+                    and not platform_cfg.gateway_restart_notification
+                ):
+                    continue
+                try:
+                    metadata = (
+                        {"thread_id": home.thread_id} if home.thread_id else None
+                    )
+                    if metadata:
+                        await adapter.send(
+                            str(home.chat_id), message, metadata=metadata
+                        )
+                    else:
+                        await adapter.send(str(home.chat_id), message)
+                    logger.info(
+                        "Sent platform-pause notice for %s to %s:%s",
+                        paused_platform.value,
+                        platform.value,
+                        home.chat_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Platform-pause notice to %s:%s failed: %s",
+                        platform.value, home.chat_id, exc,
+                    )
+
+        # Fire and forget — this runs on the gateway's main loop.
+        asyncio.ensure_future(_fan_out())
 
     def _resume_paused_platform(self, platform) -> bool:
         """Unpause a platform — reset its attempt counter and schedule an

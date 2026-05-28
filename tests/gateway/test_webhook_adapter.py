@@ -823,6 +823,63 @@ class TestInsecureNoAuthSafetyRail:
         from gateway.platforms.webhook import _is_loopback_host
         assert _is_loopback_host(host) is False
 
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "127.0.0.1", "localhost", "::1",  # loopback still trusted
+            "100.64.0.1",                     # tailscale CGNAT lower bound
+            "100.74.196.71",                  # representative tailnet IP
+            "100.127.255.254",                # tailscale CGNAT upper bound
+        ],
+    )
+    def test_is_trusted_local_host_accepts(self, host):
+        """_is_trusted_local_host accepts loopback + Tailscale CGNAT IPs."""
+        from gateway.platforms.webhook import _is_trusted_local_host
+        assert _is_trusted_local_host(host) is True
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "0.0.0.0",        # also exposes LAN/public
+            "192.168.1.5",    # plain LAN
+            "10.0.10.50",     # private RFC1918 — not tailscale
+            "100.63.255.255", # just BELOW Tailscale CGNAT range
+            "100.128.0.0",    # just ABOVE Tailscale CGNAT range
+            "example.com",    # hostnames — we only special-case IPs
+            "", None,
+        ],
+    )
+    def test_is_trusted_local_host_rejects(self, host):
+        """_is_trusted_local_host rejects LAN/public/non-CGNAT addresses."""
+        from gateway.platforms.webhook import _is_trusted_local_host
+        assert _is_trusted_local_host(host) is False
+
+    @pytest.mark.asyncio
+    async def test_connect_allows_insecure_no_auth_on_tailscale_ip(self):
+        """Binding to an explicit Tailscale CGNAT IP permits INSECURE_NO_AUTH.
+
+        Justification: a Tailscale IP only accepts connections from peers
+        authorized into the tailnet, so the trust boundary is comparable to
+        loopback for homelab integrations whose upstreams (e.g. Uptime Kuma)
+        cannot sign HMAC payloads.
+        """
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="100.74.196.71", port=0)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is True
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_still_rejects_zero_bind_even_with_tailscale_available(self):
+        """0.0.0.0 stays rejected — it'd also listen on LAN/public ifaces."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="0.0.0.0", port=0)
+        with pytest.raises(ValueError, match="non-loopback"):
+            await adapter.connect()
+
     @pytest.mark.asyncio
     async def test_connect_allows_real_secret_on_public_bind(self):
         """A real HMAC secret bound to 0.0.0.0 is the normal production case."""

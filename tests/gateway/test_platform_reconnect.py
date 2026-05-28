@@ -636,6 +636,124 @@ class TestPauseResume:
         assert runner._resume_paused_platform(Platform.TELEGRAM) is False
 
 
+class TestPauseFanOutNotification:
+    """The pause path notifies OTHER connected platforms' home channels so
+    a paused platform doesn't fail silently. The paused platform itself
+    can't deliver the message (it's offline), so we route via siblings."""
+
+    def _make_runner_with_two_platforms(self):
+        from gateway.config import HomeChannel
+        runner = _make_runner()
+        # Configure DISCORD + TELEGRAM both with home channels.
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True, token="t",
+                    home_channel=HomeChannel(
+                        platform=Platform.TELEGRAM, chat_id="tg-home", name="TG Home",
+                    ),
+                ),
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True, token="d",
+                    home_channel=HomeChannel(
+                        platform=Platform.DISCORD, chat_id="dc-home", name="DC Home",
+                    ),
+                ),
+                Platform.WEBHOOK: PlatformConfig(enabled=True),
+            }
+        )
+        runner.adapters = {
+            Platform.TELEGRAM: MagicMock(send=AsyncMock(return_value=SendResult(success=True, message_id="1"))),
+            Platform.DISCORD: MagicMock(send=AsyncMock(return_value=SendResult(success=True, message_id="2"))),
+            Platform.WEBHOOK: MagicMock(send=AsyncMock(return_value=SendResult(success=True, message_id="3"))),
+        }
+        return runner
+
+    @pytest.mark.asyncio
+    async def test_pause_fans_out_to_other_platforms_home_channels(self):
+        """When webhook pauses, Telegram + Discord adapters both get notified."""
+        runner = self._make_runner_with_two_platforms()
+        runner._failed_platforms[Platform.WEBHOOK] = {
+            "config": PlatformConfig(enabled=True),
+            "attempts": 10,
+            "next_retry": time.monotonic() + 30,
+        }
+        runner._pause_failed_platform(
+            Platform.WEBHOOK, reason="INSECURE_NO_AUTH on public bind"
+        )
+        # The fan-out is scheduled via asyncio.ensure_future — yield to it.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        tg_send = runner.adapters[Platform.TELEGRAM].send
+        dc_send = runner.adapters[Platform.DISCORD].send
+        wh_send = runner.adapters[Platform.WEBHOOK].send
+        tg_send.assert_called_once()
+        dc_send.assert_called_once()
+        # The paused platform itself MUST NOT be asked to send.
+        wh_send.assert_not_called()
+        # Message body sanity-checks
+        msg = tg_send.call_args.args[1]
+        assert "webhook" in msg
+        assert "INSECURE_NO_AUTH on public bind" in msg
+        assert "/platform resume webhook" in msg
+
+    @pytest.mark.asyncio
+    async def test_pause_skips_siblings_that_are_themselves_failed(self):
+        """If Discord is also broken, don't try to use it as a notifier."""
+        runner = self._make_runner_with_two_platforms()
+        runner._failed_platforms[Platform.DISCORD] = {
+            "config": PlatformConfig(enabled=True, token="d"),
+            "attempts": 5,
+            "next_retry": time.monotonic() + 30,
+        }
+        runner._failed_platforms[Platform.WEBHOOK] = {
+            "config": PlatformConfig(enabled=True),
+            "attempts": 10,
+            "next_retry": time.monotonic() + 30,
+        }
+        runner._pause_failed_platform(Platform.WEBHOOK, reason="x")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        runner.adapters[Platform.TELEGRAM].send.assert_called_once()
+        runner.adapters[Platform.DISCORD].send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pause_swallows_sibling_send_failures(self):
+        """A failing sibling adapter must not block the pause path or
+        prevent OTHER siblings from being notified."""
+        runner = self._make_runner_with_two_platforms()
+        runner.adapters[Platform.DISCORD].send = AsyncMock(
+            side_effect=RuntimeError("discord exploded")
+        )
+        runner._failed_platforms[Platform.WEBHOOK] = {
+            "config": PlatformConfig(enabled=True),
+            "attempts": 10,
+            "next_retry": time.monotonic() + 30,
+        }
+        # Must not raise.
+        runner._pause_failed_platform(Platform.WEBHOOK, reason="x")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        # Telegram still gets notified despite Discord blowing up.
+        runner.adapters[Platform.TELEGRAM].send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_pause_respects_gateway_restart_notification_opt_out(self):
+        """A sibling with gateway_restart_notification=False is skipped."""
+        runner = self._make_runner_with_two_platforms()
+        runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+        runner._failed_platforms[Platform.WEBHOOK] = {
+            "config": PlatformConfig(enabled=True),
+            "attempts": 10,
+            "next_retry": time.monotonic() + 30,
+        }
+        runner._pause_failed_platform(Platform.WEBHOOK, reason="x")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        runner.adapters[Platform.TELEGRAM].send.assert_not_called()
+        runner.adapters[Platform.DISCORD].send.assert_called_once()
+
+
 class TestPlatformSlashCommand:
     """Test the /platform list|pause|resume slash command handler."""
 

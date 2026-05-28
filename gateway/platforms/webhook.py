@@ -29,6 +29,7 @@ Security:
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import re
@@ -76,6 +77,16 @@ _LOOPBACK_HOSTS = frozenset({
     "ip6-loopback",
 })
 
+# Tailscale CGNAT range — RFC 6598 (100.64.0.0/10). A host bound only to an
+# address in this range is reachable only by authorized tailnet peers, which
+# is a meaningfully stronger trust boundary than a LAN bind. We treat it as
+# equivalent-to-loopback for the INSECURE_NO_AUTH safety rail so that
+# homelab integrations whose upstream cannot HMAC (e.g. Uptime Kuma) can
+# still run without forcing the user to stand up a reverse proxy on
+# 127.0.0.1. Binding to 0.0.0.0 stays rejected even when Tailscale is
+# available, because 0.0.0.0 also listens on LAN / public interfaces.
+_TAILSCALE_CGNAT_V4 = ipaddress.IPv4Network("100.64.0.0/10")
+
 
 def _is_loopback_host(host: str) -> bool:
     """True when `host` binds only to the local machine.
@@ -88,6 +99,30 @@ def _is_loopback_host(host: str) -> bool:
     if not host:
         return False
     return host.strip().lower() in _LOOPBACK_HOSTS
+
+
+def _is_trusted_local_host(host: str) -> bool:
+    """True when `host` binds only to interfaces with restricted reachability.
+
+    Superset of `_is_loopback_host`. Also accepts an explicit bind to a
+    Tailscale CGNAT (100.64.0.0/10) IPv4 address — that range is only
+    reachable by peers authorized into the same tailnet, so it's an
+    acceptable trust boundary for INSECURE_NO_AUTH routes (e.g. Uptime Kuma
+    which cannot sign payloads). `0.0.0.0`, LAN IPs, and unset/empty hosts
+    remain non-trusted because they expose the listener on other interfaces.
+    """
+    if _is_loopback_host(host):
+        return True
+    if not host:
+        return False
+    raw = host.strip().lower().strip("[]")
+    try:
+        ip = ipaddress.ip_address(raw)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv4Address):
+        return ip in _TAILSCALE_CGNAT_V4
+    return False
 
 
 def check_webhook_requirements() -> bool:
@@ -157,14 +192,20 @@ class WebhookAdapter(BasePlatformAdapter):
                 )
 
             # Safety rail: refuse to start if INSECURE_NO_AUTH is combined with a
-            # non-loopback bind. The escape hatch is for local testing only;
+            # non-trusted-local bind. The escape hatch is for local testing only;
             # serving an unauthenticated route on a public interface is a
             # deployment-grade footgun we'd rather crash early than ship.
-            if secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
+            # Trusted-local = loopback OR an explicit Tailscale CGNAT IP
+            # (100.64.0.0/10), since the latter is only reachable by
+            # authorized tailnet peers. 0.0.0.0 stays rejected because it
+            # also listens on LAN / public interfaces.
+            if secret == _INSECURE_NO_AUTH and not _is_trusted_local_host(self._host):
                 raise ValueError(
                     f"[webhook] Route '{name}' uses INSECURE_NO_AUTH secret "
                     f"but is bound to non-loopback host '{self._host}'. "
                     f"INSECURE_NO_AUTH is for local testing only. "
+                    f"Bind to 127.0.0.1, an explicit Tailscale IP "
+                    f"(100.64.0.0/10), or set a real HMAC secret. "
                     f"Refusing to start to prevent accidental exposure."
                 )
             # deliver_only routes bypass the agent — the POST body becomes a

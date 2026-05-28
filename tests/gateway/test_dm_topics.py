@@ -29,7 +29,7 @@ def _ensure_telegram_mock():
     # ``from telegram.constants import ChatType`` resolves to our mock
     # with string-valued members (not auto-generated MagicMocks).
     constants_mod = MagicMock()
-    constants_mod.ParseMode.MARKDOWN_V2 = "MarkdownV2"
+    constants_mod.ParseMode.MARKDOWN_V2 = "MARKDOWN_V2"
     constants_mod.ChatType.GROUP = "group"
     constants_mod.ChatType.SUPERGROUP = "supergroup"
     constants_mod.ChatType.CHANNEL = "channel"

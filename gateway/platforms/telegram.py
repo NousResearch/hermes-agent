@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     try:
+        from telegram import InlineQueryResultArticle, InputTextMessageContent
+    except ImportError:
+        InlineQueryResultArticle = None
+        InputTextMessageContent = None
+    try:
         from telegram import LinkPreviewOptions
     except ImportError:
         LinkPreviewOptions = None
@@ -30,6 +35,7 @@ try:
         Application,
         CommandHandler,
         CallbackQueryHandler,
+        InlineQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
@@ -44,6 +50,9 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+    InlineQueryResultArticle = Any
+    InputTextMessageContent = Any
+    InlineQueryHandler = Any
     LinkPreviewOptions = None
     Application = Any
     CommandHandler = Any
@@ -117,8 +126,8 @@ def check_telegram_requirements() -> bool:
     so the adapter's class-level type aliases get rebound.
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
-    global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent, LinkPreviewOptions, Application
+    global CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -131,12 +140,18 @@ def check_telegram_requirements() -> bool:
         from telegram import Update as _Update, Bot as _Bot, Message as _Message
         from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
         try:
+            from telegram import InlineQueryResultArticle as _IQRA, InputTextMessageContent as _ITMC
+        except ImportError:
+            _IQRA = None
+            _ITMC = None
+        try:
             from telegram import LinkPreviewOptions as _LPO
         except ImportError:
             _LPO = None
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
+            InlineQueryHandler as _IQH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
@@ -149,10 +164,13 @@ def check_telegram_requirements() -> bool:
     Message = _Message
     InlineKeyboardButton = _IKB
     InlineKeyboardMarkup = _IKM
+    InlineQueryResultArticle = _IQRA
+    InputTextMessageContent = _ITMC
     LinkPreviewOptions = _LPO
     Application = _App
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
+    InlineQueryHandler = _IQH
     TelegramMessageHandler = _MH
     ContextTypes = _CT
     filters = _filters
@@ -1581,6 +1599,13 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Handle Telegram inline mode queries (BotFather /setinline).
+            self._app.add_handler(InlineQueryHandler(self._handle_inline_query))
+            # Handle Telegram Business / Secretary messages.
+            self._app.add_handler(TelegramMessageHandler(
+                getattr(filters, "UpdateType", filters).BUSINESS_MESSAGE,
+                self._handle_business_message,
+            ))
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -4967,6 +4992,134 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
+
+    async def _handle_inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle Telegram inline mode queries by returning one article result."""
+        query = getattr(update, "inline_query", None)
+        if not query:
+            return
+
+        text = (getattr(query, "query", "") or "").strip()
+        if not text:
+            try:
+                await query.answer(results=[], cache_time=1, is_personal=True)
+            except TypeError:
+                await query.answer([])
+            return
+        if not self._message_handler:
+            return
+
+        if InlineQueryResultArticle is None or InputTextMessageContent is None:
+            logger.warning("[%s] Inline query support unavailable: telegram SDK missing result classes", self.name)
+            return
+
+        user = getattr(query, "from_user", None)
+        user_id = str(getattr(user, "id", "unknown"))
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=self.build_source(
+                chat_id=f"inline:{user_id}",
+                chat_name="Telegram inline mode",
+                chat_type="inline",
+                user_id=user_id,
+                user_name=getattr(user, "full_name", None),
+                message_id=str(getattr(query, "id", "")) or None,
+            ),
+            raw_message=query,
+            message_id=str(getattr(query, "id", "")) or None,
+            platform_update_id=getattr(update, "update_id", None),
+        )
+
+        try:
+            response = await self._message_handler(event)
+            response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+            if not response:
+                response = "No response."
+            text_result = self.truncate_message(
+                str(response), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+            )[0]
+            result = InlineQueryResultArticle(
+                id=str(getattr(query, "id", "result")),
+                title="Hermes response",
+                description=text_result[:120],
+                input_message_content=InputTextMessageContent(message_text=text_result),
+            )
+            await query.answer(results=[result], cache_time=1, is_personal=True)
+        except Exception as e:
+            logger.error("[%s] Failed to handle inline query: %s", self.name, e, exc_info=True)
+            try:
+                await query.answer(results=[], cache_time=1, is_personal=True)
+            except Exception:
+                pass
+
+    async def _handle_business_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle Telegram Business / Secretary messages and reply on the business connection."""
+        msg = getattr(update, "business_message", None)
+        if not msg:
+            return
+        text = getattr(msg, "text", None) or getattr(msg, "caption", None) or ""
+        if not text:
+            return
+        if not self._message_handler:
+            return
+
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=getattr(update, "update_id", None))
+        event.text = self._clean_bot_trigger_text(text)
+        business_connection_id = getattr(update, "business_connection_id", None) or getattr(msg, "business_connection_id", None)
+        setattr(event, "business_connection_id", business_connection_id)
+
+        try:
+            response = await self._message_handler(event)
+            response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+            if response:
+                await self._send_business_message(
+                    chat_id=event.source.chat_id,
+                    content=str(response),
+                    business_connection_id=business_connection_id,
+                )
+        except Exception as e:
+            logger.error("[%s] Failed to handle business message: %s", self.name, e, exc_info=True)
+
+    async def _send_business_message(
+        self,
+        chat_id: str,
+        content: str,
+        business_connection_id: Optional[str],
+    ) -> SendResult:
+        """Send a Telegram Business reply using ``business_connection_id``."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if not content or not content.strip():
+            return SendResult(success=True, message_id=None)
+        try:
+            formatted = self.format_message(content)
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
+            message_ids: list[str] = []
+            for chunk in chunks:
+                try:
+                    msg = await self._bot.send_message(
+                        chat_id=int(chat_id),
+                        text=chunk,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        business_connection_id=business_connection_id,
+                        **self._link_preview_kwargs(),
+                    )
+                except Exception as md_error:
+                    if "parse" not in str(md_error).lower() and "markdown" not in str(md_error).lower():
+                        raise
+                    msg = await self._bot.send_message(
+                        chat_id=int(chat_id),
+                        text=_strip_mdv2(chunk),
+                        parse_mode=None,
+                        business_connection_id=business_connection_id,
+                        **self._link_preview_kwargs(),
+                    )
+                message_ids.append(str(msg.message_id))
+            return SendResult(success=True, message_id=message_ids[0] if message_ids else None)
+        except Exception as e:
+            logger.error("[%s] Failed to send Telegram business message: %s", self.name, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""

@@ -165,26 +165,6 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   )
 }
 
-function ctxBarColor(pct: number | undefined, t: Theme) {
-  if (pct == null) {
-    return t.color.muted
-  }
-
-  if (pct >= 95) {
-    return t.color.statusCritical
-  }
-
-  if (pct > 80) {
-    return t.color.statusBad
-  }
-
-  if (pct >= 50) {
-    return t.color.statusWarn
-  }
-
-  return t.color.statusGood
-}
-
 function statusSessionCountLabel(count: number) {
   return `${count} ${count === 1 ? 'session' : 'sessions'}`
 }
@@ -207,13 +187,6 @@ function noticeColor(level: Notice['level'], t: Theme): string {
 
   // 'info' / undefined — keep it readable but understated.
   return t.color.accent
-}
-
-function ctxBar(pct: number | undefined, w = 10) {
-  const p = Math.max(0, Math.min(100, pct ?? 0))
-  const filled = Math.round((p / 100) * w)
-
-  return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
 // `minLeftContent` is the display width of the high-priority left segments
@@ -434,12 +407,10 @@ export function StatusRule({
   onSessionCountClick,
   t
 }: StatusRuleProps) {
-  const pct = usage.context_percent
-  const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
 
   // On narrow terminals the context read-out collapses to a bare token count
-  // (`12k tok`) and the visual fill bar is dropped entirely.
+  // (`12k tok`). The visual percentage bar is intentionally hidden.
   const ctxLabel = usage.context_max
     ? segs.compactCtx
       ? `${fmtK(usage.context_used ?? 0)} tok`
@@ -448,7 +419,6 @@ export function StatusRule({
       ? `${fmtK(usage.total)} tok`
       : ''
 
-  const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
 
   // A credits notice replaces the status/verb slot, but only when idle —
@@ -485,8 +455,8 @@ export function StatusRule({
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
-  // descending priority order — bar, duration, compressions, voice, session
-  // count, bg, cost. Lower-priority segments drop first and nothing truncates
+  // descending priority order — duration, compressions, voice, session count,
+  // bg, cost. Lower-priority segments drop first and nothing truncates
   // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
@@ -513,7 +483,6 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
-  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
   // Idle clock — time since the last final agent response. Hidden while busy
@@ -601,12 +570,6 @@ export function StatusRule({
             </Text>
           ) : null}
         </Box>
-        {showBar ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
-          </Text>
-        ) : null}
         {showDuration ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}

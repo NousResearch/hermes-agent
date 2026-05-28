@@ -33,7 +33,6 @@ const statusRuleText = (voiceLabel: string): string =>
       busy: false,
       cols: 80,
       cwdLabel: '~/repo',
-      fields: ['voice'],
       liveSessionCount: 1,
       model: 'gpt-5.5',
       sessionStartedAt: null,
@@ -51,8 +50,10 @@ describe('StatusRule voice label rendering', () => {
   it('omits the voice segment when voiceLabel is empty', () => {
     const text = statusRuleText('')
 
+    expect(text).toContain('gpt 5.5 │ 1 session')
     expect(text).not.toContain('voice')
-    expect(text).not.toContain('│')
+    expect(text).not.toContain('│ voice')
+    expect(text).not.toContain('│  │')
   })
 
   it('renders non-empty voice indicators', () => {

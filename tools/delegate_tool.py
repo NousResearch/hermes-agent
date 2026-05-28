@@ -2073,6 +2073,11 @@ def delegate_task(
         except ValueError as exc:
             return tool_error(str(exc))
 
+    # Cache resolved credentials per profile name so _resolve_delegation_credentials
+    # is called once per unique profile, not once per task (avoids repeated
+    # provider lookups / env reads in large batches).
+    _creds_cache: Dict[str, dict] = {}
+
     overall_start = time.monotonic()
     results = []
 
@@ -2116,11 +2121,19 @@ def delegate_task(
             else:
                 # API mode: resolve credentials from profile dict (if set) or
                 # fall back to default delegation config.
-                _cred_src = _profile_cfg if _profile_cfg else cfg
-                try:
-                    _task_creds = _resolve_delegation_credentials(_cred_src, parent_agent) if _profile_cfg else creds
-                except ValueError as exc:
-                    return tool_error(str(exc))
+                # Use creds cache so N tasks sharing one profile don't trigger
+                # N provider lookups (env reads, token refreshes, etc.).
+                if _task_profile_name and _task_profile_name in _profiles_cache:
+                    if _task_profile_name not in _creds_cache:
+                        try:
+                            _creds_cache[_task_profile_name] = _resolve_delegation_credentials(
+                                _profile_cfg, parent_agent
+                            )
+                        except ValueError as exc:
+                            return tool_error(str(exc))
+                    _task_creds = _creds_cache[_task_profile_name]
+                else:
+                    _task_creds = creds
                 _task_acp_args_explicit = t.get("acp_args") if "acp_args" in t else None
                 _task_acp_command = (
                     t.get("acp_command") or acp_command or _task_creds.get("command")
@@ -2132,10 +2145,13 @@ def delegate_task(
                 )
 
             # Toolsets: explicit call arg > profile default > top-level toolsets arg
+            # Toolset priority: explicit per-task > profile default > top-level arg.
+            # Use `is not None` (not `or`) so an explicit empty list [] is respected
+            # as "no toolsets" rather than falling through to the profile default.
+            _t_toolsets = t.get("toolsets")
             _task_toolsets = (
-                t.get("toolsets")
-                or _profile_cfg.get("toolsets")
-                or toolsets
+                _t_toolsets if _t_toolsets is not None
+                else (_profile_cfg.get("toolsets") or toolsets)
             )
 
             # Proxy from profile (v1: warning logged inside _build_child_agent, not applied)

@@ -2411,6 +2411,21 @@ def run_conversation(
                 agent._vprint(f"{agent.log_prefix}   📝 Error: {_error_summary}", force=True)
                 if status_code and status_code < 500:
                     _err_body = getattr(api_error, "body", None)
+                    if status_code == 429:
+                        try:
+                            from agent.quota_monitor import record_rate_limit
+
+                            record_rate_limit(
+                                provider=getattr(agent, "provider", "unknown"),
+                                model=getattr(agent, "model", "unknown"),
+                                status_code=status_code,
+                                error_body=_err_body,
+                            )
+                        except Exception as quota_exc:
+                            logger.debug(
+                                "quota_monitor: failed to record rate limit metadata: %s",
+                                quota_exc,
+                            )
                     _err_body_str = str(_err_body)[:300] if _err_body else None
                     if _err_body_str:
                         agent._vprint(f"{agent.log_prefix}   📋 Details: {_err_body_str}", force=True)

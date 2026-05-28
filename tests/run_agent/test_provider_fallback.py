@@ -182,6 +182,39 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_status_includes_quota_reset_note_for_failed_provider(self, tmp_path, monkeypatch):
+        """When fallback fires, status should include the failed provider's quota reset."""
+        monkeypatch.setenv("HERMES_QUOTA_STATE_PATH", str(tmp_path / "quota_state.json"))
+        from agent.quota_monitor import record_rate_limit
+
+        fbs = [{"provider": "custom:kimi-coding-shim", "model": "kimi-for-coding"}]
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "openai-codex"
+        agent.model = "gpt-5.5"
+        statuses = []
+        agent._emit_status = statuses.append
+        record_rate_limit(
+            provider="openai-codex",
+            model="gpt-5.5",
+            status_code=429,
+            error_body={
+                "type": "usage_limit_reached",
+                "plan_type": "plus",
+                "resets_at": __import__("time").time() + 3600,
+                "resets_in_seconds": 3600,
+            },
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="http://127.0.0.1:11536/v1"), "kimi-for-coding"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert len(statuses) == 1
+        assert "switching to fallback: kimi-for-coding via custom:kimi-coding-shim" in statuses[0]
+        assert "⏰ openai-codex quota resets in" in statuses[0]
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

@@ -1143,6 +1143,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
+        old_provider = agent.provider
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -1262,10 +1263,26 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 api_mode=agent.api_mode,
             )
 
-        agent._emit_status(
+        status_msg = (
             f"🔄 Primary model failed — switching to fallback: "
             f"{fb_model} via {fb_provider}"
         )
+        try:
+            from agent.quota_monitor import (
+                get_quota_summary_for_provider,
+                record_fallback_notification,
+            )
+
+            record_fallback_notification(old_provider, fb_provider)
+            quota_note = get_quota_summary_for_provider(old_provider)
+            if quota_note:
+                status_msg += f"\n   ⏰ {quota_note}"
+        except Exception as quota_exc:
+            logger.debug(
+                "quota_monitor: failed to annotate fallback notification: %s",
+                quota_exc,
+            )
+        agent._emit_status(status_msg)
         logger.info(
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,

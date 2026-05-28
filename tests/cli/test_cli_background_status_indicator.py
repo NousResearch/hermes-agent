@@ -9,6 +9,8 @@ finally block, so len() reflects truly-running tasks.
 import threading
 from datetime import datetime
 
+import pytest
+
 from cli import HermesCLI
 
 
@@ -102,6 +104,50 @@ def test_fragments_omit_bg_segment_when_idle():
     frags = cli_obj._get_status_bar_fragments()
     rendered = "".join(text for _style, text in frags)
     assert "▶" not in rendered
+
+
+@pytest.mark.parametrize("yolo_value", ["false", "0", "off", "no", ""])
+def test_yolo_false_like_values_do_not_show_indicator_in_plain_text(monkeypatch, yolo_value):
+    cli_obj = _make_cli()
+    monkeypatch.setenv("HERMES_YOLO_MODE", yolo_value)
+
+    text = cli_obj._build_status_bar_text(width=80)
+
+    assert "⚠ YOLO" not in text
+
+
+def test_truthy_yolo_value_shows_indicator_in_plain_text(monkeypatch):
+    cli_obj = _make_cli()
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    text = cli_obj._build_status_bar_text(width=80)
+
+    assert "⚠ YOLO" in text
+
+
+@pytest.mark.parametrize("yolo_value", ["false", "0", "off", "no", ""])
+def test_yolo_false_like_values_do_not_show_indicator_in_fragments(monkeypatch, yolo_value):
+    cli_obj = _make_cli()
+    cli_obj._status_bar_visible = True
+    cli_obj._get_tui_terminal_width = lambda: 120  # type: ignore[method-assign]
+    monkeypatch.setenv("HERMES_YOLO_MODE", yolo_value)
+
+    frags = cli_obj._get_status_bar_fragments()
+    rendered = "".join(text for _style, text in frags)
+
+    assert "⚠ YOLO" not in rendered
+
+
+def test_truthy_yolo_value_shows_indicator_in_fragments(monkeypatch):
+    cli_obj = _make_cli()
+    cli_obj._status_bar_visible = True
+    cli_obj._get_tui_terminal_width = lambda: 120  # type: ignore[method-assign]
+    monkeypatch.setenv("HERMES_YOLO_MODE", "true")
+
+    frags = cli_obj._get_status_bar_fragments()
+    rendered = "".join(text for _style, text in frags)
+
+    assert "⚠ YOLO" in rendered
 
 
 # ── Background terminal-process indicator (⚙ N) ───────────────────────────

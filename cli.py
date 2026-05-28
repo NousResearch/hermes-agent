@@ -3747,7 +3747,7 @@ class HermesCLI:
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
 
-            yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
+            yolo_active = is_truthy_value(os.getenv("HERMES_YOLO_MODE"))
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
                 if yolo_active:
@@ -3808,7 +3808,7 @@ class HermesCLI:
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
-            yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
+            yolo_active = is_truthy_value(os.getenv("HERMES_YOLO_MODE"))
 
             if width < 52:
                 frags = [

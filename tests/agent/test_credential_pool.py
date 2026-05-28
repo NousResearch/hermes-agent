@@ -1293,6 +1293,29 @@ def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, m
     assert pool_entry["agent_key_expires_at"] == expires_at
 
 
+def test_nous_runtime_api_key_rejects_opaque_agent_key():
+    from agent.credential_pool import PooledCredential
+
+    entry = PooledCredential(
+        provider="nous",
+        id="nous-opaque",
+        label="opaque",
+        auth_type="oauth",
+        priority=0,
+        source="device_code",
+        access_token="opaque-access-token",
+        refresh_token="refresh-token",
+        agent_key="opaque-agent-key",
+        agent_key_expires_at=datetime.fromtimestamp(
+            time.time() + 3600,
+            tz=timezone.utc,
+        ).isoformat(),
+        extra={"scope": "inference:invoke"},
+    )
+
+    assert entry.runtime_api_key == ""
+
+
 def test_nous_pool_terminal_refresh_removes_device_code_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))

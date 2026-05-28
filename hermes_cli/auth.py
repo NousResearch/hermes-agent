@@ -1791,30 +1791,19 @@ def _nous_invoke_jwt_is_usable(
     )
 
 
-def _choose_nous_inference_auth_path(
+def _assert_nous_inference_jwt_usable(
     state: Dict[str, Any],
     *,
     access_token: Any = None,
-    min_key_ttl_seconds: int = DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
-    inference_auth_mode: str = NOUS_INFERENCE_AUTH_MODE_AUTO,
-) -> Tuple[str, Optional[str]]:
-    del min_key_ttl_seconds
-    _normalize_nous_inference_auth_mode(inference_auth_mode)
+) -> None:
     token = state.get("access_token") if access_token is None else access_token
-    if _nous_invoke_jwt_is_usable(
+    reason = _nous_invoke_jwt_status(
         token,
         scope=state.get("scope"),
         expires_at=state.get("expires_at"),
-    ):
-        return NOUS_AUTH_PATH_INVOKE_JWT, None
-    reason = (
-        _nous_invoke_jwt_status(
-            token,
-            scope=state.get("scope"),
-            expires_at=state.get("expires_at"),
-        )
-        or "invoke_jwt_unavailable"
     )
+    if reason is None:
+        return
     raise AuthError(
         "Nous Portal access token is not a usable inference JWT "
         f"({reason}). Re-authenticate with: hermes auth add nous",
@@ -5058,12 +5047,8 @@ def refresh_nous_oauth_pure(
             if on_state_update is not None:
                 on_state_update(dict(state), "post_refresh_access_token")
 
-        selected_auth_path, _ = _choose_nous_inference_auth_path(
-            state,
-            inference_auth_mode=inference_auth_mode,
-        )
-        if selected_auth_path == NOUS_AUTH_PATH_INVOKE_JWT:
-            _select_nous_invoke_jwt(state)
+        _assert_nous_inference_jwt_usable(state)
+        _select_nous_invoke_jwt(state)
 
     return state
 
@@ -5266,7 +5251,6 @@ def resolve_nous_runtime_credentials(
             refresh_token_fp=_token_fingerprint(state.get("refresh_token")),
         )
 
-        selected_auth_path = NOUS_AUTH_PATH_INVOKE_JWT
         with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
             access_token = state.get("access_token")
             refresh_token = state.get("refresh_token")
@@ -5357,10 +5341,9 @@ def resolve_nous_runtime_credentials(
                         # Persist immediately so validation failures cannot drop rotated refresh tokens.
                         _persist_state("post_refresh_access_token")
 
-            selected_auth_path, _ = _choose_nous_inference_auth_path(
+            _assert_nous_inference_jwt_usable(
                 state,
                 access_token=access_token,
-                inference_auth_mode=inference_auth_mode,
             )
             _select_nous_invoke_jwt(
                 state,
@@ -5403,7 +5386,7 @@ def resolve_nous_runtime_credentials(
         "expires_at": expires_at,
         "expires_in": expires_in,
         "source": NOUS_AUTH_PATH_INVOKE_JWT,
-        "auth_path": selected_auth_path,
+        "auth_path": NOUS_AUTH_PATH_INVOKE_JWT,
     }
 
 
@@ -5448,7 +5431,7 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
             return (agent_exp, access_exp, -priority)
 
         entry = max(entries, key=_entry_sort_key)
-        runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+        runtime_key = getattr(entry, "runtime_api_key", None)
         if not runtime_key:
             return _empty_nous_auth_status()
         access_token = getattr(entry, "access_token", None)

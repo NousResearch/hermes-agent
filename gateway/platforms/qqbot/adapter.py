@@ -115,6 +115,9 @@ from gateway.platforms.qqbot.constants import (
     MEDIA_TYPE_VOICE,
     MEDIA_TYPE_FILE,
 )
+
+MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+
 from gateway.platforms.qqbot.utils import (
     coerce_list as _coerce_list_impl,
     build_user_agent,
@@ -1690,7 +1693,6 @@ class QQAdapter(BasePlatformAdapter):
             )
             return None
 
-        max_bytes = 25 * 1024 * 1024
         async with self._http_client.stream(
                 "GET",
                 url,
@@ -1703,7 +1705,7 @@ class QQAdapter(BasePlatformAdapter):
             content_length = resp.headers.get("content-length")
             if content_length is not None:
                 try:
-                    if int(content_length) > max_bytes:
+                    if int(content_length) > MAX_DOWNLOAD_BYTES:
                         logger.warning(
                             "[%s] %s too large (%s bytes): %s",
                             self._log_tag,
@@ -1718,7 +1720,7 @@ class QQAdapter(BasePlatformAdapter):
             chunks = bytearray()
             async for chunk in resp.aiter_bytes():
                 chunks.extend(chunk)
-                if len(chunks) > max_bytes:
+                if len(chunks) > MAX_DOWNLOAD_BYTES:
                     logger.warning(
                         "[%s] %s exceeded size limit while downloading: %s",
                         self._log_tag,

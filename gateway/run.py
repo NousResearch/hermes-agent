@@ -17712,7 +17712,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="gateway-housekeeping",
     )
     housekeeping_thread.start()
-    
+
+    # Start the code-change watcher so the gateway auto-restarts when any
+    # hermes-agent source file is updated on disk (e.g. after a git pull or
+    # PR merge).  Opt out via HERMES_GATEWAY_NO_AUTO_RESTART=1 or
+    # gateway.auto_restart_on_code_change: false in config.yaml.
+    from gateway.code_watcher import start_code_watcher as _start_code_watcher
+
+    _code_watcher = _start_code_watcher(cfg=config.to_dict() if config is not None else None)
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
@@ -17727,7 +17735,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_reason:
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
-    
+
+    # Stop code watcher and cron ticker cleanly
+    if _code_watcher is not None:
+        _code_watcher.stop()
     # Stop cron scheduler + housekeeping cleanly
     cron_stop.set()
     try:

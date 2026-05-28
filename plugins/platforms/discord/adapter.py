@@ -3725,6 +3725,21 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in {"true", "1", "yes"}
 
+    def _discord_thread_context_isolation(self) -> bool:
+        """Return whether Discord thread starters are isolated from backfill.
+
+        When enabled, parent-channel backfill will not import starter messages
+        from sibling threads, and a newly auto-created thread starts with only
+        its triggering message instead of inheriting parent-channel scrollback.
+        Default is off for compatibility with existing deployments.
+        """
+        configured = self.config.extra.get("thread_context_isolation")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("DISCORD_THREAD_CONTEXT_ISOLATION", "false").lower() in {"true", "1", "yes", "on"}
+
     def _discord_history_backfill_limit(self) -> int:
         """Return the max number of messages to scan backwards for context.
 
@@ -3811,6 +3826,20 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 # Skip system messages (pins, joins, thread renames, etc.)
                 if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                    continue
+
+                # Optional isolation for Discord thread-starter messages visible
+                # in the parent channel. Those messages are the first turn of a
+                # different thread, so including them in parent-channel backfill
+                # can leak sibling thread context into later tasks. Kept opt-in
+                # for compatibility with deployments that expect legacy channel
+                # backfill to include all parent-channel messages.
+                msg_thread = getattr(msg, "thread", None)
+                msg_flags = getattr(msg, "flags", None)
+                if (
+                    self._discord_thread_context_isolation()
+                    and (msg_thread is not None or bool(getattr(msg_flags, "has_thread", False)))
+                ):
                     continue
 
                 # Respect DISCORD_ALLOW_BOTS for other bots.
@@ -4512,6 +4541,9 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+        require_mention = False
+        is_free_channel = False
+        in_bot_thread = False
 
         snapshot_attachments = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
@@ -4812,11 +4844,19 @@ class DiscordAdapter(BasePlatformAdapter):
         _channel_context = None
         _is_dm = isinstance(message.channel, discord.DMChannel)
         if not _is_dm:
-            _needed_mention = (
-                require_mention
-                and not is_free_channel
-                and not in_bot_thread
-            )
+            # When thread context isolation is enabled and this mention just
+            # created a new auto-thread, the new thread's session starts with
+            # the trigger message only. Backfilling the parent channel here
+            # would leak sibling/parent conversation into the fresh thread even
+            # though responses are routed to ``effective_channel``.
+            if auto_threaded_channel is not None and self._discord_thread_context_isolation():
+                _needed_mention = False
+            else:
+                _needed_mention = (
+                    require_mention
+                    and not is_free_channel
+                    and not in_bot_thread
+                )
             _backfill_enabled = self._discord_history_backfill()
             if _needed_mention and _backfill_enabled:
                 _backfill_text = await self._fetch_channel_context(
@@ -6143,6 +6183,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     hbl = discord_cfg.get("history_backfill_limit")
     if hbl is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
         os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
+    if "thread_context_isolation" in discord_cfg and not os.getenv("DISCORD_THREAD_CONTEXT_ISOLATION"):
+        os.environ["DISCORD_THREAD_CONTEXT_ISOLATION"] = str(discord_cfg["thread_context_isolation"]).lower()
     # allow_mentions: granular control over what the bot can ping.
     # Safe defaults (no @everyone/roles) are applied in the adapter;
     # these YAML keys only override when set and let users opt back
@@ -6205,7 +6247,7 @@ def register(ctx) -> None:
         # ``discord:`` keys (require_mention, free_response_channels,
         # auto_thread, reactions, ignored_channels, allowed_channels,
         # no_thread_channels, allow_mentions.*, reply_to_mode,
-        # thread_require_mention) into ``DISCORD_*`` env vars that the
+        # thread_require_mention, thread_context_isolation) into ``DISCORD_*`` env vars that the
         # adapter reads via ``os.getenv()``.  Replaces the hardcoded block
         # that used to live in ``gateway/config.py``.  Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,

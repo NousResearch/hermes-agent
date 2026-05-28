@@ -48,7 +48,8 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
                 "sessionPeerPrefix", "contextTokens", "dialecticReasoningLevel",
                 "dialecticDynamic", "dialecticMaxChars", "messageMaxChars",
                 "dialecticMaxInputChars", "saveMessages", "observation",
-                "pinUserPeer", "userPeerAliases", "runtimePeerPrefix"):
+                "pinUserPeer", "userPeerAliases", "runtimePeerPrefix",
+                "prefetchGenericContext"):
         val = default_block.get(key)
         if val is not None:
             new_block[key] = val
@@ -117,7 +118,7 @@ def cmd_enable(args) -> None:
         for key in ("recallMode", "writeFrequency", "sessionStrategy",
                     "contextTokens", "dialecticReasoningLevel", "dialecticDynamic",
                     "dialecticMaxChars", "messageMaxChars", "dialecticMaxInputChars",
-                    "saveMessages", "observation"):
+                    "saveMessages", "observation", "prefetchGenericContext"):
             val = default_block.get(key)
             if val is not None and key not in block:
                 block[key] = val
@@ -911,6 +912,26 @@ def cmd_setup(args) -> None:
     else:
         hermes_host["dialecticReasoningLevel"] = "low"
 
+    # --- 7d. Prefetch generic context ---
+    current_prefetch = str(
+        hermes_host.get("prefetchGenericContext")
+        if hermes_host.get("prefetchGenericContext") is not None
+        else (cfg.get("prefetchGenericContext", True) if cfg.get("prefetchGenericContext") is not None else True)
+    ).lower()
+    print("\n  Prefetch generic context on session start:")
+    print("    Fire a generic dialectic call during session init to reduce")
+    print("    first-turn latency. On fast platforms (Discord, Telegram),")
+    print("    the call often finishes before the first message arrives and")
+    print("    its generic result may be replaced by a topic-relevant one.")
+    print("    true  -- fire prewarm (default, lower latency on first turn)")
+    print("    false -- skip prewarm, first turn always uses topic-relevant dialectic")
+    new_prefetch = _prompt("Prefetch generic context", default=current_prefetch)
+    if new_prefetch.strip().lower() in {"false", "0", "no", "off"}:
+        hermes_host["prefetchGenericContext"] = False
+    elif new_prefetch.strip().lower() in {"true", "1", "yes", "on"}:
+        hermes_host["prefetchGenericContext"] = True
+    # else: keep current (user pressed Enter)
+
     # --- 8. Session strategy ---
     current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-session")
     print("\n  Session strategy:")
@@ -1101,6 +1122,9 @@ def cmd_status(args) -> None:
     raw = getattr(hcfg, "raw", None) or {}
     dialectic_cadence = raw.get("dialecticCadence") or 1
     print(f"  Dialectic cad:  every {dialectic_cadence} turn{'s' if dialectic_cadence != 1 else ''}")
+    prefetch_generic = raw.get("prefetchGenericContext")
+    prefetch_display = "true" if prefetch_generic is None else str(prefetch_generic).lower()
+    print(f"  Prefetch ctx:   {prefetch_display} (generic dialectic on session start)")
     reasoning_cap = raw.get("reasoningLevelCap") or hcfg.reasoning_level_cap
     heuristic_on = "on" if hcfg.reasoning_heuristic else "off"
     print(f"  Reasoning:      base={hcfg.dialectic_reasoning_level}, cap={reasoning_cap}, heuristic={heuristic_on}")

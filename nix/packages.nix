@@ -43,7 +43,6 @@
             "modal"
             "parallel-web"
             "tts-premium"
-            "vercel"
             "voice"
           ] ++ lib.optionals pkgs.stdenv.isLinux [ "matrix" ];
         };

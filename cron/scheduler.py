@@ -110,6 +110,30 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         )
         return None
 
+
+def _cron_job_requests_memory_provider_tools(job: dict, cfg: dict) -> bool:
+    """Return True only when cron explicitly opts into memory-provider tools.
+
+    Cron agents skip memory by default so scheduled prompts do not silently
+    corrupt user representations or touch external memory providers.  The
+    resolved default cron toolset may include the legacy ``memory`` tool via
+    composite expansion, so this must inspect only explicit selections: a
+    per-job ``enabled_toolsets`` entry or a saved ``platform_toolsets.cron``
+    list from ``hermes tools``.
+    """
+    per_job = job.get("enabled_toolsets")
+    if isinstance(per_job, list):
+        return "memory" in {str(toolset) for toolset in per_job}
+
+    try:
+        platform_toolsets = (cfg or {}).get("platform_toolsets") or {}
+        cron_toolsets = platform_toolsets.get("cron")
+    except AttributeError:
+        return False
+    if not isinstance(cron_toolsets, list):
+        return False
+    return "memory" in {str(toolset) for toolset in cron_toolsets}
+
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -1622,6 +1646,8 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id, _mcp_exc,
             )
 
+        _cron_enabled_toolsets = _resolve_cron_enabled_toolsets(job, _cfg)
+        _cron_memory_opt_in = _cron_job_requests_memory_provider_tools(job, _cfg)
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -1640,7 +1666,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
-            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
+            enabled_toolsets=_cron_enabled_toolsets,
             disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
@@ -1649,7 +1675,11 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Cron skips memory by default so scheduled prompts don't silently
+            # corrupt user representations. Jobs that explicitly opt into the
+            # `memory` toolset need the memory manager initialized so provider
+            # tools such as `mnemosyne_recall` can be injected and routed.
+            skip_memory=not _cron_memory_opt_in,
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

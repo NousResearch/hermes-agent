@@ -1021,6 +1021,75 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
 
+    def test_run_job_skips_memory_by_default(self, tmp_path):
+        """Default cron runs should not initialize persistent memory providers."""
+        job = {
+            "id": "default-memory-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["skip_memory"] is True
+
+    def test_run_job_memory_toolset_initializes_memory_provider_tools(self, tmp_path):
+        """Explicit memory opt-in lets cron expose provider tools.
+
+        Regression: cron passed ``skip_memory=True`` unconditionally, so a job
+        with ``enabled_toolsets=["memory"]`` could get the legacy memory tool
+        but never initialize MemoryManager-backed provider tools such as
+        ``mnemosyne_recall``.
+        """
+        job = {
+            "id": "memory-provider-tool-job",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": ["memory"],
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["enabled_toolsets"] == ["memory"]
+        assert kwargs["skip_memory"] is False
+
+    def test_run_job_platform_memory_toolset_initializes_memory_provider_tools(self, tmp_path):
+        """An explicit cron platform memory toolset is also an opt-in."""
+        (tmp_path / "config.yaml").write_text(
+            "platform_toolsets:\n"
+            "  cron:\n"
+            "    - memory\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "platform-memory-provider-tool-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert "memory" in kwargs["enabled_toolsets"]
+        assert kwargs["skip_memory"] is False
+
     def test_run_job_disabled_toolsets_layer_user_config_on_baseline(self, tmp_path):
         """agent.disabled_toolsets must be honoured in cron — issue #25752.
 

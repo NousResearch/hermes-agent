@@ -90,7 +90,7 @@ gateway:
     nothing_to_do:         "Noch nichts zu komprimieren (das Transkript ist weiterhin vollständig geschützter Kontext)."
     focus_line:            "Fokus: \"{topic}\""
     summary_failed:        "⚠️ Zusammenfassungsgenerierung fehlgeschlagen ({error}). {count} historische Nachricht(en) wurden entfernt und durch einen Platzhalter ersetzt; früherer Kontext ist nicht mehr wiederherstellbar. Überprüfen Sie die Konfiguration des auxiliary.compression-Modells."
-    aborted:               "⚠️ Komprimierung abgebrochen ({error}). Keine Nachrichten wurden entfernt — die Konversation ist unverändert. Führe /compress aus, um es erneut zu versuchen, /reset für eine neue Sitzung, oder prüfe deine auxiliary.compression-Modellkonfiguration."
+    aborted:               "⚠️ Komprimierung abgebrochen ({error}). Keine Nachrichten wurden entfernt — die Konversation ist unverändert. Führen Sie /compress aus, um es erneut zu versuchen, /reset für eine neue Sitzung, oder überprüfen Sie Ihre auxiliary.compression-Modellkonfiguration."
     aux_failed:            "ℹ️ Das konfigurierte Komprimierungsmodell `{model}` ist fehlgeschlagen ({error}). Wiederherstellung mit Ihrem Hauptmodell — Kontext ist intakt — Sie sollten jedoch `auxiliary.compression.model` in config.yaml überprüfen."
     failed:                "Komprimierung fehlgeschlagen: {error}"
 
@@ -348,7 +348,7 @@ gateway:
     enabled:                    "⚡ YOLO-Modus für diese Sitzung **AN** — alle Befehle werden automatisch genehmigt. Mit Vorsicht verwenden."
 
   shared:
-    session_db_unavailable:      "Session-Datenbank nicht verfügbar."
-    session_db_unavailable_prefix: "Session-Datenbank nicht verfügbar"
-    session_not_found:           "Session nicht in der Datenbank gefunden."
+    session_db_unavailable:      "Sitzungsdatenbank nicht verfügbar."
+    session_db_unavailable_prefix: "Sitzungsdatenbank nicht verfügbar"
+    session_not_found:           "Sitzung nicht in der Datenbank gefunden."
     warn_passthrough:            "⚠️ {error}"

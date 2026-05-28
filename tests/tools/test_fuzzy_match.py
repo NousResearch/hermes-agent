@@ -431,18 +431,25 @@ class TestFormatNoMatchHint:
 
 
 class TestEscapeNormalizedNewString:
-    """Regression tests for unescaping common sequences in new_string
-    when the match succeeded via the escape_normalized strategy.
+    """Regression tests for unescaping common sequences in new_string when
+    the matched region of the file contains real control characters.
 
     Issue #33733: LLMs overwhelmingly represent tabs as the two-character
-    sequence \\t (backslash + t) in JSON tool-call arguments. When the file
-    contains real tab bytes (0x09), the escape_normalized strategy matches
-    old_string by unescaping it — but new_string was written as-is, leaving
-    literal \\t characters in the file.
+    sequence ``\\t`` (backslash + t) in JSON tool-call arguments. When the
+    file already contains real tab bytes (0x09), writing new_string
+    verbatim leaves literal ``\\t`` characters and corrupts the file.
+
+    The fix unescapes ``\\t`` -> tab and ``\\r`` -> CR in new_string when
+    the matched file region actually contains those control characters,
+    regardless of which match strategy fired. ``\\n`` is excluded because
+    newlines serialize correctly through JSON.
     """
 
-    def test_tab_in_new_string_unescaped(self):
-        """File has real tab, model sends literal \\t in new_string."""
+    def test_tab_in_new_string_unescaped_under_escape_normalized(self):
+        """File has real tab, model sends literal \\t in BOTH old and new.
+
+        Match strategy is ``escape_normalized``.
+        """
         content = "def hello():\n\tprint(\"before\")\n"
         old_string = "def hello():\n\\tprint(\"before\")\n"
         new_string = "def hello():\n\\tprint(\"after\")\n"
@@ -450,21 +457,25 @@ class TestEscapeNormalizedNewString:
         assert err is None, f"Unexpected error: {err}"
         assert count == 1
         assert strategy == "escape_normalized"
-        # Must contain a real tab, not literal \t
         assert "\tprint(\"after\")" in new
         assert "\\t" not in new
 
-    def test_newline_in_new_string_unescaped(self):
-        """File has real newlines, model sends literal \\n in new_string."""
-        content = "line1\nline2\nline3\n"
-        old_string = "line1\\nline2\\n"
-        new_string = "line1\\nreplaced\\n"
+    def test_tab_in_new_string_unescaped_under_exact(self):
+        """File has real tab, old_string has real tab too (matches via
+        ``exact``), but new_string still arrives with literal ``\\t``.
+
+        This is the issue's headline reproduction — the previous fix that
+        gated on ``strategy_name == "escape_normalized"`` missed this case.
+        """
+        content = "def hello():\n\tprint(\"before\")\n"
+        old_string = "\tprint(\"before\")"           # real tab
+        new_string = "\\tprint(\"after\")"           # literal backslash + t
         new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
         assert err is None, f"Unexpected error: {err}"
         assert count == 1
-        assert strategy == "escape_normalized"
-        assert "replaced" in new
-        assert "\\n" not in new
+        assert strategy == "exact"
+        assert "\tprint(\"after\")" in new
+        assert "\\t" not in new
 
     def test_carriage_return_in_new_string_unescaped(self):
         """File has real CR, model sends literal \\r in new_string."""
@@ -477,27 +488,59 @@ class TestEscapeNormalizedNewString:
         assert strategy == "escape_normalized"
         assert "replaced\r" in new
 
-    def test_mixed_escape_sequences_in_new_string(self):
-        """Model sends \\t and \\n together in new_string."""
+    def test_newline_in_new_string_NOT_unescaped(self):
+        """``\\n`` is intentionally left alone — newlines serialize correctly
+        through JSON, and unescaping would corrupt source-code escape
+        sequences far more often than help.
+        """
+        content = "line1\nline2\n"
+        old_string = "line1\nline2"
+        new_string = "alpha\\nbeta"                 # literal backslash + n
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        # The literal two-character sequence ``\n`` must survive verbatim.
+        assert "alpha\\nbeta" in new
+        # And there should be no real newline added where ``\\n`` sat.
+        assert "alpha\nbeta" not in new
+
+    def test_mixed_tab_and_newline_only_tab_unescaped(self):
+        """When new_string contains both \\t and \\n, only \\t is converted."""
         content = "def foo():\n\tpass\n"
-        old_string = "def foo():\\n\\tpass\\n"
+        old_string = "def foo():\n\tpass\n"
         new_string = "def bar():\\n\\treturn 1\\n"
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        # \t -> real tab
+        assert "\treturn 1" in new
+        assert "\\t" not in new
+        # \n preserved as literal backslash-n
+        assert "\\n" in new
+
+    def test_exact_match_preserves_literal_backslash_t_in_string_literal(self):
+        """If the matched region of the file does NOT contain a real tab,
+        new_string's literal ``\\t`` is preserved — the file genuinely uses
+        a backslash-t sequence (e.g. a Python source line ``sep = "\\t"``).
+        """
+        content = 'sep = "\\t"\n'                   # source contains backslash + t
+        old_string = 'sep = "\\t"\n'
+        new_string = 'sep = "\\tab"\n'              # still backslash + t literal
         new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
         assert err is None, f"Unexpected error: {err}"
         assert count == 1
-        assert strategy == "escape_normalized"
-        assert "\treturn 1" in new
-        assert "\\t" not in new
-        assert "\\n" not in new
-
-    def test_exact_match_preserves_literal_escapes(self):
-        """When matching via exact strategy, literal \\t in new_string should
-        NOT be unescaped — the file genuinely contains backslash-t characters."""
-        content = "path = \"C:\\\\Users\\\"\n"
-        old_string = "path = \"C:\\\\Users\\\"\n"
-        new_string = "path = \"D:\\\\data\\\"\n"
-        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
-        assert err is None
         assert strategy == "exact"
-        # Literal backslashes should be preserved
-        assert "\\\\" in new
+        # File still has the literal two-char ``\t`` — no tab byte injected.
+        assert 'sep = "\\tab"' in new
+        assert "\t" not in new
+
+    def test_no_escape_sequences_passthrough(self):
+        """When new_string has no \\t or \\r, the helper is a no-op."""
+        content = "def foo():\n    return 1\n"
+        old_string = "def foo():\n    return 1\n"
+        new_string = "def foo():\n    return 2\n"
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None
+        assert count == 1
+        assert "return 2" in new
+

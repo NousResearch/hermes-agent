@@ -77,7 +77,7 @@ function cacheSpace(space) {
 
 function dmAddressFromSpaceId(spaceId) {
   if (typeof spaceId !== "string") return null;
-  // Webhooks carry canonical space ids such as `any;-;+15551234567`.
+  // Webhooks carry canonical space ids such as `any;-;+<phone>`.
   // The iMessage helper resolves uncached DMs by recipient address.
   if (spaceId.startsWith("any;-;")) return spaceId.slice("any;-;".length);
   if (spaceId.startsWith("+")) return spaceId;

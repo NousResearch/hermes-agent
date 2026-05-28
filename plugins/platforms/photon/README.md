@@ -45,9 +45,9 @@ plugin stays the same.
 
 One implementation detail matters for shared iMessage lines: webhook
 events identify a conversation with a canonical Spectrum space id
-like `any;-;+15551234567`, while the current `spectrum-ts`
+like `any;-;+<phone>`, while the current `spectrum-ts`
 `imessage(app).space(...)` helper resolves direct-message spaces by
-recipient address (`+15551234567`). The sidecar therefore caches
+recipient address (`+<phone>`). The sidecar therefore caches
 send-capable `Space` objects from the inbound stream and, for uncached
 shared-line DMs, strips the `any;-;` prefix before sending. This
 bridges Photon's webhook shape to the SDK's outbound lookup shape
@@ -56,33 +56,36 @@ without changing the Python gateway contract.
 ## Quick setup
 
 ```bash
-# All-in-one local setup. Replace the phone with your E.164 number.
-hermes photon quick-setup --phone +15551234567
+# Log in first. Quick setup intentionally does not start this flow for you.
+hermes photon login
+
+# Then run the all-in-one local setup. Replace the placeholder with
+# your E.164 number: + followed by country code and number, no spaces.
+hermes photon quick-setup --phone '+<country-code><number>'
 ```
 
 `hermes setup gateway` runs the same guided Photon flow when you choose
-Photon from the platform list. The quick setup path is idempotent: it
-reuses local credentials first, then adopts a matching Photon dashboard
-project named `Hermes Agent` if one exists, creates one if none exists,
-and stops if multiple matching projects require an explicit selection.
+Photon from the platform list. It will ask you to run
+`hermes photon login` first if no Photon token is present. After login,
+the quick setup path is idempotent: it reuses local credentials first,
+then adopts a matching Photon dashboard project named `Hermes Agent` if
+one exists, creates one if none exists, and stops if multiple matching
+projects require an explicit selection.
 
-The equivalent CLI flow is:
+After login, quick setup performs the same work as:
 
 ```bash
-# 1. Authenticate with Photon.
-hermes photon login
-
-# 2. Reuse/adopt/create the Photon project, create the shared user,
+# 1. Reuse/adopt/create the Photon project, create the shared user,
 #    and install the sidecar dependencies.
-hermes photon setup --phone +15551234567
+hermes photon setup --phone '+<country-code><number>'
 
-# 3. Start the managed local webhook tunnel and register it with Photon.
+# 2. Start the managed local webhook tunnel and register it with Photon.
 hermes photon webhook tunnel start
 
-# 4. Check the computed next step.
+# 3. Check the computed next step.
 hermes photon status
 
-# 5. Start the gateway in foreground QA mode.
+# 4. Start the gateway in foreground QA mode.
 hermes gateway run -v
 ```
 
@@ -102,7 +105,7 @@ a specific project.
 ```bash
 hermes photon projects list
 hermes photon projects select <dashboard-or-spectrum-project-id>
-hermes photon setup --new-project --phone +15551234567
+hermes photon setup --new-project --phone '+<country-code><number>'
 ```
 
 Use `--new-project` only when you intentionally want a separate Photon
@@ -164,10 +167,10 @@ hermes gateway start
 ## Detailed command reference
 
 ```bash
-hermes photon quick-setup --phone +15551234567
 hermes photon login
-hermes photon setup --phone +15551234567
-hermes photon setup --new-project --phone +15551234567
+hermes photon quick-setup --phone '+<country-code><number>'
+hermes photon setup --phone '+<country-code><number>'
+hermes photon setup --new-project --phone '+<country-code><number>'
 hermes photon projects list
 hermes photon projects select <dashboard-or-spectrum-project-id>
 hermes photon install-sidecar

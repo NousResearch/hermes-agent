@@ -33,6 +33,8 @@ from . import tunnel as photon_tunnel
 
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
 _MIN_SPECTRUM_TS_VERSION = (1, 7, 2)
+_PHONE_FORMAT = "+<country-code><number>"
+_PHONE_ARG_PLACEHOLDER = f"'{_PHONE_FORMAT}'"
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +53,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
         help="Guided setup with managed Cloudflare webhook tunnel",
     )
     p_quick.add_argument("--project-name", default=None, help="Project name (default: 'Hermes Agent')")
-    p_quick.add_argument("--phone", default=None, help="Your E.164 phone number (e.g. +15551234567)")
+    p_quick.add_argument("--phone", default=None, help=f"Your E.164 phone number (format: {_PHONE_FORMAT})")
     p_quick.add_argument("--first-name", default=None)
     p_quick.add_argument("--last-name", default=None)
     p_quick.add_argument("--email", default=None)
@@ -63,7 +65,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
 
     p_setup = subs.add_parser("setup", help="First-time setup (login + project + user + sidecar)")
     p_setup.add_argument("--project-name", default=None, help="Project name (default: 'Hermes Agent')")
-    p_setup.add_argument("--phone", default=None, help="Your E.164 phone number (e.g. +15551234567)")
+    p_setup.add_argument("--phone", default=None, help=f"Your E.164 phone number (format: {_PHONE_FORMAT})")
     p_setup.add_argument("--first-name", default=None)
     p_setup.add_argument("--last-name", default=None)
     p_setup.add_argument("--email", default=None)
@@ -155,6 +157,10 @@ def _cmd_login(args: argparse.Namespace) -> int:
 
 
 def _cmd_quick_setup(args: argparse.Namespace) -> int:
+    if not photon_auth.load_photon_token():
+        print_login_first_guidance()
+        return 1
+
     setattr(args, "auto_create_project", True)
     print("Photon quick setup")
     print("──────────────────")
@@ -182,6 +188,10 @@ def _cmd_quick_setup(args: argparse.Namespace) -> int:
 
 def interactive_setup() -> None:
     """Entry point used by `hermes setup gateway` when Photon is selected."""
+    if not photon_auth.load_photon_token():
+        print_incomplete_setup_guidance()
+        return
+
     args = argparse.Namespace(
         project_name=None,
         phone=None,
@@ -197,12 +207,28 @@ def interactive_setup() -> None:
         print_incomplete_setup_guidance()
 
 
+def print_login_first_guidance() -> None:
+    """Explain the required login-before-quick-setup order."""
+    print()
+    print("Photon quick setup needs a Photon login first.")
+    print("  First:")
+    print("        hermes photon login")
+    print("  Then:")
+    print(f"        hermes photon quick-setup --phone {_PHONE_ARG_PLACEHOLDER}")
+
+
 def print_incomplete_setup_guidance() -> None:
     """Print explicit next steps when Photon setup did not finish."""
     print()
     print("Photon iMessage setup is not complete yet.")
-    print("  Guided setup:")
-    print("        hermes photon quick-setup --phone +15551234567")
+    if not photon_auth.load_photon_token():
+        print("  First:")
+        print("        hermes photon login")
+        print("  Then:")
+        print(f"        hermes photon quick-setup --phone {_PHONE_ARG_PLACEHOLDER}")
+    else:
+        print("  Guided setup:")
+        print(f"        hermes photon quick-setup --phone {_PHONE_ARG_PLACEHOLDER}")
     print("  Check exact status and next step:")
     print("        hermes photon status")
     print("  Docs:")
@@ -259,7 +285,7 @@ def _run_base_setup(args: argparse.Namespace, *, total_steps: int) -> int:
 
     # 3. Create a Spectrum user for the operator.
     phone = args.phone or _prompt(
-        "Your iMessage phone number (E.164, e.g. +15551234567): "
+        f"Your iMessage phone number (E.164, format {_PHONE_FORMAT}): "
     )
     if not phone:
         print(f"[3/{total_steps}] Skipped user creation (no phone given). Re-run with --phone later.")
@@ -629,7 +655,7 @@ def _cmd_webhook(args: argparse.Namespace) -> int:
     project_id, project_secret = photon_auth.load_project_credentials()
     if not (project_id and project_secret):
         print(
-            "no Photon project configured — run `hermes photon quick-setup --phone +15551234567` first",
+            f"no Photon project configured — run `hermes photon quick-setup --phone {_PHONE_ARG_PLACEHOLDER}` first",
             file=sys.stderr,
         )
         return 1
@@ -727,7 +753,7 @@ def _start_managed_tunnel_and_register() -> int:
     project_id, project_secret = photon_auth.load_project_credentials()
     if not (project_id and project_secret):
         print(
-            "no Photon project configured — run `hermes photon quick-setup --phone +15551234567` first",
+            f"no Photon project configured — run `hermes photon quick-setup --phone {_PHONE_ARG_PLACEHOLDER}` first",
             file=sys.stderr,
         )
         return 1
@@ -924,7 +950,7 @@ def _next_status_step(sidecar_status: str, tunnel_state: dict[str, Any]) -> str:
         return "hermes photon login"
     project_id, project_secret = photon_auth.load_project_credentials()
     if not (project_id and project_secret):
-        return "hermes photon quick-setup --phone +15551234567"
+        return f"hermes photon quick-setup --phone {_PHONE_ARG_PLACEHOLDER}"
     if sidecar_status.startswith("✗"):
         return "hermes photon install-sidecar"
     public_url = _get_env_value("PHOTON_WEBHOOK_PUBLIC_URL") or ""

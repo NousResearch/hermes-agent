@@ -706,10 +706,10 @@ def register(ctx) -> None:
         is_connected=is_connected,
         required_env=["PHOTON_PROJECT_ID", "PHOTON_PROJECT_SECRET"],
         install_hint=(
-            "Run: hermes photon quick-setup --phone +15551234567  (logs in "
-            "via device flow, creates/adopts a Spectrum project, links your "
-            "phone number, installs the sidecar, and registers a managed "
-            "webhook tunnel)."
+            "Run `hermes photon login`, then `hermes photon quick-setup "
+            "--phone '+<country-code><number>'` to create/adopt a Spectrum "
+            "project, link your phone number, install the sidecar, and "
+            "register a managed webhook tunnel."
         ),
         setup_fn=_cli.interactive_setup,
         env_enablement_fn=_env_enablement,

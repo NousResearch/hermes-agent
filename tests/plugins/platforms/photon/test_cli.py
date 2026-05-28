@@ -53,9 +53,9 @@ def test_register_cli_parses_quick_setup_and_tunnel_commands() -> None:
     parser = argparse.ArgumentParser()
     photon_cli.register_cli(parser)
 
-    quick = parser.parse_args(["quick-setup", "--phone", "+15551234567"])
+    quick = parser.parse_args(["quick-setup", "--phone", "+1234567"])
     assert quick.photon_command == "quick-setup"
-    assert quick.phone == "+15551234567"
+    assert quick.phone == "+1234567"
 
     tunnel = parser.parse_args(["webhook", "tunnel", "start"])
     assert tunnel.photon_command == "webhook"
@@ -185,11 +185,27 @@ def test_quick_setup_auto_creates_when_no_remote_project(monkeypatch: Any) -> No
 
     monkeypatch.setattr(photon_auth, "store_project_credentials", fake_store)
 
-    rc = photon_cli._cmd_quick_setup(_setup_args(phone="+15551234567"))
+    rc = photon_cli._cmd_quick_setup(_setup_args(phone="+1234567"))
 
     assert rc == 0
     assert stored["project_id"] == "spectrum-quick"
     assert stored["extra"]["source"] == "auto-new"
+
+
+def test_quick_setup_requires_login_first(monkeypatch: Any, capsys: Any) -> None:
+    monkeypatch.setattr(photon_auth, "load_photon_token", lambda: None)
+    monkeypatch.setattr(
+        photon_cli,
+        "_run_base_setup",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("base setup")),
+    )
+
+    rc = photon_cli._cmd_quick_setup(_setup_args(phone="+1234567"))
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "hermes photon login" in out
+    assert "hermes photon quick-setup --phone '+<country-code><number>'" in out
 
 
 def test_setup_new_project_flag_creates_and_stores(monkeypatch: Any) -> None:
@@ -501,7 +517,7 @@ def test_status_next_step_selection(monkeypatch: Any) -> None:
     monkeypatch.setattr(photon_auth, "load_photon_token", lambda: "token")
     assert (
         photon_cli._next_status_step("✓ installed", {})
-        == "hermes photon quick-setup --phone +15551234567"
+        == "hermes photon quick-setup --phone '+<country-code><number>'"
     )
 
     monkeypatch.setattr(photon_auth, "load_project_credentials", lambda: ("proj", "secret"))
@@ -548,7 +564,7 @@ def test_interactive_setup_prints_incomplete_guidance(
 
     out = capsys.readouterr().out
     assert "Photon iMessage setup is not complete yet" in out
-    assert "hermes photon quick-setup --phone +15551234567" in out
+    assert "hermes photon quick-setup --phone '+<country-code><number>'" in out
     assert "hermes photon status" in out
 
 

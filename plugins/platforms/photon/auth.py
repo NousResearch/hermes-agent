@@ -587,7 +587,8 @@ def create_user(
         raise RuntimeError("httpx is required for Photon user creation")
     if not E164_RE.match(phone_number):
         raise ValueError(
-            f"phone_number must be E.164 (e.g. +15551234567); got {phone_number!r}"
+            "phone_number must be E.164 (format +<country-code><number>); "
+            f"got {phone_number!r}"
         )
     url = f"{_spectrum_host()}/projects/{project_id}/users/"
     body: Dict[str, Any] = {"type": user_type, "phoneNumber": phone_number}

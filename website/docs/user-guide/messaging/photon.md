@@ -37,9 +37,9 @@ endpoint we'll retire the sidecar in a follow-up release.
 
 For shared iMessage lines, inbound webhooks and outbound SDK lookups
 use slightly different identifiers. Webhooks deliver a canonical
-Spectrum space id like `any;-;+15551234567`; the current iMessage SDK
+Spectrum space id like `any;-;+<phone>`; the current iMessage SDK
 helper resolves a direct-message send space by recipient address
-(`+15551234567`). Hermes keeps the webhook `space.id` as the gateway
+(`+<phone>`). Hermes keeps the webhook `space.id` as the gateway
 chat id, and the sidecar maps that id back to the recipient address
 when it needs to resolve an uncached outbound space.
 
@@ -55,9 +55,14 @@ when it needs to resolve an uncached outbound space.
 ## First-time setup
 
 ```bash
-# Device-code login + project + user + sidecar deps + webhook tunnel.
-# Replace the phone with your E.164 number.
-hermes photon quick-setup --phone +15551234567
+# Device-code login first. Quick setup intentionally requires this
+# to be completed before it creates the user or webhook.
+hermes photon login
+
+# Project + user + sidecar deps + webhook tunnel.
+# Replace the placeholder with your E.164 number:
+# + followed by country code and number, no spaces.
+hermes photon quick-setup --phone '+<country-code><number>'
 
 # Check the computed next step whenever you get stuck.
 hermes photon status
@@ -65,7 +70,7 @@ hermes photon status
 
 The wizard:
 
-1. Opens `https://app.photon.codes/` for device approval
+1. Verifies that `hermes photon login` has already completed
 2. Reuses local project credentials, adopts one matching Photon project
    named `Hermes Agent`, or creates one when none exists
 3. Calls the Spectrum `create-user` endpoint with `type: shared` so
@@ -78,9 +83,10 @@ The wizard:
 Photon. Running setup again is safe: Hermes will not silently duplicate
 a matching dashboard project. If multiple matching projects exist, the
 setup stops and asks you to select one. To intentionally make a
-replacement project, run `hermes photon setup --new-project`. To bind
-Hermes to an existing project, use `hermes photon projects list` and
-`hermes photon projects select <project-id>`.
+replacement project, run `hermes photon setup --new-project --phone
+'+<country-code><number>'`. To bind Hermes to an existing project, use
+`hermes photon projects list` and `hermes photon projects select
+<project-id>`.
 
 The Photon dashboard token is stored in `~/.hermes/auth.json` under
 `credential_pool.photon`. The Spectrum project credentials used by the
@@ -161,14 +167,14 @@ hermes gateway start
 
 ```bash
 # One-command setup.
-hermes photon quick-setup --phone +15551234567
+hermes photon login
+hermes photon quick-setup --phone '+<country-code><number>'
 
 # Separate setup steps for debugging or advanced installs.
-hermes photon login
 hermes photon projects list
 hermes photon projects select <dashboard-or-spectrum-project-id>
-hermes photon setup --phone +15551234567
-hermes photon setup --new-project --phone +15551234567
+hermes photon setup --phone '+<country-code><number>'
+hermes photon setup --new-project --phone '+<country-code><number>'
 hermes photon install-sidecar
 
 # Webhooks.

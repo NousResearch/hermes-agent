@@ -908,7 +908,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                 )
                 logger.info(
                     "Fallback provider resolved: %s model=%s",
-                    runtime.get("provider"),
+                    entry.get("provider") or runtime.get("provider"),
                     entry.get("model"),
                 )
                 return {
@@ -16130,8 +16130,21 @@ class GatewayRunner:
                     model, runtime_kwargs.get("provider"), session_key or "",
                 )
             except Exception as exc:
+                # Distinguish rate-limit / quota errors from genuine auth failures
+                # so the user sees actionable guidance instead of misleading
+                # "No Codex credentials stored" for transient 429s.
+                from hermes_cli.auth import AuthError as _AuthError
+                if isinstance(exc, _AuthError) and exc.code and (
+                    "rate" in (exc.code or "")
+                    or "quota" in (exc.code or "")
+                    or "limit" in (exc.code or "")
+                ):
+                    user_msg = f"⚠️ Provider quota exhausted: {exc}"
+                    logger.warning("Provider rate-limited: %s", exc)
+                else:
+                    user_msg = f"⚠️ Provider authentication failed: {exc}"
                 return {
-                    "final_response": f"⚠️ Provider authentication failed: {exc}",
+                    "final_response": user_msg,
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],

@@ -228,7 +228,15 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
-    return False
+    # Last resort: check the web_search_registry for plugin-registered
+    # backends (e.g. a custom "local" extract plugin).  This allows
+    # user-installed plugins with arbitrary backend names to work
+    # without being added to the hardcoded list above.
+    try:
+        from agent.web_search_registry import get_provider
+        return get_provider(backend) is not None
+    except Exception:
+        return False
 
 
 def _ddgs_package_importable() -> bool:

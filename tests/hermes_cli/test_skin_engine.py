@@ -392,3 +392,117 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
         assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"
+
+
+class TestAutoSkinDetection:
+    """Tests for the auto skin resolution (light/dark terminal detection)."""
+
+    def test_auto_resolves_to_light_when_hermes_light_set(self, monkeypatch):
+        from hermes_cli.skin_engine import _resolve_auto_skin
+        monkeypatch.setenv("HERMES_LIGHT", "1")
+        monkeypatch.delenv("HERMES_DEVICE_SKIN", raising=False)
+        assert _resolve_auto_skin() == "ko-light"
+
+    def test_auto_resolves_to_dark_when_hermes_light_false(self, monkeypatch):
+        from hermes_cli.skin_engine import _resolve_auto_skin
+        monkeypatch.setenv("HERMES_LIGHT", "0")
+        monkeypatch.delenv("HERMES_DEVICE_SKIN", raising=False)
+        assert _resolve_auto_skin() == "ko-dark"
+
+    def test_auto_resolves_to_light_when_theme_light(self, monkeypatch):
+        from hermes_cli.skin_engine import _resolve_auto_skin
+        monkeypatch.setenv("HERMES_TUI_THEME", "light")
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_DEVICE_SKIN", raising=False)
+        assert _resolve_auto_skin() == "ko-light"
+
+    def test_auto_resolves_to_dark_when_theme_dark(self, monkeypatch):
+        from hermes_cli.skin_engine import _resolve_auto_skin
+        monkeypatch.setenv("HERMES_TUI_THEME", "dark")
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_DEVICE_SKIN", raising=False)
+        assert _resolve_auto_skin() == "ko-dark"
+
+    def test_auto_resolves_to_light_when_hermes_device_skin_ko_light(self, monkeypatch):
+        from hermes_cli.skin_engine import _resolve_auto_skin
+        monkeypatch.setenv("HERMES_DEVICE_SKIN", "ko-light")
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        assert _resolve_auto_skin() == "ko-light"
+
+    def test_auto_resolves_to_dark_when_hermes_device_skin_ko_dark(self, monkeypatch, tmp_path):
+        from hermes_cli.skin_engine import _resolve_auto_skin
+        monkeypatch.setenv("HERMES_DEVICE_SKIN", "ko-dark")
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        # ko-dark is a user skin — mock _skins_dir to make it findable
+        import yaml
+        fake_skins = tmp_path / "_test_skins_auto"
+        fake_skins.mkdir()
+        (fake_skins / "ko-dark.yaml").write_text(yaml.dump({"name": "ko-dark", "colors": {}}))
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: fake_skins)
+        assert _resolve_auto_skin() == "ko-dark"
+
+    def test_auto_honours_non_auto_env_skin(self, monkeypatch):
+        from hermes_cli.skin_engine import _resolve_auto_skin
+        monkeypatch.setenv("HERMES_DEVICE_SKIN", "ares")
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        # ares is a built-in skin, so it should be honoured
+        assert _resolve_auto_skin() == "ares"
+
+    def test_auto_ignores_invalid_env_skin(self, monkeypatch):
+        from hermes_cli.skin_engine import _resolve_auto_skin
+        monkeypatch.setenv("HERMES_DEVICE_SKIN", "nonexistent_xyz")
+        monkeypatch.setenv("HERMES_TUI_THEME", "light")
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        # Invalid skin name — falls through to detection
+        assert _resolve_auto_skin() == "ko-light"
+
+    def test_init_skin_from_config_auto_resolves(self, monkeypatch):
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        monkeypatch.setenv("HERMES_LIGHT", "1")
+        monkeypatch.delenv("HERMES_DEVICE_SKIN", raising=False)
+        init_skin_from_config({"display": {"skin": "auto"}})
+        assert get_active_skin_name() == "ko-light"
+
+    def test_init_skin_from_config_auto_dark(self, monkeypatch):
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        monkeypatch.setenv("HERMES_LIGHT", "0")
+        monkeypatch.delenv("HERMES_DEVICE_SKIN", raising=False)
+        init_skin_from_config({"display": {"skin": "auto"}})
+        assert get_active_skin_name() == "ko-dark"
+
+    def test_detect_light_mode_true_when_hermes_light_set(self, monkeypatch):
+        from hermes_cli.skin_engine import _detect_terminal_light_mode
+        monkeypatch.setenv("HERMES_LIGHT", "yes")
+        assert _detect_terminal_light_mode() is True
+
+    def test_detect_light_mode_false_when_hermes_light_off(self, monkeypatch):
+        from hermes_cli.skin_engine import _detect_terminal_light_mode
+        monkeypatch.setenv("HERMES_LIGHT", "no")
+        assert _detect_terminal_light_mode() is False
+
+    def test_detect_light_mode_colorfgbg_light(self, monkeypatch):
+        from hermes_cli.skin_engine import _detect_terminal_light_mode
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        monkeypatch.delenv("HERMES_TUI_BACKGROUND", raising=False)
+        monkeypatch.setenv("COLORFGBG", "0;15")
+        assert _detect_terminal_light_mode() is True
+
+    def test_detect_light_mode_colorfgbg_dark(self, monkeypatch):
+        from hermes_cli.skin_engine import _detect_terminal_light_mode
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        monkeypatch.delenv("HERMES_TUI_BACKGROUND", raising=False)
+        monkeypatch.setenv("COLORFGBG", "15;0")
+        assert _detect_terminal_light_mode() is False

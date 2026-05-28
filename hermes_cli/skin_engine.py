@@ -787,17 +787,135 @@ def get_active_skin_name() -> str:
     return _active_skin_name
 
 
+def _detect_terminal_light_mode() -> bool:
+    """Detect whether the terminal has a light background.
+
+    Checks (in order):
+    1. HERMES_LIGHT / HERMES_TUI_LIGHT env vars (explicit override)
+    2. HERMES_TUI_THEME env var ("light" / "dark")
+    3. HERMES_TUI_BACKGROUND hex luminance
+    4. COLORFGBG (xterm/Konsole/urxvt)
+    5. macOS AppleInterfaceStyle
+    6. Fail-safe: dark (dark skins are readable on both backgrounds)
+
+    This is intentionally self-contained — no imports from cli.py — so the
+    skin engine can resolve ``auto`` at init time before the CLI layer loads.
+    """
+    import os, re, subprocess
+
+    _TRUE = re.compile(r"^(1|true|yes|on)$", re.I)
+    _FALSE = re.compile(r"^(0|false|no|off)$", re.I)
+
+    # 1. Explicit env overrides
+    for var in ("HERMES_LIGHT", "HERMES_TUI_LIGHT"):
+        v = (os.environ.get(var) or "").strip().lower()
+        if _TRUE.match(v):
+            return True
+        if _FALSE.match(v):
+            return False
+
+    # 2. Theme hint
+    theme = (os.environ.get("HERMES_TUI_THEME") or "").strip().lower()
+    if theme == "light":
+        return True
+    if theme == "dark":
+        return False
+
+    # 3. Explicit bg hex
+    bg_hint = os.environ.get("HERMES_TUI_BACKGROUND") or ""
+    if bg_hint.startswith("#") and len(bg_hint) in (4, 7):
+        try:
+            hex_str = bg_hint.lstrip("#")
+            if len(hex_str) == 3:
+                hex_str = "".join(c * 2 for c in hex_str)
+            r, g, b = (int(hex_str[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+            # sRGB luminance
+            lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            if lum >= 0.5:
+                return True
+            return False
+        except (ValueError, IndexError):
+            pass
+
+    # 4. COLORFGBG (xterm/Konsole/urxvt)
+    cfgbg = (os.environ.get("COLORFGBG") or "").strip()
+    if cfgbg:
+        last = cfgbg.split(";")[-1] if ";" in cfgbg else cfgbg
+        if last.isdigit():
+            bg = int(last)
+            if bg in (7, 15):
+                return True
+            if 0 <= bg < 16:
+                return False
+
+    # 5. macOS AppleInterfaceStyle
+    try:
+        result = subprocess.run(
+            ["defaults", "read", "-g", "AppleInterfaceStyle"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if "dark" in (result.stdout or "").lower():
+            return False
+        # Key exists but no "dark" → light
+        if result.returncode == 0:
+            return False
+        # Key doesn't exist → light (macOS default is light)
+        return True
+    except Exception:
+        pass
+
+    # 6. Fail-safe: dark (readable on both backgrounds)
+    return False
+
+
+# Skin name mapping for auto-detection
+_AUTO_SKIN_LIGHT = "ko-light"
+_AUTO_SKIN_DARK = "ko-dark"
+
+
+def _resolve_auto_skin() -> str:
+    """Resolve ``auto`` to a concrete skin name based on terminal detection.
+
+    Checks HERMES_DEVICE_SKIN env var first (set by wrapper scripts),
+    then falls back to terminal appearance detection.
+    """
+    import os
+
+    # If a wrapper already resolved the skin, honour it
+    env_skin = (os.environ.get("HERMES_DEVICE_SKIN") or "").strip()
+    if env_skin and env_skin != "auto":
+        # Verify the skin exists before using it
+        skins_path = _skins_dir()
+        user_file = skins_path / f"{env_skin}.yaml"
+        if user_file.is_file() or env_skin in _BUILTIN_SKINS:
+            return env_skin
+
+    # Detect terminal appearance and pick the right skin
+    if _detect_terminal_light_mode():
+        return _AUTO_SKIN_LIGHT
+    return _AUTO_SKIN_DARK
+
+
 def init_skin_from_config(config: dict) -> None:
     """Initialize the active skin from CLI config at startup.
 
     Call this once during CLI init with the loaded config dict.
+
+    When ``display.skin`` is ``"auto"``, resolves to the appropriate
+    skin based on terminal appearance detection (light/dark) and the
+    ``HERMES_DEVICE_SKIN`` env var.  This makes the skin adaptive
+    across any terminal on any machine without manual config changes.
     """
     display = config.get("display") or {}
     if not isinstance(display, dict):
         display = {}
     skin_name = display.get("skin", "default")
     if isinstance(skin_name, str) and skin_name.strip():
-        set_active_skin(skin_name.strip())
+        skin_name = skin_name.strip()
+        if skin_name.lower() == "auto":
+            skin_name = _resolve_auto_skin()
+            logger.info("Skin 'auto' resolved to '%s'", skin_name)
+        set_active_skin(skin_name)
     else:
         set_active_skin("default")
 

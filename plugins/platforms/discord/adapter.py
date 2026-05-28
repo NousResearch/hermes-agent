@@ -4820,8 +4820,10 @@ class DiscordAdapter(BasePlatformAdapter):
             #     recovery)
             # DMs skip entirely because every DM message triggers the bot,
             # so the session transcript already has everything.
+            # Auto-threaded messages also skip — we just created the thread,
+            # there's nothing prior to backfill.
             _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
-            if _has_mention_gap or is_thread:
+            if (_has_mention_gap or is_thread) and auto_threaded_channel is None:
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
                 )

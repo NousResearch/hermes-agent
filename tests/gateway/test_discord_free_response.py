@@ -905,3 +905,25 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
         assert event.channel_context is None
 
 
+@pytest.mark.asyncio
+async def test_discord_auto_thread_skips_backfill(adapter, monkeypatch):
+    """Auto-created threads skip backfill — the thread is brand new with no prior context."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["history_backfill"] = True
+
+    fake_thread = FakeThread(channel_id=777, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+    adapter._fetch_channel_context = AsyncMock(return_value="[Recent channel messages]\n[Alice] noise")
+
+    bot_user = adapter._client.user
+    parent = FakeTextChannel(channel_id=200, name="general")
+    message = make_message(channel=parent, content="hello", mentions=[bot_user])
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter._fetch_channel_context.assert_not_awaited()
+
+

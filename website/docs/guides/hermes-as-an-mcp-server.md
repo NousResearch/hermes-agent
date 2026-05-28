@@ -73,7 +73,7 @@ If your MCP client cannot install PyPI extras automatically, install that extra 
 When publishing or validating registry metadata, use the server name:
 
 ```text
-io.github.NousResearch/hermes-agent
+io.github.nousresearch/hermes-agent
 ```
 
 ## Safety notes

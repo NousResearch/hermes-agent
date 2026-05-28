@@ -4,7 +4,7 @@
 
 # Hermes Agent ☤
 
-<!-- mcp-name: io.github.NousResearch/hermes-agent -->
+<!-- mcp-name: io.github.nousresearch/hermes-agent -->
 
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>

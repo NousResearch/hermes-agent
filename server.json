@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.NousResearch/hermes-agent",
+  "name": "io.github.nousresearch/hermes-agent",
   "title": "Hermes Agent",
   "description": "Control Hermes Agent conversations, messaging, approvals, and events over MCP.",
   "version": "0.14.0",

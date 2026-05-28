@@ -1583,6 +1583,15 @@ class BasePlatformAdapter(ABC):
         """
         return len
 
+    def apply_permission_config(self, config: PlatformConfig, permissions: Any = None) -> None:
+        """Apply a hot-reloaded permission-only config snapshot.
+
+        Default adapters do not cache permission-derived state, so replacing the
+        config reference is enough. Platform adapters with derived permission
+        caches (for example Telegram mention regexes) override this hook.
+        """
+        self.config = config
+
     def supports_draft_streaming(
         self,
         chat_type: Optional[str] = None,

@@ -4535,6 +4535,16 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.info("[%s] Loaded %d Telegram mention pattern(s)", self.name, len(compiled))
         return compiled
 
+    def apply_permission_config(self, config: PlatformConfig, permissions: Any = None) -> None:
+        """Apply permission-only Telegram config without reconnecting.
+
+        The Telegram adapter reads most permission knobs from ``config.extra``
+        at runtime, but mention regexes are compiled for speed. Recompile only
+        that derived cache and leave connection/session state untouched.
+        """
+        self.config = config
+        self._mention_patterns = self._compile_mention_patterns()
+
     def _is_group_chat(self, message: Message) -> bool:
         chat = getattr(message, "chat", None)
         if not chat:

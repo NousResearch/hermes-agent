@@ -156,11 +156,19 @@ class PermissionManager:
     def reload(self) -> ReloadResult:
         """Build a candidate snapshot and swap it in only after validation."""
         try:
-            candidate = self._build_snapshot()
+            candidate = self.load_candidate()
         except Exception as exc:
             return ReloadResult(False, str(exc), self._snapshot)
-        self._snapshot = candidate
+        self.commit(candidate)
         return ReloadResult(True, "permissions reloaded", candidate)
+
+    def load_candidate(self) -> PermissionSnapshot:
+        """Build and validate a snapshot without changing active permissions."""
+        return self._build_snapshot()
+
+    def commit(self, snapshot: PermissionSnapshot) -> None:
+        """Make a previously validated snapshot active."""
+        self._snapshot = snapshot
 
     def authorize(self, source: SessionSource) -> AuthDecision:
         """Return an authorization decision for source using the active snapshot."""

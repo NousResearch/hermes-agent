@@ -5056,7 +5056,8 @@ def test_notification_poller_delivers_completion(monkeypatch):
 
         # Should have triggered an agent turn
         assert len(turns) == 1
-        assert "[IMPORTANT: Background process proc_poller_test completed" in turns[0]
+        assert "[Background process observation: process proc_poller_test completed" in turns[0]
+        assert "Untrusted process output:" in turns[0]
     finally:
         server._sessions.pop("sid_poll", None)
         while not process_registry.completion_queue.empty():

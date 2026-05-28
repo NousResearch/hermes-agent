@@ -83,6 +83,91 @@ class TestRunConversationCodexPath:
         assert result["api_calls"] == 1
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
+        assert result["interrupted"] is False
+
+    def test_persists_user_message_before_codex_turn(self, fake_session):
+        """The current user message must hit durable persistence before
+        codex_app_server starts any long-running work."""
+        agent = _make_codex_agent()
+        snapshots = []
+
+        def capture(messages, conversation_history=None):
+            snapshots.append([dict(m) for m in messages])
+
+        with patch.object(agent, "_persist_session", side_effect=capture), patch.object(
+            agent, "_spawn_background_review", return_value=None
+        ):
+            agent.run_conversation("flight info is BA123")
+
+        assert snapshots, "expected at least one persistence checkpoint"
+        assert snapshots[0] == [{"role": "user", "content": "flight info is BA123"}]
+
+    def test_persists_projected_codex_messages(self, fake_session):
+        """The codex_app_server path must persist its projected assistant/tool
+        transcript because the gateway skips DB writes when an agent has DB
+        persistence available."""
+        agent = _make_codex_agent()
+        snapshots = []
+
+        def capture(messages, conversation_history=None):
+            snapshots.append([dict(m) for m in messages])
+
+        with patch.object(agent, "_persist_session", side_effect=capture), patch.object(
+            agent, "_spawn_background_review", return_value=None
+        ):
+            agent.run_conversation("hello")
+
+        assert any(
+            any(
+                msg.get("role") == "assistant"
+                and msg.get("content") == "echo: hello"
+                for msg in snapshot
+            )
+            for snapshot in snapshots
+        ), snapshots
+
+    def test_persists_projected_codex_messages_before_run_turn_returns(self, monkeypatch):
+        """Projected app-server messages must checkpoint during the blocking
+        run_turn() loop, not only after turn/completed returns."""
+        snapshots = []
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            checkpoint = kwargs.get("projection_checkpoint")
+            assert checkpoint is not None, "run_turn needs an incremental checkpoint callback"
+            checkpoint([{"role": "assistant", "content": "mid-turn work"}])
+            assert any(
+                any(msg.get("content") == "mid-turn work" for msg in snapshot)
+                for snapshot in snapshots
+            ), "projection was not persisted before run_turn returned"
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "mid-turn work"}],
+                tool_iterations=0,
+                turn_id="turn-stub-1",
+                thread_id="thread-stub-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-stub-1"
+        )
+
+        agent = _make_codex_agent()
+
+        def capture(messages, conversation_history=None):
+            snapshots.append([dict(m) for m in messages])
+
+        with patch.object(agent, "_persist_session", side_effect=capture), patch.object(
+            agent, "_spawn_background_review", return_value=None
+        ):
+            result = agent.run_conversation("do codex work")
+
+        assert result["completed"] is True
+        assert sum(
+            1
+            for msg in result["messages"]
+            if msg.get("role") == "assistant" and msg.get("content") == "mid-turn work"
+        ) == 1
 
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()
@@ -318,8 +403,32 @@ class TestErrorHandling:
             result = agent.run_conversation("hi")
         assert result["completed"] is False
         assert result["partial"] is True
+        assert result["interrupted"] is False
         assert "subprocess died" in result["error"]
         assert "codex-runtime auto" in result["final_response"]
+
+    def test_session_exception_still_persists_user_message(self, monkeypatch):
+        def boom_run_turn(self, user_input, **kwargs):
+            raise RuntimeError("subprocess died")
+
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started",
+                            lambda self: "t1")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", boom_run_turn)
+
+        agent = _make_codex_agent()
+        snapshots = []
+
+        def capture(messages, conversation_history=None):
+            snapshots.append([dict(m) for m in messages])
+
+        with patch.object(agent, "_persist_session", side_effect=capture), patch.object(
+            agent, "_spawn_background_review", return_value=None
+        ):
+            result = agent.run_conversation("do not lose this")
+
+        assert result["completed"] is False
+        assert snapshots
+        assert snapshots[0] == [{"role": "user", "content": "do not lose this"}]
 
     def test_interrupted_turn_marked_partial(self, monkeypatch):
         def interrupted_turn(self, user_input, **kwargs):
@@ -341,6 +450,7 @@ class TestErrorHandling:
             result = agent.run_conversation("hi")
         assert result["completed"] is False
         assert result["partial"] is True
+        assert result["interrupted"] is True
         assert result["error"] == "user interrupted"
 
 

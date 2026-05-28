@@ -4390,12 +4390,13 @@ class AIAgent:
         user_message: str,
         original_user_message: Any,
         messages: List[Dict[str, Any]],
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
         effective_task_id: str,
         should_review_memory: bool = False,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
-        return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+        return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, conversation_history=conversation_history, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
 
 def main(
     query: str = None,

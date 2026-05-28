@@ -56,6 +56,24 @@ def test_returns_self_when_session_has_messages(db):
     assert db.resolve_resume_session_id("root") == "root"
 
 
+def test_compression_parent_with_messages_redirects_to_tip(db):
+    _make_chain(db, [("root", None), ("child", "root")])
+    db.append_message("root", role="user", content="old parent row")
+    db.append_message("child", role="assistant", content="live continuation")
+    base = int(time.time())
+    db._conn.execute(
+        "UPDATE sessions SET ended_at = ?, end_reason = 'compression' WHERE id = ?",
+        (base, "root"),
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ? WHERE id = ?",
+        (base + 1, "child"),
+    )
+    db._conn.commit()
+
+    assert db.resolve_resume_session_id("root") == "child"
+
+
 def test_returns_self_when_no_descendant_has_messages(db):
     _make_chain(db, [("root", None), ("child1", "root"), ("child2", "child1")])
     assert db.resolve_resume_session_id("root") == "root"

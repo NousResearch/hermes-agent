@@ -1404,6 +1404,7 @@ def merge_pending_message_event(
             existing.media_types.extend(event.media_types)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            _notify_pending_messages_changed(pending_messages)
             return
 
         if existing_has_media or incoming_has_media:
@@ -1422,6 +1423,7 @@ def merge_pending_message_event(
                 and event.message_type != MessageType.TEXT
             ):
                 existing.message_type = event.message_type
+            _notify_pending_messages_changed(pending_messages)
             return
 
         if (
@@ -1431,6 +1433,7 @@ def merge_pending_message_event(
         ):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            _notify_pending_messages_changed(pending_messages)
             return
 
     pending_messages[session_key] = event
@@ -1460,6 +1463,57 @@ _RETRYABLE_ERROR_PATTERNS = (
 # reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
 # ``None`` when the response was already delivered (e.g. via streaming).
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+
+
+_MISSING = object()
+
+
+class PendingMessageStore(dict):
+    """dict that notifies GatewayRunner when queued follow-ups change."""
+
+    def __init__(self, *args, on_change: Optional[Callable[[], None]] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_change = on_change
+
+    def set_change_callback(self, callback: Optional[Callable[[], None]]) -> None:
+        self._on_change = callback
+
+    def notify_changed(self) -> None:
+        if self._on_change is None:
+            return
+        try:
+            self._on_change()
+        except Exception:
+            logger.debug("pending message change callback failed", exc_info=True)
+
+    def __setitem__(self, key, value) -> None:
+        super().__setitem__(key, value)
+        self.notify_changed()
+
+    def __delitem__(self, key) -> None:
+        super().__delitem__(key)
+        self.notify_changed()
+
+    def pop(self, key, default=_MISSING):
+        value = super().pop(key, _MISSING)
+        if value is not _MISSING:
+            self.notify_changed()
+            return value
+        if default is _MISSING:
+            raise KeyError(key)
+        return default
+
+    def clear(self) -> None:
+        if not self:
+            return
+        super().clear()
+        self.notify_changed()
+
+
+def _notify_pending_messages_changed(pending_messages: Dict[str, MessageEvent]) -> None:
+    notify = getattr(pending_messages, "notify_changed", None)
+    if callable(notify):
+        notify()
 
 
 def resolve_channel_prompt(
@@ -1580,7 +1634,7 @@ class BasePlatformAdapter(ABC):
         # Without the owner-task map, an old task's finally block could delete
         # a newer task's guard, leaving stale busy state.
         self._active_sessions: Dict[str, asyncio.Event] = {}
-        self._pending_messages: Dict[str, MessageEvent] = {}
+        self._pending_messages: Dict[str, MessageEvent] = PendingMessageStore()
         self._session_tasks: Dict[str, asyncio.Task] = {}
         self._busy_text_mode: str = (
             os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue").strip().lower()
@@ -1858,6 +1912,15 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_pending_message_change_callback(
+        self,
+        callback: Optional[Callable[[], None]],
+    ) -> None:
+        """Set callback fired when queued follow-ups are added or drained."""
+        store = getattr(self, "_pending_messages", None)
+        if hasattr(store, "set_change_callback"):
+            store.set_change_callback(callback)
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -3059,6 +3122,10 @@ class BasePlatformAdapter(ABC):
 
         delay = self._text_debounce_delay(session_key)
         state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
+        # The debounce buffer is RAM-only, so force a durable pending snapshot
+        # while the short merge window is open. If the gateway dies in that
+        # window, startup restores this as a normal pending follow-up.
+        _notify_pending_messages_changed(self._pending_messages)
 
     async def _flush_text_debounce(self, session_key: str, delay: float) -> None:
         """Timer task that flushes the debounced text buffer."""
@@ -4123,7 +4190,10 @@ class BasePlatformAdapter(ABC):
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
         self._session_tasks.clear()
-        self._pending_messages.clear()
+        # Do not notify/persist a deletion here. During gateway shutdown or
+        # replacement, queued follow-ups should remain in the durable pending
+        # queue for the next process to restore.
+        dict.clear(self._pending_messages)
         self._active_sessions.clear()
         for state in list(self._text_debounce_store().values()):
             if state.task is not None and not state.task.done():

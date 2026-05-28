@@ -1888,14 +1888,12 @@ class SessionDB:
 
         Context compression ends the current session and forks a new child session
         (linked via ``parent_session_id``). The flush cursor is reset, so the
-        child is where new messages actually land — the parent ends up with
-        ``message_count = 0`` rows unless messages had already been flushed to
-        it before compression. See #15000.
+        child is where new messages actually land. See #15000.
 
-        This helper walks ``parent_session_id`` forward from ``session_id`` and
-        returns the first descendant in the chain that has at least one message
-        row. If the original session already has messages, or no descendant
-        has any, the original ``session_id`` is returned unchanged.
+        This helper first follows the explicit compression chain so resuming an
+        ended parent opens the live continuation even if the parent already has
+        messages. Older data can have empty compression parents, so we keep the
+        message-bearing descendant fallback for non-marked chains.
 
         The chain is always walked via the child whose ``started_at`` is
         latest; that matches the single-chain shape that compression creates.
@@ -1903,6 +1901,13 @@ class SessionDB:
         """
         if not session_id:
             return session_id
+
+        try:
+            tip = self.get_compression_tip(session_id)
+        except Exception:
+            tip = session_id
+        if tip and tip != session_id:
+            return tip
 
         with self._lock:
             # If this session already has messages, nothing to redirect.
@@ -3311,4 +3316,3 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
-

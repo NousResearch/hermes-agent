@@ -21,9 +21,21 @@ import logging
 import os
 import time
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _persist_codex_app_server_turn(
+    agent,
+    messages: List[Dict[str, Any]],
+    conversation_history: Optional[List[Dict[str, Any]]],
+) -> None:
+    """Best-effort durable checkpoint for the codex app-server runtime."""
+    try:
+        agent._persist_session(messages, conversation_history)
+    except Exception:
+        logger.warning("codex app-server session persistence failed", exc_info=True)
 
 
 def run_codex_app_server_turn(
@@ -32,6 +44,7 @@ def run_codex_app_server_turn(
     user_message: str,
     original_user_message: Any,
     messages: List[Dict[str, Any]],
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
     effective_task_id: str,
     should_review_memory: bool = False,
 ) -> Dict[str, Any]:
@@ -66,8 +79,17 @@ def run_codex_app_server_turn(
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    def checkpoint_projected_messages(projected_messages: List[Dict[str, Any]]) -> None:
+        if not projected_messages:
+            return
+        snapshot = list(messages) + [dict(msg) for msg in projected_messages]
+        _persist_codex_app_server_turn(agent, snapshot, conversation_history)
+
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(
+            user_input=user_message,
+            projection_checkpoint=checkpoint_projected_messages,
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn
@@ -77,6 +99,7 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
+        _persist_codex_app_server_turn(agent, messages, conversation_history)
         return {
             "final_response": (
                 f"Codex app-server turn failed: {exc}. "
@@ -86,6 +109,7 @@ def run_codex_app_server_turn(
             "api_calls": 0,
             "completed": False,
             "partial": True,
+            "interrupted": False,
             "error": str(exc),
         }
 
@@ -110,6 +134,7 @@ def run_codex_app_server_turn(
     # is exactly what curator.py / sessions DB expect.
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
+        _persist_codex_app_server_turn(agent, messages, conversation_history)
 
     # Counter ticks for the agent-improvement loop.
     # _turns_since_memory and _user_turn_count are ALREADY incremented
@@ -162,12 +187,15 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    _persist_codex_app_server_turn(agent, messages, conversation_history)
+
     return {
         "final_response": turn.final_text,
         "messages": messages,
         "api_calls": 1,  # one app-server "turn" maps to one logical API call
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
+        "interrupted": turn.interrupted,
         "error": turn.error,
         "codex_thread_id": turn.thread_id,
         "codex_turn_id": turn.turn_id,

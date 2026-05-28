@@ -215,7 +215,7 @@ class TestHTTP413Compression:
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(
                 agent, "_persist_session",
-                side_effect=lambda msgs, hist: persist_calls.append(hist),
+                side_effect=lambda msgs, hist: persist_calls.append((msgs, hist)),
             ),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -227,7 +227,13 @@ class TestHTTP413Compression:
             agent.run_conversation("hello", conversation_history=big_history)
 
         assert len(persist_calls) >= 1, "Expected at least one _persist_session call"
-        for hist in persist_calls:
+        compressed_persists = [
+            hist
+            for msgs, hist in persist_calls
+            if msgs and msgs[0].get("content") == "summary"
+        ]
+        assert compressed_persists, "Expected compressed session persist"
+        for hist in compressed_persists:
             assert hist is None, (
                 f"conversation_history should be None after mid-loop compression, "
                 f"got list with {len(hist)} items"
@@ -254,7 +260,7 @@ class TestHTTP413Compression:
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(
                 agent, "_persist_session",
-                side_effect=lambda msgs, hist: persist_calls.append(hist),
+                side_effect=lambda msgs, hist: persist_calls.append((msgs, hist)),
             ),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -266,7 +272,13 @@ class TestHTTP413Compression:
             agent.run_conversation("hello", conversation_history=big_history)
 
         assert len(persist_calls) >= 1
-        for hist in persist_calls:
+        compressed_persists = [
+            hist
+            for msgs, hist in persist_calls
+            if msgs and msgs[0].get("content") == "summary"
+        ]
+        assert compressed_persists, "Expected compressed session persist"
+        for hist in compressed_persists:
             assert hist is None, (
                 f"conversation_history should be None after context-overflow compression, "
                 f"got list with {len(hist)} items"

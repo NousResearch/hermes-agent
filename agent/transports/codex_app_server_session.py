@@ -365,6 +365,7 @@ class CodexAppServerSession:
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
         post_tool_quiet_timeout: float = 90.0,
+        projection_checkpoint: Optional[Callable[[list[dict]], None]] = None,
     ) -> TurnResult:
         """Send a user message and block until turn/completed, while
         forwarding server-initiated approval requests and projecting items
@@ -397,6 +398,20 @@ class CodexAppServerSession:
 
         self._interrupt_event.clear()
         projector = CodexEventProjector()
+
+        def _record_projected_messages(projected_messages: list[dict]) -> None:
+            if not projected_messages:
+                return
+            result.projected_messages.extend(projected_messages)
+            if projection_checkpoint is None:
+                return
+            try:
+                projection_checkpoint(list(result.projected_messages))
+            except Exception:
+                logger.warning(
+                    "codex app-server projection checkpoint failed",
+                    exc_info=True,
+                )
 
         user_input_text = _coerce_turn_input_text(user_input)
 
@@ -503,7 +518,7 @@ class CodexAppServerSession:
                     self._track_pending_file_change(pending)
                     proj = projector.project(pending)
                     if proj.messages:
-                        result.projected_messages.extend(proj.messages)
+                        _record_projected_messages(proj.messages)
                     if proj.is_tool_iteration:
                         result.tool_iterations += 1
                         last_tool_completion_at = time.monotonic()
@@ -544,7 +559,7 @@ class CodexAppServerSession:
             # Project into messages
             projection = projector.project(note)
             if projection.messages:
-                result.projected_messages.extend(projection.messages)
+                _record_projected_messages(projection.messages)
             if projection.is_tool_iteration:
                 result.tool_iterations += 1
                 # Arm/refresh the post-tool quiet watchdog whenever a

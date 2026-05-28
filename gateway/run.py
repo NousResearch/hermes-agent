@@ -1730,6 +1730,7 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._durable_pending_path = _hermes_home / "gateway_pending_messages.json"
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
         # "next-turn" follow-ups where repeated sends collapse into one
@@ -2637,6 +2638,237 @@ class GatewayRunner:
         if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
             depth += 1
         return depth
+
+    def _message_event_to_dict(self, event: "MessageEvent") -> dict:
+        source = getattr(event, "source", None)
+        return {
+            "text": event.text or "",
+            "message_type": event.message_type.value,
+            "source": source.to_dict() if source else None,
+            "message_id": event.message_id,
+            "platform_update_id": event.platform_update_id,
+            "media_urls": list(event.media_urls or []),
+            "media_types": list(event.media_types or []),
+            "reply_to_message_id": event.reply_to_message_id,
+            "reply_to_text": event.reply_to_text,
+            "auto_skill": event.auto_skill,
+            "channel_prompt": event.channel_prompt,
+            "channel_context": event.channel_context,
+            "internal": bool(event.internal),
+            "timestamp": event.timestamp.isoformat() if event.timestamp else None,
+        }
+
+    def _message_event_from_dict(self, data: dict) -> Optional["MessageEvent"]:
+        try:
+            source_data = data.get("source")
+            if not isinstance(source_data, dict):
+                return None
+            timestamp_raw = data.get("timestamp")
+            timestamp = (
+                datetime.fromisoformat(timestamp_raw)
+                if isinstance(timestamp_raw, str) and timestamp_raw
+                else datetime.now()
+            )
+            return MessageEvent(
+                text=data.get("text") or "",
+                message_type=MessageType(data.get("message_type") or MessageType.TEXT.value),
+                source=SessionSource.from_dict(source_data),
+                message_id=data.get("message_id"),
+                platform_update_id=data.get("platform_update_id"),
+                media_urls=list(data.get("media_urls") or []),
+                media_types=list(data.get("media_types") or []),
+                reply_to_message_id=data.get("reply_to_message_id"),
+                reply_to_text=data.get("reply_to_text"),
+                auto_skill=data.get("auto_skill"),
+                channel_prompt=data.get("channel_prompt"),
+                channel_context=data.get("channel_context"),
+                internal=bool(data.get("internal")),
+                timestamp=timestamp,
+            )
+        except Exception:
+            logger.debug("Failed to restore durable pending message", exc_info=True)
+            return None
+
+    def _read_durable_pending_payload(self) -> dict:
+        path = getattr(self, "_durable_pending_path", None)
+        if path is None or not path.exists():
+            return {"pending": {}, "queued": {}}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Failed to read durable pending queue %s: %s", path, exc)
+            self._quarantine_durable_pending_payload(path)
+            return {"pending": {}, "queued": {}}
+        if not isinstance(data, dict):
+            logger.warning("Invalid durable pending queue shape in %s", path)
+            self._quarantine_durable_pending_payload(path)
+            return {"pending": {}, "queued": {}}
+        pending = data.get("pending") if isinstance(data.get("pending"), dict) else {}
+        queued = data.get("queued") if isinstance(data.get("queued"), dict) else {}
+        return {"pending": pending, "queued": queued}
+
+    def _quarantine_durable_pending_payload(self, path: Path) -> None:
+        try:
+            suffix = datetime.now().strftime("%Y%m%d%H%M%S%f")
+            quarantine = path.with_name(f"{path.name}.corrupt.{suffix}")
+            path.replace(quarantine)
+            logger.warning("Quarantined corrupt durable pending queue to %s", quarantine)
+        except Exception as exc:
+            logger.warning("Failed to quarantine durable pending queue %s: %s", path, exc)
+
+    def _save_durable_pending_messages(self) -> None:
+        path = getattr(self, "_durable_pending_path", None)
+        if path is None:
+            return
+
+        # Preserve entries for platforms that are not connected in this
+        # process yet, so reconnect/startup ordering cannot drop them.
+        existing = self._read_durable_pending_payload()
+        connected_platforms = {p.value for p in self.adapters.keys()}
+        pending_payload = {
+            key: value
+            for key, value in existing.get("pending", {}).items()
+            if isinstance(value, dict)
+            and (value.get("source") or {}).get("platform") not in connected_platforms
+        }
+        queued_payload = {
+            key: value
+            for key, value in existing.get("queued", {}).items()
+            if isinstance(value, list)
+            and (
+                not value
+                or ((value[0].get("source") or {}).get("platform") not in connected_platforms)
+            )
+        }
+
+        for adapter in self.adapters.values():
+            for session_key, event in (getattr(adapter, "_pending_messages", {}) or {}).items():
+                pending_payload[session_key] = self._message_event_to_dict(event)
+            for session_key, state in (getattr(adapter, "_text_debounce", {}) or {}).items():
+                event = getattr(state, "event", None)
+                if event is not None and session_key not in pending_payload:
+                    pending_payload[session_key] = self._message_event_to_dict(event)
+
+        for session_key, events in (getattr(self, "_queued_events", {}) or {}).items():
+            if events:
+                queued_payload[session_key] = [
+                    self._message_event_to_dict(event) for event in events
+                ]
+
+        try:
+            if not pending_payload and not queued_payload:
+                path.unlink(missing_ok=True)
+                return
+            payload = {
+                "updated_at": datetime.now().isoformat(),
+                "pending": pending_payload,
+                "queued": queued_payload,
+            }
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as exc:
+            logger.warning("Failed to save durable pending queue %s: %s", path, exc)
+
+    def _restore_durable_pending_messages_for_adapter(self, adapter: Any) -> int:
+        payload = self._read_durable_pending_payload()
+        restored = 0
+        platform = getattr(adapter, "platform", None)
+        platform_value = getattr(platform, "value", platform)
+
+        pending_store = getattr(adapter, "_pending_messages", None)
+        if pending_store is not None:
+            for session_key, event_data in payload.get("pending", {}).items():
+                event = self._message_event_from_dict(event_data)
+                if event is None:
+                    continue
+                if getattr(event.source.platform, "value", event.source.platform) != platform_value:
+                    continue
+                if session_key not in pending_store:
+                    dict.__setitem__(pending_store, session_key, event)
+                    restored += 1
+
+        for session_key, event_items in payload.get("queued", {}).items():
+            if not isinstance(event_items, list):
+                continue
+            events: list[MessageEvent] = []
+            for item in event_items:
+                event = self._message_event_from_dict(item)
+                if event is None:
+                    continue
+                if getattr(event.source.platform, "value", event.source.platform) != platform_value:
+                    continue
+                events.append(event)
+            if events and not self._queued_events.get(session_key):
+                self._queued_events[session_key] = events
+                restored += len(events)
+
+        return restored
+
+    def _is_session_resume_pending(self, session_key: str) -> bool:
+        try:
+            with self.session_store._lock:  # noqa: SLF001
+                self.session_store._ensure_loaded_locked()  # noqa: SLF001
+                entry = self.session_store._entries.get(session_key)  # noqa: SLF001
+                return bool(entry and entry.resume_pending and not entry.suspended)
+        except Exception:
+            return False
+
+    def _schedule_durable_pending_messages(self) -> int:
+        scheduled = 0
+        for adapter in list(self.adapters.values()):
+            pending_store = getattr(adapter, "_pending_messages", None)
+            if not pending_store:
+                continue
+            for session_key, event in list(pending_store.items()):
+                if session_key in self._running_agents:
+                    continue
+                # If the previous turn was interrupted, let auto-resume run
+                # first; the restored pending slot will be drained afterward.
+                if self._is_session_resume_pending(session_key):
+                    continue
+                # Claim the in-memory slot without notifying the durable
+                # snapshot writer. The on-disk queue remains protected until
+                # handle_message completes and durably owns the user turn.
+                dict.pop(pending_store, session_key, None)
+                task = asyncio.create_task(
+                    self._handle_durable_pending_message(adapter, session_key, event)
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+                scheduled += 1
+        if scheduled:
+            logger.info("Scheduled %d durable pending message(s)", scheduled)
+        return scheduled
+
+    def _requeue_durable_pending_message(
+        self,
+        adapter: Any,
+        session_key: str,
+        event: MessageEvent,
+    ) -> None:
+        pending_store = getattr(adapter, "_pending_messages", None)
+        if pending_store is not None and session_key not in pending_store:
+            dict.__setitem__(pending_store, session_key, event)
+        self._save_durable_pending_messages()
+
+    async def _handle_durable_pending_message(
+        self,
+        adapter: Any,
+        session_key: str,
+        event: MessageEvent,
+    ) -> None:
+        try:
+            await adapter.handle_message(event)
+        except asyncio.CancelledError:
+            self._requeue_durable_pending_message(adapter, session_key, event)
+            raise
+        except Exception:
+            logger.exception("Durable pending message failed; re-queued for retry")
+            self._requeue_durable_pending_message(adapter, session_key, event)
+        else:
+            self._save_durable_pending_messages()
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
@@ -3809,6 +4041,33 @@ class GatewayRunner:
         {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
     )
 
+    async def _heartbeat_active_session(
+        self,
+        session_key: str,
+        stop_event: asyncio.Event,
+        *,
+        interval_seconds: float = 30.0,
+    ) -> None:
+        """Keep SessionEntry.updated_at fresh while a long turn is running.
+
+        Crash recovery marks recently updated sessions as resume_pending on
+        next startup. Without a heartbeat, all-day jobs can look idle and be
+        skipped by that recovery window.
+        """
+        if not session_key:
+            return
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+            except asyncio.TimeoutError:
+                pass
+            if stop_event.is_set():
+                break
+            try:
+                self.session_store.update_session(session_key)
+            except Exception as exc:
+                logger.debug("session heartbeat failed for %s: %s", session_key, exc)
+
     def _schedule_resume_pending_sessions(self) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
@@ -4174,6 +4433,11 @@ class GatewayRunner:
                 success = await self._connect_adapter_with_timeout(adapter, platform)
                 if success:
                     self.adapters[platform] = adapter
+                    restored_pending = self._restore_durable_pending_messages_for_adapter(adapter)
+                    if hasattr(adapter, "set_pending_message_change_callback"):
+                        adapter.set_pending_message_change_callback(
+                            self._save_durable_pending_messages
+                        )
                     self._sync_voice_mode_state_to_adapter(adapter)
                     connected_count += 1
                     self._update_platform_runtime_status(
@@ -4182,7 +4446,14 @@ class GatewayRunner:
                         error_code=None,
                         error_message=None,
                     )
-                    logger.info("✓ %s connected", platform.value)
+                    if restored_pending:
+                        logger.info(
+                            "✓ %s connected; restored %d durable pending message(s)",
+                            platform.value,
+                            restored_pending,
+                        )
+                    else:
+                        logger.info("✓ %s connected", platform.value)
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
                     # Defensive cleanup: a failed connect() may have
@@ -4372,6 +4643,7 @@ class GatewayRunner:
         # by the normal successful-turn path, so a failed auto-resume remains
         # visible for manual recovery on the next user message.
         self._schedule_resume_pending_sessions()
+        self._schedule_durable_pending_messages()
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
@@ -5871,6 +6143,11 @@ class GatewayRunner:
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
                         self.adapters[platform] = adapter
+                        restored_pending = self._restore_durable_pending_messages_for_adapter(adapter)
+                        if hasattr(adapter, "set_pending_message_change_callback"):
+                            adapter.set_pending_message_change_callback(
+                                self._save_durable_pending_messages
+                            )
                         self._sync_voice_mode_state_to_adapter(adapter)
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
@@ -8840,17 +9117,33 @@ class GatewayRunner:
             await self.hooks.emit("agent:start", hook_ctx)
 
             # Run the agent
-            agent_result = await self._run_agent(
-                message=message_text,
-                context_prompt=context_prompt,
-                history=history,
-                source=source,
-                session_id=session_entry.session_id,
-                session_key=session_key,
-                run_generation=run_generation,
-                event_message_id=self._reply_anchor_for_event(event),
-                channel_prompt=event.channel_prompt,
+            _heartbeat_stop = asyncio.Event()
+            _heartbeat_task = asyncio.create_task(
+                self._heartbeat_active_session(session_key, _heartbeat_stop)
             )
+            _background_tasks = getattr(self, "_background_tasks", None)
+            if _background_tasks is not None:
+                _background_tasks.add(_heartbeat_task)
+                _heartbeat_task.add_done_callback(_background_tasks.discard)
+            try:
+                agent_result = await self._run_agent(
+                    message=message_text,
+                    context_prompt=context_prompt,
+                    history=history,
+                    source=source,
+                    session_id=session_entry.session_id,
+                    session_key=session_key,
+                    run_generation=run_generation,
+                    event_message_id=self._reply_anchor_for_event(event),
+                    channel_prompt=event.channel_prompt,
+                )
+            finally:
+                _heartbeat_stop.set()
+                _heartbeat_task.cancel()
+                try:
+                    await _heartbeat_task
+                except asyncio.CancelledError:
+                    pass
 
             # Stop persistent typing indicator now that the agent is done
             try:

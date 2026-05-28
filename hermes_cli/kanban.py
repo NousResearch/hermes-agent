@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import shlex
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -223,7 +224,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     sub = kanban_parser.add_subparsers(dest="kanban_action")
 
     # --- init ---
-    sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
+    sub.add_parser("init", help="Create kanban.db if missing (idempotent)").add_argument(
+        "--json", action="store_true",
+        help="Emit JSON status object",
+    )
 
     # --- boards (new in v2: multi-project support) ---
     p_boards = sub.add_parser(
@@ -904,9 +908,43 @@ def kanban_command(args: argparse.Namespace) -> int:
     # HERMES_HOME. Previously only `init` and `daemon` triggered
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
+    is_json = getattr(args, "json", False)
     try:
         kb.init_db()
+    except kb.KanbanDbCorruptError as exc:
+        if is_json and action == "list":
+            # list --json must preserve the array contract: UI iterates
+            # tasks as an array. Emit [] + stderr error.
+            print(f"kanban: database error: {exc}", file=sys.stderr)
+            print(json.dumps([], ensure_ascii=False))
+            _restore_board_env()
+            return 0
+        if is_json and action == "init":
+            # init --json: emit parseable JSON error dict to stdout.
+            print(json.dumps({"ok": False, "error": str(exc), "error_code": "kanban_db_corrupt"}, ensure_ascii=False))
+            _restore_board_env()
+            return 1
+        print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
+        _restore_board_env()
+        return 1
     except Exception as exc:
+        if is_json and action == "init":
+            if isinstance(exc, kb.KanbanDbCorruptError):
+                error_code = "kanban_db_corrupt"
+            elif isinstance(exc, sqlite3.DatabaseError):
+                error_code = "kanban_db_init_failed"
+            else:
+                error_code = "kanban_db_init_failed"
+            print(json.dumps({"ok": False, "error": str(exc), "error_code": error_code}, ensure_ascii=False))
+            _restore_board_env()
+            return 1
+        if is_json and action == "list":
+            # list --json must preserve the array contract: UI iterates
+            # tasks as an array. Emit [] + stderr error.
+            print(f"kanban: database error: {exc}", file=sys.stderr)
+            print(json.dumps([], ensure_ascii=False))
+            _restore_board_env()
+            return 0
         print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
         _restore_board_env()
         return 1
@@ -1215,7 +1253,36 @@ def _parse_duration(val) -> Optional[int]:
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
-    path = kb.init_db()
+    is_json = getattr(args, "json", False)
+    try:
+        path = kb.init_db()
+    except kb.KanbanDbCorruptError as exc:
+        # Handle corrupt DB first — this exception is a subclass of
+        # Exception so without explicit ordering the generic handler below
+        # would match first (since it catches ALL exceptions).  The isinstance
+        # re-raise in the generic handler does not help here because we need
+        # to emit JSON to stdout before returning, which we cannot do after
+        # re-raising.
+        if is_json:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        else:
+            print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        # Re-raise KanbanDbCorruptError so it bubbles up to the top-level
+        # handler in kanban_command (which knows about --json for init).
+        if isinstance(exc, kb.KanbanDbCorruptError):
+            raise
+        if is_json:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        else:
+            print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
+        return 1
+
+    if is_json:
+        print(json.dumps({"ok": True, "path": str(path)}, ensure_ascii=False))
+        return 0
+
     print(f"Kanban DB initialized at {path}")
 
     # Seed bundled skills (e.g. kanban-worker) into the active profile so

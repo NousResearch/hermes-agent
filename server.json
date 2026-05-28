@@ -1,0 +1,50 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.nousresearch/hermes-agent",
+  "description": "Expose Hermes sessions, messages, search, attachments, and chat control to MCP clients.",
+  "title": "Hermes Agent",
+  "websiteUrl": "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp",
+  "repository": {
+    "url": "https://github.com/NousResearch/hermes-agent",
+    "source": "github",
+    "id": "1024554267"
+  },
+  "version": "0.14.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "hermes-agent[mcp]",
+      "version": "0.14.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        },
+        {
+          "type": "positional",
+          "value": "serve"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "HERMES_HOME",
+          "description": "Optional Hermes profile/config directory to expose sessions from. Defaults to ~/.hermes.",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "tool": "manual-pr",
+      "version": "1.0.0",
+      "notes": "Hermes MCP support is provided by the hermes mcp serve subcommand. Some clients may need fallback install instructions if they do not support PyPI extras in identifiers."
+    }
+  }
+}

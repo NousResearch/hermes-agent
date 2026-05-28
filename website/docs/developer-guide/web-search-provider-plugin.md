@@ -80,9 +80,6 @@ class MyBackendWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return False
 
-    def supports_crawl(self) -> bool:
-        return False
-
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         import httpx
 
@@ -157,12 +154,10 @@ Full contract in `agent/web_search_provider.py`. Methods you may override:
 | `is_available()` | ✅ | — | Cheap availability gate — env vars, optional deps |
 | `supports_search()` | — | `True` | Capability flag for `web_search` routing |
 | `supports_extract()` | — | `False` | Capability flag for `web_extract` routing |
-| `supports_crawl()` | — | `False` | Capability flag for deep-crawl modes |
 | `search(query, limit)` | conditional | raises | Required when `supports_search()` returns `True` |
 | `extract(urls, **kwargs)` | conditional | raises | Required when `supports_extract()` returns `True` |
-| `crawl(url, **kwargs)` | conditional | raises | Required when `supports_crawl()` returns `True` |
 
-Providers can advertise multiple capabilities from a single class — Firecrawl, Tavily, Exa, and Parallel all implement all three of search/extract/crawl. Brave Search and DDGS are search-only; SearXNG is search-only with a documented "pair me with an extract provider" workflow.
+Providers can advertise multiple capabilities from a single class — Firecrawl, Tavily, Exa, and Parallel all implement both search and extract. Brave Search and DDGS are search-only; SearXNG is search-only with a documented "pair me with an extract provider" workflow.
 
 ## Response shape
 

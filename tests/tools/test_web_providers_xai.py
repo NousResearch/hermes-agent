@@ -66,7 +66,6 @@ class TestXAIProviderIdentity:
         p = XAIWebSearchProvider()
         assert p.supports_search() is True
         assert p.supports_extract() is False
-        assert p.supports_crawl() is False
 
     def test_display_name(self):
         from plugins.web.xai.provider import XAIWebSearchProvider

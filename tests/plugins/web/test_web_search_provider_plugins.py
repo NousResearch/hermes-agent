@@ -90,20 +90,17 @@ class TestBundledPluginsRegister:
         ]
 
     @pytest.mark.parametrize(
-        "plugin_name,expected_search,expected_extract,expected_crawl",
+        "plugin_name,expected_search,expected_extract",
         [
-            ("brave-free", True, False, False),
-            ("ddgs", True, False, False),
-            ("searxng", True, False, False),
-            ("exa", True, True, False),
-            ("parallel", True, True, False),
-            ("tavily", True, True, True),
-            # firecrawl: search + extract + crawl. Crawl was originally
-            # disabled in the migration (fell through to a legacy inline
-            # path); the follow-up commit enabled it natively.
-            ("firecrawl", True, True, True),
+            ("brave-free", True, False),
+            ("ddgs", True, False),
+            ("searxng", True, False),
+            ("exa", True, True),
+            ("parallel", True, True),
+            ("tavily", True, True),
+            ("firecrawl", True, True),
             # xai: search-only via Grok's agentic web_search tool.
-            ("xai", True, False, False),
+            ("xai", True, False),
         ],
     )
     def test_capability_flags_match_spec(
@@ -111,7 +108,6 @@ class TestBundledPluginsRegister:
         plugin_name: str,
         expected_search: bool,
         expected_extract: bool,
-        expected_crawl: bool,
     ) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider
@@ -120,7 +116,6 @@ class TestBundledPluginsRegister:
         assert provider is not None, f"plugin {plugin_name!r} not registered"
         assert provider.supports_search() is expected_search
         assert provider.supports_extract() is expected_extract
-        assert provider.supports_crawl() is expected_crawl
 
     @pytest.mark.parametrize(
         "plugin_name",
@@ -456,38 +451,6 @@ class TestErrorResponseShapes:
         assert isinstance(result, list)
         if result:  # if anything came back, it should be an error entry
             assert "error" in result[0]
-
-    def test_tavily_crawl_returns_error_dict_when_unconfigured(self) -> None:
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        p = get_provider("tavily")
-        assert p is not None
-        result = p.crawl("https://example.com")
-        assert isinstance(result, dict)
-        assert "results" in result
-        assert isinstance(result["results"], list)
-        if result["results"]:
-            assert "error" in result["results"][0]
-
-    def test_firecrawl_crawl_returns_error_dict_when_unconfigured(self):
-        """firecrawl crawl is async (wraps SDK in to_thread); error must be
-        surfaced via the per-page result shape, not raised."""
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        p = get_provider("firecrawl")
-        assert p is not None
-        assert inspect.iscoroutinefunction(p.crawl)
-        result = asyncio.run(p.crawl("https://example.com"))
-        assert isinstance(result, dict)
-        assert "results" in result
-        assert isinstance(result["results"], list)
-        # Without FIRECRAWL_API_KEY, the plugin's _get_firecrawl_client()
-        # raises ValueError which is caught and returned as a per-page error.
-        assert len(result["results"]) >= 1
-        assert "error" in result["results"][0]
-        assert result["results"][0]["url"] == "https://example.com"
 
     def test_firecrawl_config_error_points_paid_users_to_nous_subscription(self, monkeypatch):
         from plugins.web.firecrawl import provider as firecrawl_provider

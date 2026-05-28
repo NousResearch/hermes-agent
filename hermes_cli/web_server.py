@@ -534,40 +534,20 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
-def _read_proc_cmdline_tokens(pid: int) -> Optional[List[str]]:
-    """Read ``/proc/<pid>/cmdline`` and return the NUL-split argv tokens.
-
-    Returns ``None`` when the file is unreadable (process gone, permission
-    denied, non-Linux host).  Split into a helper so the validation step in
-    :func:`_scan_gateway_pid_in_container` is easy to mock in tests.
-    """
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            return [a.decode("utf-8", "replace") for a in f.read().split(b"\x00") if a]
-    except OSError:
-        return None
-
-
 def _scan_gateway_pid_in_container() -> Optional[int]:
-    """Find a live ``hermes gateway run`` PID — container deployment fallback.
+    """Find a live gateway PID — container deployment fallback.
 
     In Docker/Kubernetes deployments where the gateway runs as the container
     entrypoint, ``gateway.pid`` / ``gateway.lock`` files are never reliably
     written, so :func:`get_running_pid` returns ``None`` even when the
-    gateway is alive.  This mirrors the ``pgrep`` fallback already adopted
-    upstream for the ``hermes status`` CLI (issue #4776 — refactored into
-    :func:`hermes_cli.gateway.get_gateway_runtime_snapshot`); the dashboard's
-    ``/api/status`` handler took a different code path and was missed by
-    that refactor.
+    gateway is alive.  Reuse the canonical gateway process scanner instead of
+    duplicating a narrower ``pgrep`` pattern here; the shared scanner already
+    covers supported entrypoints such as ``hermes gateway run``,
+    ``python -m hermes_cli.main gateway run``, and
+    ``python /path/hermes_cli/main.py gateway run``.
 
     Only runs when :func:`is_container` reports True, so non-container hosts
-    (where ``pgrep`` may be unavailable on Windows) are unaffected.
-
-    Uses ``pgrep`` for a fast candidate list, then re-validates each PID by
-    checking ``gateway`` and ``run`` appear as independent argv tokens in
-    ``/proc/<pid>/cmdline`` — guards against ``pgrep -f``'s substring match
-    accidentally hitting a cmdline that *contains* the literal string
-    ``"hermes gateway run"`` (e.g. a debug ``python -c`` invocation).
+    are unaffected.
     """
     try:
         from hermes_constants import is_container
@@ -576,29 +556,17 @@ def _scan_gateway_pid_in_container() -> Optional[int]:
     if not is_container():
         return None
     try:
-        import subprocess
-        result = subprocess.run(
-            ["pgrep", "-f", "hermes gateway run"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        from hermes_cli.gateway import find_gateway_pids
+
+        pids = find_gateway_pids()
     except Exception:
         return None
-    if result.returncode != 0:
-        return None
+
     self_pid = os.getpid()
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line.isdigit():
-            continue
-        pid = int(line)
+    for pid in pids:
         if pid == self_pid:
             continue
-        argv = _read_proc_cmdline_tokens(pid)
-        if argv is None:
-            continue
-        if "gateway" in argv and "run" in argv:
+        if isinstance(pid, int) and pid > 0:
             return pid
     return None
 

@@ -1017,6 +1017,7 @@ _PROVIDER_ALIASES = {
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
     "novita-ai": "novita",
+    "nousresearch": "nous",
     "novitaai": "novita",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",

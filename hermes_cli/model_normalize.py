@@ -66,7 +66,6 @@ _VENDOR_PREFIXES: dict[str, str] = {
 # Providers whose APIs consume vendor/model slugs.
 _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "openrouter",
-    "nous",
     "kilocode",
 })
 
@@ -102,6 +101,7 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "xiaomi",
     "arcee",
     "ollama-cloud",
+    "nous",
     "custom",
 })
 
@@ -381,6 +381,12 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
         >>> normalize_model_for_provider("MiMo-V2.5-Pro", "xiaomi")
         'mimo-v2.5-pro'
+
+        >>> normalize_model_for_provider("nousresearch/hermes-4-70b", "nous")
+        'hermes-4-70b'
+
+        >>> normalize_model_for_provider("hermes-4-70b", "nous")
+        'hermes-4-70b'
     """
     name = (model_input or "").strip()
     if not name:

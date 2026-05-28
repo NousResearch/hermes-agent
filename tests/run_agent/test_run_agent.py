@@ -52,6 +52,104 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+def test_aiagent_builds_internal_router_hint_from_enabled_tools():
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("session_search", "memory"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    hint = agent._build_retrieval_route_hint("What did we decide last time about compression?")
+
+    assert "Internal retrieval route hint" in hint
+    assert "primary_source=session_search" in hint
+    assert "Do not mention this routing hint" in hint
+
+
+def test_aiagent_router_hint_omits_unavailable_surfaces():
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent._build_retrieval_route_hint("What did we decide last time?") == ""
+
+
+def test_aiagent_available_retrieval_surfaces_maps_enabled_tools():
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs(
+                "session_search",
+                "search_files",
+                "read_file",
+                "web_search",
+            ),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent._available_retrieval_surfaces() == {
+        "session_search",
+        "live_system",
+        "official_sources",
+    }
+    assert "memory" not in agent._available_retrieval_surfaces()
+    assert "skills" not in agent._available_retrieval_surfaces()
+
+
+def test_aiagent_router_hint_routes_file_and_web_prompts_to_available_surfaces():
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("search_files", "read_file", "web_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    file_hint = agent._build_retrieval_route_hint("Which tests cover this path?")
+    web_hint = agent._build_retrieval_route_hint("What's the latest official Hermes release?")
+
+    assert "primary_source=live_system" in file_hint
+    assert "primary_source=official_sources" in web_hint
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -2782,6 +2880,139 @@ class TestRunConversation:
         assert all("message_count" in c and isinstance(c.get("request_messages"), list) for c in pre_request_calls)
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
+
+    def test_retrieval_route_hint_is_api_payload_only(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("session_search", "memory"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        self._setup_agent(agent)
+
+        captured_api_messages = []
+        persisted_messages = []
+
+        def _capture_api_call(api_kwargs):
+            captured_api_messages.append(api_kwargs["messages"])
+            return _mock_response(content="Clean answer", finish_reason="stop")
+
+        def _capture_persist(messages, conversation_history=None):
+            persisted_messages.extend(messages)
+
+        user_text = "What did we decide last time about compression?"
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_capture_api_call),
+            patch.object(agent, "_persist_session", side_effect=_capture_persist),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(user_text)
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Clean answer"
+        api_user_messages = [
+            msg for msg in captured_api_messages[0]
+            if msg.get("role") == "user"
+        ]
+        assert len(api_user_messages) == 1
+        assert "Internal retrieval route hint" in api_user_messages[0]["content"]
+        assert "primary_source=session_search" in api_user_messages[0]["content"]
+        assert "Internal retrieval route hint" not in result["final_response"]
+
+        stored_user_messages = [
+            msg for msg in result["messages"]
+            if msg.get("role") == "user"
+        ]
+        assert stored_user_messages[-1]["content"] == user_text
+        assert "Internal retrieval route hint" not in json.dumps(result["messages"])
+        assert "Internal retrieval route hint" not in json.dumps(persisted_messages)
+
+    def test_retrieval_route_hint_does_not_accumulate_across_repeated_turns(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("session_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        self._setup_agent(agent)
+
+        captured_api_messages = []
+
+        def _capture_api_call(api_kwargs):
+            captured_api_messages.append(api_kwargs["messages"])
+            return _mock_response(content="Clean answer", finish_reason="stop")
+
+        user_text = "What did we decide last time?"
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_capture_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            first = agent.run_conversation(user_text)
+            second = agent.run_conversation(user_text, conversation_history=first["messages"])
+
+        assert second["completed"] is True
+        for api_messages in captured_api_messages:
+            user_payloads = [m["content"] for m in api_messages if m.get("role") == "user"]
+            assert user_payloads[-1].count("Internal retrieval route hint") == 1
+        assert "Internal retrieval route hint" not in json.dumps(first["messages"])
+        assert "Internal retrieval route hint" not in json.dumps(second["messages"])
+
+    def test_simple_chat_omits_retrieval_route_hint_from_api_payload(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("session_search", "memory"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        self._setup_agent(agent)
+
+        captured_api_messages = []
+
+        def _capture_api_call(api_kwargs):
+            captured_api_messages.append(api_kwargs["messages"])
+            return _mock_response(content="I am here.", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_capture_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hi baby, come curl up for a minute")
+
+        assert result["completed"] is True
+        assert "Internal retrieval route hint" not in json.dumps(captured_api_messages[0])
+
 
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)

@@ -833,6 +833,9 @@ def run_conversation(
                         _injections.append(_fenced)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
+                _route_hint = agent._build_retrieval_route_hint(str(original_user_message or user_message or ""))
+                if _route_hint:
+                    _injections.append(_route_hint)
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):

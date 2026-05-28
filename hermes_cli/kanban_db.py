@@ -6335,6 +6335,16 @@ def board_stats(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _safe_int(val) -> Optional[int]:
+    """Best-effort int conversion for persisted task timestamps."""
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
 def _to_epoch(val) -> Optional[int]:
     """Normalise a timestamp to unix epoch seconds.
 

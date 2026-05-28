@@ -131,6 +131,8 @@ from agent.prompt_builder import (
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
     build_nous_subscription_prompt,
+    build_retrieval_route_hint,
+    classify_retrieval_route,
 )
 from agent.model_metadata import (
     fetch_model_metadata,
@@ -2344,6 +2346,34 @@ class AIAgent:
         """Forwarder — see ``agent.system_prompt.build_system_prompt``."""
         from agent.system_prompt import build_system_prompt
         return build_system_prompt(self, system_message=system_message)
+
+    def _available_retrieval_surfaces(self) -> set[str]:
+        """Return retrieval surfaces backed by tools enabled on this agent."""
+        names = set(getattr(self, "valid_tool_names", set()) or set())
+        surfaces: set[str] = set()
+        if "memory" in names:
+            surfaces.add("memory")
+        if "skill_manage" in names or "skill_view" in names:
+            surfaces.add("skills")
+        if {"fabric_recall", "fabric_search", "fabric_pending"} & names:
+            surfaces.add("shared_work")
+        if "session_search" in names:
+            surfaces.add("session_search")
+        if {"read_file", "search_files", "terminal"} & names:
+            surfaces.add("live_system")
+        if {"web_search", "web_extract"} & names:
+            surfaces.add("official_sources")
+        return surfaces
+
+    def _build_retrieval_route_hint(self, request: str) -> str:
+        """Return an API-only retrieval/source routing hint for the current turn."""
+        surfaces = self._available_retrieval_surfaces()
+        if not surfaces:
+            return ""
+        decision = classify_retrieval_route(request, available_surfaces=surfaces)
+        if decision.fallback_from:
+            return ""
+        return build_retrieval_route_hint(decision)
 
     @staticmethod
     def _get_tool_call_id_static(tc) -> str:

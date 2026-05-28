@@ -20,3 +20,10 @@ def test_manifest_includes_bundled_skills():
 
     assert "graft skills" in manifest
     assert "graft optional-skills" in manifest
+
+
+def test_plugin_package_data_includes_plugin_manifests():
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = data["tool"]["setuptools"]["package-data"]["plugins"]
+
+    assert "**/plugin.yaml" in package_data

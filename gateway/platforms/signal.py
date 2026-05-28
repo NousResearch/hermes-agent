@@ -919,9 +919,9 @@ class SignalAdapter(BasePlatformAdapter):
             return pos - shift
 
         adjusted_prior: list = []
-        for s, l, st in styles:
+        for s, ln, st in styles:
             ns = _adj(s)
-            ne = _adj(s + l)
+            ne = _adj(s + ln)
             if ne > ns:
                 adjusted_prior.append((ns, ne - ns, st))
 

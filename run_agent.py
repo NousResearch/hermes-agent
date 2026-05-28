@@ -1098,6 +1098,18 @@ class AIAgent:
         if env_timeout is not None:
             return float(env_timeout), False
 
+        # Cursor runs cursor-agent as a subprocess that emits stream-json
+        # events to its tool_progress_callback throughout the turn. From
+        # this wrapper's perspective the synchronous call may legitimately
+        # take many minutes (multi-step agentic work, big-file refactors,
+        # data processing). The wall-clock stale detector has no signal
+        # to distinguish "subprocess is actively emitting events" from
+        # "HTTP connection died silently" and would kill healthy work at
+        # 90s. Disable it for cursor; CursorAgentClient enforces its own
+        # event-driven idle timeout that resets on every stream event.
+        if self.provider == "cursor":
+            return float("inf"), False
+
         return 90.0, True
 
     def _compute_non_stream_stale_timeout(self, api_payload: Any) -> float:

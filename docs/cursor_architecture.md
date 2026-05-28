@@ -240,3 +240,58 @@ Completed internal events also populate `response.cursor_internal_tools` / `mess
 | `HERMES_CURSOR_MODE` | `agent` | `agent` (default, full power) / `ask` (read-only) / `plan` (read-only planning) |
 | `HERMES_CURSOR_WORKSPACE` | session-scoped temp dir | Pin workspace directory (reused across all turns of one session by default) |
 | `HERMES_CURSOR_BASE_URL` | `cursor://agent` | Provider marker (not HTTP) |
+| `HERMES_CURSOR_TIMEOUT_SECONDS` | `600` | Idle threshold (not wall-clock). Resets on every stream-json event from cursor-agent. A turn may run arbitrarily long in total provided events keep arriving; only true subprocess hangs trigger termination. Hermes' outer 90s stale-call detector is disabled for cursor so this is the only timeout in effect. |
+
+## Turn-Level Timeout Semantics
+
+A cursor turn can legitimately take minutes (multi-step agentic work, large
+refactors, long shell commands). Wrapping the whole subprocess in a
+wall-clock deadline would kill healthy work, so the implementation is
+deliberately split into two layers:
+
+- **Outer layer (Hermes wrapper, `run_agent.py`).** The non-streaming
+  stale-call detector that would normally fire at 90s for HTTP providers
+  is disabled for `cursor` (`_resolved_api_call_stale_timeout_base` returns
+  `float("inf")`). This matches the existing pattern for local llama.cpp
+  endpoints, which also run synchronous subprocesses of unbounded duration.
+
+- **Inner layer (`CursorAgentClient._drive_subprocess`).** An
+  event-driven idle deadline. The deadline resets on every successful
+  stream-json event received from cursor-agent (text deltas, tool_calls,
+  tool_results, thinking, system messages). Total wall-clock can be
+  arbitrary; only a true hang (no events for the threshold) raises
+  `TimeoutError` and force-kills the subprocess. Default 600s, override
+  via `HERMES_CURSOR_TIMEOUT_SECONDS`.
+
+This means a turn that spends 20 minutes inside a single `shell` command
+(say, a long test suite) will complete normally as long as cursor-agent
+emits at least one keepalive event (or the result event when it
+eventually finishes) before the idle threshold expires. If the
+subprocess genuinely dies silently, the inner deadline still catches it.
+
+## Future Work: cursor-sdk Migration
+
+Cursor released a Python SDK (`cursor-sdk`, public beta, v0.1.5 as of
+2026-05-23) which exposes a higher-level agent API with native streaming,
+typed events (`run.messages()`), proper cancellation (`run.cancel()`),
+and a structured error model (`CursorAgentError` with `is_retryable` /
+`retry_after`). It is the architecturally better target than the
+subprocess shim.
+
+We intentionally did **not** adopt it in this PR for three reasons:
+
+1. API access via the SDK is currently allowlist-gated. Users without
+   `sdk_python_preview_access` get `IntegrationNotConnectedError`, which
+   breaks the "any Cursor subscriber can use this" promise.
+2. SDK auth requires manually generating a User API Key
+   (Dashboard → Integrations) and exporting `CURSOR_API_KEY`. The CLI's
+   browser OAuth flow is one-time and friction-free; replacing it would
+   regress the onboarding experience.
+3. v0.1.5 in two weeks with documented "APIs may change before GA"
+   warnings makes upstream pinning risky for a foundational integration.
+
+When all three constraints lift (SDK GA + allowlist removed + auth
+flow supports either API key or CLI-derived token), the inner subprocess
+layer should be replaced by an SDK-backed implementation. The outer
+layer (`auth_type="external_process"`, provider registration, model
+catalog) stays as-is; only `agent/cursor_agent_client.py` changes.

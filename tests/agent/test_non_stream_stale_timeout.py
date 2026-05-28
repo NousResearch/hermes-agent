@@ -173,6 +173,32 @@ def test_chat_completions_long_messages_bumps_tier(monkeypatch, tmp_path):
     assert agent._compute_non_stream_stale_timeout(payload) >= 150.0
 
 
+def test_cursor_provider_disables_outer_wall_clock_timeout(monkeypatch, tmp_path):
+    """Cursor runs a subprocess that emits events to tool_progress_callback
+    throughout the turn. From the wrapper's perspective the call is one long
+    synchronous request that may legitimately take many minutes. The outer
+    wall-clock stale detector has no signal to distinguish "subprocess is
+    actively emitting events" from "HTTP connection died silently" and would
+    kill healthy work at 90s. CursorAgentClient enforces its own
+    event-driven idle timeout instead, so the outer detector must be
+    disabled (return inf) just like local llama.cpp endpoints.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    _write_config(tmp_path, "")
+
+    agent = _make_agent(
+        tmp_path,
+        provider="cursor",
+        base_url="cursor://agent",
+        model="composer-2.5",
+    )
+    base, implicit = agent._resolved_api_call_stale_timeout_base()
+    assert base == float("inf")
+    assert implicit is False
+
+
 def test_explicit_user_config_overrides_default(monkeypatch, tmp_path):
     """If the user explicitly sets a stale_timeout, the new defaults don't apply."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

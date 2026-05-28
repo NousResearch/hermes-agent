@@ -12,6 +12,7 @@ import io
 import json
 import os
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1436,6 +1437,129 @@ class CompressionHookTests(unittest.TestCase):
             invoked = True
         self.assertFalse(invoked,
                          "hook must not fire for non-cursor clients")
+
+
+class TimeoutTests(unittest.TestCase):
+    """Regression tests for the event-driven idle timeout.
+
+    Before this fix the wrapper enforced a wall-clock deadline that killed
+    healthy long-running turns at 90s (outer Hermes wrapper) or 600s
+    (inner cursor client). The semantics are now: the deadline resets on
+    every stream-json event, so total wall-clock can be arbitrary as long
+    as events keep flowing. Only true subprocess hangs (no events for the
+    threshold) trigger termination.
+    """
+
+    def setUp(self) -> None:
+        keys = [k for k in os.environ if k.startswith("HERMES_CURSOR_")]
+        self._saved = {k: os.environ.pop(k) for k in keys}
+
+    def tearDown(self) -> None:
+        for k in list(os.environ):
+            if k.startswith("HERMES_CURSOR_"):
+                os.environ.pop(k, None)
+        for k, v in self._saved.items():
+            os.environ[k] = v
+
+    def test_env_var_overrides_default_idle_threshold(self) -> None:
+        os.environ["HERMES_CURSOR_TIMEOUT_SECONDS"] = "1234"
+        client = CursorAgentClient()
+        try:
+            self.assertEqual(client._timeout_seconds, 1234.0)
+        finally:
+            client.close()
+
+    def test_env_var_invalid_value_falls_back_to_default(self) -> None:
+        os.environ["HERMES_CURSOR_TIMEOUT_SECONDS"] = "not-a-number"
+        client = CursorAgentClient()
+        try:
+            self.assertEqual(client._timeout_seconds, 600.0)
+        finally:
+            client.close()
+
+    def test_env_var_zero_value_falls_back_to_default(self) -> None:
+        # Zero or negative would mean "kill the subprocess instantly on
+        # arrival" which is never useful — fall back to the default.
+        os.environ["HERMES_CURSOR_TIMEOUT_SECONDS"] = "0"
+        client = CursorAgentClient()
+        try:
+            self.assertEqual(client._timeout_seconds, 600.0)
+        finally:
+            client.close()
+
+    def test_explicit_arg_overrides_default_but_env_wins(self) -> None:
+        # Precedence: env > explicit arg > default.
+        client1 = CursorAgentClient(timeout_seconds=123.0)
+        try:
+            self.assertEqual(client1._timeout_seconds, 123.0)
+        finally:
+            client1.close()
+
+        os.environ["HERMES_CURSOR_TIMEOUT_SECONDS"] = "987"
+        client2 = CursorAgentClient(timeout_seconds=123.0)
+        try:
+            self.assertEqual(client2._timeout_seconds, 987.0)
+        finally:
+            client2.close()
+
+    def test_idle_deadline_resets_on_each_stream_event(self) -> None:
+        # Slow-stream regression: emit a handful of events with per-event
+        # delays that, in aggregate, exceed the idle threshold. The old
+        # wall-clock implementation would have raised TimeoutError after
+        # the first 0.4s; the new implementation must let the turn finish
+        # because each individual gap (0.1s) stays well below 0.4s.
+        class _SlowLineStdout:
+            def __init__(self, events):
+                self._events = list(events)
+                self._idx = 0
+
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> str:
+                if self._idx >= len(self._events):
+                    raise StopIteration
+                delay, line = self._events[self._idx]
+                self._idx += 1
+                if delay > 0:
+                    time.sleep(delay)
+                return line + "\n"
+
+        class _SlowFakeProcess(_FakeProcess):
+            def __init__(self, slow_events) -> None:
+                super().__init__([])
+                self.stdout = _SlowLineStdout(slow_events)
+
+        # 8 events, each 0.1s apart => 0.8s total wall-clock.
+        # Idle threshold: 0.4s. Every gap stays under threshold, so we
+        # should succeed cleanly.
+        slow = [
+            (0.1, SUCCESS_STREAM[0]),
+            (0.1, SUCCESS_STREAM[1]),
+            (0.1, SUCCESS_STREAM[2]),
+            (0.1, SUCCESS_STREAM[3]),
+            (0.1, SUCCESS_STREAM[4]),
+        ]
+        proc = _SlowFakeProcess(slow)
+        client = CursorAgentClient(timeout_seconds=0.4)
+
+        def _fake_popen(argv, **kwargs):
+            proc.argv_seen = list(argv)
+            proc.cwd_seen = kwargs.get("cwd")
+            proc.env_seen = kwargs.get("env")
+            return proc
+
+        try:
+            with patch("agent.cursor_agent_client.subprocess.Popen", side_effect=_fake_popen):
+                resp = client.chat.completions.create(
+                    model="composer-2.5",
+                    messages=[{"role": "user", "content": "Hi"}],
+                )
+            # Successful completion with deadline resets working correctly.
+            self.assertEqual(resp.choices[0].finish_reason, "stop")
+            self.assertEqual(resp.choices[0].message.content, "Hello world")
+        finally:
+            client.close()
 
 
 if __name__ == "__main__":  # pragma: no cover

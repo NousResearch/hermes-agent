@@ -77,6 +77,14 @@ DEFAULT_CURSOR_MODEL = "auto"
 # "Allowed choices are plan, ask." stderr.
 _VALID_CURSOR_MODES = frozenset({"ask", "plan", "agent"})
 _CURSOR_CLI_MODES = frozenset({"ask", "plan"})
+# Idle threshold (not wall-clock): the deadline resets on every stream-json
+# event from cursor-agent. A turn can legitimately run for much longer than
+# this in total wall-clock; what matters is that events keep arriving. If
+# nothing arrives for this long, the subprocess is presumed hung and is
+# force-killed with a clear TimeoutError. Override via
+# ``HERMES_CURSOR_TIMEOUT_SECONDS`` env var when running workloads that
+# legitimately include very long internal operations (e.g. multi-minute
+# shell commands inside the subprocess).
 _DEFAULT_TIMEOUT_SECONDS = 600.0
 
 # Sentinels that mean "no real api key — use the cursor-agent CLI's own login
@@ -1083,7 +1091,16 @@ class CursorAgentClient:
         self._mode = chosen_mode
         override = workspace or _resolve_workspace_override()
         self._workspace: str | None = override or None  # None ⇒ tmpdir per call
+        # Idle timeout (resets per event). Env var > explicit arg > default.
         self._timeout_seconds = float(timeout_seconds) if timeout_seconds else _DEFAULT_TIMEOUT_SECONDS
+        env_timeout = os.environ.get("HERMES_CURSOR_TIMEOUT_SECONDS", "").strip()
+        if env_timeout:
+            try:
+                env_timeout_val = float(env_timeout)
+                if env_timeout_val > 0:
+                    self._timeout_seconds = env_timeout_val
+            except ValueError:
+                pass
 
         self._tool_progress_callback = tool_progress_callback
 
@@ -1436,13 +1453,21 @@ class CursorAgentClient:
                 on_tool_event=self._build_tool_event_bridge(),
                 on_text_event=self._build_text_event_bridge(),
             )
-            deadline = time.monotonic() + timeout_seconds
+            # Idle deadline, not wall-clock. Resets on every successful
+            # stream-json event. A turn can run arbitrarily long in total
+            # wall time provided the subprocess keeps emitting events
+            # (text deltas, tool_calls, tool_results). Only true hangs
+            # (no events for ``timeout_seconds``) trigger termination.
+            idle_seconds = float(timeout_seconds)
+            deadline = time.monotonic() + idle_seconds
 
             while not accumulator.terminal:
                 if time.monotonic() >= deadline:
                     self._terminate_active_proc(proc)
                     raise TimeoutError(
-                        f"cursor-agent did not return within {timeout_seconds:.0f}s."
+                        f"cursor-agent emitted no events for {idle_seconds:.0f}s; "
+                        f"presumed hung. Set HERMES_CURSOR_TIMEOUT_SECONDS to "
+                        f"increase the idle threshold."
                     )
                 if proc.poll() is not None and inbox.empty():
                     break
@@ -1450,12 +1475,15 @@ class CursorAgentClient:
                     event = inbox.get(timeout=0.25)
                 except queue.Empty:
                     continue
+                # Successful event arrival => subprocess is alive and
+                # making progress. Reset the idle deadline.
+                deadline = time.monotonic() + idle_seconds
                 try:
                     accumulator.feed(event)
                 except Exception:
-                    # Don't let a malformed event abort the entire request —
-                    # keep draining; if the terminal result never comes, the
-                    # deadline above will surface the failure.
+                    # Don't let a malformed event abort the entire request.
+                    # Keep draining; if the terminal result never comes,
+                    # the idle deadline above will surface the failure.
                     continue
 
             if not accumulator.terminal:

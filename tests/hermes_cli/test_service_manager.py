@@ -555,6 +555,16 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
     assert "/opt/data/logs/gateways/coder" not in log_text, (
         "log_dir was hard-coded; must use ${HERMES_HOME} at run time"
     )
+    # `1` action directive forwards lines to stdout BEFORE the file
+    # destination so the supervised gateway's stdout (including the
+    # rich-console banner and plain print() output) reaches docker
+    # logs, not just the rotated file. See _render_log_run's docstring
+    # for the full output-routing rationale.
+    assert "s6-log 1 " in log_text, (
+        "log/run must include the `1` action directive before the file "
+        "destination so supervised stdout reaches docker logs. Saw: "
+        f"{log_text!r}"
+    )
 
     # s6-svscanctl -a was invoked against the scandir
     assert any(

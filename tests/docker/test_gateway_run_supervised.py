@@ -327,3 +327,69 @@ def test_dashboard_supervised_when_env_set(
     assert _svstat_wants_up(container_name, "dashboard"), (
         f"dashboard slot not up: {_svstat(container_name, 'dashboard')!r}"
     )
+
+
+def test_supervised_gateway_stdout_reaches_docker_logs(
+    built_image: str, container_name: str,
+) -> None:
+    """The supervised gateway's stdout — including the rich-console
+    startup banner — must reach ``docker logs``, not just the rotated
+    log file under ``${HERMES_HOME}/logs/gateways/<profile>/current``.
+
+    Without the ``1`` action directive in ``_render_log_run``, s6-log
+    swallows the gateway's stdout into the file and ``docker logs``
+    only sees stderr (Python ``logging`` defaults to stderr). That's
+    a poor user experience: the iconic "Hermes Gateway Starting…"
+    banner with the ⚕ symbol is the most visible "yes, your gateway
+    started" signal, and forcing users to ``docker exec`` + ``tail``
+    the log file just to see it is friction users don't expect.
+
+    With the ``1`` directive, s6-log forwards every line to its own
+    stdout (which propagates up through the s6-supervise pipeline to
+    /init's stdout = container stdout = ``docker logs``) AND also
+    writes a timestamped copy to the rotated file. Best of both.
+
+    We assert by looking for the literal banner glyph (``⚕``) — a
+    distinctive character that won't appear in stderr-routed
+    Python-logging output, so its presence in ``docker logs`` proves
+    the stdout-tee is working.
+    """
+    subprocess.run(
+        ["docker", "run", "-d", "--name", container_name, built_image,
+         "gateway", "run"],
+        check=True, capture_output=True, timeout=30,
+    )
+    # Banner is printed during gateway startup — give it time to
+    # initialize past the imports + config-load phase.
+    time.sleep(8)
+
+    logs = subprocess.run(
+        ["docker", "logs", container_name],
+        capture_output=True, text=True, timeout=10,
+    )
+    combined = logs.stdout + logs.stderr
+
+    # The banner ⚕ symbol is the load-bearing assertion — it's unique
+    # to gateway startup stdout output and won't appear in stderr
+    # (Python logging) or s6 boot messages.
+    assert "⚕" in combined or "Hermes Gateway Starting" in combined, (
+        "Supervised gateway's stdout banner did not reach docker logs. "
+        "This means the `1` action directive in _render_log_run isn't "
+        "forwarding stdout to /init. "
+        f"docker logs (last 2000 chars):\n{combined[-2000:]}\n"
+        f"file contents:\n{_sh(container_name, 'cat /opt/data/logs/gateways/default/current').stdout}"
+    )
+
+    # Cross-check: the same banner must also be in the rotated log
+    # file (we kept the file destination, just added stdout). The
+    # file version has s6-log's ISO 8601 timestamp prefix; the
+    # docker logs version is raw.
+    file_contents = _sh(
+        container_name, "cat /opt/data/logs/gateways/default/current",
+    ).stdout
+    assert "⚕" in file_contents or "Hermes Gateway Starting" in file_contents, (
+        "Banner also missing from rotated log file — the file "
+        "destination may have been dropped by the new s6-log script. "
+        f"File contents:\n{file_contents}"
+    )
+

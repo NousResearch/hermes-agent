@@ -888,6 +888,9 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
 def _media_delivery_allowed_roots() -> List[Path]:
     """Return roots from which model-emitted local media may be delivered."""
     roots = [Path(root) for root in MEDIA_DELIVERY_SAFE_ROOTS]
+    docker_workspace = _docker_workspace_host_root()
+    if docker_workspace is not None:
+        roots.append(docker_workspace)
     extra_roots = os.environ.get(MEDIA_DELIVERY_ALLOW_DIRS_ENV, "")
     for chunk in extra_roots.split(os.pathsep):
         for raw_root in chunk.split(","):
@@ -969,6 +972,64 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
+def _docker_workspace_container_path(candidate: Path) -> bool:
+    """Return True for absolute container paths rooted at ``/workspace``."""
+    if not candidate.is_absolute():
+        return False
+    try:
+        candidate.relative_to("/workspace")
+        return True
+    except ValueError:
+        return False
+
+
+def _docker_workspace_host_root() -> Optional[Path]:
+    """Return the host path backing Docker's default persistent ``/workspace``."""
+    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+        return None
+    if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
+    if os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        return None
+
+    raw_volumes = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
+    if raw_volumes:
+        try:
+            import json as _json
+            parsed = _json.loads(raw_volumes)
+        except Exception:
+            parsed = []
+        if isinstance(parsed, list):
+            for spec in parsed:
+                if isinstance(spec, str) and ":/workspace" in spec:
+                    return None
+
+    try:
+        from tools.environments.base import get_sandbox_dir
+
+        root = (get_sandbox_dir() / "docker" / "default" / "workspace").resolve(strict=True)
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return None
+    return root if root.is_dir() else None
+
+
+def _translate_docker_workspace_media_path(candidate: Path) -> Optional[Path]:
+    """Translate ``/workspace/...`` from a Docker container to its host path."""
+    if not _docker_workspace_container_path(candidate):
+        return None
+    host_workspace = _docker_workspace_host_root()
+    if host_workspace is None:
+        return None
+    try:
+        relative = candidate.relative_to("/workspace")
+        translated = (host_workspace / relative).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if translated != host_workspace and not _path_is_within(translated, host_workspace):
+        return None
+    return translated
+
+
 def validate_media_delivery_path(path: str) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
@@ -991,10 +1052,16 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not expanded.is_absolute():
         return None
 
-    try:
-        resolved = expanded.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
+    translated = _translate_docker_workspace_media_path(expanded)
+    if translated is not None:
+        resolved = translated
+    elif _docker_workspace_container_path(expanded) and os.getenv("TERMINAL_ENV", "").strip().lower() == "docker":
         return None
+    else:
+        try:
+            resolved = expanded.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            return None
 
     if not resolved.is_file():
         return None

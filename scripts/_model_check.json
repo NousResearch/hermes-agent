@@ -1,0 +1,36 @@
+{
+  "openrouter_ring": [
+    "inclusionai/ring-2.6-1t"
+  ],
+  "openrouter_deepseek": [
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash:free",
+    "deepseek/deepseek-v4-flash",
+    "nex-agi/deepseek-v3.1-nex-n1",
+    "deepseek/deepseek-v3.2-speciale",
+    "deepseek/deepseek-v3.2",
+    "deepseek/deepseek-v3.2-exp",
+    "deepseek/deepseek-v3.1-terminus",
+    "deepseek/deepseek-chat-v3.1",
+    "deepseek/deepseek-r1-0528",
+    "deepseek/deepseek-chat-v3-0324",
+    "deepseek/deepseek-r1-distill-qwen-32b",
+    "deepseek/deepseek-r1-distill-llama-70b",
+    "deepseek/deepseek-r1",
+    "deepseek/deepseek-chat"
+  ],
+  "anthropic": [
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-opus-4-5-20251101",
+    "claude-sonnet-4-5-20250929",
+    "claude-opus-4-1-20250805",
+    "claude-opus-4-20250514",
+    "claude-sonnet-4-20250514"
+  ],
+  "deepseek": [
+    "deepseek-v4-flash",
+    "deepseek-v4-pro"
+  ]
+}

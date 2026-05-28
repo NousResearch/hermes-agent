@@ -103,6 +103,8 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "arcee",
     "ollama-cloud",
     "custom",
+    "mac-ollama",
+    "linux-ollama",
 })
 
 # Providers whose APIs require lowercase model IDs.  Xiaomi's
@@ -223,23 +225,32 @@ def _normalize_provider_alias(provider_name: str) -> str:
 
 
 def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> str:
-    """Strip ``provider/`` only when the prefix matches the target provider.
+    """Strip ``provider/`` or ``provider:`` prefix when it matches the target
+    or when the prefix itself is a known direct provider that requires
+    bare model names.
 
-    This prevents arbitrary slash-bearing model IDs from being mangled on
+    This prevents arbitrary separator-bearing model IDs from being mangled on
     native providers while still repairing manual config values like
-    ``zai/glm-5.1`` for the ``zai`` provider.
+    ``zai/glm-5.1`` or ``mac-ollama:qwen3:14b`` for the respective provider.
     """
-    if "/" not in model_name:
-        return model_name
-
-    prefix, remainder = model_name.split("/", 1)
-    if not prefix.strip() or not remainder.strip():
-        return model_name
-
-    normalized_prefix = _normalize_provider_alias(prefix)
+    # Build a set of all normalized prefixes that should be stripped,
+    # including the target and any MATCHING_PREFIX providers.
+    _MATCHING_SET = {
+        _normalize_provider_alias(p)
+        for p in _MATCHING_PREFIX_STRIP_PROVIDERS
+    }
     normalized_target = _normalize_provider_alias(target_provider)
-    if normalized_prefix and normalized_prefix == normalized_target:
-        return remainder.strip()
+    _MATCHING_SET.add(normalized_target)
+
+    for sep in ("/", ":"):
+        if sep not in model_name:
+            continue
+        prefix, remainder = model_name.split(sep, 1)
+        if not prefix.strip() or not remainder.strip():
+            continue
+        normalized_prefix = _normalize_provider_alias(prefix)
+        if normalized_prefix and normalized_prefix in _MATCHING_SET:
+            return remainder.strip()
     return model_name
 
 

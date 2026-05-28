@@ -1,0 +1,82 @@
+{
+  "ollama_qwen3_30b": {
+    "model": "qwen3-coder:30b-a3b-q4_k_M",
+    "provider": "ollama (local)",
+    "prompt_chars": 18500,
+    "findings_count": 10,
+    "real_bugs": 0,
+    "summary": "All 10 findings are spurious, theoretical, or already correctly handled by existing code. Zero actionable bugs found.",
+    "details": [
+      {
+        "id": 1,
+        "severity": "HIGH (claimed)",
+        "topic": "MIN_BLOCKS_KEPT accounting in Phase 1",
+        "verdict": "SPURIOUS — formula `len(remaining) + (total_blocks - i - 1)` correctly counts post-deletion block count. Logic is sound.",
+        "line_ref": "~474"
+      },
+      {
+        "id": 2,
+        "severity": "HIGH (claimed)",
+        "topic": "overage not reset between Phase 1 and Phase 2",
+        "verdict": "SPURIOUS — overage is intentionally carried over. Phase 2 only runs `if overage > 0`, and decrements by `token_saved`. Correct design.",
+        "line_ref": "~505"
+      },
+      {
+        "id": 3,
+        "severity": "MEDIUM (claimed)",
+        "topic": ".replace() template could match literal {text} in content",
+        "verdict": "THEORETICAL — extremely unlikely in practice. Content containing literal `{text}` substring is a near-zero probability edge case.",
+        "line_ref": "~296"
+      },
+      {
+        "id": 4,
+        "severity": "MEDIUM (claimed)",
+        "topic": "Block ordering between phases",
+        "verdict": "SPURIOUS — `remaining` preserves original list insertion order. Phase 2 iterates in that deterministic order. No issue.",
+        "line_ref": "~270-305"
+      },
+      {
+        "id": 5,
+        "severity": "MEDIUM (claimed)",
+        "topic": "Pause signal not re-checked during execution",
+        "verdict": "LOW IMPACT — auto_resume_if_expired() runs at entry. Adding mid-execution checks would be defensive but not a bug.",
+        "line_ref": "~408"
+      },
+      {
+        "id": 6,
+        "severity": "LOW (claimed)",
+        "topic": "tokens_after calculation assumes blocks kept as-is",
+        "verdict": "SPURIOUS — `tokens_after = total_tokens - saved` correctly accounts for all deletions and compression savings. Math checks out.",
+        "line_ref": "~536"
+      },
+      {
+        "id": 7,
+        "severity": "LOW (claimed)",
+        "topic": "remaining_blocks includes skipped blocks",
+        "verdict": "BY DESIGN — remaining_blocks includes all non-deleted blocks: protected, MIN_BLOCKS_KEPT-skipped, and unprocessed. Correct.",
+        "line_ref": "~560"
+      },
+      {
+        "id": 8,
+        "severity": "LOW (claimed)",
+        "topic": "overage determination approach",
+        "verdict": "SPURIOUS — `overage = total_tokens - budget` is straightforward. Suggested alternative is equivalent.",
+        "line_ref": "~450"
+      },
+      {
+        "id": 9,
+        "severity": "INFO",
+        "topic": "No validation for TARGET_TOKENS <= 0",
+        "verdict": "VALID but low priority — existing check `TARGET_TOKENS > TRIM_THRESHOLD_TOKENS` catches most config errors. Could add `> 0` guard.",
+        "line_ref": "~648"
+      },
+      {
+        "id": 10,
+        "severity": "INFO",
+        "topic": "count_tokens uses simple heuristic",
+        "verdict": "INTENTIONAL — documented as 'rough token count for budget enforcement'. Adding tiktoken would introduce a new dependency.",
+        "line_ref": "~260-269"
+      }
+    ]
+  }
+}

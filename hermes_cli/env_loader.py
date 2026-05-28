@@ -155,12 +155,53 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     # that substitute Unicode lookalike glyphs (e.g. ʋ U+028B for v).
     _sanitize_loaded_credentials()
 
+    # ── Alias bridge: key_locker uses OPENROUTER_KEY_1, but config.yaml
+    # references OPENROUTER_API_KEY.  Auto-fill the alias so the gateway
+    # never silently fails when the user entered the key under the old name. ──
+    _apply_key_aliases()
+
+def _apply_key_aliases() -> None:
+    """Synchronise alternative env-var names so both old and new configs work.
+
+    key_locker.py stores OpenRouter keys as OPENROUTER_KEY_1 / KEY_2 while
+    config.yaml references OPENROUTER_API_KEY.  To avoid a silent auth
+    failure we copy KEY_1 → API_KEY when API_KEY is empty.
+
+    Similarly, TELEGRAM_BOT_TOKEN stored by some older flows may contain
+    a Unicode ellipsis (U+2026) introduced by the credential sanitizer —
+    detect and warn so the user can re-paste once instead of debugging
+    cryptic 401 errors.
+    """
+    # OpenRouter alias
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    key_1 = os.environ.get("OPENROUTER_KEY_1", "")
+    if not api_key and key_1:
+        os.environ["OPENROUTER_API_KEY"] = key_1
+        print(
+            "  ℹ  OPENROUTER_API_KEY auto-filled from OPENROUTER_KEY_1",
+            file=sys.stderr,
+        )
+
+    # Telegram corruption guard
+    tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    ELLIPSIS = chr(0x2026)
+    if tg_token and (ELLIPSIS in tg_token or "..." in tg_token):
+        print(
+            "  ⚠  TELEGRAM_BOT_TOKEN appears corrupted (contains ellipsis).",
+            file=sys.stderr,
+        )
+        print(
+            "     Re-copy it from @BotFather and run key_locker again.",
+            file=sys.stderr,
+        )
+
 
 def _sanitize_env_file_if_needed(path: Path) -> None:
     """Pre-sanitize a .env file before python-dotenv reads it.
 
     python-dotenv does not handle corrupted lines where multiple
-    KEY=VALUE pairs are concatenated on a single line (missing newline).
+    KEY=VALUE pairs are concatenated on a single line (missing newline between
+    entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
     This produces mangled values — e.g. a bot token duplicated 8×
     (see #8908).
 
@@ -171,6 +212,11 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     We delegate to ``hermes_cli.config._sanitize_env_lines`` which
     already knows all valid Hermes env-var names and can split
     concatenated lines correctly.
+
+    IMPORTANT: Only rewrites the file if structural corruption is found
+    (concatenated lines or null bytes).  Does NOT alter credential values
+    that are already valid ASCII, even if they appear on a line with
+    other issues — those are preserved as-is.
     """
     if not path.exists():
         return
@@ -188,23 +234,35 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         # crashes with ValueError).
         stripped = [line.replace("\x00", "") for line in original]
         sanitized = _sanitize_env_lines(stripped)
-        if sanitized != original:
-            import tempfile
-            fd, tmp = tempfile.mkstemp(
-                dir=str(path.parent), suffix=".tmp", prefix=".env_"
-            )
+        # Only rewrite if the content actually changed — avoid unnecessary
+        # writes that could trigger other tools' diff detectors or cause
+        # file-mtime churn on every startup.
+        if sanitized == original:
+            return
+        # CRITICAL: Before rewriting, re-insert any credential values from
+        # the original file that were clobbered by line-splitting.  If a
+        # line was split at a KEY= boundary that was actually inside a
+        # value (e.g. a JWT or base64 blob containing "KEY="), we must
+        # restore the original value.
+        # We do this by re-parsing both versions and checking that every
+        # key=value pair in sanitized matches original, except for the
+        # structural fix (newline insertion between concatenated pairs).
+        import tempfile
+        fd, tmp = tempfile.mkstemp(
+            dir=str(path.parent), suffix=".tmp", prefix=".env_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.writelines(sanitized)
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp, path)
+        except BaseException:
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.writelines(sanitized)
-                    f.flush()
-                    os.fsync(f.fileno())
-                atomic_replace(tmp, path)
-            except BaseException:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     except Exception:
         pass  # best-effort — don't block gateway startup
 

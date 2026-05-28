@@ -56,6 +56,24 @@ from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
+# Ensure context_orchestrator module is importable
+_hermes_root = Path(os.path.expanduser("~/.hermes"))
+_scripts_path = str(_hermes_root / "scripts")
+if _scripts_path not in sys.path:
+    sys.path.insert(0, _scripts_path)
+from context_orchestrator import get_orchestrator, drop_orchestrator  # noqa: E402
+from gateway_integration import (  # noqa: E402
+    gateway_message_end,
+    gateway_message_start,
+    gateway_quality_gate,
+    gateway_register_tool,
+    gateway_register_turn,
+    gateway_trim_check,
+    gateway_set_block_protected,
+    gateway_shadow_review,
+    gateway_shadow_review_result,
+)
+
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
@@ -1113,12 +1131,14 @@ def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
+        from hermes_cli.config import _expand_env_vars
         import yaml as _y
         cfg_path = _hermes_home / "config.yaml"
         if not cfg_path.exists():
             return None
         with open(cfg_path, encoding="utf-8") as _f:
             cfg = _y.safe_load(_f) or {}
+        cfg = _expand_env_vars(cfg)
         fb_list = get_fallback_chain(cfg)
         if not fb_list:
             return None
@@ -3024,11 +3044,13 @@ class GatewayRunner:
         when both keys are present.
         """
         try:
+            from hermes_cli.config import _expand_env_vars
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
+                cfg = _expand_env_vars(cfg)
                 fb = get_fallback_chain(cfg)
                 if fb:
                     return fb
@@ -4677,6 +4699,12 @@ class GatewayRunner:
                                 session_id=entry.session_id,
                                 platform=_platform,
                             )
+                        except Exception:
+                            pass
+                        # Drop context orchestrator for this session — triggers
+                        # end_session which persists working memory to the palace.
+                        try:
+                            drop_orchestrator(key)
                         except Exception:
                             pass
                         # Shut down memory provider and close tool resources
@@ -6434,6 +6462,16 @@ class GatewayRunner:
                 return None
             return YuanbaoAdapter(config)
 
+        elif platform == Platform.TERMUX:
+            from gateway.platforms.termux import TermuxAdapter, check_termux_requirements
+            if not check_termux_requirements():
+                logger.warning(
+                    "Termux: not running in Termux environment — termux-sms-send and "
+                    "termux-wifi-scaninfo will not be available"
+                )
+                return None
+            return TermuxAdapter(config)
+
         return None
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
@@ -6503,6 +6541,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+            Platform.TERMUX: "TERMUX_ALLOWED_USERS",
         }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -6529,6 +6568,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+            Platform.TERMUX: "TERMUX_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         platform_allow_bots_map = {
@@ -8268,7 +8308,22 @@ class GatewayRunner:
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
-        
+
+        # Initialize context orchestrator for this session via gateway integration
+        _orch_start = gateway_message_start(
+            user_input=getattr(event, "text", "") or "",
+            task_category="gateway",
+            gateway_session_id=session_key,
+            orchestrator_session_key=session_key,
+            platform=source.platform.value if source.platform else None,
+        )
+        _orch_result = {
+            "session_id": _orch_start["session_id"],
+            "context": _orch_start["context_header"],
+            "total_est_tokens": _orch_start["est_tokens"],
+            "headroom": _orch_start["headroom"],
+        }
+
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         
@@ -8282,6 +8337,11 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+
+        # Prepend orchestrator-managed context (identity, memory, working state)
+        _orch_context = _orch_result.get("context", "")
+        if _orch_context:
+            context_prompt = _orch_context + "\n\n" + context_prompt
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -8385,7 +8445,28 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
-        
+
+        # Mid-session context trim: orchestrator checks token usage and
+        # drops/compresses low-priority blocks BEFORE the expensive
+        # _hyg_agent compression runs.
+        if history:
+            _orch_trim = gateway_trim_check(
+                current_tokens=sum(
+                    len(m.get("content", "") or "") for m in history if m
+                ) // 4,
+                target_model=_resolve_gateway_model(),
+                gateway_session_id=session_key,
+                orchestrator_session_key=session_key,
+                platform=source.platform.value if source.platform else None,
+            )
+            if _orch_trim.get("trimmed_blocks"):
+                logger.info(
+                    "Context orchestrator: trimmed %d blocks, recovered ~%s tokens (%s)",
+                    _orch_trim["trimmed_blocks"],
+                    f"{_orch_trim.get('tokens_recovered', 0):,}",
+                    _orch_trim.get("message", ""),
+                )
+
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
         #
@@ -8898,6 +8979,39 @@ class GatewayRunner:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
+            # Consult/Merge quality gate — verify response before delivery
+            _qg = gateway_quality_gate(
+                content=response or "",
+                task_type="general",
+                gateway_session_id=session_key,
+                orchestrator_session_key=session_key,
+            )
+            if _qg.get("action") == "quality_gate":
+                _qg_score = _qg.get("route_detail", {}).get("score")
+                _qg_flags = _qg.get("route_detail", {}).get("flags", [])
+                if _qg_score and _qg_score < 5:
+                    logger.warning(
+                        "Quality gate low score (%s/10) for session %s — flags: %s",
+                        _qg_score, session_key, _qg_flags,
+                    )
+
+            # Shadow review — fire async review of code changes via local 30B.
+            # Does NOT block delivery; findings are logged for audit and
+            # available via gateway_shadow_review_result(request_id).
+            if response and agent_result.get("tools"):
+                try:
+                    _sr_id = gateway_shadow_review(
+                        diff=response,
+                        file_after=response,
+                        project_context=_orch_result.get("context", ""),
+                        gateway_session_id=session_key,
+                        orchestrator_session_key=session_key,
+                    )
+                    if _sr_id:
+                        logger.debug("Shadow review queued: %s", _sr_id)
+                except Exception as _sr_err:
+                    logger.warning("Shadow review dispatch failed: %s", _sr_err)
+
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
             # streaming already delivered the body, we can't mutate the sent
@@ -9123,6 +9237,20 @@ class GatewayRunner:
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
+
+            # Register conversation turns with the orchestrator via gateway integration
+            if "prompt" in agent_result:
+                gateway_register_turn(
+                    "user", agent_result.get("prompt", ""),
+                    gateway_session_id=session_key,
+                    orchestrator_session_key=session_key,
+                )
+            if response:
+                gateway_register_turn(
+                    "assistant", response,
+                    gateway_session_id=session_key,
+                    orchestrator_session_key=session_key,
+                )
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
@@ -18703,6 +18831,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # `hermes gateway stop` and interactive Ctrl+C are handled above as
     # planned stops and should not trigger service-manager revival.
     if _signal_initiated_shutdown and not runner._restart_requested:
+        # WAL checkpoint before exit — prevents state.db corruption
+        # on unclean shutdown (the #1 overnight killer)
+        try:
+            import sqlite3, os
+            import hermes_constants
+            db_path = os.path.join(hermes_constants.get_hermes_home(), "state.db")
+            if os.path.exists(db_path):
+                conn = sqlite3.connect(db_path, timeout=10)
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                conn.close()
+        except Exception:
+            pass
         logger.info(
             "Exiting with code 1 (signal-initiated shutdown without restart "
             "request) so systemd Restart=on-failure can revive the gateway."
@@ -18746,8 +18886,9 @@ def main():
     config = None
     if args.config:
         import yaml
+        from hermes_cli.config import _expand_env_vars
         with open(args.config, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            data = _expand_env_vars(yaml.safe_load(f) or {})
             config = GatewayConfig.from_dict(data)
     
     # Run the gateway - exit with code 1 if no platforms connected,

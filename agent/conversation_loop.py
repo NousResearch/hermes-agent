@@ -1013,7 +1013,7 @@ def run_conversation(
         retry_count = 0
         max_retries = agent._api_max_retries
         primary_recovery_attempted = False
-        max_compression_attempts = 3
+        max_compression_attempts = 5
         codex_auth_retry_attempted=False
         anthropic_auth_retry_attempted=False
         nous_auth_retry_attempted=False

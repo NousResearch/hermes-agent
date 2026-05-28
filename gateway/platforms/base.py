@@ -3535,8 +3535,54 @@ class BasePlatformAdapter(ABC):
                 # cancelling, let this message-processing task unwind now.
                 pass
         
+        # Context orchestrator: import at function level for gateway
+        from gateway_integration import (  # type: ignore
+            gateway_message_start,
+            gateway_trim_check,
+            gateway_register_turn,
+            gateway_register_tool,
+            gateway_message_end,
+            gateway_quality_gate,
+            gateway_shadow_review,
+        )
+
+        response = None
         try:
             await self._run_processing_hook("on_processing_start", event)
+
+            # Context orchestrator: session start
+            _orch_start = gateway_message_start(
+                user_input=event.text or "",
+                task_category="gateway",
+                gateway_session_id=session_key,
+                orchestrator_session_key=session_key,
+                platform=self.platform.value if self.platform else None,
+            )
+
+            # Register the user turn
+            if event.text:
+                gateway_register_turn(
+                    "user", event.text or "",
+                    gateway_session_id=session_key,
+                    orchestrator_session_key=session_key,
+                )
+
+            # Mid-session context trim: check token usage before running agent
+            _orch_trim = gateway_trim_check(
+                current_tokens=_orch_start.get("est_tokens", 0),
+                target_model=_orch_start.get("model", None),
+                gateway_session_id=session_key,
+                orchestrator_session_key=session_key,
+                platform=self.platform.value if self.platform else None,
+            )
+            if _orch_trim.get("trimmed_blocks"):
+                logger.info(
+                    "[%s] Context orchestrator: trimmed %d blocks, recovered ~%s tokens (%s)",
+                    self.name,
+                    _orch_trim["trimmed_blocks"],
+                    f"{_orch_trim.get('tokens_recovered', 0):,}",
+                    _orch_trim.get("message", ""),
+                )
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
@@ -3549,6 +3595,47 @@ class BasePlatformAdapter(ABC):
             # string, and remember the TTL + platform capability so the
             # post-send block can schedule the deletion.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+
+            # Context orchestrator: register assistant turn
+            if response:
+                gateway_register_turn(
+                    "assistant", response,
+                    gateway_session_id=session_key,
+                    orchestrator_session_key=session_key,
+                )
+
+            # Context orchestrator: quality gate on response before delivery
+            if response:
+                _qg = gateway_quality_gate(
+                    content=response,
+                    task_type="general",
+                    gateway_session_id=session_key,
+                    orchestrator_session_key=session_key,
+                )
+                if _qg.get("action") == "quality_gate_reject":
+                    _qg_score = _qg.get("route_detail", {}).get("score")
+                    _qg_flags = _qg.get("route_detail", {}).get("flags", [])
+                    logger.warning(
+                        "🚫 [%s] Quality gate REJECTED response (score=%s/10) for session %s — flags: %s. Response suppressed.",
+                        self.name, _qg_score, session_key, _qg_flags,
+                    )
+                    response = None
+                elif _qg.get("action") == "quality_gate":
+                    # Advisory mode: log warning but allow delivery
+                    _qg_score = _qg.get("route_detail", {}).get("score")
+                    _qg_flags = _qg.get("route_detail", {}).get("flags", [])
+                    if _qg_score and _qg_score < 5:
+                        logger.warning(
+                            "⚠️ [%s] Quality gate low score (%s/10) for session %s — flags: %s (advisory mode)",
+                            self.name, _qg_score, session_key, _qg_flags,
+                        )
+                elif _qg.get("action") == "route":
+                    # Response was routed elsewhere (e.g., search) — suppress original
+                    logger.info(
+                        "🔀 [%s] Quality gate routed response for session %s — %s",
+                        self.name, session_key, _qg.get("reason", "unknown"),
+                    )
+                    response = None
 
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or
@@ -3875,6 +3962,18 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # Context orchestrator: session end
+            try:
+                _orch_summary = response if response else None
+                gateway_message_end(
+                    summary=_orch_summary,
+                    gateway_session_id=session_key,
+                    orchestrator_session_key=session_key,
+                )
+            except Exception:
+                import traceback as tb
+                logger.debug("[%s] gateway_message_end failed: %s", self.name, tb.format_exc())
+
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #

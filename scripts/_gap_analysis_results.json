@@ -1,0 +1,98 @@
+[
+  {
+    "n": 1,
+    "severity": "MEDIUM",
+    "category": "Test Coverage",
+    "location": "test_auto_trim.py",
+    "risk": "Functions not directly tested: ['compress_block', '_response_base', 'parse_trigger_signal', 'handle_cli_pause_resume']",
+    "detail": "These functions may work but have no dedicated test class"
+  },
+  {
+    "n": 2,
+    "severity": "LOW",
+    "category": "Test Gap",
+    "location": "test_auto_trim.py",
+    "risk": "Scenario not tested: Single block over budget (1 block, must keep)",
+    "detail": "Add test case to improve coverage"
+  },
+  {
+    "n": 2,
+    "severity": "LOW",
+    "category": "Test Gap",
+    "location": "test_auto_trim.py",
+    "risk": "Scenario not tested: Duplicate block IDs in input",
+    "detail": "Add test case to improve coverage"
+  },
+  {
+    "n": 2,
+    "severity": "LOW",
+    "category": "Test Gap",
+    "location": "test_auto_trim.py",
+    "risk": "Scenario not tested: Very large overage (10x budget)",
+    "detail": "Add test case to improve coverage"
+  },
+  {
+    "n": 2,
+    "severity": "LOW",
+    "category": "Test Gap",
+    "location": "test_auto_trim.py",
+    "risk": "Scenario not tested: Threshold equals budget exactly",
+    "detail": "Add test case to improve coverage"
+  },
+  {
+    "n": 2,
+    "severity": "LOW",
+    "category": "Test Gap",
+    "location": "test_auto_trim.py",
+    "risk": "Scenario not tested: Negative/null priority values",
+    "detail": "Add test case to improve coverage"
+  },
+  {
+    "n": 2,
+    "severity": "LOW",
+    "category": "Test Gap",
+    "location": "test_auto_trim.py",
+    "risk": "Scenario not tested: Concurrent access / threading",
+    "detail": "Add test case to improve coverage"
+  },
+  {
+    "n": 2,
+    "severity": "LOW",
+    "category": "Test Gap",
+    "location": "test_auto_trim.py",
+    "risk": "Scenario not tested: Re-trimming already-trimmed output",
+    "detail": "Add test case to improve coverage"
+  },
+  {
+    "n": 3,
+    "severity": "HIGH",
+    "category": "Mutation Side Effect",
+    "location": "auto_trim.py:431",
+    "risk": "Block IDs injected into input dicts in-place via f\"block_{i}\"",
+    "detail": "When gateway passes same block list to multiple consumers, IDs get overwritten. Should copy blocks first."
+  },
+  {
+    "n": 5,
+    "severity": "HIGH",
+    "category": "Dual Compression Risk",
+    "location": "context_orchestrator.py + auto_trim.py",
+    "risk": "Both systems have compression logic - possible double-compression path",
+    "detail": "If orchestrator compresses then auto_trim also compresses, tokens wasted. Need clear boundary."
+  },
+  {
+    "n": 7,
+    "severity": "MEDIUM",
+    "category": "Hardcoded Signal Path",
+    "location": "auto_trim.py",
+    "risk": "SIGNALS_DIR uses BRIDGE_DIR / \"signals\" - must match gateway layout on Linux",
+    "detail": "Verify /home/gerald/ai-team-shared/hermes-pipeline/bridge/signals/ exists on Linux"
+  },
+  {
+    "n": 9,
+    "severity": "INFO",
+    "category": "Integration Path",
+    "location": "gateway/run.py",
+    "risk": "Gateway uses context_orchestrator, NOT auto_trim directly",
+    "detail": "auto_trim.py must be called through context_orchestrator. Verify call chain."
+  }
+]

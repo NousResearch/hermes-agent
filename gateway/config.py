@@ -127,6 +127,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    TERMUX = "termux"
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -441,6 +442,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.YUANBAO: lambda cfg: bool(
         cfg.extra.get("app_id") and cfg.extra.get("app_secret")
     ),
+    Platform.TERMUX: lambda cfg: True,  # Termux:API always available if in Termux env
     Platform.DINGTALK: lambda cfg: bool(
         (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
         and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
@@ -1249,6 +1251,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.DISCORD] = PlatformConfig()
         config.platforms[Platform.DISCORD].enabled = True
         config.platforms[Platform.DISCORD].token = discord_token
+    elif Platform.DISCORD in config.platforms:
+        # No token configured — disable Discord so it doesn't spam warnings
+        config.platforms[Platform.DISCORD].enabled = False
     
     discord_home = os.getenv("DISCORD_HOME_CHANNEL")
     if discord_home and Platform.DISCORD in config.platforms:
@@ -1918,3 +1923,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)
+
+    # ── Post-plugin guard: re-disable platforms that lack credentials ────
+    # The plugin registry loop above unconditionally sets enabled=True for
+    # any plugin whose check_fn() passes.  If no credential is actually
+    # present the adapter will just log errors and retry forever.  Catch
+    # that here so the gateway stays quiet.
+    if Platform.DISCORD in config.platforms:
+        if not config.platforms[Platform.DISCORD].token:
+            config.platforms[Platform.DISCORD].enabled = False

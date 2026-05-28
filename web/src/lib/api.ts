@@ -224,6 +224,50 @@ export const api = {
       body: JSON.stringify({ yaml_text }),
     }),
   getEnvVars: () => fetchJSON<Record<string, EnvVarInfo>>("/api/env"),
+  getFiles: (path = "") => {
+    const qs = new URLSearchParams();
+    if (path) qs.set("path", path);
+    const suffix = qs.toString();
+    return fetchJSON<FileBrowserListing>(`/api/files${suffix ? `?${suffix}` : ""}`);
+  },
+  downloadFile: async (path: string) => {
+    const qs = new URLSearchParams({ path });
+    const headers = new Headers();
+    const token = window.__HERMES_SESSION_TOKEN__;
+    if (token) setSessionHeader(headers, token);
+    const res = await fetch(`${BASE}/api/files/download?${qs.toString()}`, {
+      headers,
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`${res.status}: ${text}`);
+    }
+    return res.blob();
+  },
+  deleteFile: (path: string) => {
+    const qs = new URLSearchParams({ path });
+    return fetchJSON<{ ok: boolean; path: string; type: "file" }>(`/api/files?${qs.toString()}`, {
+      method: "DELETE",
+    });
+  },
+  uploadDocuments: (files: File[], path = "uploads") => {
+    const form = new FormData();
+    form.append("path", path || "uploads");
+    for (const file of files) form.append("files", file);
+    return fetchJSON<FileUploadResponse>("/api/files/upload", {
+      method: "POST",
+      body: form,
+    });
+  },
+  uploadProfileDocuments: (profile: string, files: File[]) => {
+    const form = new FormData();
+    for (const file of files) form.append("files", file);
+    return fetchJSON<FileUploadResponse>(`/api/profiles/${encodeURIComponent(profile)}/files/upload`, {
+      method: "POST",
+      body: form,
+    });
+  },
   setEnvVar: (key: string, value: string) =>
     fetchJSON<{ ok: boolean }>("/api/env", {
       method: "PUT",
@@ -953,4 +997,37 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+// ── Dashboard file browser types ───────────────────────────────────────
+
+export interface FileBrowserEntry {
+  name: string;
+  path: string;
+  type: "directory" | "file";
+  size: number | null;
+  modified_at: number;
+  mime_type: string | null;
+}
+
+export interface FileBrowserListing {
+  root: string;
+  path: string;
+  parent: string | null;
+  entries: FileBrowserEntry[];
+}
+
+export interface UploadedDashboardFile {
+  name: string;
+  path: string;
+  absolute_path: string;
+  size: number;
+  mime_type: string | null;
+}
+
+export interface FileUploadResponse {
+  ok: boolean;
+  path?: string;
+  upload_dir: string;
+  files: UploadedDashboardFile[];
 }

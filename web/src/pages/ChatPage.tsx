@@ -35,12 +35,14 @@ import { ChatSidebar } from "@/components/ChatSidebar";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import type { ProfileInfo } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 
 function buildWsUrl(
   authParam: [string, string],
   resume: string | null,
   channel: string,
+  profile: string,
 ): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   // ``authParam`` is ``["token", <session>]`` in loopback mode and
@@ -48,6 +50,7 @@ function buildWsUrl(
   // ``_ws_auth_ok`` picks whichever shape matches the current gate state.
   const qs = new URLSearchParams({ [authParam[0]]: authParam[1], channel });
   if (resume) qs.set("resume", resume);
+  if (profile) qs.set("profile", profile);
   return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
 }
 
@@ -151,6 +154,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ? window.matchMedia("(max-width: 1023px)").matches
       : false,
   );
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [selectedProfile, setSelectedProfile] = useState("default");
+  const [uploading, setUploading] = useState(false);
 
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
   // switches. That is great for ordinary /chat navigation, but it means query
@@ -159,7 +165,31 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const channel = useMemo(() => generateChannelId(), [resumeParam, selectedProfile]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getProfiles()
+      .then((res) => {
+        if (cancelled) return;
+        const loaded = res.profiles.length > 0
+          ? res.profiles
+          : [{ name: "default", path: "", is_default: true, model: null, provider: null, has_env: false, skill_count: 0 }];
+        setProfiles(loaded);
+        setSelectedProfile((prev) =>
+          loaded.some((profile) => profile.name === prev)
+            ? prev
+            : loaded.find((profile) => profile.is_default)?.name ?? "default",
+        );
+      })
+      .catch((err: Error) => {
+        console.warn("[hermes-chat] failed to load profiles:", err.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -267,6 +297,65 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
     termRef.current?.focus();
   };
+
+  const waitForOpenChatSocket = useCallback(async () => {
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline) {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        return ws;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return null;
+  }, []);
+
+  const handleUploadFiles = useCallback(
+    async (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+
+      setUploading(true);
+      try {
+        const res = await api.uploadProfileDocuments(selectedProfile, Array.from(files));
+        const paths = res.files
+          .map((file) => file.absolute_path)
+          .filter((path): path is string => Boolean(path));
+
+        if (paths.length === 0) {
+          setBanner("Upload completed but no file paths were returned.");
+          return;
+        }
+
+        const message =
+          `I attached document(s) through the dashboard for the '${selectedProfile}' profile only. ` +
+          "Use these exact local file path(s) as needed:\n" +
+          paths.map((path) => `- ${path}`).join("\n");
+
+        const ws = await waitForOpenChatSocket();
+        if (!ws) {
+          setBanner(
+            `Upload completed for '${selectedProfile}', but the chat websocket was not open so I could not notify the TUI. ` +
+              `Uploaded path(s): ${paths.join(", ")}`,
+          );
+          return;
+        }
+
+        ws.send(message);
+        setTimeout(() => {
+          const s = wsRef.current;
+          if (s && s.readyState === WebSocket.OPEN) s.send("\r");
+        }, 100);
+        setBanner(null);
+        termRef.current?.focus();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setBanner(`Upload failed: ${message}`);
+      } finally {
+        setUploading(false);
+      }
+    },
+    [selectedProfile, waitForOpenChatSocket],
+  );
 
   useEffect(() => {
     const host = hostRef.current;
@@ -554,13 +643,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // ``return cleanup`` stays at the top level; handlers + disposables
     // are hoisted to ``let`` bindings the cleanup closes over.
     let unmounting = false;
+    let activeWs: WebSocket | null = null;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
     void (async () => {
       const authParam = await buildWsAuthParam();
       if (unmounting) return;
-      const url = buildWsUrl(authParam, resumeParam, channel);
+      const url = buildWsUrl(authParam, resumeParam, channel, selectedProfile);
       const ws = new WebSocket(url);
+      activeWs = ws;
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
@@ -582,7 +673,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
 
     ws.onclose = (ev) => {
-      wsRef.current = null;
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+      }
+      if (activeWs === ws) {
+        activeWs = null;
+      }
       if (unmounting) {
         return;
       }
@@ -651,13 +747,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
-      // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
-      // ticket fetch makes the open async). The cleanup runs at the outer
-      // effect's top level so it can't reach into that scope — close via
-      // the ref instead. ``?.`` covers the race where unmount fires before
-      // the ticket fetch resolves and ``wsRef.current`` was never assigned.
-      wsRef.current?.close();
-      wsRef.current = null;
+      // Close only this effect's websocket. A previous profile/resume effect
+      // may finish cleaning up after a newer socket has already opened; using
+      // wsRef.current here can close or clear the newer live chat socket and
+      // make uploads think the TUI is disconnected.
+      if (activeWs) {
+        activeWs.close();
+        if (wsRef.current === activeWs) {
+          wsRef.current = null;
+        }
+        activeWs = null;
+      }
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -666,7 +766,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, resumeParam, selectedProfile]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -728,6 +828,47 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // above the app sidebar (`z-50`) and mobile chrome (`z-40`).  The main
   // dashboard column uses `relative z-2`, which traps `position:fixed`
   // descendants below those layers (see Toast.tsx).
+  const profileUploadControls = (
+    <div className="flex flex-col gap-2 rounded border border-current/15 bg-black/10 px-3 py-2 text-xs text-text-secondary">
+      <label className="flex min-w-0 flex-col gap-1.5">
+        <span className="text-display tracking-wider text-text-tertiary">profile</span>
+        <select
+          value={selectedProfile}
+          onChange={(event) => setSelectedProfile(event.currentTarget.value)}
+          disabled={uploading}
+          className="min-w-0 rounded border border-current/20 bg-background-base px-2 py-1 text-midground"
+          title="Choose the Hermes profile used by this chat session"
+        >
+          {(profiles.length > 0
+            ? profiles
+            : [{ name: "default", path: "", is_default: true, model: null, provider: null, has_env: false, skill_count: 0 }]
+          ).map((profile) => (
+            <option key={profile.name} value={profile.name}>
+              {profile.name}{profile.is_default ? " (default)" : ""}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className={cn(
+        "inline-flex min-w-0 items-center justify-center gap-1.5 rounded border border-current/20 px-2 py-1 text-midground",
+        uploading ? "opacity-60" : "cursor-pointer hover:bg-midground/5",
+      )}>
+        <span className="truncate">{uploading ? "Uploading…" : `Upload documents to ${selectedProfile}`}</span>
+        <input
+          type="file"
+          multiple
+          className="sr-only"
+          disabled={uploading}
+          onChange={(event) => {
+            void handleUploadFiles(event.currentTarget.files);
+            event.currentTarget.value = "";
+          }}
+        />
+      </label>
+    </div>
+  );
+
   const mobileModelToolsPortal =
     isActive &&
     narrow &&
@@ -795,7 +936,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} />
+            <ChatSidebar channel={channel}>{profileUploadControls}</ChatSidebar>
           </div>
         </div>
       </>,
@@ -812,6 +953,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           {banner}
         </div>
       )}
+
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
         <div
@@ -863,7 +1005,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
           >
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} />
+              <ChatSidebar channel={channel}>{profileUploadControls}</ChatSidebar>
             </div>
           </div>
         )}

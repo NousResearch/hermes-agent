@@ -14,8 +14,10 @@ import hmac
 import importlib.util
 import json
 import logging
+import mimetypes
 import os
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -52,7 +54,7 @@ from gateway.status import get_running_pid, read_runtime_status
 from utils import env_var_enabled
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
@@ -64,7 +66,7 @@ except ImportError:
     try:
         from tools.lazy_deps import ensure as _lazy_ensure
         _lazy_ensure("tool.dashboard", prompt=False)
-        from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+        from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
@@ -204,6 +206,19 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
     host_only = host_only.lower()
+
+    # Trusted reverse proxies / tunnels may preserve the public hostname while
+    # forwarding to a loopback-bound dashboard. Allow only explicit, exact
+    # comma-separated hostnames; no wildcards. Compare after stripping any port
+    # suffix from the request Host header above.
+    allowed_hosts_env = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    allowed_hosts = {
+        item.strip().lower().strip("[]")
+        for item in allowed_hosts_env.split(",")
+        if item.strip()
+    }
+    if host_only in allowed_hosts:
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -3483,6 +3498,7 @@ _event_lock = asyncio.Lock()
 def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -3512,6 +3528,23 @@ def _resolve_chat_argv(
     # the dashboard PTY path.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
     env.setdefault("HERMES_TUI_INLINE", "1")
+
+    if profile:
+        from hermes_cli import profiles as profiles_mod
+
+        try:
+            canon_profile = profiles_mod.normalize_profile_name(profile)
+            profiles_mod.validate_profile_name(canon_profile)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not profiles_mod.profile_exists(canon_profile):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Profile '{canon_profile}' does not exist.",
+            )
+        env["HERMES_HOME"] = str(profiles_mod.get_profile_dir(canon_profile))
+        env["HERMES_PROFILE"] = canon_profile
+        env["HERMES_PROFILE_NAME"] = canon_profile
 
     if resume:
         latest_resume, _latest_path = _session_latest_descendant(resume)
@@ -3613,11 +3646,26 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # --- spawn PTY ------------------------------------------------------
     resume = ws.query_params.get("resume") or None
+    profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
     try:
-        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
+        if profile:
+            argv, cwd, env = _resolve_chat_argv(
+                resume=resume,
+                sidecar_url=sidecar_url,
+                profile=profile,
+            )
+        else:
+            # Preserve compatibility with tests/plugins that monkeypatch the
+            # resolver using the historic (resume=None, sidecar_url=None)
+            # signature. Browser chat sends profile= when the user selects one.
+            argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
+    except HTTPException as exc:
+        await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc.detail}\x1b[0m\r\n")
+        await ws.close(code=1011)
+        return
     except SystemExit as exc:
         # _make_tui_argv calls sys.exit(1) when node/npm is missing.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
@@ -4810,6 +4858,243 @@ def _mount_plugin_api_routes():
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
+
+
+_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
+_FILES_UPLOAD_DIR = "uploads"
+_FILES_RETENTION_SECONDS = 72 * 60 * 60
+
+
+def _dashboard_files_root() -> Path:
+    raw = os.environ.get(_FILES_ROOT_ENV)
+    root = Path(raw).expanduser() if raw else get_hermes_home() / "files"
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
+
+
+def _normalise_dashboard_file_path(path: str) -> str:
+    raw = path or ""
+    rel = raw.replace("\\", "/").strip("/")
+    if "\x00" in rel:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    parsed = Path(rel)
+    if Path(raw).is_absolute() or parsed.is_absolute() or any(part == ".." for part in parsed.parts):
+        raise HTTPException(status_code=403, detail="Path escapes file root")
+    return rel
+
+
+def _resolve_dashboard_file(path: str, *, must_exist: bool = True) -> Tuple[Path, str]:
+    root = _dashboard_files_root()
+    rel = _normalise_dashboard_file_path(path)
+    target = (root / rel).resolve(strict=False)
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Path escapes file root")
+    if must_exist and not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return target, rel
+
+
+def _serialize_dashboard_file_entry(path: Path) -> Optional[Dict[str, Any]]:
+    root = _dashboard_files_root()
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    stat_result = path.stat()
+    is_dir = path.is_dir()
+    return {
+        "name": path.name,
+        "path": resolved.relative_to(root).as_posix(),
+        "type": "directory" if is_dir else "file",
+        "size": None if is_dir else stat_result.st_size,
+        "modified_at": stat_result.st_mtime,
+        "mime_type": None if is_dir else (mimetypes.guess_type(path.name)[0] or "application/octet-stream"),
+    }
+
+
+def _prune_dashboard_ready_files() -> None:
+    root = _dashboard_files_root()
+    cutoff = time.time() - _FILES_RETENTION_SECONDS
+    for child in root.iterdir():
+        if child.name == _FILES_UPLOAD_DIR:
+            continue
+        try:
+            if child.is_file() and not child.is_symlink() and child.stat().st_mtime < cutoff:
+                child.unlink()
+        except OSError:
+            _log.debug("Failed to prune dashboard file %s", child, exc_info=True)
+
+
+def _ensure_upload_dir(root: Path, upload_dir: Path) -> Path:
+    """Create and validate an upload directory without following symlinks."""
+    try:
+        root = root.resolve(strict=True)
+    except OSError:
+        raise HTTPException(status_code=500, detail="File root is unavailable")
+
+    if upload_dir.exists() or upload_dir.is_symlink():
+        try:
+            mode = upload_dir.lstat().st_mode
+        except OSError:
+            raise HTTPException(status_code=400, detail="Upload path is unavailable")
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            raise HTTPException(status_code=400, detail="Upload path is not a directory")
+    else:
+        upload_dir.mkdir(parents=True, exist_ok=False)
+
+    try:
+        resolved = upload_dir.resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        raise HTTPException(status_code=403, detail="Upload path escapes file root")
+    return resolved
+
+
+def _open_unique_upload_file(upload_dir: Path, filename: str) -> Tuple[Path, Any]:
+    """Open a unique upload target without following pre-existing symlinks."""
+    safe_name = Path(filename or "upload.bin").name or "upload.bin"
+    stem = Path(safe_name).stem or "upload"
+    suffix = Path(safe_name).suffix
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    index = 0
+    while True:
+        name = f"{stem}{suffix}" if index == 0 else f"{stem}-{index}{suffix}"
+        candidate = upload_dir / name
+        try:
+            if candidate.is_symlink():
+                raise FileExistsError
+            fd = os.open(candidate, flags, 0o600)
+        except FileExistsError:
+            index += 1
+            continue
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=f"Unable to save upload: {exc.strerror or exc}")
+        return candidate, os.fdopen(fd, "wb")
+
+
+@app.get("/api/files")
+async def api_list_dashboard_files(request: Request, path: str = ""):
+    _require_token(request)
+    _prune_dashboard_ready_files()
+    target, rel = _resolve_dashboard_file(path or "")
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="Path is not a directory")
+    entries: List[Dict[str, Any]] = []
+    for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        entry = _serialize_dashboard_file_entry(child)
+        if entry is not None:
+            entries.append(entry)
+    if rel:
+        parent_path = Path(rel).parent.as_posix()
+        parent: Optional[str] = "" if parent_path == "." else parent_path
+    else:
+        parent = None
+    return {"root": str(_dashboard_files_root()), "path": rel, "parent": parent, "entries": entries}
+
+
+@app.get("/api/files/download")
+async def api_download_dashboard_file(request: Request, path: str):
+    _require_token(request)
+    target, _rel = _resolve_dashboard_file(path)
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+    media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    return FileResponse(target, media_type=media_type, filename=target.name)
+
+
+def _profile_files_root(profile: str) -> Path:
+    profile_dir = _resolve_profile_dir(profile).resolve(strict=True)
+    root = profile_dir / "files"
+    if root.exists() or root.is_symlink():
+        try:
+            mode = root.lstat().st_mode
+        except OSError:
+            raise HTTPException(status_code=400, detail="Profile files path is unavailable")
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            raise HTTPException(status_code=400, detail="Profile files path is not a directory")
+    else:
+        root.mkdir(parents=True, exist_ok=False)
+    resolved = root.resolve(strict=True)
+    try:
+        resolved.relative_to(profile_dir)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Profile files path escapes profile root")
+    return resolved
+
+
+def _save_uploaded_dashboard_files(
+    *,
+    root: Path,
+    upload_dir: Path,
+    rel_dir: str,
+    files: List[UploadFile],
+) -> Dict[str, Any]:
+    upload_dir = _ensure_upload_dir(root, upload_dir)
+    saved: List[Dict[str, Any]] = []
+    for uploaded in files:
+        target, fh = _open_unique_upload_file(upload_dir, uploaded.filename or "upload.bin")
+        with fh:
+            shutil.copyfileobj(uploaded.file, fh)
+        rel = target.resolve(strict=True).relative_to(root).as_posix()
+        saved.append({
+            "name": target.name,
+            "path": rel,
+            "absolute_path": str(target.resolve(strict=True)),
+            "size": target.stat().st_size,
+            "mime_type": uploaded.content_type or mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+        })
+    return {"ok": True, "path": rel_dir, "upload_dir": str(upload_dir), "files": saved}
+
+
+@app.post("/api/files/upload")
+async def api_upload_dashboard_files(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    path: str = Form(_FILES_UPLOAD_DIR),
+):
+    _require_token(request)
+    root = _dashboard_files_root()
+    upload_dir, rel_dir = _resolve_dashboard_file(path or _FILES_UPLOAD_DIR, must_exist=False)
+    return _save_uploaded_dashboard_files(
+        root=root,
+        upload_dir=upload_dir,
+        rel_dir=rel_dir,
+        files=files,
+    )
+
+
+@app.post("/api/profiles/{name}/files/upload")
+async def api_upload_profile_files(
+    name: str,
+    request: Request,
+    files: List[UploadFile] = File(...),
+):
+    _require_token(request)
+    root = _profile_files_root(name)
+    upload_dir = root / _FILES_UPLOAD_DIR
+    return _save_uploaded_dashboard_files(
+        root=root,
+        upload_dir=upload_dir,
+        rel_dir=_FILES_UPLOAD_DIR,
+        files=files,
+    )
+
+
+@app.delete("/api/files")
+async def api_delete_dashboard_file(request: Request, path: str):
+    _require_token(request)
+    target, rel = _resolve_dashboard_file(path)
+    if target.is_dir():
+        raise HTTPException(status_code=400, detail="Directory deletion is not supported")
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+    target.unlink()
+    return {"ok": True, "path": rel, "type": "file"}
 
 
 # Mount plugin API routes before the SPA catch-all.

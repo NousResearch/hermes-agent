@@ -113,14 +113,27 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             # old_string/new_string — e.g. LLM used 2-space indent but the
             # file is 4-space. Shift new_string by the indentation delta so
             # the replacement matches the file's actual indent pattern.
-            effective_new = new_string
-            if strategy_name == "escape_normalized":
-                # The escape_normalized strategy matched because old_string
-                # contained literal \t/\n/\r that were unescaped to match
-                # real control characters in the file. Apply the same
-                # unescaping to new_string so we don't write literal
-                # backslash sequences where the file has real tabs/newlines.
-                effective_new = _unescape_common_sequences(new_string)
+            # LLMs frequently serialize tabs / carriage returns in JSON
+            # tool-call arguments as the two-character sequences ``\t`` and
+            # ``\r`` (backslash + letter) instead of the real control bytes.
+            # If we write new_string verbatim, the file ends up with literal
+            # backslash sequences where the surrounding code uses real tabs.
+            #
+            # Strategy: only unescape when the matched region of the file
+            # *actually contains* the corresponding real control character.
+            # That mirrors the region-based heuristic in
+            # ``_detect_escape_drift`` and keeps legitimate writes of the
+            # literal two-character string ``"\t"`` (e.g. patching Python
+            # source that contains a tab string literal in source text)
+            # untouched — those files have a backslash+t in the matched
+            # region, not a real tab, so we leave new_string alone.
+            #
+            # ``\n`` is intentionally excluded: newlines serialize correctly
+            # through JSON, and rewriting backslash-n would mangle escape
+            # sequences in source code constants far more often than help.
+            effective_new = _maybe_unescape_new_string(
+                new_string, content, matches,
+            )
             new_content = _apply_replacements(
                 content, matches, effective_new,
                 old_string=old_string if strategy_name != "exact" else None,
@@ -255,17 +268,40 @@ def _reindent_replacement(file_region: str, old_string: str, new_string: str) ->
     return "\n".join(out_lines)
 
 
-def _unescape_common_sequences(s: str) -> str:
-    """Unescape common C-style escape sequences that LLMs produce literally.
+def _maybe_unescape_new_string(new_string: str,
+                               content: str,
+                               matches: List[Tuple[int, int]]) -> str:
+    """Conditionally unescape ``\\t``/``\\r`` in new_string.
 
-    When the model sends ``\\t`` (two characters: backslash + t) instead of a
-    real tab byte (0x09), the patch tool would write the literal characters.
-    This helper converts common escape sequences to their actual byte values.
+    LLMs frequently send the two-character sequences ``\\t`` (backslash + t)
+    and ``\\r`` (backslash + r) inside JSON tool-call arguments where they
+    meant a real tab or carriage-return byte. Writing the string verbatim
+    corrupts tab-indented files with literal backslash-letter pairs.
 
-    Only call this when the matching strategy confirmed that the file already
-    contains real control characters (i.e. ``escape_normalized`` matched).
+    The unescape is only applied per-sequence when the *matched region of
+    the file* actually contains the corresponding control character — that
+    is, we only convert ``\\t`` -> tab when the file region we're replacing
+    contains a real tab byte. Files that legitimately contain the literal
+    two-character string ``"\\t"`` (e.g. a Python source line that defines
+    ``sep = "\\t"``) get a backslash+t in the matched region instead of a
+    tab, so we leave new_string alone.
+
+    ``\\n`` is intentionally excluded: newlines serialize correctly through
+    JSON and rewriting backslash-n would corrupt escape sequences in
+    string literals far more often than it would help.
     """
-    return s.replace('\\t', '\t').replace('\\n', '\n').replace('\\r', '\r')
+    # Cheap pre-check — bail out unless new_string actually contains one of
+    # the suspect sequences. Keeps the common case free.
+    if "\\t" not in new_string and "\\r" not in new_string:
+        return new_string
+
+    matched_regions = "".join(content[start:end] for start, end in matches)
+    out = new_string
+    if "\\t" in out and "\t" in matched_regions:
+        out = out.replace("\\t", "\t")
+    if "\\r" in out and "\r" in matched_regions:
+        out = out.replace("\\r", "\r")
+    return out
 
 
 def _apply_replacements(content: str, matches: List[Tuple[int, int]],

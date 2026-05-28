@@ -2687,8 +2687,13 @@ class GatewayRunner:
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
             from gateway.status import write_runtime_status
+            # Permanent guard: treat explicit None the same as omitting the arg.
+            # This prevents the heartbeat/state bug where gateway_state gets
+            # overwritten with null in the JSON, causing the watchdog to
+            # falsely believe the gateway is dead.
+            state_kw = {} if gateway_state is None else {"gateway_state": gateway_state}
             write_runtime_status(
-                gateway_state=gateway_state,
+                **state_kw,
                 exit_reason=exit_reason,
                 restart_requested=self._restart_requested,
                 active_agents=self._running_agent_count(),
@@ -4404,9 +4409,41 @@ class GatewayRunner:
         # turn so the agent kicks off the new chat.
         asyncio.create_task(self._handoff_watcher())
 
+        # Start heartbeat watcher — touches gateway_state.json every 60s
+        # even when idle, so the external watchdog can distinguish "quiet but
+        # alive" from "genuinely hung / dead".
+        asyncio.create_task(self._heartbeat_watcher())
+
         logger.info("Press Ctrl+C to stop")
         
         return True
+
+    async def _heartbeat_watcher(self, interval: int = 60) -> None:
+        """Background task that keeps gateway_state.json fresh even when idle.
+
+        Writes a no-op runtime status update every ``interval`` seconds so
+        the external watchdog can distinguish "quiet but alive" (state file
+        mtime advancing) from "genuinely hung or dead" (mtime frozen).
+
+        Without this, any idle period longer than the watchdog's stale
+        threshold causes a spurious restart.
+
+        IMPORTANT: calls write_runtime_status() directly without gateway_state
+        so the sentinel _UNSET is used and the existing state value is preserved.
+        _update_runtime_status(gateway_state=None) would overwrite it with null.
+        """
+        await asyncio.sleep(interval)  # let startup settle first
+        while self._running:
+            try:
+                from gateway.status import write_runtime_status
+                write_runtime_status(
+                    restart_requested=self._restart_requested,
+                    active_agents=self._running_agent_count(),
+                )
+                logger.debug("Heartbeat: gateway_state.json touched")
+            except Exception as exc:
+                logger.debug("Heartbeat write failed: %s", exc)
+            await asyncio.sleep(interval)
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.

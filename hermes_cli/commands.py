@@ -86,7 +86,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
     CommandDef("compress", "Manually compress conversation context", "Session",
-               args_hint="[focus topic]"),
+               aliases=("compact",), args_hint="[focus topic]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",

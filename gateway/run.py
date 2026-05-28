@@ -1094,7 +1094,7 @@ class _KanbanDispatchDbDiagnostic:
 
 def _kanban_dispatch_error_class_and_message(
     diagnostic: _KanbanDispatchDbDiagnostic,
-    exc: Exception,
+    exc: object,
 ) -> tuple[str, str]:
     """Prefer board-local SQLite diagnostic metadata over wrapper classes."""
     return (
@@ -1119,7 +1119,7 @@ def _kanban_board_db_fingerprint(kb_module: Any, slug: str) -> tuple[str, int | 
 
 def _classify_kanban_dispatch_db_error(
     kb_module: Any,
-    exc: Exception,
+    exc: object,
 ) -> _KanbanDispatchDbDiagnostic | None:
     """Classify SQLite errors far enough for safe gateway dispatch handling.
 
@@ -1136,6 +1136,8 @@ def _classify_kanban_dispatch_db_error(
     errors.
     """
     diagnostic = getattr(exc, "diagnostic", None)
+    if diagnostic is None and hasattr(exc, "category"):
+        diagnostic = exc
     if diagnostic is not None and hasattr(diagnostic, "category"):
         category = str(getattr(diagnostic, "category", "sqlite_error") or "sqlite_error")
         quarantine = bool(getattr(diagnostic, "quarantine", False))
@@ -1228,7 +1230,7 @@ def _log_kanban_dispatch_db_diagnostic(
     fingerprint: tuple[str, int | None, int | None],
     operation: str,
     diagnostic: _KanbanDispatchDbDiagnostic,
-    exc: Exception,
+    exc: object,
 ) -> None:
     """Log one clear, non-traceback diagnostic for a classified board failure."""
     log_fn = logger.error if diagnostic.severity == "error" else logger.warning
@@ -1324,6 +1326,35 @@ def _dispatch_kanban_board_once(
         if failure_limit is not None:
             kwargs["failure_limit"] = failure_limit
         result = kb_module.dispatch_once(conn, **kwargs)
+        db_error = getattr(result, "db_error", None)
+        if db_error is not None:
+            diagnostic = _classify_kanban_dispatch_db_error(kb_module, db_error)
+            if diagnostic is not None:
+                if diagnostic.quarantine:
+                    disabled_boards[slug] = (fingerprint, time.monotonic(), diagnostic)
+                error_class, error_message = _kanban_dispatch_error_class_and_message(
+                    diagnostic, db_error
+                )
+                _update_kanban_dispatch_runtime_status(
+                    slug,
+                    state="quarantined" if diagnostic.quarantine else "degraded",
+                    healthy=False,
+                    degraded=True,
+                    db_path=fingerprint[0],
+                    operation=operation,
+                    last_error_kind=diagnostic.kind,
+                    last_error_severity=diagnostic.severity,
+                    last_error_class=error_class,
+                    last_error_message=error_message,
+                    last_error_action=diagnostic.operator_action,
+                    quarantine_retry_after_seconds=(
+                        quarantine_retry_after_seconds if diagnostic.quarantine else None
+                    ),
+                )
+                _log_kanban_dispatch_db_diagnostic(
+                    slug, fingerprint, operation, diagnostic, db_error
+                )
+                return None
         _update_kanban_dispatch_runtime_status(
             slug,
             state="healthy",

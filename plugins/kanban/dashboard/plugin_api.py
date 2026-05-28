@@ -1285,65 +1285,186 @@ except ImportError:
     _psutil = None  # type: ignore[assignment]
 
 
-@router.get("/workers/active")
-def list_active_workers(
-    board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
-):
-    """Return every currently-running worker on the board.
+def _runtime_dispatch_status_map() -> dict[str, dict[str, Any]]:
+    """Return gateway-embedded dispatch runtime state when this plugin runs in-gateway."""
+    try:
+        from gateway.run import get_kanban_dispatch_runtime_status
+        statuses = get_kanban_dispatch_runtime_status()
+        return statuses if isinstance(statuses, dict) else {}
+    except Exception:
+        return {}
 
-    A worker is a ``task_runs`` row whose ``ended_at`` is NULL and whose
-    ``worker_pid`` is non-NULL, belonging to a task with ``status='running'``.
 
-    Returns ``{workers: [...], count: N, checked_at: <epoch>}``.  Each
-    worker entry carries enough context for the dashboard to link back to
-    its task without a second round-trip.
+def _active_workers_for_board(slug: str) -> tuple[list[dict[str, Any]], Optional[str]]:
+    """Return active worker/claim rows for one board.
+
+    Source of truth deliberately mirrors embedded dispatch's live-state checks:
+    the task row owns the current claim (status/claim_lock/worker_pid/current_run_id),
+    while task_runs provides run history. Older dashboard code counted only
+    open task_runs rows with worker_pid, which could miss live task claims after
+    migration/backfill drift and made cross-board status look empty when the
+    caller omitted ?board=. This helper reports both sides and flags drift.
     """
-    board = _resolve_board(board)
-    conn = _conn(board=board)
+    try:
+        conn = kanban_db.connect(board=slug)
+    except Exception as exc:
+        return [], str(exc)
     try:
         rows = conn.execute(
             """
             SELECT
-                r.id          AS run_id,
-                r.task_id,
-                t.title       AS task_title,
-                t.status      AS task_status,
-                t.assignee    AS task_assignee,
-                r.profile,
-                r.worker_pid,
-                r.started_at,
-                r.claim_lock,
-                r.claim_expires,
-                r.last_heartbeat_at,
-                r.max_runtime_seconds
-            FROM task_runs r
-            JOIN tasks t ON t.id = r.task_id
-            WHERE r.ended_at IS NULL
-              AND r.worker_pid IS NOT NULL
-              AND t.status = 'running'
-            ORDER BY r.started_at ASC
+                t.id                 AS task_id,
+                t.title              AS task_title,
+                t.status             AS task_status,
+                t.assignee           AS task_assignee,
+                t.current_run_id     AS task_current_run_id,
+                t.claim_lock         AS task_claim_lock,
+                t.claim_expires      AS task_claim_expires,
+                t.worker_pid         AS task_worker_pid,
+                t.last_heartbeat_at  AS task_last_heartbeat_at,
+                t.max_runtime_seconds AS task_max_runtime_seconds,
+                r.id                 AS run_id,
+                r.profile            AS run_profile,
+                r.status             AS run_status,
+                r.worker_pid         AS run_worker_pid,
+                r.started_at         AS run_started_at,
+                r.claim_lock         AS run_claim_lock,
+                r.claim_expires      AS run_claim_expires,
+                r.last_heartbeat_at  AS run_last_heartbeat_at,
+                r.max_runtime_seconds AS run_max_runtime_seconds,
+                r.ended_at           AS run_ended_at
+            FROM tasks t
+            LEFT JOIN task_runs r
+              ON r.id = t.current_run_id
+              OR (
+                    t.current_run_id IS NULL
+                AND r.task_id = t.id
+                AND r.ended_at IS NULL
+                AND r.worker_pid IS NOT NULL
+              )
+            WHERE t.worker_pid IS NOT NULL
+               OR t.claim_lock IS NOT NULL
+               OR (t.status = 'running' AND r.ended_at IS NULL AND r.worker_pid IS NOT NULL)
+            ORDER BY COALESCE(r.started_at, t.started_at, t.created_at) ASC
             """,
         ).fetchall()
-        workers = [
-            {
-                "run_id": row["run_id"],
-                "task_id": row["task_id"],
-                "task_title": row["task_title"],
-                "task_status": row["task_status"],
-                "task_assignee": row["task_assignee"],
-                "profile": row["profile"],
-                "worker_pid": row["worker_pid"],
-                "started_at": row["started_at"],
-                "claim_lock": row["claim_lock"],
-                "claim_expires": row["claim_expires"],
-                "last_heartbeat_at": row["last_heartbeat_at"],
-                "max_runtime_seconds": row["max_runtime_seconds"],
-            }
-            for row in rows
-        ]
-        return {"workers": workers, "count": len(workers), "checked_at": int(time.time())}
+    except Exception as exc:
+        return [], str(exc)
     finally:
         conn.close()
+
+    workers: list[dict[str, Any]] = []
+    for row in rows:
+        task_pid = row["task_worker_pid"]
+        run_pid = row["run_worker_pid"]
+        pid = task_pid if task_pid is not None else run_pid
+        task_claim = row["task_claim_lock"]
+        run_claim = row["run_claim_lock"]
+        run_id = row["run_id"]
+        task_current_run_id = row["task_current_run_id"]
+        task_status = row["task_status"]
+        open_run = bool(run_id is not None and row["run_ended_at"] is None)
+        task_running = task_status == "running"
+        pid_alive: Optional[bool]
+        if pid is None:
+            pid_alive = None
+        else:
+            try:
+                pid_alive = bool(kanban_db._pid_alive(int(pid)))
+            except Exception:
+                pid_alive = None
+        consistency: list[str] = []
+        if not task_running:
+            consistency.append("task_not_running")
+        if task_current_run_id is None:
+            consistency.append("missing_current_run_id")
+        elif run_id is None:
+            consistency.append("current_run_missing")
+        elif int(task_current_run_id) != int(run_id):
+            consistency.append("current_run_mismatch")
+        if task_pid is None and run_pid is not None:
+            consistency.append("task_pid_missing")
+        if task_pid is not None and run_pid is None and open_run:
+            consistency.append("run_pid_missing")
+        if task_pid is not None and run_pid is not None and int(task_pid) != int(run_pid):
+            consistency.append("pid_mismatch")
+        if task_claim and run_claim and task_claim != run_claim:
+            consistency.append("claim_mismatch")
+        if not open_run:
+            consistency.append("open_run_missing")
+        workers.append({
+            "board": slug,
+            "run_id": run_id,
+            "task_id": row["task_id"],
+            "task_title": row["task_title"],
+            "task_status": task_status,
+            "task_assignee": row["task_assignee"],
+            "profile": row["run_profile"] or row["task_assignee"],
+            "worker_pid": pid,
+            "pid_alive": pid_alive,
+            "started_at": row["run_started_at"],
+            "claim_lock": task_claim or run_claim,
+            "claim_expires": row["task_claim_expires"] or row["run_claim_expires"],
+            "last_heartbeat_at": row["task_last_heartbeat_at"] or row["run_last_heartbeat_at"],
+            "max_runtime_seconds": row["task_max_runtime_seconds"] or row["run_max_runtime_seconds"],
+            "task_claim_lock": task_claim,
+            "run_claim_lock": run_claim,
+            "task_worker_pid": task_pid,
+            "run_worker_pid": run_pid,
+            "task_current_run_id": task_current_run_id,
+            "run_status": row["run_status"],
+            "claim_consistent": not consistency,
+            "consistency": consistency,
+        })
+    return workers, None
+
+
+@router.get("/workers/active")
+def list_active_workers(
+    board: Optional[str] = Query(
+        None,
+        description="Kanban board slug; omit to scan every non-archived board",
+    ),
+):
+    """Return every currently-running worker/claim.
+
+    With ``?board=slug`` this is scoped to one board. Without it, the endpoint
+    scans every non-archived board and returns a fleet-wide count so operators do
+    not get a misleading ``count=0`` merely because the dashboard's current-board
+    pointer differs from the board whose workers are alive.
+    """
+    checked_at = int(time.time())
+    if board is not None and board != "":
+        slug = _resolve_board(board) or kanban_db.DEFAULT_BOARD
+        workers, error = _active_workers_for_board(slug)
+        body: dict[str, Any] = {
+            "workers": workers,
+            "count": len(workers),
+            "checked_at": checked_at,
+            "board": slug,
+            "current": kanban_db.get_current_board(),
+            "boards": {slug: {"count": len(workers), "error": error}},
+        }
+        if error:
+            body["error"] = error
+        return body
+
+    boards = kanban_db.list_boards(include_archived=False)
+    current = kanban_db.get_current_board()
+    all_workers: list[dict[str, Any]] = []
+    per_board: dict[str, dict[str, Any]] = {}
+    for b in boards:
+        slug = b["slug"]
+        workers, error = _active_workers_for_board(slug)
+        all_workers.extend(workers)
+        per_board[slug] = {"count": len(workers), "error": error}
+    return {
+        "workers": all_workers,
+        "count": len(all_workers),
+        "checked_at": checked_at,
+        "current": current,
+        "boards": per_board,
+    }
 
 
 @router.get("/runs/{run_id}")
@@ -1897,6 +2018,41 @@ def _board_counts(slug: str) -> dict[str, int]:
         return {}
 
 
+def _board_dispatch_status(slug: str) -> dict[str, Any]:
+    """Small operator-facing dispatch/worker diagnostic for a board list row."""
+    workers, active_error = _active_workers_for_board(slug)
+    runtime = _runtime_dispatch_status_map().get(slug) or {}
+    counts = _board_counts(slug)
+    state = runtime.get("state") or "unknown"
+    healthy = runtime.get("healthy") if "healthy" in runtime else None
+    last_error = None
+    if runtime.get("last_error_kind") or runtime.get("last_error_message"):
+        last_error = {
+            "kind": runtime.get("last_error_kind"),
+            "severity": runtime.get("last_error_severity"),
+            "message": runtime.get("last_error_message"),
+            "action": runtime.get("last_error_action"),
+            "operation": runtime.get("operation"),
+            "quarantine_retry_after_seconds": runtime.get("quarantine_retry_after_seconds"),
+        }
+    return {
+        "state": state,
+        "healthy": healthy,
+        "last_tick_at": runtime.get("last_tick_at") or runtime.get("checked_at"),
+        "last_successful_tick_at": (
+            runtime.get("last_successful_tick_at") or runtime.get("last_successful_tick")
+        ),
+        "last_error": last_error,
+        "last_error_kind": runtime.get("last_error_kind"),
+        "active_worker_count": len(workers),
+        "claim_inconsistent_count": sum(1 for w in workers if not w.get("claim_consistent")),
+        "active_error": active_error,
+        "ready_count": int(counts.get("ready", 0)),
+        "review_count": int(counts.get("review", 0)),
+        "running_count": int(counts.get("running", 0)),
+    }
+
+
 @router.get("/boards")
 def list_boards(include_archived: bool = Query(False)):
     """Return every board on disk with task counts and the active slug."""
@@ -1906,6 +2062,7 @@ def list_boards(include_archived: bool = Query(False)):
         b["is_current"] = (b["slug"] == current)
         b["counts"] = _board_counts(b["slug"])
         b["total"] = sum(b["counts"].values())
+        b["dispatch_status"] = _board_dispatch_status(b["slug"])
     return {"boards": boards, "current": current}
 
 

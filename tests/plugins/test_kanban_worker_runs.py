@@ -145,6 +145,52 @@ def test_workers_active_excludes_runs_without_pid(client):
     assert r.json()["count"] == 0
 
 
+def test_workers_active_scans_all_boards_when_board_omitted(client):
+    """Omitting ?board returns fleet-wide workers instead of only the current board."""
+    kb.create_board("other-board")
+    conn = kb.connect(board="other-board")
+    try:
+        task_id = kb.create_task(conn, title="other-active", assignee="dana")
+        conn.execute("UPDATE tasks SET status='running' WHERE id=?", (task_id,))
+        _insert_run(conn, task_id, worker_pid=24680)
+    finally:
+        conn.close()
+
+    scoped = client.get("/api/plugins/kanban/workers/active?board=default")
+    assert scoped.status_code == 200
+    assert scoped.json()["count"] == 0
+
+    r = client.get("/api/plugins/kanban/workers/active")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 1
+    assert body["boards"]["other-board"]["count"] == 1
+    worker = body["workers"][0]
+    assert worker["board"] == "other-board"
+    assert worker["task_id"] == task_id
+    assert worker["worker_pid"] == 24680
+
+
+def test_boards_list_includes_dispatch_worker_status(client):
+    """Board rows expose per-board active worker and dispatch diagnostics."""
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="status-active", assignee="erin")
+        conn.execute("UPDATE tasks SET status='running' WHERE id=?", (task_id,))
+        _insert_run(conn, task_id, worker_pid=13579)
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/boards")
+    assert r.status_code == 200
+    boards = {b["slug"]: b for b in r.json()["boards"]}
+    assert "default" in boards
+    status = boards["default"]["dispatch_status"]
+    assert status["active_worker_count"] == 1
+    assert status["running_count"] == 1
+    assert "claim_inconsistent_count" in status
+
+
 # ---------------------------------------------------------------------------
 # GET /runs/{run_id}
 # ---------------------------------------------------------------------------

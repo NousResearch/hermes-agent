@@ -22,7 +22,7 @@ class _FakeConn:
         self.closed = True
 
 
-def _fake_kb(tmp_path, *, connect_exc=None, dispatch_exc=None):
+def _fake_kb(tmp_path, *, connect_exc=None, dispatch_exc=None, dispatch_result=None):
     db_path = tmp_path / "kanban.db"
     db_path.write_bytes(b"SQLite format 3\x00" + b"\x00" * 100)
     conn = _FakeConn()
@@ -45,6 +45,8 @@ def _fake_kb(tmp_path, *, connect_exc=None, dispatch_exc=None):
         calls["dispatch_once"] += 1
         if dispatch_exc is not None:
             raise dispatch_exc
+        if dispatch_result is not None:
+            return dispatch_result
         return SimpleNamespace(spawned=[])
 
     kb = SimpleNamespace(
@@ -163,6 +165,50 @@ def test_kanban_board_tick_quarantines_release_stale_claims_read_failure(tmp_pat
     assert "WAL/SHM" in messages[0]
     assert "operation=dispatch_once" in messages[0]
     assert caplog.records[0].operation == "dispatch_once"
+    assert caplog.records[0].sqlite_failure == "disk_io"
+    assert caplog.records[0].quarantined is True
+    assert not caplog.records[0].exc_info
+
+
+def test_kanban_board_tick_quarantines_dispatch_result_db_error(tmp_path, caplog):
+    """dispatch_once may degrade internally; the gateway must still quarantine."""
+    from gateway.run import _dispatch_kanban_board_once
+
+    diagnostic = SimpleNamespace(
+        category="disk_io",
+        quarantine=True,
+        operator_action="repair or restore the board DB and WAL/SHM sidecars",
+        error_class="OperationalError",
+        error_message="disk I/O error",
+    )
+    kb, conn, calls, db_path = _fake_kb(
+        tmp_path,
+        dispatch_result=SimpleNamespace(spawned=[], db_error=diagnostic),
+    )
+    disabled = {}
+
+    with caplog.at_level("ERROR", logger="gateway.run"):
+        assert _dispatch_kanban_board_once(
+            kb,
+            "superoptions",
+            disabled_boards=disabled,
+            quarantine_retry_after_seconds=300,
+        ) is None
+        assert _dispatch_kanban_board_once(
+            kb,
+            "superoptions",
+            disabled_boards=disabled,
+            quarantine_retry_after_seconds=300,
+        ) is None
+
+    assert calls == {"connect": 1, "dispatch_once": 1}
+    assert conn.closed is True
+    assert len(caplog.records) == 1
+    assert "operation=dispatch_once" in caplog.records[0].getMessage()
+    assert caplog.records[0].board_slug == "superoptions"
+    assert caplog.records[0].db_path == str(db_path)
+    assert caplog.records[0].error_class == "OperationalError"
+    assert caplog.records[0].error_message == "disk I/O error"
     assert caplog.records[0].sqlite_failure == "disk_io"
     assert caplog.records[0].quarantined is True
     assert not caplog.records[0].exc_info

@@ -3576,7 +3576,7 @@ def block_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'review')
                 """,
                 (task_id,),
             )
@@ -3589,7 +3589,7 @@ def block_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'review')
                    AND current_run_id = ?
                 """,
                 (task_id, int(expected_run_id)),
@@ -5456,6 +5456,16 @@ def dispatch_once(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        if not dry_run:
+            # Preflight force-loaded skills before claiming/spawning. A missing
+            # task skill is deterministic: the child CLI aborts during preload
+            # with ``Unknown skill(s)`` before the worker can report anything.
+            # Block once with a clear remediation instead of burning retries.
+            skill_error = _task_skill_preflight_error(get_task(conn, row["id"]))
+            if skill_error:
+                if block_task(conn, row["id"], reason=skill_error):
+                    result.auto_blocked.append(row["id"])
+                continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -5556,6 +5566,18 @@ def dispatch_once(
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        if not dry_run:
+            # Review workers get an injected review skill. Validate it against
+            # the reviewer's profile before claim/spawn so a missing review
+            # skill blocks once with a fixable reason instead of crash-looping.
+            review_probe = get_task(conn, row["id"])
+            if review_probe is not None:
+                review_probe.skills = list(review_probe.skills or []) + ["sdlc-review"]
+            skill_error = _task_skill_preflight_error(review_probe)
+            if skill_error:
+                if block_task(conn, row["id"], reason=skill_error):
+                    result.auto_blocked.append(row["id"])
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
@@ -5837,6 +5859,175 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     except OSError:
         pass
     return False
+
+
+def _skill_search_dirs_for_home(hermes_home: Optional[str]) -> list[Path]:
+    """Return local + profile-configured external skill dirs for a worker home.
+
+    Dispatcher preflight must reason about the *child* process' skill search
+    path, not the dispatcher's. ``hermes -p <profile>`` runs with that
+    profile's ``HERMES_HOME``, so per-task ``--skills`` values are fatal when
+    they are only installed in the default profile. This mirrors the subset of
+    ``tools.skills_tool.skill_view`` resolution that matters for local skills.
+    """
+    base = Path(hermes_home) if hermes_home else (Path.home() / ".hermes")
+    dirs: list[Path] = []
+    local = base / "skills"
+    if local.is_dir():
+        dirs.append(local)
+
+    config_path = base / "config.yaml"
+    if not config_path.exists():
+        return dirs
+    try:
+        from agent.skill_utils import yaml_load  # type: ignore[reportMissingImports]
+
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return dirs
+    if not isinstance(parsed, dict):
+        return dirs
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return dirs
+    raw_dirs = skills_cfg.get("external_dirs")
+    if isinstance(raw_dirs, str):
+        raw_dirs = [raw_dirs]
+    if not isinstance(raw_dirs, list):
+        return dirs
+
+    seen = {p.resolve() for p in dirs if p.exists()}
+    for raw in raw_dirs:
+        entry = str(raw or "").strip()
+        if not entry:
+            continue
+        # Expand profile-relative variables without mutating global env.
+        entry = (
+            entry.replace("${HERMES_HOME}", str(base))
+            .replace("$HERMES_HOME", str(base))
+        )
+        expanded = os.path.expanduser(os.path.expandvars(entry))
+        path = Path(expanded)
+        if not path.is_absolute():
+            path = base / path
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        if resolved in seen or not path.is_dir():
+            continue
+        seen.add(resolved)
+        dirs.append(path)
+    return dirs
+
+
+def _skill_resolution_issue_in_home(
+    skill_name: str,
+    hermes_home: Optional[str],
+) -> Optional[str]:
+    """Return why ``skill_name`` cannot be preloaded in ``hermes_home``.
+
+    Returns ``None`` when local resolution succeeds. Qualified plugin skill
+    names (``plugin:skill``) are allowed through when no local match is found
+    because plugin availability is managed by the spawned CLI process; blocking
+    them here would create false negatives for plugin-provided skills.
+    """
+    name = str(skill_name or "").strip().lstrip("/")
+    if not name or name == "kanban-worker":
+        return None
+
+    local_category_name: Optional[str] = None
+    if ":" in name:
+        namespace, bare = name.split(":", 1)
+        if namespace and bare:
+            local_category_name = f"{namespace}/{bare}"
+
+    dirs = _skill_search_dirs_for_home(hermes_home)
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def _record(path: Path) -> None:
+        try:
+            key = path.resolve()
+        except OSError:
+            key = path
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(path)
+
+    try:
+        from agent.skill_utils import iter_skill_index_files  # type: ignore[reportMissingImports]
+
+        for search_dir in dirs:
+            direct_path = search_dir / name
+            if direct_path.is_dir() and (direct_path / "SKILL.md").is_file():
+                _record(direct_path / "SKILL.md")
+            elif direct_path.with_suffix(".md").is_file():
+                _record(direct_path.with_suffix(".md"))
+
+            if local_category_name:
+                categorized_path = search_dir / local_category_name
+                if categorized_path.is_dir() and (categorized_path / "SKILL.md").is_file():
+                    _record(categorized_path / "SKILL.md")
+                elif categorized_path.with_suffix(".md").is_file():
+                    _record(categorized_path.with_suffix(".md"))
+
+            for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                if found_skill_md.parent.name == name:
+                    _record(found_skill_md)
+
+            for found_md in search_dir.rglob(f"{name}.md"):
+                if found_md.name != "SKILL.md":
+                    _record(found_md)
+    except OSError:
+        pass
+
+    if len(candidates) == 1:
+        return None
+    if len(candidates) > 1:
+        return "ambiguous"
+    if ":" in name:
+        return None
+    return "missing"
+
+
+def _task_skill_preflight_error(task: Optional[Task]) -> Optional[str]:
+    """Return a human-actionable reason if task.skills won't load."""
+    if not task or not task.skills or not task.assignee:
+        return None
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env  # type: ignore[reportMissingImports]
+
+        profile = normalize_profile_name(task.assignee)
+        profile_home = resolve_profile_env(profile)
+    except Exception:
+        # The caller's profile-exists guard handles unknown profiles. If this
+        # resolution fails for some other reason, don't invent a skill error.
+        return None
+
+    issues: list[tuple[str, str]] = []
+    for skill in task.skills:
+        issue = _skill_resolution_issue_in_home(str(skill), profile_home)
+        if issue:
+            issues.append((str(skill), issue))
+    if not issues:
+        return None
+
+    missing = [skill for skill, issue in issues if issue == "missing"]
+    ambiguous = [skill for skill, issue in issues if issue == "ambiguous"]
+    parts: list[str] = []
+    if missing:
+        parts.append("missing skill(s): " + ", ".join(missing))
+    if ambiguous:
+        parts.append("ambiguous skill(s): " + ", ".join(ambiguous))
+    return (
+        f"skill preflight failed for @{profile}: "
+        + "; ".join(parts)
+        + f". Install/copy the skill(s) into {profile_home}/skills, "
+        "configure that profile's skills.external_dirs, or remove the "
+        "per-task skills before unblocking."
+    )
 
 
 def _worker_terminal_timeout_env(

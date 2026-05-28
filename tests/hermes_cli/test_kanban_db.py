@@ -1149,6 +1149,73 @@ def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypat
     assert not res.spawned
 
 
+def test_dispatch_blocks_ready_task_with_missing_profile_skill(kanban_home):
+    """Per-task skills are validated against the assignee profile before spawn.
+
+    Without this preflight, the worker subprocess exits during CLI preload with
+    ``Unknown skill(s)`` and the dispatcher wastes retry ticks before blocking.
+    """
+    profile_home = kanban_home / "profiles" / "worker"
+    (profile_home / "skills").mkdir(parents=True)
+    spawns: list[str] = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="needs-missing-skill",
+            assignee="worker",
+            skills=["repository-architecture-analysis"],
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, t)
+        events = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ?",
+            (t,),
+        ).fetchall()
+
+    assert spawns == []
+    assert t in res.auto_blocked
+    assert task is not None
+    assert task.status == "blocked"
+    assert any(
+        e["kind"] == "blocked"
+        and "repository-architecture-analysis" in (e["payload"] or "")
+        for e in events
+    )
+
+
+def test_dispatch_spawns_when_profile_skill_exists(kanban_home):
+    profile_home = kanban_home / "profiles" / "worker"
+    skill_dir = profile_home / "skills" / "software-development" / "repository-architecture-analysis"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: repository-architecture-analysis\ndescription: test\n---\n# Test\n",
+        encoding="utf-8",
+    )
+    spawns: list[tuple[str, list[str]]] = []
+
+    def fake_spawn(task, workspace):
+        spawns.append((task.id, list(task.skills or [])))
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="has-skill",
+            assignee="worker",
+            skills=["repository-architecture-analysis"],
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, t)
+
+    assert spawns == [(t, ["repository-architecture-analysis"])]
+    assert res.spawned and res.spawned[0][0] == t
+    assert task is not None
+    assert task.status == "running"
+
+
 def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
     """``has_spawnable_ready`` returns False when every ready task is
     assigned to a control-plane lane — used by gateway/CLI dispatchers

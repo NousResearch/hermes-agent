@@ -1033,11 +1033,13 @@ def test_discord_toolsets_in_configurable_toolsets():
     keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     assert "discord" in keys
     assert "discord_admin" in keys
+    assert "model_control" in keys
 
 
 def test_discord_toolsets_in_default_off():
     assert "discord" in _DEFAULT_OFF_TOOLSETS
     assert "discord_admin" in _DEFAULT_OFF_TOOLSETS
+    assert "model_control" in _DEFAULT_OFF_TOOLSETS
 
 
 def test_discord_toolsets_not_available_on_other_platforms():

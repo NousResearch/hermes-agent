@@ -692,6 +692,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        self._run_tool_started_at: Dict[str, Dict[str, float]] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -2903,42 +2904,34 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    def _push_run_event(
+        self,
+        run_id: str,
+        loop: "asyncio.AbstractEventLoop",
+        event: Dict[str, Any],
+    ) -> None:
+        """Push one structured event to a run's SSE queue from any thread."""
+        self._set_run_status(
+            run_id,
+            self._run_statuses.get(run_id, {}).get("status", "running"),
+            last_event=event.get("event"),
+        )
+        q = self._run_streams.get(run_id)
+        if q is None:
+            return
+        try:
+            loop.call_soon_threadsafe(q.put_nowait, event)
+        except Exception:
+            pass
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
-        """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
+        """Return a progress callback for non-tool structured run events."""
         def _push(event: Dict[str, Any]) -> None:
-            self._set_run_status(
-                run_id,
-                self._run_statuses.get(run_id, {}).get("status", "running"),
-                last_event=event.get("event"),
-            )
-            q = self._run_streams.get(run_id)
-            if q is None:
-                return
-            try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
-            except Exception:
-                pass
+            self._push_run_event(run_id, loop, event)
 
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
-            if event_type == "tool.started":
-                _push({
-                    "event": "tool.started",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "tool": tool_name,
-                    "preview": preview,
-                })
-            elif event_type == "tool.completed":
-                _push({
-                    "event": "tool.completed",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "tool": tool_name,
-                    "duration": round(kwargs.get("duration", 0), 3),
-                    "error": kwargs.get("is_error", False),
-                })
-            elif event_type == "reasoning.available":
+            if event_type == "reasoning.available":
                 _push({
                     "event": "reasoning.available",
                     "run_id": run_id,
@@ -2946,6 +2939,64 @@ class APIServerAdapter(BasePlatformAdapter):
                     "text": preview or "",
                 })
             # _thinking and subagent_progress are intentionally not forwarded
+
+        return _callback
+
+    def _make_run_tool_start_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
+        """Return the system tool-start event callback for /v1/runs SSE."""
+        def _callback(tool_call_id: str, tool_name: str, args: dict | None = None):
+            if tool_call_id:
+                self._run_tool_started_at.setdefault(run_id, {})[tool_call_id] = time.time()
+            try:
+                from agent.display import build_tool_preview
+
+                preview = build_tool_preview(tool_name, args or {}) or ""
+            except Exception:
+                preview = ""
+            self._push_run_event(
+                run_id,
+                loop,
+                {
+                    "event": "tool.started",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "tool_call_id": tool_call_id,
+                    "tool": tool_name,
+                    "preview": preview,
+                    "status": "running",
+                },
+            )
+
+        return _callback
+
+    def _make_run_tool_complete_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
+        """Return the system tool-complete event callback for /v1/runs SSE."""
+        def _callback(tool_call_id: str, tool_name: str, args: dict | None = None, result: Any = None):
+            started_at = None
+            if tool_call_id:
+                started_at = self._run_tool_started_at.setdefault(run_id, {}).pop(tool_call_id, None)
+            event = {
+                "event": "tool.completed",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "tool_call_id": tool_call_id,
+                "tool": tool_name,
+                "status": "completed",
+            }
+            if started_at is not None:
+                event["duration"] = round(max(0.0, time.time() - started_at), 3)
+            try:
+                from agent.display import _detect_tool_failure
+
+                is_error, _ = _detect_tool_failure(tool_name, result)
+                event["error"] = is_error
+            except Exception:
+                pass
+            self._push_run_event(
+                run_id,
+                loop,
+                event,
+            )
 
         return _callback
 
@@ -3039,6 +3090,8 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_approval_sessions[run_id] = approval_session_key
 
         event_cb = self._make_run_event_callback(run_id, loop)
+        tool_start_cb = self._make_run_tool_start_callback(run_id, loop)
+        tool_complete_cb = self._make_run_tool_complete_callback(run_id, loop)
 
         # Also wire stream_delta_callback so message.delta events flow through.
         def _text_cb(delta: Optional[str]) -> None:
@@ -3070,6 +3123,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
+                    tool_start_callback=tool_start_cb,
+                    tool_complete_callback=tool_complete_cb,
                     gateway_session_key=gateway_session_key,
                 )
                 self._active_run_agents[run_id] = agent
@@ -3226,6 +3281,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                self._run_tool_started_at.pop(run_id, None)
 
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
@@ -3306,6 +3362,7 @@ class APIServerAdapter(BasePlatformAdapter):
         finally:
             self._run_streams.pop(run_id, None)
             self._run_streams_created.pop(run_id, None)
+            self._run_tool_started_at.pop(run_id, None)
 
         return response
 
@@ -3463,6 +3520,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                self._run_tool_started_at.pop(run_id, None)
 
             stale_statuses = [
                 run_id

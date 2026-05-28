@@ -158,21 +158,21 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     for tc, name, args, block_result, blocked_by_guardrail in parsed_calls:
         if block_result is not None:
             continue
+        if agent.tool_start_callback:
+            try:
+                agent.tool_start_callback(tc.id, name, args)
+            except Exception as cb_err:
+                logging.debug(f"Tool start callback error: {cb_err}")
+
+    for tc, name, args, block_result, blocked_by_guardrail in parsed_calls:
+        if block_result is not None:
+            continue
         if agent.tool_progress_callback:
             try:
                 preview = _build_tool_preview(name, args)
                 agent.tool_progress_callback("tool.started", name, preview, args)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
-
-    for tc, name, args, block_result, blocked_by_guardrail in parsed_calls:
-        if block_result is not None:
-            continue
-        if agent.tool_start_callback:
-            try:
-                agent.tool_start_callback(tc.id, name, args)
-            except Exception as cb_err:
-                logging.debug(f"Tool start callback error: {cb_err}")
 
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag)
@@ -548,18 +548,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception:
                 pass
 
+        if not _execution_blocked and agent.tool_start_callback:
+            try:
+                agent.tool_start_callback(tool_call.id, function_name, function_args)
+            except Exception as cb_err:
+                logging.debug(f"Tool start callback error: {cb_err}")
+
         if not _execution_blocked and agent.tool_progress_callback:
             try:
                 preview = _build_tool_preview(function_name, function_args)
                 agent.tool_progress_callback("tool.started", function_name, preview, function_args)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
-
-        if not _execution_blocked and agent.tool_start_callback:
-            try:
-                agent.tool_start_callback(tool_call.id, function_name, function_args)
-            except Exception as cb_err:
-                logging.debug(f"Tool start callback error: {cb_err}")
 
         # Checkpoint: snapshot working dir before file-mutating tools
         if not _execution_blocked and function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
@@ -664,6 +664,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+        elif function_name == "switch_model":
+            from tools.switch_model_tool import switch_model_for_agent as _switch_model_for_agent
+            function_result = _switch_model_for_agent(
+                agent,
+                function_args.get("new_model", ""),
+                reason=function_args.get("reason"),
+                provider=function_args.get("provider"),
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('switch_model', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):

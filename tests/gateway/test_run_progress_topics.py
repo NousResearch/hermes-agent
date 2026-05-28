@@ -144,6 +144,35 @@ class FakeAgent:
         }
 
 
+class ToolLifecycleAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tool_start_callback = kwargs.get("tool_start_callback")
+        self.tool_complete_callback = kwargs.get("tool_complete_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        start_cb = self.tool_start_callback
+        complete_cb = self.tool_complete_callback
+        progress_cb = self.tool_progress_callback
+        if start_cb is not None:
+            if progress_cb is not None:
+                progress_cb("tool.started", "search_files", "legacy duplicate", {"pattern": "gateway progress"})
+            start_cb("call_search_1", "search_files", {"pattern": "gateway progress"})
+            time.sleep(0.35)
+            if progress_cb is not None:
+                progress_cb("tool.completed", "search_files", None, None, duration=0.42, is_error=False)
+            complete_cb("call_search_1", "search_files", {"pattern": "gateway progress"}, '{"success": true}')
+            start_cb("call_terminal_1", "terminal", {"command": "false"})
+            time.sleep(0.35)
+            complete_cb("call_terminal_1", "terminal", {"command": "false"}, '{"exit_code": 1, "error": "failed"}')
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class LongPreviewAgent:
     """Agent that emits a tool call with a very long preview string."""
     LONG_CMD = "cd /home/teknium/.hermes/hermes-agent/.worktrees/hermes-d8860339 && source .venv/bin/activate && python -m pytest tests/gateway/test_run_progress_topics.py -n0 -q"
@@ -245,6 +274,100 @@ def _make_runner(adapter):
     return runner
 
 
+def test_format_gateway_tool_complete_message_compact():
+    gateway_run = importlib.import_module("gateway.run")
+
+    line = gateway_run._format_gateway_tool_complete_message(
+        "search_files",
+        is_error=False,
+        duration=0.42,
+    )
+
+    assert "search_files completed" in line
+    assert "0.4s" in line
+    assert "pattern" not in line
+    assert "\n" not in line
+
+
+def test_format_gateway_tool_complete_message_error_compact():
+    gateway_run = importlib.import_module("gateway.run")
+
+    line = gateway_run._format_gateway_tool_complete_message(
+        "terminal",
+        is_error=True,
+        duration=12.3,
+    )
+
+    assert "terminal error" in line
+    assert "12s" in line
+    assert "command" not in line
+    assert "\n" not in line
+
+
+def test_format_gateway_tool_start_message_compact_redacted():
+    gateway_run = importlib.import_module("gateway.run")
+
+    line = gateway_run._format_gateway_tool_start_message(
+        "terminal",
+        {"command": "echo hello", "api_key": "sk-secret"},
+        progress_mode="all",
+    )
+
+    assert "terminal started" in line
+    assert "echo hello" in line
+    assert "api_key" not in line
+    assert "sk-secret" not in line
+    assert "\n" not in line
+
+
+def test_format_gateway_tool_start_message_verbose_redacted():
+    gateway_run = importlib.import_module("gateway.run")
+
+    line = gateway_run._format_gateway_tool_start_message(
+        "search_files",
+        {"pattern": "tool trace", "token": "sk-secret1234567890"},
+        progress_mode="verbose",
+    )
+
+    assert "search_files started" in line
+    assert "pattern" in line
+    assert "tool trace" in line
+    assert "token" not in line
+    assert "sk-secret1234567890" not in line
+
+
+def test_format_telegram_forced_tool_trace_message_redacted():
+    gateway_run = importlib.import_module("gateway.run")
+
+    line = gateway_run._format_telegram_forced_tool_trace_message(
+        "tool.started",
+        "terminal",
+        {"command": "echo hello", "api_key": "sk-secret"},
+    )
+
+    assert line == '💻 terminal: "echo hello"'
+    assert "api_key" not in line
+    assert "sk-secret" not in line
+
+
+def test_telegram_tool_trace_spy_path_defaults_to_hermes_logs(monkeypatch, tmp_path):
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.delenv("HERMES_TELEGRAM_TOOL_TRACE_SPY_PATH", raising=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    assert gateway_run._telegram_tool_trace_spy_path() == (
+        tmp_path / "logs" / "telegram-tool-trace-spy.log"
+    )
+
+
+def test_telegram_tool_trace_spy_path_honors_override(monkeypatch, tmp_path):
+    gateway_run = importlib.import_module("gateway.run")
+    override = tmp_path / "trace.log"
+    monkeypatch.setenv("HERMES_TELEGRAM_TOOL_TRACE_SPY_PATH", str(override))
+
+    assert gateway_run._telegram_tool_trace_spy_path() == override
+
+
 @pytest.mark.asyncio
 async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
@@ -283,7 +406,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '💻 terminal: "pwd"',
+            "content": '💻 terminal started: "pwd"',
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }
@@ -464,6 +587,103 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
     assert adapter.sent[0]["metadata"] == {"thread_id": "topic_17585"}
     assert adapter.edits
     assert adapter.edits[0]["message_id"] == "progress-1"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_telegram_progress_renders_tool_lifecycle(monkeypatch, tmp_path):
+    """Telegram progress should show compact started/completed/error lifecycle."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ToolLifecycleAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-tool-lifecycle",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    all_progress_text = "\n".join(
+        [call["content"] for call in adapter.sent]
+        + [call["content"] for call in adapter.edits]
+    )
+    assert "search_files started" in all_progress_text
+    assert "search_files completed" in all_progress_text
+    assert "terminal started" in all_progress_text
+    assert "terminal error" in all_progress_text
+    assert "gateway progress" in all_progress_text
+    assert "pattern" not in all_progress_text
+    assert "command" not in all_progress_text
+
+
+def test_run_agent_telegram_forced_tool_trace_sends_separate_messages(monkeypatch, tmp_path):
+    """Forced Telegram trace bypasses editable progress bubbles when enabled."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    monkeypatch.setenv("HERMES_TELEGRAM_FORCE_TOOL_TRACE", "1")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ToolLifecycleAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    async def _run():
+        return await runner._run_agent(
+            message="hello",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-forced-tool-trace",
+            session_key="agent:main:telegram:dm:12345",
+        )
+
+    result = asyncio.run(_run())
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert not adapter.edits
+    all_trace_text = "\n".join(call["content"] for call in adapter.sent)
+    assert '🔎 search_files: "gateway progress"' in all_trace_text
+    assert "✅ 🔎 search_files: done" in all_trace_text
+    assert '💻 terminal: "false"' in all_trace_text
+    assert "❌ 💻 terminal: error" in all_trace_text
+    assert "pattern" not in all_trace_text
+    assert "command" not in all_trace_text
 
 
 # ---------------------------------------------------------------------------

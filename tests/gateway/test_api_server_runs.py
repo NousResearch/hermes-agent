@@ -306,6 +306,50 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    def test_run_tool_events_use_system_lifecycle_callbacks(self, adapter):
+        """Run SSE callbacks should emit real tool lifecycle events with call ids."""
+        import queue
+
+        class _ImmediateLoop:
+            def call_soon_threadsafe(self, fn, *args):
+                fn(*args)
+
+        run_id = "run_tool_events"
+        event_q = queue.Queue()
+        adapter._run_streams[run_id] = event_q
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+
+        loop = _ImmediateLoop()
+        progress_cb = adapter._make_run_event_callback(run_id, loop)
+        start_cb = adapter._make_run_tool_start_callback(run_id, loop)
+        complete_cb = adapter._make_run_tool_complete_callback(run_id, loop)
+
+        start_cb("call_terminal_1", "terminal", {"command": "pwd"})
+        progress_cb("tool.started", "terminal", "legacy duplicate", {"command": "pwd"})
+        complete_cb("call_terminal_1", "terminal", {"command": "pwd"}, "ok")
+        progress_cb(
+            "tool.completed",
+            "terminal",
+            None,
+            None,
+            duration=0.1,
+            is_error=False,
+        )
+
+        tool_events = []
+        while not event_q.empty():
+            event = event_q.get_nowait()
+            if event.get("event", "").startswith("tool."):
+                tool_events.append(event)
+
+        assert [e["event"] for e in tool_events] == ["tool.started", "tool.completed"]
+        assert tool_events[0]["tool_call_id"] == "call_terminal_1"
+        assert tool_events[0]["status"] == "running"
+        assert tool_events[1]["tool_call_id"] == "call_terminal_1"
+        assert tool_events[1]["status"] == "completed"
+        assert tool_events[1]["error"] is False
+        assert isinstance(tool_events[1]["duration"], float)
+
 
 
     @pytest.mark.asyncio

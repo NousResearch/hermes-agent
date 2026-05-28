@@ -922,6 +922,27 @@ DEFAULT_CONFIG = {
         "min_coding_score": 0.65,
     },
 
+    # Optional per-turn model cascade. Disabled by default because changing
+    # the active model affects cost, latency, and provider credentials. When
+    # enabled, the user message is classified as nano/mini/full/frontier and
+    # the corresponding configured model is applied through the same resolver
+    # used by `/model`.
+    "model_cascade": {
+        "enabled": False,
+        "models": {
+            "nano": "",
+            "mini": "",
+            "full": "",
+            "frontier": "",
+        },
+        "providers": {
+            "nano": "",
+            "mini": "",
+            "full": "",
+            "frontier": "",
+        },
+    },
+
     # AWS Bedrock provider configuration.
     # Only used when model.provider is "bedrock".
     "bedrock": {

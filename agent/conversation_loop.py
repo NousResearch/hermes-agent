@@ -335,6 +335,36 @@ def run_conversation(
     if isinstance(persist_user_message, str):
         persist_user_message = _sanitize_surrogates(persist_user_message)
 
+    # Optional model cascade: classify this turn and switch through the
+    # normal session-local model resolver before any model-specific preflight
+    # work (context compression, runtime-main routing, API call logging).
+    try:
+        from agent.model_cascade import maybe_apply_model_cascade
+
+        _cascade_message = (
+            persist_user_message
+            if isinstance(persist_user_message, str)
+            else user_message
+        )
+        _cascade_decision = maybe_apply_model_cascade(agent, _cascade_message)
+        if _cascade_decision and _cascade_decision.get("applied"):
+            logger.info(
+                "model cascade switched session=%s tier=%s model=%s provider=%s",
+                agent.session_id or "none",
+                _cascade_decision.get("tier"),
+                _cascade_decision.get("resolved_model") or _cascade_decision.get("model"),
+                _cascade_decision.get("resolved_provider") or _cascade_decision.get("provider"),
+            )
+            try:
+                set_runtime_main(
+                    getattr(agent, "provider", "") or "",
+                    getattr(agent, "model", "") or "",
+                )
+            except Exception:
+                pass
+    except Exception as _cascade_err:
+        logger.warning("model cascade pre-turn routing failed: %s", _cascade_err)
+
     # Store stream callback for _interruptible_api_call to pick up
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None

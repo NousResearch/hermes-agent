@@ -1624,6 +1624,14 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             choices=function_args.get("choices"),
             callback=agent.clarify_callback,
         )
+    elif function_name == "switch_model":
+        from tools.switch_model_tool import switch_model_for_agent as _switch_model_for_agent
+        return _switch_model_for_agent(
+            agent,
+            function_args.get("new_model", ""),
+            reason=function_args.get("reason"),
+            provider=function_args.get("provider"),
+        )
     elif function_name == "delegate_task":
         return agent._dispatch_delegate_task(function_args)
     else:

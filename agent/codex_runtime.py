@@ -26,6 +26,134 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _codex_item_tool_event(item: dict) -> tuple[str, str, dict, bool]:
+    """Map a codex app-server item to Hermes tool trace fields."""
+    item_type = str(item.get("type") or "")
+    item_id = str(item.get("id") or "")
+    try:
+        from agent.transports.codex_event_projector import _deterministic_call_id
+    except Exception:
+        def _deterministic_call_id(kind: str, ident: str) -> str:  # type: ignore[no-redef]
+            return f"codex_{kind}_{ident or 'unknown'}"
+
+    if item_type == "commandExecution":
+        call_id = _deterministic_call_id("exec", item_id)
+        args = {
+            "command": item.get("command") or "",
+            "cwd": item.get("cwd") or "",
+        }
+        exit_code = item.get("exitCode")
+        return call_id, "exec_command", args, exit_code not in (None, 0)
+
+    if item_type == "fileChange":
+        call_id = _deterministic_call_id("apply_patch", item_id)
+        changes = []
+        for change in item.get("changes") or []:
+            if not isinstance(change, dict):
+                continue
+            kind = (change.get("kind") or {}).get("type") or "update"
+            path = change.get("path") or ""
+            changes.append({"kind": kind, "path": path})
+        first_path = next((c.get("path") for c in changes if c.get("path")), "")
+        return call_id, "apply_patch", {"path": first_path, "changes": changes}, False
+
+    if item_type == "mcpToolCall":
+        server = item.get("server") or "mcp"
+        tool = item.get("tool") or "unknown"
+        call_id = _deterministic_call_id(f"mcp_{server}_{tool}", item_id)
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        return call_id, f"mcp.{server}.{tool}", args, bool(item.get("error"))
+
+    if item_type == "dynamicToolCall":
+        tool = item.get("tool") or "unknown"
+        call_id = _deterministic_call_id(f"dyn_{tool}", item_id)
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        return call_id, str(tool), args, item.get("success") is False
+
+    return "", "", {}, False
+
+
+def _make_codex_tool_trace_event_callback(agent):
+    """Project codex app-server item events into Hermes tool callbacks."""
+    started: set[str] = set()
+    started_at: dict[str, float] = {}
+
+    def _emit_start(call_id: str, tool_name: str, args: dict) -> None:
+        if not call_id or not tool_name or call_id in started:
+            return
+        started.add(call_id)
+        started_at[call_id] = time.time()
+        if getattr(agent, "tool_start_callback", None):
+            try:
+                agent.tool_start_callback(call_id, tool_name, args)
+            except Exception:
+                logger.debug("codex tool_start_callback raised", exc_info=True)
+        elif getattr(agent, "tool_progress_callback", None):
+            try:
+                agent.tool_progress_callback(
+                    "tool.started",
+                    tool_name,
+                    "",
+                    args,
+                    tool_call_id=call_id,
+                )
+            except Exception:
+                logger.debug("codex tool_progress_callback raised", exc_info=True)
+
+    def _emit_complete(call_id: str, tool_name: str, args: dict, is_error: bool) -> None:
+        if not call_id or not tool_name:
+            return
+        if call_id not in started:
+            _emit_start(call_id, tool_name, args)
+        duration = None
+        if call_id in started_at:
+            duration = max(0.0, time.time() - started_at.pop(call_id, time.time()))
+        started.discard(call_id)
+        if getattr(agent, "tool_complete_callback", None):
+            try:
+                agent.tool_complete_callback(call_id, tool_name, args, {"error": is_error})
+            except Exception:
+                logger.debug("codex tool_complete_callback raised", exc_info=True)
+        elif getattr(agent, "tool_progress_callback", None):
+            try:
+                agent.tool_progress_callback(
+                    "tool.completed",
+                    tool_name,
+                    "",
+                    args,
+                    tool_call_id=call_id,
+                    duration=duration,
+                    is_error=is_error,
+                )
+            except Exception:
+                logger.debug("codex tool_progress_callback raised", exc_info=True)
+
+    def _on_event(notification: dict) -> None:
+        method = str(notification.get("method") or "")
+        params = notification.get("params") or {}
+        item = params.get("item") or {}
+        if not isinstance(item, dict):
+            return
+        if item.get("type") not in {
+            "commandExecution",
+            "fileChange",
+            "mcpToolCall",
+            "dynamicToolCall",
+        }:
+            return
+        call_id, tool_name, args, is_error = _codex_item_tool_event(item)
+        if method == "item/started":
+            _emit_start(call_id, tool_name, args)
+        elif method == "item/completed":
+            _emit_complete(call_id, tool_name, args, is_error)
+
+    return _on_event
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -47,6 +175,7 @@ def run_codex_app_server_turn(
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
     # shutdown (see _cleanup hook).
+    codex_tool_trace_callback = _make_codex_tool_trace_event_callback(agent)
     if not hasattr(agent, "_codex_session") or agent._codex_session is None:
         cwd = getattr(agent, "session_cwd", None) or os.getcwd()
         # Approval callback: defer to Hermes' standard prompt flow if a
@@ -60,7 +189,13 @@ def run_codex_app_server_turn(
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            on_event=codex_tool_trace_callback,
         )
+    else:
+        try:
+            agent._codex_session._on_event = codex_tool_trace_callback
+        except Exception:
+            logger.debug("failed to refresh codex app-server event callback", exc_info=True)
 
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early

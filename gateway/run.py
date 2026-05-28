@@ -38,10 +38,10 @@ import tempfile
 import threading
 import time
 import sqlite3
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
@@ -131,6 +131,10 @@ _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
     re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
+)
+_GATEWAY_SECRET_KEY_RE = re.compile(
+    r"(api[_-]?key|token|secret|password|authorization|credential)",
+    re.IGNORECASE,
 )
 
 
@@ -226,6 +230,24 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     return redacted
 
 
+def _gateway_visible_arg_keys(args: dict | None) -> list[str]:
+    """Return non-sensitive argument keys safe to show in chat progress."""
+    if not isinstance(args, dict):
+        return []
+    return [str(key) for key in args.keys() if not _GATEWAY_SECRET_KEY_RE.search(str(key))]
+
+
+def _gateway_redacted_args_for_display(args: dict | None) -> dict:
+    """Return a shallow copy of args with secret-looking keys removed."""
+    if not isinstance(args, dict):
+        return {}
+    return {
+        key: value
+        for key, value in args.items()
+        if not _GATEWAY_SECRET_KEY_RE.search(str(key))
+    }
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
@@ -316,6 +338,222 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
+
+
+def _format_gateway_tool_complete_message(
+    tool_name: str,
+    *,
+    is_error: bool = False,
+    duration: float | int | None = None,
+) -> str:
+    """Return a compact user-facing tool completion trace line."""
+    from agent.display import get_tool_emoji
+
+    emoji = get_tool_emoji(tool_name, default="⚙️")
+    suffix = ""
+    try:
+        if duration is not None:
+            duration_f = float(duration)
+            suffix = f" ({duration_f:.1f}s)" if duration_f < 10 else f" ({round(duration_f)}s)"
+    except Exception:
+        suffix = ""
+    status = "error" if is_error else "completed"
+    marker = "❌" if is_error else "✅"
+    return f"{marker} {emoji} {tool_name} {status}{suffix}"
+
+
+def _format_gateway_tool_start_message(
+    tool_name: str,
+    args: dict | None = None,
+    *,
+    progress_mode: str = "all",
+) -> str:
+    """Return a compact, redacted user-facing tool start trace line."""
+    from agent.display import (
+        build_tool_preview,
+        get_tool_emoji,
+        get_tool_preview_max_len,
+    )
+
+    emoji = get_tool_emoji(tool_name, default="⚙️")
+    args = args or {}
+    if progress_mode == "verbose" and args:
+        args_str = json.dumps(
+            _gateway_redacted_args_for_display(args),
+            ensure_ascii=False,
+            default=str,
+        )
+        args_str = _redact_gateway_user_facing_secrets(args_str)
+        preview_len = get_tool_preview_max_len()
+        if preview_len > 0 and len(args_str) > preview_len:
+            args_str = args_str[: preview_len - 3] + "..."
+        return f"{emoji} {tool_name} started({_gateway_visible_arg_keys(args)})\n{args_str}"
+
+    preview = build_tool_preview(tool_name, args) or ""
+    preview = _redact_gateway_user_facing_secrets(str(preview))
+    if preview:
+        preview_len = get_tool_preview_max_len()
+        cap = preview_len if preview_len > 0 else 80
+        if len(preview) > cap:
+            preview = preview[: cap - 3] + "..."
+        return f"{emoji} {tool_name} started: \"{preview}\""
+    return f"{emoji} {tool_name} started"
+
+
+_TELEGRAM_FORCED_TOOL_TRACE_LABELS: tuple[tuple[tuple[str, ...], tuple[str, str]], ...] = (
+    (("terminal", "shell", "bash", "command", "exec_command"), ("💻", "terminal")),
+    (("read_file", "file_read", "read"), ("📖", "read_file")),
+    (("write_file", "file_write", "write"), ("✍️", "write_file")),
+    (("apply_patch", "patch"), ("🔧", "patch")),
+    (("search_files", "grep", "find", "rg", "search"), ("🔎", "search_files")),
+    (("skill_view", "view_skill"), ("📚", "skill_view")),
+    (("todo", "planning", "update_plan"), ("📋", "todo")),
+    (("python", "execute_code", "code_interpreter"), ("🐍", "execute_code")),
+    (("browser", "web", "web_extract", "browser_navigate"), ("🌐", "browser")),
+)
+
+
+def _telegram_forced_tool_trace_label(tool_name: str | None) -> tuple[str, str]:
+    name = str(tool_name or "").lower()
+    for needles, label in _TELEGRAM_FORCED_TOOL_TRACE_LABELS:
+        if any(needle in name for needle in needles):
+            return label
+    return "🛠", "tool"
+
+
+def _telegram_forced_tool_trace_payload(tool_name: str | None, args: dict | None) -> str:
+    """Return a compact, redacted action payload for forced Telegram trace."""
+    if not isinstance(args, dict) or not args:
+        return ""
+    name = str(tool_name or "").lower()
+    preferred_keys: tuple[str, ...]
+    if any(s in name for s in ("terminal", "shell", "bash", "command", "exec_command")):
+        preferred_keys = ("command", "cmd", "query")
+    elif "read" in name:
+        preferred_keys = ("path", "file_path", "filename", "target")
+    elif any(s in name for s in ("write", "patch")):
+        preferred_keys = ("path", "file_path", "filename", "target")
+    elif any(s in name for s in ("search", "grep", "find", "rg")):
+        preferred_keys = ("pattern", "query", "path", "target")
+    elif "skill" in name:
+        preferred_keys = ("skill", "name", "path", "query")
+    elif any(s in name for s in ("todo", "planning", "update_plan")):
+        preferred_keys = ("step", "title", "task", "status")
+    elif any(s in name for s in ("python", "execute_code", "code")):
+        preferred_keys = ("code", "script", "command")
+    elif any(s in name for s in ("browser", "web")):
+        preferred_keys = ("url", "query", "path")
+    else:
+        preferred_keys = ("path", "file_path", "command", "query", "pattern", "url", "name")
+
+    value: Any = None
+    for key in preferred_keys:
+        if key in args and args.get(key) not in (None, ""):
+            value = args.get(key)
+            break
+    if value is None:
+        visible_keys = [
+            str(key) for key in args.keys()
+            if not _GATEWAY_SECRET_KEY_RE.search(str(key))
+        ]
+        value = ", ".join(visible_keys[:4])
+    if isinstance(value, (dict, list, tuple)):
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    else:
+        text = str(value)
+    text = _redact_gateway_user_facing_secrets(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > 160:
+        text = text[:157] + "..."
+    return text
+
+
+def _format_telegram_forced_tool_trace_message(
+    event_type: str,
+    tool_name: str | None,
+    args: dict | None = None,
+    *,
+    duration: float | int | None = None,
+    is_error: bool = False,
+) -> str:
+    """Format a one-line Telegram tool trace message sent as its own bubble."""
+    emoji, label = _telegram_forced_tool_trace_label(tool_name)
+    event = str(event_type or "")
+    if event == "tool.completed":
+        suffix = ""
+        try:
+            if duration is not None:
+                duration_f = float(duration)
+                suffix = f" ({duration_f:.1f}s)" if duration_f < 10 else f" ({round(duration_f)}s)"
+        except Exception:
+            suffix = ""
+        state = "error" if is_error else "done"
+        marker = "❌" if is_error else "✅"
+        return f"{marker} {emoji} {label}: {state}{suffix}"
+
+    payload = _telegram_forced_tool_trace_payload(tool_name, args)
+    if payload:
+        return f"{emoji} {label}: \"{payload}\""
+    return f"{emoji} {label}"
+
+
+def _telegram_tool_trace_spy_enabled() -> bool:
+    return is_truthy_value(os.getenv("HERMES_TELEGRAM_TOOL_TRACE_SPY"), default=False)
+
+
+def _telegram_tool_trace_spy_path() -> Path:
+    override = os.getenv("HERMES_TELEGRAM_TOOL_TRACE_SPY_PATH")
+    if override:
+        return Path(override).expanduser()
+    return _hermes_home / "logs" / "telegram-tool-trace-spy.log"
+
+
+def _truncate_telegram_trace_preview(value: Any, *, limit: int = 180) -> str:
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            text = repr(value)
+    else:
+        text = str(value or "")
+    text = _redact_gateway_user_facing_secrets(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > limit:
+        text = text[: limit - 3] + "..."
+    return text
+
+
+def _write_telegram_tool_trace_spy(
+    source_name: str,
+    event_type: str,
+    tool_name: str | None,
+    preview: Any = "",
+    *,
+    chat_id_present: bool = False,
+    sent_to_telegram: bool = False,
+) -> None:
+    """Append one redacted Telegram tool-trace diagnostic line when enabled."""
+    if not _telegram_tool_trace_spy_enabled():
+        return
+    try:
+        spy_path = _telegram_tool_trace_spy_path()
+        spy_path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        line = " | ".join(
+            [
+                timestamp,
+                _truncate_telegram_trace_preview(source_name, limit=80),
+                _truncate_telegram_trace_preview(event_type, limit=80),
+                _truncate_telegram_trace_preview(tool_name or "", limit=80),
+                _truncate_telegram_trace_preview(preview, limit=180),
+                f"chat_id_present={'yes' if chat_id_present else 'no'}",
+                f"sent_to_telegram={'yes' if sent_to_telegram else 'no'}",
+            ]
+        )
+        with spy_path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        logger.debug("Telegram tool trace spy write failed", exc_info=True)
 
 
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
@@ -15824,6 +16062,10 @@ class GatewayRunner:
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
         tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        force_telegram_tool_trace = (
+            source.platform == Platform.TELEGRAM
+            and is_truthy_value(os.getenv("HERMES_TELEGRAM_FORCE_TOOL_TRACE"), default=False)
+        )
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -15840,6 +16082,11 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        visible_tool_lifecycle = deque()  # FIFO names for starts rendered to chat
+        use_system_tool_events = source.platform == Platform.TELEGRAM
+        visible_system_tool_calls: Dict[str, Dict[str, Any]] = {}
+        forced_tool_trace_queue = queue.Queue() if force_telegram_tool_trace else None
+        forced_tool_trace_seen: set[tuple[str, str, str, str]] = set()
 
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
         # that implements ``delete_message``). When enabled via
@@ -15863,8 +16110,79 @@ class GatewayRunner:
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
 
+        def _enqueue_forced_tool_trace(
+            event_type: str,
+            tool_name: str | None,
+            args: dict | None = None,
+            *,
+            tool_call_id: str | None = None,
+            duration: float | int | None = None,
+            is_error: bool = False,
+            source_name: str = "gateway.tool_callback",
+        ) -> None:
+            preview = _telegram_forced_tool_trace_payload(tool_name, args)
+            _write_telegram_tool_trace_spy(
+                source_name,
+                event_type,
+                tool_name,
+                preview,
+                chat_id_present=bool(source.chat_id),
+                sent_to_telegram=False,
+            )
+            if not forced_tool_trace_queue or not _run_still_current():
+                return
+            if str(tool_name or "").startswith("_"):
+                return
+            run_id = f"{session_key or source.chat_id or 'gateway'}:{run_generation or 0}"
+            call_id = str(tool_call_id or "")
+            if not call_id:
+                call_id = f"legacy:{str(tool_name or '')}:{preview}"
+            dedup_key = (run_id, call_id, str(event_type or ""), str(tool_name or ""))
+            if dedup_key in forced_tool_trace_seen:
+                return
+            forced_tool_trace_seen.add(dedup_key)
+            msg = _format_telegram_forced_tool_trace_message(
+                event_type,
+                tool_name,
+                args if isinstance(args, dict) else {},
+                duration=duration,
+                is_error=is_error,
+            )
+            forced_tool_trace_queue.put(
+                {
+                    "message": msg,
+                    "event_type": str(event_type or ""),
+                    "tool_name": str(tool_name or ""),
+                    "preview": preview,
+                    "dedup_key": dedup_key,
+                    "source": source_name,
+                }
+            )
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
+            _write_telegram_tool_trace_spy(
+                "gateway.progress_callback",
+                event_type,
+                tool_name,
+                preview or args or "",
+                chat_id_present=bool(source.chat_id),
+                sent_to_telegram=False,
+            )
+            if (
+                force_telegram_tool_trace
+                and event_type in {"tool.started", "tool.completed"}
+                and not use_system_tool_events
+            ):
+                _enqueue_forced_tool_trace(
+                    event_type,
+                    tool_name,
+                    args,
+                    tool_call_id=kwargs.get("tool_call_id"),
+                    duration=kwargs.get("duration"),
+                    is_error=bool(kwargs.get("is_error")),
+                    source_name="gateway.progress_callback",
+                )
             if not progress_queue or not _run_still_current():
                 return
 
@@ -15895,12 +16213,53 @@ class GatewayRunner:
                             mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
                 except Exception as _hint_err:
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+
+            if event_type == "tool.completed":
+                if use_system_tool_events:
+                    return
+                # Only render completions for starts that were actually shown.
+                # This avoids duplicate-looking lifecycle lines in "new" mode,
+                # where repeated same-tool starts are intentionally suppressed.
+                matched_tool = False
+                try:
+                    for _idx, _visible_name in enumerate(visible_tool_lifecycle):
+                        if _visible_name == tool_name:
+                            del visible_tool_lifecycle[_idx]
+                            matched_tool = True
+                            break
+                except Exception:
+                    matched_tool = False
+                if not matched_tool:
+                    return
+
+                progress_queue.put(
+                    _format_gateway_tool_complete_message(
+                        tool_name,
+                        is_error=bool(kwargs.get("is_error")),
+                        duration=kwargs.get("duration"),
+                    )
+                )
                 return
 
-
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
+            # Only act on tool.started events (ignore reasoning.available, etc.)
             if event_type not in {"tool.started",}:
                 return
+            if str(tool_name or "").startswith("_"):
+                return
+            if use_system_tool_events:
+                # Real AIAgent instances emit structured tool_start_callback
+                # events with call IDs. Keep legacy progress events as a
+                # fallback for older/custom integrations that only call
+                # tool_progress_callback, but do not render duplicate starts
+                # once the system lifecycle stream has seen this tool.
+                try:
+                    if any(
+                        str(call.get("name") or "") == str(tool_name or "")
+                        for call in visible_system_tool_calls.values()
+                    ):
+                        return
+                except Exception:
+                    pass
 
             # Suppress tool-progress bubbles once the user has sent `stop`.
             # When the LLM response carries N parallel tool calls, the agent
@@ -15922,6 +16281,7 @@ class GatewayRunner:
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
+            visible_tool_lifecycle.append(tool_name)
             
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
@@ -15932,17 +16292,22 @@ class GatewayRunner:
                 if args:
                     from agent.display import get_tool_preview_max_len
                     _pl = get_tool_preview_max_len()
-                    args_str = json.dumps(args, ensure_ascii=False, default=str)
+                    args_str = json.dumps(
+                        _gateway_redacted_args_for_display(args),
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                    args_str = _redact_gateway_user_facing_secrets(args_str)
                     # When tool_preview_length is 0 (default), don't truncate
                     # in verbose mode — the user explicitly asked for full
                     # detail.  Platform message-length limits handle the rest.
                     if _pl > 0 and len(args_str) > _pl:
                         args_str = args_str[:_pl - 3] + "..."
-                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                    msg = f"{emoji} {tool_name} started({_gateway_visible_arg_keys(args)})\n{args_str}"
                 elif preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
+                    msg = f"{emoji} {tool_name} started: \"{preview}\""
                 else:
-                    msg = f"{emoji} {tool_name}..."
+                    msg = f"{emoji} {tool_name} started"
                 progress_queue.put(msg)
                 return
             
@@ -15955,9 +16320,9 @@ class GatewayRunner:
                 _cap = _pl if _pl > 0 else 40
                 if len(preview) > _cap:
                     preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                msg = f"{emoji} {tool_name} started: \"{preview}\""
             else:
-                msg = f"{emoji} {tool_name}..."
+                msg = f"{emoji} {tool_name} started"
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
@@ -15972,6 +16337,83 @@ class GatewayRunner:
             repeat_count[0] = 0
             
             progress_queue.put(msg)
+
+        def tool_start_callback(tool_call_id: str, tool_name: str, args: dict = None):
+            """System lifecycle callback for visible Telegram tool starts."""
+            if not _run_still_current():
+                return
+            if not use_system_tool_events:
+                return
+            if str(tool_name or "").startswith("_"):
+                return
+            try:
+                _agent_for_interrupt = agent_holder[0] if agent_holder else None
+                if _agent_for_interrupt is not None and getattr(
+                    _agent_for_interrupt, "is_interrupted", False
+                ):
+                    return
+            except Exception:
+                pass
+            visible_system_tool_calls[str(tool_call_id)] = {
+                "name": str(tool_name),
+                "started_at": time.time(),
+            }
+            _enqueue_forced_tool_trace(
+                "tool.started",
+                tool_name,
+                args,
+                tool_call_id=str(tool_call_id or ""),
+                source_name="gateway.tool_start_callback",
+            )
+            if not progress_queue:
+                return
+            msg = _format_gateway_tool_start_message(
+                str(tool_name),
+                args if isinstance(args, dict) else {},
+                progress_mode=str(progress_mode or "all"),
+            )
+            progress_queue.put(msg)
+
+        def tool_complete_callback(tool_call_id: str, tool_name: str, args: dict = None, result=None):
+            """System lifecycle callback for visible Telegram tool completion."""
+            if not _run_still_current():
+                return
+            if not use_system_tool_events:
+                return
+            call_id = str(tool_call_id)
+            visible = visible_system_tool_calls.pop(call_id, None)
+            if not visible:
+                return
+            visible_name = str(visible.get("name") or tool_name or "tool")
+            duration = None
+            try:
+                duration = max(0.0, time.time() - float(visible.get("started_at")))
+            except Exception:
+                duration = None
+            try:
+                from agent.display import _detect_tool_failure
+
+                is_error, _ = _detect_tool_failure(str(tool_name or visible_name), result)
+            except Exception:
+                is_error = False
+            _enqueue_forced_tool_trace(
+                "tool.completed",
+                str(tool_name or visible_name),
+                args if isinstance(args, dict) else {},
+                tool_call_id=call_id,
+                duration=duration,
+                is_error=is_error,
+                source_name="gateway.tool_complete_callback",
+            )
+            if not progress_queue:
+                return
+            progress_queue.put(
+                _format_gateway_tool_complete_message(
+                    str(tool_name or visible_name),
+                    is_error=is_error,
+                    duration=duration,
+                )
+            )
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
@@ -16326,6 +16768,87 @@ class GatewayRunner:
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
                     await asyncio.sleep(1)
+
+        async def send_forced_tool_trace_messages():
+            if not forced_tool_trace_queue:
+                return
+            adapter = self.adapters.get(source.platform)
+            if not adapter:
+                return
+            while True:
+                try:
+                    if not _run_still_current():
+                        while not forced_tool_trace_queue.empty():
+                            try:
+                                forced_tool_trace_queue.get_nowait()
+                            except Exception:
+                                break
+                        return
+                    event = forced_tool_trace_queue.get_nowait()
+                    if isinstance(event, dict):
+                        msg = str(event.get("message") or "")
+                        event_type = str(event.get("event_type") or "")
+                        tool_name = str(event.get("tool_name") or "")
+                        preview = event.get("preview") or msg
+                    else:
+                        msg = str(event)
+                        event_type = "tool.trace"
+                        tool_name = ""
+                        preview = msg
+                    result = await adapter.send(
+                        chat_id=source.chat_id,
+                        content=msg,
+                        reply_to=_progress_reply_to,
+                        metadata=_progress_metadata,
+                    )
+                    _write_telegram_tool_trace_spy(
+                        "gateway.forced_broadcaster",
+                        event_type,
+                        tool_name,
+                        preview,
+                        chat_id_present=bool(source.chat_id),
+                        sent_to_telegram=bool(getattr(result, "success", False)),
+                    )
+                    await asyncio.sleep(0.15)
+                except queue.Empty:
+                    await asyncio.sleep(0.2)
+                except asyncio.CancelledError:
+                    while not forced_tool_trace_queue.empty():
+                        try:
+                            event = forced_tool_trace_queue.get_nowait()
+                        except Exception:
+                            break
+                        try:
+                            if isinstance(event, dict):
+                                msg = str(event.get("message") or "")
+                                event_type = str(event.get("event_type") or "")
+                                tool_name = str(event.get("tool_name") or "")
+                                preview = event.get("preview") or msg
+                            else:
+                                msg = str(event)
+                                event_type = "tool.trace"
+                                tool_name = ""
+                                preview = msg
+                            result = await adapter.send(
+                                chat_id=source.chat_id,
+                                content=msg,
+                                reply_to=_progress_reply_to,
+                                metadata=_progress_metadata,
+                            )
+                            _write_telegram_tool_trace_spy(
+                                "gateway.forced_broadcaster.cancel_flush",
+                                event_type,
+                                tool_name,
+                                preview,
+                                chat_id_present=bool(source.chat_id),
+                                sent_to_telegram=bool(getattr(result, "success", False)),
+                            )
+                        except Exception:
+                            break
+                    return
+                except Exception as e:
+                    logger.error("Forced Telegram tool trace error: %s", e)
+                    await asyncio.sleep(1)
         
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
@@ -16647,7 +17170,9 @@ class GatewayRunner:
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            agent.tool_progress_callback = progress_callback if (tool_progress_enabled or force_telegram_tool_trace) else None
+            agent.tool_start_callback = tool_start_callback if ((tool_progress_enabled or force_telegram_tool_trace) and use_system_tool_events) else None
+            agent.tool_complete_callback = tool_complete_callback if ((tool_progress_enabled or force_telegram_tool_trace) and use_system_tool_events) else None
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
@@ -17271,6 +17796,9 @@ class GatewayRunner:
         progress_task = None
         if tool_progress_enabled:
             progress_task = asyncio.create_task(send_progress_messages())
+        forced_tool_trace_task = None
+        if force_telegram_tool_trace:
+            forced_tool_trace_task = asyncio.create_task(send_forced_tool_trace_messages())
 
         # Start stream consumer task — polls for consumer creation since it
         # happens inside run_sync (thread pool) after the agent is constructed.
@@ -17823,6 +18351,8 @@ class GatewayRunner:
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
                 progress_task.cancel()
+            if forced_tool_trace_task:
+                forced_tool_trace_task.cancel()
             interrupt_monitor.cancel()
             _notify_task.cancel()
 
@@ -17869,7 +18399,7 @@ class GatewayRunner:
                 self._update_runtime_status("draining")
             
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:
+            for task in [progress_task, forced_tool_trace_task, interrupt_monitor, tracking_task, _notify_task]:
                 if task:
                     try:
                         await task

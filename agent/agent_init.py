@@ -1049,6 +1049,11 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+    _model_cascade_cfg = _agent_cfg.get("model_cascade", {})
+    agent._model_cascade_config = (
+        _model_cascade_cfg if isinstance(_model_cascade_cfg, dict) else {}
+    )
+    agent._model_cascade_last_decision = None
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

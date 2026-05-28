@@ -209,6 +209,12 @@ TOOLSETS = {
         "tools": ["todo"],
         "includes": []
     },
+
+    "model_control": {
+        "description": "Session-local model switching tool",
+        "tools": ["switch_model"],
+        "includes": []
+    },
     
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",

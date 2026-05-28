@@ -212,6 +212,9 @@ class TestToolsetConsistency:
             for inc in ts["includes"]:
                 assert inc in TOOLSETS, f"{name} includes unknown toolset '{inc}'"
 
+    def test_model_control_toolset_exposes_switch_model(self):
+        assert TOOLSETS["model_control"]["tools"] == ["switch_model"]
+
     def test_hermes_platforms_share_core_tools(self):
         """All hermes-* platform toolsets share the same core tools.
 

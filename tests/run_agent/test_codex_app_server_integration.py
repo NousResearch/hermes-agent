@@ -12,11 +12,13 @@ Verifies that:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 import run_agent
+from agent.codex_runtime import _make_codex_tool_trace_event_callback
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
 
@@ -68,6 +70,81 @@ class TestApiModeAccepted:
     def test_api_mode_is_codex_app_server(self):
         agent = _make_codex_agent()
         assert agent.api_mode == "codex_app_server"
+
+
+class TestCodexToolTraceProjection:
+    def test_codex_item_events_emit_tool_lifecycle_callbacks(self):
+        starts = []
+        completes = []
+        agent = SimpleNamespace(
+            tool_start_callback=lambda call_id, name, args: starts.append((call_id, name, args)),
+            tool_complete_callback=lambda call_id, name, args, result: completes.append(
+                (call_id, name, args, result)
+            ),
+        )
+        on_event = _make_codex_tool_trace_event_callback(agent)
+
+        item = {
+            "type": "commandExecution",
+            "id": "exec-1",
+            "command": "pwd",
+            "cwd": "/tmp/project",
+            "exitCode": 0,
+        }
+        on_event({"method": "item/started", "params": {"item": item}})
+        on_event({"method": "item/completed", "params": {"item": item}})
+
+        assert starts == [
+            (
+                "codex_exec_exec-1",
+                "exec_command",
+                {"command": "pwd", "cwd": "/tmp/project"},
+            )
+        ]
+        assert completes == [
+            (
+                "codex_exec_exec-1",
+                "exec_command",
+                {"command": "pwd", "cwd": "/tmp/project"},
+                {"error": False},
+            )
+        ]
+
+    def test_codex_completed_event_starts_unseen_tool_before_completion(self):
+        starts = []
+        completes = []
+        agent = SimpleNamespace(
+            tool_start_callback=lambda call_id, name, args: starts.append((call_id, name, args)),
+            tool_complete_callback=lambda call_id, name, args, result: completes.append(
+                (call_id, name, args, result)
+            ),
+        )
+        on_event = _make_codex_tool_trace_event_callback(agent)
+
+        on_event({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "dynamicToolCall",
+                    "id": "tool-1",
+                    "tool": "web_search",
+                    "arguments": {"query": "hermes"},
+                    "success": False,
+                }
+            },
+        })
+
+        assert starts == [
+            ("codex_dyn_web_search_tool-1", "web_search", {"query": "hermes"})
+        ]
+        assert completes == [
+            (
+                "codex_dyn_web_search_tool-1",
+                "web_search",
+                {"query": "hermes"},
+                {"error": True},
+            )
+        ]
 
 
 class TestRunConversationCodexPath:

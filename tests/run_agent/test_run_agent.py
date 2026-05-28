@@ -2706,6 +2706,49 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_model_cascade_applies_before_api_call(self, agent, monkeypatch):
+        self._setup_agent(agent)
+        agent.model = "gpt-4.1-nano"
+        agent.provider = "openai"
+        agent._model_cascade_config = {
+            "enabled": True,
+            "models": {"full": "gpt-5.4"},
+            "providers": {"full": "openrouter"},
+        }
+
+        def fake_switch(agent_obj, model, *, reason=None, provider=None):
+            assert model == "gpt-5.4"
+            assert reason == "model_cascade:full"
+            assert provider == "openrouter"
+            agent_obj.model = "openrouter/gpt-5.4"
+            agent_obj.provider = "openrouter"
+            return json.dumps(
+                {
+                    "success": True,
+                    "new_model": "openrouter/gpt-5.4",
+                    "provider": "openrouter",
+                }
+            )
+
+        monkeypatch.setattr("tools.switch_model_tool.switch_model_for_agent", fake_switch)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("explain the architecture here")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Final answer"
+        assert agent.model == "openrouter/gpt-5.4"
+        assert agent._model_cascade_last_decision["applied"] is True
+        assert agent.client.chat.completions.create.call_args.kwargs["model"] == "openrouter/gpt-5.4"
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"

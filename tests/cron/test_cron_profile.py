@@ -229,7 +229,7 @@ class TestRunJobProfileContext:
             observed.setdefault("dotenv_paths", []).append(str(path))
             return True
 
-        monkeypatch.setattr(dotenv, "load_dotenv", fake_load_dotenv)
+        monkeypatch.setattr("cron.scheduler", "load_hermes_dotenv", lambda **_: None)
 
     def test_run_job_sets_and_restores_profile_home(
         self, isolated_cron_profile_home, monkeypatch
@@ -280,7 +280,7 @@ class TestRunJobProfileContext:
             os.environ["HERMES_CRON_TIMEOUT"] = "123"
             return True
 
-        monkeypatch.setattr(dotenv, "load_dotenv", fake_load_dotenv)
+        monkeypatch.setattr("cron.scheduler", "load_hermes_dotenv", lambda **_: None)
 
         job = {
             "id": "env-profile",

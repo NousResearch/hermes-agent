@@ -308,7 +308,7 @@ class TestRunJobTerminalCwd:
         # happily clobber TERMINAL_CWD out from under us if the real user .env
         # has TERMINAL_CWD set (common on dev boxes).  Stub it out.
         import dotenv
-        monkeypatch.setattr(dotenv, "load_dotenv", lambda *_a, **_kw: True)
+        monkeypatch.setattr("cron.scheduler", "load_hermes_dotenv", lambda **_: None)
 
     def test_workdir_sets_and_restores_terminal_cwd(
         self, tmp_path, monkeypatch

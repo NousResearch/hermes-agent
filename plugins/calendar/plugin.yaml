@@ -1,0 +1,14 @@
+name: calendar
+version: 0.1.0
+description: "Google Calendar connector — thin subprocess wrapper around `gws calendar`. Provides list_events, create_event, update_event, cancel_event, and find_free_slots. OAuth and token storage are owned entirely by gws. Requires AGENTE_GWS_BIN env var set to the gws binary path."
+author: agente.dev
+kind: standalone
+platforms:
+  - linux
+  - macos
+provides_tools:
+  - list_events
+  - create_event
+  - update_event
+  - cancel_event
+  - find_free_slots

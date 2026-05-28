@@ -1437,7 +1437,9 @@ def get_model_context_length(
     """Get the context length for a model.
 
     Resolution order:
-    0. Explicit config override (model.context_length or custom_providers per-model)
+    0a. custom_providers per-model override (most specific — wins over the
+        global ``model.context_length`` default which applies to *all* models).
+    0b. Explicit global config override (``model.context_length``)
     1. Persistent cache (previously discovered via probing).  Nous URLs
        bypass the cache here so step 5b can always reconcile against
        the authoritative portal /v1/models response.
@@ -1458,14 +1460,11 @@ def get_model_context_length(
     7. Hardcoded defaults (broad family patterns, longest-key-first)
     8. Local server query (last resort)
     9. Default fallback (256K)"""
-    # 0. Explicit config override — user knows best
-    if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
-        return config_context_length
-
-    # 0b. custom_providers per-model override — check before any probe.
-    # This closes the gap where /model switch and display paths used to fall
-    # back to 128K despite the user having a per-model context_length set.
-    # See #15779.
+    # 0a. custom_providers per-model override — most specific signal, wins over
+    # the global ``model.context_length`` default which applies to *all* models.
+    # Without this precedence, a user who sets ``model.context_length: 200000``
+    # for an Anthropic daily-driver would see /model display 200K for their
+    # local Ollama models too, even with an explicit per-model 64K override.
     if custom_providers and base_url and model:
         try:
             from hermes_cli.config import get_custom_provider_context_length
@@ -1477,7 +1476,11 @@ def get_model_context_length(
             if cp_ctx:
                 return cp_ctx
         except Exception:
-            pass  # fall through to probing
+            pass
+
+    # 0b. Explicit global config override — user knows best (model.context_length)
+    if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
+        return config_context_length
 
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that

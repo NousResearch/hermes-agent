@@ -472,6 +472,15 @@ class TestHistoryDisplay:
         called_with = mock_handler.call_args.args[0]
         assert called_with.lower().startswith("/sessions")
 
+    def test_indicator_command_is_dispatched(self):
+        """/indicator must hit _handle_indicator_command, not fall through."""
+        cli = _make_cli()
+
+        with patch.object(cli, "_handle_indicator_command") as mock_handler:
+            cli.process_command("/indicator emoji")
+
+        mock_handler.assert_called_once_with("/indicator emoji")
+
 
 class TestRootLevelProviderOverride:
     """Root-level provider/base_url in config.yaml must NOT override model.provider."""

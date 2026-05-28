@@ -327,6 +327,16 @@ def _parse_service_tier_config(raw: str) -> str | None:
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
+
+_INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
+_INDICATOR_DEFAULT = "kaomoji"
+
+
+def _normalize_indicator_style(value: Any) -> str:
+    """Normalize the persisted TUI indicator style to a known value."""
+    raw = str(value or "").strip().lower()
+    return raw if raw in _INDICATOR_STYLES else _INDICATOR_DEFAULT
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -8652,6 +8662,8 @@ class HermesCLI:
             self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
+        elif canonical == "indicator":
+            self._handle_indicator_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
         elif canonical == "busy":
@@ -9534,6 +9546,40 @@ class HermesCLI:
         print("  Note: banner colors will update on next session start.")
         if self._apply_tui_skin_style():
             print("  Prompt + TUI colors updated.")
+
+    def _handle_indicator_command(self, cmd: str) -> None:
+        """Handle /indicator - show or change the TUI busy-indicator style."""
+        from hermes_cli.config import load_config
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            cfg = load_config() or {}
+            current = _normalize_indicator_style(
+                (cfg.get("display") or {}).get("tui_status_indicator", "")
+            )
+            _cprint(f"  {_ACCENT}TUI indicator: {current}{_RST}")
+            _cprint(
+                f"  {_DIM}Usage: /indicator [kaomoji|emoji|unicode|ascii]{_RST}"
+            )
+            _cprint(
+                f"  {_DIM}Applies to Hermes TUI and dashboard chat, not the classic CLI prompt.{_RST}"
+            )
+            return
+
+        raw = parts[1].strip().lower()
+        if raw not in _INDICATOR_STYLES:
+            choices = "|".join(_INDICATOR_STYLES)
+            _cprint(f"  {_DIM}(._.) Unknown indicator: {raw!r}{_RST}")
+            _cprint(f"  {_DIM}Usage: /indicator [{choices}]{_RST}")
+            return
+
+        if save_config_value("display.tui_status_indicator", raw):
+            _cprint(f"  {_ACCENT}✓ TUI indicator set to '{raw}' (saved to config){_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ TUI indicator set to '{raw}' (session only){_RST}")
+        _cprint(
+            f"  {_DIM}The change applies to Hermes TUI and dashboard chat sessions.{_RST}"
+        )
 
     def _handle_footer_command(self, cmd_original: str) -> None:
         """Toggle or inspect ``display.runtime_footer.enabled`` from the CLI.

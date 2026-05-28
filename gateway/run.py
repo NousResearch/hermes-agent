@@ -10063,6 +10063,33 @@ class GatewayRunner:
             "  /platform resume <name> — re-queue a paused platform"
         )
 
+    def _running_under_launchd_service(self) -> bool:
+        """Return True when this gateway PID is supervised by launchd."""
+        if sys.platform != "darwin":
+            return False
+        try:
+            import subprocess
+            from hermes_cli.gateway import get_launchd_label
+
+            label = get_launchd_label()
+            result = subprocess.run(
+                ["launchctl", "list", label],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return False
+        if result.returncode != 0:
+            return False
+        current_pid = os.getpid()
+        output = result.stdout or ""
+        if re.search(rf'"PID"\s*=\s*{current_pid}\b', output):
+            return True
+        if re.search(rf"^{current_pid}\s+", output, flags=re.MULTILINE):
+            return True
+        return False
+
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /restart command - drain active work, then restart the gateway."""
         # Defensive idempotency check: if the previous gateway process
@@ -10135,7 +10162,12 @@ class GatewayRunner:
         # us.  The detached subprocess approach (setsid + bash) doesn't work
         # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
         # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        _service_manager = os.environ.get("HERMES_GATEWAY_SERVICE_MANAGER", "").strip().lower()
+        _under_service = (
+            bool(os.environ.get("INVOCATION_ID"))
+            or _service_manager in {"systemd", "launchd"}
+            or self._running_under_launchd_service()
+        )
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)

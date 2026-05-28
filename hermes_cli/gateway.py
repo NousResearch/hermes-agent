@@ -969,6 +969,29 @@ def _probe_launchd_service_running() -> bool:
     return result.returncode == 0
 
 
+def _ensure_launchd_service_loaded() -> bool:
+    """Ensure the macOS launchd job is loaded before self-signalling restarts.
+
+    A gateway-hosted restart is only safe if launchd is actively supervising
+    the current job. If the plist exists but the job was booted out/unloaded,
+    sending SIGUSR1 to the gateway makes it exit with the planned-restart code
+    and nothing is left to bring it back. Bootstrap first so launchd owns the
+    relaunch instead of relying on a fragile detached helper that can be killed
+    with the old gateway process.
+    """
+    plist_path = get_launchd_plist_path()
+    if not plist_path.exists():
+        return False
+    if _probe_launchd_service_running():
+        return True
+    subprocess.run(
+        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+        check=True,
+        timeout=30,
+    )
+    return True
+
+
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
     """Return a unified view of gateway liveness for the current profile."""
     gateway_pids = tuple(find_gateway_pids())
@@ -2868,6 +2891,8 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+        <key>HERMES_GATEWAY_SERVICE_MANAGER</key>
+        <string>launchd</string>
     </dict>
     
     <key>RunAtLoad</key>
@@ -3056,10 +3081,13 @@ def launchd_restart():
 
     try:
         pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
-            print("✓ Service restart requested")
-            return
-        if pid is not None:
+        if pid is not None and _ensure_launchd_service_loaded():
+            print(f"⏳ Launchd service restarting gracefully (PID {pid})...")
+            if _graceful_restart_via_sigusr1(pid, drain_timeout + 5):
+                print("✓ Service restart requested")
+                return
+            print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
+        elif pid is not None:
             try:
                 terminate_pid(pid, force=False)
             except (ProcessLookupError, PermissionError, OSError):

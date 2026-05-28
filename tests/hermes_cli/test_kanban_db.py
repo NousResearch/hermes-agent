@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -651,6 +653,49 @@ def test_has_spawnable_ready_false_on_empty_queue(kanban_home):
     with kb.connect() as conn:
         assert kb.has_spawnable_ready(conn) is False
 
+
+def test_dispatch_does_not_reap_unrelated_child(kanban_home):
+    if os.name == "nt":
+        pytest.skip("POSIX waitpid regression")
+    with kb._known_worker_child_pids_lock:
+        kb._known_worker_child_pids.clear()
+    child = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(42)"])
+    time.sleep(0.1)
+
+    try:
+        with kb.connect() as conn:
+            kb.dispatch_once(conn, max_spawn=0)
+
+        assert child.wait(timeout=5) == 42
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+
+
+def test_dispatch_reaps_tracked_worker_child(kanban_home):
+    if os.name == "nt":
+        pytest.skip("POSIX waitpid regression")
+    with kb._known_worker_child_pids_lock:
+        kb._known_worker_child_pids.clear()
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys,time; time.sleep(0.2); sys.exit(7)"]
+    )
+    kb._track_worker_child(child.pid)
+    time.sleep(0.3)
+
+    try:
+        with kb.connect() as conn:
+            kb.dispatch_once(conn, max_spawn=0)
+
+        assert child.pid not in kb._known_worker_child_pids
+        assert kb._classify_worker_exit(child.pid) == ("nonzero_exit", 7)
+    finally:
+        with kb._known_worker_child_pids_lock:
+            kb._known_worker_child_pids.discard(child.pid)
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
 
 def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable):
     spawns = []

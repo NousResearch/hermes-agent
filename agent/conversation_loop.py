@@ -1260,14 +1260,19 @@ def run_conversation(
                 # session instead of re-failing every retry.
                 if getattr(agent, "_disable_streaming", False):
                     _use_streaming = False
-                # CopilotACPClient communicates via subprocess stdio and
-                # returns a plain SimpleNamespace — not an iterable
-                # stream.  Mirror the ACP exclusion used for Responses
-                # API upgrade (lines ~1083-1085).
+                # CopilotACPClient and CursorAgentClient both communicate
+                # via subprocess stdio and return a plain SimpleNamespace —
+                # not an iterable stream.  Trying to iterate the result of
+                # ``create(stream=True)`` on either of them surfaces as
+                # ``TypeError: 'types.SimpleNamespace' object is not
+                # iterable`` in the streaming hot path, so we steer the
+                # whole loop to the non-streaming variant up front.
                 elif (
                     agent.provider == "copilot-acp"
+                    or agent.provider == "cursor"
                     or str(agent.base_url or "").lower().startswith("acp://copilot")
                     or str(agent.base_url or "").lower().startswith("acp+tcp://")
+                    or str(agent.base_url or "").lower().startswith("cursor://")
                 ):
                     _use_streaming = False
                 elif not agent._has_stream_consumers():

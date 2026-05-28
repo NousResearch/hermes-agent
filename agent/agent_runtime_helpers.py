@@ -1273,6 +1273,28 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
+    if agent.provider == "cursor" or str(client_kwargs.get("base_url", "")).startswith("cursor://"):
+        from agent.cursor_agent_client import CursorAgentClient
+
+        # CursorAgentClient ignores OpenAI-specific kwargs (timeout, http_client,
+        # max_retries, etc.) but accepts them via **_ to stay drop-in.
+        # We additionally pipe the agent's tool_progress_callback into the
+        # client so cursor-agent's *internal* tool calls (shell/read/edit
+        # running inside the subprocess) show up in the Hermes UI in real
+        # time. Without this bridge the chat just shows the model's final
+        # text and the user can't tell what cursor actually did under the
+        # hood.
+        client = CursorAgentClient(
+            tool_progress_callback=getattr(agent, "tool_progress_callback", None),
+            **client_kwargs,
+        )
+        _ra().logger.info(
+            "Cursor Agent client created (%s, shared=%s) %s",
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return client
     if agent.provider == "google-gemini-cli" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
         from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
 
@@ -1479,6 +1501,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 "api_key": effective_key,
                 "base_url": effective_base,
             }
+            # External-process providers (copilot-acp, cursor) need the
+            # resolved CLI binary path + extra args carried across model
+            # switches; otherwise the new client falls back to whatever's
+            # on $PATH instead of the binary the user picked at auth time.
+            if agent.provider in ("copilot-acp", "cursor"):
+                if getattr(agent, "acp_command", None):
+                    agent._client_kwargs["command"] = agent.acp_command
+                if getattr(agent, "acp_args", None):
+                    agent._client_kwargs["args"] = agent.acp_args
             _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
             if _sm_timeout is not None:
                 agent._client_kwargs["timeout"] = _sm_timeout

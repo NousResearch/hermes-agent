@@ -3694,6 +3694,40 @@ def resolve_provider_client(
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
+        if provider == "cursor":
+            api_key = str(creds.get("api_key", "")).strip()
+            base_url = str(creds.get("base_url", "")).strip()
+            command = str(creds.get("command", "")).strip() or None
+            args = list(creds.get("args") or [])
+            if not final_model:
+                # Cursor's CLI default is composer-2.5-fast — give it that when
+                # the user didn't pick one so the model picker isn't a hard
+                # prereq.
+                final_model = "auto"
+            if not base_url:
+                logger.warning(
+                    "resolve_provider_client: cursor requested but external "
+                    "process credentials are incomplete"
+                )
+                return None, None
+            from agent.cursor_agent_client import CursorAgentClient
+
+            client = CursorAgentClient(
+                # Empty / sentinel api_key means "use cursor-agent login"; the
+                # client only forwards --api-key when the value looks like a
+                # real token (sentinel "cursor-agent-login" is filtered out).
+                api_key=None if api_key in ("", "cursor-agent-login") else api_key,
+                base_url=base_url,
+                command=command,
+                args=args,
+                # auxiliary_client is reached for sub-agents / summarisers
+                # where there's no live agent; the bridge is a no-op when
+                # no callback is provided.
+                tool_progress_callback=None,
+            )
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
         logger.warning("resolve_provider_client: external-process provider %s not "
                        "directly supported", provider)
         return None, None

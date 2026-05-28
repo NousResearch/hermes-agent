@@ -155,7 +155,17 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
             return emoji
     except Exception:
         pass
-    # 3. Hardcoded fallback
+    # 3. Pseudo-tools used by external-process providers (cursor's
+    #    ``narrate`` event surfaces the model's between-tool planning
+    #    prose; copilot-acp may add its own kinds later). They live
+    #    outside the regular tool registry so we resolve their emoji
+    #    here to avoid touching the registry layer.
+    pseudo_emojis = {
+        "narrate": "💬",
+    }
+    if tool_name in pseudo_emojis:
+        return pseudo_emojis[tool_name]
+    # 4. Hardcoded fallback
     return default
 
 
@@ -403,7 +413,20 @@ def extract_edit_diff(
     function_args: dict | None = None,
     snapshot: LocalEditSnapshot | None = None,
 ) -> str | None:
-    """Extract a unified diff from a file-edit tool result."""
+    """Extract a unified diff from a file-edit tool result.
+
+    External-process providers (cursor-agent) attach their unified
+    diff directly to ``function_args["_diff_string"]`` because they
+    don't go through the local snapshot pathway. We honour that
+    first so the existing diff renderer (``_summarize_rendered_diff_sections``
+    + ``_emit_inline_diff``) handles cursor edits with the same
+    colors, headers, and line caps as Hermes' native edits.
+    """
+    if isinstance(function_args, dict):
+        pre = function_args.get("_diff_string")
+        if isinstance(pre, str) and pre.strip():
+            return pre
+
     if tool_name == "patch" and result:
         data = safe_json_loads(result)
         if isinstance(data, dict):
@@ -886,6 +909,24 @@ def get_cute_tool_message(
         limit = _tool_preview_max_len
         return ("..." + p[-(limit-3):]) if len(p) > limit else p
 
+    def _resolve_file_path(a):
+        # Cursor's wire format isn't fully consistent across tool
+        # kinds; ``editToolCall.args`` has been seen using
+        # ``target_file`` / ``targetFile`` / ``file_path`` while
+        # other tools use ``path``. Try them all so the activity
+        # feed always shows what was touched.
+        if not isinstance(a, dict):
+            return ""
+        for key in (
+            "path", "file", "filePath", "filename",
+            "target_file", "targetFile", "file_path",
+            "relative_workspace_path",
+        ):
+            v = a.get(key)
+            if isinstance(v, str) and v.strip():
+                return _path(v)
+        return ""
+
     def _wrap(line: str) -> str:
         """Apply skin tool prefix and failure suffix."""
         if skin_prefix != "┊":
@@ -913,9 +954,26 @@ def get_cute_tool_message(
                   "wait": f"wait {sid}", "kill": f"kill {sid}", "write": f"write {sid}", "submit": f"submit {sid}"}
         return _wrap(f"┊ ⚙️  proc      {labels.get(action, f'{action} {sid}')}  {dur}")
     if tool_name == "read_file":
-        return _wrap(f"┊ 📖 read      {_path(args.get('path', ''))}  {dur}")
+        return _wrap(f"┊ 📖 read      {_resolve_file_path(args)}  {dur}")
     if tool_name == "write_file":
-        return _wrap(f"┊ ✍️  write     {_path(args.get('path', ''))}  {dur}")
+        # Header only — the diff body (if any) is rendered separately
+        # via the native ``render_edit_diff_with_delta`` pipeline that
+        # already handles all of Hermes' file-mutation tools. Same
+        # colors, file/hunk headers, and line caps for cursor's edits
+        # as for native ones.
+        path_disp = _resolve_file_path(args)
+        diff = args.get("_diff_stats") if isinstance(args, dict) else None
+        if isinstance(diff, dict):
+            la, lr = diff.get("added", 0), diff.get("removed", 0)
+            return _wrap(f"┊ ✍️  write     {path_disp}  +{la} -{lr}  {dur}")
+        return _wrap(f"┊ ✍️  write     {path_disp}  {dur}")
+    if tool_name == "edit_file":
+        path_disp = _resolve_file_path(args)
+        diff = args.get("_diff_stats") if isinstance(args, dict) else None
+        if isinstance(diff, dict):
+            la, lr = diff.get("added", 0), diff.get("removed", 0)
+            return _wrap(f"┊ ✏️  edit      {path_disp}  +{la} -{lr}  {dur}")
+        return _wrap(f"┊ ✏️  edit      {path_disp}  {dur}")
     if tool_name == "patch":
         return _wrap(f"┊ 🔧 patch     {_path(args.get('path', ''))}  {dur}")
     if tool_name == "search_files":
@@ -1021,6 +1079,18 @@ def get_cute_tool_message(
         if tasks and isinstance(tasks, list):
             return _wrap(f"┊ 🔀 delegate  {len(tasks)} parallel tasks  {dur}")
         return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
+
+    # Pseudo-tools surfaced by external-process providers (cursor's
+    # ``narrate`` events show the model's between-tool planning prose).
+    # They aren't real tools so they don't go through the registry —
+    # we resolve their display line directly here.
+    if tool_name == "narrate":
+        # The "preview" arg already carries the one-line snippet; the
+        # full text lives in args["text"]. Use the preview slot so the
+        # CLI's preview-truncation logic still works on it.
+        text = (args or {}).get("text", "") if isinstance(args, dict) else ""
+        snippet = text.strip().splitlines()[0] if text else ""
+        return _wrap(f"┊ 💬 narrate   {_trunc(snippet, 60)}  {dur}")
 
     preview = build_tool_preview(tool_name, args) or ""
     return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")

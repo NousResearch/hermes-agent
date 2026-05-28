@@ -163,6 +163,46 @@ class TestAutoTitleSession:
 class TestMaybeAutoTitle:
     """Tests for maybe_auto_title() — the fire-and-forget entry point."""
 
+    def test_skips_when_main_runtime_is_cursor(self):
+        # Regression: cursor's CLI has a 3-5s cold start + harness
+        # overhead. Firing a background title-gen call against it
+        # competes with the user's next chat turn for subprocess
+        # bandwidth — empirically adds 30s+ on the next round trip.
+        # The title is cosmetic; silent skip is the right tradeoff.
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(
+                db, "sess-cursor", "hello", "hi", history,
+                main_runtime={"provider": "cursor", "model": "composer-2.5-fast"},
+            )
+            import time
+            time.sleep(0.1)
+            mock_auto.assert_not_called()
+
+    def test_still_fires_for_other_providers(self):
+        # Sanity-check the cursor-skip is targeted: openrouter, openai,
+        # anthropic, etc. should keep working.
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        with patch("agent.title_generator.threading.Thread") as mock_thread:
+            instance = MagicMock()
+            mock_thread.return_value = instance
+            maybe_auto_title(
+                db, "sess-or", "hello", "hi", history,
+                main_runtime={"provider": "openrouter", "model": "x"},
+            )
+            mock_thread.assert_called_once()
+            instance.start.assert_called_once()
+
     def test_skips_if_not_first_exchange(self):
         """Should not fire for conversations with more than 2 user messages."""
         db = MagicMock()

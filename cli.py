@@ -10648,6 +10648,28 @@ class HermesCLI:
                     _cprint(f"  {line}")
                 except Exception:
                     pass
+                # External-process providers (cursor-agent) attach
+                # the unified diff to ``stored_args["_diff_string"]``
+                # because their edits don't go through Hermes' local
+                # snapshot pipeline. Route them through the same
+                # ``render_edit_diff_with_delta`` renderer the native
+                # tools use so the inline diff styling stays consistent
+                # (skin colors, file/hunk headers, line caps).
+                try:
+                    if isinstance(stored_args, dict) and stored_args.get("_diff_string"):
+                        from agent.display import render_edit_diff_with_delta
+                        render_edit_diff_with_delta(
+                            function_name,
+                            kwargs.get("result"),
+                            function_args=stored_args,
+                            snapshot=None,
+                            print_fn=_cprint,
+                        )
+                except Exception:
+                    logger.debug(
+                        "Cursor edit inline-diff rendering failed",
+                        exc_info=True,
+                    )
                 # First-touch onboarding: on the first tool in this process
                 # that takes longer than the threshold while we're in the
                 # noisiest progress mode, print a one-time hint about

@@ -149,6 +149,21 @@ def maybe_auto_title(
     if not session_db or not session_id or not user_message or not assistant_response:
         return
 
+    # Cursor's CLI has a ~3-5s cold-start per invocation plus its
+    # internal-tool harness; firing an extra background title-gen call
+    # against it can add 30s+ of competing subprocess load on top of
+    # the user's next chat turn. We skip title generation when the
+    # main runtime is cursor — the session title shows as "(untitled)"
+    # in the sessions list, which is preferable to a slow + verbose +
+    # error-prone background call. Users can still set titles manually
+    # via the ``/title`` slash command.
+    if main_runtime and (main_runtime.get("provider") or "").lower() == "cursor":
+        logger.debug(
+            "Skipping auto-title for cursor provider — extra CLI "
+            "invocations would slow down the user's chat session."
+        )
+        return
+
     # Count user messages in history to detect first exchange.
     # conversation_history includes the exchange that just happened,
     # so for a first exchange we expect exactly 1 user message

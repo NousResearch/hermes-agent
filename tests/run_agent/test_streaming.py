@@ -1570,12 +1570,76 @@ class TestCopilotACPStreamingDecision:
             _use_streaming = False
         elif (
             agent.provider == "copilot-acp"
+            or agent.provider == "cursor"
             or str(agent.base_url or "").lower().startswith("acp://copilot")
             or str(agent.base_url or "").lower().startswith("acp+tcp://")
+            or str(agent.base_url or "").lower().startswith("cursor://")
         ):
             _use_streaming = False
 
         assert _use_streaming is True
+
+
+class TestCursorAgentStreamingDecision:
+    """Verify that ``cursor`` routes to the non-streaming path.
+
+    ``CursorAgentClient`` shells out to ``cursor-agent`` and returns a plain
+    SimpleNamespace — not an iterable stream.  Without this exclusion the
+    streaming hot path iterates the SimpleNamespace and raises
+    ``TypeError: 'types.SimpleNamespace' object is not iterable``.
+    """
+
+    @staticmethod
+    def _make_cursor_agent(provider="cursor", base_url="cursor://agent"):
+        from run_agent import AIAgent
+        agent = AIAgent(
+            api_key="cursor-agent-login",
+            base_url=base_url,
+            provider=provider,
+            model="auto",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: None,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        return agent
+
+    def test_provider_name_triggers_non_streaming(self):
+        agent = self._make_cursor_agent(provider="cursor", base_url="cursor://agent")
+
+        _use_streaming = True
+        if getattr(agent, "_disable_streaming", False):
+            _use_streaming = False
+        elif (
+            agent.provider == "copilot-acp"
+            or agent.provider == "cursor"
+            or str(agent.base_url or "").lower().startswith("acp://copilot")
+            or str(agent.base_url or "").lower().startswith("acp+tcp://")
+            or str(agent.base_url or "").lower().startswith("cursor://")
+        ):
+            _use_streaming = False
+
+        assert _use_streaming is False
+
+    def test_cursor_base_url_triggers_non_streaming(self):
+        # base_url='cursor://agent' alone (provider mislabelled) is still
+        # enough to disable streaming.
+        agent = self._make_cursor_agent(provider="custom", base_url="cursor://agent")
+        agent.provider = "custom"
+
+        _use_streaming = True
+        if (
+            agent.provider == "copilot-acp"
+            or agent.provider == "cursor"
+            or str(agent.base_url or "").lower().startswith("acp://copilot")
+            or str(agent.base_url or "").lower().startswith("acp+tcp://")
+            or str(agent.base_url or "").lower().startswith("cursor://")
+        ):
+            _use_streaming = False
+
+        assert _use_streaming is False
 
 
 class TestCodexFallbackErrorEvent:

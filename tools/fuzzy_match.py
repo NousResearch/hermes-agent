@@ -69,6 +69,13 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     if old_string == new_string:
         return content, 0, None, "old_string and new_string are identical"
 
+    # Unescape common escape sequences that the LLM commonly produces
+    # as literal text instead of real bytes in JSON tool call arguments.
+    # This is the symmetrical counterpart to _strategy_escape_normalized
+    # which already does the same for old_string during matching.
+    # Note: \n is excluded because newlines serialize correctly in JSON.
+    new_string = new_string.replace('\\t', '\t').replace('\\r', '\r')
+
     # Try each matching strategy in order
     strategies: List[Tuple[str, Callable]] = [
         ("exact", _strategy_exact),

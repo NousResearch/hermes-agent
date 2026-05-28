@@ -332,6 +332,71 @@ class TestEscapeDriftGuard:
         assert count == 1
 
 
+class TestNewStringEscapeUnescaping:
+    """Tests for the new_string escape-sequence unescaping fix (#33733).
+
+    When the LLM produces literal ``\\t`` or ``\\r`` (two-character sequences)
+    in new_string instead of real tab/carriage-return bytes, the tool must
+    convert them before writing to disk.
+    """
+
+    def test_tab_in_new_string_unescaped(self):
+        """Literal \\t in new_string should become a real tab."""
+        content = "def hello():\n\tprint(\"before\")\n"
+        old_string = "\tprint(\"before\")"
+        # Simulate LLM sending literal backslash-t (two chars)
+        new_string = "\\tprint(\"after\")"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert "\tprint(\"after\")" in new
+        # Ensure no literal \t remains
+        assert "\\t" not in new
+
+    def test_carriage_return_in_new_string_unescaped(self):
+        """Literal \\r in new_string should become a real carriage return."""
+        content = "line1\r\nline2\r\n"
+        old_string = "line1\r\nline2"
+        new_string = "line1\\r\\nline2"
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert "\r\n" in new or "\r" in new
+
+    def test_newline_not_unescaped(self):
+        """Literal \\n in new_string should NOT be converted — newlines
+        serialize correctly in JSON and are intentionally left alone."""
+        content = "hello world\n"
+        old_string = "hello world"
+        new_string = "line1\\nline2"
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        # The literal \\n (two chars) should remain — we only unescape \\t and \\r
+        assert "line1\\nline2" in new or "line1\nline2" in new
+
+    def test_no_escape_sequences_passthrough(self):
+        """When new_string has no escape sequences, it should pass through unchanged."""
+        content = "def foo():\n    return 1\n"
+        old_string = "def foo():\n    return 1"
+        new_string = "def foo():\n    return 2"
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None
+        assert count == 1
+        assert "return 2" in new
+
+    def test_tab_unescape_with_fuzzy_match(self):
+        """Tab unescaping should work even when old_string matches via a fuzzy strategy."""
+        content = "    def hello():\n        print(\"before\")\n"
+        # old_string at zero indent — forces a fuzzy strategy
+        old_string = "def hello():\n    print(\"before\")"
+        new_string = "def hello():\n\\tprint(\"after\")"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy != "exact"
+
+
 class TestFindClosestLines:
     def setup_method(self):
         from tools.fuzzy_match import find_closest_lines

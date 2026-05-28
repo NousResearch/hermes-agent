@@ -42,6 +42,8 @@ interface SessionInfo {
   model?: string;
   provider?: string;
   credential_warning?: string;
+  /** The active profile name from the PTY gateway. */
+  profile_name?: string;
 }
 
 interface RpcEnvelope {
@@ -75,7 +77,7 @@ interface ChatSidebarProps {
   className?: string;
   /** When false, the Agent Profile selector card is hidden. */
   chatByAgentProfile?: boolean;
-  /** Fires after a profile switch -- parent bumps channel key. */
+  /** Fires after a profile switch. */
   onProfileActivated?: () => void;
 }
 
@@ -99,21 +101,18 @@ export function ChatSidebar({
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeProfile, setActiveProfile] = useState("default");
-  const [profileOpen, setProfileOpen] = useState(false);
 
-  // Fetch the active profile from the server on mount.
-  // /api/active-profile is public -- no auth needed.
+  // Agent Profile state (gated by chatByAgentProfile)
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [activeProfile, setActiveProfile] = useState<string>("default");
+
+  // Fetch active profile on mount.
   useEffect(() => {
-    fetch(`${HERMES_BASE_PATH}/api/active-profile`)
-      .then((r) => r.json())
-      .then((d: { name?: string }) => { if (d.name) setActiveProfile(d.name); })
+    fetch(HERMES_BASE_PATH + "/api/active-profile")
+      .then(r => r.json())
+      .then(d => { if (d.name) setActiveProfile(d.name); })
       .catch(() => {});
   }, []);
-
-  // After profile activation, notify parent to bump the channel key.
-  const handleProfileActivated = useCallback(
-    () => onProfileActivated?.(), [onProfileActivated]);
 
   useEffect(() => {
     let cancelled = false;
@@ -126,6 +125,7 @@ export function ChatSidebar({
 
       if (ev.payload) {
         setInfo((prev) => ({ ...prev, ...ev.payload }));
+        // profile_name handled by /api/active-profile fetch on mount
       }
     });
 
@@ -331,6 +331,9 @@ export function ChatSidebar({
     [gw, sessionId],
   );
 
+  const handleProfileActivated = useCallback(
+    () => onProfileActivated?.(), [onProfileActivated]);
+
   const canPickModel = state === "open" && !!sessionId;
   const modelLabel = (info.model ?? "—").split("/").slice(-1)[0] ?? "—";
   const banner = error ?? info.credential_warning ?? null;
@@ -342,10 +345,12 @@ export function ChatSidebar({
         className,
       )}
     >
-      {/* ACTIVE PROFILE -- read-only, shows current profile from /api/active-profile */}
+      {/* ACTIVE PROFILE - read-only, shows current profile */}
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="min-w-0">
-          <div className="text-display text-xs tracking-wider text-text-tertiary">active profile</div>
+          <div className="text-display text-xs tracking-wider text-text-tertiary">
+            active profile
+          </div>
           <Button ghost size="sm" disabled
             className="self-start min-w-0 px-0 py-0 normal-case tracking-normal text-sm font-medium"
             title={activeProfile}>
@@ -381,7 +386,7 @@ export function ChatSidebar({
         <Badge tone={STATE_TONE[state]}>{STATE_LABEL[state]}</Badge>
       </Card>
 
-      {/* Agent Profile selector -- gated by chatByAgentProfile */}
+      {/* Agent Profile selector - gated by chatByAgentProfile */}
       {chatByAgentProfile && (
         <Card className="flex items-center justify-between gap-2 px-3 py-2">
           <div className="min-w-0">
@@ -445,7 +450,8 @@ export function ChatSidebar({
 
       {profileOpen && (
         <ProfilePickerDialog activeProfile={activeProfile}
-          onClose={() => setProfileOpen(false)} onProfileActivated={handleProfileActivated} />
+          onClose={() => setProfileOpen(false)}
+          onProfileActivated={handleProfileActivated} />
       )}
     </aside>
   );

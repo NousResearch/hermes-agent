@@ -2117,6 +2117,13 @@ def cmd_postinstall(args):
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
     _require_tty("model")
+    if getattr(args, "refresh", False):
+        try:
+            from hermes_cli.models import clear_provider_models_cache
+            clear_provider_models_cache()
+            print("  Cleared model picker cache.")
+        except Exception:
+            pass
     select_provider_and_model(args=args)
 
 
@@ -11310,6 +11317,11 @@ def main():
         "model",
         help="Select default model and provider",
         description="Interactively select your inference provider and default model",
+    )
+    model_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Wipe the model picker disk cache and re-fetch every provider's live /v1/models list.",
     )
     model_parser.add_argument(
         "--portal-url",

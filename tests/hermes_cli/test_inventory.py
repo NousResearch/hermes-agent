@@ -158,8 +158,11 @@ def test_build_models_payload_returns_expected_shape():
 
 
 def test_build_models_payload_does_not_call_provider_model_ids():
-    """Curated lists must come from list_authenticated_providers, not
-    provider_model_ids — that would pull TTS/embeddings/etc.
+    """``build_models_payload`` is a thin shape adapter — it delegates the
+    actual curation to ``list_authenticated_providers`` (which DOES call
+    ``cached_provider_model_ids`` internally for live discovery, with disk
+    caching). ``build_models_payload`` itself must not call the live fetcher
+    directly; the test pins that boundary.
     """
     rows = [{"slug": "nous", "name": "Nous", "models": ["hermes-4-405b"],
              "total_models": 1, "is_current": False, "is_user_defined": False,

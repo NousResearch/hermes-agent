@@ -212,23 +212,26 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     """
     try:
         parsed = json.loads(args)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return args
 
-    def _shrink(obj: Any) -> Any:
-        if isinstance(obj, str):
-            if len(obj) > head_chars:
-                return obj[:head_chars] + "...[truncated]"
+    try:
+        def _shrink(obj: Any) -> Any:
+            if isinstance(obj, str):
+                if len(obj) > head_chars:
+                    return obj[:head_chars] + "...[truncated]"
+                return obj
+            if isinstance(obj, dict):
+                return {k: _shrink(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_shrink(v) for v in obj]
             return obj
-        if isinstance(obj, dict):
-            return {k: _shrink(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_shrink(v) for v in obj]
-        return obj
 
-    shrunken = _shrink(parsed)
-    # ensure_ascii=False preserves CJK/emoji instead of bloating with \uXXXX
-    return json.dumps(shrunken, ensure_ascii=False)
+        shrunken = _shrink(parsed)
+        # ensure_ascii=False preserves CJK/emoji instead of bloating with \uXXXX
+        return json.dumps(shrunken, ensure_ascii=False)
+    except (TypeError, ValueError, RecursionError):
+        return args
 
 
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:

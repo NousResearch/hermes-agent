@@ -230,6 +230,229 @@ def test_api_calendar_list_respects_date_range(api_module):
     assert params["timeMax"] == "2026-04-07T23:59:59Z"
 
 
+def _decode_raw(raw: str) -> str:
+    """Decode a base64url MIME 'raw' back to its text form for assertions."""
+    import base64
+
+    return base64.urlsafe_b64decode(raw).decode()
+
+
+def test_api_gmail_draft_create_uses_drafts_create(api_module):
+    """draft create calls _run_gws with drafts/create and a message.raw body."""
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(
+            returncode=0,
+            stdout='{"id": "draft1", "message": {"id": "m1", "threadId": "t1"}}',
+            stderr="",
+        )
+
+    args = api_module.argparse.Namespace(
+        to="user@example.com", subject="Hi", body="Hello",
+        cc="", from_header="", html=False, func=api_module.gmail_draft_create,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_draft_create(args)
+
+    cmd = captured["cmd"]
+    assert cmd[0] == "/usr/bin/gws"
+    assert "drafts" in cmd
+    assert "create" in cmd
+    body = json.loads(cmd[cmd.index("--json") + 1])
+    assert "raw" in body["message"]
+    decoded = _decode_raw(body["message"]["raw"])
+    assert "user@example.com" in decoded
+    assert "Hi" in decoded
+
+
+def test_api_gmail_draft_create_html_and_cc(api_module):
+    """--html marks the MIME as text/html and --cc adds a Cc header."""
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout='{"id": "draft1", "message": {}}', stderr="")
+
+    args = api_module.argparse.Namespace(
+        to="user@example.com", subject="Hi", body="<b>Hello</b>",
+        cc="cc@example.com", from_header="", html=True, func=api_module.gmail_draft_create,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_draft_create(args)
+
+    body = json.loads(captured["cmd"][captured["cmd"].index("--json") + 1])
+    decoded = _decode_raw(body["message"]["raw"])
+    assert "text/html" in decoded
+    assert "cc@example.com" in decoded
+
+
+def test_api_gmail_draft_create_rejects_empty(api_module):
+    """draft create with no to/subject/body exits non-zero (empty-draft guard)."""
+    args = api_module.argparse.Namespace(
+        to="", subject="", body="", cc="", from_header="", html=False,
+        func=api_module.gmail_draft_create,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        api_module.gmail_draft_create(args)
+
+    assert exc_info.value.code == 1
+
+
+def test_api_gmail_draft_send_uses_drafts_send(api_module):
+    """draft send calls _run_gws with drafts/send and an {'id': ...} body."""
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout='{"id": "m1", "threadId": "t1"}', stderr="")
+
+    args = api_module.argparse.Namespace(draft_id="draft1", func=api_module.gmail_draft_send)
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_draft_send(args)
+
+    cmd = captured["cmd"]
+    assert "drafts" in cmd
+    assert "send" in cmd
+    assert json.loads(cmd[cmd.index("--json") + 1]) == {"id": "draft1"}
+
+
+def test_api_gmail_draft_list_uses_drafts_list(api_module):
+    """draft list calls drafts/list with maxResults, then enriches each draft."""
+    cmds = []
+
+    def capture_run(cmd, **kwargs):
+        cmds.append(cmd)
+        return MagicMock(
+            returncode=0,
+            stdout='{"drafts": [{"id": "d1", "message": {"id": "m1", "threadId": "t1"}}]}',
+            stderr="",
+        )
+
+    args = api_module.argparse.Namespace(max=10, func=api_module.gmail_draft_list)
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_draft_list(args)
+
+    list_cmds = [c for c in cmds if "drafts" in c and "list" in c]
+    assert list_cmds, "expected a drafts/list call"
+    params = json.loads(list_cmds[0][list_cmds[0].index("--params") + 1])
+    assert params["maxResults"] == 10
+
+
+def test_api_gmail_draft_list_skips_enrichment_when_no_message_id(api_module, capsys):
+    """A draft with no message stub id yields an id-only row and triggers no
+    messages.get fetch."""
+    cmds = []
+
+    def capture_run(cmd, **kwargs):
+        cmds.append(cmd)
+        return MagicMock(returncode=0, stdout='{"drafts": [{"id": "d1"}]}', stderr="")
+
+    args = api_module.argparse.Namespace(max=10, func=api_module.gmail_draft_list)
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_draft_list(args)
+
+    # No per-draft messages.get call should have been made.
+    assert not [c for c in cmds if "messages" in c and "get" in c]
+    rows = json.loads(capsys.readouterr().out)
+    assert rows == [{
+        "draftId": "d1", "messageId": "", "to": "", "subject": "", "date": "", "snippet": "",
+    }]
+
+
+def test_api_headers_dict_is_case_insensitive(api_module):
+    """Gmail returns headers with whatever case the message used; lookups must
+    be case-insensitive (drafts we build carry lowercase to/subject)."""
+    msg = {"payload": {"headers": [
+        {"name": "to", "value": "a@b.com"},
+        {"name": "subject", "value": "Hi"},
+        {"name": "Message-Id", "value": "<x@mail>"},
+    ]}}
+    headers = api_module._headers_dict(msg)
+    assert headers.get("To") == "a@b.com"
+    assert headers.get("Subject") == "Hi"
+    assert headers.get("Message-ID") == "<x@mail>"   # all-caps lookup, mixed-case header
+    assert headers["Message-ID"] == "<x@mail>"        # subscript path (reply threading)
+    assert "To" in headers
+
+
+def test_api_gmail_draft_list_populates_to_subject_from_lowercase_headers(api_module, capsys):
+    """Regression: a draft whose metadata returns lowercase 'to'/'subject'
+    headers (as Gmail does for tool-created drafts) must still populate the
+    to/subject fields in the listing."""
+    def capture_run(cmd, **kwargs):
+        if "drafts" in cmd and "list" in cmd:
+            stdout = '{"drafts": [{"id": "d1", "message": {"id": "m1", "threadId": "t1"}}]}'
+        else:  # messages.get enrichment — headers come back lowercase
+            stdout = ('{"snippet": "hello", "payload": {"headers": ['
+                      '{"name": "to", "value": "a@b.com"},'
+                      '{"name": "subject", "value": "Hi there"},'
+                      '{"name": "Date", "value": "Mon, 1 Jan 2026"}]}}')
+        return MagicMock(returncode=0, stdout=stdout, stderr="")
+
+    args = api_module.argparse.Namespace(max=10, func=api_module.gmail_draft_list)
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_draft_list(args)
+
+    rows = json.loads(capsys.readouterr().out)
+    assert rows[0]["to"] == "a@b.com"
+    assert rows[0]["subject"] == "Hi there"
+    assert rows[0]["date"] == "Mon, 1 Jan 2026"
+
+
+def test_api_gmail_draft_list_tolerates_enrichment_failure(api_module, monkeypatch, capsys):
+    """On the Python-client path, a per-draft metadata fetch that raises falls
+    back to an id-only row instead of sinking the whole listing."""
+    monkeypatch.setattr(api_module, "_gws_binary", lambda: None)
+
+    fake_service = MagicMock()
+    fake_service.users().drafts().list().execute.return_value = {
+        "drafts": [{"id": "d1", "message": {"id": "m1", "threadId": "t1"}}]
+    }
+    fake_service.users().messages().get().execute.side_effect = RuntimeError("boom")
+    monkeypatch.setattr(api_module, "build_service", lambda *a, **k: fake_service)
+
+    args = api_module.argparse.Namespace(max=10, func=api_module.gmail_draft_list)
+    api_module.gmail_draft_list(args)
+
+    rows = json.loads(capsys.readouterr().out)
+    assert rows == [{
+        "draftId": "d1", "messageId": "m1", "to": "", "subject": "", "date": "", "snippet": "",
+    }]
+
+
+def test_api_gmail_send_includes_headers_in_raw_mime(api_module):
+    """gmail send builds the messages.send body from a base64url raw MIME that
+    carries the recipient and subject headers."""
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout='{"id": "m1", "threadId": "t1"}', stderr="")
+
+    args = api_module.argparse.Namespace(
+        to="user@example.com", subject="Hi", body="Hello",
+        cc="", from_header="", html=False, thread_id="", func=api_module.gmail_send,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_send(args)
+
+    cmd = captured["cmd"]
+    assert "messages" in cmd
+    assert "send" in cmd
+    decoded = _decode_raw(json.loads(cmd[cmd.index("--json") + 1])["raw"])
+    assert "user@example.com" in decoded
+    assert "Hi" in decoded
+
+
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
     token_path = api_module.TOKEN_PATH
     _write_token(token_path, token="ya29.old")

@@ -10,6 +10,9 @@ Usage:
   python google_api.py gmail get MESSAGE_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
   python google_api.py gmail reply MESSAGE_ID --body "Thanks"
+  python google_api.py gmail draft create --to user@example.com --subject "Hi" --body "Hello"
+  python google_api.py gmail draft list [--max 10]
+  python google_api.py gmail draft send DRAFT_ID
   python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
   python google_api.py drive search "budget report" [--max 10]
@@ -128,8 +131,47 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
         sys.exit(1)
 
 
-def _headers_dict(msg: dict) -> dict[str, str]:
-    return {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+def _build_message_raw(to, subject, body, cc="", from_header="", html=False) -> str:
+    """Build a MIME message and return its base64url-encoded raw form.
+
+    Single source of truth for MIME construction shared by gmail send and
+    gmail draft create. Headers are only set when a value is provided so the
+    same helper works for complete sends and partial (work-in-progress) drafts.
+    """
+    message = MIMEText(body, "html" if html else "plain")
+    if to:
+        message["To"] = to
+    if subject:
+        message["Subject"] = subject
+    if cc:
+        message["Cc"] = cc
+    if from_header:
+        message["From"] = from_header
+    return base64.urlsafe_b64encode(message.as_bytes()).decode()
+
+
+class _Headers(dict):
+    """Case-insensitive view of message headers.
+
+    RFC 5322 field names are case-insensitive, and Gmail returns each header
+    with whatever case the message used (e.g. a draft we built with a lowercase
+    'to' header comes back as 'to', not 'To'). Keys are stored lowercased and
+    lookups lowercase the key, so headers.get("To")/["Message-ID"] resolve
+    regardless of the on-the-wire casing.
+    """
+
+    def get(self, key, default=None):
+        return super().get(key.lower(), default)
+
+    def __getitem__(self, key):
+        return super().__getitem__(key.lower())
+
+    def __contains__(self, key):
+        return super().__contains__(key.lower())
+
+
+def _headers_dict(msg: dict) -> "_Headers":
+    return _Headers((h["name"].lower(), h["value"]) for h in msg.get("payload", {}).get("headers", []))
 
 
 def _extract_message_body(msg: dict) -> str:
@@ -312,20 +354,12 @@ def gmail_get(args):
 
 
 def gmail_send(args):
+    raw = _build_message_raw(args.to, args.subject, args.body, args.cc, args.from_header, args.html)
+    body = {"raw": raw}
+    if args.thread_id:
+        body["threadId"] = args.thread_id
+
     if _gws_binary():
-        message = MIMEText(args.body, "html" if args.html else "plain")
-        message["to"] = args.to
-        message["subject"] = args.subject
-        if args.cc:
-            message["cc"] = args.cc
-        if args.from_header:
-            message["from"] = args.from_header
-
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        body = {"raw": raw}
-        if args.thread_id:
-            body["threadId"] = args.thread_id
-
         result = _run_gws(
             ["gmail", "users", "messages", "send"],
             params={"userId": "me"},
@@ -335,20 +369,6 @@ def gmail_send(args):
         return
 
     service = build_service("gmail", "v1")
-    message = MIMEText(args.body, "html" if args.html else "plain")
-    message["to"] = args.to
-    message["subject"] = args.subject
-    if args.cc:
-        message["cc"] = args.cc
-    if args.from_header:
-        message["from"] = args.from_header
-
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-    body = {"raw": raw}
-
-    if args.thread_id:
-        body["threadId"] = args.thread_id
-
     result = service.users().messages().send(userId="me", body=body).execute()
     print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
 
@@ -450,6 +470,121 @@ def gmail_modify(args):
     service = build_service("gmail", "v1")
     result = service.users().messages().modify(userId="me", id=args.message_id, body=body).execute()
     print(json.dumps({"id": result["id"], "labels": result.get("labelIds", [])}, indent=2))
+
+
+
+def gmail_draft_create(args):
+    # A draft with no recipient, subject, or body is almost certainly user error
+    # (the optional flags are for partial drafts, not empty ones).
+    if not (args.to or args.subject or args.body):
+        print("ERROR: provide at least one of --to, --subject, or --body", file=sys.stderr)
+        sys.exit(1)
+
+    raw = _build_message_raw(args.to, args.subject, args.body, args.cc, args.from_header, args.html)
+    body = {"message": {"raw": raw}}
+
+    if _gws_binary():
+        result = _run_gws(
+            ["gmail", "users", "drafts", "create"],
+            params={"userId": "me"},
+            body=body,
+        )
+    else:
+        service = build_service("gmail", "v1")
+        result = service.users().drafts().create(userId="me", body=body).execute()
+
+    message = result.get("message", {})
+    print(json.dumps({
+        "status": "drafted",
+        "draftId": result["id"],
+        "messageId": message.get("id", ""),
+        "threadId": message.get("threadId", ""),
+    }, indent=2))
+
+
+
+def gmail_draft_send(args):
+    body = {"id": args.draft_id}
+
+    if _gws_binary():
+        result = _run_gws(
+            ["gmail", "users", "drafts", "send"],
+            params={"userId": "me"},
+            body=body,
+        )
+    else:
+        service = build_service("gmail", "v1")
+        result = service.users().drafts().send(userId="me", body=body).execute()
+
+    print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
+
+
+
+def gmail_draft_list(args):
+    # Decide the transport once so the per-draft enrichment below can close over
+    # a service that's guaranteed bound (and to avoid a redundant _gws_binary()
+    # call per draft).
+    use_gws = bool(_gws_binary())
+    service = None if use_gws else build_service("gmail", "v1")
+
+    def _enrich(draft):
+        """Return a list row for a draft, enriching with message metadata.
+
+        Drafts.list only returns the draft id plus a message stub, so fetch
+        To/Subject/Date per draft like gmail_search does. On the Python-client
+        path a failed per-draft fetch falls back to an id-only row so one bad
+        draft doesn't sink the whole listing; the gws path inherits _run_gws's
+        exit-on-error behavior, same as the rest of this module.
+        """
+        message_stub = draft.get("message", {})
+        row = {
+            "draftId": draft.get("id", ""),
+            "messageId": message_stub.get("id", ""),
+            "to": "",
+            "subject": "",
+            "date": "",
+            "snippet": "",
+        }
+        if not row["messageId"]:
+            return row
+        try:
+            if use_gws:
+                msg = _run_gws(
+                    ["gmail", "users", "messages", "get"],
+                    params={
+                        "userId": "me",
+                        "id": row["messageId"],
+                        "format": "metadata",
+                        "metadataHeaders": ["To", "Subject", "Date"],
+                    },
+                )
+            else:
+                msg = service.users().messages().get(
+                    userId="me", id=row["messageId"], format="metadata",
+                    metadataHeaders=["To", "Subject", "Date"],
+                ).execute()
+        except Exception as exc:
+            # Degrade to an id-only row rather than sinking the whole listing,
+            # but don't swallow silently — surface why a draft came back bare.
+            print(f"WARNING: metadata fetch failed for draft {row['draftId']}: {exc}", file=sys.stderr)
+            return row
+        headers = _headers_dict(msg)
+        row["to"] = headers.get("To", "")
+        row["subject"] = headers.get("Subject", "")
+        row["date"] = headers.get("Date", "")
+        row["snippet"] = msg.get("snippet", "")
+        return row
+
+    if use_gws:
+        results = _run_gws(
+            ["gmail", "users", "drafts", "list"],
+            params={"userId": "me", "maxResults": args.max},
+        )
+    else:
+        results = service.users().drafts().list(userId="me", maxResults=args.max).execute()
+
+    output = [_enrich(d) for d in results.get("drafts", [])]
+    print(json.dumps(output, indent=2, ensure_ascii=False))
 
 
 # =========================================================================
@@ -1088,6 +1223,26 @@ def main():
     p.add_argument("--add-labels", default="", help="Comma-separated label IDs to add")
     p.add_argument("--remove-labels", default="", help="Comma-separated label IDs to remove")
     p.set_defaults(func=gmail_modify)
+
+    p = gmail_sub.add_parser("draft")
+    draft_sub = p.add_subparsers(dest="draft_action", required=True)
+
+    pc = draft_sub.add_parser("create")
+    pc.add_argument("--to", default="")
+    pc.add_argument("--subject", default="")
+    pc.add_argument("--body", default="")
+    pc.add_argument("--cc", default="")
+    pc.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
+    pc.add_argument("--html", action="store_true", help="Treat body as HTML")
+    pc.set_defaults(func=gmail_draft_create)
+
+    ps = draft_sub.add_parser("send")
+    ps.add_argument("draft_id")
+    ps.set_defaults(func=gmail_draft_send)
+
+    pl = draft_sub.add_parser("list")
+    pl.add_argument("--max", type=int, default=10)
+    pl.set_defaults(func=gmail_draft_list)
 
     # --- Calendar ---
     cal = sub.add_parser("calendar")

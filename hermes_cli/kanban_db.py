@@ -7305,17 +7305,21 @@ def repair_projection_subscriptions(
     *,
     apply: bool = False,
 ) -> dict:
-    """Report and optionally remove notification/projection rows for missing tasks.
+    """Report and optionally repair broken notification/projection rows.
 
     ``kanban_notify_subs`` is the local source of truth that binds gateway
     projection destinations (Discord forum/thread rows, Telegram topics, etc.)
-    back to canonical Kanban tasks. Legacy migrations and manual DB repairs can
-    leave rows whose ``task_id`` no longer exists; those rows confuse thread
-    lifecycle routing because a projected source appears bound to a phantom
-    task. Dry-run mode reports them, while apply mode deletes only those orphan
-    rows and preserves every row with a live task.
+    back to canonical Kanban tasks. The reconciler is deliberately conservative:
+
+    * orphan rows whose ``task_id`` no longer exists are safe to delete;
+    * malformed rows without a usable platform/chat target are safe to delete;
+    * ambiguous rows where one projected source maps to multiple live tasks are
+      reported loudly but not mutated, because choosing the correct task needs a
+      human or platform-side evidence.
     """
-    rows = conn.execute(
+    scanned = int(conn.execute("SELECT COUNT(*) FROM kanban_notify_subs").fetchone()[0])
+
+    orphan_rows = conn.execute(
         """
         SELECT s.*
           FROM kanban_notify_subs AS s
@@ -7327,30 +7331,95 @@ def repair_projection_subscriptions(
     orphans = [
         {
             "task_id": str(row["task_id"]),
-            "platform": str(row["platform"]),
-            "chat_id": str(row["chat_id"]),
+            "platform": str(row["platform"] or ""),
+            "chat_id": str(row["chat_id"] or ""),
             "thread_id": str(row["thread_id"] or ""),
         }
-        for row in rows
+        for row in orphan_rows
     ]
-    scanned = int(conn.execute("SELECT COUNT(*) FROM kanban_notify_subs").fetchone()[0])
+
+    malformed_rows = []
+    for row in conn.execute(
+        """
+        SELECT s.*
+          FROM kanban_notify_subs AS s
+          JOIN tasks AS t ON t.id = s.task_id
+         WHERE COALESCE(s.platform, '') = ''
+            OR COALESCE(s.chat_id, '') = ''
+         ORDER BY
+              CASE
+                  WHEN COALESCE(s.platform, '') = '' THEN 0
+                  WHEN COALESCE(s.chat_id, '') = '' THEN 1
+                  ELSE 2
+              END,
+              s.task_id, s.platform, s.chat_id, s.thread_id
+        """
+    ).fetchall():
+        platform = str(row["platform"] or "")
+        chat_id = str(row["chat_id"] or "")
+        if not platform:
+            reason = "missing_platform"
+        elif not chat_id:
+            reason = "missing_chat_id"
+        else:  # Defensive: SQL predicate should keep this unreachable.
+            reason = "malformed"
+        malformed_rows.append({
+            "task_id": str(row["task_id"]),
+            "platform": platform,
+            "chat_id": chat_id,
+            "thread_id": str(row["thread_id"] or ""),
+            "reason": reason,
+        })
+
+    ambiguous_rows = conn.execute(
+        """
+        SELECT s.platform, s.chat_id, s.thread_id,
+               GROUP_CONCAT(s.task_id, ',') AS task_ids,
+               COUNT(DISTINCT s.task_id) AS task_count
+          FROM kanban_notify_subs AS s
+          JOIN tasks AS t ON t.id = s.task_id
+         WHERE COALESCE(s.platform, '') != ''
+           AND COALESCE(s.chat_id, '') != ''
+         GROUP BY s.platform, s.chat_id, s.thread_id
+        HAVING task_count > 1
+         ORDER BY s.platform, s.chat_id, s.thread_id
+        """
+    ).fetchall()
+    ambiguous_bindings = []
+    for row in ambiguous_rows:
+        task_ids = sorted(tid for tid in str(row["task_ids"] or "").split(",") if tid)
+        ambiguous_bindings.append({
+            "platform": str(row["platform"] or ""),
+            "chat_id": str(row["chat_id"] or ""),
+            "thread_id": str(row["thread_id"] or ""),
+            "task_ids": task_ids,
+        })
+
+    removal_keys = {
+        (row["task_id"], row["platform"], row["chat_id"], row["thread_id"])
+        for row in [*orphans, *malformed_rows]
+    }
     removed = 0
-    if apply and orphans:
+    if apply and removal_keys:
         with write_txn(conn):
-            for row in orphans:
+            for task_id, platform, chat_id, thread_id in sorted(removal_keys):
                 cur = conn.execute(
                     """
                     DELETE FROM kanban_notify_subs
                      WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
                     """,
-                    (row["task_id"], row["platform"], row["chat_id"], row["thread_id"]),
+                    (task_id, platform, chat_id, thread_id),
                 )
                 removed += cur.rowcount
     return {
         "scanned": scanned,
         "orphaned": len(orphans),
+        "malformed": len(malformed_rows),
+        "ambiguous": len(ambiguous_bindings),
         "removed": removed,
         "orphans": orphans,
+        "malformed_rows": malformed_rows,
+        "ambiguous_bindings": ambiguous_bindings,
     }
 
 

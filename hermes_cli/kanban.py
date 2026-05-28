@@ -2500,6 +2500,8 @@ def _cmd_repair(args: argparse.Namespace) -> int:
         "  projection_subscriptions: "
         f"scanned={projection_report['scanned']} "
         f"orphaned={projection_report['orphaned']} "
+        f"malformed={projection_report['malformed']} "
+        f"ambiguous={projection_report['ambiguous']} "
         f"removed={projection_report['removed']}"
     )
     for orphan in projection_report["orphans"]:
@@ -2507,6 +2509,20 @@ def _cmd_repair(args: argparse.Namespace) -> int:
             "    orphan "
             f"{orphan['task_id']} -> "
             f"{orphan['platform']}:{orphan['chat_id']}:{orphan['thread_id']}"
+        )
+    for row in projection_report["malformed_rows"]:
+        print(
+            "    malformed "
+            f"{row['task_id']} -> "
+            f"{row['platform']}:{row['chat_id']}:{row['thread_id']} "
+            f"({row['reason']})"
+        )
+    for binding in projection_report["ambiguous_bindings"]:
+        task_ids = ",".join(binding["task_ids"])
+        print(
+            "    ambiguous "
+            f"{binding['platform']}:{binding['chat_id']}:{binding['thread_id']} "
+            f"-> {task_ids}"
         )
     return 0
 

@@ -12,6 +12,7 @@ the realistic runtime context. See the conftest module docstring.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 
@@ -200,4 +201,107 @@ def test_dashboard_restarts_after_crash(
 
     raise AssertionError(
         f"Dashboard not restarted after kill (first_pid={first_pid})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# OAuth auth-gate behaviour — regression guard for the dashboard-insecure
+# auto-injection bug. Pre-fix, the s6 run script appended `--insecure`
+# whenever `HERMES_DASHBOARD_HOST` was non-loopback, silently disabling
+# the OAuth gate on every container-deployed dashboard. The matching
+# static-text guard lives in tests/test_docker_home_override_scripts.py;
+# this is the behavioural end-to-end check.
+# ---------------------------------------------------------------------------
+
+
+def _fetch_api_status(container: str, *, deadline_s: float = 60.0) -> dict:
+    """Poll ``/api/status`` from inside the container via the venv python.
+
+    The dashboard binds to ``HERMES_DASHBOARD_HOST`` (typically ``0.0.0.0``)
+    so loopback inside the container works. The image doesn't ship
+    ``curl`` but Python's stdlib ``urllib`` is good enough.
+
+    Returns the decoded JSON dict on success; raises AssertionError on
+    timeout.
+    """
+    probe = (
+        "/opt/hermes/.venv/bin/python -c "
+        "'import json,urllib.request as u;"
+        "print(u.urlopen(\"http://127.0.0.1:9119/api/status\",timeout=5)"
+        ".read().decode())'"
+    )
+    end = time.monotonic() + deadline_s
+    last_err = ""
+    while time.monotonic() < end:
+        r = docker_exec_sh(container, probe, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            try:
+                return json.loads(r.stdout)
+            except (ValueError, json.JSONDecodeError) as exc:  # noqa: F841
+                last_err = f"json parse: {exc!r} / stdout={r.stdout!r}"
+        else:
+            last_err = f"rc={r.returncode} stderr={r.stderr!r}"
+        time.sleep(0.5)
+    raise AssertionError(
+        f"/api/status never returned valid JSON within {deadline_s}s; "
+        f"last error: {last_err}"
+    )
+
+
+def test_dashboard_oauth_gate_engages_on_non_loopback_bind(
+    built_image: str, container_name: str,
+) -> None:
+    """The s6 dashboard run script must NOT auto-add ``--insecure`` when the
+    dashboard binds to ``0.0.0.0``. The OAuth auth gate engages on its own
+    when a ``DashboardAuthProvider`` is registered (the bundled nous
+    provider activates whenever ``HERMES_DASHBOARD_OAUTH_CLIENT_ID`` is
+    set).
+
+    Regression guard for the wildcard-subdomain rollout where every
+    portal-provisioned agent binds ``0.0.0.0`` and relies on the OAuth
+    gate to authenticate browser callers. Before this fix, the run script
+    flipped ``--insecure`` on for any non-loopback bind, which routed
+    ``start_server`` straight back into the legacy ``allow_public=True``
+    branch and disabled the gate every time.
+    """
+    subprocess.run(
+        ["docker", "run", "-d", "--name", container_name,
+         "-e", "HERMES_DASHBOARD=1",
+         "-e", "HERMES_DASHBOARD_HOST=0.0.0.0",
+         "-e", "HERMES_DASHBOARD_OAUTH_CLIENT_ID=agent:test-instance",
+         built_image, "sleep", "120"],
+        check=True, capture_output=True, timeout=30,
+    )
+    status = _fetch_api_status(container_name)
+    assert status.get("auth_required") is True, (
+        "OAuth gate must be engaged on 0.0.0.0 bind when a provider is "
+        "registered and HERMES_DASHBOARD_INSECURE is unset. Got: "
+        f"{status!r}"
+    )
+    assert "nous" in status.get("auth_providers", []), (
+        "Bundled dashboard_auth/nous provider should register when "
+        f"HERMES_DASHBOARD_OAUTH_CLIENT_ID is set. Got: {status!r}"
+    )
+
+
+def test_dashboard_insecure_env_var_opts_out_of_gate(
+    built_image: str, container_name: str,
+) -> None:
+    """``HERMES_DASHBOARD_INSECURE=1`` re-enables the legacy no-gate mode
+    for operators running on trusted LANs behind a reverse proxy without
+    the OAuth contract. Same opt-out shape as the rest of the s6 boolean
+    envs (``HERMES_DASHBOARD``, ``HERMES_DASHBOARD_TUI``).
+    """
+    subprocess.run(
+        ["docker", "run", "-d", "--name", container_name,
+         "-e", "HERMES_DASHBOARD=1",
+         "-e", "HERMES_DASHBOARD_HOST=0.0.0.0",
+         "-e", "HERMES_DASHBOARD_INSECURE=1",
+         built_image, "sleep", "120"],
+        check=True, capture_output=True, timeout=30,
+    )
+    status = _fetch_api_status(container_name)
+    assert status.get("auth_required") is False, (
+        "HERMES_DASHBOARD_INSECURE=1 must disable the auth gate (explicit "
+        f"opt-in for trusted-LAN deployments). Got: {status!r}"
     )

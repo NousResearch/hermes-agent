@@ -30,6 +30,7 @@ from hermes_cli.providers import (
     determine_api_mode,
     get_label,
     is_aggregator,
+    normalize_provider,
     resolve_provider_full,
 )
 from hermes_cli.model_normalize import (
@@ -823,6 +824,42 @@ def switch_model(
                                 resolved_in_current_catalog = True
                                 break
 
+            # Aggregator live API fallback: models.dev may be stale (e.g.
+            # opencode-zen's models.dev catalog has "mimo-v2.5-free" but the
+            # live /v1/models endpoint returns bare "mimo-v2.5"). Also check
+            # custom_providers model dicts which are authoritative for the
+            # user's configured aggregators.
+            if not resolved_in_current_catalog:
+                new_model_lower = new_model.lower()
+                # Check custom_providers model dicts
+                if custom_providers:
+                    for cp in custom_providers:
+                        if not isinstance(cp, dict):
+                            continue
+                        cp_models = cp.get("models", {})
+                        if isinstance(cp_models, dict):
+                            for mid in cp_models:
+                                if mid.lower() == new_model_lower:
+                                    resolved_in_current_catalog = True
+                                    break
+                        if resolved_in_current_catalog:
+                            break
+                # Live API fallback for aggregator providers with a base_url
+                if not resolved_in_current_catalog and current_base_url:
+                    try:
+                        from agent.model_metadata import fetch_endpoint_model_metadata
+                        live_models = fetch_endpoint_model_metadata(
+                            current_base_url, current_api_key,
+                        )
+                        if live_models:
+                            for mid in live_models:
+                                if mid.lower() == new_model_lower:
+                                    new_model = mid
+                                    resolved_in_current_catalog = True
+                                    break
+                    except Exception:
+                        pass
+
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
         is_custom = current_provider in {"custom", "local"} or (
@@ -949,11 +986,18 @@ def switch_model(
             for entry in custom_providers:
                 if not isinstance(entry, dict):
                     continue
-                # Match by provider slug (custom:<name>) or by base_url
+                # Match by provider slug (custom:<name>), direct name match,
+                # normalized provider name, or by base_url.
                 entry_name = entry.get("name", "")
                 entry_slug = f"custom:{entry_name}" if entry_name else ""
                 entry_url = entry.get("base_url", "")
-                if entry_slug == target_provider or entry_url == base_url:
+                normalized_target = normalize_provider(target_provider) if target_provider else ""
+                if (
+                    entry_slug == target_provider
+                    or entry_name == target_provider
+                    or entry_name == normalized_target
+                    or entry_url == base_url
+                ):
                     # Check if the requested model matches the entry's model
                     entry_model = entry.get("model", "")
                     entry_models = entry.get("models", {})

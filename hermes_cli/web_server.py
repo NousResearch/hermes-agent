@@ -1122,9 +1122,23 @@ async def set_model_assignment(body: ModelAssignment):
                 model_cfg = {}
             model_cfg["provider"] = provider
             model_cfg["default"] = model
-            # Clear stale base_url so the resolver picks the provider's own default.
+            # Clear stale base_url so the resolver picks the provider's own default —
+            # BUT only when the new provider is a built-in (anthropic/openai/etc.)
+            # that has a hardcoded endpoint in Hermes' registry. For user-defined
+            # custom providers (declared in `custom_providers:`), the base_url IS
+            # the provider's "own default" and must be preserved; otherwise the
+            # resolver falls back to OpenRouter and the next agent call 401s.
+            # Fixes the recurring "Unknown provider" / "Missing Authentication header"
+            # bug seen by anyone routing through a self-hosted LLM gateway (LiteLLM,
+            # vLLM, llama-server, etc.) after using the dashboard model picker.
+            custom_provider_names = {
+                (entry.get("name") or "").strip().lower()
+                for entry in (cfg.get("custom_providers") or [])
+                if isinstance(entry, dict)
+            }
             if "base_url" in model_cfg and model_cfg.get("base_url"):
-                model_cfg["base_url"] = ""
+                if provider.strip().lower() not in custom_provider_names:
+                    model_cfg["base_url"] = ""
             # Also clear hardcoded context_length override — new model may have
             # a different context window.
             if "context_length" in model_cfg:

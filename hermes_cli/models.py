@@ -11,6 +11,7 @@ import json
 import os
 import urllib.request
 import urllib.error
+import urllib.parse
 import time
 from difflib import get_close_matches
 from pathlib import Path
@@ -3183,6 +3184,67 @@ def probe_api_models(
     }
 
 
+def probe_azure_foundry_model(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    model: str,
+    timeout: float = 5.0,
+) -> Optional[str]:
+    """Resolve a single Azure Foundry model via ``GET /models/{id}``.
+
+    Azure Foundry's per-model endpoint resolves bare aliases (e.g.
+    ``gpt-5.5``) that are absent from the ``/models`` *list* but are still
+    valid for inference — it returns the concrete snapshot id. Returns the
+    resolved id on HTTP 200, or ``None`` when the model is unknown (404 /
+    auth failure) or the endpoint is unreachable.
+    """
+    base = (base_url or "").strip().rstrip("/")
+    if not base or not model:
+        return None
+    headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    url = base + "/models/" + urllib.parse.quote(model, safe="")
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            resolved = data.get("id")
+            return resolved if isinstance(resolved, str) and resolved else model
+    except Exception:
+        return None
+
+
+def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
+    """Fetch available language models with tool-use from AI Gateway."""
+    api_key = os.getenv("AI_GATEWAY_API_KEY", "").strip()
+    if not api_key:
+        return None
+    base_url = os.getenv("AI_GATEWAY_BASE_URL", "").strip()
+    if not base_url:
+        from hermes_constants import AI_GATEWAY_BASE_URL
+        base_url = AI_GATEWAY_BASE_URL
+
+    url = base_url.rstrip("/") + "/models"
+    headers: dict[str, str] = {
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": _HERMES_USER_AGENT,
+    }
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            return [
+                m["id"]
+                for m in data.get("data", [])
+                if m.get("id")
+                and m.get("type") == "language"
+                and "tool-use" in (m.get("tags") or [])
+            ]
+    except Exception:
+        return None
+
+
 def fetch_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
@@ -3642,6 +3704,71 @@ def validate_requested_model(
                 f"model listing.  Many Anthropic-compatible proxies do not "
                 f"implement GET /v1/models.  The model name has been accepted "
                 f"without verification."
+            ),
+        }
+
+    # Azure Foundry: the /models *list* omits bare aliases (e.g. `gpt-5.5`)
+    # that the endpoint still accepts for inference — Azure resolves them to a
+    # concrete dated snapshot. A strict list-membership check would reject a
+    # working model, so fall back to a per-model `GET /models/{id}` lookup
+    # before warning, and never hard-reject (consistent with anthropic/codex).
+    if normalized == "azure-foundry":
+        probe = probe_api_models(api_key, base_url, api_mode=api_mode)
+        api_models = probe.get("models")
+        resolved_base = probe.get("resolved_base_url") or base_url
+        if api_models is not None:
+            # Direct hit, or a bare alias of a dated snapshot: Azure publishes
+            # snapshots as `{alias}-{YYYY-MM-DD}`, so a requested `gpt-5.5` is
+            # backed by a live `gpt-5.5-2026-04-24`. This resolves from the
+            # single list response — no extra per-model request.
+            _prefix = requested_for_lookup + "-"
+            if requested_for_lookup in set(api_models) or any(
+                m.startswith(_prefix) for m in api_models
+            ):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+        if probe_azure_foundry_model(api_key, resolved_base, requested_for_lookup):
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        if api_models is not None:
+            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the Azure Foundry model "
+                    f"listing. It may still work if your deployment exposes it."
+                    f"{suggestion_text}"
+                ),
+            }
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Note: could not verify `{requested}` against the Azure Foundry "
+                f"model listing. The model name has been accepted without verification."
             ),
         }
 

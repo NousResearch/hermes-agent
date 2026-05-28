@@ -1234,8 +1234,25 @@ class AIAgent:
         'max_completion_tokens' for gpt-5.x models served via the
         OpenAI-compatible endpoint. OpenRouter, local models, and older
         OpenAI models use 'max_tokens'.
+
+        Azure AI Foundry hosts non-OpenAI models (Mistral, DeepSeek,
+        Grok, ...) at the same ``*.openai.azure.com`` base URL via
+        deployment names. Those vendors' /chat/completions handlers
+        reject 'max_completion_tokens' (HTTP 422 extra_forbidden) and
+        require the legacy 'max_tokens'. Detect by model name: only
+        gpt-* and o-series deployments get the new kwarg on Azure.
         """
-        if self._is_direct_openai_url() or self._is_azure_openai_url() or self._is_github_copilot_url():
+        if self._is_direct_openai_url() or self._is_github_copilot_url():
+            return {"max_completion_tokens": value}
+        if self._is_azure_openai_url():
+            model_lc = str(getattr(self, "model", "") or "").lower()
+            non_openai_vendor_prefixes = (
+                "deepseek", "grok", "mistral", "mixtral", "llama",
+                "claude", "phi-", "phi3", "phi4", "qwen", "command-",
+                "jamba", "nemotron",
+            )
+            if any(p in model_lc for p in non_openai_vendor_prefixes):
+                return {"max_tokens": value}
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 

@@ -1366,6 +1366,7 @@ AUTHOR_MAP = {
     "peter.yuqin@gmail.com": "WuKongAI-CMU",  # PR #10082 (reject symlinked audio inputs)
     "sunil.nitie@gmail.com": "Sunil123135",  # PR #31031 (Windows Docker Desktop compose)
     "weichangyuwcy@gmail.com": "ChyuWei",  # PR #30987 (TUI TTS env var on voice off)
+    "wock9000@users.noreply.github.com": "wock9000",  # azure-foundry model resolution salvage
 }
 
 

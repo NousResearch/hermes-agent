@@ -924,6 +924,21 @@ def _resolve_azure_foundry_runtime(
         if isinstance(_entra, dict):
             cfg_entra = _entra
 
+    # Fallback: when the top-level model.provider points elsewhere (e.g. the
+    # user runs an azure-foundry model via alias while the default provider
+    # is openrouter), pick up base_url + api_mode from providers.azure-foundry.
+    if not cfg_base_url:
+        try:
+            providers_cfg = load_config().get("providers") or {}
+        except Exception:
+            providers_cfg = {}
+        az_cfg = providers_cfg.get("azure-foundry") if isinstance(providers_cfg, dict) else None
+        if isinstance(az_cfg, dict):
+            cfg_base_url = str(az_cfg.get("base_url") or "").strip().rstrip("/")
+            az_api_mode = _parse_api_mode(az_cfg.get("api_mode"))
+            if az_api_mode:
+                cfg_api_mode = az_api_mode
+
     # Model-family inference: Azure Foundry deploys GPT-5.x / codex / o1-o4
     # reasoning models as Responses-API-only.  Calling /chat/completions
     # against them returns 400 "The requested operation is unsupported."

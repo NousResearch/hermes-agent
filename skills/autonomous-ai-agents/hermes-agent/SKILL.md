@@ -1084,3 +1084,39 @@ Types: `fix:`, `feat:`, `refactor:`, `docs:`, `chore:`
 - Use `get_hermes_home()` from `hermes_constants` for all paths (profile-safe)
 - Config values go in `config.yaml`, secrets go in `.env`
 - New tools need a `check_fn` so they only appear when requirements are met
+
+---
+
+## Memory — When NOT to use it
+
+Memory is for durable **user/env facts** that survive across sessions and aren't easily re-discovered.
+It is NOT a scratch pad for procedures, recipes, or skill content.
+
+### Anti-patterns the tool gate rejects
+
+The `memory` tool automatically rejects entries that match any of these:
+
+1. **File paths with `/references/` or ending in `.md`** — signals skill content being duplicated into memory.
+   Put it in a skill with `skill_manage` instead.
+2. **SQL queries, shell commands, or code blocks** — these are procedures, not facts.
+   Use a skill's `references/` directory.
+3. **Numbered steps** (`1.` / `2.` / `(1)` / `(2)` patterns) — step-by-step recipes belong in skills.
+4. **Procedural signal words near imperative verbs** — phrases like "via run", "use recipe",
+   "procedure: run/fix/check" indicate a recipe, not a fact.
+
+### Bypass for legitimate edge cases
+
+Set `bypass_procedural_check=True` only when the entry is a genuine env fact that happens
+to contain a path or short command. Examples:
+
+- `AWS_PROFILE=mcp-hive` (env var with a value that looks like a path)
+- `Project root is ~/Desktop/work/myapp` (stable fact, not a procedure)
+- `AGENTS.md governs all contributors to this repo` (reference to a file as a fact, not a recipe)
+
+Do NOT use the bypass to force procedures or recipes into memory. Those belong in skills.
+
+### The three-layer defence
+
+Memory bloat follows a pattern: the tool gate is the hard layer, the skill rule is the soft
+layer, and the weekly watchdog (cron job `memory-audit-watchdog`) catches drift that slips
+through both. If memory reaches >70% of the 2200-char cap, the watchdog pings for a manual audit.

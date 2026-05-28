@@ -156,8 +156,18 @@ class TestAggregatorProviders:
         result = normalize_model_for_provider("claude-sonnet-4.6", "openrouter")
         assert result == "anthropic/claude-sonnet-4.6"
 
-    def test_nous_prepends_vendor(self):
-        result = normalize_model_for_provider("gpt-5.4", "nous")
+    def test_nous_strips_matching_prefix(self):
+        """nous is a direct API (inference-api.nousresearch.com) — strip nousresearch/ prefix."""
+        result = normalize_model_for_provider("nousresearch/hermes-4-70b", "nous")
+        assert result == "hermes-4-70b"
+
+    def test_nous_bare_model_passes_through(self):
+        result = normalize_model_for_provider("hermes-4-70b", "nous")
+        assert result == "hermes-4-70b"
+
+    def test_nous_non_matching_prefix_preserved(self):
+        """Non-matching vendor prefix (e.g. openai/) is NOT stripped for nous."""
+        result = normalize_model_for_provider("openai/gpt-5.4", "nous")
         assert result == "openai/gpt-5.4"
 
     def test_vendor_already_present(self):

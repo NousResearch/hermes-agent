@@ -305,3 +305,39 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+    def test_skips_same_provider_during_rate_limit_cooldown(self):
+        """When rate-limited on provider X, fallback entries on the SAME
+        provider should be skipped — they share the same throttle window
+        and would all return 429.  See the same-provider rate-limit dedup
+        added for the opencode-zen all-fallback-429 scenario."""
+        import time as _time
+        from hermes_cli.failover import FailoverReason
+
+        fbs = [
+            # Same provider as current — should be skipped during cooldown.
+            {"provider": "opencode-zen", "model": "deepseek-v4-flash-free"},
+            {"provider": "opencode-zen", "model": "minimax-m2.5-free"},
+            # Different provider — should be tried.
+            {"provider": "nous", "model": "hermes-4-70b"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "opencode-zen"
+        agent.model = "mimo-v2.5-free"
+        agent.base_url = "https://opencode.ai/zen/v1"
+        # Simulate active rate-limit cooldown.
+        agent._rate_limited_until = _time.monotonic() + 60
+
+        called = []
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            called.append((provider, model))
+            return _mock_client(), model
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+            with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
+                ok = agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+
+        assert ok is True
+        # Both opencode-zen entries skipped, nous entry used.
+        assert called == [("nous", "hermes-4-70b")], (
+            f"expected same-provider-during-cooldown skip, got call order: {called}"
+        )

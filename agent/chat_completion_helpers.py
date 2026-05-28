@@ -1086,6 +1086,24 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         )
         return agent._try_activate_fallback()
 
+    # When the trigger is a rate-limit (429) or billing exhaustion, skip
+    # fallback entries on the SAME provider.  All keys/quota on that
+    # provider share the same throttle window — trying a different model
+    # on the same provider burns the retry budget without recovering.
+    # Only skip when the provider is the same AND we're in an active
+    # rate-limit cooldown.  This preserves the ability to try the same
+    # provider later (e.g. after cooldown expires) while preventing the
+    # useless loop of N fallback entries all returning 429.
+    if reason in {FailoverReason.rate_limit, FailoverReason.billing}:
+        rate_cooldown_active = getattr(agent, "_rate_limited_until", 0) > time.monotonic()
+        if rate_cooldown_active and fb_provider == current_provider:
+            logger.warning(
+                "Fallback skip: %s/%s shares provider %s with rate-limited "
+                "current backend (cooldown active) — would hit same 429",
+                fb_provider, fb_model, current_provider,
+            )
+            return agent._try_activate_fallback()
+
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()
     # access for Codex providers.

@@ -227,7 +227,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         """Compute the external webhook URL for BlueBubbles registration."""
         host = self.webhook_host
         if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
-            host = "localhost"
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property

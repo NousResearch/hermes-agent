@@ -664,6 +664,88 @@ def test_command_dispatch_retry_handles_multipart_content(server):
     assert result["message"] == "analyze this"
 
 
+def test_command_dispatch_retry_handles_input_text_multipart_content(server):
+    """command.dispatch /retry preserves input_text parts in multipart content."""
+    sid = "test-session"
+    history = [
+        {"role": "user", "content": [
+            {"type": "input_text", "text": "analyze this"},
+            {"type": "input_image", "image_url": "data:image/png;base64,..."},
+        ]},
+        {"role": "assistant", "content": "I see the image."},
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r6b",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "analyze this"
+
+
+def test_command_dispatch_retry_preserves_scalar_whitespace(server):
+    """command.dispatch /retry should preserve scalar message whitespace."""
+    sid = "test-session"
+    history = [
+        {"role": "user", "content": "  analyze this  \n"},
+        {"role": "assistant", "content": "working on it"},
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r6c",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "  analyze this  \n"
+
+
+def test_command_dispatch_retry_rejects_non_text_structured_dict_content(server):
+    """command.dispatch /retry should not resend non-text placeholders."""
+    sid = "test-session"
+    history = [
+        {"role": "user", "content": {"type": "input_image", "image_url": "data:image/png;base64,..."}},
+        {"role": "assistant", "content": "I see the image."},
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r6d",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+
+
 def test_command_dispatch_returns_skill_payload(server):
     """command.dispatch returns structured skill payload for the TUI to send()."""
     sid = "test-session"

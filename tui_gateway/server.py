@@ -2201,6 +2201,35 @@ def _content_display_text(content: Any) -> str:
     return str(content)
 
 
+def _retry_text_part_text(part: Any) -> Optional[str]:
+    if isinstance(part, dict):
+        kind = part.get("type")
+        if kind in {"text", "input_text", "output_text"}:
+            return str(part.get("text") or part.get("content") or "")
+        if not kind and "text" in part:
+            return str(part.get("text") or "")
+        return None
+    if isinstance(part, str):
+        return part
+    if isinstance(part, (int, float)):
+        return str(part)
+    return None
+
+
+def _retry_text_content(content: Any) -> str:
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            text = _retry_text_part_text(part)
+            if text is not None and text.strip():
+                text_parts.append(text)
+        return " ".join(text_parts)
+    text = _retry_text_part_text(content)
+    if text is not None:
+        return text
+    return ""
+
+
 def _history_to_messages(history: list[dict]) -> list[dict]:
     messages = []
     tool_call_args = {}
@@ -5040,14 +5069,8 @@ def _(rid, params: dict) -> dict:
                 break
         if last_user_idx is None:
             return _err(rid, 4018, "no previous user message to retry")
-        content = history[last_user_idx].get("content", "")
-        if isinstance(content, list):
-            content = " ".join(
-                p.get("text", "")
-                for p in content
-                if isinstance(p, dict) and p.get("type") == "text"
-            )
-        if not content:
+        content = _retry_text_content(history[last_user_idx].get("content", ""))
+        if not content.strip():
             return _err(rid, 4018, "last user message is empty")
         # Truncate history: remove everything from the last user message onward
         # (mirrors CLI retry_last() which strips the failed exchange)

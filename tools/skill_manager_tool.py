@@ -111,6 +111,9 @@ SKILLS_DIR = HERMES_HOME / "skills"
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
+LIFECYCLE_STATUSES = ("learning", "candidate", "locked", "deprecated")
+LIFECYCLE_VALIDATION_LEVELS = ("unvalidated", "observed", "repeated", "locked")
+
 
 def _containing_skills_root(skill_path: Path) -> Path:
     """Return the skills root directory (local or external_dirs entry) that
@@ -214,6 +217,47 @@ def _validate_category(category: Optional[str]) -> Optional[str]:
     return None
 
 
+def _validate_lifecycle_metadata(frontmatter: Dict[str, Any]) -> Optional[str]:
+    """Validate optional metadata.hermes.lifecycle fields when present."""
+    metadata = frontmatter.get("metadata")
+    if metadata is None:
+        return None
+    if not isinstance(metadata, dict):
+        return None
+
+    hermes_metadata = metadata.get("hermes")
+    if hermes_metadata is None:
+        return None
+    if not isinstance(hermes_metadata, dict):
+        return None
+
+    lifecycle = hermes_metadata.get("lifecycle")
+    if lifecycle is None:
+        return None
+    if not isinstance(lifecycle, dict):
+        return "metadata.hermes.lifecycle must be a YAML mapping."
+
+    status = lifecycle.get("status")
+    if status is not None and status not in LIFECYCLE_STATUSES:
+        allowed = ", ".join(LIFECYCLE_STATUSES)
+        return f"metadata.hermes.lifecycle.status must be one of: {allowed}."
+
+    validation_level = lifecycle.get("validation_level")
+    if validation_level is not None and validation_level not in LIFECYCLE_VALIDATION_LEVELS:
+        allowed = ", ".join(LIFECYCLE_VALIDATION_LEVELS)
+        return f"metadata.hermes.lifecycle.validation_level must be one of: {allowed}."
+
+    evidence_count = lifecycle.get("evidence_count")
+    if evidence_count is not None and not isinstance(evidence_count, int):
+        return "metadata.hermes.lifecycle.evidence_count must be an integer."
+
+    supersedes = lifecycle.get("supersedes")
+    if supersedes is not None and not isinstance(supersedes, list):
+        return "metadata.hermes.lifecycle.supersedes must be a list when present."
+
+    return None
+
+
 def _validate_frontmatter(content: str) -> Optional[str]:
     """
     Validate that SKILL.md content has proper frontmatter with required fields.
@@ -245,6 +289,10 @@ def _validate_frontmatter(content: str) -> Optional[str]:
         return "Frontmatter must include 'description' field."
     if len(str(parsed["description"])) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."
+
+    lifecycle_err = _validate_lifecycle_metadata(parsed)
+    if lifecycle_err:
+        return lifecycle_err
 
     body = content[end_match.end() + 3:].strip()
     if not body:

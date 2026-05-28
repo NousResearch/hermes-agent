@@ -1,0 +1,58 @@
+{
+  "receipt_version": "1.0",
+  "scope": "skill lifecycle metadata schema, Validation & Retention convention, and compact skill-change receipt template",
+  "issues": [
+    "leo-guinan/hermes-agent#2",
+    "leo-guinan/hermes-agent#3",
+    "leo-guinan/hermes-agent#5"
+  ],
+  "changed_paths": [
+    "tools/skill_manager_tool.py",
+    "tests/tools/test_skill_manager_tool.py",
+    "website/docs/developer-guide/creating-skills.md",
+    "website/docs/developer-guide/skill-change-receipt-template.md",
+    "skills/software-development/writing-plans/SKILL.md"
+  ],
+  "before_after_example": {
+    "skill": "skills/software-development/writing-plans/SKILL.md",
+    "before_frontmatter_excerpt": "metadata:\n  hermes:\n    tags: [planning, design, implementation, workflow, documentation]\n    related_skills: [subagent-driven-development, test-driven-development, requesting-code-review]",
+    "after_frontmatter_excerpt": "metadata:\n  hermes:\n    tags: [planning, design, implementation, workflow, documentation]\n    related_skills: [subagent-driven-development, test-driven-development, requesting-code-review]\n    lifecycle:\n      status: candidate\n      validation_level: repeated\n      retention_policy: retain compact receipts and falsifiers only\n      last_validated: '2026-05-27'\n      evidence_count: 1\n      supersedes: []\n      superseded_by:"
+  },
+  "acceptance_evidence": {
+    "schema_documented": "website/docs/developer-guide/creating-skills.md#skill-lifecycle-metadata",
+    "invalid_enum_values_caught": "tests/tools/test_skill_manager_tool.py::TestValidateFrontmatter::test_invalid_lifecycle_status_rejected and ::test_invalid_lifecycle_validation_level_rejected",
+    "existing_skills_pass_unchanged": "validated 94 bundled SKILL.md files with _validate_frontmatter",
+    "validation_retention_section_added": "skills/software-development/writing-plans/SKILL.md#validation--retention",
+    "receipt_template_exists": "website/docs/developer-guide/skill-change-receipt-template.md"
+  },
+  "validation_commands": [
+    {
+      "command": "/Users/leoguinan/hermes-agent/venv/bin/python -m pytest tests/tools/test_skill_manager_tool.py -q -o 'addopts='",
+      "result": "pass",
+      "observed_output_excerpt": "51 passed in 0.58s"
+    },
+    {
+      "command": "/Users/leoguinan/hermes-agent/venv/bin/python - <<'PY' ... validate all skills with _validate_frontmatter ... PY",
+      "result": "pass",
+      "observed_output_excerpt": "validated_skills=94"
+    },
+    {
+      "command": "parse JSON code fences in website/docs/developer-guide/skill-change-receipt-template.md",
+      "result": "pass",
+      "observed_output_excerpt": "json_receipt_blocks=2"
+    }
+  ],
+  "retained_artifacts": [
+    "receipts/skill-lifecycle-metadata-receipt.json",
+    "website/docs/developer-guide/skill-change-receipt-template.md"
+  ],
+  "discarded_artifacts": [
+    "raw agent transcript",
+    "intermediate RED pytest failure output beyond the summary needed to prove test-first development"
+  ],
+  "known_limitations_or_falsifiers": [
+    "This PR validates lifecycle metadata in skill_manager_tool frontmatter validation; curator audit behavior is reserved for issue #4.",
+    "If another skill parser begins enforcing metadata independently, add matching parser tests before marking lifecycle metadata locked.",
+    "If lifecycle receipts start retaining raw transcripts or secrets, demote the convention and tighten receipt guidance."
+  ]
+}

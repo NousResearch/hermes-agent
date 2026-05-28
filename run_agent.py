@@ -5815,6 +5815,60 @@ class AIAgent:
         # returns empty output (e.g. chatgpt.com backend-api sends
         # response.incomplete instead of response.completed).
         self._codex_streamed_text_parts: list = []
+
+        def _backfill_codex_final_response(final_response: Any, collected_output_items: list) -> Any:
+            """Recover Codex streamed output when the SDK final response is empty."""
+            _out = getattr(final_response, "output", None)
+            if isinstance(_out, list) and not _out:
+                if collected_output_items:
+                    final_response.output = list(collected_output_items)
+                    logger.debug(
+                        "Codex stream: backfilled %d output items from stream events",
+                        len(collected_output_items),
+                    )
+                elif self._codex_streamed_text_parts and not has_tool_calls:
+                    assembled = "".join(self._codex_streamed_text_parts)
+                    final_response.output = [SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=assembled)],
+                    )]
+                    logger.debug(
+                        "Codex stream: synthesized output from %d text deltas (%d chars)",
+                        len(self._codex_streamed_text_parts), len(assembled),
+                    )
+            return final_response
+
+        def _synthesize_codex_final_response(exc: Exception, collected_output_items: list) -> Any:
+            """Build a minimal final response from stream events after SDK finalization bugs."""
+            if collected_output_items:
+                logger.debug(
+                    "Codex stream: SDK final response failed (%s); using %d collected output items",
+                    exc, len(collected_output_items),
+                )
+                return SimpleNamespace(
+                    output=list(collected_output_items),
+                    status="completed",
+                )
+            if self._codex_streamed_text_parts and not has_tool_calls:
+                assembled = "".join(self._codex_streamed_text_parts)
+                logger.debug(
+                    "Codex stream: SDK final response failed (%s); "
+                    "synthesizing output from %d text deltas (%d chars)",
+                    exc, len(self._codex_streamed_text_parts), len(assembled),
+                )
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=assembled)],
+                    )],
+                    status="completed",
+                )
+            raise exc
+
         for attempt in range(max_stream_retries + 1):
             if self._interrupt_requested:
                 raise InterruptedError("Agent interrupted before Codex stream retry")
@@ -5868,31 +5922,16 @@ class AIAgent:
                                 sum(len(p) for p in self._codex_streamed_text_parts),
                                 self._client_log_context(),
                             )
-                    final_response = stream.get_final_response()
+                    try:
+                        final_response = stream.get_final_response()
+                    except TypeError as exc:
+                        return _synthesize_codex_final_response(exc, collected_output_items)
                     # PATCH: ChatGPT Codex backend streams valid output items
                     # but get_final_response() can return an empty output list.
                     # Backfill from collected items or synthesize from deltas.
-                    _out = getattr(final_response, "output", None)
-                    if isinstance(_out, list) and not _out:
-                        if collected_output_items:
-                            final_response.output = list(collected_output_items)
-                            logger.debug(
-                                "Codex stream: backfilled %d output items from stream events",
-                                len(collected_output_items),
-                            )
-                        elif self._codex_streamed_text_parts and not has_tool_calls:
-                            assembled = "".join(self._codex_streamed_text_parts)
-                            final_response.output = [SimpleNamespace(
-                                type="message",
-                                role="assistant",
-                                status="completed",
-                                content=[SimpleNamespace(type="output_text", text=assembled)],
-                            )]
-                            logger.debug(
-                                "Codex stream: synthesized output from %d text deltas (%d chars)",
-                                len(self._codex_streamed_text_parts), len(assembled),
-                            )
-                    return final_response
+                    return _backfill_codex_final_response(final_response, collected_output_items)
+            except TypeError as exc:
+                return _synthesize_codex_final_response(exc, collected_output_items)
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
                     logger.debug(

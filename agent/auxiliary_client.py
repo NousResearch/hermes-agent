@@ -553,20 +553,54 @@ class _CodexCompletionsAdapter:
             collected_output_items: List[Any] = []
             collected_text_deltas: List[str] = []
             has_function_calls = False
-            with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
-                final = stream.get_final_response()
+
+            def _synthesize_final_from_stream(exc: Exception) -> Any:
+                if collected_output_items:
+                    logger.debug(
+                        "Codex auxiliary: SDK final response failed (%s); "
+                        "using %d collected output items",
+                        exc, len(collected_output_items),
+                    )
+                    return SimpleNamespace(
+                        output=list(collected_output_items),
+                        status="completed",
+                    )
+                if collected_text_deltas and not has_function_calls:
+                    assembled = "".join(collected_text_deltas)
+                    logger.debug(
+                        "Codex auxiliary: SDK final response failed (%s); "
+                        "synthesizing from %d deltas (%d chars)",
+                        exc, len(collected_text_deltas), len(assembled),
+                    )
+                    return SimpleNamespace(
+                        output=[SimpleNamespace(
+                            type="message", role="assistant", status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )],
+                        status="completed",
+                    )
+                raise exc
+
+            try:
+                with self._client.responses.stream(**resp_kwargs) as stream:
+                    for _event in stream:
+                        _etype = getattr(_event, "type", "")
+                        if _etype == "response.output_item.done":
+                            _done = getattr(_event, "item", None)
+                            if _done is not None:
+                                collected_output_items.append(_done)
+                        elif "output_text.delta" in _etype:
+                            _delta = getattr(_event, "delta", "")
+                            if _delta:
+                                collected_text_deltas.append(_delta)
+                        elif "function_call" in _etype:
+                            has_function_calls = True
+                    try:
+                        final = stream.get_final_response()
+                    except TypeError as exc:
+                        final = _synthesize_final_from_stream(exc)
+            except TypeError as exc:
+                final = _synthesize_final_from_stream(exc)
 
             # Backfill empty output from collected stream events
             _output = getattr(final, "output", None)

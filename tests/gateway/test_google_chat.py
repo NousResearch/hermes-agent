@@ -1543,9 +1543,7 @@ class TestUserOAuthHelper:
         assert SCOPES == ["https://www.googleapis.com/auth/chat.messages.create"]
 
     def test_sanitize_email_lowercases_and_replaces_unsafe_chars(self):
-        """Path components must be filesystem-safe across users.
-        ``a@B.com`` and ``A@b.com`` must collapse to the same key, and
-        path-traversal characters must NOT escape into the filename."""
+        """Human-readable previews stay filesystem-safe and normalized."""
         from plugins.platforms.google_chat.oauth import _sanitize_email
         assert _sanitize_email("Ramon@NTTData.com") == "ramon@nttdata.com"
         assert _sanitize_email("user+tag@x.io") == "user_tag@x.io"
@@ -1566,7 +1564,38 @@ class TestUserOAuthHelper:
         legacy = _legacy_token_path()
         assert per_user.parent.name == "google_chat_user_tokens"
         assert per_user != legacy
-        assert per_user.name == "alice@example.com.json"
+        assert per_user.suffix == ".json"
+        assert per_user.stem.startswith("alice@example.com--")
+        assert len(per_user.stem.split("--", 1)[1]) == 64
+
+    def test_colliding_sanitized_emails_get_distinct_storage_paths(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.platforms.google_chat.oauth import _pending_auth_path, _token_path
+
+        assert _token_path("user+tag@x.io") != _token_path("user_tag@x.io")
+        assert _pending_auth_path("user+tag@x.io") != _pending_auth_path("user_tag@x.io")
+
+    def test_ambiguous_legacy_slot_is_not_used_as_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.platforms.google_chat.oauth import (
+            _active_token_path,
+            _legacy_per_user_token_path,
+            _token_path,
+        )
+
+        legacy = _legacy_per_user_token_path("user_tag@x.io")
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text("{}", encoding="utf-8")
+
+        # `user+tag` and `user_tag` collided under the old sanitized scheme.
+        # After the fix, neither address should silently treat that legacy
+        # file as its own slot.
+        assert _active_token_path("user+tag@x.io") == _token_path("user+tag@x.io")
+        assert _active_token_path("user_tag@x.io") == _token_path("user_tag@x.io")
 
     def test_load_user_credentials_per_email_returns_none_when_missing(
         self, tmp_path, monkeypatch
@@ -1583,10 +1612,12 @@ class TestUserOAuthHelper:
         """``list_authorized_emails`` enumerates the per-user dir; the
         legacy file is intentionally excluded (its owner is unknown)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        users_dir = tmp_path / "google_chat_user_tokens"
-        users_dir.mkdir(parents=True)
-        (users_dir / "alice@example.com.json").write_text("{}")
-        (users_dir / "bob@example.com.json").write_text("{}")
+        from plugins.platforms.google_chat.oauth import _token_path
+        alice = _token_path("alice@example.com")
+        bob = _token_path("bob@example.com")
+        alice.parent.mkdir(parents=True)
+        alice.write_text(json.dumps({"_hermes_email": "alice@example.com"}))
+        bob.write_text(json.dumps({"_hermes_email": "bob@example.com"}))
         # Legacy file should NOT appear in the list.
         (tmp_path / "google_chat_user_token.json").write_text("{}")
 
@@ -1594,6 +1625,17 @@ class TestUserOAuthHelper:
         assert list_authorized_emails() == [
             "alice@example.com", "bob@example.com",
         ]
+
+    def test_list_authorized_emails_falls_back_to_legacy_stem(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        users_dir = tmp_path / "google_chat_user_tokens"
+        users_dir.mkdir(parents=True)
+        (users_dir / "legacy-only.json").write_text("{}", encoding="utf-8")
+
+        from plugins.platforms.google_chat.oauth import list_authorized_emails
+        assert list_authorized_emails() == ["legacy-only"]
 
     def test_list_authorized_emails_empty_when_dir_missing(
         self, tmp_path, monkeypatch

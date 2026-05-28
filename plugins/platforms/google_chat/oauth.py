@@ -43,11 +43,11 @@ familiar with that flow can read this without surprises.
 Token storage layout
 --------------------
 - Per-user tokens (keyed by sender email):
-    ``${HERMES_HOME}/google_chat_user_tokens/<sanitized_email>.json``
+    ``${HERMES_HOME}/google_chat_user_tokens/<preview>--<sha256>.json``
 - Legacy single-user token (fallback, untouched for backward compat):
     ``${HERMES_HOME}/google_chat_user_token.json``
 - Per-user pending OAuth state during /setup-files start → exchange:
-    ``${HERMES_HOME}/google_chat_user_oauth_pending/<sanitized_email>.json``
+    ``${HERMES_HOME}/google_chat_user_oauth_pending/<preview>--<sha256>.json``
 - Legacy pending state:
     ``${HERMES_HOME}/google_chat_user_oauth_pending.json``
 - Shared OAuth client (one per host):
@@ -57,6 +57,7 @@ Token storage layout
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -104,16 +105,28 @@ def _hermes_home() -> Path:
     return get_hermes_home()
 
 
-# Filesystem-safe key: lowercase, allow ``[a-z0-9._-@]``, replace anything
-# else with ``_``. ``ramon.fernandez@nttdata.com`` stays human-readable
-# (``ramon.fernandez@nttdata.com.json``) which makes admin debugging by
-# ``ls ~/.hermes/google_chat_user_tokens/`` trivial.
+# Human-readable preview only: lowercase, allow ``[a-z0-9._-@]``, replace
+# anything else with ``_``. This is intentionally lossy and MUST NOT be used
+# as the security boundary for per-user storage slots.
 _EMAIL_FS_RE = re.compile(r"[^a-z0-9._@-]+")
+_EMAIL_METADATA_KEY = "_hermes_email"
+_STORAGE_PREVIEW_MAX = 48
+
+
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
 
 
 def _sanitize_email(email: str) -> str:
-    cleaned = _EMAIL_FS_RE.sub("_", (email or "").strip().lower())
+    cleaned = _EMAIL_FS_RE.sub("_", _normalize_email(email))
     return cleaned or "_unknown_"
+
+
+def _email_storage_key(email: str) -> str:
+    normalized = _normalize_email(email)
+    preview = _sanitize_email(normalized)[:_STORAGE_PREVIEW_MAX]
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"{preview}--{digest}"
 
 
 def _legacy_token_path() -> Path:
@@ -132,10 +145,28 @@ def _user_pending_dir() -> Path:
     return _hermes_home() / "google_chat_user_oauth_pending"
 
 
+def _legacy_per_user_token_path(email: str) -> Path:
+    return _user_tokens_dir() / f"{_sanitize_email(email)}.json"
+
+
+def _legacy_per_user_pending_path(email: str) -> Path:
+    return _user_pending_dir() / f"{_sanitize_email(email)}.json"
+
+
+def _legacy_per_user_slot_is_unambiguous(email: str) -> bool:
+    """Allow auto-migration only for legacy slots that can't collide."""
+    normalized = _normalize_email(email)
+    return (
+        bool(normalized)
+        and "_" not in normalized
+        and normalized == _sanitize_email(normalized)
+    )
+
+
 def _token_path(email: Optional[str] = None) -> Path:
     """Return the on-disk token path for ``email`` or the legacy path."""
     if email:
-        return _user_tokens_dir() / f"{_sanitize_email(email)}.json"
+        return _user_tokens_dir() / f"{_email_storage_key(email)}.json"
     return _legacy_token_path()
 
 
@@ -145,8 +176,43 @@ def _client_secret_path() -> Path:
 
 def _pending_auth_path(email: Optional[str] = None) -> Path:
     if email:
-        return _user_pending_dir() / f"{_sanitize_email(email)}.json"
+        return _user_pending_dir() / f"{_email_storage_key(email)}.json"
     return _legacy_pending_path()
+
+
+def _active_token_path(email: Optional[str] = None) -> Path:
+    """Return the active token path, using only safe legacy fallback."""
+    if not email:
+        return _legacy_token_path()
+    current = _token_path(email)
+    if current.exists():
+        return current
+    legacy = _legacy_per_user_token_path(email)
+    if legacy.exists() and _legacy_per_user_slot_is_unambiguous(email):
+        return legacy
+    return current
+
+
+def _migrate_legacy_token_path(email: str, legacy_path: Path) -> Path:
+    """Copy a safe legacy per-user token into the collision-free path."""
+    current = _token_path(email)
+    if legacy_path == current or not legacy_path.exists():
+        return legacy_path
+    try:
+        data = json.loads(legacy_path.read_text(encoding="utf-8"))
+        _write_private_json(
+            current,
+            _normalize_authorized_user_payload(data, email=email),
+        )
+        legacy_path.unlink(missing_ok=True)
+        return current
+    except Exception:
+        logger.debug(
+            "[google_chat_user_oauth] failed to migrate legacy token at %s",
+            legacy_path,
+            exc_info=True,
+        )
+        return legacy_path
 
 
 # Minimum scope for native Chat attachment delivery.
@@ -189,7 +255,7 @@ def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
 
     Does NOT raise on the no-token case — that's expected.
     """
-    token_path = _token_path(email)
+    token_path = _active_token_path(email)
     if not token_path.exists():
         return None
 
@@ -216,6 +282,8 @@ def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
         return None
 
     if creds.valid:
+        if email:
+            _migrate_legacy_token_path(email, token_path)
         return creds
 
     if creds.expired and creds.refresh_token:
@@ -229,7 +297,10 @@ def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
             return None
         # Persist refreshed token so next start picks up the new access
         # token without an unnecessary refresh round-trip.
-        _persist_credentials(creds, token_path)
+        persisted_path = _token_path(email)
+        _persist_credentials(creds, persisted_path, email=email)
+        if email and token_path != persisted_path:
+            token_path.unlink(missing_ok=True)
         return creds
 
     # Token exists but is unusable (e.g. revoked, no refresh token).
@@ -258,7 +329,7 @@ def refresh_or_none(creds: Any, email: Optional[str] = None) -> Optional[Any]:
     if creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            _persist_credentials(creds, _token_path(email))
+            _persist_credentials(creds, _token_path(email), email=email)
             return creds
         except Exception as exc:
             logger.warning(
@@ -294,17 +365,29 @@ def list_authorized_emails() -> List[str]:
     out: List[str] = []
     for f in d.iterdir():
         if f.is_file() and f.suffix == ".json":
-            out.append(f.stem)
+            label = f.stem
+            try:
+                payload = json.loads(f.read_text(encoding="utf-8"))
+                meta_email = _normalize_email(payload.get(_EMAIL_METADATA_KEY, ""))
+                if meta_email:
+                    label = meta_email
+            except Exception:
+                pass
+            out.append(label)
     out.sort()
     return out
 
 
-def _persist_credentials(creds: Any, token_path: Path) -> None:
+def _persist_credentials(
+    creds: Any, token_path: Path, email: Optional[str] = None
+) -> None:
     """Persist refreshed credentials atomically with private permissions."""
     try:
         _write_private_json(
             token_path,
-            _normalize_authorized_user_payload(json.loads(creds.to_json())),
+            _normalize_authorized_user_payload(
+                json.loads(creds.to_json()), email=email,
+            ),
         )
     except Exception:
         logger.debug(
@@ -318,11 +401,18 @@ def _persist_credentials(creds: Any, token_path: Path) -> None:
 # =============================================================================
 
 
-def _normalize_authorized_user_payload(payload: dict) -> dict:
+def _normalize_authorized_user_payload(
+    payload: dict, email: Optional[str] = None
+) -> dict:
     """Ensure the persisted token JSON has the type field google-auth expects."""
     normalized = dict(payload)
     if not normalized.get("type"):
         normalized["type"] = "authorized_user"
+    meta_email = _normalize_email(email or normalized.get(_EMAIL_METADATA_KEY, ""))
+    if meta_email:
+        normalized[_EMAIL_METADATA_KEY] = meta_email
+    else:
+        normalized.pop(_EMAIL_METADATA_KEY, None)
     return normalized
 
 
@@ -397,7 +487,7 @@ def check_auth(email: Optional[str] = None) -> bool:
 
     Per-user when ``email`` given, legacy single-user when omitted.
     """
-    token_path = _token_path(email)
+    token_path = _active_token_path(email)
     if not token_path.exists():
         print(f"NOT_AUTHENTICATED: No token at {token_path}")
         return False
@@ -448,26 +538,56 @@ def _save_pending_auth(*, state: str, code_verifier: str,
             "state": state,
             "code_verifier": code_verifier,
             "redirect_uri": _REDIRECT_URI,
-            "email": email or "",
+            "email": _normalize_email(email or ""),
         },
     )
 
 
 def _load_pending_auth(email: Optional[str] = None) -> dict:
     pending = _pending_auth_path(email)
-    if not pending.exists():
+    candidates = [pending]
+    if email:
+        legacy = _legacy_per_user_pending_path(email)
+        if legacy != pending:
+            candidates.append(legacy)
+
+    data = None
+    loaded_path = None
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            maybe_data = json.loads(candidate.read_text())
+        except Exception as exc:
+            print(f"ERROR: Could not read pending OAuth session: {exc}")
+            print("Run --auth-url again to start a fresh session.")
+            sys.exit(1)
+        if not maybe_data.get("state") or not maybe_data.get("code_verifier"):
+            print("ERROR: Pending OAuth session is missing PKCE data.")
+            print("Run --auth-url again.")
+            sys.exit(1)
+        if candidate != pending and email:
+            if _normalize_email(maybe_data.get("email", "")) != _normalize_email(email):
+                continue
+        data = maybe_data
+        loaded_path = candidate
+        break
+
+    if data is None:
         print("ERROR: No pending OAuth session found. Run --auth-url first.")
         sys.exit(1)
-    try:
-        data = json.loads(pending.read_text())
-    except Exception as exc:
-        print(f"ERROR: Could not read pending OAuth session: {exc}")
-        print("Run --auth-url again to start a fresh session.")
-        sys.exit(1)
-    if not data.get("state") or not data.get("code_verifier"):
-        print("ERROR: Pending OAuth session is missing PKCE data.")
-        print("Run --auth-url again.")
-        sys.exit(1)
+
+    if email and loaded_path and loaded_path != pending:
+        _write_private_json(
+            pending,
+            {
+                "state": data["state"],
+                "code_verifier": data["code_verifier"],
+                "redirect_uri": data.get("redirect_uri", _REDIRECT_URI),
+                "email": _normalize_email(email),
+            },
+        )
+        loaded_path.unlink(missing_ok=True)
     return data
 
 
@@ -564,7 +684,9 @@ def exchange_auth_code(code: str, email: Optional[str] = None) -> None:
         sys.exit(1)
 
     creds = flow.credentials
-    token_payload = _normalize_authorized_user_payload(json.loads(creds.to_json()))
+    token_payload = _normalize_authorized_user_payload(
+        json.loads(creds.to_json()), email=email,
+    )
 
     actually_granted = (
         list(creds.granted_scopes or [])
@@ -579,13 +701,16 @@ def exchange_auth_code(code: str, email: Optional[str] = None) -> None:
     token_path = _token_path(email)
     _write_private_json(token_path, token_payload)
     _pending_auth_path(email).unlink(missing_ok=True)
+    if email:
+        _legacy_per_user_pending_path(email).unlink(missing_ok=True)
 
     print(f"OK: Authenticated. Token saved to {token_path}")
-    rel_label = (
-        f"{display_hermes_home()}/google_chat_user_tokens/{_sanitize_email(email)}.json"
-        if email
-        else f"{display_hermes_home()}/google_chat_user_token.json"
-    )
+    rel_label = str(token_path)
+    try:
+        rel_label = str(token_path.relative_to(_hermes_home()))
+        rel_label = f"{display_hermes_home()}/{rel_label.replace(os.sep, '/')}"
+    except ValueError:
+        pass
     print(f"Profile path: {rel_label}")
 
 
@@ -594,7 +719,7 @@ def revoke(email: Optional[str] = None) -> None:
 
     Per-user when ``email`` given, legacy single-user when omitted.
     """
-    token_path = _token_path(email)
+    token_path = _active_token_path(email)
     if not token_path.exists():
         print("No token to revoke.")
         return
@@ -623,6 +748,9 @@ def revoke(email: Optional[str] = None) -> None:
 
     token_path.unlink(missing_ok=True)
     _pending_auth_path(email).unlink(missing_ok=True)
+    if email:
+        _legacy_per_user_token_path(email).unlink(missing_ok=True)
+        _legacy_per_user_pending_path(email).unlink(missing_ok=True)
     print(f"Deleted {token_path}")
 
 

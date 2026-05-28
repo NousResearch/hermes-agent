@@ -3181,6 +3181,9 @@ def _prompt_manual_callback_paste(redirect_uri: str) -> dict:
     print("not on your laptop) — that is expected.  Copy the FULL URL")
     print("from your browser's address bar of that failed page and paste")
     print("it below.  A bare '?code=...&state=...' fragment also works.")
+    print("If the consent page shows the authorization code in-page")
+    print("(xAI's current behavior) rather than redirecting, paste the")
+    print("bare code value on its own.")
     print("───────────────────────────────────────────────────────────────")
     try:
         raw = input("Callback URL: ")
@@ -6965,7 +6968,21 @@ def _xai_oauth_loopback_login(
             provider="xai-oauth",
             code="xai_authorization_failed",
         )
-    if callback.get("state") != state:
+    callback_state = callback.get("state")
+    # Manual-paste bare-code path: when a user pastes only the opaque
+    # authorization code (no ``code=``/``state=`` query parameters),
+    # ``_parse_pasted_callback`` returns ``state=None``.  xAI's consent
+    # page renders the code in-page rather than redirecting through the
+    # 127.0.0.1 callback, so on many remote setups (Cloud Shell, headless
+    # VPS, container consoles) the bare code is the only thing the user
+    # can obtain.  PKCE (code_verifier) still binds the exchange to this
+    # client, so the local state-equality check is redundant on the
+    # bare-code path — we substitute the locally generated state to keep
+    # the rest of the validation chain (and the token exchange) unchanged.
+    # See #26923 (AccursedGalaxy comment, 2026-05-20).
+    if callback_state is None and manual_paste:
+        callback_state = state
+    if callback_state != state:
         raise AuthError(
             "xAI authorization failed: state mismatch.",
             provider="xai-oauth",

@@ -22,6 +22,13 @@ from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
 
+try:
+    from gateway.board_comms import evaluate_send as _evaluate_board_send
+    from gateway.board_comms import log_suppression as _log_board_suppression
+except Exception:  # pragma: no cover - board-comms governor is best-effort
+    _evaluate_board_send = None  # type: ignore[assignment]
+    _log_board_suppression = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 # Audio file extensions Hermes recognizes for native audio delivery.
@@ -97,6 +104,62 @@ def _reply_anchor_for_event(event) -> str | None:
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
     return getattr(event, "message_id", None)
+
+
+def _board_comms_metadata_for_event(event: "MessageEvent", metadata: dict | None) -> dict:
+    """Attach inbound Board context to outbound send metadata."""
+    meta = dict(metadata or {})
+    source = getattr(event, "source", None)
+    ctx = dict(meta.get("board_context") or {})
+    ctx.setdefault("inbound_text", getattr(event, "text", "") or "")
+    ctx.setdefault("user_id", getattr(source, "user_id", "") or "")
+    ctx.setdefault("user_name", getattr(source, "user_name", "") or "")
+    ctx.setdefault("is_bot", bool(getattr(source, "is_bot", False)))
+    thread_id = getattr(source, "thread_id", None)
+    if thread_id is not None:
+        meta.setdefault("thread_id", thread_id)
+    meta["board_context"] = ctx
+    return meta
+
+
+def _board_send_allowed(chat_id: str, content: str, metadata: dict | None) -> bool:
+    """Return False when the Board comms governor suppresses an outbound send."""
+    decision = _board_send_decision(chat_id, content, metadata)
+    return bool(getattr(decision, "allow", True))
+
+
+def _board_send_decision(chat_id: str, content: str, metadata: dict | None):
+    """Evaluate and log the Board comms decision for a proposed send."""
+    if _evaluate_board_send is None:
+        return None
+    try:
+        decision = _evaluate_board_send(
+            chat_id=str(chat_id),
+            content=content,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        logger.debug("board_comms evaluate_send failed: %s", exc)
+        return None
+    if getattr(decision, "allow", True):
+        return decision
+    try:
+        if _log_board_suppression is not None:
+            _log_board_suppression(
+                chat_id=str(chat_id),
+                content=content,
+                reason=getattr(decision, "reason", "SUPPRESS_BOARD_COMMS"),
+                detail=getattr(decision, "detail", ""),
+                metadata=metadata,
+            )
+    except Exception as exc:
+        logger.debug("board_comms log_suppression failed: %s", exc)
+    logger.info(
+        "Board comms suppressed outbound message to %s: %s",
+        chat_id,
+        getattr(decision, "reason", "SUPPRESS_BOARD_COMMS"),
+    )
+    return decision
 
 
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
@@ -3342,9 +3405,10 @@ class BasePlatformAdapter(ABC):
                 )
                 try:
                     _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                    _thread_meta = _board_comms_metadata_for_event(event, _thread_meta)
                     response = await self._message_handler(event)
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
-                    if _text:
+                    if _text and _board_send_allowed(event.source.chat_id, _text, _thread_meta):
                         _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
                             content=_text,
@@ -3392,9 +3456,10 @@ class BasePlatformAdapter(ABC):
                         _thread_meta = _thread_metadata_for_source(
                             event.source, _reply_anchor_for_event(event)
                         )
+                        _thread_meta = _board_comms_metadata_for_event(event, _thread_meta)
                         response = await self._message_handler(event)
                         _text, _eph_ttl = self._unwrap_ephemeral(response)
-                        if _text:
+                        if _text and _board_send_allowed(event.source.chat_id, _text, _thread_meta):
                             _r = await self._send_with_retry(
                                 chat_id=event.source.chat_id,
                                 content=_text,
@@ -3494,6 +3559,7 @@ class BasePlatformAdapter(ABC):
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
+        delivery_suppressed = False
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -3511,6 +3577,7 @@ class BasePlatformAdapter(ABC):
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        _thread_metadata = _board_comms_metadata_for_event(event, _thread_metadata)
         _keep_typing_kwargs = {"metadata": _thread_metadata}
         try:
             _keep_typing_sig = inspect.signature(self._keep_typing)
@@ -3599,6 +3666,14 @@ class BasePlatformAdapter(ABC):
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 
+                # Evaluate Board text suppression before TTS/media dispatch so
+                # a voice-triggered acknowledgement cannot bypass the public
+                # send-boundary guard via audio caption delivery.
+                text_send_decision = _board_send_decision(event.source.chat_id, text_content, _thread_metadata) if text_content else None
+                text_send_allowed_by_board = bool(getattr(text_send_decision, "allow", True))
+                if text_content and not text_send_allowed_by_board:
+                    delivery_suppressed = True
+
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
@@ -3607,6 +3682,7 @@ class BasePlatformAdapter(ABC):
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
+                        and text_send_allowed_by_board
                         and not media_files):
                     try:
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
@@ -3650,7 +3726,12 @@ class BasePlatformAdapter(ABC):
                             pass
 
                 # Send the text portion
-                if text_content and not _tts_caption_delivered:
+                text_send_allowed = bool(
+                    text_content
+                    and not _tts_caption_delivered
+                    and text_send_allowed_by_board
+                )
+                if text_send_allowed:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     # Mark final response messages for notification delivery.
@@ -3664,7 +3745,9 @@ class BasePlatformAdapter(ABC):
                         _thread_metadata = dict(_thread_metadata)
                         _thread_metadata["notify"] = True
                     else:
-                        _thread_metadata = {"notify": True}
+                        _thread_metadata = _board_comms_metadata_for_event(
+                            event, {"notify": True}
+                        )
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
@@ -3797,7 +3880,7 @@ class BasePlatformAdapter(ABC):
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
 
             # Determine overall success for the processing hook
-            processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            processing_ok = delivery_succeeded if delivery_attempted else (delivery_suppressed or not bool(response))
             await self._run_processing_hook(
                 "on_processing_complete",
                 event,

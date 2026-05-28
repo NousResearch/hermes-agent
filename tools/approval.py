@@ -5,7 +5,7 @@ This module is the single source of truth for the dangerous command system:
 - Per-session approval state (thread-safe, keyed by session_key)
 - Approval prompting (CLI interactive + gateway async)
 - Smart approval via auxiliary LLM (auto-approve low-risk commands)
-- Permanent allowlist persistence (config.yaml)
+- Scoped approval persistence (config.yaml command_allowlist records)
 """
 
 import contextvars
@@ -16,7 +16,8 @@ import sys
 import threading
 import time
 import unicodedata
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 from hermes_cli.config import cfg_get
 
 from utils import env_var_enabled, is_truthy_value
@@ -494,7 +495,16 @@ _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
-_permanent_approved: set = set()
+_permanent_approved: set = set()  # Legacy read-only compatibility surface.
+_scoped_approval_records: dict[str, list[dict[str, Any]]] = {}
+_SCOPED_APPROVAL_FIELDS = (
+    "pattern_key",
+    "action",
+    "system",
+    "credential_spend_risk",
+    "expiration",
+    "owner",
+)
 
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
@@ -636,64 +646,202 @@ def is_current_session_yolo_enabled() -> bool:
     return is_session_yolo_enabled(get_current_session_key(default=""))
 
 
+def _parse_scoped_approval_expiration(value: str) -> datetime:
+    """Parse an ISO-ish expiration timestamp into an aware UTC datetime."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("scoped approval requires expiration")
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError("scoped approval expiration must be ISO-8601") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _scoped_approval_is_active(record: dict[str, Any], now: datetime | None = None) -> bool:
+    try:
+        expiration = _parse_scoped_approval_expiration(record.get("expiration", ""))
+    except ValueError:
+        return False
+    now = now or datetime.now(timezone.utc)
+    return expiration > now
+
+
+def _coerce_scoped_approval_record(item: Any) -> dict[str, Any] | None:
+    """Return a normalized scoped approval record, or None for legacy strings."""
+    if isinstance(item, str):
+        # Legacy command_allowlist strings are not silently converted into live
+        # authority. They remain visible in config for manual review/migration.
+        return None
+    if not isinstance(item, dict):
+        return None
+    record = {field: str(item.get(field, "")).strip() for field in _SCOPED_APPROVAL_FIELDS}
+    if any(not record[field] for field in _SCOPED_APPROVAL_FIELDS):
+        return None
+    if not _scoped_approval_is_active(record):
+        return None
+    return record
+
+
+def _store_scoped_approval_record(record: dict[str, Any]) -> None:
+    _scoped_approval_records.setdefault(record["pattern_key"], []).append(record)
+    # Keep legacy introspection/tests able to see which keys have an active
+    # scoped grant, without treating arbitrary legacy strings as authority.
+    _permanent_approved.add(record["pattern_key"])
+
+
+def _active_scoped_approval_for_aliases(aliases: set[str]) -> dict[str, Any] | None:
+    for alias in aliases:
+        for record in list(_scoped_approval_records.get(alias, [])):
+            if _scoped_approval_is_active(record):
+                return record
+        # Prune expired/malformed records opportunistically.
+        if alias in _scoped_approval_records:
+            active = [r for r in _scoped_approval_records[alias] if _scoped_approval_is_active(r)]
+            if active:
+                _scoped_approval_records[alias] = active
+            else:
+                _scoped_approval_records.pop(alias, None)
+                _permanent_approved.discard(alias)
+    return None
+
+
+def build_scoped_approval_record(
+    pattern_key: str,
+    *,
+    action: str,
+    system: str,
+    credential_spend_risk: str,
+    expiration: str,
+    owner: str,
+) -> dict[str, str]:
+    """Create a validated scoped approval record for durable authority."""
+    record = {
+        "pattern_key": str(pattern_key or "").strip(),
+        "action": str(action or "").strip(),
+        "system": str(system or "").strip(),
+        "credential_spend_risk": str(credential_spend_risk or "").strip(),
+        "expiration": str(expiration or "").strip(),
+        "owner": str(owner or "").strip(),
+    }
+    missing = [field for field, value in record.items() if not value]
+    if missing:
+        raise ValueError(f"scoped approval missing required metadata: {', '.join(missing)}")
+    _parse_scoped_approval_expiration(record["expiration"])
+    return record
+
+
+def scoped_approval_record_for_command(pattern_key: str, description: str, *, owner: str = "Anthony") -> dict[str, str]:
+    """Build the default bounded record for an explicit long-lived approval."""
+    expiration = (datetime.now(timezone.utc) + timedelta(days=30)).replace(microsecond=0).isoformat()
+    return build_scoped_approval_record(
+        pattern_key,
+        action=description or pattern_key,
+        system="local-terminal",
+        credential_spend_risk="dangerous-command / local-system risk",
+        expiration=expiration,
+        owner=owner,
+    )
+
+
 def is_approved(session_key: str, pattern_key: str) -> bool:
-    """Check if a pattern is approved (session-scoped or permanent).
+    """Check if a pattern is approved by session state or active scoped record.
 
     Accept both the current canonical key and the legacy regex-derived key so
-    existing command_allowlist entries continue to work after key migrations.
+    session approvals continue to work after key migrations. Legacy durable
+    command_allowlist strings are loaded for review but are not authority unless
+    represented as scoped approval records with action/system/risk/expiration/owner.
     """
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
-        if any(alias in _permanent_approved for alias in aliases):
+        if _active_scoped_approval_for_aliases(aliases) is not None:
             return True
         session_approvals = _session_approved.get(session_key, set())
         return any(alias in session_approvals for alias in aliases)
 
 
-def approve_permanent(pattern_key: str):
-    """Add a pattern to the permanent allowlist."""
+def approve_permanent(
+    pattern_key: str,
+    *,
+    action: str | None = None,
+    system: str | None = None,
+    credential_spend_risk: str | None = None,
+    expiration: str | None = None,
+    owner: str | None = None,
+):
+    """Store a scoped approval record; unscoped permanent approvals are refused."""
+    if not all([action, system, credential_spend_risk, expiration, owner]):
+        raise ValueError(
+            "scoped approval requires action, system, credential_spend_risk, "
+            "expiration, and owner"
+        )
+    record = build_scoped_approval_record(
+        pattern_key,
+        action=action or "",
+        system=system or "",
+        credential_spend_risk=credential_spend_risk or "",
+        expiration=expiration or "",
+        owner=owner or "",
+    )
     with _lock:
-        _permanent_approved.add(pattern_key)
+        _store_scoped_approval_record(record)
+    return dict(record)
 
 
-def load_permanent(patterns: set):
-    """Bulk-load permanent allowlist entries from config."""
+def load_permanent(patterns):
+    """Bulk-load scoped approval records from config, ignoring legacy strings."""
     with _lock:
-        _permanent_approved.update(patterns)
+        for item in patterns or set():
+            record = _coerce_scoped_approval_record(item)
+            if record:
+                _store_scoped_approval_record(record)
 
 
 
 # =========================================================================
-# Config persistence for permanent allowlist
+# Config persistence for scoped approval records
 # =========================================================================
 
-def load_permanent_allowlist() -> set:
-    """Load permanently allowed command patterns from config.
+def load_permanent_allowlist() -> list:
+    """Load scoped command approval records from config.
 
-    Also syncs them into the approval module so is_approved() works for
-    patterns added via 'always' in a previous session.
+    Legacy string entries in command_allowlist are returned for visibility but
+    intentionally do not authorize future commands. Durable authority now needs
+    action, system, credential_spend_risk, expiration, and owner.
     """
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        patterns = set(config.get("command_allowlist", []) or [])
-        if patterns:
-            load_permanent(patterns)
-        return patterns
+        records = list(config.get("command_allowlist", []) or [])
+        if records:
+            load_permanent(records)
+        return records
     except Exception as e:
-        logger.warning("Failed to load permanent allowlist: %s", e)
-        return set()
+        logger.warning("Failed to load scoped approval records: %s", e)
+        return []
 
 
-def save_permanent_allowlist(patterns: set):
-    """Save permanently allowed command patterns to config."""
+def save_permanent_allowlist(patterns):
+    """Save active scoped approval records to config."""
     try:
         from hermes_cli.config import load_config, save_config
         config = load_config()
-        config["command_allowlist"] = list(patterns)
+        if patterns is _permanent_approved or patterns is None:
+            records = [dict(record) for values in _scoped_approval_records.values() for record in values]
+        else:
+            records = []
+            for item in patterns or []:
+                record = _coerce_scoped_approval_record(item)
+                if record:
+                    records.append(dict(record))
+        config["command_allowlist"] = records
         save_config(config)
     except Exception as e:
-        logger.warning("Could not save allowlist: %s", e)
+        logger.warning("Could not save scoped approval records: %s", e)
 
 
 # =========================================================================
@@ -708,13 +856,13 @@ def prompt_dangerous_approval(command: str, description: str,
 
     Args:
         allow_permanent: When False, hide the [a]lways option (used when
-            tirith warnings are present, since broad permanent allowlisting
+            tirith warnings are present, since broad durable allowlisting
             is inappropriate for content-level security findings).
         approval_callback: Optional callback registered by the CLI for
             prompt_toolkit integration. Signature:
             (command, description, *, allow_permanent=True) -> str.
 
-    Returns: 'once', 'session', 'always', or 'deny'
+    Returns: 'once', 'session', 'scoped', or 'deny'
     """
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
@@ -795,12 +943,12 @@ def prompt_dangerous_approval(command: str, description: str,
             elif choice in {'s', 'session'}:
                 print(t("approval.allowed_session"))
                 return "session"
-            elif choice in {'a', 'always'}:
+            elif choice in {'a', 'always', 'scoped'}:
                 if not allow_permanent:
                     print(t("approval.allowed_session"))
                     return "session"
-                print(t("approval.allowed_always"))
-                return "always"
+                print("Approved as a scoped approval record (30-day default; metadata required).")
+                return "scoped"
             else:
                 print(t("approval.denied"))
                 return "deny"
@@ -1011,10 +1159,11 @@ def check_dangerous_command(command: str, env_type: str,
 
     if choice == "session":
         approve_session(session_key, pattern_key)
-    elif choice == "always":
+    elif choice in {"always", "scoped"}:
+        record = scoped_approval_record_for_command(pattern_key, description)
         approve_session(session_key, pattern_key)
-        approve_permanent(pattern_key)
-        save_permanent_allowlist(_permanent_approved)
+        approve_permanent(**record)
+        save_permanent_allowlist(None)
 
     return {"approved": True, "message": None}
 
@@ -1341,12 +1490,13 @@ def check_all_command_guards(command: str, env_type: str,
 
             # User approved — persist based on scope (same logic as CLI)
             for key, _, is_tirith in warnings:
-                if choice == "session" or (choice == "always" and is_tirith):
+                if choice == "session" or (choice in {"always", "scoped"} and is_tirith):
                     approve_session(session_key, key)
-                elif choice == "always":
+                elif choice in {"always", "scoped"}:
+                    record = scoped_approval_record_for_command(key, combined_desc)
                     approve_session(session_key, key)
-                    approve_permanent(key)
-                    save_permanent_allowlist(_permanent_approved)
+                    approve_permanent(**record)
+                    save_permanent_allowlist(None)
                 # choice == "once": no persistence — command allowed this
                 # single time only, matching the CLI's behavior.
 
@@ -1417,18 +1567,19 @@ def check_all_command_guards(command: str, env_type: str,
 
     # Persist approval for each warning individually
     for key, _, is_tirith in warnings:
-        if choice == "session" or (choice == "always" and is_tirith):
-            # tirith: session only (no permanent broad allowlisting)
+        if choice == "session" or (choice in {"always", "scoped"} and is_tirith):
+            # tirith: session only (no broad durable allowlisting)
             approve_session(session_key, key)
-        elif choice == "always":
-            # dangerous patterns: permanent allowed
+        elif choice in {"always", "scoped"}:
+            # dangerous patterns: scoped approval record only
+            record = scoped_approval_record_for_command(key, combined_desc)
             approve_session(session_key, key)
-            approve_permanent(key)
-            save_permanent_allowlist(_permanent_approved)
+            approve_permanent(**record)
+            save_permanent_allowlist(None)
 
     return {"approved": True, "message": None,
             "user_approved": True, "description": combined_desc}
 
 
-# Load permanent allowlist from config on module import
+# Load scoped approval records from config on module import
 load_permanent_allowlist()

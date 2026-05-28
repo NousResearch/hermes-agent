@@ -194,22 +194,21 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "copilot-acp",
     ],
     "copilot": [
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "gpt-4o-mini",
         "claude-sonnet-4.6",
-        "claude-sonnet-4",
         "claude-sonnet-4.5",
         "claude-haiku-4.5",
-        "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
-        "gemini-2.5-pro",
+        "claude-opus-4.7",
+        "claude-opus-4.6",
+        "claude-opus-4.6-fast",
+        "claude-opus-4.5",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-5.2",
+        "gpt-5.4-mini",
+        "gpt-5-mini",
+        "gpt-4.1",
     ],
     "gemini": [
         "gemini-3.1-pro-preview",
@@ -2251,8 +2250,10 @@ def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
     if not model_id:
         return False
 
-    if item.get("model_picker_enabled") is False:
-        return False
+    # Hidden-from-picker preview/default models can still be chat-capable and
+    # callable by Hermes. Ignore model_picker_enabled here; endpoint/type
+    # filtering below removes embeddings and non-text tools without repeating
+    # the 2026-05 Copilot drift where Claude Opus models were silently hidden.
 
     capabilities = item.get("capabilities")
     if isinstance(capabilities, dict):

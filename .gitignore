@@ -41,6 +41,7 @@ images/
 downloads/
 __pycache__/
 hermes_agent.egg-info/
+build/
 wandb/
 testlogs
 

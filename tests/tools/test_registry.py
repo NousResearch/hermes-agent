@@ -304,6 +304,7 @@ class TestBuiltinDiscovery:
             "tools.memory_tool",
             "tools.mixture_of_agents_tool",
             "tools.process_registry",
+            "tools.recruitment_system_tool",
             "tools.rl_training_tool",
             "tools.send_message_tool",
             "tools.session_search_tool",

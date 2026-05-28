@@ -612,6 +612,38 @@ class APIServerAdapter(BasePlatformAdapter):
             ],
         })
 
+    async def _handle_recruitment_ai_query(self, request: "web.Request") -> "web.Response":
+        """POST /api/recruitment-system/ai-query — read-only recruitmentSystem query."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"success": False, "message": "Invalid JSON in request body"}, status=400)
+
+        try:
+            from tools.recruitment_system_tool import query_recruitment_system_api
+
+            payload = await asyncio.to_thread(query_recruitment_system_api, body)
+        except Exception as exc:
+            logger.exception("[api_server] recruitmentSystem query handler failed")
+            payload = {
+                "success": False,
+                "error_code": "QUERY_FAILED",
+                "message": f"{type(exc).__name__}: {exc}",
+                "trace_id": uuid.uuid4().hex,
+            }
+            return web.json_response(payload, status=500)
+
+        status = 200 if payload.get("success") else 400
+        if payload.get("http_status"):
+            status = int(payload["http_status"])
+        elif payload.get("error_code") == "API_CONNECTION_FAILED":
+            status = 502
+        return web.json_response(payload, status=status)
+
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         auth_err = self._check_auth(request)
@@ -2317,6 +2349,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
+            self._app.router.add_post("/api/recruitment-system/ai-query", self._handle_recruitment_ai_query)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

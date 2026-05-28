@@ -56,6 +56,8 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
+    # RecruitmentSystem business APIs (gated by RECRUITMENT_API_BASE_URL)
+    "recruitment_system_query", "recruitment_system_create_job", "recruitment_system_health",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -201,6 +203,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "recruitment_system": {
+        "description": "RecruitmentSystem business operations through official HTTP APIs",
+        "tools": ["recruitment_system_query", "recruitment_system_create_job", "recruitment_system_health"],
+        "includes": []
+    },
+
     "feishu_doc": {
         "description": "Read Feishu/Lark document content",
         "tools": ["feishu_doc_read"],
@@ -283,6 +291,8 @@ TOOLSETS = {
             "execute_code", "delegate_task",
             # Cronjob management
             "cronjob",
+            # RecruitmentSystem business APIs
+            "recruitment_system_query", "recruitment_system_create_job", "recruitment_system_health",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 

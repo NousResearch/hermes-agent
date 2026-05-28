@@ -1,0 +1,18 @@
+# recruitment-system-query runtime template.
+# Copy values into ~/.hermes/.env or your process environment.
+# Do not configure direct MySQL credentials for this skill.
+
+api:
+  RECRUITMENT_API_BASE_URL: "http://127.0.0.1:8080"
+  RECRUITMENT_API_TENANT_ID: "1001"
+  RECRUITMENT_API_USER_ID: "hr_mgr_1001"
+  RECRUITMENT_API_TOKEN: ""
+  RECRUITMENT_API_TIMEOUT_SECONDS: "15"
+
+defaults:
+  RECRUITMENT_DEFAULT_DEPARTMENT: "研发中心"
+  RECRUITMENT_DEFAULT_WORK_LOCATION: "上海"
+  RECRUITMENT_DEFAULT_EMPLOYMENT_TYPE: "FULL_TIME"
+  RECRUITMENT_DEFAULT_HEADCOUNT: "1"
+  RECRUITMENT_DEFAULT_OWNER_USER_ID: "hr_mgr_1001"
+  RECRUITMENT_DEFAULT_OWNER_USER_NAME: "HR经理"

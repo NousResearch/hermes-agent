@@ -607,11 +607,13 @@ def _codex_pool_dicts(entries: Optional[List[Any]]) -> Iterator[Dict[str, Any]]:
 
 
 def _read_codex_pool_entries() -> Optional[List[Any]]:
-    """Locked read of ``credential_pool.openai-codex`` from auth.json (None when absent)."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store
+    """Locked read of ``credential_pool.openai-codex`` (None when absent).
+
+    Goes through ``read_credential_pool`` so a named profile with an empty local Codex pool
+    inherits the global-root pool, the same per-provider fallback every other pool read uses."""
+    from hermes_cli.auth import _auth_store_lock, read_credential_pool
     with _auth_store_lock():
-        auth_store = _load_auth_store()
-    return _pool_entries(auth_store, "openai-codex")
+        return read_credential_pool("openai-codex") or None
 
 
 def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:

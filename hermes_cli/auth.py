@@ -5966,6 +5966,11 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     env_url = ""
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+    # MeshBoard stream-tap launcher sets HERMES_LLM_BASE_URL to a local proxy.
+    # Honour it when the provider-specific env var is absent so the tap is not
+    # silently bypassed.
+    if not env_url:
+        env_url = os.getenv("HERMES_LLM_BASE_URL", "").strip()
 
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -6155,6 +6160,11 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     env_url = ""
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+    # MeshBoard stream-tap launcher sets HERMES_LLM_BASE_URL to a local proxy.
+    # Honour it when the provider-specific env var is absent so the tap is not
+    # silently bypassed.
+    if not env_url:
+        env_url = os.getenv("HERMES_LLM_BASE_URL", "").strip()
 
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)

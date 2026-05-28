@@ -1,127 +1,19 @@
 import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
-import { useStore } from '@nanostores/react'
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
-import unicodeSpinners from 'unicode-animations'
+import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
-import { $delegationState } from '../app/delegationStore.js'
-import type { IndicatorStyle } from '../app/interfaces.js'
-import { useTurnSelector } from '../app/turnStore.js'
-import { $uiState } from '../app/uiStore.js'
-import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
-import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
 
-const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
+const STATUS_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
-// Keep verb segment width stable so status-bar content to the right doesn't
-// jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
-
-// Compact alternates for the `emoji` and `ascii` indicator styles.
-// Each entry is a fixed-width (display-width) glyph.
-const EMOJI_FRAMES = ['⚕ ', '🌀', '🤔', '✨', '🍵', '🔮']
-const ASCII_FRAMES = ['|', '/', '-', '\\']
-
-// Faster tick for spinner-style indicators — they read as motion only
-// at frame rates closer to their authored interval.
-const SPINNER_TICK_MS = 100
-
-interface IndicatorRender {
-  frame: string
-  intervalMs: number
-  // When false, FaceTicker hides the rotating verb and just shows the
-  // glyph + duration.  Lets `unicode` stay minimal while the other
-  // styles keep the verb-rotation flavour users associate with the
-  // running… status.
-  showVerb: boolean
-}
-
-const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
-  if (style === 'kaomoji') {
-    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
-  }
-
-  if (style === 'emoji') {
-    return {
-      frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '⚕ ',
-      intervalMs: SPINNER_TICK_MS * 6,
-      showVerb: true
-    }
-  }
-
-  if (style === 'ascii') {
-    return {
-      frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|',
-      intervalMs: SPINNER_TICK_MS,
-      showVerb: true
-    }
-  }
-
-  // 'unicode' — braille spinner (fixed 1-col).  Authored interval is
-  // ~80ms; honour it but bound below at a safe minimum so React
-  // re-renders stay reasonable.  This style is for users who want
-  // the cleanest possible status, so no verb rotation either.
-  const spinner = unicodeSpinners.braille
-  const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
-
-  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
-}
-
-function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
-  const ui = useStore($uiState)
-  const style = ui.indicatorStyle
-  const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
-  const [now, setNow] = useState(() => Date.now())
-
-  // Pre-compute cadence + verb-visibility for the active style so an
-  // `/indicator` switch re-arms the interval (and skips the verb timer
-  // for verb-less styles like `unicode`) without leaving the previous
-  // timer dangling.
-  const { intervalMs, showVerb } = renderIndicator(style, 0)
-
-  useEffect(() => {
-    const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
-    const clock = setInterval(() => setNow(Date.now()), 1000)
-    // Verb timer is gated on `showVerb` — `unicode` style hides the verb
-    // entirely, so cycling `verbTick` would be an avoidable re-render.
-    const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
-
-    return () => {
-      clearInterval(glyph)
-      clearInterval(clock)
-
-      if (verb !== null) {
-        clearInterval(verb)
-      }
-    }
-  }, [intervalMs, showVerb])
-
-  const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
-  // Leading space keeps a gap between the frame and the duration when the
-  // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
-  // IS shown, its trailing padding already provides the gap, so the extra
-  // space is harmless.
-  const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
-
-  return (
-    <Text color={color}>
-      {frame}
-      {verbSegment}
-      {durationSegment}
-    </Text>
-  )
-}
+export const VERB_PAD_LEN = Math.max(...VERBS.map(verb => verb.length)) + 1
+export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN)
 
 function ctxBarColor(pct: number | undefined, t: Theme) {
   if (pct == null) {
@@ -141,10 +33,6 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
   }
 
   return t.color.statusGood
-}
-
-function statusSessionCountLabel(count: number) {
-  return `${count} ${count === 1 ? 'session' : 'sessions'}`
 }
 
 function ctxBar(pct: number | undefined, w = 10) {
@@ -169,67 +57,6 @@ export function statusRuleWidths(cols: number, cwdLabel: string) {
   const leftWidth = Math.max(1, width - separatorWidth - rightWidth)
 
   return { leftWidth, rightWidth, separatorWidth }
-}
-
-function SpawnHud({ t }: { t: Theme }) {
-  // Tight HUD that only appears when the session is actually fanning out.
-  // Colour escalates to warn/error as depth or concurrency approaches the cap.
-  const delegation = useStore($delegationState)
-  const subagents = useTurnSelector(state => state.subagents)
-
-  const tree = useMemo(() => buildSubagentTree(subagents), [subagents])
-  const totals = useMemo(() => treeTotals(tree), [tree])
-
-  if (!totals.descendantCount && !delegation.paused) {
-    return null
-  }
-
-  const maxDepth = delegation.maxSpawnDepth
-  const maxConc = delegation.maxConcurrentChildren
-  const depth = Math.max(0, totals.maxDepthFromHere)
-  const active = totals.activeCount
-
-  // `max_concurrent_children` is a per-parent cap, not a global one.
-  // `activeCount` sums every running agent across the tree and would
-  // over-warn for multi-orchestrator runs.  The widest level of the tree
-  // is a closer proxy to "most concurrent spawns that could be hitting a
-  // single parent's slot budget".
-  const widestLevel = widthByDepth(tree).reduce((a, b) => Math.max(a, b), 0)
-  const depthRatio = maxDepth ? depth / maxDepth : 0
-  const concRatio = maxConc ? widestLevel / maxConc : 0
-  const ratio = Math.max(depthRatio, concRatio)
-
-  const color = delegation.paused || ratio >= 1 ? t.color.error : ratio >= 0.66 ? t.color.warn : t.color.muted
-
-  const pieces: string[] = []
-
-  if (delegation.paused) {
-    pieces.push('⏸ paused')
-  }
-
-  if (totals.descendantCount > 0) {
-    const depthLabel = maxDepth ? `${depth}/${maxDepth}` : `${depth}`
-    pieces.push(`d${depthLabel}`)
-
-    if (active > 0) {
-      // Label pairs the widest-level count (drives concRatio above) with
-      // the total active count for context.  `W/cap` triggers the warn,
-      // `+N` is everything else currently running across the tree.
-      const extra = Math.max(0, active - widestLevel)
-      const widthLabel = maxConc ? `${widestLevel}/${maxConc}` : `${widestLevel}`
-      const suffix = extra > 0 ? `+${extra}` : ''
-      pieces.push(`⚡${widthLabel}${suffix}`)
-    }
-  }
-
-  const atCap = depthRatio >= 1 || concRatio >= 1
-
-  return (
-    <Text color={color}>
-      {atCap ? ' │ ⚠ ' : ' │ '}
-      {pieces.join(' ')}
-    </Text>
-  )
 }
 
 function SessionDuration({ startedAt }: { startedAt: number }) {
@@ -266,6 +93,28 @@ const shortModelLabel = (model: string) =>
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
+function StatusBusyIndicator({ busy, t }: { busy: boolean; t: Theme }) {
+  const [frame, setFrame] = useState(0)
+
+  useEffect(() => {
+    if (!busy) {
+      setFrame(0)
+
+      return
+    }
+
+    const id = setInterval(() => setFrame(value => (value + 1) % STATUS_SPINNER_FRAMES.length), 120)
+
+    return () => clearInterval(id)
+  }, [busy])
+
+  if (!busy) {
+    return null
+  }
+
+  return <Text color={t.color.accent}>{STATUS_SPINNER_FRAMES[frame]} </Text>
+}
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -292,133 +141,60 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 }
 
 export function StatusRule({
-  cwdLabel,
-  cols,
   busy,
-  status,
-  statusColor,
+  cols,
   model,
   modelFast,
   modelReasoningEffort,
   usage,
-  bgCount,
-  liveSessionCount,
   sessionStartedAt,
-  showCost,
-  turnStartedAt,
-  voiceLabel,
-  onSessionCountClick,
   t
 }: StatusRuleProps) {
   const pct = usage.context_percent
-  const barColor = ctxBarColor(pct, t)
+  const contextColor = ctxBarColor(pct, t)
 
   const ctxLabel = usage.context_max
-    ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+    ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}${pct != null ? ` ${pct}%` : ''}`
     : usage.total > 0
       ? `${fmtK(usage.total)} tok`
       : ''
-
   const bar = usage.context_max ? ctxBar(pct) : ''
-  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel)
-  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
-  const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
-    event.stopImmediatePropagation?.()
-    onSessionCountClick?.()
-  }
-
-  const sessionCountNode = sessionCountText ? (
-    onSessionCountClick ? (
-      <Box flexShrink={0} onClick={handleSessionCountClick}>
-        <Text color={t.color.accent}> │ {sessionCountText}</Text>
-      </Box>
-    ) : (
-      <Text color={t.color.muted}> │ {sessionCountText}</Text>
-    )
-  ) : null
 
   return (
     <Box height={1}>
-      <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
+      <Box flexDirection="row" flexShrink={1} overflow="hidden" width={Math.max(1, cols)}>
         <Text color={t.color.border} wrap="truncate-end">
           {'─ '}
         </Text>
-        {busy ? (
-          <FaceTicker color={statusColor} startedAt={turnStartedAt} />
-        ) : (
-          <Text color={statusColor} wrap="truncate-end">
-            {status}
-          </Text>
-        )}
+        <StatusBusyIndicator busy={busy} t={t} />
         <Text color={t.color.muted} wrap="truncate-end">
-          {' │ '}
           {modelLabel(model, modelReasoningEffort, modelFast)}
         </Text>
         {ctxLabel ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {ctxLabel}
-          </Text>
-        ) : null}
-        {bar ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
-          </Text>
+          <>
+            <Text color={t.color.muted} wrap="truncate-end">
+              {' │ '}
+            </Text>
+            <Text color={contextColor} wrap="truncate-end">
+              Context {ctxLabel}
+            </Text>
+            {bar ? (
+              <Text color={contextColor} wrap="truncate-end">
+                {' '}
+                [{bar}]
+              </Text>
+            ) : null}
+          </>
         ) : null}
         {sessionStartedAt ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <SessionDuration startedAt={sessionStartedAt} />
-          </Text>
-        ) : null}
-        {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <Text
-              color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted}
-            >
-              cmp {usage.compressions}
+          <>
+            <Text color={t.color.muted}> │ </Text>
+            <Text color={t.color.muted} wrap="truncate-end">
+              <SessionDuration startedAt={sessionStartedAt} />
             </Text>
-          </Text>
-        ) : null}
-        <SpawnHud t={t} />
-        {voiceLabel ? (
-          <Text
-            color={
-              voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
-            }
-            wrap="truncate-end"
-          >
-            {' │ '}
-            {voiceLabel}
-          </Text>
-        ) : null}
-        {sessionCountNode}
-        {bgCount > 0 ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {bgCount} bg
-          </Text>
-        ) : null}
-        {showCost && typeof usage.cost_usd === 'number' ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ $'}
-            {usage.cost_usd.toFixed(4)}
-          </Text>
+          </>
         ) : null}
       </Box>
-
-      {rightWidth > 0 ? (
-        <>
-          <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
-          <Box flexShrink={0} width={rightWidth}>
-            <Text color={t.color.label} wrap="truncate-end">
-              {cwdLabel}
-            </Text>
-          </Box>
-        </>
-      ) : null}
     </Box>
   )
 }

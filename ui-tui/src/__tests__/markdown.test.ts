@@ -95,6 +95,19 @@ describe('INLINE_RE emphasis', () => {
   })
 })
 
+describe('code fence rendering', () => {
+  it('renders the fence language as a separate label, not command text', () => {
+    const lines = renderPlain(
+      React.createElement(Box, null, React.createElement(Md, { t: DEFAULT_THEME, text: '```bash\npython3 dev.py\n```' }))
+    )
+
+    const normalized = lines.map(line => line.replace(/\s+/g, ' ').trim())
+
+    expect(normalized.some(line => line.includes('bash code block'))).toBe(true)
+    expect(lines.some(line => line.trim() === 'python3 dev.py')).toBe(true)
+  })
+})
+
 describe('stripInlineMarkup', () => {
   it('strips word-boundary emphasis only', () => {
     expect(stripInlineMarkup('say _hi_ there')).toBe('say hi there')

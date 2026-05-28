@@ -997,7 +997,15 @@ export function useMainApp(gw: GatewayClient) {
   // Pass current progress through unfrozen — streaming update throttling
   // handles interaction load; progress must stay truthful so panels don't
   // randomly disappear when the live tail scrolls offscreen.
-  const appProgress = useMemo(() => ({ showProgressArea }), [showProgressArea])
+  const appProgress = useMemo(
+    () => ({
+      busy: ui.busy,
+      showProgressArea,
+      statusColor: statusColorOf(ui.status, ui.theme.color),
+      turnStartedAt: ui.sid ? turnStartedAt : null
+    }),
+    [showProgressArea, turnStartedAt, ui.busy, ui.sid, ui.status, ui.theme.color]
+  )
 
   const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
   const gitBranch = useGitBranch(cwd)

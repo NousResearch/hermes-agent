@@ -44,7 +44,7 @@ describe('DEFAULT_THEME', () => {
     const { DEFAULT_THEME } = await importThemeWithCleanEnv()
 
     expect(DEFAULT_THEME.brand.name).toBe('Hermes Agent')
-    expect(DEFAULT_THEME.brand.prompt).toBe('❯')
+    expect(DEFAULT_THEME.brand.prompt).toBe(':')
     expect(DEFAULT_THEME.brand.tool).toBe('┊')
   })
 

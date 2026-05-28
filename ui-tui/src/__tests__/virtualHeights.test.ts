@@ -18,10 +18,10 @@ describe('virtual height estimates', () => {
   })
 
   it('uses compound user prompt width when estimating user message wrapping', () => {
-    const msg: Msg = { role: 'user', text: 'x'.repeat(21) }
+    const msg: Msg = { role: 'user', text: 'x'.repeat(23) }
 
-    expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
-    expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
+    expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
+    expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
   })
 
   it('includes detail sections when visible', () => {
@@ -32,15 +32,15 @@ describe('virtual height estimates', () => {
     )
   })
 
-  it('accounts for the response separator when assistant details are visible', () => {
+  it('accounts for attached action-feed details when assistant details are visible', () => {
     const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'plan' }
 
     expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBe(
-      estimatedMsgHeight(msg, 80, { compact: false, details: false }) + 3
+      estimatedMsgHeight(msg, 80, { compact: false, details: false }) + 2
     )
   })
 
-  it('does not account for a response separator without visible details', () => {
+  it('does not account for attached details without visible details', () => {
     const msg: Msg = { role: 'assistant', text: 'ok' }
 
     expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBe(
@@ -69,6 +69,23 @@ describe('virtual height estimates', () => {
         toolsVisible: false
       })
     ).toBe(estimatedMsgHeight(toolsOnly, 80, { compact: false, details: false }))
+  })
+
+  it('accounts for assistant log prefix rows', () => {
+    const plain: Msg = { role: 'assistant', text: '파일 확인 중입니다.' }
+    const prefixed: Msg = { role: 'assistant', text: '진행상황: 파일 확인 중입니다.' }
+
+    expect(estimatedMsgHeight(prefixed, 80, { compact: false, details: false })).toBe(
+      estimatedMsgHeight(plain, 80, { compact: false, details: false }) + 1
+    )
+  })
+
+  it('reserves the action-feed bottom gap for visible trail rows', () => {
+    const trail: Msg = { kind: 'trail', role: 'system', text: '', tools: ['Terminal("npm test")'] }
+
+    expect(estimatedMsgHeight(trail, 80, { compact: false, details: true })).toBe(
+      estimatedMsgHeight(trail, 80, { compact: false, details: true, toolsVisible: false }) + 2
+    )
   })
 
   it('reserves two extra rows for the inter-turn separator on non-first user messages', () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { applyVoiceRecordResponse, shouldFallThroughForScroll } from '../app/useInputHandlers.js'
+import { applyCompletionReplacement, applyVoiceRecordResponse, shouldFallThroughForScroll } from '../app/useInputHandlers.js'
 
 const baseKey = {
   downArrow: false,
@@ -39,6 +39,28 @@ describe('shouldFallThroughForScroll — keep transcript scrolling alive during 
 
   it('does NOT fall through for unrelated state (no scroll keys held)', () => {
     expect(shouldFallThroughForScroll(baseKey)).toBe(false)
+  })
+})
+
+describe('applyCompletionReplacement', () => {
+  it('inserts only the completion text field, never display/meta prompt text', () => {
+    expect(
+      applyCompletionReplacement('/', 1, {
+        display: '/help',
+        meta: 'Show help and commands',
+        text: '/help'
+      })
+    ).toBe('/help')
+  })
+
+  it('preserves the existing leading slash when replacing a slash-command prefix', () => {
+    expect(
+      applyCompletionReplacement('/he', 1, {
+        display: '/help',
+        meta: 'Show help and commands',
+        text: '/help'
+      })
+    ).toBe('/help')
   })
 })
 

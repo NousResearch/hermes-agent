@@ -842,6 +842,50 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert env["NODE_ENV"] == "production"
 
 
+def test_launch_tui_defaults_inline_mode_inside_tmux(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-501/default,123,0")
+    monkeypatch.delenv("HERMES_TUI_INLINE", raising=False)
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert captured["env"]["HERMES_TUI_INLINE"] == "1"
+
+
+def test_launch_tui_respects_explicit_inline_override_inside_tmux(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-501/default,123,0")
+    monkeypatch.setenv("HERMES_TUI_INLINE", "0")
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert captured["env"]["HERMES_TUI_INLINE"] == "0"
+
+
 def test_launch_tui_exit_code_42_relaunches_update(monkeypatch, main_mod):
     from unittest.mock import patch
 

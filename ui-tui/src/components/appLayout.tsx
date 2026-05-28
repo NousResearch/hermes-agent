@@ -10,6 +10,7 @@ import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
+  composerInputSurfaceHeight,
   composerPromptWidth,
   inputVisualHeight,
   stableComposerColumns
@@ -19,13 +20,13 @@ import { composerPromptText } from '../lib/prompt.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
-import { FloatingOverlays, PromptZone } from './appOverlays.js'
+import { CompletionOverlay, FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
-import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
+import { StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
 
 const PromptPrefix = memo(function PromptPrefix({
@@ -60,21 +61,6 @@ const TranscriptPane = memo(function TranscriptPane({
   transcript
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
-
-  // LiveTodoPanel rides as a child of the latest user-message row so it
-  // visually belongs to the prompt and follows it during scroll. -1 when
-  // empty → row.index === -1 is always false → no render.
-  const lastUserIdx = useMemo(() => {
-    const items = transcript.historyItems
-
-    for (let i = items.length - 1; i >= 0; i--) {
-      if (items[i].role === 'user') {
-        return i
-      }
-    }
-
-    return -1
-  }, [transcript.historyItems])
 
   // Index of the first user-role message; every later user message gets a
   // small dash above it so multi-turn transcripts visually segment by
@@ -130,7 +116,6 @@ const TranscriptPane = memo(function TranscriptPane({
                 />
               )}
 
-              {row.index === lastUserIdx && <LiveTodoPanel />}
             </Box>
           ))}
 
@@ -174,6 +159,7 @@ const ComposerPane = memo(function ComposerPane({
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
+  const inputSurfaceHeight = composerInputSurfaceHeight(inputHeight)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
   const captureInputDrag = (e: GutterMouseEvent) => {
@@ -249,11 +235,8 @@ const ComposerPane = memo(function ComposerPane({
 
       <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
         <FloatingOverlays
-          cols={composer.cols}
-          compIdx={composer.compIdx}
-          completions={composer.completions}
-          onActiveSessionSelect={actions.activateLiveSession}
           onActiveSessionClose={actions.closeLiveSession}
+          onActiveSessionSelect={actions.activateLiveSession}
           onModelSelect={actions.onModelSelect}
           onNewLiveSession={actions.newLiveSession}
           onNewPromptSession={actions.newPromptSession}
@@ -261,12 +244,14 @@ const ComposerPane = memo(function ComposerPane({
           pagerPageSize={composer.pagerPageSize}
         />
 
+        <CompletionOverlay cols={composer.cols} compIdx={composer.compIdx} completions={composer.completions} />
+
         {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
 
         {!isBlocked && (
           <>
             {composer.inputBuf.map((line, i) => (
-              <Box key={i}>
+              <Box backgroundColor={ui.theme.color.completionBg} key={i} width={Math.max(1, composer.cols - 2)}>
                 <Box width={promptWidth}>
                   {i === 0 ? (
                     <PromptPrefix color={ui.theme.color.muted} promptText={promptText} width={promptWidth} />
@@ -280,6 +265,8 @@ const ComposerPane = memo(function ComposerPane({
             ))}
 
             <Box
+              backgroundColor={ui.theme.color.completionBg}
+              height={inputSurfaceHeight}
               onMouseDown={captureInputDrag}
               onMouseDrag={dragFromPromptRow}
               onMouseUp={endInputDrag}
@@ -305,6 +292,7 @@ const ComposerPane = memo(function ComposerPane({
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
                   placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  placeholderColor={ui.theme.color.muted}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />

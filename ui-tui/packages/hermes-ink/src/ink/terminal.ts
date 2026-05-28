@@ -177,15 +177,40 @@ export function needsAltScreenResizeScrollbackClear(env: NodeJS.ProcessEnv = pro
 // disambiguation. We previously enabled unconditionally (#23350), assuming
 // terminals silently ignore unknown CSI — but some terminals honor the enable
 // and emit codepoints our input parser doesn't handle (notably over SSH and
-// in xterm.js-based terminals like VS Code). tmux is allowlisted because it
-// accepts modifyOtherKeys and doesn't forward the kitty sequence to the outer
-// terminal.
+// in xterm.js-based terminals like VS Code). tmux is kept in the capability
+// allowlist for explicit probes/tests, but the actual enable helpers below do
+// not push extended-key modes from inside tmux by default because that can
+// break the tmux prefix path in the outer terminal.
 const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal', 'vscode']
 
 /** True if this terminal correctly handles extended key reporting
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
-export function supportsExtendedKeys(): boolean {
-  return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
+export function supportsExtendedKeys(terminal: string | null = env.terminal): boolean {
+  return EXTENDED_KEYS_TERMINALS.includes(terminal ?? '')
+}
+
+/**
+ * Kitty keyboard mode must not be pushed from inside tmux. Some outer
+ * terminals (notably iTerm2) honor CSI >1u even when it is emitted by an app
+ * running in a tmux pane; then Ctrl+B reaches tmux as a CSI-u sequence
+ * rather than the C-b prefix byte, so the user's tmux prefix stops working. Tmux has
+ * its own extended-key negotiation, but requesting either Kitty or
+ * modifyOtherKeys from a pane can still make outer terminals report Ctrl+B in
+ * a form tmux does not treat as the prefix. Keep app-initiated extended-key
+ * modes for direct terminal sessions only unless a user explicitly opts in.
+ */
+export function shouldEnableKittyKeyboard(
+  processEnv: NodeJS.ProcessEnv = process.env,
+  terminal: string | null = env.terminal
+): boolean {
+  return supportsExtendedKeys(terminal) && !processEnv.TMUX
+}
+
+export function shouldEnableModifyOtherKeys(
+  terminal: string | null = env.terminal,
+  processEnv: NodeJS.ProcessEnv = process.env
+): boolean {
+  return supportsExtendedKeys(terminal) && !processEnv.TMUX
 }
 
 /** True if the terminal scrolls the viewport when it receives cursor-up

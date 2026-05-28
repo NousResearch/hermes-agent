@@ -5,6 +5,14 @@ import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 import { THINKING_COT_MAX } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import {
+  actionStatusGlyph,
+  foldActionDetail,
+  parseActionCall,
+  selectVisibleActionFeedItems,
+  summarizeHiddenActionFeedItems,
+  type ActionStatus
+} from '../lib/actionFeed.js'
+import {
   buildSubagentTree,
   fmtCost,
   fmtTokens,
@@ -247,15 +255,18 @@ function Chevron({
   tone?: 'dim' | 'error' | 'warn'
 }) {
   const color = tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.muted
+  const emphasizedTitle = title === 'Action feed'
 
   return (
     <Box onClick={(e: any) => onClick(!!e?.shiftKey || !!e?.ctrlKey)}>
       <Text color={color} dim={tone === 'dim'}>
         <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
-        {title}
+        <Text bold={emphasizedTitle} color={emphasizedTitle ? t.color.label : color}>
+          {title}
+        </Text>
         {typeof count === 'number' ? ` (${count})` : ''}
         {suffix ? (
-          <Text color={t.color.statusFg} dim>
+          <Text color={t.color.statusFg} dim wrap="truncate-end">
             {'  '}
             {suffix}
           </Text>
@@ -684,6 +695,7 @@ interface Group {
   details: DetailRow[]
   key: string
   label: string
+  status: ActionStatus
 }
 
 export const ToolTrail = memo(function ToolTrail({
@@ -790,24 +802,37 @@ export const ToolTrail = memo(function ToolTrail({
   const groups: Group[] = []
   const meta: DetailRow[] = []
   const pushDetail = (row: DetailRow) => (groups.at(-1)?.details ?? meta).push(row)
+  const foldedDetail = (detail: string, tone: ActionStatus) => {
+    const folded = foldActionDetail(detail)
+    const hidden = folded.hiddenLines > 0 ? `\n… +${folded.hiddenLines} lines hidden` : ''
+
+    return {
+      color: tone === 'error' ? t.color.error : t.color.muted,
+      content: `${folded.preview}${hidden}`,
+      dimColor: tone !== 'error'
+    }
+  }
 
   for (const [i, line] of trail.entries()) {
     const parsed = parseToolTrailResultLine(line)
 
     if (parsed) {
+      const status: ActionStatus = parsed.mark === '✗' ? 'error' : 'success'
+      const { duration, label: callWithoutDuration } = splitToolDuration(parsed.call)
+      const action = parseActionCall(callWithoutDuration)
+
       groups.push({
-        color: parsed.mark === '✗' ? t.color.error : t.color.text,
-        content: parsed.call,
+        color: status === 'error' ? t.color.error : t.color.text,
+        content: `${action.title}${duration}`,
         details: [],
         key: `tr-${i}`,
-        label: parsed.call
+        label: parsed.call,
+        status
       })
 
       if (parsed.detail) {
         pushDetail({
-          color: parsed.mark === '✗' ? t.color.error : t.color.muted,
-          content: parsed.detail,
-          dimColor: parsed.mark !== '✗',
+          ...foldedDetail(parsed.detail, status),
           key: `tr-${i}-d`
         })
       }
@@ -823,7 +848,8 @@ export const ToolTrail = memo(function ToolTrail({
         content: label,
         details: [{ color: t.color.muted, content: 'drafting...', dimColor: true, key: `tr-${i}-d` }],
         key: `tr-${i}`,
-        label
+        label,
+        status: 'running'
       })
 
       continue
@@ -851,16 +877,19 @@ export const ToolTrail = memo(function ToolTrail({
 
   for (const tool of tools) {
     const label = formatToolCall(tool.name, tool.context || '')
+    const action = parseActionCall(label)
+    const args = tool.verboseArgs ? foldActionDetail(`Args:\n${boundedLiveRenderText(tool.verboseArgs)}`) : null
 
     groups.push({
       color: t.color.text,
       key: tool.id,
       label,
-      details: tool.verboseArgs
+      status: 'running',
+      details: args
         ? [
             {
               color: t.color.muted,
-              content: `Args:\n${boundedLiveRenderText(tool.verboseArgs)}`,
+              content: `${args.preview}${args.hiddenLines > 0 ? `\n… +${args.hiddenLines} lines hidden` : ''}`,
               dimColor: true,
               key: `${tool.id}-args`
             }
@@ -868,7 +897,7 @@ export const ToolTrail = memo(function ToolTrail({
         : [],
       content: (
         <>
-          <Spinner color={t.color.accent} variant="tool" /> {label}
+          {action.title}
           {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
         </>
       )
@@ -883,7 +912,8 @@ export const ToolTrail = memo(function ToolTrail({
 
   // ── Derived ────────────────────────────────────────────────────
 
-  const hasTools = groups.length > 0
+  const { hidden: hiddenActionCount, hiddenItems: hiddenActionGroups, items: visibleGroups } = selectVisibleActionFeedItems(groups)
+  const hasTools = visibleGroups.length > 0
   const hasSubagents = subagents.length > 0
   const hasMeta = meta.length > 0
   const hasThinking = !!cot || reasoningActive || reasoningStreaming
@@ -899,8 +929,17 @@ export const ToolTrail = memo(function ToolTrail({
   const toolTokensLabel = toolTokens !== undefined && toolTokens > 0 ? `~${fmtK(toolTokens)} tokens` : undefined
 
   const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
-  const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
-  const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
+  const allDelegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
+  const visibleDelegateGroups = visibleGroups.filter(g => g.label.startsWith('Delegate Task'))
+  const inlineDelegateKey =
+    hasSubagents && allDelegateGroups.length === 1 && visibleDelegateGroups.length === 1 ? visibleDelegateGroups[0]!.key : null
+  const hiddenActionSummary = summarizeHiddenActionFeedItems(hiddenActionGroups)
+  const actionFeedSuffix = [
+    hiddenActionCount > 0 ? `+${hiddenActionCount} hidden${hiddenActionSummary ? `: ${hiddenActionSummary}` : ''}` : null,
+    toolTokensLabel
+  ]
+    .filter(Boolean)
+    .join('  ')
 
   const toolLabel = (group: Group) => {
     const { duration, label } = splitToolDuration(String(group.content))
@@ -915,6 +954,14 @@ export const ToolTrail = memo(function ToolTrail({
     ) : (
       group.content
     )
+  }
+
+  const actionGlyph = (group: Group) => {
+    if (group.status === 'running') {
+      return <Spinner color={t.color.accent} variant="tool" />
+    }
+
+    return <Text color={group.status === 'error' ? t.color.error : t.color.accent}>{actionStatusGlyph(group.status)}</Text>
   }
 
   // ── Backstop: floating alerts when every panel is hidden ─────────
@@ -1051,7 +1098,7 @@ export const ToolTrail = memo(function ToolTrail({
     panels.push({
       header: (
         <Chevron
-          count={groups.length}
+          count={visibleGroups.length}
           onClick={shift => {
             if (shift) {
               expandAll()
@@ -1060,17 +1107,17 @@ export const ToolTrail = memo(function ToolTrail({
             }
           }}
           open={openTools}
-          suffix={toolTokensLabel}
+          suffix={actionFeedSuffix || undefined}
           t={t}
-          title="Tool calls"
+          title="Action feed"
         />
       ),
       key: 'tools',
       open: openTools,
       render: rails => (
         <Box flexDirection="column">
-          {groups.map((group, index) => {
-            const branch: TreeBranch = index === groups.length - 1 ? 'last' : 'mid'
+          {visibleGroups.map((group, index) => {
+            const branch: TreeBranch = index === visibleGroups.length - 1 ? 'last' : 'mid'
             const childRails = nextTreeRails(rails, branch)
             const hasInlineSubagents = inlineDelegateKey === group.key
 
@@ -1081,7 +1128,7 @@ export const ToolTrail = memo(function ToolTrail({
                   color={group.color}
                   content={
                     <>
-                      <Text color={t.color.accent}>● </Text>
+                      {actionGlyph(group)} {' '}
                       {toolLabel(group)}
                     </>
                   }

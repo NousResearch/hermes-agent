@@ -1521,6 +1521,8 @@ def _launch_tui(
     env.setdefault("HERMES_PYTHON", sys.executable)
     env.setdefault("HERMES_CWD", os.getcwd())
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
+    if env.get("TMUX") and "HERMES_TUI_INLINE" not in env:
+        env["HERMES_TUI_INLINE"] = "1"
 
     wt_info = None
     if worktree:

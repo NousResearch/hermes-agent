@@ -239,7 +239,7 @@ function normalizeAnsiForeground(color: string): string {
 const BRAND: ThemeBrand = {
   name: 'Hermes Agent',
   icon: '⚕',
-  prompt: '❯',
+  prompt: ':',
   welcome: 'Type your message or /help for commands.',
   goodbye: 'Goodbye! ⚕',
   tool: '┊',

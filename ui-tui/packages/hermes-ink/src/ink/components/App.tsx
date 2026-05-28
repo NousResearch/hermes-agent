@@ -20,7 +20,7 @@ import reconciler from '../reconciler.js'
 import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js'
 import { TerminalQuerier, xtversion } from '../terminal-querier.js'
-import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js'
+import { isXtermJs, setXtversionName, shouldEnableKittyKeyboard, shouldEnableModifyOtherKeys } from '../terminal.js'
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -282,12 +282,15 @@ export default class App extends PureComponent<Props, State> {
         this.props.stdout.write(EFE)
 
         // Enable extended key reporting so ctrl+shift+<letter> is
-        // distinguishable from ctrl+<letter>. We write both the kitty stack
-        // push (CSI >1u) and xterm modifyOtherKeys level 2 (CSI >4;2m) —
-        // terminals honor whichever they implement (tmux only accepts the
-        // latter).
-        if (supportsExtendedKeys()) {
+        // distinguishable from ctrl+<letter>. Direct terminals use the Kitty
+        // stack push (CSI >1u); tmux panes use only tmux-native
+        // modifyOtherKeys so the outer terminal does not switch Ctrl+B away
+        // from the byte tmux needs for its prefix.
+        if (shouldEnableKittyKeyboard()) {
           this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
+        }
+
+        if (shouldEnableModifyOtherKeys()) {
           this.props.stdout.write(ENABLE_MODIFY_OTHER_KEYS)
         }
 

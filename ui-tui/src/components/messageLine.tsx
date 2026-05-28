@@ -7,6 +7,7 @@ import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
+import { splitAssistantLogPrefix } from '../lib/assistantLogPrefix.js'
 import {
   boundedLiveRenderText,
   compactPreview,
@@ -66,7 +67,7 @@ export const MessageLine = memo(function MessageLine({
 
   if (msg.kind === 'trail' && (msg.tools?.length || tools.length || thinking)) {
     return thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden' ? (
-      <Box flexDirection="column">
+      <Box flexDirection="column" marginBottom={1}>
         <ToolTrail
           commandOverride={detailsModeCommandOverride}
           detailsMode={detailsMode}
@@ -109,8 +110,6 @@ export const MessageLine = memo(function MessageLine({
   const showDetails =
     (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) || (thinkingMode !== 'hidden' && Boolean(thinking))
 
-  const showResponseSeparator = shouldShowResponseSeparator(msg, showDetails)
-
   const content = (() => {
     if (msg.kind === 'slash') {
       return <Text color={t.color.muted}>{msg.text}</Text>
@@ -143,6 +142,26 @@ export const MessageLine = memo(function MessageLine({
 
     if (msg.role === 'assistant') {
       const bodyWidth = transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)
+      const logPrefix = splitAssistantLogPrefix(msg.text)
+
+      if (logPrefix) {
+        const bodyText = isStreaming ? boundedLiveRenderText(logPrefix.body) : logPrefix.body
+
+        return (
+          <Box flexDirection="column">
+            <Text bold color={t.color.label}>
+              {logPrefix.prefix}:
+            </Text>
+            {bodyText ? (
+              isStreaming ? (
+                <StreamingMd cols={bodyWidth} compact={compact} t={t} text={bodyText} />
+              ) : (
+                <Md cols={bodyWidth} compact={compact} t={t} text={bodyText} />
+              )
+            ) : null}
+          </Box>
+        )
+      }
 
       return isStreaming ? (
         // Incremental markdown: split at the last stable block boundary so
@@ -176,14 +195,26 @@ export const MessageLine = memo(function MessageLine({
   // against the prose around it.
   const isDiffSegment = msg.kind === 'diff'
 
+  const userBackground = msg.role === 'user' ? t.color.completionBg : undefined
+
   return (
     <Box
       flexDirection="column"
-      marginBottom={msg.role === 'user' || isDiffSegment ? 1 : 0}
+      marginBottom={msg.role === 'user' || isDiffSegment || showDetails ? 1 : 0}
       marginTop={msg.role === 'user' || msg.kind === 'slash' || isDiffSegment ? 1 : 0}
     >
+      <Box backgroundColor={userBackground} paddingX={msg.role === 'user' ? 1 : 0}>
+        <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
+          <Text bold={msg.role === 'user'} color={prefix}>
+            {glyph}{' '}
+          </Text>
+        </NoSelect>
+
+        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
+      </Box>
+
       {showDetails && (
-        <Box flexDirection="column" marginBottom={1}>
+        <Box flexDirection="column">
           <ToolTrail
             commandOverride={detailsModeCommandOverride}
             detailsMode={detailsMode}
@@ -196,33 +227,9 @@ export const MessageLine = memo(function MessageLine({
           />
         </Box>
       )}
-
-      {showResponseSeparator && (
-        <Box marginBottom={1}>
-          <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
-            <Text color={t.color.border}>└─ </Text>
-          </NoSelect>
-          <Text color={t.color.muted} dim>
-            Response
-          </Text>
-        </Box>
-      )}
-
-      <Box>
-        <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
-          <Text bold={msg.role === 'user'} color={prefix}>
-            {glyph}{' '}
-          </Text>
-        </NoSelect>
-
-        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
-      </Box>
     </Box>
   )
 })
-
-export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
-  msg.role === 'assistant' && showDetails && /\S/.test(msg.text)
 
 interface MessageLineProps {
   cols: number

@@ -1,19 +1,23 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldShowResponseSeparator } from '../components/messageLine.js'
+import { splitAssistantLogPrefix } from '../lib/assistantLogPrefix.js'
 
-describe('shouldShowResponseSeparator', () => {
-  it('separates assistant response text from visible details', () => {
-    expect(shouldShowResponseSeparator({ role: 'assistant', text: 'final', thinking: 'plan' }, true)).toBe(true)
+describe('splitAssistantLogPrefix', () => {
+  it('extracts prepared progress prefixes for emphasized rendering', () => {
+    expect(splitAssistantLogPrefix('**진행상황:**\n파일 확인 중입니다.')).toEqual({
+      body: '파일 확인 중입니다.',
+      prefix: '진행상황'
+    })
   })
 
-  it('does not add a response separator without details or body text', () => {
-    expect(shouldShowResponseSeparator({ role: 'assistant', text: 'final' }, false)).toBe(false)
-    expect(shouldShowResponseSeparator({ role: 'assistant', text: '   ', thinking: 'plan' }, true)).toBe(false)
+  it('extracts same-line prepared progress prefixes', () => {
+    expect(splitAssistantLogPrefix('검증: 테스트를 다시 실행합니다.')).toEqual({
+      body: '테스트를 다시 실행합니다.',
+      prefix: '검증'
+    })
   })
 
-  it('does not add response separators to non-assistant transcript rows', () => {
-    expect(shouldShowResponseSeparator({ role: 'user', text: 'prompt' }, true)).toBe(false)
-    expect(shouldShowResponseSeparator({ role: 'system', text: 'note' }, true)).toBe(false)
+  it('leaves ordinary assistant prose untouched', () => {
+    expect(splitAssistantLogPrefix('일반 답변입니다.')).toBeNull()
   })
 })

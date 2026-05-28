@@ -3,6 +3,7 @@ import { stringWidth, wrapAnsi } from '@hermes/ink'
 import type { Role } from '../types.js'
 
 export const COMPOSER_PROMPT_GAP_WIDTH = 1
+export const COMPOSER_INPUT_SURFACE_MIN_HEIGHT = 1
 
 let _seg: Intl.Segmenter | null = null
 const seg = () => (_seg ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' }))
@@ -168,6 +169,10 @@ export function offsetFromPosition(value: string, row: number, col: number, cols
 
 export function inputVisualHeight(value: string, columns: number) {
   return cursorLayout(value, value.length, columns).line + 1
+}
+
+export function composerInputSurfaceHeight(inputHeight: number) {
+  return Math.max(COMPOSER_INPUT_SURFACE_MIN_HEIGHT, inputHeight)
 }
 
 export function composerPromptWidth(promptText: string) {

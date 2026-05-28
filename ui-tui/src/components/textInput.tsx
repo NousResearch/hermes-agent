@@ -29,16 +29,33 @@ const { Box, Text, useStdin, useInput, useStdout, stringWidth, useCursorAdvance,
 const ESC = '\x1b'
 const INV = `${ESC}[7m`
 const INV_OFF = `${ESC}[27m`
-const DIM = `${ESC}[2m`
-const DIM_OFF = `${ESC}[22m`
 const FWD_DEL_RE = new RegExp(`${ESC}\\[3(?:[~$^]|;)`)
 const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
 const FRAME_BATCH_MS = 16
 const MULTI_CLICK_MS = 500
+const IME_TERMINATOR_HOLD_MS = 40
+const IME_TERMINATOR_RE = /^[ .,!?:;]+$/
+const LEADING_IME_TERMINATOR_RE = /^([.,!?:;]+)([\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]+)$/
+const HANGUL_IME_COMMIT_RE = /[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]/
 
 const invert = (s: string) => INV + s + INV_OFF
-const dim = (s: string) => DIM + s + DIM_OFF
+const truthy = (value?: string) => /^(?:1|true|yes|on)$/i.test((value ?? '').trim())
+const falsy = (value?: string) => /^(?:0|false|no|off)$/i.test((value ?? '').trim())
+
+function parseFastEchoOverride(env: NodeJS.ProcessEnv): boolean | null {
+  const raw = env.HERMES_TUI_FAST_ECHO
+
+  if (truthy(raw)) {
+    return true
+  }
+
+  if (falsy(raw)) {
+    return false
+  }
+
+  return null
+}
 
 let _seg: Intl.Segmenter | null = null
 const seg = () => (_seg ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' }))
@@ -121,6 +138,21 @@ export function applyPrintableInsert(
 }
 
 export const shouldRouteMultiCharInputAsPaste = (text: string): boolean => text.includes('\n')
+
+export const containsHangulImeCommit = (text: string): boolean => HANGUL_IME_COMMIT_RE.test(text)
+
+export const shouldDeferImeTerminator = (text: string): boolean =>
+  text.length > 0 && text.length <= 3 && IME_TERMINATOR_RE.test(text)
+
+export const normalizeImeTerminatorOrder = (text: string): string => {
+  const match = LEADING_IME_TERMINATOR_RE.exec(text)
+
+  if (!match) {
+    return text
+  }
+
+  return `${match[2]}${match[1]}`
+}
 
 function prevPos(s: string, p: number) {
   const pos = snapPos(s, p)
@@ -328,9 +360,23 @@ export function canFastBackspaceShape(current: string, cursor: number, columns?:
 }
 
 export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): boolean {
+  const explicitOverride = parseFastEchoOverride(env)
+
+  if (explicitOverride !== null) {
+    return explicitOverride
+  }
+
   // Terminal.app still shows paint/cursor artifacts under the fast-echo
   // bypass path. Fall back to the normal Ink render path there.
   if ((env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal') {
+    return false
+  }
+
+  // tmux adds its own cursor/IME/alternate-buffer state layer. The direct
+  // stdout fast-echo path can race React layout there, which is exactly how
+  // typed text ends up visually below the composer instead of inside it. Keep
+  // tmux on the normal Ink render path unless explicitly opted in.
+  if (env.TMUX) {
     return false
   }
 
@@ -419,6 +465,7 @@ export function TextInput({
   mouseApiRef,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
+  placeholderColor,
   focus = true
 }: TextInputProps) {
   const [cur, setCur] = useState(value.length)
@@ -436,6 +483,7 @@ export function TextInput({
   const editVersionRef = useRef(0)
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingParentValue = useRef<string | null>(null)
+  const pendingImeTerminator = useRef<null | { text: string; timer: ReturnType<typeof setTimeout> | null }>(null)
   const localRenderTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lineWidthRef = useRef(stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value))
   const mouseAnchorRef = useRef<null | number>(null)
@@ -499,17 +547,15 @@ export function TextInput({
 
   const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
 
-  // Placeholder text is just a hint, not a selection — render it dim
-  // without inverse styling. In a TTY the hardware cursor parks at column
-  // 0 and visually marks the input start. Non-TTY surfaces still need the
-  // synthetic inverse first-char to draw a cursor at all.
+  // Placeholder text is just a hint, not a selection. Render it as normal
+  // Ink text instead of embedding ANSI dim/reset sequences in the content;
+  // raw SGR resets can visually punch through the composer's background box
+  // in some terminals. In a TTY the hardware cursor parks at column 0 and
+  // visually marks the input start. Non-TTY surfaces still need a synthetic
+  // inverse first-char to draw a cursor at all.
   const rendered = useMemo(() => {
     if (!focus) {
-      return display || dim(placeholder)
-    }
-
-    if (!display && placeholder) {
-      return nativeCursor ? dim(placeholder) : invert(placeholder[0] ?? ' ') + dim(placeholder.slice(1))
+      return display
     }
 
     if (selected) {
@@ -517,7 +563,9 @@ export function TextInput({
     }
 
     return nativeCursor ? display || ' ' : renderWithCursor(display, cur)
-  }, [cur, display, focus, nativeCursor, placeholder, selected])
+  }, [cur, display, focus, nativeCursor, selected])
+
+  const showPlaceholder = !display && !!placeholder
 
   useEffect(() => {
     if (self.current) {
@@ -571,6 +619,10 @@ export function TextInput({
 
       if (parentChangeTimer.current) {
         clearTimeout(parentChangeTimer.current)
+      }
+
+      if (pendingImeTerminator.current?.timer) {
+        clearTimeout(pendingImeTerminator.current.timer)
       }
 
       if (localRenderTimer.current) {
@@ -731,6 +783,7 @@ export function TextInput({
     }
 
     flushParentChange()
+    flushPendingImeTerminator()
   }
 
   const scheduleKeyBurstCommit = (next: string, nextCur: number) => {
@@ -744,6 +797,51 @@ export function TextInput({
       keyBurstTimer.current = null
       flushParentChange()
     }, FRAME_BATCH_MS)
+  }
+
+  const takePendingImeTerminator = () => {
+    const pending = pendingImeTerminator.current
+
+    if (!pending) {
+      return ''
+    }
+
+    if (pending.timer) {
+      clearTimeout(pending.timer)
+    }
+
+    pendingImeTerminator.current = null
+
+    return pending.text
+  }
+
+  const flushPendingImeTerminator = () => {
+    const text = takePendingImeTerminator()
+
+    if (!text) {
+      return false
+    }
+
+    const c = curRef.current
+    const v = vRef.current
+    commit(v.slice(0, c) + text + v.slice(c), c + text.length)
+
+    return true
+  }
+
+  const deferImeTerminator = (text: string) => {
+    const existing = pendingImeTerminator.current
+
+    if (existing?.timer) {
+      clearTimeout(existing.timer)
+    }
+
+    const nextText = `${existing?.text ?? ''}${text}`
+    const timer = setTimeout(() => {
+      flushPendingImeTerminator()
+    }, IME_TERMINATOR_HOLD_MS)
+
+    pendingImeTerminator.current = { text: nextText, timer }
   }
 
   const clearSel = () => {
@@ -961,12 +1059,15 @@ export function TextInput({
       const actionDeleteToStart = (mod && inp === 'u') || isMacActionFallback(k, inp, 'u')
       const actionKillToEnd = (mod && inp === 'k') || isMacActionFallback(k, inp, 'k')
       const actionDeleteWord = (mod && inp === 'w') || isMacActionFallback(k, inp, 'w')
-      const range = selRange()
+      let range = selRange()
       const delFwd = k.delete || fwdDel.current
       const isPrintableInput = (event.keypress.isPasted || inp.length > 0) && PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
 
       if (!isPrintableInput) {
         flushKeyBurst()
+        c = curRef.current
+        v = vRef.current
+        range = selRange()
       }
 
       if (mod && inp === 'z') {
@@ -1082,7 +1183,11 @@ export function TextInput({
         }
       } else if (event.keypress.isPasted || inp.length > 0) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
-        const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+        let text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+
+        if (!event.keypress.isPasted) {
+          text = normalizeImeTerminatorOrder(text)
+        }
 
         if (bracketed && emitPaste({ bracketed: true, cursor: c, text, value: v })) {
           return
@@ -1092,8 +1197,33 @@ export function TextInput({
           return
         }
 
+        if (!event.keypress.isPasted && pendingImeTerminator.current && containsHangulImeCommit(text) && !text.includes('\n')) {
+          const suffix = takePendingImeTerminator()
+          const inserted = applyPrintableInsert(v, c, `${text}${suffix}`, range)
+
+          if (!inserted) {
+            return
+          }
+
+          commit(inserted.value, inserted.cursor)
+
+          return
+        }
+
+        if (!event.keypress.isPasted && pendingImeTerminator.current) {
+          flushPendingImeTerminator()
+          c = curRef.current
+          v = vRef.current
+        }
+
         if (text === '\n') {
           return commit(ins(v, c, '\n'), c + 1)
+        }
+
+        if (!event.keypress.isPasted && !range && shouldDeferImeTerminator(text)) {
+          deferImeTerminator(text)
+
+          return
         }
 
         if (text.length > 1 || text.includes('\n')) {
@@ -1115,7 +1245,12 @@ export function TextInput({
 
           v = inserted.value
           c = inserted.cursor
-          scheduleKeyBurstCommit(v, c)
+
+          if (containsHangulImeCommit(text)) {
+            commit(v, c)
+          } else {
+            scheduleKeyBurstCommit(v, c)
+          }
 
           return
         }
@@ -1226,7 +1361,22 @@ export function TextInput({
       ref={boxRef}
       width={columns}
     >
-      <Text wrap="wrap">{rendered}</Text>
+      {showPlaceholder ? (
+        <Text wrap="wrap">
+          {focus && !nativeCursor ? (
+            <>
+              <Text color={placeholderColor} inverse>
+                {placeholder[0] ?? ' '}
+              </Text>
+              <Text color={placeholderColor}>{placeholder.slice(1)}</Text>
+            </>
+          ) : (
+            <Text color={placeholderColor}>{placeholder}</Text>
+          )}
+        </Text>
+      ) : (
+        <Text wrap="wrap">{rendered}</Text>
+      )}
     </Box>
   )
 }
@@ -1257,6 +1407,7 @@ interface TextInputProps {
   ) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
   onSubmit?: (v: string) => void
   placeholder?: string
+  placeholderColor?: string
   value: string
   voiceRecordKey?: ParsedVoiceRecordKey
 }

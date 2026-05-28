@@ -5,7 +5,7 @@ import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@hermes/ink'
 
-import { TERMUX_TUI_MODE } from './config/env.js'
+import { INLINE_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
@@ -22,10 +22,10 @@ if (!process.stdin.isTTY) {
 // terminal tab can still have mouse/focus/paste modes enabled.
 resetTerminalModes()
 
-// Desktop terminals benefit from a clean startup slate because the TUI usually
-// runs in AlternateScreen. On Termux we keep prior output intact so users can
-// review/copy earlier assistant replies after reopening the app.
-if (TERMUX_TUI_MODE) {
+// AlternateScreen sessions benefit from a clean startup slate. Inline sessions
+// (Termux/tmux/HERMES_TUI_INLINE=1) intentionally keep primary-buffer
+// scrollback so native/tmux copy-mode can review earlier output.
+if (INLINE_MODE) {
   process.stdout.write('\n')
 } else {
   process.stdout.write('\x1b[2J\x1b[H\x1b[3J')

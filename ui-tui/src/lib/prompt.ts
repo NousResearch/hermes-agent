@@ -1,4 +1,4 @@
-const TERMUX_SAFE_PROMPT = '>'
+const TERMUX_SAFE_PROMPT = ':'
 
 export function composerPromptText(
   prompt: string,

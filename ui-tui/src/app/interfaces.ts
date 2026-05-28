@@ -340,7 +340,10 @@ export interface AppLayoutComposerProps {
 }
 
 export interface AppLayoutProgressProps {
+  busy: boolean
   showProgressArea: boolean
+  statusColor: string
+  turnStartedAt: null | number
 }
 
 export interface AppLayoutStatusProps {

@@ -15,7 +15,7 @@ import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionW
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
-import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
+import type { CompletionItem, InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -77,6 +77,17 @@ export function applyVoiceRecordResponse(
   } else {
     voice.setProcessing(false)
   }
+}
+
+export function applyCompletionReplacement(
+  input: string,
+  compReplace: number,
+  row: Pick<CompletionItem, 'text'>
+): string {
+  const replaceUntil = Math.max(0, Math.min(compReplace, input.length))
+  const text = input.startsWith('/') && row.text.startsWith('/') && replaceUntil > 0 ? row.text.slice(1) : row.text
+
+  return input.slice(0, replaceUntil) + text
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
@@ -551,12 +562,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       const row = cState.completions[cState.compIdx]
 
       if (row?.text) {
-        const text =
-          cState.input.startsWith('/') && row.text.startsWith('/') && cState.compReplace > 0
-            ? row.text.slice(1)
-            : row.text
-
-        cActions.setInput(cState.input.slice(0, cState.compReplace) + text)
+        cActions.setInput(applyCompletionReplacement(cState.input, cState.compReplace, row))
       }
 
       return

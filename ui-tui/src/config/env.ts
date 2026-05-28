@@ -1,4 +1,5 @@
 import type { MouseTrackingMode } from '@hermes/ink'
+
 import { isTermuxTuiMode } from '../lib/termux.js'
 
 const truthy = (v?: string) => /^(?:1|true|yes|on)$/i.test((v ?? '').trim())
@@ -49,15 +50,20 @@ export const MOUSE_TRACKING: MouseTrackingMode = resolvedBootMouseEnabled ? 'all
 
 export const NO_CONFIRM_DESTRUCTIVE = truthy(process.env.HERMES_TUI_NO_CONFIRM)
 
-const inlineOverride = parseToggle(process.env.HERMES_TUI_INLINE)
-
 // Skip AlternateScreen — TUI renders into the primary buffer so the host
 // terminal's native scrollback captures whatever scrolls off the top.
 //
-// On Termux we default this on: users often background/foreground the app,
-// and primary-buffer rendering makes long-thread review and copy/paste much
-// less fragile. Override explicitly with HERMES_TUI_INLINE=0/1.
-export const INLINE_MODE = inlineOverride ?? TERMUX_TUI_MODE
+// On Termux and tmux we default this on: users often rely on the host/tmux
+// scrollback and copy-mode (`Ctrl-b [`). AlternateScreen makes tmux report
+// `alternate_on=1` and keeps pane history at 0, so copy-mode opens but cannot
+// scroll the Hermes transcript. Override explicitly with HERMES_TUI_INLINE=0/1.
+export const isInlineModeEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => {
+  const override = parseToggle(env.HERMES_TUI_INLINE)
+
+  return override ?? (isTermuxTuiMode(env) || !!env.TMUX)
+}
+
+export const INLINE_MODE = isInlineModeEnabled()
 
 // Live FPS counter overlay, fed by ink's onFrame (real render rate, not a
 // synthetic timer).

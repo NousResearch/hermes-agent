@@ -28,12 +28,12 @@ import { patchUiState } from './uiStore.js'
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   bottom: 'bottom',
   off: 'off',
-  on: 'top',
-  top: 'top'
+  on: 'bottom',
+  top: 'bottom'
 }
 
 export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
-  raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
+  raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'bottom') : 'bottom'
 
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
 

@@ -520,23 +520,25 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['sb'],
-    help: 'status bar position (on|off|top|bottom)',
+    help: 'status bar position (on|off|bottom)',
     name: 'statusbar',
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
-      const toggle: StatusBarMode = ctx.ui.statusBar === 'off' ? 'top' : 'off'
+      const toggle: StatusBarMode = ctx.ui.statusBar === 'off' ? 'bottom' : 'off'
 
       const next: null | StatusBarMode =
         !mode || mode === 'toggle'
           ? toggle
-          : mode === 'on' || mode === 'top'
-            ? 'top'
-            : mode === 'off' || mode === 'bottom'
-              ? mode
-              : null
+          : mode === 'on'
+            ? 'bottom'
+            : mode === 'top'
+              ? 'bottom'
+              : mode === 'off' || mode === 'bottom'
+                ? mode
+                : null
 
       if (!next) {
-        return ctx.transcript.sys('usage: /statusbar [on|off|top|bottom|toggle]')
+        return ctx.transcript.sys('usage: /statusbar [on|off|bottom|toggle]')
       }
 
       patchUiState({ statusBar: next })

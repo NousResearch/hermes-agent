@@ -752,7 +752,18 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
 
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
-            {lang && !isDiff && <Text color={t.color.muted}>{'─ ' + lang}</Text>}
+            {lang && !isDiff && (
+              <Box>
+                <Text color={t.color.muted}>┌─ </Text>
+                <Text bold inverse color={t.color.text}>
+                  {' '}
+                  {lang}{' '}
+                </Text>
+                <Text color={t.color.muted} dim>
+                  {' code block'}
+                </Text>
+              </Box>
+            )}
 
             {block.map((l, j) => {
               if (highlighted) {

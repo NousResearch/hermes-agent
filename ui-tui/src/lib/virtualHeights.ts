@@ -1,6 +1,7 @@
 import { TERMUX_TUI_MODE } from '../config/env.js'
 import type { Msg } from '../types.js'
 
+import { splitAssistantLogPrefix } from './assistantLogPrefix.js'
 import { transcriptBodyWidth } from './inputMetrics.js'
 
 const hashText = (text: string) => {
@@ -102,8 +103,9 @@ export const estimatedMsgHeight = (
   }
 
   const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)
-  const text = msg.text
-  let h = wrappedLines(text || ' ', bodyWidth)
+  const logPrefix = msg.role === 'assistant' ? splitAssistantLogPrefix(msg.text) : null
+  const text = logPrefix ? logPrefix.body : msg.text
+  let h = logPrefix ? 1 + (text ? wrappedLines(text, bodyWidth) : 0) : wrappedLines(text || ' ', bodyWidth)
 
   if (!compact && msg.role === 'assistant') {
     // Paragraph gaps add up to 6 extra rows of breathing room. Slice
@@ -122,10 +124,17 @@ export const estimatedMsgHeight = (
     if (hasVisibleDetails) {
       h += (hasVisibleTools ? (msg.tools?.length ?? 0) : 0) + (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
 
-      if (msg.role === 'assistant' && /\S/.test(msg.text)) {
-        h += 2
+      if (msg.role === 'assistant') {
+        // Assistant details now render directly under the natural-language
+        // message as one visual module. There is no separate "Response" label,
+        // but the outer message still reserves a bottom gap after the feed.
+        h += 1
       }
     }
+  }
+
+  if (msg.kind === 'trail' && details && ((toolsVisible && msg.tools?.length) || (thinkingVisible && /\S/.test(msg.thinking ?? '')))) {
+    h += 1
   }
 
   if (msg.role === 'user' || msg.kind === 'diff') {

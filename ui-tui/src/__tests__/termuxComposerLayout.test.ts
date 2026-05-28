@@ -5,15 +5,15 @@ import { composerPromptText } from '../lib/prompt.js'
 
 describe('Termux composer prompt + width guards', () => {
   it('uses a single-cell ASCII prompt marker in Termux mode', () => {
-    expect(composerPromptText('❯', 'coder', false, true, 50)).toBe('>')
+    expect(composerPromptText('❯', 'coder', false, true, 50)).toBe(':')
   })
 
   it('suppresses profile prefixes on narrow Termux panes', () => {
-    expect(composerPromptText('❯', 'upstr', false, true, 72)).toBe('>')
+    expect(composerPromptText('❯', 'upstr', false, true, 72)).toBe(':')
   })
 
   it('keeps profile context on very wide Termux panes', () => {
-    expect(composerPromptText('❯', 'upstr', false, true, 120)).toBe('upstr >')
+    expect(composerPromptText('❯', 'upstr', false, true, 120)).toBe('upstr :')
   })
 
   it('reserves fewer columns for gutter on narrow Termux widths', () => {

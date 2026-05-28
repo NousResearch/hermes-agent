@@ -77,7 +77,8 @@ import {
 } from './selection.js'
 import {
   needsAltScreenResizeScrollbackClear,
-  supportsExtendedKeys,
+  shouldEnableKittyKeyboard,
+  shouldEnableModifyOtherKeys,
   SYNC_OUTPUT_SUPPORTED,
   type Terminal,
   writeDiffToTerminal
@@ -135,6 +136,20 @@ const DEEP_ERASE_THEN_HOME_PATCH = Object.freeze({
   type: 'stdout' as const,
   content: ERASE_SCREEN + ERASE_SCROLLBACK + CURSOR_HOME
 })
+
+function shouldHealMainScreenResize(): boolean {
+  const override = process.env['HERMES_TUI_MAIN_SCREEN_RESIZE_REPAINT']
+
+  if (override === '0' || override === 'false') {
+    return false
+  }
+
+  if (override === '1' || override === 'true') {
+    return true
+  }
+
+  return !!process.env['TMUX']
+}
 
 // Cached per-Ink-instance, invalidated on resize. frame.cursor.y for
 // alt-screen is always terminalRows - 1 (renderer.ts).
@@ -279,11 +294,11 @@ export default class Ink {
   // one full-render frame; steady-state frames after clear it and regain
   // the blit + narrow-damage fast path.
   private prevFrameContaminated = false
-  // Set by handleResize: prepend ERASE_SCREEN to the next onRender's patches
-  // INSIDE the BSU/ESU block so clear+paint is atomic. Writing ERASE_SCREEN
-  // synchronously in handleResize would leave the screen blank for the ~80ms
-  // render() takes; deferring into the atomic block means old content stays
-  // visible until the new frame is fully ready.
+  // Set by resize/self-heal paths: prepend ERASE_SCREEN to the next
+  // onRender's patches instead of clearing synchronously. In alt screen this
+  // lands inside the BSU/ESU block when supported; in tmux inline/main-screen
+  // mode it still keeps the visible clear adjacent to the full repaint and
+  // preserves scrollback (CSI 2J, not 3J).
   private needsEraseBeforePaint = false
   // Native cursor positioning: a component (via useDeclaredCursor) declares
   // where the terminal cursor should be parked after each frame. Terminal
@@ -489,13 +504,15 @@ export default class Ink {
     const cols = this.options.stdout.columns || 80
     const rows = this.options.stdout.rows || 24
     const dimsChanged = cols !== this.terminalColumns || rows !== this.terminalRows
+    const canAltScreenResizeHeal = this.altScreenActive && !this.isPaused && this.options.stdout.isTTY
+    const canMainScreenResizeHeal = !this.altScreenActive && !this.isPaused && this.options.stdout.isTTY && shouldHealMainScreenResize()
 
     // Terminals often emit 2+ resize events for one user action
     // (window settling). Same-dimension events are usually no-ops,
-    // but in alt-screen mode a same-dimension resize can signal a
-    // terminal host reflow or buffer restore that leaves stale glyphs
+    // but in full-screen or tmux inline modes a same-dimension resize can
+    // signal a terminal host reflow or buffer restore that leaves stale glyphs
     // on the physical screen — treat it as a repaint signal.
-    if (!dimsChanged && !(this.altScreenActive && !this.isPaused && this.options.stdout.isTTY)) {
+    if (!dimsChanged && !canAltScreenResizeHeal && !canMainScreenResizeHeal) {
       return
     }
 
@@ -529,8 +546,19 @@ export default class Ink {
     // by handleResume (SIGCONT) and the sleep-wake detector; resize itself
     // doesn't exit alt-screen. Do NOT write ERASE_SCREEN: render() below
     // can take ~80ms; erasing first leaves the screen blank that whole time.
-    if (this.altScreenActive && !this.isPaused && this.options.stdout.isTTY) {
+    if (canAltScreenResizeHeal) {
       this.prepareAltScreenResizeRepaint()
+    } else if (canMainScreenResizeHeal) {
+      // tmux inline/main-screen mode preserves scrollback, but terminal
+      // clients (notably mobile/remote clients such as Termius) can keep
+      // stale cells after detach/reattach, window-size changes, or switching
+      // between tmux windows with different dimensions. tmux's logical buffer
+      // can be clean while the client display is dirty. Treat resize events as
+      // a repaint signal here too: clear only the visible screen and force a
+      // full frame diff from a blank previous frame.
+      this.repaint()
+      this.prevFrameContaminated = true
+      this.needsEraseBeforePaint = true
     }
 
     // Already queued: later events in this burst updated dims/alt-screen
@@ -676,7 +704,8 @@ export default class Ink {
     // without the pop we'd accumulate depth on each editor round-trip).
     this.options.stdout.write(
       '\x1b[?1004h' +
-        (supportsExtendedKeys() ? DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS : '')
+        (shouldEnableKittyKeyboard() ? DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD : '') +
+        (shouldEnableModifyOtherKeys() ? ENABLE_MODIFY_OTHER_KEYS : '')
     )
   }
   onRender() {
@@ -946,6 +975,7 @@ export default class Ink {
     const optimizeMs = performance.now() - tOptimize
     const hasDiff = optimized.length > 0
     const needsAltScreenErase = this.altScreenActive && this.needsEraseBeforePaint
+    const needsMainScreenErase = !this.altScreenActive && this.needsEraseBeforePaint
 
     if (this.altScreenActive && (hasDiff || needsAltScreenErase)) {
       // Prepend CSI H to anchor the physical cursor to (0,0) so
@@ -975,6 +1005,11 @@ export default class Ink {
       }
 
       optimized.push(this.altScreenParkPatch)
+    }
+
+    if (needsMainScreenErase) {
+      this.needsEraseBeforePaint = false
+      optimized.unshift(ERASE_THEN_HOME_PATCH)
     }
 
     // Native cursor positioning: park the terminal cursor at the declared
@@ -1189,15 +1224,15 @@ export default class Ink {
    */
   repaint(): void {
     this.frontFrame = emptyFrame(
-      this.frontFrame.viewport.height,
-      this.frontFrame.viewport.width,
+      this.terminalRows,
+      this.terminalColumns,
       this.stylePool,
       this.charPool,
       this.hyperlinkPool
     )
     this.backFrame = emptyFrame(
-      this.backFrame.viewport.height,
-      this.backFrame.viewport.width,
+      this.terminalRows,
+      this.terminalColumns,
       this.stylePool,
       this.charPool,
       this.hyperlinkPool
@@ -1344,8 +1379,12 @@ export default class Ink {
     // allowlisted terminals at raw-mode entry; a terminal reset clears them).
     // Pop-before-push keeps Kitty stack depth at 1 instead of accumulating
     // on each call.
-    if (supportsExtendedKeys()) {
-      this.options.stdout.write(DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS)
+    if (shouldEnableKittyKeyboard()) {
+      this.options.stdout.write(DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD)
+    }
+
+    if (shouldEnableModifyOtherKeys()) {
+      this.options.stdout.write(ENABLE_MODIFY_OTHER_KEYS)
     }
 
     if (!this.altScreenActive) {

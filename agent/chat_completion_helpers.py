@@ -403,13 +403,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 _elapsed, _ttfb_timeout, api_kwargs.get("model", "unknown"),
             )
             if _silent_hint:
-                agent._emit_status(
+                agent._buffer_status(
                     f"⚠️ No first byte from provider in {int(_elapsed)}s "
                     f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
                     f"Reconnecting. {_silent_hint}"
                 )
             else:
-                agent._emit_status(
+                agent._buffer_status(
                     f"⚠️ No first byte from provider in {int(_elapsed)}s "
                     f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
                     f"Reconnecting."
@@ -455,7 +455,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 api_kwargs.get("model", "unknown"),
                 f"{_est_tokens_for_codex_watchdog:,}",
             )
-            agent._emit_status(
+            agent._buffer_status(
                 f"⚠️ Codex stream sent no events for {int(_event_stale_elapsed)}s "
                 f"after first byte (model: {api_kwargs.get('model', 'unknown')}). "
                 f"Reconnecting."
@@ -493,13 +493,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
             )
             if _silent_hint:
-                agent._emit_status(
+                agent._buffer_status(
                     f"⚠️ No response from provider for {int(_elapsed)}s "
                     f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
                     f"{_silent_hint}"
                 )
             else:
-                agent._emit_status(
+                agent._buffer_status(
                     f"⚠️ No response from provider for {int(_elapsed)}s "
                     f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
                     f"Aborting call."
@@ -1262,7 +1262,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 api_mode=agent.api_mode,
             )
 
-        agent._emit_status(
+        agent._buffer_status(
             f"🔄 Primary model failed — switching to fallback: "
             f"{fb_model} via {fb_provider}"
         )
@@ -2251,7 +2251,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             mid_tool_call=False,
                             diag=request_client_holder.get("diag"),
                         )
-                        agent._emit_status(
+                        agent._buffer_status(
                             "❌ Provider returned malformed streaming data after "
                             f"{_max_stream_retries + 1} attempts. "
                             "The provider may be experiencing issues — "
@@ -2358,7 +2358,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _stale_elapsed, _stream_stale_timeout,
                 api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
             )
-            agent._emit_status(
+            agent._buffer_status(
                 f"⚠️ No response from provider for {int(_stale_elapsed)}s "
                 f"(model: {api_kwargs.get('model', 'unknown')}, "
                 f"context: ~{_est_ctx:,} tokens). "

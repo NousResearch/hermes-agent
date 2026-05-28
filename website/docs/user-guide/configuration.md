@@ -8,6 +8,10 @@ description: "Configure Hermes Agent — config.yaml, providers, models, API key
 
 All settings are stored in the `~/.hermes/` directory for easy access.
 
+:::tip Easiest path to a working `config.yaml`
+Run `hermes setup --portal` — one OAuth gets you a model provider and all four Tool Gateway tools without hand-editing YAML. Portal subscribers also get 10% off token-billed providers. See [Nous Portal](/integrations/nous-portal).
+:::
+
 ## Directory Structure
 
 ```text
@@ -566,6 +570,7 @@ compression:
   threshold: 0.50                                   # Compress at this % of context limit
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
   protect_last_n: 20                                # Min recent messages to keep uncompressed
+  protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
   hygiene_hard_message_limit: 400                   # Gateway safety valve — see below
 
 # The summarization model/provider is configured under auxiliary:
@@ -581,6 +586,8 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 :::
 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. Runaway sessions with thousands of messages can hit model context limits before the normal percent-of-context threshold fires; when message count crosses this ceiling, Hermes forces compression regardless of token usage. Default `400` — raise it for platforms where very long sessions are normal, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
+
+`protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
 
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.
@@ -866,7 +873,7 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 :::
 
 :::info
-Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/integrations/providers#fallback-model). All three follow the same provider/model/base_url pattern.
+Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/integrations/providers#fallback-providers). All three follow the same provider/model/base_url pattern.
 :::
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
@@ -1422,7 +1429,7 @@ Environment scrubbing (strips `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, 
 
 ## Web Search Backends
 
-The `web_search`, `web_extract`, and `web_crawl` tools support five backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
+The `web_search` and `web_extract` tools support five backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
 
 ```yaml
 web:
@@ -1433,17 +1440,17 @@ web:
   extract_backend: "firecrawl"
 ```
 
-| Backend | Env Var | Search | Extract | Crawl |
-|---------|---------|--------|---------|-------|
-| **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ |
-| **SearXNG** | `SEARXNG_URL` | ✔ | — | — |
-| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
-| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ |
-| **Exa** | `EXA_API_KEY` | ✔ | ✔ | — |
+| Backend | Env Var | Search | Extract |
+|---------|---------|--------|---------|
+| **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ |
+| **SearXNG** | `SEARXNG_URL` | ✔ | — |
+| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ |
+| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ |
+| **Exa** | `EXA_API_KEY` | ✔ | ✔ |
 
 **Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `SEARXNG_URL` is set, SearXNG is used. If only `EXA_API_KEY` is set, Exa is used. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
 
-**SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` and `web_crawl` require a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
+**SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
 
 **Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=*** on the server to disable auth).
 

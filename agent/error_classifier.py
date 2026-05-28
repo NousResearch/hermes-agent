@@ -97,13 +97,20 @@ _BILLING_PATTERNS = [
     "insufficient_quota",
     "insufficient balance",
     "credit balance",
+    "credits exhausted",
     "credits have been exhausted",
+    "no usable credits",
     "top up your credits",
     "payment required",
     "billing hard limit",
     "exceeded your current quota",
     "account is deactivated",
     "plan does not include",
+    "out of funds",
+    "run out of funds",
+    "balance_depleted",
+    "model_not_supported_on_free_tier",
+    "not available on the free tier",
 ]
 
 # Patterns that indicate rate limiting (transient, will resolve)
@@ -690,8 +697,13 @@ def _classify_by_status(
         )
 
     if status_code == 403:
-        # OpenRouter 403 "key limit exceeded" is actually billing
-        if "key limit exceeded" in error_msg or "spending limit" in error_msg:
+        # OpenRouter 403 "key limit exceeded" is actually billing. Other
+        # providers also use 403 for account-plan or credit exhaustion.
+        if (
+            "key limit exceeded" in error_msg
+            or "spending limit" in error_msg
+            or any(p in error_msg for p in _BILLING_PATTERNS)
+        ):
             return result_fn(
                 FailoverReason.billing,
                 retryable=False,
@@ -708,6 +720,17 @@ def _classify_by_status(
         return _classify_402(error_msg, result_fn)
 
     if status_code == 404:
+        # Nous API currently surfaces HA/NAS credit depletion as a paid model
+        # becoming unavailable on the Free Tier, returned as 404 rather than
+        # 402. Treat that as entitlement/billing exhaustion, not a missing
+        # model, so the retry loop can show credit/top-up guidance.
+        if any(p in error_msg for p in _BILLING_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         # OpenRouter policy-block 404 — distinct from "model not found".
         # The model exists; the user's account privacy setting excludes the
         # only endpoint serving it. Falling back to another provider won't
@@ -973,7 +996,15 @@ def _classify_by_error_code(
             should_rotate_credential=True,
         )
 
-    if code_lower in {"insufficient_quota", "billing_not_active", "payment_required"}:
+    if code_lower in {
+        "insufficient_quota",
+        "billing_not_active",
+        "payment_required",
+        "insufficient_credits",
+        "no_usable_credits",
+        "balance_depleted",
+        "model_not_supported_on_free_tier",
+    }:
         return result_fn(
             FailoverReason.billing,
             retryable=False,

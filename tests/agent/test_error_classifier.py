@@ -254,11 +254,50 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
 
+    def test_402_out_of_funds_billing(self):
+        e = MockAPIError(
+            "Payment Required",
+            status_code=402,
+            body={
+                "status": 402,
+                "message": (
+                    "Your API key has run out of funds. Please go visit the "
+                    "portal to sort that out: https://portal.nousresearch.com"
+                ),
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
     def test_402_transient_usage_limit(self):
         e = MockAPIError("usage limit exceeded, try again later", status_code=402)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
+
+    def test_403_plan_entitlement_billing(self):
+        e = MockAPIError("This plan does not include the requested model", status_code=403)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_404_free_tier_model_block_is_billing(self):
+        e = MockAPIError(
+            "Not Found",
+            status_code=404,
+            body={
+                "status": 404,
+                "message": (
+                    "Model 'gpt-5' is not available on the Free Tier. "
+                    "Upgrade at https://portal.nousresearch.com or pick a free model."
+                ),
+            },
+        )
+        result = classify_api_error(e, provider="nous", model="gpt-5")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
 
     # ── Rate limit ──
 
@@ -753,11 +792,29 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.context_overflow
 
+    def test_error_code_model_not_supported_on_free_tier_is_billing(self):
+        e = MockAPIError(
+            "Model unavailable",
+            body={
+                "error": {
+                    "code": "model_not_supported_on_free_tier",
+                    "message": "Model 'gpt-5' is not available on the Free Tier.",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="nous", model="gpt-5")
+        assert result.reason == FailoverReason.billing
+
     # ── Message-only patterns (no status code) ──
 
     def test_message_billing_pattern(self):
         e = Exception("insufficient credits to complete this request")
         result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+
+    def test_message_free_tier_model_block_is_billing(self):
+        e = Exception("Model 'gpt-5' is not available on the Free Tier.")
+        result = classify_api_error(e, provider="nous", model="gpt-5")
         assert result.reason == FailoverReason.billing
 
     def test_message_rate_limit_pattern(self):

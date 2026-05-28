@@ -127,6 +127,7 @@ export const tr: Translations = {
 
   sessions: {
     title: "Oturumlar",
+    history: "Geçmiş",
     overview: "Genel bakış",
     searchPlaceholder: "Mesaj içeriğinde ara...",
     noSessions: "Henüz oturum yok",
@@ -422,7 +423,7 @@ export const tr: Translations = {
   },
 
   language: {
-    switchTo: "İngilizce'ye geç",
+    switchTo: "Dil değiştir",
   },
 
   theme: {

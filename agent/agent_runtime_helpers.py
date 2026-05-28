@@ -1994,6 +1994,36 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     api_msg.pop("reasoning_content", None)
 
 
+def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
+    """Re-pad assistant turns with reasoning_content for the active provider.
+
+    ``api_messages`` is built once, before the retry loop, while the *primary*
+    provider is active.  If a mid-conversation fallback then switches to a
+    require-side provider (DeepSeek / Kimi / MiMo thinking mode), assistant
+    turns that were built when the prior provider did NOT need the echo-back go
+    out without ``reasoning_content`` and the new provider rejects them with
+    HTTP 400 ("The reasoning_content in the thinking mode must be passed back").
+
+    Calling this immediately before building the request kwargs re-applies the
+    pad against the *current* provider.  It is idempotent and a no-op unless
+    ``_needs_thinking_reasoning_pad()`` is True for the active provider, so it
+    is safe to call every iteration and covers every fallback path.
+
+    Returns the number of assistant turns that gained reasoning_content.
+    """
+    if not agent._needs_thinking_reasoning_pad():
+        return 0
+    padded = 0
+    for api_msg in api_messages:
+        if api_msg.get("role") != "assistant":
+            continue
+        if api_msg.get("reasoning_content"):
+            continue
+        copy_reasoning_content_for_api(agent, api_msg, api_msg)
+        if api_msg.get("reasoning_content"):
+            padded += 1
+    return padded
+
 
 def _iter_pool_sockets(client: Any):
     """Yield raw sockets reachable from an OpenAI/httpx client pool.

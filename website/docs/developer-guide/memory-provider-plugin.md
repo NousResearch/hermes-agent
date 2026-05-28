@@ -61,7 +61,7 @@ class MyMemoryProvider(MemoryProvider):
 | `is_available()` | Agent init, before activation | **Yes** — no network calls |
 | `initialize(session_id, **kwargs)` | Agent startup | **Yes** |
 | `get_tool_schemas()` | After init, for tool injection | **Yes** |
-| `handle_tool_call(name, args)` | When agent uses your tools | **Yes** (if you have tools) |
+| `handle_tool_call(tool_name, args, **kwargs)` | When agent uses your tools | **Yes** (if you have tools) |
 
 ### Config
 
@@ -75,9 +75,9 @@ class MyMemoryProvider(MemoryProvider):
 | Method | When Called | Use Case |
 |--------|-----------|----------|
 | `system_prompt_block()` | System prompt assembly | Static provider info |
-| `prefetch(query)` | Before each API call | Return recalled context |
+| `prefetch(query, *, session_id="")` | Before each API call | Return recalled context |
 | `queue_prefetch(query)` | After each turn | Pre-warm for next turn |
-| `sync_turn(user, assistant)` | After each completed turn | Persist conversation |
+| `sync_turn(user, assistant, *, session_id="")` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
@@ -182,7 +182,7 @@ data_dir = Path("~/.hermes/my-provider").expanduser()
 
 ## Testing
 
-See `tests/agent/test_memory_plugin_e2e.py` for the complete E2E testing pattern using a real SQLite provider.
+See `tests/agent/test_memory_provider.py` and adjacent memory tests (`tests/agent/test_memory_session_switch.py`, `tests/agent/test_memory_user_id.py`, `tests/run_agent/test_memory_provider_init.py`) for end-to-end patterns.
 
 ```python
 from agent.memory_manager import MemoryManager

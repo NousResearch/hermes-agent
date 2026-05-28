@@ -8265,7 +8265,30 @@ class GatewayRunner:
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
-        
+
+        try:
+            from gateway.mirror import drain_pending_mirrors
+
+            drained = drain_pending_mirrors(
+                session_entry.session_id,
+                source.platform.value if source.platform else "",
+                str(source.chat_id),
+                thread_id=source.thread_id,
+            )
+            if drained:
+                logger.info(
+                    "Mirror: replayed %d pending message(s) into session %s",
+                    drained,
+                    session_entry.session_id,
+                )
+        except Exception as e:
+            logger.debug(
+                "Mirror pending replay failed for %s (%s): %s",
+                session_entry.session_id,
+                session_key,
+                e,
+            )
+
         # Build session context
         context = build_session_context(source, self.config, session_entry)
         

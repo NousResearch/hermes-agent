@@ -12,14 +12,16 @@ the full SessionStore machinery.
 import json
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
 _SESSIONS_DIR = get_hermes_home() / "sessions"
 _SESSIONS_INDEX = _SESSIONS_DIR / "sessions.json"
+_PENDING_MIRRORS_PATH = _SESSIONS_DIR / "pending_mirrors.json"
 
 
 def mirror_to_session(
@@ -36,26 +38,10 @@ def mirror_to_session(
     Finds the gateway session that matches the given platform + chat_id,
     then writes a mirror entry to both the JSONL transcript and SQLite DB.
 
-    Returns True if mirrored successfully, False if no matching session or error.
+    Returns True if mirrored immediately, False if it was queued or failed.
     All errors are caught -- this is never fatal.
     """
     try:
-        session_id = _find_session_id(
-            platform,
-            str(chat_id),
-            thread_id=thread_id,
-            user_id=user_id,
-        )
-        if not session_id:
-            logger.debug(
-                "Mirror: no session found for %s:%s:%s:%s",
-                platform,
-                chat_id,
-                thread_id,
-                user_id,
-            )
-            return False
-
         mirror_msg = {
             "role": "assistant",
             "content": message_text,
@@ -63,6 +49,28 @@ def mirror_to_session(
             "mirror": True,
             "mirror_source": source_label,
         }
+
+        session_id = _find_session_id(
+            platform,
+            str(chat_id),
+            thread_id=thread_id,
+            user_id=user_id,
+        )
+        if not session_id:
+            _queue_pending_mirror(
+                platform,
+                str(chat_id),
+                mirror_msg,
+                thread_id=thread_id,
+            )
+            logger.debug(
+                "Mirror: queued pending entry for %s:%s:%s:%s",
+                platform,
+                chat_id,
+                thread_id,
+                user_id,
+            )
+            return False
 
         _append_to_sqlite(session_id, mirror_msg)
 
@@ -147,6 +155,76 @@ def _find_session_id(
 
     best_entry = max(candidates, key=lambda entry: entry.get("updated_at", ""))
     return best_entry.get("session_id")
+
+
+def drain_pending_mirrors(
+    session_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+) -> int:
+    """Replay queued mirror messages into a newly started session."""
+    key = _pending_mirror_key(platform, chat_id, thread_id=thread_id)
+    pending = _load_pending_mirrors()
+    messages = pending.pop(key, [])
+    if not messages:
+        return 0
+
+    _save_pending_mirrors(pending)
+
+    drained = 0
+    for message in messages:
+        try:
+            _append_to_sqlite(session_id, message)
+            drained += 1
+        except Exception as e:
+            logger.debug(
+                "Mirror pending replay failed for %s into %s: %s",
+                key,
+                session_id,
+                e,
+            )
+
+    return drained
+
+
+def _pending_mirror_key(
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+) -> str:
+    return f"{platform.lower()}::{chat_id}::{thread_id or ''}"
+
+
+def _load_pending_mirrors() -> Dict[str, List[Dict[str, Any]]]:
+    if not _PENDING_MIRRORS_PATH.exists():
+        return {}
+
+    try:
+        with open(_PENDING_MIRRORS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception as e:
+        logger.debug("Mirror pending load failed: %s", e)
+
+    return {}
+
+
+def _save_pending_mirrors(data: Dict[str, List[Dict[str, Any]]]) -> None:
+    atomic_json_write(_PENDING_MIRRORS_PATH, data)
+
+
+def _queue_pending_mirror(
+    platform: str,
+    chat_id: str,
+    message: Dict[str, Any],
+    thread_id: Optional[str] = None,
+) -> None:
+    key = _pending_mirror_key(platform, chat_id, thread_id=thread_id)
+    pending = _load_pending_mirrors()
+    pending.setdefault(key, []).append(message)
+    _save_pending_mirrors(pending)
 
 
 

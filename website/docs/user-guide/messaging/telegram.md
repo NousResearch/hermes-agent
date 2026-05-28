@@ -48,6 +48,15 @@ sethome - Set this chat as the home channel
 ```
 :::
 
+:::note Hermes populates the command menu for you
+Hermes auto-registers the `/` command menu from its command registry, so you usually don't need `/setcommands`. The menu is capped per scope (default **30**) to stay under Telegram's command-payload limit. If you run plugins that add slash commands (e.g. a profile router exposing `/finance`, `/trend`) and they don't show up in the `/` menu, raise the cap in `~/.hermes/config.yaml` (clamped to Telegram's 1–100):
+
+```yaml
+telegram:
+  menu_max_commands: 50
+```
+:::
+
 ## Step 3: Privacy Mode (Critical for Groups)
 
 Telegram bots have a **privacy mode** that is **enabled by default**. This is the single most common source of confusion when using bots in groups.

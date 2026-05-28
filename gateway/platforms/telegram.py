@@ -105,6 +105,12 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 }
 
 
+# Default cap for the Telegram bot-command menu (per scope). Telegram's Bot API
+# permits up to 100 commands per scope, but the total setMyCommands payload has
+# an undocumented ~4KB ceiling, so the default stays conservative. Override per
+# instance with ``telegram.menu_max_commands`` in config.yaml (clamped 1..100) —
+# useful to surface plugin/profile slash commands (e.g. /finance) that would
+# otherwise be trimmed when core + skill commands fill the default 30 slots.
 MAX_COMMANDS_PER_SCOPE = 30
 
 
@@ -409,6 +415,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
+        # Bot-command menu cap (per scope). Defaults to MAX_COMMANDS_PER_SCOPE;
+        # raise via ``telegram.menu_max_commands`` to surface plugin/profile slash
+        # commands that would otherwise be trimmed. Clamped to Telegram's 1..100.
+        self._menu_max_commands: int = self._coerce_int_extra(
+            "menu_max_commands", MAX_COMMANDS_PER_SCOPE, min_value=1, max_value=100
+        )
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -852,6 +864,27 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
             return default
         return bool(value)
+
+    def _coerce_int_extra(
+        self,
+        key: str,
+        default: int,
+        *,
+        min_value: Optional[int] = None,
+        max_value: Optional[int] = None,
+    ) -> int:
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if value is None:
+            return default
+        try:
+            result = int(value)
+        except (TypeError, ValueError):
+            return default
+        if min_value is not None:
+            result = max(min_value, result)
+        if max_value is not None:
+            result = min(max_value, result)
+        return result
 
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
@@ -1694,9 +1727,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 from hermes_cli.commands import telegram_menu_commands
                 # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit (~4KB total).  Limit to 30 core commands
-                # to stay well under the threshold while covering all categories.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                # payload size limit (~4KB total).  Cap the menu (default 30,
+                # configurable via telegram.menu_max_commands) to stay under the
+                # threshold while covering all categories.
+                menu_commands, hidden_count = telegram_menu_commands(max_commands=self._menu_max_commands)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall
@@ -4929,7 +4963,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 from telegram import BotCommand, BotCommandScopeChat
                 from hermes_cli.commands import telegram_menu_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                menu_commands, _ = telegram_menu_commands(max_commands=self._menu_max_commands)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)

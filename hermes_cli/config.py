@@ -3729,6 +3729,39 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 f"Move '{key}' under the appropriate section",
             ))
 
+    # ── memory.*: numeric keys must coerce to int ────────────────────────
+    # YAML-quoted values (e.g. memory_char_limit: "2200") slip past runtime
+    # type checks and silently disable the memory subsystem at agent init.
+    # Flag any present-but-non-int value (strings, bools, floats) here so
+    # `hermes doctor` / `hermes config check` catches the malformed value
+    # before init logs a cryptic disable message. int() coercion is checked
+    # too — covers garbage like "abc" — but strict int-type is required
+    # because the runtime disable triggers on type mismatch, not on parse.
+    memory_cfg = config.get("memory")
+    if isinstance(memory_cfg, dict):
+        _NUMERIC_MEMORY_KEYS = (
+            "memory_char_limit",
+            "user_char_limit",
+            "nudge_interval",
+            "flush_min_turns",
+        )
+        for mkey in _NUMERIC_MEMORY_KEYS:
+            if mkey not in memory_cfg:
+                continue
+            value = memory_cfg[mkey]
+            if value is None:
+                continue
+            # bool is a subclass of int — flag it explicitly.
+            is_strict_int = isinstance(value, int) and not isinstance(value, bool)
+            if is_strict_int:
+                continue
+            # Non-int present — warn.
+            issues.append(ConfigIssue(
+                "warning",
+                f"memory.{mkey} = {value!r} is not numeric — memory subsystem will be disabled at init",
+                f"Edit ~/.hermes/config.yaml to set memory.{mkey} as an unquoted integer",
+            ))
+
     return issues
 
 

@@ -206,3 +206,79 @@ class TestConfigIssueDataclass:
         a = ConfigIssue("error", "msg", "hint")
         b = ConfigIssue("error", "msg", "hint")
         assert a == b
+
+
+class TestMemoryNumericCoercion:
+    """memory.* keys that take ints must coerce; quoted strings warn early."""
+
+    def test_quoted_memory_char_limit_emits_warning(self):
+        issues = validate_config_structure({
+            "memory": {"memory_char_limit": "2200"},
+        })
+        warnings = [i for i in issues if i.severity == "warning"]
+        match = [i for i in warnings if "memory.memory_char_limit" in i.message]
+        assert len(match) == 1, f"Expected one warning, got: {[i.message for i in warnings]}"
+        assert "'2200'" in match[0].message
+        assert "memory.memory_char_limit" in match[0].hint
+
+    def test_numeric_memory_char_limit_no_warning(self):
+        issues = validate_config_structure({
+            "memory": {"memory_char_limit": 2200},
+        })
+        assert not any("memory.memory_char_limit" in i.message for i in issues)
+
+    def test_quoted_user_char_limit_emits_warning(self):
+        issues = validate_config_structure({
+            "memory": {"user_char_limit": "1375"},
+        })
+        match = [i for i in issues if "memory.user_char_limit" in i.message]
+        assert len(match) == 1
+        assert match[0].severity == "warning"
+
+    def test_quoted_nudge_interval_emits_warning(self):
+        issues = validate_config_structure({
+            "memory": {"nudge_interval": "abc"},
+        })
+        assert any("memory.nudge_interval" in i.message for i in issues)
+
+    def test_absent_keys_no_warning(self):
+        issues = validate_config_structure({"memory": {}})
+        assert not any(
+            "is not numeric" in i.message for i in issues
+        )
+
+    def test_none_treated_as_absent(self):
+        issues = validate_config_structure({
+            "memory": {"memory_char_limit": None},
+        })
+        assert not any("memory.memory_char_limit" in i.message for i in issues)
+
+    def test_flush_min_turns_optional_quoted_warns(self):
+        issues = validate_config_structure({
+            "memory": {"flush_min_turns": "10"},
+        })
+        assert any("memory.flush_min_turns" in i.message for i in issues)
+
+    def test_bool_value_warns(self):
+        # bool is a subclass of int — must NOT silently pass numeric check.
+        issues = validate_config_structure({
+            "memory": {"memory_char_limit": True},
+        })
+        assert any("memory.memory_char_limit" in i.message and "is not numeric" in i.message for i in issues)
+
+    def test_float_value_warns(self):
+        # YAML 2200.0 should not be accepted — strict int required.
+        issues = validate_config_structure({
+            "memory": {"memory_char_limit": 2200.0},
+        })
+        assert any("memory.memory_char_limit" in i.message and "is not numeric" in i.message for i in issues)
+
+    def test_all_clean_no_warnings(self):
+        issues = validate_config_structure({
+            "memory": {
+                "memory_char_limit": 2200,
+                "user_char_limit": 1375,
+                "nudge_interval": 5,
+            },
+        })
+        assert not any("is not numeric" in i.message for i in issues)

@@ -1367,6 +1367,189 @@ class TestChatCompletionsEndpoint:
             assert call_kwargs.kwargs.get("user_message") == "Hello"
 
     @pytest.mark.asyncio
+    async def test_openwebui_memory_context_is_folded_into_user_message(self, adapter):
+        """Open WebUI's memory system block is also made visible in the user turn."""
+        mock_result = {
+            "final_response": "Example User",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": "User Context:\n1. [2026-05-28] My name is Example User\n",
+                            },
+                            {"role": "user", "content": "WHAT IS MY NAME?"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["ephemeral_system_prompt"].startswith("User Context:")
+            assert "FACTS FROM OPEN WEBUI MEMORY" in call_kwargs["user_message"]
+            assert "- My name is Example User" in call_kwargs["user_message"]
+            assert "QUESTION:\nWHAT IS MY NAME?" in call_kwargs["user_message"]
+
+    @pytest.mark.asyncio
+    async def test_openwebui_memory_context_is_not_folded_for_general_questions(self, adapter):
+        """Open WebUI memory should not hijack unrelated knowledge questions."""
+        mock_result = {
+            "final_response": "RAG is retrieval-augmented generation.",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": "User Context:\n1. [2026-05-28] My name is Example User\n",
+                            },
+                            {"role": "user", "content": "WHAT IS RAG?"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["user_message"] == "WHAT IS RAG?"
+
+    @pytest.mark.asyncio
+    async def test_openwebui_query_generation_returns_strict_json(self, adapter):
+        """Open WebUI web search query generation should not depend on local model JSON discipline."""
+        prompt = """### Task:
+Analyze the chat history to determine the necessity of generating search queries, in the given language.
+
+### Guidelines:
+- Respond **EXCLUSIVELY** with a JSON object.
+- When generating search queries, respond in the format: { "queries": ["query1", "query2"] }.
+
+### Chat History:
+<chat_history>
+USER: WHAT IS RAG?
+</chat_history>
+"""
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                        "metadata": {
+                            "task": "query_generation",
+                            "task_body": {"prompt": "WHAT IS RAG?"},
+                        },
+                    },
+                )
+
+            assert resp.status == 200
+            body = await resp.json()
+            content = body["choices"][0]["message"]["content"]
+            assert json.loads(content) == {
+                "queries": [
+                    "RAG retrieval augmented generation",
+                    "what is retrieval augmented generation",
+                    "RAG AI meaning",
+                ]
+            }
+            mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_hermes_persistent_memory_is_folded_into_user_message(self, adapter, monkeypatch):
+        """Hermes USER.md/MEMORY.md stays visible near the active user turn."""
+        mock_result = {
+            "final_response": "Example User",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        class FakeMemoryStore:
+            def __init__(self):
+                self.user_entries = []
+                self.memory_entries = []
+
+            def load_from_disk(self):
+                self.user_entries = ["User's name is Example User."]
+                self.memory_entries = ["LLM Wiki path is configured."]
+
+        monkeypatch.setattr("tools.memory_tool.MemoryStore", FakeMemoryStore)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "WHAT IS MY NAME?"}],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert "FACTS FROM HERMES PERSISTENT MEMORY" in call_kwargs["user_message"]
+            assert "- User's name is Example User." in call_kwargs["user_message"]
+            assert "QUESTION:\nWHAT IS MY NAME?" in call_kwargs["user_message"]
+
+    @pytest.mark.asyncio
+    async def test_hermes_persistent_memory_is_not_folded_for_general_questions(self, adapter, monkeypatch):
+        """Hermes memory should stay out of unrelated general web-search questions."""
+        mock_result = {
+            "final_response": "RAG is retrieval-augmented generation.",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        class FakeMemoryStore:
+            def __init__(self):
+                self.user_entries = []
+                self.memory_entries = []
+
+            def load_from_disk(self):
+                self.user_entries = ["User's name is Example User."]
+                self.memory_entries = ["LLM Wiki path is configured."]
+
+        monkeypatch.setattr("tools.memory_tool.MemoryStore", FakeMemoryStore)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "WHAT IS RAG?"}],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["user_message"] == "WHAT IS RAG?"
+
+    @pytest.mark.asyncio
     async def test_conversation_history_passed(self, adapter):
         """Previous user/assistant messages become conversation_history."""
         mock_result = {"final_response": "3", "messages": [], "api_calls": 1}

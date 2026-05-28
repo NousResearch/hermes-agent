@@ -411,6 +411,15 @@ class ResponseStore:
                     exc_info=True,
                 )
 
+    def _next_access_time(self) -> float:
+        """Return a strictly increasing timestamp for deterministic LRU order."""
+        now = time.time()
+        row = self._conn.execute("SELECT MAX(accessed_at) FROM responses").fetchone()
+        latest = row[0] if row else None
+        if latest is not None and now <= latest:
+            return latest + 0.000001
+        return now
+
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""
         row = self._conn.execute(
@@ -420,7 +429,7 @@ class ResponseStore:
             return None
         self._conn.execute(
             "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
-            (time.time(), response_id),
+            (self._next_access_time(), response_id),
         )
         self._conn.commit()
         return json.loads(row[0])
@@ -429,7 +438,7 @@ class ResponseStore:
         """Store a response, evicting the oldest if at capacity."""
         self._conn.execute(
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
-            (response_id, json.dumps(data, default=str), time.time()),
+            (response_id, json.dumps(data, default=str), self._next_access_time()),
         )
         # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
@@ -651,6 +660,239 @@ def _derive_chat_session_id(
     seed = f"{system_prompt or ''}\n{first_user_message}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"api-{digest}"
+
+
+def _text_from_user_message_for_memory_gate(user_message: Any) -> str:
+    if isinstance(user_message, str):
+        return user_message
+
+    if isinstance(user_message, list):
+        parts: List[str] = []
+        for item in user_message:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+
+    return ""
+
+
+def _user_message_requests_memory_context(user_message: Any) -> bool:
+    """Return true when the current turn asks for personal/durable memory."""
+    text = _text_from_user_message_for_memory_gate(user_message).lower()
+    if not text:
+        return False
+
+    direct_phrases = (
+        "my name",
+        "who am i",
+        "about me",
+        "my profile",
+        "user profile",
+        "my memory",
+        "what do you remember",
+        "what did i tell you",
+        "what have i told you",
+        "do you remember",
+        "remember about me",
+        "my wife",
+        "my father",
+        "my mother",
+        "my job",
+        "job am i",
+        "job i am",
+        "job search",
+    )
+    if any(phrase in text for phrase in direct_phrases):
+        return True
+
+    return ("memory" in text and any(term in text for term in ("me", "my", "profile", "remember")))
+
+
+def _extract_openwebui_task_prompt(body: Dict[str, Any], user_message: Any) -> str:
+    metadata = body.get("metadata")
+    if isinstance(metadata, dict):
+        task_body = metadata.get("task_body")
+        if isinstance(task_body, dict):
+            prompt = task_body.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                return prompt.strip()
+
+    text = _text_from_user_message_for_memory_gate(user_message)
+    history_match = re.search(r"<chat_history>(.*?)</chat_history>", text, re.IGNORECASE | re.DOTALL)
+    history = history_match.group(1) if history_match else text
+    user_lines = re.findall(r"(?im)^USER:\s*(.+)$", history)
+    if user_lines:
+        return user_lines[-1].strip()
+
+    return ""
+
+
+def _openwebui_search_queries_for_prompt(prompt: str) -> List[str]:
+    cleaned = re.sub(r"\s+", " ", prompt).strip(" \t\r\n\"'`")
+    if not cleaned:
+        return []
+
+    acronyms = {token.upper() for token in re.findall(r"\b[A-Z][A-Z0-9]{1,7}\b", prompt)}
+    if "RAG" in acronyms:
+        return [
+            "RAG retrieval augmented generation",
+            "what is retrieval augmented generation",
+            "RAG AI meaning",
+        ]
+
+    if acronyms and len(cleaned.split()) <= 8:
+        acronym = sorted(acronyms, key=lambda item: (-len(item), item))[0]
+        return [
+            f"{acronym} meaning in AI",
+            f"{acronym} definition technology",
+            cleaned,
+        ]
+
+    return [cleaned]
+
+
+def _maybe_openwebui_query_generation_response(body: Dict[str, Any], user_message: Any) -> Optional[str]:
+    """Return strict JSON for Open WebUI's query-generation task.
+
+    Open WebUI calls the selected model to turn chat history into search
+    queries, then parses only the last JSON object in the response. Small local
+    models often add prose around that JSON, so normalize this task server-side
+    before the output can become a malformed SearXNG query.
+    """
+    metadata = body.get("metadata")
+    task = metadata.get("task") if isinstance(metadata, dict) else None
+    text = _text_from_user_message_for_memory_gate(user_message)
+
+    is_query_task = isinstance(task, str) and "query" in task.lower()
+    has_openwebui_prompt = (
+        "Analyze the chat history" in text
+        and "generating search queries" in text
+        and '"queries"' in text
+    )
+    if not is_query_task and not has_openwebui_prompt:
+        return None
+
+    prompt = _extract_openwebui_task_prompt(body, user_message)
+    queries = _openwebui_search_queries_for_prompt(prompt)
+    return json.dumps({"queries": queries}, ensure_ascii=False)
+
+
+def _fold_openwebui_memory_context_into_user_message(
+    system_prompt: Optional[str],
+    user_message: Any,
+) -> Any:
+    """Make Open WebUI memory visible to Hermes' agent-style prompt path.
+
+    Open WebUI injects stored memories as a system message headed
+    ``User Context:``. Hermes' API adapter already forwards system messages as
+    an ephemeral system prompt, but the server-side Hermes agent is optimized
+    around task/user turns and can underweight that external context. For this
+    specific Open WebUI memory block, duplicate the facts into the current user
+    turn so personal-memory questions resolve reliably while preserving the
+    original system prompt for providers that do honor it.
+    """
+    if not isinstance(system_prompt, str) or "User Context:" not in system_prompt:
+        return user_message
+    if not _user_message_requests_memory_context(user_message):
+        return user_message
+
+    memory_context = system_prompt.strip()
+    if not memory_context or memory_context == "User Context:":
+        return user_message
+
+    fact_lines: List[str] = []
+    for raw_line in memory_context.splitlines():
+        line = raw_line.strip()
+        if not line or line == "User Context:":
+            continue
+        line = re.sub(r"^\d+\.\s*", "", line)
+        line = re.sub(r"^\[[^\]]+\]\s*", "", line)
+        if line:
+            fact_lines.append(f"- {line}")
+    facts = "\n".join(fact_lines) if fact_lines else memory_context
+
+    prefix = (
+        "FACTS FROM OPEN WEBUI MEMORY:\n"
+        f"{facts}\n\n"
+        "Use these background facts only when they directly answer the user's "
+        "question. If the answer is present here, answer directly and exactly. "
+        "Do not say you lack memory.\n\n"
+        "QUESTION:"
+    )
+
+    if isinstance(user_message, str):
+        return f"{prefix}\n{user_message}"
+
+    if isinstance(user_message, list):
+        return [{"type": "text", "text": prefix}, *user_message]
+
+    return user_message
+
+
+def _fold_hermes_persistent_memory_into_user_message(user_message: Any) -> Any:
+    """Keep Hermes' compact memory visible near the active user turn.
+
+    Built-in MEMORY.md/USER.md is already part of the system prompt, but small
+    local models with short context windows may truncate early prompt sections.
+    Duplicating the compact memory block immediately before the current question
+    makes memory lookups reliable for OpenAI-compatible frontends without
+    changing the durable memory store.
+    """
+    if not _user_message_requests_memory_context(user_message):
+        return user_message
+
+    try:
+        from tools.memory_tool import MemoryStore
+
+        store = MemoryStore()
+        store.load_from_disk()
+        sections: List[str] = []
+        if store.user_entries:
+            sections.append(
+                "USER PROFILE:\n"
+                + "\n".join(f"- {entry}" for entry in store.user_entries if entry.strip())
+            )
+        if store.memory_entries:
+            sections.append(
+                "AGENT MEMORY:\n"
+                + "\n".join(f"- {entry}" for entry in store.memory_entries if entry.strip())
+            )
+    except Exception:
+        return user_message
+
+    facts = "\n\n".join(section for section in sections if section.strip()).strip()
+    if not facts:
+        return user_message
+
+    max_chars = 2500
+    if len(facts) > max_chars:
+        facts = facts[:max_chars].rstrip() + "\n- [truncated: additional memory exists on disk]"
+
+    prefix = (
+        "FACTS FROM HERMES PERSISTENT MEMORY:\n"
+        f"{facts}\n\n"
+        "Use these durable memory facts only when they directly answer the "
+        "user's question. If the answer is present here, answer directly and "
+        "do not say you lack memory.\n\n"
+        "QUESTION:"
+    )
+
+    if isinstance(user_message, str):
+        if "FACTS FROM HERMES PERSISTENT MEMORY:" in user_message:
+            return user_message
+        return f"{prefix}\n{user_message}"
+
+    if isinstance(user_message, list):
+        first_text = user_message[0] if user_message else {}
+        if isinstance(first_text, dict) and "FACTS FROM HERMES PERSISTENT MEMORY:" in str(first_text.get("text", "")):
+            return user_message
+        return [{"type": "text", "text": prefix}, *user_message]
+
+    return user_message
 
 
 _CRON_AVAILABLE = False
@@ -1722,6 +1964,37 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
+        model_name = body.get("model", self._model_name)
+        created = int(time.time())
+
+        openwebui_query_response = _maybe_openwebui_query_generation_response(body, user_message)
+        if openwebui_query_response is not None:
+            return web.json_response({
+                "id": completion_id,
+                "object": "chat.completion",
+                "created": created,
+                "model": model_name,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": openwebui_query_response,
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            })
+
+        user_message = _fold_openwebui_memory_context_into_user_message(system_prompt, user_message)
+        user_message = _fold_hermes_persistent_memory_into_user_message(user_message)
+
         # Allow caller to scope long-term memory (e.g. Honcho) with a
         # stable per-channel identifier via X-Hermes-Session-Key.  This
         # is independent of X-Hermes-Session-Id: the key persists across
@@ -1779,10 +2052,6 @@ class APIServerAdapter(BasePlatformAdapter):
                     break
             session_id = _derive_chat_session_id(system_prompt, first_user)
             # history already set from request body above
-
-        completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
-        created = int(time.time())
 
         if stream:
             import queue as _q

@@ -25,6 +25,7 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import inspect
@@ -51,8 +52,47 @@ _INTERNAL_NOTE_RE = re.compile(
 )
 
 
-def sanitize_context(text: str) -> str:
+def _memory_text(value: Any) -> str:
+    """Return a plain-text representation safe for memory providers.
+
+    Gateway/model content can occasionally be structured OpenAI-style content
+    blocks instead of a string.  Memory providers operate on text, so extract
+    human-readable text parts and replace non-text media with placeholders
+    instead of letting regex sanitizers crash on lists or dicts.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+                elif item.get("type") in {"image", "image_url", "input_image"}:
+                    parts.append("[image]")
+                elif item.get("type") in {"audio", "input_audio"}:
+                    parts.append("[audio]")
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False, sort_keys=True, default=str))
+            else:
+                parts.append(str(item))
+        return "\n".join(p for p in parts if p)
+    if isinstance(value, dict):
+        text = value.get("text") or value.get("content")
+        if isinstance(text, str):
+            return text
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return str(value)
+
+
+def sanitize_context(text: Any) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
+    text = _memory_text(text)
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)

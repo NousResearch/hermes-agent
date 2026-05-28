@@ -794,6 +794,20 @@ class TestMemoryContextFencing:
         assert "</memory-context>" not in result.lower()
         assert "datamore" in result
 
+    def test_sanitize_context_accepts_structured_content_blocks(self):
+        from agent.memory_manager import sanitize_context
+
+        result = sanitize_context([
+            {"type": "text", "text": "visible <memory-context>hidden</memory-context>"},
+            {"type": "image_url", "image_url": {"url": "https://example.test/x.png"}},
+            "tail",
+        ])
+
+        assert "visible" in result
+        assert "hidden" not in result
+        assert "[image]" in result
+        assert "tail" in result
+
     def test_fenced_block_separates_user_from_recall(self):
         from agent.memory_manager import build_memory_context_block
         prefetch = "## Holographic Memory\n- [0.9] user is named Alice"

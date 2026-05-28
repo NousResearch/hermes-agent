@@ -366,6 +366,37 @@ class TestAnthropicOAuthOutgoingPrefix:
         assert len(kwargs["system"]) >= 2
         assert len(kwargs["system"][1]["text"]) < len(long_system)
 
+    def test_system_prompt_cap_drops_block1_when_block0_fills_budget(self):
+        """When block[0] alone fills the budget, block[1] is dropped (not set to '').
+        Anthropic rejects empty string text blocks."""
+        from agent.anthropic_adapter import (
+            _OAUTH_SYSTEM_PROMPT_CAP_CHARS,
+            _CLAUDE_CODE_SYSTEM_PREFIX,
+        )
+        # Construct a case where the identity block plus a near-budget filler
+        # leaves _remaining == 0.  We patch the identity prefix to be exactly
+        # _OAUTH_SYSTEM_PROMPT_CAP_CHARS chars so block[1] has zero budget.
+        import agent.anthropic_adapter as _aa
+        original_prefix = _aa._CLAUDE_CODE_SYSTEM_PREFIX
+        try:
+            _aa._CLAUDE_CODE_SYSTEM_PREFIX = "X" * _OAUTH_SYSTEM_PROMPT_CAP_CHARS
+            kwargs = self._build(
+                [{"type": "function", "function": {"name": "t", "description": "x",
+                                                    "parameters": {}}}],
+                messages=[
+                    {"role": "system", "content": "operator instructions"},
+                    {"role": "user", "content": "Hi"},
+                ],
+            )
+            # block[1] must not be an empty string (Anthropic rejects empty text blocks)
+            for block in kwargs.get("system", []):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    assert block.get("text") != "", (
+                        "Empty string text block found — Anthropic API rejects these"
+                    )
+        finally:
+            _aa._CLAUDE_CODE_SYSTEM_PREFIX = original_prefix
+
     # -- Message history sanitization ----------------------------------------
 
     def test_message_history_brand_sanitized(self):

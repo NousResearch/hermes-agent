@@ -2199,8 +2199,9 @@ def build_anthropic_kwargs(
                     _seen_names.add(_tname)
                     _deduped.append(tool)
                 else:
-                    logger.debug(
-                        "OAuth post-strip dedup: dropping duplicate tool %r",
+                    logger.warning(
+                        "OAuth post-strip dedup: dropping duplicate tool %r "
+                        "(tool was registered under both bare and mcp_-prefixed name)",
                         _tname,
                     )
             anthropic_tools = _deduped
@@ -2267,16 +2268,29 @@ def build_anthropic_kwargs(
                     _original_text = system[1].get("text", "")
                     if len(_original_text) > _remaining:
                         _is_full_tools = _delegate_only not in ("1", "true", "yes")
-                        logger.warning(
-                            "OAuth system prompt truncated from %d to %d chars "
-                            "(dropped %d chars of operator instructions)%s",
-                            len(_original_text), _remaining,
-                            len(_original_text) - _remaining,
-                            " — WARNING: full tool set is exposed with "
-                            "truncated system prompt (HERMES_OAUTH_DELEGATE_ONLY"
-                            " is off)" if _is_full_tools else "",
-                        )
-                        system[1]["text"] = _original_text[:_remaining]
+                        if _remaining == 0:
+                            # Block[0] alone fills the entire budget — drop block[1]
+                            # rather than set it to "" (Anthropic rejects empty text blocks).
+                            logger.warning(
+                                "OAuth system prompt: block[0] (%d chars) fills the "
+                                "budget; dropping block[1] (%d chars) entirely%s",
+                                _first_len, len(_original_text),
+                                " — WARNING: full tool set is exposed with "
+                                "truncated system prompt (HERMES_OAUTH_DELEGATE_ONLY"
+                                " is off)" if _is_full_tools else "",
+                            )
+                            system = system[:1]
+                        else:
+                            logger.warning(
+                                "OAuth system prompt truncated from %d to %d chars "
+                                "(dropped %d chars of operator instructions)%s",
+                                len(_original_text), _remaining,
+                                len(_original_text) - _remaining,
+                                " — WARNING: full tool set is exposed with "
+                                "truncated system prompt (HERMES_OAUTH_DELEGATE_ONLY"
+                                " is off)" if _is_full_tools else "",
+                            )
+                            system[1]["text"] = _original_text[:_remaining]
                 # Drop any blocks beyond the second
                 if len(system) > 2:
                     logger.warning(

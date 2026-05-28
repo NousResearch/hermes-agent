@@ -127,6 +127,7 @@ export const ko: Translations = {
 
   sessions: {
     title: "세션",
+    history: "기록",
     overview: "개요",
     searchPlaceholder: "메시지 내용 검색...",
     noSessions: "아직 세션이 없습니다",
@@ -422,7 +423,7 @@ export const ko: Translations = {
   },
 
   language: {
-    switchTo: "영어로 전환",
+    switchTo: "언어 변경",
   },
 
   theme: {

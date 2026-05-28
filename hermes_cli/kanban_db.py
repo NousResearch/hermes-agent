@@ -6366,43 +6366,6 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
-def _skill_available_for_home(skill_name: str, hermes_home: Optional[str]) -> bool:
-    """True if ``skill_name`` resolves under the worker's ``HERMES_HOME``.
-
-    Preloading a missing skill via ``--skills <name>`` is fatal at CLI startup
-    (``ValueError: Unknown skill(s): <name>``), aborting the worker before the
-    agent loop runs. When a worker activates a profile (``hermes -p <name>``)
-    its ``SKILLS_DIR`` becomes ``<profile_home>/skills`` — which may not
-    contain skills that exist in the *default* root home. Gate every
-    ``--skills`` injection on actual resolvability instead of trusting the
-    caller; dropping a missing flag is safer than crash-looping the worker
-    until the watchdog auto-blocks it.
-
-    Used for both the bundled ``kanban-worker`` skill (always injected) and
-    per-task ``task.skills`` overrides.
-    """
-    from pathlib import Path as _Path
-
-    if not skill_name:
-        return False
-    # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill set.
-    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
-    skills_root = base / "skills"
-    if not skills_root.is_dir():
-        return False
-    # Bounded rglob covers nested categories (devops/, mlops/, etc.) without
-    # caller needing to know the category layout. Cheap on typical skill
-    # trees (a few dozen entries); short-circuits on first match.
-    try:
-        for skill_md in skills_root.rglob(f"{skill_name}/SKILL.md"):
-            if skill_md.is_file():
-                return True
-    except OSError:
-        pass
-    return False
-
-
 
 class MissingForcedSkillsError(RuntimeError):
     """Raised before worker spawn when task-level --skills would crash startup."""
@@ -6900,15 +6863,9 @@ def _default_spawn(
     # Dedupe against the built-in so we don't double-load kanban-worker
     # if a task author asks for it explicitly.
     #
-    # Gate each name on resolvability under the worker's HERMES_HOME
-    # for the same reason kanban-worker is gated above: preloading a
-    # missing skill is fatal at CLI startup. Without this filter, a
-    # ``task.skills`` entry that exists in the root home but not in
-    # the profile-scoped skills dir crash-loops the worker (often
-    # 100+ respawns before the watchdog auto-blocks) instead of just
-    # running without the supplementary context. A skipped skill is
-    # logged to stderr so operators see why the worker did not get
-    # the requested skill loaded; the task still proceeds.
+    # Validate every task-level forced skill before spawning. Missing required
+    # skills first get one allowlisted sync attempt; if they still don't
+    # resolve, block before Popen so the worker cannot crash at CLI startup.
     if task.skills:
         worker_home = env.get("HERMES_HOME")
         for sk in task.skills:

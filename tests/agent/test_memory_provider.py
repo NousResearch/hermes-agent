@@ -84,6 +84,13 @@ class MetadataMemoryProvider(FakeMemoryProvider):
         self.memory_writes.append((action, target, content, metadata or {}))
 
 
+class MessagesMemoryProvider(FakeMemoryProvider):
+    """Provider that opts into completed-turn message context."""
+
+    def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
+        self.synced_turns.append((user_content, assistant_content, session_id, messages))
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider ABC tests
 # ---------------------------------------------------------------------------
@@ -235,6 +242,28 @@ class TestMemoryManager:
         mgr.sync_all("user msg", "assistant msg")
         assert p1.synced_turns == [("user msg", "assistant msg")]
         assert p2.synced_turns == [("user msg", "assistant msg")]
+
+    def test_sync_all_passes_messages_to_opted_in_provider(self):
+        mgr = MemoryManager()
+        p = MessagesMemoryProvider("external")
+        mgr.add_provider(p)
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "call-1"}]},
+            {"role": "tool", "tool_call_id": "call-1", "content": "ok"},
+        ]
+
+        mgr.sync_all("user msg", "assistant msg", session_id="sess-1", messages=messages)
+
+        assert p.synced_turns == [("user msg", "assistant msg", "sess-1", messages)]
+
+    def test_sync_all_omits_messages_for_legacy_provider(self):
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("external")
+        mgr.add_provider(p)
+
+        mgr.sync_all("user msg", "assistant msg", messages=[{"role": "tool"}])
+
+        assert p.synced_turns == [("user msg", "assistant msg")]
 
     def test_sync_failure_doesnt_block_others(self):
         """If one provider's sync fails, others still run."""

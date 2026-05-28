@@ -112,11 +112,22 @@ class MemoryProvider(ABC):
         that do background prefetching should override this.
         """
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         """Persist a completed turn to the backend.
 
         Called after each turn. Should be non-blocking — queue for
         background processing if the backend has latency.
+
+        ``messages`` is the OpenAI-style conversation message list as of the
+        completed turn, including any assistant tool calls and tool results.
+        Providers that do not need raw turn context can ignore it.
         """
 
     @abstractmethod

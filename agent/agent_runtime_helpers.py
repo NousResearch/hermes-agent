@@ -648,6 +648,28 @@ def recover_with_credential_pool(
             return True, False
         return False, True
 
+    if effective_reason == FailoverReason.auth_permanent:
+        # The credential is permanently invalid (revoked, deactivated, etc.).
+        # Skip the refresh attempt entirely — OAuth refresh cannot fix a revoked
+        # key.  Mark as dead and rotate immediately.
+        _ra().logger.info(
+            "Credential %s — permanent auth failure from %s; "
+            "marking dead and rotating (no refresh attempted).",
+            status_code if status_code is not None else "auth_permanent",
+            agent.provider or "provider",
+        )
+        rotate_status = status_code if status_code is not None else 401
+        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        if next_entry is not None:
+            _ra().logger.info(
+                "Credential %s (auth_permanent) — rotated to pool entry %s",
+                rotate_status,
+                getattr(next_entry, "id", "?"),
+            )
+            agent._swap_credential(next_entry)
+            return True, False
+        return False, has_retried_429
+
     if effective_reason == FailoverReason.auth:
         # Subscription/entitlement 403s look like auth failures on the wire
         # but refresh cannot fix them — the OAuth token is already valid,

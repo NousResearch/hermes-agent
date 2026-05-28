@@ -689,6 +689,26 @@ def _classify_by_status(
         # the retryability check in run_agent.py.  If those succeed, the
         # loop `continue`s.  If they fail, retryable=False ensures we
         # hit the client-error abort path (which tries fallback first).
+        #
+        # Permanent auth failures (revoked/invalidated keys) get a
+        # distinct classification so the credential pool can mark them
+        # as terminally dead instead of putting them in cooldown rotation.
+        _PERMANENT_401_SIGNALS = (
+            "token_invalidated",
+            "token_revoked",
+            "invalid_api_key",
+            "api key has been revoked",
+            "api key is invalid",
+            "api key not found",
+            "key has been deactivated",
+        )
+        if any(s in error_msg for s in _PERMANENT_401_SIGNALS):
+            return result_fn(
+                FailoverReason.auth_permanent,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         return result_fn(
             FailoverReason.auth,
             retryable=False,

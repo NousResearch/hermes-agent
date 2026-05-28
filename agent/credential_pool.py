@@ -55,6 +55,7 @@ def _load_config_safe() -> Optional[dict]:
 
 STATUS_OK = "ok"
 STATUS_EXHAUSTED = "exhausted"
+STATUS_DEAD = "dead"  # Terminal state — credential permanently removed from rotation
 
 AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
@@ -207,6 +208,44 @@ def _exhausted_ttl(error_code: Optional[int]) -> int:
     if error_code == 429:
         return EXHAUSTED_TTL_429_SECONDS
     return EXHAUSTED_TTL_DEFAULT_SECONDS
+
+
+# Patterns that indicate a permanent auth failure — the credential will never
+# recover and should be permanently removed from rotation (STATUS_DEAD) rather
+# than given a cooldown window.
+_PERMANENT_AUTH_PATTERNS: tuple[str, ...] = (
+    "token_invalidated",
+    "token_revoked",
+    "invalid_api_key",
+    "api key has been revoked",
+    "api key is invalid",
+    "api key not found",
+    "key has been deactivated",
+    "account has been deactivated",
+    "account is deactivated",
+)
+
+
+def _is_permanent_auth_failure(
+    status_code: Optional[int],
+    error_context: Optional[Dict[str, Any]],
+) -> bool:
+    """Return True if the error is a permanent auth failure that warrants STATUS_DEAD.
+
+    Checks both the status code (401/403) and the error message for patterns
+    that indicate the credential itself is terminally invalid (revoked, deactivated,
+    invalidated) — as opposed to a transient token expiry that refresh can fix.
+    """
+    if status_code not in (401, 403):
+        return False
+    if not error_context:
+        return False
+    # Combine all message-like fields for pattern matching
+    haystack = " ".join(
+        str(error_context.get(k) or "").lower()
+        for k in ("message", "reason", "code", "error")
+    )
+    return any(p in haystack for p in _PERMANENT_AUTH_PATTERNS)
 
 
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:
@@ -445,6 +484,30 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
+
+        # Permanent auth failures (revoked, invalidated, deactivated keys) are
+        # terminal — the credential will never recover.  Mark as STATUS_DEAD
+        # with no reset_at so it never re-enters rotation.
+        if _is_permanent_auth_failure(status_code, error_context):
+            _label = entry.label or entry.id[:8]
+            logger.info(
+                "credential pool: marking %s DEAD (permanent auth failure: %s)",
+                _label,
+                normalized_error.get("message", "(no message)")[:120],
+            )
+            updated = replace(
+                entry,
+                last_status=STATUS_DEAD,
+                last_status_at=time.time(),
+                last_error_code=status_code,
+                last_error_reason=normalized_error.get("reason"),
+                last_error_message=normalized_error.get("message"),
+                last_error_reset_at=None,  # No cooldown — permanent
+            )
+            self._replace_entry(entry, updated)
+            self._persist()
+            return updated
+
         updated = replace(
             entry,
             last_status=STATUS_EXHAUSTED,
@@ -1203,6 +1266,9 @@ class CredentialPool:
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
+            # STATUS_DEAD: permanently removed from rotation — never re-enter.
+            if entry.last_status == STATUS_DEAD:
+                continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry)
                 if exhausted_until is not None and now < exhausted_until:

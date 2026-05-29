@@ -1242,6 +1242,14 @@ DEFAULT_CONFIG = {
 
     # Web dashboard settings
     "dashboard": {
+        # Local bind defaults for ``hermes dashboard``. CLI flags win over
+        # environment variables, which win over config.yaml:
+        #   HERMES_DASHBOARD_HOST=127.0.0.1
+        #   HERMES_DASHBOARD_PORT=9119
+        # Keep the default loopback-only; binding publicly without an auth gate
+        # requires an explicit ``hermes dashboard --insecure`` opt-in.
+        "host": "127.0.0.1",
+        "port": 9119,
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there

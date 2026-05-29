@@ -15,7 +15,11 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from hermes_cli.main import cmd_dashboard
+from hermes_cli.main import (
+    _extract_dashboard_url_from_cmdline,
+    _resolve_dashboard_bind,
+    cmd_dashboard,
+)
 
 
 def _ns(**kw):
@@ -66,6 +70,47 @@ class TestDashboardStatus:
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
+
+    def test_status_url_from_cmdline_flags(self):
+        url = _extract_dashboard_url_from_cmdline(
+            "python -m hermes_cli.main dashboard --host 127.0.0.1 --port 9120 --no-open"
+        )
+        assert url == "http://127.0.0.1:9120"
+
+
+class TestDashboardBindResolution:
+    def test_cli_flags_win_over_env_and_config(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_HOST", "localhost")
+        monkeypatch.setenv("HERMES_DASHBOARD_PORT", "9120")
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"dashboard": {"host": "127.0.0.1", "port": 9119}},
+        ):
+            assert _resolve_dashboard_bind(_ns(host="::1", port=9121)) == ("::1", 9121)
+
+    def test_env_wins_over_config_when_cli_omitted(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_HOST", "localhost")
+        monkeypatch.setenv("HERMES_DASHBOARD_PORT", "9120")
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"dashboard": {"host": "127.0.0.1", "port": 9119}},
+        ):
+            assert _resolve_dashboard_bind(_ns(host=None, port=None)) == ("localhost", 9120)
+
+    def test_config_used_for_stable_default_when_cli_and_env_omitted(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DASHBOARD_HOST", raising=False)
+        monkeypatch.delenv("HERMES_DASHBOARD_PORT", raising=False)
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"dashboard": {"host": "127.0.0.1", "port": 9122}},
+        ):
+            assert _resolve_dashboard_bind(_ns(host=None, port=None)) == ("127.0.0.1", 9122)
+
+    def test_invalid_port_fails_before_server_start(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_PORT", "not-a-port")
+        with pytest.raises(SystemExit) as exc:
+            _resolve_dashboard_bind(_ns(host=None, port=None))
+        assert "Invalid dashboard port" in str(exc.value)
 
 
 class TestDashboardStop:

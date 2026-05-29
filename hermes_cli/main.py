@@ -10818,6 +10818,108 @@ def _render_distribution_plan(plan) -> None:
         )
 
 
+_DASHBOARD_DEFAULT_HOST = "127.0.0.1"
+_DASHBOARD_DEFAULT_PORT = 9119
+
+
+def _parse_dashboard_port(value, *, source: str) -> int:
+    """Parse and validate dashboard bind ports from config/env/CLI."""
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        raise SystemExit(f"Invalid dashboard port from {source}: {value!r}")
+    if not 1 <= port <= 65535:
+        raise SystemExit(
+            f"Invalid dashboard port from {source}: {port} (expected 1-65535)"
+        )
+    return port
+
+
+def _resolve_dashboard_bind(args) -> tuple[str, int]:
+    """Resolve the dashboard bind address with explicit precedence.
+
+    Precedence is intentionally predictable for automation:
+      1. ``hermes dashboard --host/--port``
+      2. ``HERMES_DASHBOARD_HOST`` / ``HERMES_DASHBOARD_PORT``
+      3. ``dashboard.host`` / ``dashboard.port`` in config.yaml
+      4. built-in loopback fallback (127.0.0.1:9119)
+    """
+    config_host = _DASHBOARD_DEFAULT_HOST
+    config_port = _DASHBOARD_DEFAULT_PORT
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        cfg = load_config()
+        config_host = cfg_get(cfg, "dashboard", "host", default=_DASHBOARD_DEFAULT_HOST)
+        config_port = cfg_get(cfg, "dashboard", "port", default=_DASHBOARD_DEFAULT_PORT)
+    except Exception:
+        # Dashboard startup should still have deterministic loopback defaults
+        # if config loading fails; the rest of startup will surface config
+        # errors where they are actionable.
+        pass
+
+    host = config_host or _DASHBOARD_DEFAULT_HOST
+    port_value = config_port if config_port not in (None, "") else _DASHBOARD_DEFAULT_PORT
+
+    env_host = os.environ.get("HERMES_DASHBOARD_HOST")
+    if env_host is not None and env_host.strip():
+        host = env_host.strip()
+
+    env_port = os.environ.get("HERMES_DASHBOARD_PORT")
+    if env_port is not None and env_port.strip():
+        port_value = env_port.strip()
+
+    cli_host = getattr(args, "host", None)
+    if cli_host is not None and str(cli_host).strip():
+        host = str(cli_host).strip()
+
+    cli_port = getattr(args, "port", None)
+    if cli_port is not None:
+        port_value = cli_port
+
+    host = str(host).strip()
+    if not host:
+        raise SystemExit("Invalid dashboard host: empty value")
+    port = _parse_dashboard_port(port_value, source="CLI/env/config")
+    return host, port
+
+
+def _extract_dashboard_url_from_cmdline(cmdline: str) -> str | None:
+    """Best-effort URL extraction for ``hermes dashboard --status``."""
+    if not cmdline:
+        return None
+    try:
+        import shlex
+
+        tokens = shlex.split(cmdline)
+    except ValueError:
+        tokens = cmdline.split()
+
+    host: str | None = None
+    port: str | None = None
+    for i, tok in enumerate(tokens):
+        if tok == "--host" and i + 1 < len(tokens):
+            host = tokens[i + 1]
+        elif tok.startswith("--host="):
+            host = tok.split("=", 1)[1]
+        elif tok == "--port" and i + 1 < len(tokens):
+            port = tokens[i + 1]
+        elif tok.startswith("--port="):
+            port = tok.split("=", 1)[1]
+
+    if host is None or port is None:
+        ns = type("_DashboardStatusArgs", (), {"host": host, "port": port})()
+        try:
+            resolved_host, resolved_port = _resolve_dashboard_bind(ns)
+        except SystemExit:
+            resolved_host = host or _DASHBOARD_DEFAULT_HOST
+            resolved_port = port or _DASHBOARD_DEFAULT_PORT
+    else:
+        resolved_host = host
+        resolved_port = port
+    return f"http://{resolved_host}:{resolved_port}"
+
+
 def _report_dashboard_status() -> int:
     """Print ``hermes dashboard`` PIDs and return the count.
 
@@ -10849,7 +10951,11 @@ def _report_dashboard_status() -> int:
         except (OSError, ValueError):
             pass
         if cmdline:
-            print(f"    PID {pid}: {cmdline}")
+            url = _extract_dashboard_url_from_cmdline(cmdline)
+            if url:
+                print(f"    PID {pid}: {cmdline}\n      URL: {url}")
+            else:
+                print(f"    PID {pid}: {cmdline}")
         else:
             print(f"    PID {pid}")
     return len(pids)
@@ -10927,9 +11033,10 @@ def cmd_dashboard(args):
     from hermes_cli.web_server import start_server
 
     embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
+    host, port = _resolve_dashboard_bind(args)
     start_server(
-        host=args.host,
-        port=args.port,
+        host=host,
+        port=port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
         embedded_chat=embedded_chat,
@@ -14097,10 +14204,21 @@ Examples:
         description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
     )
     dashboard_parser.add_argument(
-        "--port", type=int, default=9119, help="Port (default 9119)"
+        "--port",
+        type=int,
+        default=None,
+        help=(
+            "Port (default: dashboard.port config or "
+            "HERMES_DASHBOARD_PORT, falling back to 9119)"
+        ),
     )
     dashboard_parser.add_argument(
-        "--host", default="127.0.0.1", help="Host (default 127.0.0.1)"
+        "--host",
+        default=None,
+        help=(
+            "Host (default: dashboard.host config or "
+            "HERMES_DASHBOARD_HOST, falling back to 127.0.0.1)"
+        ),
     )
     dashboard_parser.add_argument(
         "--no-open", action="store_true", help="Don't open browser automatically"

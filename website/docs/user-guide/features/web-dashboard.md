@@ -20,12 +20,14 @@ hermes dashboard
 
 This starts a local web server and opens `http://127.0.0.1:9119` in your browser. The dashboard runs entirely on your machine — no data leaves localhost.
 
+The loopback URL is stable across restarts by default. For local automations, point health checks at `http://127.0.0.1:9119/api/status`.
+
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--port` | `9119` | Port to run the web server on |
-| `--host` | `127.0.0.1` | Bind address |
+| `--port` | `dashboard.port`, `HERMES_DASHBOARD_PORT`, then `9119` | Port to run the web server on |
+| `--host` | `dashboard.host`, `HERMES_DASHBOARD_HOST`, then `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
 | `--tui` | off | Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). Alternatively set `HERMES_DASHBOARD_TUI=1`. |
@@ -39,6 +41,16 @@ hermes dashboard --host 0.0.0.0
 
 # Start without opening browser
 hermes dashboard --no-open
+
+# Make a different loopback port persistent across restarts
+hermes config set dashboard.port 9120
+hermes dashboard --no-open
+
+# Or override once from the environment
+HERMES_DASHBOARD_PORT=9120 hermes dashboard --no-open
+
+# Show running dashboard processes and their best-effort active URLs
+hermes dashboard --status
 
 # Enable the in-browser Chat tab
 hermes dashboard --tui
@@ -186,7 +198,7 @@ Browse, search, and toggle skills and toolsets. Skills are loaded from `~/.herme
 - **Toolsets** — a separate section shows built-in toolsets (file operations, web browsing, etc.) with their active/inactive status, setup requirements, and list of included tools
 
 :::warning Security
-The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine. If you bind to `0.0.0.0`, anyone on your network can view and modify your credentials. The dashboard has no authentication of its own.
+The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine. If you bind to `0.0.0.0`, anyone on your network may be able to view and modify credentials unless an OAuth/auth gate or external reverse-proxy authentication is in place. Only use `--insecure` on trusted networks with additional controls.
 :::
 
 ## `/reload` Slash Command

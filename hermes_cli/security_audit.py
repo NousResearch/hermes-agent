@@ -293,7 +293,7 @@ def _http_post_json(url: str, payload: dict) -> dict:
 
 def _http_get_json(url: str) -> dict:
     req = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:  # SSRF: add IP block check
         return json.loads(resp.read().decode("utf-8"))
 
 

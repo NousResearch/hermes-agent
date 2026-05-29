@@ -1,0 +1,4 @@
+name: orchestrator-slash
+version: 0.1.0
+description: "Slash commands for the agentic-hub Temporal plan orchestrator — /resume and /skip signal the drainTierGraph workflow when a phase is blocked."
+author: "blake / agentic-hub plan 020-E"

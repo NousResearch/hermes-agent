@@ -218,7 +218,7 @@ def test_get_gateway_eligible_tools_ignores_quoted_false_opt_in(monkeypatch):
     monkeypatch.setattr(
         ns,
         "_get_gateway_direct_credentials",
-        lambda: {"web": True, "image_gen": False, "tts": False, "browser": False},
+        lambda: {"web": True, "image_gen": False, "video_gen": False, "tts": False, "browser": False},
     )
 
     unconfigured, has_direct, already_managed = ns.get_gateway_eligible_tools(
@@ -230,4 +230,4 @@ def test_get_gateway_eligible_tools_ignores_quoted_false_opt_in(monkeypatch):
 
     assert "web" in has_direct
     assert "web" not in already_managed
-    assert set(unconfigured) == {"image_gen", "tts", "browser"}
+    assert set(unconfigured) == {"image_gen", "video_gen", "tts", "browser"}

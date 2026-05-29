@@ -14,7 +14,45 @@ from provider_gateway.policy import (
 )
 from provider_gateway.usage_tracker import ProviderUsageRecord, ProviderUsageTracker
 
+from provider_gateway.circuit_breaker import CircuitBreaker
+from provider_gateway.router import ProviderRouter
+
 logger = logging.getLogger(__name__)
+
+# Global cache for the gateway components (safeguards session lifecycle)
+_circuit_breaker: CircuitBreaker | None = None
+_router: ProviderRouter | None = None
+
+
+def get_circuit_breaker(agent: Any = None) -> CircuitBreaker:
+    """Get or create the global CircuitBreaker instance, optionally binding it to the agent."""
+    global _circuit_breaker
+    if _circuit_breaker is None:
+        _circuit_breaker = CircuitBreaker()
+    
+    if agent is not None:
+        try:
+            if not hasattr(agent, "_provider_circuit_breaker") or agent._provider_circuit_breaker is None:
+                setattr(agent, "_provider_circuit_breaker", _circuit_breaker)
+        except Exception:
+            pass
+    return _circuit_breaker
+
+
+def get_provider_router(agent: Any = None) -> ProviderRouter:
+    """Get or create the global ProviderRouter instance, optionally binding it to the agent."""
+    global _router
+    if _router is None:
+        breaker = get_circuit_breaker(agent)
+        _router = ProviderRouter(breaker)
+    
+    if agent is not None:
+        try:
+            if not hasattr(agent, "_provider_router") or agent._provider_router is None:
+                setattr(agent, "_provider_router", _router)
+        except Exception:
+            pass
+    return _router
 
 
 def record_provider_response_usage(
@@ -35,11 +73,16 @@ def record_provider_response_usage(
         api_mode=getattr(agent, "api_mode", None),
     )
     estimated_cost = _estimate_cost_usd(agent, usage, config)
+    provider = _agent_str(agent, "provider", "unknown")
+    latency_ms = round(max(0.0, latency_seconds) * 1000.0, 2)
+
+    # Record success to the circuit breaker
+    get_circuit_breaker(agent).record_success(provider, latency_ms=latency_ms)
 
     return _record_usage(
         agent,
         ProviderUsageRecord(
-            provider=_agent_str(agent, "provider", "unknown"),
+            provider=provider,
             model=_agent_str(agent, "model", "unknown"),
             api_mode=_agent_str(agent, "api_mode", "chat_completions"),
             input_tokens=usage.input_tokens,
@@ -49,7 +92,7 @@ def record_provider_response_usage(
             cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens,
             estimated_cost_usd=estimated_cost,
-            latency_ms=round(max(0.0, latency_seconds) * 1000.0, 2),
+            latency_ms=latency_ms,
             status="success",
             session_id=getattr(agent, "session_id", None),
         ),
@@ -67,13 +110,19 @@ def record_provider_error_usage(
     if not _should_track_usage(agent, config):
         return False
 
+    provider = _agent_str(agent, "provider", "unknown")
+    latency_ms = round(max(0.0, latency_seconds) * 1000.0, 2)
+
+    # Record failure to the circuit breaker
+    get_circuit_breaker(agent).record_failure(provider)
+
     return _record_usage(
         agent,
         ProviderUsageRecord(
-            provider=_agent_str(agent, "provider", "unknown"),
+            provider=provider,
             model=_agent_str(agent, "model", "unknown"),
             api_mode=_agent_str(agent, "api_mode", "chat_completions"),
-            latency_ms=round(max(0.0, latency_seconds) * 1000.0, 2),
+            latency_ms=latency_ms,
             status="error",
             session_id=getattr(agent, "session_id", None),
             error_type=type(error).__name__,

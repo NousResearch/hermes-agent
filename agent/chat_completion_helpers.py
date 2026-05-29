@@ -1066,11 +1066,61 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
             agent._rate_limited_until = time.monotonic() + 60
-    if agent._fallback_index >= len(agent._fallback_chain):
-        return False
+    # ── [SUNTIKAN PROVIDER GATEWAY DYNAMIC ROUTING] ──
+    goto_fallback_logic = False
+    try:
+        from provider_gateway.config import load_gateway_config, GatewayConfig
+        from provider_gateway.policy import build_gateway_policy, should_consider_gateway_fallback
+        from provider_gateway.runtime import get_provider_router
 
-    fb = agent._fallback_chain[agent._fallback_index]
-    agent._fallback_index += 1
+        gw_config = getattr(agent, "_provider_gateway_config", None)
+        if gw_config is None:
+            gw_config = load_gateway_config()
+            setattr(agent, "_provider_gateway_config", gw_config)
+
+        if gw_config.enabled and should_consider_gateway_fallback(reason):
+            policy = build_gateway_policy(agent, gw_config)
+            # Filter out primary since it has just failed
+            candidates_to_route = [c for c in policy.candidates if c.source != "primary"]
+
+            router = get_provider_router(agent)
+            current_prov = (getattr(agent, "provider", "") or "").strip().lower()
+            current_mod = (getattr(agent, "model", "") or "").strip()
+
+            selected_route = router.select_route(
+                candidates_to_route,
+                strategy=gw_config.routing_strategy,
+                current_provider=current_prov,
+                current_model=current_mod,
+            )
+
+            if selected_route is not None:
+                fb = {
+                    "provider": selected_route.provider,
+                    "model": selected_route.model,
+                    "base_url": selected_route.base_url,
+                    "api_key": selected_route.api_key,
+                    "key_env": selected_route.key_env,
+                }
+                # Align fallback index if the chosen candidate exists in the fallback chain
+                for idx, entry in enumerate(agent._fallback_chain):
+                    if (
+                        isinstance(entry, dict)
+                        and (entry.get("provider") or "").strip().lower() == selected_route.provider.lower()
+                        and (entry.get("model") or "").strip() == selected_route.model
+                    ):
+                        agent._fallback_index = idx + 1
+                        break
+                goto_fallback_logic = True
+    except Exception as exc:
+        logger.debug("Provider gateway dynamic routing failed, falling back to linear: %s", exc)
+
+    if not goto_fallback_logic:
+        if agent._fallback_index >= len(agent._fallback_chain):
+            return False
+
+        fb = agent._fallback_chain[agent._fallback_index]
+        agent._fallback_index += 1
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:

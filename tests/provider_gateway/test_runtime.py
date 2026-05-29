@@ -10,6 +10,7 @@ from agent import conversation_loop
 from agent.chat_completion_helpers import interruptible_api_call
 from agent.error_classifier import FailoverReason
 from provider_gateway.config import GatewayConfig
+from provider_gateway.circuit_breaker import CircuitState
 from provider_gateway.policy import ProviderRouteCandidate
 from provider_gateway.runtime import (
     _estimate_cost_usd,
@@ -437,3 +438,48 @@ def test_negative_latency_is_clamped_to_zero() -> None:
 
     assert len(tracker.records) == 1
     assert tracker.records[0].latency_ms == 0.0
+
+
+def test_runtime_updates_circuit_breaker() -> None:
+    """Test that runtime success/error calls update the circuit breaker health."""
+    from provider_gateway.runtime import get_circuit_breaker
+    tracker = CapturingTracker()
+    agent = SimpleNamespace(
+        _provider_gateway_config=GatewayConfig(
+            enabled=True,
+            track_usage=True,
+            track_cost=False,
+        ),
+        _provider_usage_tracker=tracker,
+        provider="test-circuit-provider",
+        model="claude-sonnet",
+        api_mode="chat_completions",
+        session_id="session-1",
+    )
+
+    # Initially not tracked or CLOSED
+    breaker = get_circuit_breaker(agent)
+    assert breaker.is_available("test-circuit-provider") is True
+
+    # Record success
+    record_provider_response_usage(
+        agent,
+        SimpleNamespace(usage=_response_usage()),
+        latency_seconds=0.15,
+    )
+    health = breaker.get_health("test-circuit-provider")
+    assert health is not None
+    assert health.state == CircuitState.CLOSED
+    assert health.total_requests == 1
+    assert health.latency_samples == [150.0]
+
+    # Record failure
+    record_provider_error_usage(
+        agent,
+        RuntimeError("API error"),
+        latency_seconds=0.1,
+    )
+    assert health.total_requests == 2
+    assert health.total_failures == 1
+    assert health.consecutive_failures == 1
+

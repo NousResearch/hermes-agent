@@ -700,12 +700,20 @@ class _CodexCompletionsAdapter:
             # xAI's Responses endpoint rejects ``pattern`` and ``format`` JSON Schema
             # keywords (HTTP 400). Strip them here to match the parity guarantee that
             # chat_completion_helpers.py provides for the main-agent xAI path.
+            #
+            # Deep-copy before sanitizing — ``list(tools)`` is only a shallow
+            # copy of the outer list, but the sanitizers mutate the inner
+            # parameter dicts in place.  Without a deep copy the caller's
+            # tool registry permanently loses its slash-containing enum
+            # constraints after the first auxiliary xAI call.  See #27907.
             try:
+                import copy as _copy
                 from tools.schema_sanitizer import (
                     strip_pattern_and_format,
                     strip_slash_enum,
                 )
-                tools, _ = strip_pattern_and_format(list(tools))
+                tools = _copy.deepcopy(list(tools))
+                tools, _ = strip_pattern_and_format(tools)
                 tools, _ = strip_slash_enum(tools)
             except Exception as exc:
                 logger.warning(

@@ -115,6 +115,8 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
    all proportionally in Tailwind v4. */
 @theme inline {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
+  --font-sans: var(--theme-font-sans);
+  --font-mono: var(--theme-font-mono);
 }
 
 #root {

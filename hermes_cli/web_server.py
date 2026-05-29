@@ -110,17 +110,20 @@ app.add_middleware(
 
 # ---------------------------------------------------------------------------
 # Endpoints that do NOT require the session token.  Everything else under
-# /api/ is gated by the auth middleware below.  Keep this list minimal —
-# only truly non-sensitive, read-only endpoints belong here.
+# /api/ is gated by the auth middleware below.
+#
+# This list is defined in ``hermes_cli.dashboard_auth.public_paths`` so the
+# OAuth gate middleware can honour the same allowlist — keeping the two
+# gates in lockstep avoids drift like the wildcard-subdomain regression
+# where ``/api/status`` was public under the legacy gate but 401'd under
+# the OAuth gate (breaking the portal's liveness probe).
+#
+# Keep the upstream list minimal — only truly non-sensitive, read-only
+# endpoints belong there.
 # ---------------------------------------------------------------------------
-_PUBLIC_API_PATHS: frozenset = frozenset({
-    "/api/status",
-    "/api/config/defaults",
-    "/api/config/schema",
-    "/api/model/info",
-    "/api/dashboard/themes",
-    "/api/dashboard/plugins",
-})
+from hermes_cli.dashboard_auth.public_paths import (
+    PUBLIC_API_PATHS as _PUBLIC_API_PATHS,
+)
 
 
 def _has_valid_session_token(request: Request) -> bool:
@@ -3348,7 +3351,6 @@ async def get_models_analytics(days: int = 30):
 # ---------------------------------------------------------------------------
 
 import re
-import asyncio
 
 # PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
 # Windows the import raises; catch and leave PtyBridge=None so the rest of

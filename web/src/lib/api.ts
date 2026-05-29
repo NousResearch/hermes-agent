@@ -41,7 +41,11 @@ function setSessionHeader(headers: Headers, token: string): void {
   }
 }
 
-export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+export async function fetchJSON<T>(
+  url: string,
+  init?: RequestInit,
+  options?: FetchJSONOptions,
+): Promise<T> {
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
@@ -100,7 +104,7 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
     // that reload once on the first stale-token 401 — gated mode is
     // handled above, so reaching here in gated mode means a real
     // middleware failure that should not reload-loop.
-    if (!window.__HERMES_AUTH_REQUIRED__) {
+    if (!window.__HERMES_AUTH_REQUIRED__ && !options?.allowUnauthorized) {
       let alreadyReloaded = false;
       try {
         alreadyReloaded =
@@ -198,8 +202,19 @@ export const api = {
    * still exists but is never useful there (no Session, no cookie). The
    * AuthWidget component swallows 401s from this call: if the gate isn't
    * engaged, /api/auth/me returns 401 and the widget renders nothing.
+   *
+   * ``allowUnauthorized`` is load-bearing: in loopback mode this endpoint
+   * 401s by design, and fetchJSON's default loopback behaviour treats a
+   * 401 as a rotated session token and full-page-reloads to pick up a
+   * fresh one. Because every *other* dashboard request succeeds (and so
+   * clears the one-shot reload guard), that turns this expected 401 into
+   * an infinite reload loop. Opting out keeps the 401 a plain throw the
+   * widget can catch.
    */
-  getAuthMe: () => fetchJSON<AuthMeResponse>("/api/auth/me"),
+  getAuthMe: () =>
+    fetchJSON<AuthMeResponse>("/api/auth/me", undefined, {
+      allowUnauthorized: true,
+    }),
   logout: () =>
     fetch(`${BASE}/auth/logout`, {
       method: "POST",
@@ -512,6 +527,15 @@ export interface ActionResponse {
   name: string;
   ok: boolean;
   pid: number;
+}
+
+/** Per-call overrides for {@link fetchJSON}. */
+interface FetchJSONOptions {
+  /** When true, a 401 response is surfaced as a normal thrown error rather
+   *  than triggering the loopback stale-token page reload. Use for probes
+   *  whose 401 is an expected signal (e.g. /api/auth/me in non-gated mode)
+   *  rather than evidence of a rotated session token. */
+  allowUnauthorized?: boolean;
 }
 
 export interface ActionStatusResponse {

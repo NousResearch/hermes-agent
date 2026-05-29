@@ -1,6 +1,5 @@
 """Tests for the provider module registry and profiles."""
 
-import pytest
 from providers import get_provider_profile, _REGISTRY
 from providers.base import ProviderProfile, OMIT_TEMPERATURE
 

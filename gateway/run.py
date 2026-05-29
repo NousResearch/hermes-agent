@@ -15955,19 +15955,54 @@ class GatewayRunner:
 
         # Per-platform display settings — resolve via display_config module
         # which checks display.platforms.<platform>.<key> first, then
-        # display.<key> global, then built-in platform defaults.
-        from gateway.display_config import resolve_display_setting
+        # display.<key> global, then built-in platform defaults.  Local ops
+        # addition: display.platforms.<platform>.scopes.dm.<key> can narrow
+        # noisy progress to private chats without affecting groups.
+        from gateway.display_config import _normalise, resolve_display_setting
+
+        def _display_scope_for_source() -> str:
+            chat_type = str(getattr(source, "chat_type", "") or "").strip().lower()
+            return "dm" if chat_type in {"dm", "private", "direct", "im"} else "group"
+
+        def _normalize_scoped_display_value(setting: str, value):
+            return _normalise(setting, value)
+
+        def _resolve_scoped_display_setting(setting: str, fallback=None):
+            value = resolve_display_setting(user_config, platform_key, setting, fallback)
+            try:
+                platforms_cfg = (display_config.get("platforms") or {}) if isinstance(display_config, dict) else {}
+                platform_cfg = platforms_cfg.get(platform_key) or {}
+                scopes_cfg = platform_cfg.get("scopes") or {}
+                scope_cfg = scopes_cfg.get(_display_scope_for_source()) or {}
+                if isinstance(scope_cfg, dict) and setting in scope_cfg:
+                    return _normalize_scoped_display_value(setting, scope_cfg.get(setting))
+            except Exception:
+                pass
+            return value
+
+        def _resolve_scoped_platform_flag(key: str, default: bool = False) -> bool:
+            try:
+                platforms_cfg = (display_config.get("platforms") or {}) if isinstance(display_config, dict) else {}
+                platform_cfg = platforms_cfg.get(platform_key) or {}
+                value = platform_cfg.get(key, default) if isinstance(platform_cfg, dict) else default
+                scopes_cfg = platform_cfg.get("scopes") or {} if isinstance(platform_cfg, dict) else {}
+                scope_cfg = scopes_cfg.get(_display_scope_for_source()) or {}
+                if isinstance(scope_cfg, dict) and key in scope_cfg:
+                    value = scope_cfg.get(key)
+                return is_truthy_value(value, default=default)
+            except Exception:
+                return default
 
         # Apply tool preview length config (0 = no limit)
         try:
             from agent.display import set_tool_preview_max_len
-            _tpl = resolve_display_setting(user_config, platform_key, "tool_preview_length", 0)
+            _tpl = _resolve_scoped_display_setting("tool_preview_length", 0)
             set_tool_preview_max_len(int(_tpl) if _tpl else 0)
         except Exception:
             pass
 
-        # Tool progress mode — resolved per-platform with env var fallback
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
+        # Tool progress mode — resolved per-platform/per-scope with env var fallback
+        _resolved_tp = _resolve_scoped_display_setting("tool_progress")
         _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
         _display_cfg = display_config if isinstance(display_config, dict) else {}
         _platforms_cfg = _display_cfg.get("platforms") or {}
@@ -15999,9 +16034,7 @@ class GatewayRunner:
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
             and bool(
-                resolve_display_setting(
-                    user_config,
-                    platform_key,
+                _resolve_scoped_display_setting(
                     "interim_assistant_messages",
                     True,
                 )
@@ -16021,7 +16054,7 @@ class GatewayRunner:
         # are collected here and deleted after the final response lands.
         # Failed runs skip cleanup so the bubbles remain as breadcrumbs.
         _cleanup_progress = bool(
-            resolve_display_setting(user_config, platform_key, "cleanup_progress")
+            _resolve_scoped_display_setting("cleanup_progress")
         )
         _cleanup_adapter = self.adapters.get(source.platform) if _cleanup_progress else None
         if _cleanup_adapter is not None and (
@@ -16031,6 +16064,10 @@ class GatewayRunner:
             _cleanup_progress = False
             _cleanup_adapter = None
         _cleanup_msg_ids: List[str] = []
+        _allow_uneditable_tool_progress = _resolve_scoped_platform_flag(
+            "allow_uneditable_tool_progress",
+            default=False,
+        )
         # First-touch onboarding latch: fires at most once per run, even if
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
@@ -16180,9 +16217,11 @@ class GatewayRunner:
                 return
 
             # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+            # editing unless a scoped private-chat override explicitly allows
+            # separate progress bubbles.  Keep this opt-in because group chats
+            # would otherwise get one permanent message per update.
+            adapter_supports_progress_edit = type(adapter).edit_message is not BasePlatformAdapter.edit_message
+            if not adapter_supports_progress_edit and not _allow_uneditable_tool_progress:
                 while not progress_queue.empty():
                     try:
                         progress_queue.get_nowait()
@@ -16192,7 +16231,7 @@ class GatewayRunner:
 
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
-            can_edit = True          # False once an edit fails (platform doesn't support it)
+            can_edit = adapter_supports_progress_edit  # False sends standalone lines on uneditable DMs
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 

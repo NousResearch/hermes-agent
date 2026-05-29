@@ -154,7 +154,7 @@ def _make_runner(adapter):
     return runner
 
 
-def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
+def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool, config: dict | None = None):
     """Wire up the module stubs every _run_agent test needs."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
@@ -172,13 +172,13 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
 
     # Wire the per-platform cleanup_progress flag via the config loader the
     # gateway actually reads (``_load_gateway_config`` returns user config).
-    cfg = {
+    cfg = config if config is not None else ({
         "display": {
             "platforms": {
                 "telegram": {"cleanup_progress": True},
             }
         }
-    } if cleanup_on else {}
+    } if cleanup_on else {})
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: cfg)
     return gateway_run
 
@@ -219,6 +219,63 @@ async def test_cleanup_off_by_default_leaves_bubbles(monkeypatch, tmp_path):
         for _ in range(10):
             await asyncio.sleep(0.01)
     assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_progress_can_be_scoped_to_dm_only(monkeypatch, tmp_path):
+    """Scoped display config enables cleanup for DMs without changing groups."""
+    cfg = {
+        "display": {
+            "platforms": {
+                "telegram": {
+                    "cleanup_progress": False,
+                    "scopes": {
+                        "dm": {"cleanup_progress": "yes"},
+                        "group": {"cleanup_progress": "off"},
+                    },
+                },
+            },
+        },
+    }
+
+    dm_adapter = CleanupCaptureAdapter()
+    dm_runner = _make_runner(dm_adapter)
+    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=False, config=cfg)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    dm_result = await dm_runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="u1", chat_type="dm"),
+        session_id="sess-dm",
+        session_key="agent:main:telegram:dm:u1",
+    )
+    dm_cb = dm_adapter.pop_post_delivery_callback("agent:main:telegram:dm:u1")
+    assert callable(dm_cb)
+    dm_cb()
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if dm_adapter.deleted:
+            break
+    assert len(dm_adapter.deleted) >= 1
+
+    group_adapter = CleanupCaptureAdapter()
+    group_runner = _make_runner(group_adapter)
+    group_result = await group_runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1001", chat_type="group"),
+        session_id="sess-group",
+        session_key="agent:main:telegram:group:-1001",
+    )
+    group_cb = group_adapter.pop_post_delivery_callback("agent:main:telegram:group:-1001")
+    if group_cb is not None:
+        group_cb()
+        for _ in range(10):
+            await asyncio.sleep(0.01)
+    assert group_adapter.deleted == []
 
 
 @pytest.mark.asyncio

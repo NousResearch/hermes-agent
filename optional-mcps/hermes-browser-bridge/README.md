@@ -14,7 +14,7 @@ Hermes Browser Bridge connects Hermes Agent to a user's already-authenticated br
 2. Load the Chrome extension:
    - Open `chrome://extensions/`
    - Enable Developer mode
-   - Click *Load unpacked*
+   - Click _Load unpacked_
    - Select the `extension/` folder
 3. Bridge auto-connects at `ws://127.0.0.1:8787`
 

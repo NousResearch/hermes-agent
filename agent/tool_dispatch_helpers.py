@@ -11,8 +11,9 @@ Pure module-level utilities extracted from ``run_agent.py``:
   ``_append_subdir_hint_to_multimodal`` — envelope helpers for the
   ``{"_multimodal": True, "content": [...], "text_summary": ...}`` dict
   shape returned by tools like ``computer_use``.
-* ``_extract_file_mutation_targets`` / ``_extract_error_preview`` —
-  per-turn file-mutation verifier inputs.
+* ``_extract_file_mutation_targets`` / ``_extract_error_preview`` /
+  ``_extract_file_mutation_refusal_reason`` — per-turn file-mutation
+  verifier inputs.
 * ``_trajectory_normalize_msg`` — strip image blobs from a message for
   trajectory saving.
 
@@ -269,6 +270,21 @@ def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List
     return []
 
 
+def _decode_leading_json_object(text: str) -> dict[str, Any] | None:
+    """Decode a tool-result JSON object, tolerating appended guidance text."""
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        data = json.loads(stripped)
+    except Exception:
+        try:
+            data, _end = json.JSONDecoder().raw_decode(stripped)
+        except Exception:
+            return None
+    return data if isinstance(data, dict) else None
+
+
 def _extract_error_preview(result: Any, max_len: int = 180) -> str:
     """Pull a one-line error summary out of a tool result for footer display."""
     text = _multimodal_text_summary(result) if result is not None else ""
@@ -279,19 +295,30 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
             return ""
     # Try to parse JSON and pull the ``error`` field — tool handlers return
     # ``{"success": false, "error": "..."}``; raw string wins if parse fails.
-    stripped = text.strip()
-    if stripped.startswith("{"):
-        try:
-            data = json.loads(stripped)
-            if isinstance(data, dict) and isinstance(data.get("error"), str):
-                text = data["error"]
-        except Exception:
-            pass
+    # Tool-loop guidance may be appended after the JSON object on repeated
+    # failures, so accept a leading JSON object even when extra text follows.
+    data = _decode_leading_json_object(text)
+    if isinstance(data, dict) and isinstance(data.get("error"), str):
+        text = data["error"]
     # Collapse whitespace, trim to max_len.
     text = " ".join(text.split())
     if len(text) > max_len:
         text = text[: max_len - 1] + "…"
     return text
+
+
+def _extract_file_mutation_refusal_reason(result: Any) -> str:
+    """Return structured guardrail refusal reason when present."""
+    text = _multimodal_text_summary(result) if result is not None else ""
+    if not isinstance(text, str):
+        try:
+            text = str(text)
+        except Exception:
+            return "protected_refusal"
+    data = _decode_leading_json_object(text)
+    if isinstance(data, dict) and isinstance(data.get("refusal_reason"), str):
+        return data["refusal_reason"]
+    return "protected_refusal"
 
 
 def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
@@ -412,6 +439,7 @@ __all__ = [
     "_append_subdir_hint_to_multimodal",
     "_extract_file_mutation_targets",
     "_extract_error_preview",
+    "_extract_file_mutation_refusal_reason",
     "_trajectory_normalize_msg",
     "make_tool_result_message",
 ]

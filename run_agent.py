@@ -152,7 +152,8 @@ from agent.tool_guardrails import (
 )
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
-    file_mutation_result_landed,
+    FileMutationOutcome,
+    classify_file_mutation_result,
 )
 from agent.trajectory import (
     convert_scratchpad_to_think,
@@ -168,6 +169,7 @@ from agent.tool_dispatch_helpers import (
     _append_subdir_hint_to_multimodal,  # noqa: F401  # re-exported for tests that `from run_agent import _append_subdir_hint_to_multimodal`
     _extract_file_mutation_targets,
     _extract_error_preview,
+    _extract_file_mutation_refusal_reason,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
@@ -2049,22 +2051,40 @@ class AIAgent:
     ) -> None:
         """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
 
-        On failure, store ``{path: {error_preview, tool}}`` entries.  On
-        success, remove any prior failure entries for the same paths (the
-        model recovered within the turn).  Silently no-ops if the per-turn
-        state dict hasn't been initialised yet (e.g. a tool dispatched
-        outside ``run_conversation``).
+        Record the outcome of each ``write_file`` / ``patch`` call. Normal edit
+        failures are stored in ``_turn_failed_file_mutations``. Deliberate
+        file-tool guardrail blocks are stored in ``_turn_protected_file_refusals``
+        so final-response wording can distinguish safety refusals from broken
+        edits. A later successful write/patch to the same target clears either
+        unresolved entry.
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
             return
         state = getattr(self, "_turn_failed_file_mutations", None)
+        protected_state = getattr(self, "_turn_protected_file_refusals", None)
         if state is None:
             return
+        if protected_state is None:
+            protected_state = {}
+            self._turn_protected_file_refusals = protected_state
         targets = _extract_file_mutation_targets(tool_name, args)
         if not targets:
             return
-        landed = file_mutation_result_landed(tool_name, result)
-        if is_error and not landed:
+        outcome = classify_file_mutation_result(tool_name, result)
+        if is_error and outcome is FileMutationOutcome.PROTECTED_REFUSAL:
+            preview = _extract_error_preview(result)
+            refusal_reason = _extract_file_mutation_refusal_reason(result)
+            if protected_state is not None:
+                for path in targets:
+                    state.pop(path, None)
+                    if path not in protected_state:
+                        protected_state[path] = {
+                            "tool": tool_name,
+                            "error_preview": preview,
+                            "refusal_reason": refusal_reason,
+                        }
+            return
+        if is_error and outcome is not FileMutationOutcome.LANDED:
             preview = _extract_error_preview(result)
             for path in targets:
                 # Keep the FIRST error we saw for a given path unless we
@@ -2075,9 +2095,13 @@ class AIAgent:
                         "tool": tool_name,
                         "error_preview": preview,
                     }
+                if protected_state is not None:
+                    protected_state.pop(path, None)
         else:
             for path in targets:
                 state.pop(path, None)
+                if protected_state is not None:
+                    protected_state.pop(path, None)
 
     def _file_mutation_verifier_enabled(self) -> bool:
         """Check whether the per-turn file-mutation verifier footer is on.
@@ -2107,35 +2131,71 @@ class AIAgent:
         return True  # safe default: verifier on
 
     @staticmethod
-    def _format_file_mutation_failure_footer(failed: Dict[str, Dict[str, Any]]) -> str:
-        """Render the per-turn failed-mutation dict as a user-facing footer.
+    def _format_file_mutation_failure_footer(
+        failed: Dict[str, Dict[str, Any]],
+        protected_refusals: Dict[str, Dict[str, Any]] | None = None,
+    ) -> str:
+        """Render unresolved per-turn file-mutation outcomes as a footer.
 
-        Displays up to 10 paths with their first error preview, then a
-        count of any additional failures.  Returns an empty string when
-        the dict is empty so callers can concatenate unconditionally.
+        ``failed`` means a normal edit attempt did not land.  ``protected_refusals``
+        means Hermes deliberately blocked a protected target before mutation.  Both
+        are unresolved if the task required that file change, but they should not
+        sound like the same class of failure to the user.
         """
-        if not failed:
+        protected_refusals = protected_refusals or {}
+        if not failed and not protected_refusals:
             return ""
-        lines = [
-            "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
-            "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
-        ]
-        shown = 0
-        for path, info in failed.items():
-            if shown >= 10:
-                break
-            preview = (info.get("error_preview") or "").strip()
-            tool = info.get("tool") or "patch"
-            if preview:
-                lines.append(f"  • {path} — [{tool}] {preview}")
-            else:
-                lines.append(f"  • {path} — [{tool}] failed")
-            shown += 1
-        remaining = len(failed) - shown
-        if remaining > 0:
-            lines.append(f"  • … and {remaining} more")
+
+        lines: list[str] = []
+        if failed:
+            lines.append(
+                "⚠️ File-mutation verifier: "
+                f"{len(failed)} file(s) were NOT modified this turn despite any "
+                "wording above that may suggest otherwise. If any of these file "
+                "changes were required for the task, the task should be treated "
+                "as incomplete until they are fixed. Run `git status` or "
+                "`read_file` to confirm."
+            )
+            shown = 0
+            for path, info in failed.items():
+                if shown >= 10:
+                    break
+                preview = " ".join((info.get("error_preview") or "").split())
+                tool = info.get("tool") or "patch"
+                if preview:
+                    lines.append(f"  • {path} — [{tool}] {preview}")
+                else:
+                    lines.append(f"  • {path} — [{tool}] failed")
+                shown += 1
+            remaining = len(failed) - shown
+            if remaining > 0:
+                lines.append(f"  • … and {remaining} more")
+
+        if protected_refusals:
+            if lines:
+                lines.append("")
+            lines.append(
+                "ℹ️ Protected file-tool edit skipped: Hermes refused to edit "
+                f"{len(protected_refusals)} protected target(s) with the file tool. "
+                "The file tool did not change the protected target. If this "
+                "file-tool edit was required for the task, the plan is incomplete "
+                "until an approved alternate flow completes and verifies it."
+            )
+            shown = 0
+            for path, info in protected_refusals.items():
+                if shown >= 10:
+                    break
+                preview = " ".join((info.get("error_preview") or "").split())
+                tool = info.get("tool") or "write_file"
+                reason = info.get("refusal_reason") or "protected_refusal"
+                if preview:
+                    lines.append(f"  • {path} — [{tool}] {reason}: {preview}")
+                else:
+                    lines.append(f"  • {path} — [{tool}] {reason}")
+                shown += 1
+            remaining = len(protected_refusals) - shown
+            if remaining > 0:
+                lines.append(f"  • … and {remaining} more")
         return "\n".join(lines)
 
     def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:

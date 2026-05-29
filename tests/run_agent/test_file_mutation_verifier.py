@@ -27,6 +27,7 @@ from run_agent import (
     AIAgent,
     _FILE_MUTATING_TOOLS,
     _extract_error_preview,
+    _extract_file_mutation_refusal_reason,
     _extract_file_mutation_targets,
 )
 
@@ -99,6 +100,16 @@ class TestExtractErrorPreview:
         raw = json.dumps({"success": False, "error": "Could not find old_string in /tmp/x"})
         assert _extract_error_preview(raw) == "Could not find old_string in /tmp/x"
 
+    def test_json_error_field_with_appended_tool_loop_warning_still_preferred(self):
+        raw = json.dumps({
+            "error": "Refusing to write to sensitive system path: /etc/example.conf",
+            "file_mutation_status": "protected_refusal",
+            "refusal_reason": "sensitive_system_path",
+        }) + "\n\n[Tool loop warning: identical failed call repeated]"
+
+        assert _extract_error_preview(raw) == "Refusing to write to sensitive system path: /etc/example.conf"
+        assert _extract_file_mutation_refusal_reason(raw) == "sensitive_system_path"
+
     def test_plain_string_falls_through(self):
         assert _extract_error_preview("Error executing tool: boom") == "Error executing tool: boom"
 
@@ -128,6 +139,7 @@ def _bare_agent() -> AIAgent:
     """
     agent = object.__new__(AIAgent)
     agent._turn_failed_file_mutations = {}
+    agent._turn_protected_file_refusals = {}
     return agent
 
 
@@ -216,6 +228,64 @@ class TestRecordFileMutationResult:
 
         assert agent._turn_failed_file_mutations == {}
 
+    def test_protected_refusal_recorded_separately_from_failed_edits(self):
+        agent = _bare_agent()
+        result = json.dumps({
+            "error": "Refusing to write to sensitive system path: /etc/example.conf",
+            "file_mutation_status": "protected_refusal",
+            "refusal_reason": "sensitive_system_path",
+        })
+
+        agent._record_file_mutation_result(
+            "write_file", {"path": "/etc/example.conf", "content": "x"},
+            result, is_error=True,
+        )
+
+        assert agent._turn_failed_file_mutations == {}
+        assert agent._turn_protected_file_refusals["/etc/example.conf"]["refusal_reason"] == "sensitive_system_path"
+
+    def test_repeated_protected_refusal_with_tool_loop_warning_stays_protected(self):
+        agent = _bare_agent()
+        refusal = json.dumps({
+            "error": "Refusing to write to sensitive system path: /etc/example.conf",
+            "file_mutation_status": "protected_refusal",
+            "refusal_reason": "sensitive_system_path",
+        })
+        args = {"path": "/etc/example.conf", "content": "x"}
+
+        agent._record_file_mutation_result("write_file", args, refusal, is_error=True)
+        agent._record_file_mutation_result(
+            "write_file",
+            args,
+            refusal + "\n\n[Tool loop warning: identical failed call repeated]",
+            is_error=True,
+        )
+
+        assert agent._turn_failed_file_mutations == {}
+        assert agent._turn_protected_file_refusals["/etc/example.conf"]["refusal_reason"] == "sensitive_system_path"
+
+    def test_success_removes_prior_protected_refusal(self):
+        agent = _bare_agent()
+        refusal = json.dumps({
+            "error": "Refusing to write to sensitive system path: /etc/example.conf",
+            "file_mutation_status": "protected_refusal",
+            "refusal_reason": "sensitive_system_path",
+        })
+        agent._record_file_mutation_result(
+            "write_file", {"path": "/etc/example.conf", "content": "x"},
+            refusal, is_error=True,
+        )
+        assert "/etc/example.conf" in agent._turn_protected_file_refusals
+
+        success = json.dumps({"bytes_written": 12})
+        agent._record_file_mutation_result(
+            "write_file", {"path": "/etc/example.conf", "content": "x"},
+            success, is_error=False,
+        )
+
+        assert agent._turn_protected_file_refusals == {}
+        assert agent._turn_failed_file_mutations == {}
+
     def test_repeated_failure_keeps_first_error(self):
         agent = _bare_agent()
         agent._record_file_mutation_result(
@@ -283,9 +353,45 @@ class TestFormatFooter:
             {"/tmp/a.md": {"tool": "patch", "error_preview": "Could not find old_string"}},
         )
         assert "1 file(s) were NOT modified" in out
+        assert "task should be treated as incomplete" in out
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
         assert "git status" in out  # user-actionable hint
+
+    def test_protected_refusal_footer_is_informational_but_impact_aware(self):
+        out = AIAgent._format_file_mutation_failure_footer(
+            {},
+            protected_refusals={
+                "/etc/supervisor/conf.d/example.conf": {
+                    "tool": "write_file",
+                    "error_preview": "Refusing to write to sensitive system path: /etc/supervisor/conf.d/example.conf",
+                    "refusal_reason": "sensitive_system_path",
+                },
+            },
+        )
+
+        assert "Protected file-tool edit skipped" in out
+        assert "⚠️ File-mutation verifier" not in out
+        assert "/etc/supervisor/conf.d/example.conf" in out
+        assert "The file tool did not change the protected target" in out
+        assert "If this file-tool edit was required" in out
+
+    def test_mixed_failure_and_protected_refusal_renders_both_meanings(self):
+        out = AIAgent._format_file_mutation_failure_footer(
+            {"/tmp/a.md": {"tool": "patch", "error_preview": "Could not find old_string"}},
+            protected_refusals={
+                "/etc/example.conf": {
+                    "tool": "write_file",
+                    "error_preview": "Refusing to write to sensitive system path: /etc/example.conf",
+                    "refusal_reason": "sensitive_system_path",
+                },
+            },
+        )
+
+        assert "task should be treated as incomplete" in out
+        assert "Protected file-tool edit skipped" in out
+        assert "/tmp/a.md" in out
+        assert "/etc/example.conf" in out
 
     def test_truncation_at_10_entries(self):
         failed = {

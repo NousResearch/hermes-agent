@@ -224,6 +224,15 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     return get_cross_profile_warning(resolved)
 
 
+def _protected_file_mutation_error(message: str, reason: str) -> str:
+    """Return a structured file-mutation guardrail refusal payload."""
+    return tool_error(
+        message,
+        file_mutation_status="protected_refusal",
+        refusal_reason=reason,
+    )
+
+
 def _is_expected_write_exception(exc: Exception) -> bool:
     """Return True for expected write denials that should not hit error logs."""
     if isinstance(exc, PermissionError):
@@ -893,11 +902,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     """
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
-        return tool_error(sensitive_err)
+        return _protected_file_mutation_error(sensitive_err, "sensitive_system_path")
     if not cross_profile:
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
-            return tool_error(cross_warning)
+            return _protected_file_mutation_error(cross_warning, "cross_profile_guard")
     if _is_internal_file_status_text(content):
         return tool_error(
             "Refusing to write internal read_file status text as file content. "
@@ -977,20 +986,21 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # because the agent uses relative ``..`` paths legitimately
             # (e.g. ``patch path="../other_module/x.py"`` from a worktree).
             if has_traversal_component(v4a_path):
-                return tool_error(
+                return _protected_file_mutation_error(
                     f"V4A patch header contains '..' traversal: {v4a_path!r}. "
                     "Use the agent's cwd-relative path (no '..') or an absolute "
-                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
+                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers.",
+                    "v4a_traversal_guard",
                 )
             _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
-            return tool_error(sensitive_err)
+            return _protected_file_mutation_error(sensitive_err, "sensitive_system_path")
         if not cross_profile:
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
-                return tool_error(cross_warning)
+                return _protected_file_mutation_error(cross_warning, "cross_profile_guard")
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping

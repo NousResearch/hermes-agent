@@ -697,13 +697,14 @@ def run_conversation(
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
-    # Per-turn file-mutation verifier state.  Keyed by resolved path;
-    # each failed ``write_file`` / ``patch`` call records the error
-    # preview.  Later successful writes to the same path remove the
-    # entry (the model recovered).  At end-of-turn, any entries still
-    # present are surfaced in an advisory footer so the model cannot
-    # over-claim success while the file is actually unchanged on disk.
+    # Per-turn file-mutation verifier state. Keyed by the target path reported
+    # in the file-tool arguments.
+    # ``_turn_failed_file_mutations`` tracks normal edit failures that did not
+    # land. ``_turn_protected_file_refusals`` tracks deliberate guardrail blocks
+    # (for example /etc writes) separately so the final footer can explain both
+    # safety and task impact without conflating them.
     agent._turn_failed_file_mutations: Dict[str, Dict[str, Any]] = {}
+    agent._turn_protected_file_refusals: Dict[str, Dict[str, Any]] = {}
     
     # Record the execution thread so interrupt()/clear_interrupt() can
     # scope the tool-level interrupt signal to THIS agent's thread only.
@@ -4436,8 +4437,12 @@ def run_conversation(
     if final_response and not interrupted:
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
-            if _failed and agent._file_mutation_verifier_enabled():
-                footer = agent._format_file_mutation_failure_footer(_failed)
+            _protected = getattr(agent, "_turn_protected_file_refusals", None) or {}
+            if (_failed or _protected) and agent._file_mutation_verifier_enabled():
+                footer = agent._format_file_mutation_failure_footer(
+                    _failed,
+                    protected_refusals=_protected,
+                )
                 if footer:
                     final_response = final_response.rstrip() + "\n\n" + footer
         except Exception as _ver_err:

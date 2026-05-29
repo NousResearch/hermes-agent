@@ -139,6 +139,15 @@ class TestWriteFileHandler:
         assert "error" in result
         assert "string" in result["error"].lower() or "content" in result["error"].lower()
 
+    def test_sensitive_path_refusal_returns_structured_protected_metadata(self):
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool("/etc/supervisor/conf.d/example.conf", "data"))
+
+        assert "error" in result
+        assert result["file_mutation_status"] == "protected_refusal"
+        assert result["refusal_reason"] == "sensitive_system_path"
+        assert "sensitive system path" in result["error"]
+
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
@@ -209,6 +218,21 @@ class TestPatchHandler:
         assert "Unknown mode" in result["error"]
 
     @patch("tools.file_tools._get_file_ops")
+    def test_replace_sensitive_path_refusal_returns_structured_protected_metadata(self, mock_get):
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="replace",
+            path="/etc/supervisor/conf.d/example.conf",
+            old_string="old",
+            new_string="new",
+        ))
+
+        assert "error" in result
+        assert result["file_mutation_status"] == "protected_refusal"
+        assert result["refusal_reason"] == "sensitive_system_path"
+        mock_get.return_value.patch_replace.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
     def test_patch_v4a_rejects_traversal_in_update_header(self, mock_get):
         """V4A '*** Update File:' headers come from patch content, which can
         carry prompt-injection-controlled paths (skill content, web extract).
@@ -229,6 +253,8 @@ class TestPatchHandler:
         ))
         assert "error" in result
         assert "traversal" in result["error"].lower()
+        assert result["file_mutation_status"] == "protected_refusal"
+        assert result["refusal_reason"] == "v4a_traversal_guard"
         # patch_v4a must not be invoked when the header is rejected
         mock_get.return_value.patch_v4a.assert_not_called()
 
@@ -246,6 +272,26 @@ class TestPatchHandler:
         ))
         assert "error" in result
         assert "traversal" in result["error"].lower()
+        assert result["file_mutation_status"] == "protected_refusal"
+        assert result["refusal_reason"] == "v4a_traversal_guard"
+
+    @patch("tools.file_tools._check_cross_profile_path")
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_cross_profile_refusal_returns_structured_protected_metadata(self, mock_get, mock_cross_profile):
+        from tools.file_tools import patch_tool
+        mock_cross_profile.return_value = "Refusing to write to another Hermes profile path"
+
+        result = json.loads(patch_tool(
+            mode="replace",
+            path="/root/.hermes/profiles/chloe/skills/example/SKILL.md",
+            old_string="old",
+            new_string="new",
+        ))
+
+        assert "error" in result
+        assert result["file_mutation_status"] == "protected_refusal"
+        assert result["refusal_reason"] == "cross_profile_guard"
+        mock_get.return_value.patch_replace.assert_not_called()
 
 
 class TestSearchHandler:

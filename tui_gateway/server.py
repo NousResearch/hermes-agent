@@ -1501,8 +1501,11 @@ def _tool_ctx(name: str, args: dict) -> str:
         return ""
 
 
-_TUI_VERBOSE_TEXT_MAX_CHARS = 16_000
-_TUI_VERBOSE_TEXT_MAX_LINES = 240
+# TUI tool details live inside Ink/React state and transcript snapshots.
+# Keep them much smaller than general live-render tails so repeated large
+# browser/session_search payloads do not balloon the Node heap.
+_TUI_VERBOSE_TEXT_MAX_CHARS = 4_096
+_TUI_VERBOSE_TEXT_MAX_LINES = 80
 
 
 def _cap_tui_verbose_text(text: str) -> str:

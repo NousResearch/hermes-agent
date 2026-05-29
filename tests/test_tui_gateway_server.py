@@ -73,6 +73,11 @@ def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
     assert server._tool_result_text("token=secret") == ""
 
 
+def test_tui_verbose_tool_default_caps_stay_small_for_ink_heap():
+    assert server._TUI_VERBOSE_TEXT_MAX_CHARS == 4_096
+    assert server._TUI_VERBOSE_TEXT_MAX_LINES == 80
+
+
 def test_tui_verbose_tool_details_are_capped_before_emit(monkeypatch):
     monkeypatch.setattr(server, "_TUI_VERBOSE_TEXT_MAX_CHARS", 12)
     monkeypatch.setattr(server, "_TUI_VERBOSE_TEXT_MAX_LINES", 2)
@@ -82,6 +87,35 @@ def test_tui_verbose_tool_details_are_capped_before_emit(monkeypatch):
     assert capped.startswith("[showing verbose tail; omitted ")
     assert capped.endswith("three\nfour")
     assert "one" not in capped
+
+
+def test_tui_verbose_tool_complete_caps_large_result_payloads(monkeypatch):
+    redact_module = types.ModuleType("agent.redact")
+    monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
+    setattr(redact_module, "redact_sensitive_text", lambda text, **_kwargs: str(text))
+
+    helpers_module = types.ModuleType("agent.tool_dispatch_helpers")
+    giant = ("snapshot node\n" * 200) + ("x" * 5_000)
+    monkeypatch.setitem(sys.modules, "agent.tool_dispatch_helpers", helpers_module)
+    setattr(helpers_module, "_multimodal_text_summary", lambda _result: giant)
+
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "verbose-cap-test",
+        {"tool_progress_mode": "verbose", "tool_started_at": {}},
+    )
+
+    server._on_tool_complete("verbose-cap-test", "tool-1", "browser_snapshot", {}, "ignored")
+
+    event_type, sid, payload = events[0]
+    assert event_type == "tool.complete"
+    assert sid == "verbose-cap-test"
+    assert payload["result_text"].startswith("[showing verbose tail; omitted ")
+    assert len(payload["result_text"]) <= server._TUI_VERBOSE_TEXT_MAX_CHARS + 128
 
 
 def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):

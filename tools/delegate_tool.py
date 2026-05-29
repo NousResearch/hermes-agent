@@ -3036,6 +3036,53 @@ DELEGATE_TASK_SCHEMA = {
 # --- Registry ---
 from tools.registry import registry, tool_error
 
+
+def _resolve_reasoning_effort_from_config(model_id: str, call_reasoning_effort: str = None) -> str:
+    """Resolve reasoning effort using config→complexity mapping (4-tier fallback).
+    
+    Priority:
+    1. Per-call argument (call_reasoning_effort)
+    2. Config model_complexity_map entry for this model
+    3. delegation.reasoning_effort config default
+    4. "medium" (ultimate fallback)
+    
+    Args:
+        model_id: Model identifier
+        call_reasoning_effort: Per-call override (if provided)
+    
+    Returns: Reasoning effort level string
+    """
+    # Priority 1: per-call override
+    if call_reasoning_effort:
+        return call_reasoning_effort
+    
+    # Priority 2: config model_complexity_map
+    try:
+        from hermes_cli.config import get_model_complexity_map
+        complexity_map = get_model_complexity_map()
+        if model_id in complexity_map:
+            effort = complexity_map[model_id].get("reasoning_effort")
+            if effort:
+                logger.debug("Reasoning effort for %s from config: %s", model_id, effort)
+                return effort
+    except Exception as e:
+        logger.debug("Config lookup failed for %s: %s", model_id, e)
+    
+    # Priority 3: delegation config default
+    try:
+        cfg = _load_config()
+        effort = cfg.get("reasoning_effort")
+        if effort:
+            logger.debug("Reasoning effort for %s from delegation default: %s", model_id, effort)
+            return effort
+    except Exception:
+        pass
+    
+    # Priority 4: ultimate fallback
+    logger.debug("Reasoning effort for %s: no config found, using default 'medium'", model_id)
+    return "medium"
+
+
 registry.register(
     name="delegate_task",
     toolset="delegation",

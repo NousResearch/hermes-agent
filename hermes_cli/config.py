@@ -5916,3 +5916,110 @@ def _inject_platform_plugin_env_vars() -> None:
 
 # Eagerly inject so that platform plugin env vars show up in the setup wizard.
 _inject_platform_plugin_env_vars()
+
+
+# ============================================================================
+# Phase 34754: Model Complexity Configuration (User-Extensible)
+# ============================================================================
+
+def get_model_complexity_map() -> Dict[str, Dict[str, Any]]:
+    """Load model complexity mapping from config.yaml delegation section.
+    
+    Returns dict of active models:
+        {
+            "qwen3.5:397b-cloud": {
+                "active": True,
+                "complexity": "easy",
+                "reasoning_effort": "low",
+                "description": "..."
+            },
+            ...
+        }
+    
+    Only returns models with active=True.
+    """
+    try:
+        cfg = load_config()
+        delegation = cfg.get("delegation", {})
+        complexity_map = delegation.get("model_complexity_map", {})
+        
+        # Filter to active models only
+        return {
+            model_id: config
+            for model_id, config in complexity_map.items()
+            if config.get("active", True)
+        }
+    except Exception as e:
+        logger.debug("Failed to load model_complexity_map: %s", e)
+        return {}
+
+
+def get_model_complexity(model_id: str) -> str:
+    """Get complexity level for a model using 4-tier fallback chain.
+    
+    Priority:
+    1. Explicit entry in model_complexity_map
+    2. BENCHMARK_REGISTRY (hard-coded, published scores)
+    3. SIZE_TIERS estimation (hard-coded, size-based)
+    4. delegation.reasoning_effort config default
+    5. "medium" (ultimate fallback)
+    
+    Returns: "easy", "medium", or "hard"
+    """
+    # Priority 1: config model_complexity_map
+    complexity_map = get_model_complexity_map()
+    if model_id in complexity_map:
+        complexity = complexity_map[model_id].get("complexity", "medium")
+        logger.debug("Model %s complexity from config: %s", model_id, complexity)
+        return complexity
+    
+    # Priority 2: BENCHMARK_REGISTRY
+    try:
+        from agent.benchmark_registry import BENCHMARK_REGISTRY, calculate_capability_score
+        if model_id in BENCHMARK_REGISTRY:
+            score = calculate_capability_score(BENCHMARK_REGISTRY[model_id])
+            if score >= 0.85:
+                logger.debug("Model %s complexity from benchmark (score %.2f): hard", model_id, score)
+                return "hard"
+            elif score >= 0.70:
+                logger.debug("Model %s complexity from benchmark (score %.2f): medium", model_id, score)
+                return "medium"
+            else:
+                logger.debug("Model %s complexity from benchmark (score %.2f): easy", model_id, score)
+                return "easy"
+    except Exception as e:
+        logger.debug("BENCHMARK_REGISTRY lookup failed for %s: %s", model_id, e)
+    
+    # Priority 3: SIZE_TIERS estimation
+    try:
+        from agent.model_fallback_estimator import estimate_capability_score
+        score, source, note = estimate_capability_score(model_id)
+        if score >= 0.85:
+            logger.debug("Model %s complexity from fallback (score %.2f, %s): hard", model_id, score, source)
+            return "hard"
+        elif score >= 0.70:
+            logger.debug("Model %s complexity from fallback (score %.2f, %s): medium", model_id, score, source)
+            return "medium"
+        else:
+            logger.debug("Model %s complexity from fallback (score %.2f, %s): easy", model_id, score, source)
+            return "easy"
+    except Exception as e:
+        logger.debug("Fallback estimator failed for %s: %s", model_id, e)
+    
+    # Priority 4: delegation.reasoning_effort config
+    try:
+        cfg = load_config()
+        effort = cfg.get("delegation", {}).get("reasoning_effort", "medium")
+        # Map reasoning_effort → complexity (heuristic)
+        if effort in ("xhigh", "high"):
+            return "hard"
+        elif effort in ("low", "minimal", "none"):
+            return "easy"
+        else:
+            return "medium"
+    except Exception:
+        pass
+    
+    # Priority 5: Ultimate fallback
+    logger.debug("Model %s: no complexity found, using default 'medium'", model_id)
+    return "medium"

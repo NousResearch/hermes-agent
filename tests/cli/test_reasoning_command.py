@@ -305,13 +305,15 @@ class TestReasoningCallback(unittest.TestCase):
 
 
 class TestReasoningPreviewBuffering(unittest.TestCase):
-    def _make_cli(self):
+    def _make_cli(self, *, show_reasoning=False):
         from cli import HermesCLI
 
         cli = HermesCLI.__new__(HermesCLI)
         cli.verbose = True
+        cli.show_reasoning = show_reasoning
         cli._spinner_text = ""
         cli._reasoning_preview_buf = ""
+        cli._reasoning_shown_this_turn = False
         cli._invalidate = lambda *args, **kwargs: None
         return cli
 
@@ -373,6 +375,15 @@ class TestReasoningPreviewBuffering(unittest.TestCase):
         cli._flush_reasoning_preview(force=False)
         self.assertEqual(cli._reasoning_preview_buf, "a" * 30)
 
+    @patch("cli._cprint")
+    def test_show_reasoning_preview_marks_turn_as_displayed(self, mock_cprint):
+        cli = self._make_cli(show_reasoning=True)
+
+        cli._emit_reasoning_preview("working through the answer")
+
+        self.assertTrue(cli._reasoning_shown_this_turn)
+        self.assertEqual(mock_cprint.call_count, 1)
+
 
 class TestReasoningDisplayModeSelection(unittest.TestCase):
     def _make_cli(self, *, show_reasoning=False, streaming_enabled=False, verbose=False):
@@ -386,10 +397,12 @@ class TestReasoningDisplayModeSelection(unittest.TestCase):
         cli._on_reasoning = lambda text: ("preview", text)
         return cli
 
-    def test_show_reasoning_non_streaming_uses_final_box_only(self):
+    def test_show_reasoning_non_streaming_uses_preview_callback(self):
         cli = self._make_cli(show_reasoning=True, streaming_enabled=False, verbose=False)
 
-        self.assertIsNone(cli._current_reasoning_callback())
+        callback = cli._current_reasoning_callback()
+        self.assertIsNotNone(callback)
+        self.assertEqual(callback("x"), ("preview", "x"))
 
     def test_show_reasoning_streaming_uses_live_reasoning_box(self):
         cli = self._make_cli(show_reasoning=True, streaming_enabled=True, verbose=False)

@@ -1378,6 +1378,28 @@ def _wrap_pcm_as_wav(
     return riff_header + fmt_chunk + data_chunk_header + pcm_bytes
 
 
+def _prepare_gemini_tts_prompt(text: str, gemini_config: Dict[str, Any]) -> str:
+    """Apply optional Gemini TTS prompt templating.
+
+    Gemini TTS style controls are prompt-driven. This helper keeps Hermes close
+    to the upstream API by only changing the text part sent to generateContent:
+    users can provide a director-style prompt and place the transcript with
+    ``{text}``. If the placeholder is omitted, append the transcript after the
+    template so existing prompt-style instructions still work.
+    """
+    prompt_template = str(
+        gemini_config.get("prompt_template")
+        or gemini_config.get("template")
+        or ""
+    ).strip()
+    if not prompt_template:
+        return text
+
+    if "{text}" in prompt_template:
+        return prompt_template.replace("{text}", text)
+    return f"{prompt_template}\n\n{text}"
+
+
 def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate audio using Google Gemini TTS.
 
@@ -1404,6 +1426,8 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         )
 
     gemini_config = tts_config.get("gemini", {})
+    if not isinstance(gemini_config, dict):
+        gemini_config = {}
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
     voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
     base_url = str(
@@ -1412,16 +1436,24 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         or DEFAULT_GEMINI_TTS_BASE_URL
     ).strip().rstrip("/")
 
-    payload: Dict[str, Any] = {
-        "contents": [{"parts": [{"text": text}]}],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {"voiceName": voice},
-                },
+    request_text = _prepare_gemini_tts_prompt(text, gemini_config)
+    generation_config: Dict[str, Any] = {
+        "responseModalities": ["AUDIO"],
+        "speechConfig": {
+            "voiceConfig": {
+                "prebuiltVoiceConfig": {"voiceName": voice},
             },
         },
+    }
+    if "temperature" in gemini_config and gemini_config.get("temperature") is not None:
+        try:
+            generation_config["temperature"] = float(gemini_config.get("temperature"))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid Gemini TTS temperature: %r", gemini_config.get("temperature"))
+
+    payload: Dict[str, Any] = {
+        "contents": [{"parts": [{"text": request_text}]}],
+        "generationConfig": generation_config,
     }
 
     endpoint = f"{base_url}/models/{model}:generateContent"

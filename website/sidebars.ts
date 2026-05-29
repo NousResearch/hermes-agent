@@ -545,6 +545,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-productivity',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/productivity/productivity-antigravity-cli',
                     'user-guide/skills/optional/productivity/productivity-canvas',
                     'user-guide/skills/optional/productivity/productivity-here-now',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',

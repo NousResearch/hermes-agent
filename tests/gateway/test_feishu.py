@@ -4883,3 +4883,161 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+class TestThemeMaterialIngestionRouting(unittest.TestCase):
+    """Tests for theme material ingestion group routing in _handle_message_with_guards."""
+
+    THEME_GROUP_ID = "oc_a19b4f58f14f7bea48a67610eb0bcb33"
+    OTHER_GROUP_ID = "oc_99999999999999999999999999999"
+
+    def _build_event(self, chat_id, text="", mentions=None, message_type="text"):
+        from gateway.platforms.base import MessageEvent
+
+        source = SimpleNamespace(chat_id=chat_id)
+        msg = SimpleNamespace(
+            message_id="m_test",
+            content=json.dumps({"text": text}) if text else "{}",
+            message_type=message_type,
+            mentions=mentions or [],
+        )
+        event = MessageEvent(
+            text=text,
+            message_type=message_type,
+            source=source,
+            message_id="m_test",
+            raw_message=msg,
+        )
+        return event
+
+    def _build_adapter(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        adapter._require_mention = True
+        adapter._chat_locks = {}
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    # -----------------------------------------------------------------
+    # 1. Specified group + keyword trigger
+    # -----------------------------------------------------------------
+    def test_keyword_trigger_sets_auto_skill(self):
+        adapter = self._build_adapter()
+        event = self._build_event(self.THEME_GROUP_ID, text="请帮我录入一份新资料")
+        # Ensure event.message has .text for routing code
+        event.message = SimpleNamespace(text="请帮我录入一份新资料")
+
+        class FakeLock:
+            async def __aenter__(self): pass
+            async def __aexit__(self, *args): pass
+
+        adapter._get_chat_lock = Mock(return_value=FakeLock())
+
+        asyncio.run(adapter._handle_message_with_guards(event))
+
+        self.assertEqual(event.auto_skill, "theme-material-ingestion")
+        adapter.handle_message.assert_awaited_once_with(event)
+
+    # -----------------------------------------------------------------
+    # 2. Specified group + @mention trigger (verifies _mentions_self is called)
+    # -----------------------------------------------------------------
+    def test_mention_trigger_sets_auto_skill(self):
+        import unittest.mock
+        from gateway.platforms.feishu import FeishuAdapter  # noqa: F401
+
+        adapter = self._build_adapter()
+        event = self._build_event(
+            self.THEME_GROUP_ID,
+            text="@_user_1 请帮我整理资料",
+            mentions=[],
+        )
+        event.message = SimpleNamespace(text="@_user_1 请帮我整理资料")
+
+        class FakeLock:
+            async def __aenter__(self): pass
+            async def __aexit__(self, *args): pass
+
+        adapter._get_chat_lock = Mock(return_value=FakeLock())
+
+        with unittest.mock.patch.object(
+            FeishuAdapter, "_mentions_self", return_value=True
+        ):
+            asyncio.run(adapter._handle_message_with_guards(event))
+
+        self.assertEqual(event.auto_skill, "theme-material-ingestion")
+
+    # -----------------------------------------------------------------
+    # 3. Specified group + attachment trigger (no text, no mention → no trigger)
+    # -----------------------------------------------------------------
+    # -----------------------------------------------------------------
+    def test_attachment_trigger_sets_auto_skill(self):
+        adapter = self._build_adapter()
+        # Attachment-only message: text empty, but in a group context
+        event = self._build_event(self.THEME_GROUP_ID, text="", mentions=[])
+
+        class FakeLock:
+            async def __aenter__(self): pass
+            async def __aexit__(self, *args): pass
+
+        adapter._get_chat_lock = Mock(return_value=FakeLock())
+
+        # Without keyword or mention, should NOT trigger
+        asyncio.run(adapter._handle_message_with_guards(event))
+        self.assertIsNone(getattr(event, "auto_skill", None))
+
+    # -----------------------------------------------------------------
+    # 4. Non-specified group does NOT trigger
+    # -----------------------------------------------------------------
+    def test_other_group_does_not_trigger(self):
+        adapter = self._build_adapter()
+        event = self._build_event(self.OTHER_GROUP_ID, text="请帮我录入资料")
+
+        class FakeLock:
+            async def __aenter__(self): pass
+            async def __aexit__(self, *args): pass
+
+        adapter._get_chat_lock = Mock(return_value=FakeLock())
+
+        asyncio.run(adapter._handle_message_with_guards(event))
+
+        self.assertIsNone(getattr(event, "auto_skill", None))
+        adapter.handle_message.assert_awaited_once_with(event)
+
+    # -----------------------------------------------------------------
+    # 5. Existing path mapping constants present
+    # -----------------------------------------------------------------
+    def test_existing_paths_defined(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        self.assertEqual(
+            FeishuAdapter._THEME_INGESTION_TOPIC_EXISTING_PATHS["competition_aild"],
+            "projects/competition-consulting-qa/aild/",
+        )
+        self.assertEqual(
+            FeishuAdapter._THEME_INGESTION_TOPIC_EXISTING_PATHS["competition_emergency_safety"],
+            "projects/competition-consulting-qa/emergency-safety/",
+        )
+        self.assertIsNone(
+            FeishuAdapter._THEME_INGESTION_TOPIC_EXISTING_PATHS["chuangqingchun"],
+        )
+        self.assertEqual(
+            FeishuAdapter._THEME_INGESTION_DUPLICATE_POLICY,
+            "reuse_existing",
+        )
+
+    # -----------------------------------------------------------------
+    # 6. All trigger keywords defined
+    # -----------------------------------------------------------------
+    def test_trigger_keywords_defined(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        expected_kw = {"录入", "入库", "归档", "转 markdown", "整理资料", "新资料"}
+        self.assertEqual(FeishuAdapter._THEME_INGESTION_KEYWORDS, expected_kw)
+        self.assertEqual(
+            FeishuAdapter._THEME_INGESTION_GROUP_ID,
+            "oc_a19b4f58f14f7bea48a67610eb0bcb33",
+        )

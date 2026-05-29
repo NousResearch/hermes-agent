@@ -2842,6 +2842,20 @@ class FeishuAdapter(BasePlatformAdapter):
             self._chat_locks[chat_id] = lock
         return lock
 
+    # -------------------------------------------------------------------------
+    # Theme Material Ingestion Group routing
+    # -------------------------------------------------------------------------
+    _THEME_INGESTION_GROUP_ID = "oc_a19b4f58f14f7bea48a67610eb0bcb33"
+    _THEME_INGESTION_KEYWORDS = frozenset({
+        "录入", "入库", "归档", "转 markdown", "整理资料", "新资料",
+    })
+    _THEME_INGESTION_TOPIC_EXISTING_PATHS = {
+        "competition_aild": "projects/competition-consulting-qa/aild/",
+        "competition_emergency_safety": "projects/competition-consulting-qa/emergency-safety/",
+        "chuangqingchun": None,  # TODO: confirm path
+    }
+    _THEME_INGESTION_DUPLICATE_POLICY = "reuse_existing"
+
     async def _handle_message_with_guards(self, event: MessageEvent) -> None:
         """Dispatch a single event through the agent pipeline with per-chat serialization
         before handing the event off to the agent.
@@ -2850,6 +2864,22 @@ class FeishuAdapter(BasePlatformAdapter):
         time (matches openclaw's createChatQueue serial queue behaviour).
         """
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
+        message = getattr(event, "message", None)
+        raw_text = getattr(message, "text", "") or "" if message else ""
+
+        # Theme Material Ingestion Group routing
+        if chat_id == self._THEME_INGESTION_GROUP_ID:
+            normalized = raw_text.lower()
+            kw_triggered = any(kw in normalized for kw in self._THEME_INGESTION_KEYWORDS)
+            mention_triggered = message and self._mentions_self(message)
+            if kw_triggered or mention_triggered:
+                event.auto_skill = "theme-material-ingestion"
+                logger.info(
+                    "[Feishu] Theme material ingestion triggered: "
+                    "chat_id=%s keyword=%s mention=%s",
+                    chat_id, kw_triggered, mention_triggered,
+                )
+
         chat_lock = self._get_chat_lock(chat_id)
         async with chat_lock:
             await self.handle_message(event)

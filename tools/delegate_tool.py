@@ -1924,6 +1924,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[Dict[str, str]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1997,6 +1998,12 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    # Caller-supplied model override (per-task or top-level) beats config
+    if model and isinstance(model, dict) and model.get("model"):
+        creds["model"] = model["model"]
+        if model.get("provider"):
+            creds["provider"] = model["provider"]
+
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2058,16 +2065,24 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model override beats top-level model > config model
+            task_model = creds.get("model")
+            task_provider = creds.get("provider")
+            pt_model = t.get("model")
+            if pt_model and isinstance(pt_model, dict) and pt_model.get("model"):
+                task_model = pt_model["model"]
+                if pt_model.get("provider"):
+                    task_provider = pt_model["provider"]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
+                override_provider=task_provider,
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
@@ -2793,6 +2808,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

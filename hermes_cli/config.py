@@ -1349,7 +1349,7 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "xai" (Grok STT)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -1359,6 +1359,11 @@ DEFAULT_CONFIG = {
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
+        },
+        "xai": {
+            "language": "",  # auto-detect by default; set to "en", "fr", etc. for xAI formatting
+            "format": True,  # inverse text normalization when language is set
+            "diarize": False,  # include speaker ids on word timestamps when supported by xAI
         },
     },
 

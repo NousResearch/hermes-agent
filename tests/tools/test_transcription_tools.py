@@ -1174,6 +1174,114 @@ class TestTranscribeXAI:
         assert result["success"] is True
         assert result["transcript"] == "bonjour le monde"
         assert result["provider"] == "xai"
+        assert result["language"] == "fr"
+        assert result["duration"] == 3.2
+        assert result["metadata"]["word_count"] == 0
+
+    def test_returns_words_segments_and_metadata(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "text": "Hello there. Hi back.",
+            "language": "en",
+            "duration": 2.4,
+            "words": [
+                {"text": "Hello", "start": 0.0, "end": 0.4, "speaker": 0},
+                {"text": "there.", "start": 0.4, "end": 0.8, "speaker": 0},
+                {"text": "Hi", "start": 1.2, "end": 1.4, "speaker": 1},
+                {"text": "back.", "start": 1.4, "end": 1.8, "speaker": 1},
+            ],
+        }
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"xai": {"diarize": True}}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_xai
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        assert result["success"] is True
+        assert result["words"] == [
+            {"text": "Hello", "start": 0.0, "end": 0.4, "speaker": 0},
+            {"text": "there.", "start": 0.4, "end": 0.8, "speaker": 0},
+            {"text": "Hi", "start": 1.2, "end": 1.4, "speaker": 1},
+            {"text": "back.", "start": 1.4, "end": 1.8, "speaker": 1},
+        ]
+        assert result["segments"] == [
+            {
+                "start": 0.0,
+                "speaker": 0,
+                "end": 0.8,
+                "text": "Hello there.",
+                "word_count": 2,
+            },
+            {
+                "start": 1.2,
+                "speaker": 1,
+                "end": 1.8,
+                "text": "Hi back.",
+                "word_count": 2,
+            },
+        ]
+        assert result["metadata"] == {
+            "model": "grok-stt",
+            "language": "en",
+            "duration": 2.4,
+            "word_count": 4,
+            "segment_count": 2,
+            "channel_count": 0,
+            "channel_word_count": 0,
+            "channel_segment_count": 0,
+            "speakers": [0, 1],
+            "diarize_requested": True,
+            "diarization_present": True,
+        }
+
+    def test_returns_multichannel_metadata(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "text": "agent hello customer hi",
+            "duration": 2.0,
+            "channels": [
+                {
+                    "index": 0,
+                    "text": "agent hello",
+                    "words": [
+                        {"text": "agent", "start": 0.0, "end": 0.3},
+                        {"text": "hello", "start": 0.3, "end": 0.7},
+                    ],
+                },
+                {
+                    "index": 1,
+                    "text": "customer hi",
+                    "words": [
+                        {"text": "customer", "start": 1.0, "end": 1.4},
+                        {"text": "hi", "start": 1.4, "end": 1.6},
+                    ],
+                },
+            ],
+        }
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_xai
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        assert result["channels"][0]["index"] == 0
+        assert result["channels"][0]["segments"] == [{
+            "start": 0.0,
+            "end": 0.7,
+            "text": "agent hello",
+            "word_count": 2,
+        }]
+        assert result["channels"][1]["index"] == 1
+        assert result["metadata"]["channel_count"] == 2
+        assert result["metadata"]["channel_word_count"] == 4
+        assert result["metadata"]["channel_segment_count"] == 2
+        assert result["metadata"]["duration"] == 2.0
 
     def test_whitespace_stripped(self, monkeypatch, sample_ogg, mock_xai_http_module):
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")

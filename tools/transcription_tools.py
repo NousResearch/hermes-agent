@@ -9,8 +9,9 @@ Provides speech-to-text transcription with six providers:
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
-  - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
-    Inverse Text Normalization, diarization, 21 languages.
+  - **xai** — xAI Grok STT API, uses Hermes-managed xAI auth or
+    ``XAI_API_KEY``. Supports inverse text normalization, diarization,
+    word-level timestamps, and response metadata.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -33,7 +34,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from urllib.parse import urljoin
 
 from utils import is_truthy_value
@@ -1399,12 +1400,222 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _coerce_xai_number(value: Any) -> Optional[float]:
+    """Return a timestamp/duration as float when xAI provides a numeric value."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_xai_int(value: Any) -> Optional[int]:
+    """Return speaker/channel ids as int when xAI provides one."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_xai_stt_words(value: Any) -> List[Dict[str, Any]]:
+    """Normalize xAI word-level timestamp rows without preserving unknown fields."""
+    if not isinstance(value, list):
+        return []
+
+    words: List[Dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+
+        text = str(raw.get("text", "")).strip()
+        start = _coerce_xai_number(raw.get("start"))
+        end = _coerce_xai_number(raw.get("end"))
+        speaker = _coerce_xai_int(raw.get("speaker"))
+
+        if not text and start is None and end is None:
+            continue
+
+        word: Dict[str, Any] = {"text": text}
+        if start is not None:
+            word["start"] = start
+        if end is not None:
+            word["end"] = end
+        if speaker is not None:
+            word["speaker"] = speaker
+        words.append(word)
+
+    return words
+
+
+def _xai_stt_segments_from_words(words: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build coarse speaker segments from contiguous xAI word timestamps."""
+    segments: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+    current_text: List[str] = []
+
+    for word in words:
+        speaker = word.get("speaker")
+        speaker_changed = current is not None and speaker != current.get("speaker")
+
+        if current is None or speaker_changed:
+            if current is not None:
+                current["text"] = " ".join(current_text).strip()
+                current["word_count"] = len(current_text)
+                segments.append(current)
+
+            current = {}
+            if "start" in word:
+                current["start"] = word["start"]
+            if speaker is not None:
+                current["speaker"] = speaker
+            current_text = []
+
+        text = str(word.get("text", "")).strip()
+        if text:
+            current_text.append(text)
+        if current is not None and "end" in word:
+            current["end"] = word["end"]
+
+    if current is not None:
+        current["text"] = " ".join(current_text).strip()
+        current["word_count"] = len(current_text)
+        segments.append(current)
+
+    return segments
+
+
+def _normalize_xai_stt_channels(value: Any) -> List[Dict[str, Any]]:
+    """Normalize xAI multichannel transcripts and add per-channel segments."""
+    if not isinstance(value, list):
+        return []
+
+    channels: List[Dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+
+        channel: Dict[str, Any] = {}
+        index = _coerce_xai_int(raw.get("index"))
+        if index is not None:
+            channel["index"] = index
+
+        text = str(raw.get("text", "")).strip()
+        if text:
+            channel["text"] = text
+
+        words = _normalize_xai_stt_words(raw.get("words"))
+        if words:
+            channel["words"] = words
+            channel["segments"] = _xai_stt_segments_from_words(words)
+
+        if channel:
+            channels.append(channel)
+
+    return channels
+
+
+def _build_xai_stt_metadata(
+    *,
+    model_name: str,
+    language: Any,
+    duration: Optional[float],
+    words: List[Dict[str, Any]],
+    segments: List[Dict[str, Any]],
+    channels: List[Dict[str, Any]],
+    diarize_requested: bool,
+) -> Dict[str, Any]:
+    speaker_ids = {
+        word["speaker"]
+        for word in words
+        if isinstance(word.get("speaker"), int)
+    }
+    channel_word_count = 0
+    channel_segment_count = 0
+    for channel in channels:
+        channel_words = channel.get("words")
+        if isinstance(channel_words, list):
+            channel_word_count += len(channel_words)
+            for word in channel_words:
+                if isinstance(word, dict) and isinstance(word.get("speaker"), int):
+                    speaker_ids.add(word["speaker"])
+        channel_segments = channel.get("segments")
+        if isinstance(channel_segments, list):
+            channel_segment_count += len(channel_segments)
+
+    speakers = sorted(speaker_ids)
+    return {
+        "model": model_name,
+        "language": language or "",
+        "duration": duration,
+        "word_count": len(words),
+        "segment_count": len(segments),
+        "channel_count": len(channels),
+        "channel_word_count": channel_word_count,
+        "channel_segment_count": channel_segment_count,
+        "speakers": speakers,
+        "diarize_requested": diarize_requested,
+        "diarization_present": bool(speakers),
+    }
+
+
+def _build_xai_stt_success_result(
+    result: Dict[str, Any],
+    *,
+    transcript_text: str,
+    model_name: str,
+    diarize_requested: bool,
+) -> Dict[str, Any]:
+    """Return the public xAI STT result while preserving the legacy transcript."""
+    language = result.get("language")
+    duration = _coerce_xai_number(result.get("duration"))
+    words = _normalize_xai_stt_words(result.get("words"))
+    segments = _xai_stt_segments_from_words(words)
+    channels = _normalize_xai_stt_channels(result.get("channels"))
+
+    out: Dict[str, Any] = {
+        "success": True,
+        "transcript": transcript_text,
+        "provider": "xai",
+    }
+    if language is not None:
+        out["language"] = language
+    if duration is not None:
+        out["duration"] = duration
+    if words:
+        out["words"] = words
+        out["segments"] = segments
+    if channels:
+        out["channels"] = channels
+
+    out["metadata"] = _build_xai_stt_metadata(
+        model_name=model_name,
+        language=language,
+        duration=duration,
+        words=words,
+        segments=segments,
+        channels=channels,
+        diarize_requested=diarize_requested,
+    )
+    return out
+
+
 def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using xAI Grok STT API.
 
     Uses the ``POST /v1/stt`` REST endpoint with multipart/form-data.
     Supports Inverse Text Normalization, diarization, and word-level timestamps.
-    Requires ``XAI_API_KEY`` environment variable.
+    Uses Hermes-managed xAI credentials or ``XAI_API_KEY``.
     """
     from tools.xai_http import resolve_xai_http_credentials
 
@@ -1492,7 +1703,12 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
             len(transcript_text),
         )
 
-        return {"success": True, "transcript": transcript_text, "provider": "xai"}
+        return _build_xai_stt_success_result(
+            result,
+            transcript_text=transcript_text,
+            model_name=model_name,
+            diarize_requested=use_diarize,
+        )
 
     except PermissionError:
         return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
@@ -1524,6 +1740,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
           - "transcript" (str): The transcribed text (empty on failure)
           - "error" (str, optional): Error message if success is False
           - "provider" (str, optional): Which provider was used
+          - provider-specific metadata, when returned by the backend (for xAI:
+            language, duration, words, segments, channels, metadata)
     """
     # Validate input
     error = _validate_audio_file(file_path)

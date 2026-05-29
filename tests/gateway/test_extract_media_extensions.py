@@ -105,3 +105,53 @@ def test_gis_extensions_extracted(ext):
     assert _paths(f"MEDIA:/tmp/track{ext}") == [f"/tmp/track{ext}"]
     media, _ = BasePlatformAdapter.extract_media(f"MEDIA:/home/user/My Folder/coords{ext}")
     assert [p for p, _v in media] == [f"/home/user/My Folder/coords{ext}"]
+
+
+# --- Windows path recognition (#28989, #24032) -----------------------------
+# Recognition only: Windows drive-letter / UNC MEDIA: tags are parsed so they
+# are STRIPPED from user-visible text (no raw C:\ leak) and routed through the
+# delivery gate. Safe Windows *delivery* is deferred to the L0 path-validation
+# security PR; validate_media_delivery_path rejects them (see test_platform_base).
+
+@pytest.mark.parametrize("path", [
+    r"C:\Users\foo\report.pdf",
+    "C:/Users/foo/report.pdf",
+    r"C:\Users\Foo\My Folder\report.pdf",  # spaced Windows path (OneDrive repro)
+    r"D:\data\track.gpx",
+])
+def test_windows_media_tag_recognized_and_stripped(path):
+    media, cleaned = BasePlatformAdapter.extract_media(f"Here you go: MEDIA:{path}")
+    assert [p for p, _v in media] == [path]
+    assert "MEDIA:" not in cleaned
+    assert "C:" not in cleaned and "D:" not in cleaned  # raw path no longer leaks
+
+
+def test_windows_bold_media_tag_stripped():
+    media, cleaned = BasePlatformAdapter.extract_media(r"**MEDIA:C:\out\img.png**")
+    assert [p for p, _v in media] == [r"C:\out\img.png"]
+    assert "MEDIA:" not in cleaned
+    assert "*" not in cleaned
+
+
+@pytest.mark.parametrize("path", [
+    r"\\server\share\report.pdf",
+    r"\\host\My Share\doc.pdf",  # spaced UNC
+])
+def test_windows_unc_media_tag_recognized_and_stripped(path):
+    # UNC paths must be recognized (and stripped) too — the validate gate
+    # fail-closes their delivery, but leaving them unrecognized would leak the
+    # raw path into the user's message (the #28989/#24032 symptom).
+    media, cleaned = BasePlatformAdapter.extract_media(f"Here: MEDIA:{path}")
+    assert [p for p, _v in media] == [path]
+    assert "MEDIA:" not in cleaned
+    assert "\\" not in cleaned  # no raw backslash path remains
+
+
+def test_tool_media_re_recognizes_windows_paths():
+    from gateway.platforms.base import _TOOL_MEDIA_RE
+    for content, expected in [
+        (r'{"media_tag": "MEDIA:C:\out\img.png"}', r"C:\out\img.png"),
+        (r'{"media_tag": "MEDIA:\\srv\share\f.pdf"}', r"\\srv\share\f.pdf"),
+    ]:
+        got = [m.group(1).rstrip('",}') for m in _TOOL_MEDIA_RE.finditer(content)]
+        assert got == [expected]

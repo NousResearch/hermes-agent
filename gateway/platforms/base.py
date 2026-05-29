@@ -901,7 +901,7 @@ _MEDIA_EXT_ALT = _media_ext_alternation()
 _MEDIA_TAG_RE = re.compile(
     r'''(?P<wrap>\*{0,2})[`"']?MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
-    r'''(?:~/|/)\S*?(?:[^\S\n]+\S+?)*?\.(?i:''' + _MEDIA_EXT_ALT + r''')'''
+    r'''(?:~/|/|[A-Za-z]:[\\/]|\\\\)\S*?(?:[^\S\n]+\S+?)*?\.(?i:''' + _MEDIA_EXT_ALT + r''')'''
     r'''(?=[\s`"',;:)\]}*]|$))[`"']?(?P=wrap)'''
 )
 
@@ -916,8 +916,10 @@ _LOCAL_PATH_RE = re.compile(
 # salvage re-injection). Narrower grammar than _MEDIA_TAG_RE (no quoted
 # branches, no spaced paths — JSON paths are single tokens). Defined here so
 # it is built from the same frozenset and lives as one module-level object.
+# Windows drive-letter and UNC paths are recognized for parity with
+# _MEDIA_TAG_RE (so they're stripped from text; delivery still fail-closes).
 _TOOL_MEDIA_RE = re.compile(
-    r'MEDIA:((?:/|~/)\S+\.(?:' + _MEDIA_EXT_ALT + r'))\b',
+    r'MEDIA:((?:/|~/|[A-Za-z]:[\\/]|\\\\)\S+\.(?:' + _MEDIA_EXT_ALT + r'))\b',
     re.IGNORECASE,
 )
 
@@ -1091,6 +1093,20 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
         candidate = candidate[1:-1].strip()
     candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
     if not candidate:
+        return None
+
+    # Fail-closed for Windows-style paths (drive-letter `C:\`/`C:/`, UNC
+    # `\\server\share`). Extraction recognizes these so the MEDIA: tag is
+    # stripped from user-visible text (#28989, #24032), but native Windows
+    # *delivery* requires a Windows-aware credential denylist / allowlist
+    # model that the POSIX denylist below cannot provide — that is the L0
+    # path-validation security PR (refs #32644). Until then they are dropped
+    # (and surfaced via media_dropped), never delivered, on every host. This
+    # also closes a latent fail-open for quoted Windows paths on Windows hosts.
+    # `\w` (not [A-Za-z]) so Unicode-homoglyph drive letters (e.g. fullwidth
+    # `Ｃ:`) can't slip past the ASCII class; no legitimate POSIX path
+    # starts with a word-char + `:` + slash, so this never over-rejects.
+    if re.match(r'(?:\w:[\\/]|\\\\)', candidate):
         return None
 
     expanded = Path(os.path.expanduser(candidate))

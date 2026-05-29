@@ -445,6 +445,28 @@ class TestMediaDeliveryPathValidation:
         assert safe_media == [(str(safe.resolve()), True)]
         assert dropped_media == [(str(unsafe), False)]
 
+    @pytest.mark.parametrize("win_path", [
+        r"C:\Users\foo\report.pdf",
+        "C:/Users/foo/image.png",
+        r"D:\data\track.gpx",
+        r"\\server\share\report.pdf",  # UNC
+        "Ｃ:/Users/foo/x.png",     # fullwidth-C homoglyph drive letter
+    ])
+    def test_windows_paths_not_deliverable_pending_l0(self, win_path):
+        # Windows drive-letter / UNC paths are recognized by extraction (tag
+        # stripped, no raw-path leak) but fail-closed at the delivery gate
+        # until the L0 Windows-aware path-validation security PR. This also
+        # closes a latent fail-open on native Windows hosts, where the POSIX
+        # credential denylist matches nothing.
+        assert BasePlatformAdapter.validate_media_delivery_path(win_path) is None
+
+    def test_windows_media_path_partitions_to_dropped(self):
+        safe_media, dropped_media = BasePlatformAdapter.partition_media_delivery_paths(
+            [(r"C:\Users\foo\report.pdf", False)]
+        )
+        assert safe_media == []
+        assert dropped_media == [(r"C:\Users\foo\report.pdf", False)]
+
     def test_allows_operator_configured_extra_root(self, tmp_path, monkeypatch):
         extra_root = tmp_path / "operator-media"
         media_file = extra_root / "report.pdf"

@@ -498,19 +498,24 @@ class _LineClient:
                     raise RuntimeError(f"LINE content {resp.status}")
                 return await resp.read()
 
-    async def get_bot_user_id(self) -> Optional[str]:
-        """Fetch this channel's own userId so we can filter self-messages."""
+    async def get_bot_info(self) -> tuple:
+        """Fetch this channel's own userId and displayName from LINE /v2/bot/info."""
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=10.0)
         try:
             async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
                 async with session.get(LINE_BOT_INFO_URL, headers=self._headers) as resp:
                     if resp.status >= 400:
-                        return None
+                        return None, None
                     data = await resp.json()
-                    return data.get("userId")
+                    return data.get("userId"), data.get("displayName")
         except Exception:
-            return None
+            return None, None
+
+    async def get_bot_user_id(self) -> Optional[str]:
+        """Fetch this channel's own userId so we can filter self-messages."""
+        user_id, _ = await self.get_bot_info()
+        return user_id
 
 
 # ---------------------------------------------------------------------------
@@ -673,6 +678,9 @@ class LineAdapter(BasePlatformAdapter):
         self.allowed_rooms = _csv_set(
             os.getenv("LINE_ALLOWED_ROOMS", "")
         ) | set(extra.get("allowed_rooms", []))
+        self.require_mention = _truthy_env(
+            "LINE_REQUIRE_MENTION", bool(extra.get("require_mention", False))
+        )
 
         # Slow-LLM postback button threshold
         try:
@@ -707,9 +715,11 @@ class LineAdapter(BasePlatformAdapter):
         self._runner = None  # aiohttp.web.AppRunner
         self._site = None  # aiohttp.web.TCPSite
         self._reply_tokens: Dict[str, Tuple[str, float]] = {}  # chat_id → (token, expiry)
+        self._quote_tokens: Dict[str, str] = {}  # chat_id → quoteToken
         self._cache = RequestCache()
         self._dedup = _MessageDeduplicator()
         self._bot_user_id: Optional[str] = None
+        self._bot_display_name: Optional[str] = None
         self._lock_key: Optional[str] = None
 
         # Media state
@@ -757,10 +767,11 @@ class LineAdapter(BasePlatformAdapter):
         # not filtering self-events; the cost is minor (LINE doesn't
         # actually echo our own messages back).
         try:
-            self._bot_user_id = await self._client.get_bot_user_id()
+            self._bot_user_id, self._bot_display_name = await self._client.get_bot_info()
         except Exception as exc:
-            logger.debug("LINE: get_bot_user_id failed: %s", exc)
+            logger.debug("LINE: get_bot_info failed: %s", exc)
             self._bot_user_id = None
+            self._bot_display_name = None
 
         # Spin up the aiohttp webhook server.
         try:
@@ -923,12 +934,26 @@ class LineAdapter(BasePlatformAdapter):
         chat_id, chat_type = _resolve_chat(source)
         user_id = source.get("userId", "") or chat_id
 
+        # Require @mention in group chats when configured
+        if self.require_mention and chat_type == "group":
+            mentionees = msg.get("mention", {}).get("mentionees", [])
+            is_mentioned = any(m.get("isSelf") for m in mentionees)
+            # Fallback for desktop LINE clients that don't send mention objects
+            if not is_mentioned and self._bot_display_name:
+                raw_text = msg.get("text", "") or ""
+                is_mentioned = f"@{self._bot_display_name}" in raw_text
+            if not is_mentioned:
+                return
+
         # Stash the reply token for outbound use.
         if chat_id and reply_token:
             self._reply_tokens[chat_id] = (
                 reply_token,
                 time.time() + LINE_REPLY_TOKEN_TTL_SECONDS,
             )
+        quote_token = msg.get("quoteToken", "")
+        if chat_id and quote_token:
+            self._quote_tokens[chat_id] = quote_token
 
         # Handle media inbound — fetch the binary, cache it, and surface a
         # vision-tool-friendly local path on the MessageEvent.
@@ -1100,6 +1125,9 @@ class LineAdapter(BasePlatformAdapter):
         if not chunks:
             return SendResult(success=True, message_id=None)
         messages = [_text_message(c) for c in chunks][:LINE_MAX_MESSAGES_PER_CALL]
+        quote_token = self._quote_tokens.pop(chat_id, "")
+        if quote_token and messages:
+            messages[0]["quoteToken"] = quote_token
 
         token, used_reply = self._consume_reply_token(chat_id)
         if used_reply and not force_push:

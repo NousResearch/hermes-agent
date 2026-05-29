@@ -255,7 +255,7 @@ gateway:
     title:                 "**Título:** {title}"
     created:               "**Creado:** {timestamp}"
     last_activity:         "**Última actividad:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    tokens:                "**Uso de sesión (acumulado):** {tokens}"
     agent_running:         "**Agente activo:** {state}"
     state_yes:             "Sí ⚡"
     state_no:              "No"

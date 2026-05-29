@@ -472,6 +472,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
     return False
 
 
+import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -1561,6 +1562,10 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        # Optional hook (e.g. Telegram DM topic recovery) that rewrites
+        # ``event.source.thread_id`` before session keying. Returns the
+        # corrected thread_id or None to leave the source untouched.
+        self._topic_recovery_fn: Optional[Callable[[Any], Optional[str]]] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -1815,6 +1820,40 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_topic_recovery_fn(
+        self,
+        fn: Optional[Callable[[Any], Optional[str]]],
+    ) -> None:
+        """Install a thread_id-recovery hook (Telegram DM topic mode).
+
+        The hook is called with ``event.source`` before session keying;
+        a non-None return value replaces ``source.thread_id``. Pass
+        ``None`` to clear the hook.
+        """
+        # Guard against subclasses that initialize via ``object.__new__`` in
+        # tests and never run ``BasePlatformAdapter.__init__``.
+        self._topic_recovery_fn = fn  # type: ignore[attr-defined]
+
+    def _apply_topic_recovery(self, event: MessageEvent) -> None:
+        """Rewrite ``event.source.thread_id`` in place if the hook returns one."""
+        recover = getattr(self, "_topic_recovery_fn", None)
+        if recover is None:
+            return
+        source = getattr(event, "source", None)
+        if source is None:
+            return
+        try:
+            recovered = recover(source)
+        except Exception:
+            logger.debug("topic recovery hook failed", exc_info=True)
+            return
+        if recovered is None or str(recovered) == str(source.thread_id or ""):
+            return
+        try:
+            event.source = dataclasses.replace(source, thread_id=str(recovered))
+        except Exception:
+            logger.debug("topic recovery rewrite failed", exc_info=True)
 
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
@@ -3332,7 +3371,12 @@ class BasePlatformAdapter(ABC):
             return
 
         coerce_plaintext_gateway_command(event)
-        
+
+        # Rewrite ``event.source.thread_id`` via the installed recovery hook
+        # (Telegram DM topic mode) so the session key, guard checks, and
+        # downstream delivery all agree on the same lane.
+        self._apply_topic_recovery(event)
+
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),

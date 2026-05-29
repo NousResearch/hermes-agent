@@ -7103,6 +7103,17 @@ def _update_via_zip(args):
     # if the user asked for something else — exactly the silent-divergence
     # bug --branch was added to prevent. Refuse to proceed in that case
     # rather than lie.
+    if getattr(args, "release", None) is not None:
+        print(
+            "✗ --release is not supported on the Windows ZIP-fallback update path."
+        )
+        print(
+            "  This path runs when git file I/O is broken on the system. Resolve "
+            "the git-side breakage (typically an antivirus or NTFS filter holding "
+            "files open) and rerun `hermes update --release`, or update against "
+            "main with `hermes update`."
+        )
+        sys.exit(1)
     branch = _resolve_update_branch(args)
     if branch != "main":
         print(
@@ -8519,6 +8530,144 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
+# Sentinel ``--release`` was passed with no value (``--release`` alone) — means
+# "the newest release tag".  A concrete value (``--release v2026.5.29``) pins to
+# that exact tag.  ``None`` means the flag was not passed at all.
+RELEASE_LATEST = "latest"
+
+
+def _resolve_release_request(args) -> str | None:
+    """Return the release the user asked for, or ``None`` if ``--release`` absent.
+
+    ``hermes update --release``               → ``"latest"`` (newest v* tag)
+    ``hermes update --release latest``        → ``"latest"``
+    ``hermes update --release v2026.5.29``    → ``"v2026.5.29"`` (exact pin)
+
+    Whitespace-only values collapse to ``"latest"`` so ``--release ""`` behaves
+    like the bare flag rather than trying to check out an empty ref.
+    """
+    raw = getattr(args, "release", None)
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    if not value or value.lower() == RELEASE_LATEST:
+        return RELEASE_LATEST
+    return value
+
+
+def _latest_release_tag(git_cmd: list, cwd) -> str | None:
+    """Return the newest ``v*`` release tag known locally, or ``None``.
+
+    Uses git's version-aware sort so ``v2026.5.29`` correctly outranks
+    ``v2026.5.7`` (lexicographic order would invert them).  Callers must
+    fetch tags first; this only reads what is already in the local repo.
+    """
+    result = subprocess.run(
+        git_cmd + ["tag", "--list", "v*", "--sort=-version:refname"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    for line in (result.stdout or "").splitlines():
+        tag = line.strip()
+        if tag:
+            return tag
+    return None
+
+
+def _tag_exists(git_cmd: list, cwd, tag: str) -> bool:
+    """Return True iff ``tag`` resolves to an object in the local repo."""
+    result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "--quiet", f"refs/tags/{tag}"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _head_is_at_or_after(git_cmd: list, cwd, ref: str) -> bool:
+    """Return True when HEAD already contains ``ref`` (ref is an ancestor of HEAD).
+
+    Used to answer "is this release already installed?" without a commit-count:
+    a tag checked out as a detached HEAD is its own ancestor, so a repeated
+    ``--release vX`` is correctly reported as up to date.
+    """
+    result = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", ref, "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _cmd_update_check_release(release_request: str):
+    """Implement ``hermes update --check --release [TAG]``.
+
+    Fetches tags and reports whether HEAD already contains the requested
+    release, without installing anything.  Mirrors the friendly
+    git-only/Docker/PyPI guards used by the branch-tracking check path.
+    """
+    from hermes_cli.config import detect_install_method, recommended_update_command
+
+    method = detect_install_method(PROJECT_ROOT)
+    if method == "docker":
+        from hermes_cli.config import format_docker_update_message
+        print(format_docker_update_message())
+        sys.exit(1)
+    if method == "pip":
+        print("⚠ --release is ignored for PyPI installs (pip tracks published versions).")
+        return
+
+    git_dir = PROJECT_ROOT / ".git"
+    if not git_dir.exists():
+        print("✗ Not a git repository — cannot check for updates.")
+        sys.exit(1)
+
+    git_cmd = ["git"]
+    if sys.platform == "win32":
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+
+    print("→ Fetching release tags...")
+    fetch_result = subprocess.run(
+        git_cmd + ["fetch", "origin", "--tags"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if fetch_result.returncode != 0:
+        stderr = fetch_result.stderr.strip()
+        if "Could not resolve host" in stderr or "unable to access" in stderr:
+            print("✗ Network error — cannot reach the remote repository.")
+        elif "Authentication failed" in stderr or "could not read Username" in stderr:
+            print("✗ Authentication failed — check your git credentials or SSH key.")
+        else:
+            print("✗ Failed to fetch release tags.")
+            if stderr:
+                print(f"  {stderr.splitlines()[0]}")
+        sys.exit(1)
+
+    if release_request == RELEASE_LATEST:
+        target_tag = _latest_release_tag(git_cmd, PROJECT_ROOT)
+        if not target_tag:
+            print("✗ No release tags (v*) found on origin.")
+            sys.exit(1)
+    else:
+        target_tag = release_request
+        if not _tag_exists(git_cmd, PROJECT_ROOT, target_tag):
+            print(f"✗ Release tag '{target_tag}' not found.")
+            sys.exit(1)
+
+    if _head_is_at_or_after(git_cmd, PROJECT_ROOT, target_tag):
+        print(f"✓ Already on release {target_tag}.")
+    else:
+        print(f"⚕ Release update available: {target_tag}.")
+        print(f"  Run '{recommended_update_command()} --release {target_tag}' to install.")
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -8852,6 +9001,14 @@ def cmd_update(args):
         managed_error("update Hermes Agent")
         return
 
+    # --release pins to a tag; --branch tracks a branch tip.  Asking for both
+    # at once is contradictory — fail fast with a clear message rather than
+    # silently letting one win.
+    if getattr(args, "release", None) is not None and getattr(args, "branch", None):
+        print("✗ --release and --branch are mutually exclusive.")
+        print("  Use --release to pin a tagged version, or --branch to track a branch tip.")
+        sys.exit(1)
+
     # Docker users can't ``git pull`` — the image excludes ``.git`` from
     # the build context.  Bail with a friendly explanation pointing at
     # ``docker pull`` BEFORE any of the apply-path / check-path branches
@@ -8863,6 +9020,12 @@ def cmd_update(args):
         sys.exit(1)
 
     if getattr(args, "check", False):
+        # --check --release reports against the latest (or pinned) release tag
+        # so the answer matches what `hermes update --release` would install.
+        release_request = _resolve_release_request(args)
+        if release_request is not None:
+            _cmd_update_check_release(release_request)
+            return
         # --check honors --branch so the "any new commits?" answer matches
         # what a subsequent `hermes update --branch=<x>` would actually pull.
         branch = _resolve_update_branch(args)
@@ -8992,12 +9155,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _update_via_zip(args)
         return
 
+    # --release [TAG]: pin to a tagged release instead of tracking a branch.
+    # ``None`` when the flag was absent (the historical branch-tracking path).
+    release_request = _resolve_release_request(args)
+
     # Fetch and pull
     try:
 
         print("→ Fetching updates...")
+        # When pinning to a release we need tags fetched too; ``--tags`` pulls
+        # them alongside the branch refs in a single round-trip.
+        fetch_cmd = git_cmd + ["fetch", "origin"]
+        if release_request is not None:
+            fetch_cmd = git_cmd + ["fetch", "origin", "--tags"]
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
+            fetch_cmd,
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -9034,12 +9206,49 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # against a non-default channel.
         branch = _resolve_update_branch(args)
 
+        # --release [TAG]: pin to a tagged release.  ``target_tag`` is the
+        # concrete tag to check out as a detached HEAD (a real pin); it stays
+        # None for the historical branch-tracking path.  Resolving here (after
+        # the ``--tags`` fetch above) lets the rest of the flow special-case
+        # the few branch-only git operations on ``target_tag is not None``.
+        target_tag = None
+        if release_request is not None:
+            if release_request == RELEASE_LATEST:
+                target_tag = _latest_release_tag(git_cmd, PROJECT_ROOT)
+                if not target_tag:
+                    print("✗ No release tags (v*) found on origin.")
+                    print("  Update against the branch instead with `hermes update`.")
+                    sys.exit(1)
+            else:
+                target_tag = release_request
+                if not _tag_exists(git_cmd, PROJECT_ROOT, target_tag):
+                    print(f"✗ Release tag '{target_tag}' not found.")
+                    print("  List available releases with: git tag --list 'v*'")
+                    sys.exit(1)
+
+            # Already on (or ahead of) the requested release?  A pinned
+            # checkout is its own ancestor, so re-running `--release <tag>`
+            # is correctly reported as up to date without touching the tree.
+            if _head_is_at_or_after(git_cmd, PROJECT_ROOT, target_tag):
+                _invalidate_update_cache()
+                print(f"✓ Already on release {target_tag}.")
+                return
+            print(f"→ Pinning to release {target_tag}...")
+
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical
         # "always update against main" behavior; for any other target it's
         # the same thing — get HEAD onto the requested branch first, then
         # fast-forward.
-        if current_branch != branch:
+        #
+        # Release pins (``target_tag``) skip this entirely: the whole point of
+        # --release is to land on a detached HEAD at the tag, so forcing a
+        # tag-pinned install back onto ``main`` first (the old behavior #34514
+        # complains about) would destroy the pin.  We only stash here and let
+        # the checkout-the-tag step below move HEAD.
+        if target_tag is not None:
+            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+        elif current_branch != branch:
             label = (
                 "detached HEAD"
                 if current_branch == "HEAD"
@@ -9089,15 +9298,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
             and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
         )
 
-        # Check if there are updates
-        result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        commit_count = int(result.stdout.strip())
+        # Check if there are updates.  Release pins already established above
+        # that HEAD is behind the target tag, so the commit-count probe (which
+        # is branch-relative) is skipped — commit_count is forced positive so
+        # the "apply the update" path runs.
+        if target_tag is not None:
+            commit_count = 1
+        else:
+            result = subprocess.run(
+                git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            commit_count = int(result.stdout.strip())
 
         if commit_count == 0:
             _invalidate_update_cache()
@@ -9126,7 +9341,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("✓ Already up to date!")
             return
 
-        print(f"→ Found {commit_count} new commit(s)")
+        if target_tag is not None:
+            print(f"→ Checking out release {target_tag}")
+        else:
+            print(f"→ Found {commit_count} new commit(s)")
 
         # Snapshot critical state (state.db, config, pairing JSONs, etc.)
         # before pulling so a user can recover if something goes wrong.
@@ -9144,7 +9362,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Never let a snapshot failure block an update.
             logger.debug("Pre-update snapshot failed: %s", exc)
 
-        print("→ Pulling updates...")
+        if target_tag is None:
+            print("→ Pulling updates...")
         update_succeeded = False
         # Capture the pre-pull SHA so we can auto-roll-back if the new code
         # has a syntax error in a critical-path file (PR #28452 incident:
@@ -9153,33 +9372,53 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
-            pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
-            if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+            if target_tag is not None:
+                # Release pin: detach HEAD onto the tag.  --detach keeps this a
+                # true pin (no local branch ref is moved), so a later
+                # `hermes update` (branch mode) won't silently carry the tag
+                # forward, and the next `--release` re-resolves cleanly.
+                checkout_tag = subprocess.run(
+                    git_cmd + ["checkout", "--detach", target_tag],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
+                if checkout_tag.returncode != 0:
+                    print(f"✗ Failed to check out release {target_tag}.")
+                    if checkout_tag.stderr.strip():
+                        print(f"  {checkout_tag.stderr.strip().splitlines()[0]}")
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        f"  Try manually: git fetch origin --tags && git checkout --detach {target_tag}"
                     )
                     sys.exit(1)
+            else:
+                pull_result = subprocess.run(
+                    git_cmd + ["pull", "--ff-only", "origin", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if pull_result.returncode != 0:
+                    # ff-only failed — local and remote have diverged (e.g. upstream
+                    # force-pushed or rebase).  Since local changes are already
+                    # stashed, reset to match the remote exactly.
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        )
+                        sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit
@@ -9252,8 +9491,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
 
-        # Fork upstream sync logic (only for main branch on forks)
-        if is_fork and branch == "main":
+        # Fork upstream sync logic (only for main branch on forks).  A release
+        # pin is an explicit "hold exactly this tag" request, so we never drag
+        # it forward to upstream/main here.
+        if target_tag is None and is_fork and branch == "main":
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
@@ -13783,6 +14024,20 @@ Examples:
             "If the local checkout is on a different branch, hermes will "
             "switch to the requested branch first (auto-stashing any "
             "uncommitted changes)."
+        ),
+    )
+    update_parser.add_argument(
+        "--release",
+        nargs="?",
+        const="latest",
+        default=None,
+        metavar="TAG",
+        help=(
+            "Pin to a tagged release instead of tracking a branch. "
+            "`--release` (or `--release latest`) installs the newest vYYYY.M.D "
+            "tag; `--release v2026.5.29` pins to that exact tag. The release is "
+            "checked out as a detached HEAD, so a tag-pinned install stays "
+            "pinned across runs. Mutually exclusive with --branch."
         ),
     )
     update_parser.add_argument(

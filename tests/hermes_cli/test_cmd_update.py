@@ -626,6 +626,134 @@ class TestCmdUpdateZipBranchRefusal:
         assert "Downloading latest version" not in out
 
 
+class TestResolveReleaseRequest:
+    """``--release`` parsing: absent vs. bare vs. explicit tag."""
+
+    def test_absent_returns_none(self):
+        from hermes_cli.main import _resolve_release_request
+
+        assert _resolve_release_request(SimpleNamespace(release=None)) is None
+
+    def test_bare_flag_means_latest(self):
+        from hermes_cli.main import _resolve_release_request, RELEASE_LATEST
+
+        assert _resolve_release_request(SimpleNamespace(release="latest")) == RELEASE_LATEST
+
+    def test_blank_collapses_to_latest(self):
+        from hermes_cli.main import _resolve_release_request, RELEASE_LATEST
+
+        assert _resolve_release_request(SimpleNamespace(release="   ")) == RELEASE_LATEST
+
+    def test_explicit_tag_preserved(self):
+        from hermes_cli.main import _resolve_release_request
+
+        assert _resolve_release_request(SimpleNamespace(release="v2026.5.29")) == "v2026.5.29"
+
+
+class TestCmdUpdateRelease:
+    """``hermes update --release [TAG]`` pins to a tagged release.
+
+    Covers the issue #34514 asks: pin to a specific tag, land on a detached
+    HEAD (don't force the pin back to main), and report "already on" when the
+    requested release is already installed.
+    """
+
+    def _release_side_effect(
+        self,
+        *,
+        current_branch="HEAD",
+        latest_tag="v2026.5.29",
+        requested_tag_exists=True,
+        head_contains_target=False,
+    ):
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{current_branch}\n", stderr="")
+
+            # _tag_exists probe
+            if "rev-parse" in joined and "--verify" in joined and "refs/tags/" in joined:
+                rc = 0 if requested_tag_exists else 1
+                return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+
+            # _latest_release_tag
+            if "tag" in joined and "--list" in joined:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{latest_tag}\nv2026.5.28\n", stderr=""
+                )
+
+            # _head_is_at_or_after
+            if "merge-base" in joined and "--is-ancestor" in joined:
+                rc = 0 if head_contains_target else 1
+                return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        return side_effect
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_release_latest_checks_out_newest_tag_detached(self, mock_run, _which, capsys):
+        mock_run.side_effect = self._release_side_effect(
+            current_branch="HEAD", latest_tag="v2026.5.29", head_contains_target=False
+        )
+
+        cmd_update(SimpleNamespace(release="latest"))
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        # Detached checkout of the resolved tag — a real pin, not a branch move.
+        assert any("checkout --detach v2026.5.29" in c for c in commands), commands
+        # Never pulls a branch and never force-switches a detached HEAD to main.
+        assert not any("pull --ff-only" in c for c in commands), commands
+        assert not any("checkout main" in c for c in commands), commands
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_release_specific_tag_is_pinned(self, mock_run, _which, capsys):
+        mock_run.side_effect = self._release_side_effect(
+            current_branch="main", requested_tag_exists=True, head_contains_target=False
+        )
+
+        cmd_update(SimpleNamespace(release="v2026.5.7"))
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("checkout --detach v2026.5.7" in c for c in commands), commands
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_release_already_installed_short_circuits(self, mock_run, _which, capsys):
+        mock_run.side_effect = self._release_side_effect(
+            requested_tag_exists=True, head_contains_target=True
+        )
+
+        cmd_update(SimpleNamespace(release="v2026.5.29"))
+
+        out = capsys.readouterr().out
+        assert "Already on release v2026.5.29" in out
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("checkout --detach" in c for c in commands), commands
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_release_unknown_tag_exits_cleanly(self, mock_run, _which, capsys):
+        mock_run.side_effect = self._release_side_effect(requested_tag_exists=False)
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_update(SimpleNamespace(release="v9999.1.1"))
+        assert exc.value.code == 1
+
+        out = capsys.readouterr().out
+        assert "v9999.1.1" in out
+        assert "not found" in out
+
+    def test_release_and_branch_are_mutually_exclusive(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cmd_update(SimpleNamespace(release="latest", branch="main"))
+        assert exc.value.code == 1
+        assert "mutually exclusive" in capsys.readouterr().out
+
+
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm
 

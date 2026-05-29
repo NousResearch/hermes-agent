@@ -204,7 +204,7 @@ def apply_migration(
     yaml = YAML(typ="rt")
     yaml.preserve_quotes = True
     with config_path.open("r", encoding="utf-8") as fh:
-        doc = yaml.load(fh)
+        doc = yaml.load(Loader=yaml.SafeLoader, fh)
 
     if doc is None:
         return ApplyResult(

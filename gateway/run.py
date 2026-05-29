@@ -1684,6 +1684,24 @@ class GatewayRunner:
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
+        # Gateway-level job tracker (workstream routing, modifier attachment,
+        # /interrupt /cancel surface, restart persistence).
+        from gateway.jobs import GatewayJobs as _GatewayJobs
+        self.jobs = _GatewayJobs.get()
+        try:
+            self.jobs.load()
+            # Demote active/paused jobs (lost agent context on restart)
+            # and promote first queued job for each session.
+            _interrupted = self.jobs.recover_after_restart()
+            if _interrupted:
+                _count = sum(len(v) for v in _interrupted.values())
+                logger.info(
+                    "Recovered %d interrupted job(s) across %d session(s) after restart",
+                    _count, len(_interrupted),
+                )
+        except Exception as _jobs_load_exc:
+            logger.warning("Failed to load gateway jobs state: %s", _jobs_load_exc)
+
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
         self._prefill_messages = self._load_prefill_messages()
@@ -7118,6 +7136,81 @@ class GatewayRunner:
                 logger.info("STOP for session %s — agent interrupted, session lock released", _quick_key)
                 return EphemeralReply(t("gateway.stop.stopped"))
 
+            # /interrupt <prompt> — pause the active job and start a new one.
+            if _cmd_def_inner and _cmd_def_inner.name == "interrupt":
+                interrupt_text = event.get_command_args().strip()
+                _jobs = getattr(self, "jobs", None)
+                if not interrupt_text:
+                    # Ambiguous — ask what to do before abandoning current job.
+                    _active = _jobs.active_job(_quick_key) if _jobs else None
+                    if _active:
+                        return (
+                            f"⏳ Currently working on: {_active.matter_summary}\n"
+                            f"Usage: /interrupt <new prompt> — pauses this and starts new task.\n"
+                            f"Or: /queue <prompt> — queues without interrupting."
+                        )
+                    return "Usage: /interrupt <prompt>"
+                # Pause the active gateway job.
+                _jobs = getattr(self, "jobs", None)
+                if _jobs is not None:
+                    _active = _jobs.active_job(_quick_key)
+                    if _active:
+                        _jobs.pause(_quick_key, _active.job_id)
+                await self._interrupt_and_clear_session(
+                    _quick_key,
+                    source,
+                    interrupt_reason=_INTERRUPT_REASON_STOP,
+                    invalidation_reason="interrupt_command",
+                )
+                # Create a new job for the interrupt prompt.
+                if _jobs is not None:
+                    _jobs.create(
+                        _quick_key,
+                        "misc",
+                        f"Interrupt: {interrupt_text[:80]}",
+                        interrupt_text,
+                        status="active",
+                    )
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    adapter._pending_messages[_quick_key] = MessageEvent(
+                        text=interrupt_text,
+                        message_type=MessageType.TEXT,
+                        source=source,
+                        channel_prompt=event.channel_prompt,
+                    )
+                return f"⏸ Interrupted. Starting new task: {interrupt_text[:60]}"
+
+            # /cancel — cancel the active or specified job.
+            if _cmd_def_inner and _cmd_def_inner.name == "cancel":
+                _jobs = getattr(self, "jobs", None)
+                if _jobs is None:
+                    return "No job tracker available."
+                _cancel_hint = event.get_command_args().strip()
+                if _cancel_hint:
+                    # Try to find by matter_summary keyword match
+                    candidates = _jobs.active_or_queued_jobs(_quick_key)
+                    target = None
+                    for candidate in candidates:
+                        if _cancel_hint.lower() in candidate.matter_summary.lower():
+                            target = candidate
+                            break
+                    if target is None:
+                        return f"No job matching '{_cancel_hint}'. Active/queued jobs:\n{_jobs.status_summary(_quick_key)}"
+                else:
+                    target = _jobs.active_job(_quick_key)
+                    if target is None:
+                        return f"No active job to cancel. Queued jobs:\n{_jobs.status_summary(_quick_key)}"
+                # Interrupt agent if running
+                await self._interrupt_and_clear_session(
+                    _quick_key,
+                    source,
+                    interrupt_reason=_INTERRUPT_REASON_STOP,
+                    invalidation_reason="cancel_command",
+                )
+                _jobs.cancel(_quick_key, target.job_id)
+                return f"✗ Cancelled: {target.matter_summary}"
+
             # /reset and /new must bypass the running-agent guard so they
             # actually dispatch as commands instead of being queued as user
             # text (which would be fed back to the agent with the same
@@ -7303,6 +7396,54 @@ class GatewayRunner:
                     f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
                     f"mid-turn. Wait for the current response or `/stop` first."
                 )
+
+            # ── "done" / "push it" intercept (PRIORITY, agent busy) ────
+            _plain_text = (event.text or "").strip().lower()
+            _jobs = getattr(self, "jobs", None)
+            if _jobs is not None and _plain_text in {"done", "push it", "push"}:
+                _candidates = _jobs.active_or_queued_jobs(_quick_key)
+                if _plain_text == "done":
+                    if len(_candidates) == 1:
+                        _target = _candidates[0]
+                        await self._interrupt_and_clear_session(
+                            _quick_key, source,
+                            interrupt_reason=_INTERRUPT_REASON_STOP,
+                            invalidation_reason="done_command",
+                        )
+                        _jobs.complete(_quick_key, _target.job_id)
+                        return f"✓ Marked done: {_target.matter_summary}"
+                    if len(_candidates) > 1:
+                        _lines = ["Which job is done?"]
+                        for j in _candidates:
+                            _lines.append(f"  • [{j.workstream}] {j.matter_summary}")
+                        return "\n".join(_lines)
+                    return "No active or queued jobs to mark done."
+                if _plain_text in {"push it", "push"}:
+                    if len(_candidates) == 1:
+                        # Promote and run
+                        _target = _candidates[0]
+                        await self._interrupt_and_clear_session(
+                            _quick_key, source,
+                            interrupt_reason=_INTERRUPT_REASON_STOP,
+                            invalidation_reason="push_command",
+                        )
+                        if _target.status != "active":
+                            _jobs.set_status(_quick_key, _target.job_id, "active")
+                        adapter = self.adapters.get(source.platform)
+                        if adapter and _target.trigger_text:
+                            adapter._pending_messages[_quick_key] = MessageEvent(
+                                text=_target.trigger_text,
+                                message_type=MessageType.TEXT,
+                                source=source,
+                                channel_prompt=event.channel_prompt,
+                            )
+                        return f"▶ Pushing: {_target.matter_summary}"
+                    if len(_candidates) > 1:
+                        _lines = ["Which job should I push?"]
+                        for j in _candidates:
+                            _lines.append(f"  • [{j.workstream}] {j.matter_summary}")
+                        return "\n".join(_lines)
+                    return "No queued jobs to push."
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
@@ -7848,6 +7989,39 @@ class GatewayRunner:
             if self._should_send_telegram_lobby_reminder(source):
                 return self._telegram_topic_root_lobby_message()
             return None
+
+        # ── "done" / "push it" intercept (COLD path, no agent running) ──
+        _plain_text = (event.text or "").strip().lower()
+        _jobs_cold = getattr(self, "jobs", None)
+        if _jobs_cold is not None and _plain_text in {"done", "push it", "push"} and not event.is_command():
+            _candidates = _jobs_cold.active_or_queued_jobs(_quick_key)
+            if _plain_text == "done":
+                if len(_candidates) == 1:
+                    _target = _candidates[0]
+                    _jobs_cold.complete(_quick_key, _target.job_id)
+                    return f"✓ Marked done: {_target.matter_summary}"
+                if len(_candidates) > 1:
+                    _lines = ["Which job is done?"]
+                    for j in _candidates:
+                        _lines.append(f"  • [{j.workstream}] {j.matter_summary}")
+                    return "\n".join(_lines)
+                return "No active or queued jobs."
+            if _plain_text in {"push it", "push"}:
+                if len(_candidates) == 1:
+                    _target = _candidates[0]
+                    if _target.status != "active":
+                        _jobs_cold.set_status(_quick_key, _target.job_id, "active")
+                    # Re-inject the trigger text so the agent runs it.
+                    if _target.trigger_text:
+                        event = dataclasses.replace(event, text=_target.trigger_text)
+                    # Fall through to normal agent run below.
+                elif len(_candidates) > 1:
+                    _lines = ["Which job should I push?"]
+                    for j in _candidates:
+                        _lines.append(f"  • [{j.workstream}] {j.matter_summary}")
+                    return "\n".join(_lines)
+                else:
+                    return "No queued jobs to push."
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -8784,6 +8958,63 @@ class GatewayRunner:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
+            # ── Gateway job tracking ──────────────────────────────────
+            # Create or attach a job for this message. Inject job context
+            # so the agent can apply the completeness-test / modifier rules.
+            _jobs = getattr(self, "jobs", None)
+            _job_context = ""
+            if _jobs is not None:
+                _existing = _jobs.active_or_queued_jobs(session_key)
+                if not _existing:
+                    # No existing jobs — always standalone.
+                    _ws = "misc"
+                    _summary = (event.text or "")[:80].replace("\n", " ")
+                    _jobs.create(session_key, _ws, _summary, event.text or "")
+                else:
+                    # Existing jobs — heuristic completeness test.
+                    _msg_text = (event.text or "").strip()
+                    _word_count = len(_msg_text.split())
+                    if _word_count <= 5 and len(_msg_text) <= 60 and _msg_text.lower() in {
+                        "done", "ok", "yes", "no", "push it", "cancel", "cancel it",
+                    } or not any(w.lower() in _msg_text.lower() for w in {
+                        "what", "how", "who", "where", "when", "why", "find", "check",
+                        "search", "look", "create", "make", "build", "write", "run",
+                        "show", "list", "tell", "explain", "please", "can you", "could you",
+                    }):
+                        # Looks like a modifier — attach to best matching job.
+                        _target = _jobs.best_match(session_key, "misc", _msg_text)
+                        if _target:
+                            _jobs.attach_modifier(
+                                session_key, _target.job_id,
+                                event.text or "", _target.workstream,
+                            )
+                            _job_context = (
+                                f"\n[Gateway: This message may be a modifier to "
+                                f"existing job '{_target.matter_summary}' "
+                                f"({_target.workstream}). "
+                                f"If it is NOT a modifier, treat it as standalone.]\n"
+                            )
+                    if not _job_context:
+                        # Standalone — create new job.
+                        _ws = "misc"
+                        _summary = (event.text or "")[:80].replace("\n", " ")
+                        _jobs.create(session_key, _ws, _summary, event.text or "")
+                # Always inject brief job context.
+                _active = _jobs.active_job(session_key)
+                if _active:
+                    _queued_list = [
+                        j for j in _jobs.active_or_queued_jobs(session_key)
+                        if j.status == "queued"
+                    ]
+                    _q_summary = ", ".join(
+                        f"'{j.matter_summary}'" for j in _queued_list[:3]
+                    ) if _queued_list else "none"
+                    _job_context = _job_context + (
+                        f"\n[Gateway jobs: active='{_active.matter_summary}' "
+                        f"({_active.workstream}), queued={_q_summary}]\n"
+                    )
+                message_text = (_job_context + message_text).strip()
+
             # Run the agent
             agent_result = await self._run_agent(
                 message=message_text,
@@ -8822,6 +9053,20 @@ class GatewayRunner:
                 return None
 
             response = agent_result.get("final_response") or ""
+
+            # ── Mark active gateway job as completed ──────────────────
+            _jobs = getattr(self, "jobs", None)
+            if _jobs is not None and response and not agent_result.get("interrupted"):
+                _active = _jobs.active_job(session_key if session_key else _quick_key)
+                if _active and _active.workstream == "misc":
+                    # Try to re-classify workstream from the response content
+                    # (agent may have identified it during processing).
+                    pass  # kept as misc for now; agent can update via future tool
+                if _active:
+                    _jobs.complete(
+                        session_key if session_key else _quick_key,
+                        _active.job_id,
+                    )
 
             # Convert the agent's internal "(empty)" sentinel into a
             # user-friendly message.  "(empty)" means the model failed to
@@ -9379,6 +9624,11 @@ class GatewayRunner:
         if _qe is not None:
             _qe.pop(session_key, None)
 
+        # Clear gateway jobs for this session.
+        _jobs = getattr(self, "jobs", None)
+        if _jobs is not None:
+            _jobs.clear_session(session_key)
+
         try:
             from tools.env_passthrough import clear_env_passthrough
             clear_env_passthrough()
@@ -9761,6 +10011,14 @@ class GatewayRunner:
         ])
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
+
+        # Gateway job tracker status.
+        _jobs = getattr(self, "jobs", None)
+        if _jobs is not None:
+            _job_summary = _jobs.status_summary(session_key)
+            if _job_summary and "No tracked" not in _job_summary:
+                lines.extend(["", "📋 Jobs:", _job_summary])
+
         lines.extend([
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
@@ -17811,7 +18069,17 @@ class GatewayRunner:
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
             adapter = self.adapters.get(source.platform)
-            
+
+            # ── Promote next queued gateway job ───────────────────────
+            _jobs = getattr(self, "jobs", None)
+            if _jobs is not None and not result.get("interrupted"):
+                # Current active job was already completed in
+                # _handle_message_with_agent. If there's a queued
+                # modifier/follow-up that's been promoted, reflect it.
+                _next = _jobs._next_queued(session_key)
+                if _next and not _jobs.active_job(session_key):
+                    _jobs.set_status(session_key, _next.job_id, "active")
+
             # Get pending message from adapter.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending_event = None

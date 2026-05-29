@@ -15293,6 +15293,7 @@ class GatewayRunner:
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
+        ("memory", "provider"),
     )
 
     _HONCHO_CACHE_BUSTING_KEYS = (

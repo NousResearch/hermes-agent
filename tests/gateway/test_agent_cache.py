@@ -319,6 +319,27 @@ class TestExtractCacheBustingConfig:
         assert out["honcho.peer_name"] == "eri"
         assert out["honcho.user_peer_aliases"] == [("123", "eri")]
 
+    def test_memory_provider_change_busts_signature(self, monkeypatch):
+        """Switching memory.provider must itself change the cache-busting
+        signature, so the agent is rebuilt when a user swaps providers
+        mid-gateway (independent of the honcho.json identity keys)."""
+        from gateway.run import GatewayRunner
+
+        # Neutralize honcho.json reads so the only varying input is the
+        # provider value itself.
+        monkeypatch.setattr(
+            GatewayRunner,
+            "_extract_honcho_cache_busting_config",
+            classmethod(lambda cls: cls._empty_honcho_cache_busting_config()),
+        )
+
+        sig_honcho = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+        sig_mem0 = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "mem0"}})
+
+        assert sig_honcho["memory.provider"] == "honcho"
+        assert sig_mem0["memory.provider"] == "mem0"
+        assert sig_honcho != sig_mem0
+
     def test_honcho_cache_busting_config_memoized_by_mtime(self, monkeypatch, tmp_path):
         """Repeated Honcho extraction for unchanged honcho.json should reuse parse result."""
         from types import SimpleNamespace

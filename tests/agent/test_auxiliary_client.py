@@ -2644,6 +2644,40 @@ class TestCodexAuxiliaryAdapterTimeout:
 
         assert time.monotonic() - started < 0.14
 
+    def test_retries_once_when_create_returns_none(self):
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="summary recovered")],
+        )
+        events = [
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                status="completed", id="r1", usage=None,
+            )),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
+
+        class FakeResponses:
+            def __init__(self):
+                self.calls = 0
+
+            def create(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return None
+                return _FakeCreateStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize this"}])
+
+        assert fake_client.responses.calls == 2
+        assert response.choices[0].message.content == "summary recovered"
+
 
 class TestCodexAuxiliaryAdapterNullOutputRecovery:
     def test_recovers_output_item_when_terminal_event_has_null_output(self):

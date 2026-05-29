@@ -396,6 +396,40 @@ class TelegramAdapter(BasePlatformAdapter):
             value = min(value, max_value)
         return value
 
+    @classmethod
+    def _telegram_send_timeout_seconds(cls) -> float:
+        return cls._env_float_clamped(
+            "HERMES_TELEGRAM_SEND_TIMEOUT_SECONDS",
+            45.0,
+            min_value=5.0,
+            max_value=180.0,
+        )
+
+    @classmethod
+    def _telegram_typing_timeout_seconds(cls) -> float:
+        return cls._env_float_clamped(
+            "HERMES_TELEGRAM_TYPING_TIMEOUT_SECONDS",
+            2.0,
+            min_value=0.2,
+            max_value=10.0,
+        )
+
+    @classmethod
+    def _telegram_post_send_typing_timeout_seconds(cls) -> float:
+        return cls._env_float_clamped(
+            "HERMES_TELEGRAM_POST_SEND_TYPING_TIMEOUT_SECONDS",
+            2.0,
+            min_value=0.2,
+            max_value=10.0,
+        )
+
+    @staticmethod
+    async def _await_telegram_api(awaitable, *, timeout: float, operation: str):
+        try:
+            return await asyncio.wait_for(awaitable, timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(f"Telegram {operation} timed out after {timeout:.1f}s") from exc
+
     @property
     def message_len_fn(self):
         """Telegram measures message length in UTF-16 code units."""
@@ -1644,7 +1678,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     webhook_url=webhook_url,
                     secret_token=webhook_secret,
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=False,
                 )
                 self._webhook_mode = True
                 logger.info(
@@ -1677,7 +1711,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=False,
                     error_callback=_polling_error_callback,
                 )
             
@@ -1856,6 +1890,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ImportError, AttributeError):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
+            send_timeout = self._telegram_send_timeout_seconds()
             for i, chunk in enumerate(chunks):
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
@@ -1904,28 +1939,36 @@ class TelegramAdapter(BasePlatformAdapter):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
                         try:
-                            msg = await self._bot.send_message(
-                                chat_id=int(chat_id),
-                                text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
-                                reply_to_message_id=reply_to_id,
-                                **thread_kwargs,
-                                **self._link_preview_kwargs(),
-                                **self._notification_kwargs(metadata),
+                            msg = await self._await_telegram_api(
+                                self._bot.send_message(
+                                    chat_id=int(chat_id),
+                                    text=chunk,
+                                    parse_mode=ParseMode.MARKDOWN_V2,
+                                    reply_to_message_id=reply_to_id,
+                                    **thread_kwargs,
+                                    **self._link_preview_kwargs(),
+                                    **self._notification_kwargs(metadata),
+                                ),
+                                timeout=send_timeout,
+                                operation="send_message",
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
-                                msg = await self._bot.send_message(
-                                    chat_id=int(chat_id),
-                                    text=plain_chunk,
-                                    parse_mode=None,
-                                    reply_to_message_id=reply_to_id,
-                                    **thread_kwargs,
-                                    **self._link_preview_kwargs(),
-                                    **self._notification_kwargs(metadata),
+                                msg = await self._await_telegram_api(
+                                    self._bot.send_message(
+                                        chat_id=int(chat_id),
+                                        text=plain_chunk,
+                                        parse_mode=None,
+                                        reply_to_message_id=reply_to_id,
+                                        **thread_kwargs,
+                                        **self._link_preview_kwargs(),
+                                        **self._notification_kwargs(metadata),
+                                    ),
+                                    timeout=send_timeout,
+                                    operation="send_message",
                                 )
                             else:
                                 raise
@@ -2039,7 +2082,11 @@ class TelegramAdapter(BasePlatformAdapter):
             # (especially noticeable when the agent sends intermediate progress
             # messages like "Checking:" before running tools).
             try:
-                await self.send_typing(chat_id, metadata=metadata)
+                await self._await_telegram_api(
+                    self.send_typing(chat_id, metadata=metadata),
+                    timeout=self._telegram_post_send_typing_timeout_seconds(),
+                    operation="post-send typing",
+                )
             except Exception:
                 pass  # Typing failures are non-fatal
 
@@ -4136,10 +4183,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 _typing_thread = self._metadata_thread_id(metadata)
                 _is_dm_topic = bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
                 message_thread_id = self._message_thread_id_for_typing(_typing_thread)
-                await self._bot.send_chat_action(
-                    chat_id=int(chat_id),
-                    action="typing",
-                    message_thread_id=message_thread_id,
+                await self._await_telegram_api(
+                    self._bot.send_chat_action(
+                        chat_id=int(chat_id),
+                        action="typing",
+                        message_thread_id=message_thread_id,
+                    ),
+                    timeout=self._telegram_typing_timeout_seconds(),
+                    operation="send_chat_action",
                 )
             except Exception as e:
                 # For DM topic lanes, Telegram may reject message_thread_id.
@@ -4147,9 +4198,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 # indicator at least appears in the main DM view.
                 if _is_dm_topic and message_thread_id is not None:
                     try:
-                        await self._bot.send_chat_action(
-                            chat_id=int(chat_id),
-                            action="typing",
+                        await self._await_telegram_api(
+                            self._bot.send_chat_action(
+                                chat_id=int(chat_id),
+                                action="typing",
+                            ),
+                            timeout=self._telegram_typing_timeout_seconds(),
+                            operation="send_chat_action",
                         )
                         return
                     except Exception:
@@ -5654,10 +5709,21 @@ class TelegramAdapter(BasePlatformAdapter):
         chat = message.chat
         user = message.from_user
         
-        # Determine chat type.  Normalize through ``str`` so tests/mocks and
-        # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
-        # string-like, but mocks often provide plain strings).
-        telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        # Determine chat type. Normalize through known ChatType constants first:
+        # some tests install MagicMock Telegram modules, whose string form looks
+        # like "<MagicMock name='...SUPERGROUP' ...>" and is not enum-like.
+        raw_chat_type = getattr(chat, "type", "")
+        telegram_chat_type = str(raw_chat_type).split(".")[-1].strip().lower()
+        for attr_name, normalized in (
+            ("GROUP", "group"),
+            ("SUPERGROUP", "supergroup"),
+            ("CHANNEL", "channel"),
+            ("PRIVATE", "private"),
+        ):
+            if raw_chat_type is getattr(ChatType, attr_name, None):
+                telegram_chat_type = normalized
+                break
+
         chat_type = "dm"
         if telegram_chat_type in {"group", "supergroup"}:
             chat_type = "group"

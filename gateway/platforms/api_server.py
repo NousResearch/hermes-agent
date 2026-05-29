@@ -64,6 +64,7 @@ logger = logging.getLogger(__name__)
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
+AUTO_PORT_RANGE_END = 8699
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
@@ -77,6 +78,68 @@ def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _probe_host(host: str) -> str:
+    """Return a concrete loopback address for local bind probes."""
+    if host in {"", "0.0.0.0", "::", "::0"}:
+        return "127.0.0.1"
+    return host
+
+
+def _is_port_open(host: str, port: int) -> bool:
+    try:
+        with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.25)
+            return sock.connect_ex((_probe_host(host), port)) == 0
+    except OSError:
+        return False
+
+
+def _read_env_file(path: Path) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
+
+
+def _api_server_port_assignments() -> Dict[int, List[str]]:
+    """Map configured API server ports to enabled Hermes profile names."""
+    try:
+        from hermes_cli.profiles import list_profiles
+    except Exception:
+        return {}
+
+    assignments: Dict[int, List[str]] = {}
+    try:
+        profiles = list_profiles()
+    except Exception:
+        return assignments
+
+    for profile in profiles:
+        env = _read_env_file(Path(profile.path) / ".env")
+        enabled = str(env.get("API_SERVER_ENABLED", "")).strip().lower() in {"1", "true", "yes", "on"}
+        has_key = bool(env.get("API_SERVER_KEY", ""))
+        if not enabled and not has_key:
+            continue
+        port = _coerce_port(env.get("API_SERVER_PORT"), DEFAULT_PORT)
+        assignments.setdefault(port, []).append(profile.name)
+    return assignments
 
 
 _TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -700,6 +763,11 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            self._profile_name = get_active_profile_name()
+        except Exception:
+            self._profile_name = "custom"
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -718,6 +786,94 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+
+    def _find_auto_port(self, assignments: Dict[int, List[str]]) -> Optional[int]:
+        reserved = {
+            port
+            for port, owners in assignments.items()
+            if self._profile_name not in owners
+        }
+        start = max(DEFAULT_PORT, min(self._port + 1, AUTO_PORT_RANGE_END))
+        for candidate in range(start, AUTO_PORT_RANGE_END + 1):
+            if candidate in reserved:
+                continue
+            if not _is_port_open(self._host, candidate):
+                return candidate
+        for candidate in range(DEFAULT_PORT, start):
+            if candidate in reserved:
+                continue
+            if not _is_port_open(self._host, candidate):
+                return candidate
+        return None
+
+    def _persist_auto_port(self, port: int) -> None:
+        if not _env_flag("HERMES_API_SERVER_PERSIST_AUTO_PORT", True):
+            return
+        try:
+            from hermes_constants import get_hermes_home
+            env_path = get_hermes_home() / ".env"
+            try:
+                lines = env_path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                lines = []
+
+            replaced = False
+            next_lines: List[str] = []
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("API_SERVER_PORT="):
+                    next_lines.append(f"API_SERVER_PORT={port}")
+                    replaced = True
+                else:
+                    next_lines.append(line)
+            if not replaced:
+                next_lines.append(f"API_SERVER_PORT={port}")
+
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            env_path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
+        except Exception as exc:
+            logger.warning(
+                "[%s] API server auto-selected port %d but could not persist it: %s",
+                self.name, port, exc,
+            )
+
+    def _maybe_reassign_busy_port(self) -> bool:
+        if not _is_port_open(self._host, self._port):
+            return True
+
+        assignments = _api_server_port_assignments()
+        owners = assignments.get(self._port, [])
+        collision_is_configured = len(owners) > 1 and self._profile_name in owners
+        auto_enabled = _env_flag("HERMES_API_SERVER_AUTO_PORT", True)
+        auto_always = _env_flag("HERMES_API_SERVER_AUTO_PORT_ALWAYS", False)
+
+        if auto_enabled and (collision_is_configured or auto_always):
+            replacement = self._find_auto_port(assignments)
+            if replacement is not None:
+                old_port = self._port
+                self._port = replacement
+                self._persist_auto_port(replacement)
+                logger.warning(
+                    "[%s] API server port %d is shared by enabled profiles %s; "
+                    "auto-selected http://%s:%d and persisted API_SERVER_PORT=%d.",
+                    self.name,
+                    old_port,
+                    ", ".join(sorted(owners)) or "(unknown)",
+                    self._host,
+                    replacement,
+                    replacement,
+                )
+                return True
+
+        owner_hint = f" configured by enabled profiles: {', '.join(sorted(owners))}" if owners else ""
+        logger.error(
+            "[%s] Port %d already in use%s. Set API_SERVER_PORT to a free value "
+            "or fix duplicate profile port assignments.",
+            self.name,
+            self._port,
+            owner_hint,
+        )
+        return False
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -4128,15 +4284,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 except ImportError:
                     pass
 
-            # Port conflict detection — fail fast if port is already in use
-            try:
-                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
-                    _s.settimeout(1)
-                    _s.connect(('127.0.0.1', self._port))
-                logger.error('[%s] Port %d already in use. Set a different port in config.yaml: platforms.api_server.port', self.name, self._port)
+            # Port conflict detection. Duplicate enabled Hermes profiles are
+            # auto-reassigned into the reserved API range; unrelated listeners
+            # still fail loudly so a real conflict is not hidden.
+            if not self._maybe_reassign_busy_port():
                 return False
-            except (ConnectionRefusedError, OSError):
-                pass  # port is free
 
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()

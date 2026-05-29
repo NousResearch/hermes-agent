@@ -531,6 +531,36 @@ def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatc
     assert response.usage.total_tokens == 11
 
 
+def test_run_codex_stream_retries_when_create_returns_none(monkeypatch):
+    """Regression: SDK/provider drift can return None instead of an iterable."""
+    agent = _build_agent(monkeypatch)
+    calls = {"create": 0}
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        assert kwargs.get("stream") is True
+        if calls["create"] == 1:
+            return None
+        return _FakeCreateStream(
+            [
+                SimpleNamespace(type="response.created"),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=_codex_message_response("retry recovered"),
+                ),
+            ]
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["create"] == 2
+    assert response.status == "completed"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

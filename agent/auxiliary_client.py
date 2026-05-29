@@ -802,6 +802,11 @@ class _CodexCompletionsAdapter:
                 _check_cancelled()
 
             event_stream = self._client.responses.create(**stream_kwargs)
+            if event_stream is None:
+                logger.warning("Codex auxiliary Responses create(stream=True) returned no event stream; retrying once")
+                event_stream = self._client.responses.create(**stream_kwargs)
+            if event_stream is None:
+                raise RuntimeError("Codex auxiliary Responses create(stream=True) returned no event stream")
             try:
                 final = _consume_codex_event_stream(
                     event_stream,

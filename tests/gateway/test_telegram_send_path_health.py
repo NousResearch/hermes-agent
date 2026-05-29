@@ -5,6 +5,7 @@ can enter a wedged state where ``bot.send_message()`` returns a valid Message
 but nothing reaches the recipient.  ``_send_path_degraded`` short-circuits
 ``send()`` so cron's live-adapter branch falls through to standalone HTTP.
 """
+import asyncio
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -63,6 +64,39 @@ async def test_send_short_circuits_when_path_degraded():
     assert result.error == "send_path_degraded"
     assert result.retryable is True
     adapter._bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_message_timeout_returns_without_hanging(monkeypatch):
+    adapter = _make_adapter()
+
+    async def slow_send_message(**kwargs):
+        await asyncio.sleep(10)
+
+    adapter._bot.send_message = AsyncMock(side_effect=slow_send_message)
+    monkeypatch.setattr(adapter, "_telegram_send_timeout_seconds", lambda: 0.01)
+
+    result = await adapter.send("123", "hello")
+
+    assert result.success is False
+    assert "timed out" in result.error.lower()
+    assert result.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_post_send_typing_timeout_does_not_block_delivery(monkeypatch):
+    adapter = _make_adapter()
+
+    async def slow_send_typing(chat_id, metadata=None):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(adapter, "send_typing", slow_send_typing)
+    monkeypatch.setattr(adapter, "_telegram_post_send_typing_timeout_seconds", lambda: 0.01)
+
+    result = await adapter.send("123", "hello")
+
+    assert result.success is True
+    adapter._bot.send_message.assert_awaited()
 
 
 @pytest.mark.asyncio

@@ -2783,6 +2783,37 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
 
+    def test_persists_clean_user_message_before_first_api_call(self, agent):
+        """A crash during the first provider call must not lose the inbound
+        user turn, and API-only injected context must stay ephemeral."""
+        self._setup_agent(agent)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        snapshots = []
+
+        def capture(messages, conversation_history=None):
+            snapshots.append([dict(m) for m in messages])
+
+        def api_call(api_kwargs):
+            assert snapshots, "user message was not persisted before first API call"
+            assert snapshots[0] == [{"role": "user", "content": "plain user turn"}]
+            api_user = next(
+                msg for msg in api_kwargs["messages"] if msg.get("role") == "user"
+            )
+            assert "EPHEMERAL PLUGIN CONTEXT" in api_user.get("content", "")
+            assert "EPHEMERAL PLUGIN CONTEXT" not in snapshots[0][0]["content"]
+            return resp
+
+        with (
+            patch.object(agent, "_persist_session", side_effect=capture),
+            patch.object(agent, "_interruptible_api_call", side_effect=api_call),
+            patch("hermes_cli.plugins.invoke_hook", return_value=[{"context": "EPHEMERAL PLUGIN CONTEXT"}]),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("plain user turn")
+
+        assert result["completed"] is True
+
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)
         agent.platform = None

@@ -763,13 +763,24 @@ def run_conversation(
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
+        # Durability checkpoint: the codex app-server runtime can run for a
+        # long time outside Hermes' normal tool loop, so persist the inbound
+        # user turn before handing control to the subprocess.
+        agent._persist_session(messages, conversation_history)
         return agent._run_codex_app_server_turn(
             user_message=user_message,
             original_user_message=original_user_message,
             messages=messages,
+            conversation_history=conversation_history,
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
         )
+
+    # Durability checkpoint for normal runtimes: persist the clean inbound
+    # user turn before the first long provider/API call. API-only memory and
+    # plugin context is injected into api_messages later without mutating
+    # messages, so this checkpoint stays replay-safe and non-ephemeral.
+    agent._persist_session(messages, conversation_history)
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
@@ -3633,6 +3644,7 @@ def run_conversation(
                             "tool_call_id": tc.id,
                             "content": content,
                         })
+                    agent._persist_session(messages, conversation_history)
                     continue
                 # Reset retry counter on successful tool call validation
                 agent._invalid_tool_retries = 0
@@ -3725,6 +3737,7 @@ def run_conversation(
                                 "tool_call_id": tc.id,
                                 "content": tool_result,
                             })
+                        agent._persist_session(messages, conversation_history)
                         continue
                 
                 # Reset retry counter on successful JSON validation
@@ -3809,6 +3822,9 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                # Persist after every completed tool batch so a crash or
+                # gateway restart preserves the current work trace.
+                agent._persist_session(messages, conversation_history)
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision

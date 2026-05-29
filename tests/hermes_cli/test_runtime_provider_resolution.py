@@ -793,6 +793,54 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     assert resolved["model"] == "acme-large"
 
 
+def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
+    """Named custom providers on one gateway must keep their own credentials and protocol."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("GPT_KEY", "gpt-secret")
+    monkeypatch.setenv("CLAUDE_KEY", "claude-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "gpt",
+                    "base_url": "https://gateway.example.com",
+                    "key_env": "GPT_KEY",
+                    "api_mode": "codex_responses",
+                    "model": "gpt-5.5",
+                },
+                {
+                    "name": "claude",
+                    "base_url": "https://gateway.example.com",
+                    "key_env": "CLAUDE_KEY",
+                    "api_mode": "anthropic_messages",
+                    "model": "claude-opus-4-8",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:claude")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://gateway.example.com"
+    assert resolved["api_key"] == "claude-secret"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["requested_provider"] == "custom:claude"
+    assert resolved["model"] == "claude-opus-4-8"
+
+
 def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

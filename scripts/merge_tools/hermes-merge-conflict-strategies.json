@@ -90,8 +90,8 @@
     },
     {
       "pattern": "tools/environments/local.py",
-      "action": "preserve_custom",
-      "note": "Windows-native shell compatibility layer.",
+      "action": "official_with_overlay",
+      "note": "Take upstream env-security fixes; overlay Windows-native shell compatibility.",
       "context": "overlap_only"
     },
     {
@@ -186,8 +186,8 @@
     },
     {
       "pattern": "tests/tools/test_local_env_blocklist.py",
-      "action": "preserve_custom",
-      "note": "Windows env blocklist tests.",
+      "action": "official_with_overlay",
+      "note": "Take upstream env-security assertions; overlay Windows-specific regressions.",
       "context": "overlap_only"
     },
     {

@@ -65,7 +65,7 @@ from hermes_constants import get_hermes_home
 
 # OpenAI lazy proxy + safe stdio + proxy URL helpers — see agent/process_bootstrap.py.
 # `OpenAI` is re-exported here so `patch("run_agent.OpenAI", ...)` in tests works.
-# The other `# noqa: F401` re-exports below cover names accessed via
+# The other F401 re-exports below cover names accessed via
 # `mock.patch("run_agent.<X>")`, `from run_agent import <X>` in production
 # siblings, or the `_ra().<X>` indirection in agent/system_prompt.py — none
 # of which ruff's in-module usage scan can see.
@@ -116,10 +116,13 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
+from agent.retry_utils import jittered_backoff  # noqa: F401  # re-exported for tests that mock.patch("run_agent.jittered_backoff")
 # Imported for agent.system_prompt._ra() patch contract.
 from agent.prompt_builder import (  # noqa: F401
+    DEFAULT_AGENT_IDENTITY,
     build_context_files_prompt,
     build_environment_hints,
+    build_nous_subscription_prompt,
     build_skills_system_prompt,
     load_soul_md,
     TOOL_USE_ENFORCEMENT_GUIDANCE,

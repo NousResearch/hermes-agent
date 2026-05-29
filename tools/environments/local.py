@@ -94,22 +94,9 @@ def _resolve_safe_cwd(cwd: str) -> str:
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
+# Bedrock is auth_type="aws_sdk" but its bearer token is a Hermes-managed
+# inference secret, unlike the user's general AWS operator credential chain.
 _AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "AWS_SECURITY_TOKEN",
-    "AWS_PROFILE",
-    "AWS_DEFAULT_PROFILE",
-    "AWS_SHARED_CREDENTIALS_FILE",
-    "AWS_CONFIG_FILE",
-    "AWS_WEB_IDENTITY_TOKEN_FILE",
-    "AWS_ROLE_ARN",
-    "AWS_ROLE_SESSION_NAME",
-    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
-    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
     "AWS_BEARER_TOKEN_BEDROCK",
 })
 

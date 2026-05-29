@@ -706,12 +706,17 @@ here; full developer notes live in `AGENTS.md`, user-facing docs under
 
 Spawn a subagent with an isolated context + terminal session.
 
-- **Single:** `delegate_task(goal, context, toolsets)`.
-- **Batch:** `delegate_task(tasks=[{goal, ...}, ...])` runs children in
+- **Single:** `delegate_task(goal, context, toolsets, tier)`.
+- **Batch:** `delegate_task(tasks=[{goal, ...}, ...], tier=...)` runs children in
   parallel, capped by `delegation.max_concurrent_children` (default 3).
 - **Background:** `delegate_task(background=true)` returns a handle
   immediately and keeps the parent loop going; the child's result
   re-enters the conversation as a new turn when it finishes.
+- **Tier routing:** top-level `tier` is bounded to `small`, `medium`, or `large`.
+  `small` prefers `delegation_small`, `large` prefers `delegation_large`, and
+  omitted / `medium` uses `delegation` before falling back to parent inheritance.
+  Batch mode applies one top-level tier to the whole call; there is no per-task
+  tier inside `tasks[]`.
 - **Roles:** `leaf` (default; cannot re-delegate) vs `orchestrator`
   (can spawn its own workers, bounded by `delegation.max_spawn_depth`).
 - **Not durable.** A backgrounded child is still process-local — if the
@@ -719,7 +724,8 @@ Spawn a subagent with an isolated context + terminal session.
   the process, use `cronjob` or
   `terminal(background=True, notify_on_complete=True)`.
 
-Config: `delegation.*` in `config.yaml`.
+Config: `delegation.*` in `config.yaml`, plus optional `delegation_small.*`
+and `delegation_large.*` routing blocks.
 
 ### Cron (scheduled jobs)
 

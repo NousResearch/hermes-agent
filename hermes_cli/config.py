@@ -2089,6 +2089,23 @@ DEFAULT_CONFIG = {
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
     },
+    # Optional alternate routing blocks selected by delegate_task(tier=...).
+    # These are intentionally small v1 surfaces: just provider/model or direct
+    # endpoint overrides, with the same precedence rules as delegation.*.
+    "delegation_small": {
+        "model": "",
+        "provider": "",
+        "base_url": "",
+        "api_key": "",
+        "api_mode": "",
+    },
+    "delegation_large": {
+        "model": "",
+        "provider": "",
+        "base_url": "",
+        "api_key": "",
+        "api_mode": "",
+    },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.

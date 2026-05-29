@@ -70,6 +70,9 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("tier", props)
+        self.assertEqual(props["tier"]["enum"], ["small", "medium", "large"])
+        self.assertNotIn("tier", props["tasks"]["items"]["properties"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -211,6 +214,12 @@ class TestDelegateTask(unittest.TestCase):
         result = json.loads(delegate_task(goal="  ", parent_agent=parent))
         self.assertIn("error", result)
 
+    def test_invalid_tier_returns_tool_error(self):
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(goal="test", tier="huge", parent_agent=parent))
+        self.assertIn("error", result)
+        self.assertIn("Invalid delegation tier", result["error"])
+
     def test_task_missing_goal(self):
         parent = _make_mock_parent()
         result = json.loads(delegate_task(tasks=[{"context": "no goal here"}], parent_agent=parent))
@@ -247,6 +256,61 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["summary"], "Result A")
         self.assertEqual(result["results"][1]["summary"], "Result B")
         self.assertIn("total_duration_seconds", result)
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    def test_batch_mode_uses_top_level_tier_once(self, mock_cfg, mock_creds, mock_run):
+        mock_cfg.return_value = {"max_iterations": 50}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_run.side_effect = [
+            {"task_index": 0, "status": "completed", "summary": "Result A", "api_calls": 2, "duration_seconds": 3.0},
+            {"task_index": 1, "status": "completed", "summary": "Result B", "api_calls": 4, "duration_seconds": 6.0},
+        ]
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(
+                tasks=[{"goal": "Research topic A"}, {"goal": "Research topic B"}],
+                tier="large",
+                parent_agent=parent,
+            )
+        )
+
+        self.assertIn("results", result)
+        mock_creds.assert_called_once_with(mock_cfg.return_value, parent, tier="large")
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    def test_blank_tier_behaves_like_medium(self, mock_cfg, mock_creds, mock_run):
+        mock_cfg.return_value = {"max_iterations": 50}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done!",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+
+        result = json.loads(delegate_task(goal="Fix tests", tier="  ", parent_agent=parent))
+
+        self.assertIn("results", result)
+        mock_creds.assert_called_once_with(mock_cfg.return_value, parent, tier="medium")
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode_accepts_json_string_tasks(self, mock_run):
@@ -968,6 +1032,71 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["provider"])
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
+
+    def test_small_tier_prefers_delegation_small_block(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "anthropic/claude-sonnet-4",
+            "provider": "openrouter",
+            "delegation_small": {
+                "model": "google/gemini-3-flash-preview",
+                "provider": "openrouter",
+            },
+        }
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_runtime:
+            mock_runtime.return_value = {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "small-key",
+                "api_mode": "chat_completions",
+                "model": "google/gemini-3-flash-preview",
+            }
+            creds = _resolve_delegation_credentials(cfg, parent, tier="small")
+
+        self.assertEqual(creds["model"], "google/gemini-3-flash-preview")
+        self.assertEqual(creds["provider"], "openrouter")
+        mock_runtime.assert_called_once_with(
+            requested="openrouter",
+            target_model="google/gemini-3-flash-preview",
+        )
+
+    def test_large_tier_falls_back_to_default_block_when_unset(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "anthropic/claude-sonnet-4",
+            "provider": "openrouter",
+        }
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_runtime:
+            mock_runtime.return_value = {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "default-key",
+                "api_mode": "chat_completions",
+                "model": "anthropic/claude-sonnet-4",
+            }
+            creds = _resolve_delegation_credentials(cfg, parent, tier="large")
+
+        self.assertEqual(creds["model"], "anthropic/claude-sonnet-4")
+        mock_runtime.assert_called_once_with(
+            requested="openrouter",
+            target_model="anthropic/claude-sonnet-4",
+        )
+
+    def test_small_tier_inherits_parent_when_no_routing_blocks_exist(self):
+        parent = _make_mock_parent(depth=0)
+        creds = _resolve_delegation_credentials({}, parent, tier="small")
+
+        self.assertIsNone(creds["provider"])
+        self.assertIsNone(creds["base_url"])
+        self.assertIsNone(creds["api_key"])
+        self.assertIsNone(creds["api_mode"])
+        self.assertIsNone(creds["model"])
+
+    def test_invalid_tier_raises_value_error(self):
+        parent = _make_mock_parent(depth=0)
+
+        with self.assertRaisesRegex(ValueError, "Invalid delegation tier"):
+            _resolve_delegation_credentials({}, parent, tier="giant")
 
 
 

@@ -490,6 +490,44 @@ function openExternalUrl(rawUrl) {
   return true
 }
 
+function ensureWslWindowsFonts() {
+  if (!IS_WSL) return
+
+  const fontsDir = ['/mnt/c/Windows/Fonts', '/mnt/c/windows/fonts'].find(candidate => {
+    try {
+      return fs.statSync(candidate).isDirectory()
+    } catch {
+      return false
+    }
+  })
+  if (!fontsDir) return
+
+  try {
+    const confDir = path.join(app.getPath('home'), '.config', 'fontconfig', 'conf.d')
+    const confPath = path.join(confDir, '99-hermes-wsl-windows-fonts.conf')
+    let existing = ''
+    try {
+      existing = fs.readFileSync(confPath, 'utf8')
+    } catch {
+      existing = ''
+    }
+    if (existing.includes(fontsDir)) return
+
+    fs.mkdirSync(confDir, { recursive: true })
+    fs.writeFileSync(
+      confPath,
+      `<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n  <dir>${fontsDir}</dir>\n</fontconfig>\n`
+    )
+    rememberLog(`[fonts] wired WSL Windows fonts for renderer: ${fontsDir}`)
+
+    const cache = spawn('fc-cache', ['-f', fontsDir], { detached: true, stdio: 'ignore' })
+    cache.on('error', () => undefined)
+    cache.unref()
+  } catch (error) {
+    rememberLog(`[fonts] WSL font setup skipped: ${error.message}`)
+  }
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -1341,9 +1379,7 @@ function resolveHermesBackend(dashboardArgs) {
         shell: false
       }
     }
-    rememberLog(
-      `Ignoring system Python ${python}: hermes_cli is not importable; falling through to bootstrap.`
-    )
+    rememberLog(`Ignoring system Python ${python}: hermes_cli is not importable; falling through to bootstrap.`)
   }
 
   // 6. Nothing usable yet -- signal the bootstrap runner that we need to
@@ -3296,6 +3332,7 @@ app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
   }
   installMediaPermissions()
+  ensureWslWindowsFonts()
   createWindow()
 
   app.on('activate', () => {

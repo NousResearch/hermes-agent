@@ -1615,6 +1615,57 @@ def test_setup_status_reports_provider_config(monkeypatch):
     assert resp["result"]["provider_configured"] is False
 
 
+def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "openrouter",
+            "api_key": "",
+            "source": "env/config",
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    assert resp["result"]["ok"] is False
+    assert resp["result"]["provider"] == "openrouter"
+
+
+def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "custom",
+            "api_key": "no-key-required",
+            "source": "env/config",
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    assert resp["result"]["ok"] is True
+    assert resp["result"]["provider"] == "custom"
+
+
+def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypatch):
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "bedrock",
+            "api_key": "aws-sdk",
+            "source": "iam-role",
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    assert resp["result"]["ok"] is False
+    assert resp["result"]["provider"] == "bedrock"
+
+
 def test_complete_slash_includes_provider_alias():
     resp = server.handle_request(
         {"id": "1", "method": "complete.slash", "params": {"text": "/pro"}}

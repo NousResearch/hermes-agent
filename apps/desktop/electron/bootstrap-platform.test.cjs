@@ -8,7 +8,8 @@ const { bundledRuntimeImportCheck, isWindowsBinaryPathInWsl, isWslEnvironment } 
 test('isWslEnvironment detects WSL2 env vars on linux', () => {
   assert.equal(isWslEnvironment({ WSL_DISTRO_NAME: 'Ubuntu' }, 'linux'), true)
   assert.equal(isWslEnvironment({ WSL_INTEROP: '/run/WSL/123_interop' }, 'linux'), true)
-  assert.equal(isWslEnvironment({}, 'linux'), false)
+  assert.equal(isWslEnvironment({}, 'linux', '6.6.87.2-microsoft-standard-WSL2'), true)
+  assert.equal(isWslEnvironment({}, 'linux', '6.6.87-generic'), false)
   assert.equal(isWslEnvironment({ WSL_DISTRO_NAME: 'Ubuntu' }, 'darwin'), false)
 })
 

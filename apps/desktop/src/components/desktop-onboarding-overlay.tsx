@@ -4,7 +4,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Check, ChevronLeft, ChevronRight, ExternalLink, KeyRound, Loader2, Sparkles } from '@/lib/icons'
+import {
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  KeyRound,
+  Loader2,
+  Sparkles,
+  Terminal
+} from '@/lib/icons'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
@@ -99,9 +109,9 @@ const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
 }
 
 const FLOW_SUBTITLES: Record<OAuthProvider['flow'], string> = {
-  pkce: 'Opens your browser to sign in, then continues here.',
-  device_code: 'Opens a verification page in your browser. Hermes connects automatically.',
-  external: 'Sign in once in your terminal, then come back to chat.'
+  pkce: 'Opens your browser to sign in, then continues here',
+  device_code: 'Opens a verification page in your browser — Hermes connects automatically',
+  external: 'Sign in once in your terminal, then come back to chat'
 }
 
 const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
@@ -147,7 +157,7 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
     <div className="fixed inset-0 z-1300 flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
       <div className="w-full max-w-[45rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-sm">
         <Header />
-        <div className="grid gap-5 p-6">
+        <div className="grid gap-3 p-5">
           {reason ? <ReasonNotice reason={reason} /> : null}
           {ready ? showPicker ? <Picker ctx={ctx} /> : <FlowPanel ctx={ctx} flow={flow} /> : <Preparing boot={boot} />}
         </div>
@@ -209,13 +219,13 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
 
 function Header() {
   return (
-    <div className="border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) px-6 py-5">
+    <div className="border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) px-5 py-4">
       <div className="flex items-start gap-3">
         <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">
           <Sparkles className="size-5" />
         </div>
         <div>
-          <h2 className="text-[0.9375rem] font-semibold tracking-tight">Welcome to Hermes</h2>
+          <h2 className="text-[0.9375rem] font-semibold tracking-tight">Let's get you setup with Hermes Agent</h2>
           <p className="mt-1 max-w-xl text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
             Connect a model provider to start chatting. Most options take one click.
           </p>
@@ -225,8 +235,31 @@ function Header() {
   )
 }
 
-function Picker({ ctx }: { ctx: OnboardingContext }) {
+const FEATURED_ID = 'nous'
+const FEATURED_PITCH = 'One subscription, 300+ frontier models — the recommended way to run Hermes'
+const SHOW_ALL_KEY = 'hermes-onboarding-show-all-v1'
+
+const readShowAll = () => {
+  try {
+    return window.localStorage.getItem(SHOW_ALL_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+const persistShowAll = (value: boolean) => {
+  try {
+    window.localStorage.setItem(SHOW_ALL_KEY, value ? '1' : '0')
+  } catch {
+    // localStorage unavailable — degrade silently.
+  }
+
+  return value
+}
+
+export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const { mode, providers } = useStore($desktopOnboarding)
+  const [showAll, setShowAll] = useState(readShowAll)
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
 
@@ -234,42 +267,123 @@ function Picker({ ctx }: { ctx: OnboardingContext }) {
     return <ApiKeyForm canGoBack={hasOauth} ctx={ctx} />
   }
 
+  if (providers === null) {
+    return <Status>Looking up providers...</Status>
+  }
+
+  const select = (p: OAuthProvider) => void startProviderOAuth(p, ctx)
+  const featured = ordered.find(p => p.id === FEATURED_ID) ?? null
+  const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
+  // Collapse the secondary providers behind a disclosure only when Nous
+  // Portal is present to anchor the choice — otherwise show the full list.
+  const collapsible = Boolean(featured) && rest.length > 0
+  const showRest = !collapsible || showAll
+
   return (
-    <div className="grid gap-3">
-      {providers === null ? (
-        <Status>Looking up providers...</Status>
-      ) : (
-        ordered.map(provider => (
-          <ProviderRow key={provider.id} onSelect={p => void startProviderOAuth(p, ctx)} provider={provider} />
-        ))
-      )}
-      <FooterLink onClick={() => setOnboardingMode('apikey')}>I have an API key</FooterLink>
+    <div className="grid gap-2">
+      {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
+      {showRest ? (
+        <>
+          {rest.map(p => (
+            <ProviderRow key={p.id} onSelect={select} provider={p} />
+          ))}
+          <KeyProviderRow onClick={() => setOnboardingMode('apikey')} />
+        </>
+      ) : null}
+      {collapsible ? (
+        <button
+          className="flex items-center justify-center gap-1.5 pt-1 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+          onClick={() => setShowAll(persistShowAll(!showAll))}
+          type="button"
+        >
+          {showAll ? 'Collapse' : 'Other providers'}
+          <ChevronDown className={cn('size-3.5 transition', showAll && 'rotate-180')} />
+        </button>
+      ) : null}
+      <div className="flex justify-end pt-1">
+        <button
+          className="text-xs font-medium text-muted-foreground hover:text-foreground"
+          onClick={() => setOnboardingMode('apikey')}
+          type="button"
+        >
+          I have an API key
+        </button>
+      </div>
     </div>
   )
 }
 
-function FooterLink({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+function FeaturedProviderRow({
+  onSelect,
+  provider
+}: {
+  onSelect: (provider: OAuthProvider) => void
+  provider: OAuthProvider
+}) {
+  const loggedIn = provider.status?.logged_in
+
   return (
-    <div className="pt-2 text-center">
-      <button
-        className="text-sm font-semibold text-foreground underline-offset-4 decoration-current/20 hover:underline"
-        onClick={onClick}
-        type="button"
-      >
-        {children}
-      </button>
-    </div>
+    <button
+      className={cn(
+        'group flex w-full items-center justify-between gap-4 rounded-2xl border-2 border-primary/50 bg-primary/5 p-4 text-left transition hover:border-primary hover:bg-primary/10',
+        loggedIn && 'border-primary'
+      )}
+      onClick={() => onSelect(provider)}
+      type="button"
+    >
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <img alt="" className="size-5 shrink-0 rounded" src="/apple-touch-icon.png" />
+          <span className="text-base font-semibold">{providerTitle(provider)}</span>
+          {loggedIn ? (
+            <ConnectedTag />
+          ) : (
+            <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
+              <span aria-hidden="true" className="dither inline-block size-2 shrink-0" />
+              Recommended
+            </span>
+          )}
+        </div>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{FEATURED_PITCH}</p>
+      </div>
+      <ChevronRight className="size-5 shrink-0 text-primary transition group-hover:translate-x-0.5" />
+    </button>
+  )
+}
+
+function ConnectedTag() {
+  return (
+    <span className="inline-flex items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+      <Check className="size-3" />
+      Connected
+    </span>
+  )
+}
+
+function KeyProviderRow({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      className="group flex w-full items-center justify-between gap-3 rounded-2xl border border-border bg-background/60 p-3 text-left transition hover:border-primary/40 hover:bg-accent/40"
+      onClick={onClick}
+      type="button"
+    >
+      <div className="min-w-0">
+        <span className="text-sm font-semibold">OpenRouter</span>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">One key, hundreds of models — a solid default</p>
+      </div>
+      <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+    </button>
   )
 }
 
 function ProviderRow({ onSelect, provider }: { onSelect: (provider: OAuthProvider) => void; provider: OAuthProvider }) {
   const loggedIn = provider.status?.logged_in
-  const Trail = provider.flow === 'external' ? ExternalLink : ChevronRight
+  const Trail = provider.flow === 'external' ? Terminal : ChevronRight
 
   return (
     <button
       className={cn(
-        'group flex w-full items-center justify-between gap-3 rounded-2xl border border-border bg-background/60 p-4 text-left transition hover:border-primary/40 hover:bg-accent/40',
+        'group flex w-full items-center justify-between gap-3 rounded-2xl border border-border bg-background/60 p-3 text-left transition hover:border-primary/40 hover:bg-accent/40',
         loggedIn && 'border-primary/30'
       )}
       onClick={() => onSelect(provider)}
@@ -278,12 +392,7 @@ function ProviderRow({ onSelect, provider }: { onSelect: (provider: OAuthProvide
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold">{providerTitle(provider)}</span>
-          {loggedIn ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-              <Check className="size-3" />
-              Connected
-            </span>
-          ) : null}
+          {loggedIn ? <ConnectedTag /> : null}
         </div>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{FLOW_SUBTITLES[provider.flow]}</p>
       </div>

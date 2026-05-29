@@ -5263,8 +5263,49 @@ def _(rid, params: dict) -> dict:
     """
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_cli.auth import has_usable_secret
+        from hermes_cli.main import _has_any_provider_configured
 
         runtime = resolve_runtime_provider(requested=None)
+        provider_configured = bool(_has_any_provider_configured())
+        provider = runtime.get("provider") or "provider"
+        source = str(runtime.get("source") or "")
+        if not provider_configured and provider == "bedrock" and source in {
+            "iam-role",
+            "aws-sdk-default-chain",
+        }:
+            return _ok(
+                rid,
+                {
+                    "ok": False,
+                    "provider": provider,
+                    "model": runtime.get("model"),
+                    "source": source,
+                    "error": "No Hermes provider is configured.",
+                },
+            )
+
+        api_key = runtime.get("api_key")
+        api_key_text = "" if callable(api_key) else str(api_key or "").strip()
+        credential_ok = (
+            callable(api_key)
+            or api_key_text in {"aws-sdk", "no-key-required"}
+            or has_usable_secret(api_key_text)
+            or bool(runtime.get("command"))
+        )
+
+        if not credential_ok:
+            return _ok(
+                rid,
+                {
+                    "ok": False,
+                    "provider": provider,
+                    "model": runtime.get("model"),
+                    "source": runtime.get("source"),
+                    "error": f"No usable credentials found for {provider}.",
+                },
+            )
+
         return _ok(
             rid,
             {

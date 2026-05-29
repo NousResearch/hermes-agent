@@ -1,6 +1,15 @@
-function isWslEnvironment(env = process.env, platform = process.platform) {
+const fs = require('node:fs')
+
+function isWslEnvironment(env = process.env, platform = process.platform, kernelRelease = null) {
   if (platform !== 'linux') return false
-  return Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP)
+  if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) return true
+
+  try {
+    const release = kernelRelease ?? fs.readFileSync('/proc/sys/kernel/osrelease', 'utf8')
+    return /microsoft|wsl/i.test(release)
+  } catch {
+    return false
+  }
 }
 
 function isWindowsBinaryPathInWsl(filePath, options = {}) {

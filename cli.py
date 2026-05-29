@@ -15125,13 +15125,50 @@ def main(
     # Handle single query mode
     if query or image:
         query, single_query_images = _collect_query_images(query, image)
+        # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
+        # the actual task description lives in the task body. Mirror the
+        # gateway/CLI behaviour for inbound images by scanning the body for
+        # local image paths and http(s) image URLs and attaching them to the
+        # worker's first turn. Without this, users who paste a screenshot
+        # path or URL into a kanban task body never get it routed to the
+        # model's vision input.
+        single_query_image_urls: list[str] = []
+        _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        if _kanban_task_id:
+            try:
+                from hermes_cli import kanban_db as _kb
+                from agent.image_routing import extract_image_refs as _extract_refs
+
+                _conn = _kb.connect()
+                try:
+                    _task = _kb.get_task(_conn, _kanban_task_id)
+                finally:
+                    try:
+                        _conn.close()
+                    except Exception:
+                        pass
+                _body = getattr(_task, "body", "") if _task is not None else ""
+                if _body:
+                    _kb_paths, _kb_urls = _extract_refs(_body)
+                    if _kb_paths:
+                        # Dedupe against any --image the user already passed.
+                        _seen = {str(p) for p in single_query_images}
+                        for _p in _kb_paths:
+                            if _p not in _seen:
+                                _seen.add(_p)
+                                single_query_images.append(Path(_p))
+                    if _kb_urls:
+                        single_query_image_urls.extend(_kb_urls)
+            except Exception as _exc:
+                # Best-effort enrichment; never block worker startup on it.
+                logger.debug("kanban image-ref extraction failed: %s", _exc)
         if quiet:
             # Quiet mode: suppress banner, spinner, tool previews.
             # Only print the final response and parseable session info.
             cli.tool_progress_mode = "off"
             if cli._ensure_runtime_credentials():
                 effective_query: Any = query
-                if single_query_images:
+                if single_query_images or single_query_image_urls:
                     # Honour the same image-routing decision used by the
                     # interactive path. With a vision-capable model (incl.
                     # custom-provider models declared via
@@ -15160,19 +15197,26 @@ def main(
                             _parts, _skipped = _build_parts(
                                 query if isinstance(query, str) else "",
                                 [str(p) for p in single_query_images],
+                                image_urls=list(single_query_image_urls) or None,
                             )
                             if any(p.get("type") == "image_url" for p in _parts):
                                 effective_query = _parts
                             else:
                                 # All images unreadable — text fallback.
+                                # ``_preprocess_images_with_vision`` only knows
+                                # about local files; URLs would be lost there,
+                                # so keep the original query text intact when
+                                # only URLs were supplied.
+                                if single_query_images:
+                                    effective_query = cli._preprocess_images_with_vision(
+                                        query, single_query_images, announce=False,
+                                    )
+                        except Exception:
+                            if single_query_images:
                                 effective_query = cli._preprocess_images_with_vision(
                                     query, single_query_images, announce=False,
                                 )
-                        except Exception:
-                            effective_query = cli._preprocess_images_with_vision(
-                                query, single_query_images, announce=False,
-                            )
-                    else:
+                    elif single_query_images:
                         effective_query = cli._preprocess_images_with_vision(
                             query,
                             single_query_images,

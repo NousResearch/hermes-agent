@@ -159,7 +159,7 @@ def test_run_conversation_empty_exhausted_surfaces_explanation():
     # The user must NOT be left with a bare sentinel; the explanation wins.
     assert result["final_response"] != "(empty)"
     assert result["final_response"].strip() != ""
-    assert "without a usable reply" in result["final_response"]
+    assert "No reply:" in result["final_response"]
 
 
 def test_run_conversation_normal_reply_stays_quiet():
@@ -178,4 +178,4 @@ def test_run_conversation_normal_reply_stays_quiet():
 
     assert result["turn_exit_reason"].startswith("text_response")
     assert result["final_response"] == "Done."
-    assert "without a usable reply" not in result["final_response"]
+    assert "No reply:" not in result["final_response"]

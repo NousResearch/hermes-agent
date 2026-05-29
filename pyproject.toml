@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-agent"
-version = "0.15.0"
+version = "0.15.1"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -226,6 +226,14 @@ plugins = [
   "*/dashboard/manifest.json",
   "*/dashboard/dist/*",
   "*/dashboard/dist/**/*",
+  # Plugin discovery (hermes_cli/plugins.py) reads a plugin.yaml/plugin.yml
+  # manifest from each bundled plugin directory to register it. Wheels only
+  # carry files declared here, so without this glob the wheel ships every
+  # plugin's Python code but none of its manifests — the scan finds zero
+  # plugins and all gateway platforms fail with "No adapter available for
+  # <platform>" (#34034), web-search providers go missing (#28149), etc.
+  "**/plugin.yaml",
+  "**/plugin.yml",
 ]
 
 [tool.setuptools.packages.find]

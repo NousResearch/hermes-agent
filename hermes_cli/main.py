@@ -3004,7 +3004,6 @@ def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_provider_auth_state,
-        NOUS_INFERENCE_AUTH_MODE_LEGACY,
         _prompt_model_selection,
         _save_model_choice,
         _update_config_for_provider,
@@ -3072,7 +3071,7 @@ def _model_flow_nous(config, current_model="", args=None):
 
     # Verify credentials are still valid (catches expired sessions early)
     try:
-        creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=5 * 60)
+        creds = resolve_nous_runtime_credentials()
     except Exception as exc:
         relogin = isinstance(exc, AuthError) and exc.relogin_required
         msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
@@ -3106,14 +3105,13 @@ def _model_flow_nous(config, current_model="", args=None):
     if not free_tier:
         try:
             refreshed_creds = resolve_nous_runtime_credentials(
-                min_key_ttl_seconds=5 * 60,
-                inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+                force_refresh=True,
             )
             if refreshed_creds:
                 creds = refreshed_creds
         except Exception:
             # Runtime inference has its own paid-entitlement recovery path; do
-            # not block model selection if this opportunistic remint fails.
+            # not block model selection if this opportunistic refresh fails.
             pass
 
     # Resolve portal URL early — needed both for upgrade links and for the
@@ -5593,7 +5591,6 @@ def _model_flow_bedrock(config, current_model=""):
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.auth import (
-        LMSTUDIO_NOAUTH_PLACEHOLDER,
         PROVIDER_REGISTRY,
         _prompt_model_selection,
         _save_model_choice,
@@ -6161,13 +6158,6 @@ def cmd_webhook(args):
     from hermes_cli.webhook import webhook_command
 
     webhook_command(args)
-
-
-def cmd_portal(args):
-    """Nous Portal status and Tool Gateway routing surface."""
-    from hermes_cli.portal_cli import portal_command
-
-    return portal_command(args)
 
 
 def cmd_slack(args):
@@ -10978,24 +10968,6 @@ def cmd_logs(args):
         since=getattr(args, "since", None),
         component=getattr(args, "component", None),
     )
-
-
-def _build_provider_choices() -> list[str]:
-    """Build the --provider choices list from CANONICAL_PROVIDERS + 'auto'."""
-    try:
-        from hermes_cli.models import CANONICAL_PROVIDERS as _cp
-        return ["auto"] + [p.slug for p in _cp]
-    except Exception:
-        # Fallback: static list guarantees the CLI always works
-        return [
-            "auto", "openrouter", "nous", "openai-codex", "xai-oauth", "copilot-acp", "copilot",
-            "anthropic", "gemini", "google-gemini-cli", "xai", "bedrock", "azure-foundry",
-            "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
-            "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
-            "nvidia", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",
-        ]
-
-
 # Top-level subcommands that argparse knows about WITHOUT running plugin
 # discovery.  Used to short-circuit eager plugin imports (which can take
 # 500ms+ pulling in google.cloud.pubsub_v1, aiohttp, grpc, etc.) when the
@@ -12911,7 +12883,34 @@ Examples:
     )
     plugins_remove.add_argument("name", help="Plugin directory name to remove")
 
-    plugins_subparsers.add_parser("list", aliases=["ls"], help="List installed plugins")
+    plugins_list = plugins_subparsers.add_parser(
+        "list", aliases=["ls"], help="List installed plugins"
+    )
+    plugins_list.add_argument(
+        "--enabled",
+        action="store_true",
+        help="Show only enabled plugins",
+    )
+    plugins_list.add_argument(
+        "--user",
+        action="store_true",
+        help="Show only user-installed plugins (including git plugins)",
+    )
+    plugins_list.add_argument(
+        "--no-bundled",
+        action="store_true",
+        help="Hide bundled plugins",
+    )
+    plugins_list.add_argument(
+        "--plain",
+        action="store_true",
+        help="Print compact plain-text output instead of a Rich table",
+    )
+    plugins_list.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON",
+    )
 
     plugins_enable = plugins_subparsers.add_parser(
         "enable", help="Enable a disabled plugin"
@@ -13391,6 +13390,11 @@ Examples:
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )
 
+    sessions_subparsers.add_parser(
+        "optimize",
+        help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
+    )
+
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
     sessions_rename = sessions_subparsers.add_parser(
@@ -13562,6 +13566,34 @@ Examples:
 
             relaunch(["--resume", selected_id])
             return  # won't reach here after execvp
+
+        elif action == "optimize":
+            db_path = db.db_path
+            before_mb = (
+                os.path.getsize(db_path) / (1024 * 1024)
+                if db_path.exists()
+                else 0.0
+            )
+            print("Optimizing session store (FTS merge + VACUUM)…")
+            try:
+                # vacuum() merges FTS5 segments (optimize_fts) then VACUUMs,
+                # and returns the number of indexes it merged.
+                n = db.vacuum()
+            except Exception as e:
+                print(f"Error: optimization failed: {e}")
+                db.close()
+                return
+            after_mb = (
+                os.path.getsize(db_path) / (1024 * 1024)
+                if db_path.exists()
+                else 0.0
+            )
+            saved = before_mb - after_mb
+            print(f"Optimized {n} FTS index(es).")
+            print(
+                f"Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
+                f"(reclaimed {saved:.1f} MB)"
+            )
 
         elif action == "stats":
             total = db.session_count()

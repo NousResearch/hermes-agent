@@ -1,10 +1,9 @@
 """Tests for agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
 
+import base64
 import json
 import logging
-import os
 import time
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -29,6 +28,12 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
 )
+
+
+def _jwt_with_claims(claims: dict) -> str:
+    header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    return f"{header}.{payload}.sig"
 
 
 @pytest.fixture(autouse=True)
@@ -609,7 +614,7 @@ class TestExpiredCodexFallback:
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-test-fallback")
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _resolve_auto, AnthropicAuxiliaryClient
+            from agent.auxiliary_client import _resolve_auto
             client, model = _resolve_auto()
             # Should NOT be Codex, should be Anthropic (or another available provider)
             assert not isinstance(client, type(None)), "Should find a provider after expired Codex"
@@ -696,7 +701,7 @@ class TestExpiredCodexFallback:
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            from agent.auxiliary_client import _try_anthropic
             client, model = _try_anthropic()
             assert client is not None, "Should resolve token"
             adapter = client.chat.completions
@@ -751,7 +756,7 @@ class TestExpiredCodexFallback:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            from agent.auxiliary_client import _try_anthropic
             client, model = _try_anthropic()
             assert client is not None
             adapter = client.chat.completions
@@ -889,9 +894,16 @@ class TestVisionClientFallback:
 
 class TestAuxiliaryPoolAwareness:
     def test_try_nous_uses_pool_entry(self):
+        pooled_token = _jwt_with_claims({
+            "scope": "inference:invoke",
+            "exp": int(time.time() + 3600),
+        })
+
         class _Entry:
             access_token = "pooled-access-token"
-            agent_key = "pooled-agent-key"
+            agent_key = pooled_token
+            agent_key_expires_at = "2099-01-01T00:00:00+00:00"
+            scope = "inference:invoke"
             inference_base_url = "https://inference.pool.example/v1"
 
         class _Pool:
@@ -912,7 +924,7 @@ class TestAuxiliaryPoolAwareness:
 
         assert client is not None
         assert model == "google/gemini-3-flash-preview"
-        assert mock_openai.call_args.kwargs["api_key"] == "pooled-agent-key"
+        assert mock_openai.call_args.kwargs["api_key"] == pooled_token
         assert mock_openai.call_args.kwargs["base_url"] == "https://inference.pool.example/v1"
 
     def test_try_nous_uses_portal_recommendation_for_text(self):

@@ -50,17 +50,6 @@ def _skin_color(key: str, fallback: str) -> str:
         return get_active_skin().get_color(key, fallback)
     except Exception:
         return fallback
-
-
-def _skin_branding(key: str, fallback: str) -> str:
-    """Get a branding string from the active skin, or return fallback."""
-    try:
-        from hermes_cli.skin_engine import get_active_skin
-        return get_active_skin().get_branding(key, fallback)
-    except Exception:
-        return fallback
-
-
 # =========================================================================
 # ASCII Art & Branding
 # =========================================================================

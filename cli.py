@@ -74,10 +74,15 @@ except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 
 try:
-    from hermes_cli.pt_input_extras import install_shift_enter_alias, install_ctrl_enter_alias
+    from hermes_cli.pt_input_extras import (
+        install_ctrl_enter_alias,
+        install_ignored_terminal_sequences,
+        install_shift_enter_alias,
+    )
     install_shift_enter_alias()
     install_ctrl_enter_alias()
-    del install_shift_enter_alias, install_ctrl_enter_alias
+    install_ignored_terminal_sequences()
+    del install_shift_enter_alias, install_ctrl_enter_alias, install_ignored_terminal_sequences
 except Exception:
     pass
 import threading
@@ -382,6 +387,10 @@ def load_cli_config() -> Dict[str, Any]:
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
             "record_sessions": False,  # Auto-record browser sessions as WebM videos
             "engine": "auto",  # Browser engine: auto (Chrome), lightpanda, chrome
+            "camofox": {
+                "rewrite_loopback_urls": False,
+                "loopback_host_alias": "host.docker.internal",
+            },
         },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
@@ -576,6 +585,8 @@ def load_cli_config() -> Dict[str, Any]:
         "docker_env": "TERMINAL_DOCKER_ENV",
         "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+        "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+        "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
         # Persistent shell (non-local backends)
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
@@ -2475,8 +2486,9 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 def _preserve_ctrl_enter_newline() -> bool:
     """Detect environments where Ctrl+Enter must produce a newline, not submit.
 
-    Native Windows, WSL, SSH sessions, and Windows Terminal all send Ctrl+Enter
-    as bare LF (c-j). On those terminals c-j must NOT be bound to submit;
+    Windows Terminal, WSL, SSH sessions, Ghostty, and some modern terminals
+    deliver Ctrl+Enter/Ctrl+J as bare LF (c-j). On those terminals c-j must
+    NOT be bound to submit;
     binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
     submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
     some thin PTYs without SSH) still need c-j bound to submit, so we keep
@@ -2489,6 +2501,12 @@ def _preserve_ctrl_enter_newline() -> bool:
     if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
         return True
     if os.environ.get("WT_SESSION"):
+        return True
+    if os.environ.get("GHOSTTY_RESOURCES_DIR") or os.environ.get("GHOSTTY_BIN_DIR"):
+        return True
+    if os.environ.get("TERM", "").lower() == "xterm-ghostty":
+        return True
+    if os.environ.get("TERM_PROGRAM", "").lower() == "ghostty":
         return True
     if "microsoft" in os.environ.get("WSL_DISTRO_NAME", "").lower():
         return True
@@ -2510,7 +2528,7 @@ def _bind_prompt_submit_keys(kb, handler) -> None:
     some thin PTYs (docker exec, certain SSH flavors) deliver Enter as LF
     instead of CR — without this, Enter appears dead on those terminals.
 
-    Exception: on Windows, WSL, SSH sessions, and Windows Terminal,
+    Exception: on Windows, WSL, SSH sessions, Windows Terminal, and Ghostty,
     c-j is the wire encoding of Ctrl+Enter (a distinct keystroke from
     plain Enter / c-m). We leave c-j unbound there so the c-j newline
     handler registered separately can fire — giving the user an
@@ -12704,7 +12722,21 @@ class HermesCLI:
         
         # Key bindings for the input area
         kb = KeyBindings()
-        
+
+        from prompt_toolkit.keys import Keys as _IgnoreKeys
+
+        @kb.add(_IgnoreKeys.Ignore, eager=True)
+        def handle_ignored_terminal_sequence(event):
+            """Consume parser-level ignored terminal sequences before self-insert.
+
+            install_ignored_terminal_sequences() in hermes_cli.pt_input_extras
+            registers focus reports (CSI I / CSI O) as Keys.Ignore at the
+            VT100 parser level. Without this no-op binding the default
+            self-insert path would still fire and the bytes would land in
+            the buffer.
+            """
+            return None
+
         def handle_enter(event):
             """Handle Enter key - submit input.
             
@@ -15125,13 +15157,50 @@ def main(
     # Handle single query mode
     if query or image:
         query, single_query_images = _collect_query_images(query, image)
+        # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
+        # the actual task description lives in the task body. Mirror the
+        # gateway/CLI behaviour for inbound images by scanning the body for
+        # local image paths and http(s) image URLs and attaching them to the
+        # worker's first turn. Without this, users who paste a screenshot
+        # path or URL into a kanban task body never get it routed to the
+        # model's vision input.
+        single_query_image_urls: list[str] = []
+        _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        if _kanban_task_id:
+            try:
+                from hermes_cli import kanban_db as _kb
+                from agent.image_routing import extract_image_refs as _extract_refs
+
+                _conn = _kb.connect()
+                try:
+                    _task = _kb.get_task(_conn, _kanban_task_id)
+                finally:
+                    try:
+                        _conn.close()
+                    except Exception:
+                        pass
+                _body = getattr(_task, "body", "") if _task is not None else ""
+                if _body:
+                    _kb_paths, _kb_urls = _extract_refs(_body)
+                    if _kb_paths:
+                        # Dedupe against any --image the user already passed.
+                        _seen = {str(p) for p in single_query_images}
+                        for _p in _kb_paths:
+                            if _p not in _seen:
+                                _seen.add(_p)
+                                single_query_images.append(Path(_p))
+                    if _kb_urls:
+                        single_query_image_urls.extend(_kb_urls)
+            except Exception as _exc:
+                # Best-effort enrichment; never block worker startup on it.
+                logger.debug("kanban image-ref extraction failed: %s", _exc)
         if quiet:
             # Quiet mode: suppress banner, spinner, tool previews.
             # Only print the final response and parseable session info.
             cli.tool_progress_mode = "off"
             if cli._ensure_runtime_credentials():
                 effective_query: Any = query
-                if single_query_images:
+                if single_query_images or single_query_image_urls:
                     # Honour the same image-routing decision used by the
                     # interactive path. With a vision-capable model (incl.
                     # custom-provider models declared via
@@ -15160,19 +15229,26 @@ def main(
                             _parts, _skipped = _build_parts(
                                 query if isinstance(query, str) else "",
                                 [str(p) for p in single_query_images],
+                                image_urls=list(single_query_image_urls) or None,
                             )
                             if any(p.get("type") == "image_url" for p in _parts):
                                 effective_query = _parts
                             else:
                                 # All images unreadable — text fallback.
+                                # ``_preprocess_images_with_vision`` only knows
+                                # about local files; URLs would be lost there,
+                                # so keep the original query text intact when
+                                # only URLs were supplied.
+                                if single_query_images:
+                                    effective_query = cli._preprocess_images_with_vision(
+                                        query, single_query_images, announce=False,
+                                    )
+                        except Exception:
+                            if single_query_images:
                                 effective_query = cli._preprocess_images_with_vision(
                                     query, single_query_images, announce=False,
                                 )
-                        except Exception:
-                            effective_query = cli._preprocess_images_with_vision(
-                                query, single_query_images, announce=False,
-                            )
-                    else:
+                    elif single_query_images:
                         effective_query = cli._preprocess_images_with_vision(
                             query,
                             single_query_images,

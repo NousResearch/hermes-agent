@@ -7,14 +7,12 @@ import subprocess
 import sys
 import time
 import pytest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.environments.local import _HERMES_PROVIDER_ENV_FORCE_PREFIX
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
-    MAX_OUTPUT_CHARS,
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
 )
@@ -563,9 +561,18 @@ class TestPopenLeakOnSetupFailure:
         def boom(*args, **kwargs):
             raise RuntimeError("Thread creation failed")
 
+        # proc.pid is a MagicMock-backed fake; os.getpgid(fake_pid) would query
+        # the real OS for an arbitrary PID. On a busy host that PID may exist,
+        # in which case spawn_local's primary cleanup path
+        # (os.killpg(os.getpgid(pid), SIGKILL)) succeeds against an UNRELATED
+        # real process group and proc.kill() is never reached — flaky failure,
+        # and a real risk of SIGKILLing an innocent process group. Force the
+        # ProcessLookupError fallback so the test deterministically exercises
+        # proc.kill() and never issues a real killpg.
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", side_effect=boom), \
+             patch("os.getpgid", side_effect=ProcessLookupError), \
              patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="Thread creation failed"):
                 registry.spawn_local("echo hello", cwd="/tmp")
@@ -590,9 +597,14 @@ class TestPopenLeakOnSetupFailure:
 
         fake_thread = MagicMock()
 
+        # See note in test_popen_killed_when_thread_creation_fails: force the
+        # ProcessLookupError fallback so cleanup deterministically calls
+        # proc.kill() instead of issuing a real os.killpg against whatever
+        # process group happens to own the fake PID on the host.
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", return_value=fake_thread), \
+             patch("os.getpgid", side_effect=ProcessLookupError), \
              patch.object(registry, "_write_checkpoint", side_effect=OSError("disk full")):
             with pytest.raises(OSError, match="disk full"):
                 registry.spawn_local("echo hello", cwd="/tmp")

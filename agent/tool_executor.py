@@ -13,14 +13,13 @@ extracted functions reach back through the ``run_agent`` module via
 from __future__ import annotations
 
 import concurrent.futures
-import contextvars
 import json
 import logging
 import os
 import random
 import threading
 import time
-from typing import Any, Optional
+from typing import Optional
 
 from agent.display import (
     KawaiiSpinner,
@@ -38,12 +37,9 @@ from agent.tool_dispatch_helpers import (
     make_tool_result_message,
 )
 from tools.terminal_tool import (
-    _get_approval_callback,
-    _get_sudo_password_callback,
-    set_approval_callback as _set_approval_callback,
-    set_sudo_password_callback as _set_sudo_password_callback,
     get_active_env,
 )
+from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
@@ -60,6 +56,55 @@ def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
     import run_agent
     return run_agent
+
+
+def _tool_search_scoped_names(agent) -> frozenset:
+    """Return the deferrable tool names the session may invoke via tool_call.
+
+    The Tool Search unwrap dispatches the underlying tool directly, bypassing
+    the bridge branch (and its scope check) in
+    ``model_tools.handle_function_call``. To keep a restricted-toolset session
+    (subagent, kanban worker, curated gateway session) from reaching tools it
+    was never granted, the unwrap validates the underlying name against this
+    set: the deferrable subset of the session's own enabled/disabled toolset
+    scope.
+
+    Result is cached on the agent and refreshed when the tool registry's
+    generation changes (e.g. an MCP server reconnects), so the common case is
+    a dict lookup, not a full tool-defs rebuild on every tool call.
+    """
+    try:
+        import model_tools
+        from tools import tool_search as _ts
+        from tools.registry import registry as _registry
+    except Exception:
+        return frozenset()
+
+    enabled = getattr(agent, "enabled_toolsets", None)
+    disabled = getattr(agent, "disabled_toolsets", None)
+    cache_key = (
+        getattr(_registry, "_generation", 0),
+        frozenset(enabled) if enabled is not None else None,
+        frozenset(disabled) if disabled is not None else None,
+    )
+    cached = getattr(agent, "_tool_search_scope_cache", None)
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+    try:
+        scoped_defs = model_tools.get_tool_definitions(
+            enabled_toolsets=enabled,
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        ) or []
+        names = _ts.scoped_deferrable_names(scoped_defs)
+    except Exception:
+        names = frozenset()
+    try:
+        agent._tool_search_scope_cache = (cache_key, names)
+    except Exception:
+        pass
+    return names
 
 
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -100,6 +145,41 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if not isinstance(function_args, dict):
             function_args = {}
 
+        # ── Tool Search unwrap ────────────────────────────────────────
+        # When the model invokes the tool_call bridge, peel it open so
+        # every downstream check (checkpointing, guardrails, plugin
+        # pre-tool-call hooks, the display/activity feed, the post-call
+        # callback) sees the underlying tool — not the bridge. This is
+        # the OpenClaw lesson: hooks must observe the real tool name.
+        #
+        # The original tool_call entry on ``tool_call.function`` is left
+        # untouched so the conversation transcript and the matching
+        # tool_call_id are preserved exactly as the model emitted them.
+        #
+        # Scope gate: the unwrap dispatches the underlying tool directly
+        # (bypassing the bridge branch in handle_function_call and its
+        # scope check), so we enforce session toolset scope HERE. A tool
+        # the session was not granted is rejected before any checkpoint,
+        # hook, or dispatch fires.
+        _ts_scope_block = None
+        try:
+            from tools import tool_search as _ts
+            if function_name == _ts.TOOL_CALL_NAME:
+                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
+                if not _err and _underlying:
+                    if _underlying in _tool_search_scoped_names(agent):
+                        function_name = _underlying
+                        function_args = _underlying_args
+                    else:
+                        _ts_scope_block = json.dumps({
+                            "error": (
+                                f"'{_underlying}' is not available in this session. "
+                                "Use tool_search to find tools you can call."
+                            ),
+                        }, ensure_ascii=False)
+        except Exception:
+            pass
+
         # Checkpoint for file-mutating tools
         if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
             try:
@@ -124,21 +204,25 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
         block_result = None
         blocked_by_guardrail = False
-        try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            block_message = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
-            )
-        except Exception:
-            block_message = None
-
-        if block_message is not None:
-            block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+        if _ts_scope_block is not None:
+            # Out-of-scope tool_call: reject before hooks/guardrails/dispatch.
+            block_result = _ts_scope_block
         else:
-            guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
-            if not guardrail_decision.allows_execution:
-                block_result = agent._guardrail_block_result(guardrail_decision)
-                blocked_by_guardrail = True
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                block_message = get_pre_tool_call_block_message(
+                    function_name, function_args, task_id=effective_task_id or "",
+                )
+            except Exception:
+                block_message = None
+
+            if block_message is not None:
+                block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+            else:
+                guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+                if not guardrail_decision.allows_execution:
+                    block_result = agent._guardrail_block_result(guardrail_decision)
+                    blocked_by_guardrail = True
 
         parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
 
@@ -186,14 +270,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     agent._current_tool = tool_names_str
     agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
 
-    # Capture CLI callbacks from the agent thread so worker threads can
-    # register them locally.  Without this, _get_approval_callback() in
-    # terminal_tool returns None in ThreadPoolExecutor workers, causing
-    # the dangerous-command prompt to fall back to input() — which
-    # deadlocks against prompt_toolkit's raw terminal mode (#13617).
-    _parent_approval_cb = _get_approval_callback()
-    _parent_sudo_cb = _get_sudo_password_callback()
-
     def _run_tool(index, tool_call, function_name, function_args):
         """Worker function executed in a thread."""
         # Register this worker tid so the agent can fan out an interrupt
@@ -220,18 +296,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             set_activity_callback(agent._touch_activity)
         except Exception:
             pass
-        # Propagate approval/sudo callbacks to this worker thread.
-        # Mirrors cli.py run_agent() pattern (GHSA-qg5c-hvr5-hjgr).
-        if _parent_approval_cb is not None:
-            try:
-                _set_approval_callback(_parent_approval_cb)
-            except Exception:
-                pass
-        if _parent_sudo_cb is not None:
-            try:
-                _set_sudo_password_callback(_parent_sudo_cb)
-            except Exception:
-                pass
+        # Approval/sudo callbacks (thread-local) and the agent turn's
+        # ContextVars are propagated by propagate_context_to_thread() at the
+        # submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
         try:
             result = agent._invoke_tool(
@@ -261,13 +328,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             _ra()._set_interrupt(False, _worker_tid)
         except Exception:
             pass
-        # Clear thread-local callbacks so a recycled worker thread
-        # doesn't hold stale references to a disposed CLI instance.
-        try:
-            _set_approval_callback(None)
-            _set_sudo_password_callback(None)
-        except Exception:
-            pass
 
     # Start spinner for CLI mode (skip when TUI handles tool progress)
     spinner = None
@@ -287,9 +347,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 for i, tc, name, args in runnable_calls:
-                    # Propagate ContextVars (e.g. _approval_session_key); mirrors asyncio.to_thread.
-                    ctx = contextvars.copy_context()
-                    f = executor.submit(ctx.run, _run_tool, i, tc, name, args)
+                    # Propagate the agent turn's ContextVars (e.g.
+                    # _approval_session_key) AND thread-local approval/sudo
+                    # callbacks into the worker thread; clears callbacks on exit.
+                    f = executor.submit(
+                        propagate_context_to_thread(_run_tool), i, tc, name, args
+                    )
                     futures.append(f)
 
                 # Wait for all to complete with periodic heartbeats so the
@@ -497,15 +560,38 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         if not isinstance(function_args, dict):
             function_args = {}
 
-        # Check plugin hooks for a block directive before executing.
-        _block_msg: Optional[str] = None
+        # Tool Search unwrap — see execute_tool_calls_concurrent for full
+        # rationale, including the scope gate (the unwrap dispatches the
+        # underlying tool directly, so session toolset scope is enforced here).
+        _ts_scope_block: Optional[str] = None
         try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            _block_msg = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
-            )
+            from tools import tool_search as _ts
+            if function_name == _ts.TOOL_CALL_NAME:
+                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
+                if not _err and _underlying:
+                    if _underlying in _tool_search_scoped_names(agent):
+                        function_name = _underlying
+                        function_args = _underlying_args
+                    else:
+                        _ts_scope_block = (
+                            f"'{_underlying}' is not available in this session. "
+                            "Use tool_search to find tools you can call."
+                        )
         except Exception:
             pass
+
+        # Check plugin hooks for a block directive before executing.
+        _block_msg: Optional[str] = None
+        if _ts_scope_block is not None:
+            _block_msg = _ts_scope_block
+        else:
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                _block_msg = get_pre_tool_call_block_message(
+                    function_name, function_args, task_id=effective_task_id or "",
+                )
+            except Exception:
+                pass
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:
@@ -752,6 +838,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     session_id=agent.session_id or "",
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                     skip_pre_tool_call_hook=True,
+                    enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                    disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 )
                 _spinner_result = function_result
             except Exception as tool_error:
@@ -772,6 +860,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     session_id=agent.session_id or "",
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                     skip_pre_tool_call_hook=True,
+                    enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                    disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 )
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"

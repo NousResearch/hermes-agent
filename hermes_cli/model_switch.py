@@ -277,19 +277,6 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
-
-
-@dataclass
-class CustomAutoResult:
-    """Result of switching to bare 'custom' provider with auto-detect."""
-
-    success: bool
-    model: str = ""
-    base_url: str = ""
-    api_key: str = ""
-    error_message: str = ""
-
-
 # ---------------------------------------------------------------------------
 # Flag parsing
 # ---------------------------------------------------------------------------
@@ -1085,8 +1072,7 @@ def list_authenticated_providers(
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
-        _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
-        cached_provider_model_ids,
+        _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
         get_curated_nous_model_ids,
     )
 

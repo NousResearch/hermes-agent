@@ -6648,13 +6648,17 @@ def _run_npm_install_deterministic(
     )
 
 
-def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
+def _build_web_ui(web_dir: Path, *, fatal: bool = False, clean_install: bool = False) -> bool:
     """Build the web UI frontend if npm is available.
 
     Args:
         web_dir: Path to the ``web/`` source directory.
         fatal: If True, print error guidance and return False on failure
                instead of a soft warning (used by ``hermes web``).
+        clean_install: If True, remove ``web/node_modules`` before reinstalling.
+            ``hermes update`` overlays new source over an existing checkout; a
+            clean reinstall avoids leaving ``web/node_modules`` in a mixed old
+            + new state after dependency version bumps (#34312).
 
     Returns True if the build succeeded or was skipped (no package.json).
     """
@@ -6698,6 +6702,15 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             text = blob.decode("utf-8", errors="replace").rstrip() if isinstance(blob, bytes) else blob.rstrip()
             if text:
                 _say(text)
+
+    if clean_install:
+        node_modules = web_dir / "node_modules"
+        if node_modules.exists():
+            _say("→ Refreshing web/node_modules from a clean slate...")
+            try:
+                shutil.rmtree(node_modules)
+            except OSError as exc:
+                _say(f"  ⚠ Failed to remove {node_modules}: {exc}")
 
     r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
     if r1.returncode != 0:
@@ -7224,7 +7237,7 @@ def _update_via_zip(args):
     # optional — a failure here only affects ``hermes dashboard``. Make
     # that visible so users don't panic and reboot mid-build (#33788).
     print("→ Core update complete. Building dashboard (optional)...")
-    _build_web_ui(PROJECT_ROOT / "web")
+    _build_web_ui(PROJECT_ROOT / "web", clean_install=True)
 
     # Sync skills
     try:
@@ -9302,7 +9315,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # optional from a CLI perspective. Telegraphing this avoids the
         # "stuck at webui-build → reboot → broken install" trap (#33788).
         print("→ Core update complete. Building dashboard (optional)...")
-        _build_web_ui(PROJECT_ROOT / "web")
+        _build_web_ui(PROJECT_ROOT / "web", clean_install=True)
 
         print()
         print("✓ Code updated!")

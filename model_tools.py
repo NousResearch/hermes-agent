@@ -21,9 +21,11 @@ Public API (signatures preserved from the original 2,400-line version):
 """
 
 import os
+import sys
 import json
 import re
 import asyncio
+import contextvars
 import logging
 import threading
 import time
@@ -210,7 +212,20 @@ TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 
 # Resolved tool names from the last get_tool_definitions() call.
 # Used by code_execution_tool to know which tools are available in this session.
-_last_resolved_tool_names: List[str] = []
+#
+# Concurrency (issue #34442): this is per-context, NOT process-global. When
+# two sessions run concurrently in the same gateway process (e.g. two
+# Telegram/Feishu users messaging from different chats), each asyncio task
+# carries its own copy via a ContextVar, so session A's get_tool_definitions()
+# no longer clobbers session B's resolved tool list. Reads and assignments of
+# the module attribute ``model_tools._last_resolved_tool_names`` are routed
+# through the ContextVar transparently (see the PEP 562 ``__getattr__`` and the
+# module ``__setattr__`` proxy at the bottom of this file), so every existing
+# caller — including delegate_tool.py's save/restore and the test suite —
+# keeps working unchanged while gaining per-context isolation.
+_last_resolved_tool_names_var: "contextvars.ContextVar[List[str]]" = (
+    contextvars.ContextVar("_last_resolved_tool_names", default=[])
+)
 
 
 # =============================================================================
@@ -305,9 +320,11 @@ def get_tool_definitions(
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
             # Update _last_resolved_tool_names so downstream callers see
-            # consistent state even on a cache hit.
-            global _last_resolved_tool_names
-            _last_resolved_tool_names = [t["function"]["name"] for t in cached]
+            # consistent state even on a cache hit. Set the per-context
+            # ContextVar (issue #34442) so concurrent sessions stay isolated.
+            _last_resolved_tool_names_var.set(
+                [t["function"]["name"] for t in cached]
+            )
             # Return a shallow copy of the list but share the dict references —
             # schemas are treated as read-only by all known callers.
             return list(cached)
@@ -466,8 +483,9 @@ def _compute_tool_definitions(
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
 
-    global _last_resolved_tool_names
-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+    _last_resolved_tool_names_var.set(
+        [t["function"]["name"] for t in filtered_tools]
+    )
 
     # Sanitize schemas for broad backend compatibility. llama.cpp's
     # json-schema-to-grammar converter (used by its OAI server to build
@@ -832,7 +850,10 @@ def handle_function_call(
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+            sandbox_enabled = (
+                enabled_tools if enabled_tools is not None
+                else _last_resolved_tool_names_var.get()
+            )
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
@@ -921,3 +942,50 @@ def check_toolset_requirements() -> Dict[str, bool]:
 def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[dict]]:
     """Return (available_toolsets, unavailable_info)."""
     return registry.check_tool_availability(quiet=quiet)
+
+
+# =============================================================================
+# Per-context _last_resolved_tool_names proxy  (issue #34442)
+# =============================================================================
+#
+# Historically ``_last_resolved_tool_names`` was a process-global ``list``.
+# That is a race condition: two sessions running concurrently in one gateway
+# process overwrite each other's resolved tool list, so a tool call from
+# session A can be checked against session B's tool set.
+#
+# We back the attribute with a ContextVar (declared above) so each asyncio
+# task / session gets its own copy. To avoid touching the ~9 call sites in
+# delegate_tool.py, the test suite, and code_execution that read or assign
+# ``model_tools._last_resolved_tool_names`` directly, we route attribute
+# access through the ContextVar transparently:
+#
+#   * reads  -> ``__getattr__`` (PEP 562) returns the current context's value
+#   * writes -> a ``ModuleType`` subclass ``__setattr__`` updates the ContextVar
+#
+# Net effect: every existing caller keeps using the plain attribute and gets
+# per-context isolation for free; nothing else in the module changes.
+
+from types import ModuleType as _ModuleType
+
+
+class _ModelToolsModule(_ModuleType):
+    """Module subclass that proxies ``_last_resolved_tool_names`` through the
+    per-context ContextVar so concurrent sessions stay isolated (#34442)."""
+
+    def __getattr__(self, name):  # only called when normal lookup misses
+        if name == "_last_resolved_tool_names":
+            return _last_resolved_tool_names_var.get()
+        raise AttributeError(
+            f"module {self.__name__!r} has no attribute {name!r}"
+        )
+
+    def __setattr__(self, name, value):
+        if name == "_last_resolved_tool_names":
+            _last_resolved_tool_names_var.set(value)
+            return
+        super().__setattr__(name, value)
+
+
+# Swap this module's type so the proxy above takes effect for the live module
+# object that every importer shares.
+sys.modules[__name__].__class__ = _ModelToolsModule

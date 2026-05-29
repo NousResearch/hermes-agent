@@ -510,6 +510,54 @@ class TestToolNamePreservation(unittest.TestCase):
         self.assertEqual(captured["saved"], expected_tools)
 
 
+class TestLastResolvedToolNamesConcurrency(unittest.TestCase):
+    """Regression for #34442: model_tools._last_resolved_tool_names must be
+    per-context, not process-global, so concurrent sessions in one gateway
+    process don't clobber each other's resolved tool list."""
+
+    def test_attribute_read_write_roundtrip(self):
+        """The attribute is still readable/assignable like a plain list, so
+        all existing callers (delegate save/restore, tests) keep working."""
+        import model_tools
+
+        model_tools._last_resolved_tool_names = ["terminal", "read_file"]
+        self.assertEqual(
+            model_tools._last_resolved_tool_names, ["terminal", "read_file"]
+        )
+        # Save/restore pattern used by delegate_tool.py around subagents.
+        saved = list(model_tools._last_resolved_tool_names)
+        model_tools._last_resolved_tool_names = ["child_only"]
+        self.assertEqual(model_tools._last_resolved_tool_names, ["child_only"])
+        model_tools._last_resolved_tool_names = list(saved)
+        self.assertEqual(
+            model_tools._last_resolved_tool_names, ["terminal", "read_file"]
+        )
+
+    def test_concurrent_sessions_do_not_clobber_each_other(self):
+        """Two concurrent asyncio tasks each set their own tool list and must
+        continue to observe their own value across an await boundary."""
+        import asyncio
+        import model_tools
+
+        async def session(tools, hold):
+            model_tools._last_resolved_tool_names = tools
+            # Yield control so the other session runs and sets its own list.
+            await asyncio.sleep(hold)
+            return list(model_tools._last_resolved_tool_names)
+
+        async def run():
+            return await asyncio.gather(
+                session(["toolA1", "toolA2"], 0.02),
+                session(["toolB1"], 0.01),
+            )
+
+        seen_a, seen_b = asyncio.run(run())
+        # Before the fix, session A would observe session B's list (or vice
+        # versa) because the value was a single process-global.
+        self.assertEqual(seen_a, ["toolA1", "toolA2"])
+        self.assertEqual(seen_b, ["toolB1"])
+
+
 class TestDelegateObservability(unittest.TestCase):
     """Tests for enriched metadata returned by _run_single_child."""
 

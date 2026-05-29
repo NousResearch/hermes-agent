@@ -162,39 +162,64 @@ class TestGenerateMistralTts:
 
 
 class TestTtsDispatcherMistral:
-    def test_dispatcher_returns_disabled_error(
+    def test_dispatcher_returns_disabled_error_when_locked(
         self, tmp_path, mock_mistral_module, monkeypatch
     ):
-        """Mistral TTS is intentionally disabled (PyPI quarantine 2026-05-12).
-
-        The dispatcher must short-circuit with a clear status message before
-        attempting any SDK import, even when MISTRAL_API_KEY is set and a
-        mock SDK is wired in. Restore routing once `mistralai` is
-        un-quarantined on PyPI.
+        """Without the HERMES_ALLOW_MISTRALAI opt-in, the dispatcher must
+        short-circuit with a clear status message before attempting any SDK
+        import — even when MISTRAL_API_KEY is set and a mock SDK is wired in.
         """
         import json
 
         from tools.tts_tool import text_to_speech_tool
 
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        monkeypatch.delenv("HERMES_ALLOW_MISTRALAI", raising=False)
 
         output_path = str(tmp_path / "out.mp3")
         with patch("tools.tts_tool._load_tts_config", return_value={"provider": "mistral"}):
             result = json.loads(text_to_speech_tool("Hello", output_path=output_path))
 
         assert result["success"] is False
-        assert "temporarily disabled" in result["error"]
+        assert "disabled" in result["error"]
         assert "quarantined" in result["error"]
         # SDK must not have been called.
         mock_mistral_module.audio.speech.complete.assert_not_called()
 
-    def test_dispatcher_returns_error_when_sdk_not_installed(self, tmp_path, monkeypatch):
-        """Same disabled message regardless of SDK presence."""
+    def test_dispatcher_routes_to_generator_when_unlocked(
+        self, tmp_path, mock_mistral_module, monkeypatch
+    ):
+        """With the opt-in + a clean SDK, the dispatcher routes to the
+        Mistral generator instead of short-circuiting.
+        """
+        import base64
         import json
 
         from tools.tts_tool import text_to_speech_tool
 
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        monkeypatch.setenv("HERMES_ALLOW_MISTRALAI", "1")
+        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
+            audio_data=base64.b64encode(b"audio").decode()
+        )
+
+        output_path = str(tmp_path / "out.mp3")
+        with patch("tools.lazy_deps.mistralai_unlock_status",
+                   return_value=(True, "unlocked")), \
+             patch("tools.tts_tool._load_tts_config", return_value={"provider": "mistral"}):
+            result = json.loads(text_to_speech_tool("Hello", output_path=output_path))
+
+        assert result["success"] is True
+        mock_mistral_module.audio.speech.complete.assert_called_once()
+
+    def test_dispatcher_returns_error_when_sdk_not_installed(self, tmp_path, monkeypatch):
+        """Locked-by-default message regardless of SDK presence."""
+        import json
+
+        from tools.tts_tool import text_to_speech_tool
+
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        monkeypatch.delenv("HERMES_ALLOW_MISTRALAI", raising=False)
         with patch(
             "tools.tts_tool._import_mistral_client", side_effect=ImportError("no module")
         ), patch("tools.tts_tool._load_tts_config", return_value={"provider": "mistral"}):
@@ -203,7 +228,7 @@ class TestTtsDispatcherMistral:
             )
 
         assert result["success"] is False
-        assert "temporarily disabled" in result["error"]
+        assert "disabled" in result["error"]
 
 
 class TestCheckTtsRequirementsMistral:

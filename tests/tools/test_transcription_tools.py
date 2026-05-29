@@ -1012,29 +1012,51 @@ class TestTranscribeMistral:
 class TestGetProviderMistral:
     """Mistral-specific provider selection tests.
 
-    Mistral STT is intentionally disabled in 2026-05-12+ while the
-    `mistralai` PyPI package is quarantined. These tests document that
-    explicit `provider: mistral` always returns "none" with a warning, and
-    that auto-detect skips mistral entirely.
+    The `mistralai` PyPI package was quarantined on 2026-05-12 (malicious
+    2.4.6 release). The blanket ban is lifted only behind an explicit
+    opt-in (HERMES_ALLOW_MISTRALAI) plus a version floor enforced by
+    tools.lazy_deps.mistralai_unlock_status(). Without the opt-in, explicit
+    `provider: mistral` still returns "none"; auto-detect always skips it.
     """
 
-    def test_mistral_when_key_and_sdk_available(self, monkeypatch):
-        """Even with key + SDK, explicit mistral returns 'none' (disabled)."""
+    def test_mistral_locked_by_default_returns_none(self, monkeypatch):
+        """Without the opt-in env var, explicit mistral returns 'none'."""
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        monkeypatch.delenv("HERMES_ALLOW_MISTRALAI", raising=False)
         with patch("tools.transcription_tools._HAS_MISTRAL", True):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "mistral"}) == "none"
 
-    def test_mistral_explicit_no_key_returns_none(self, monkeypatch):
-        """Explicit mistral with no key returns none."""
+    def test_mistral_unlocked_with_clean_version_and_key(self, monkeypatch):
+        """Opt-in + clean SDK version + key returns 'mistral'."""
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        monkeypatch.setenv("HERMES_ALLOW_MISTRALAI", "1")
+        with patch("tools.lazy_deps.mistralai_unlock_status",
+                   return_value=(True, "unlocked")):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({"provider": "mistral"}) == "mistral"
+
+    def test_mistral_unlocked_but_no_key_returns_none(self, monkeypatch):
+        """Opt-in + clean SDK but missing key returns 'none'."""
         monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        monkeypatch.setenv("HERMES_ALLOW_MISTRALAI", "1")
+        with patch("tools.lazy_deps.mistralai_unlock_status",
+                   return_value=(True, "unlocked")):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({"provider": "mistral"}) == "none"
+
+    def test_mistral_explicit_no_key_returns_none(self, monkeypatch):
+        """Explicit mistral with no key returns none (locked)."""
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        monkeypatch.delenv("HERMES_ALLOW_MISTRALAI", raising=False)
         with patch("tools.transcription_tools._HAS_MISTRAL", True):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "mistral"}) == "none"
 
     def test_mistral_explicit_no_sdk_returns_none(self, monkeypatch):
-        """Explicit mistral with key but no SDK returns none."""
+        """Explicit mistral with key but no SDK returns none (locked)."""
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        monkeypatch.delenv("HERMES_ALLOW_MISTRALAI", raising=False)
         with patch("tools.transcription_tools._HAS_MISTRAL", False):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "mistral"}) == "none"

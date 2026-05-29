@@ -504,6 +504,102 @@ def is_available(feature: str) -> bool:
     return not feature_missing(feature)
 
 
+# ---------------------------------------------------------------------------
+# mistralai quarantine unlock
+# ---------------------------------------------------------------------------
+#
+# The ``mistralai`` PyPI project was quarantined on 2026-05-12 after a
+# malicious **2.4.6** release (the "Mini Shai-Hulud" supply-chain worm).
+# The quarantine was version-specific: 2.4.8 and later are clean. Because
+# the malicious version is still installable from caches/mirrors, Hermes
+# blanket-banned the ``mistral`` STT/TTS providers at runtime.
+#
+# That blanket ban left users who have *manually verified* a clean install
+# (>=2.4.8) with no escape hatch. This helper lifts the ban behind an
+# explicit opt-in env var (mirroring ``HERMES_ALLOW_PRIVATE_URLS`` in
+# ``tools/url_safety.py``) AND a hard version floor, so the known-malicious
+# 2.4.6 can never be re-enabled even if the user opts in.
+
+#: Lowest ``mistralai`` version considered safe (2.4.6 was the malicious
+#: release; 2.4.8 is the first clean post-quarantine release per #34503).
+MISTRALAI_MIN_SAFE_VERSION = "2.4.8"
+
+#: Opt-in env var. Set to a truthy value (``1``/``true``/``yes``/``on``) to
+#: allow the ``mistral`` STT/TTS providers once a clean SDK is installed.
+MISTRALAI_UNLOCK_ENV = "HERMES_ALLOW_MISTRALAI"
+
+
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def mistralai_unlock_status() -> tuple[bool, str]:
+    """Decide whether the quarantined ``mistralai`` SDK may be used.
+
+    Returns a ``(allowed, reason)`` tuple:
+
+    * ``allowed`` — True only when the user has explicitly opted in via
+      :data:`MISTRALAI_UNLOCK_ENV` AND an installed ``mistralai`` is at or
+      above :data:`MISTRALAI_MIN_SAFE_VERSION`.
+    * ``reason`` — a short, user-facing explanation suitable for logging or
+      surfacing in an error message.
+
+    The version floor is enforced even when the user opts in, so the
+    known-malicious 2.4.6 can never be re-enabled by this path.
+    """
+    if not _env_truthy(MISTRALAI_UNLOCK_ENV):
+        return (
+            False,
+            "`mistralai` is quarantined (malicious 2.4.6 release, 2026-05-12). "
+            f"Set {MISTRALAI_UNLOCK_ENV}=1 to re-enable it after confirming you "
+            f"have a clean install (>= {MISTRALAI_MIN_SAFE_VERSION}).",
+        )
+
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except ImportError:  # pragma: no cover - importlib.metadata always present
+        return (False, "Cannot determine installed `mistralai` version.")
+
+    try:
+        installed = version("mistralai")
+    except PackageNotFoundError:
+        return (
+            False,
+            f"{MISTRALAI_UNLOCK_ENV} is set but the `mistralai` package is not "
+            "installed.",
+        )
+    except Exception:
+        return (False, "Cannot determine installed `mistralai` version.")
+
+    try:
+        from packaging.version import InvalidVersion, Version
+    except ImportError:
+        # packaging unavailable — refuse rather than guess, since the whole
+        # point of this gate is the version floor.
+        return (
+            False,
+            "`packaging` unavailable; cannot verify the installed `mistralai` "
+            "version meets the safety floor.",
+        )
+
+    try:
+        if Version(installed) < Version(MISTRALAI_MIN_SAFE_VERSION):
+            return (
+                False,
+                f"Installed `mistralai` {installed} is below the safe floor "
+                f"{MISTRALAI_MIN_SAFE_VERSION} (2.4.6 was malicious). Upgrade "
+                "to a clean release.",
+            )
+    except (InvalidVersion, Exception):
+        return (
+            False,
+            f"Installed `mistralai` version {installed!r} is unparseable; "
+            "refusing to enable.",
+        )
+
+    return (True, f"`mistralai` {installed} unlocked via {MISTRALAI_UNLOCK_ENV}.")
+
+
 def feature_install_command(feature: str) -> Optional[str]:
     """Return the ``pip install`` command a user could run manually, or None."""
     if feature not in LAZY_DEPS:

@@ -793,17 +793,26 @@ def _get_provider(stt_config: dict) -> str:
 
         if provider == "mistral":
             # `mistralai` PyPI package was quarantined on 2026-05-12 after a
-            # malicious 2.4.6 release. Refuse to use this provider until it's
-            # available again so we surface a clear message instead of an
-            # opaque ImportError mid-call.
-            logger.warning(
-                "STT provider 'mistral' (Voxtral Transcribe) is temporarily "
-                "disabled — `mistralai` PyPI package is quarantined "
-                "(malicious 2.4.6 release on 2026-05-12). Falling back to "
-                "another provider. Set stt.provider in config.yaml to 'local' "
-                "or 'openai' to silence this warning."
-            )
-            return "none"
+            # malicious 2.4.6 release. The ban is lifted only behind an
+            # explicit opt-in (HERMES_ALLOW_MISTRALAI) + a version floor; see
+            # tools/lazy_deps.mistralai_unlock_status().
+            from tools.lazy_deps import mistralai_unlock_status
+
+            allowed, reason = mistralai_unlock_status()
+            if not allowed:
+                logger.warning(
+                    "STT provider 'mistral' (Voxtral Transcribe) unavailable: "
+                    "%s Falling back to another provider.",
+                    reason,
+                )
+                return "none"
+            if not get_env_value("MISTRAL_API_KEY"):
+                logger.warning(
+                    "STT provider 'mistral' configured but MISTRAL_API_KEY "
+                    "is not set. Falling back to another provider."
+                )
+                return "none"
+            return "mistral"
 
         if provider == "xai":
             from tools.xai_http import resolve_xai_http_credentials

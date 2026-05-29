@@ -404,3 +404,62 @@ class TestRefreshActiveFeatures:
         result = ld.refresh_active_features()
         assert result["a.ok"] == "current"
         assert result["b.fail"].startswith("failed:")
+
+
+# ---------------------------------------------------------------------------
+# mistralai_unlock_status — quarantine opt-in gate (#34503)
+# ---------------------------------------------------------------------------
+
+class TestMistralaiUnlockStatus:
+    """The blanket mistralai ban is lifted only behind an explicit opt-in
+    env var AND a version floor (2.4.6 was malicious; >= 2.4.8 is clean)."""
+
+    @staticmethod
+    def _patch_version(monkeypatch, *, installed=None, missing=False):
+        import importlib.metadata as md
+
+        def fake_version(pkg):
+            if missing:
+                raise md.PackageNotFoundError(pkg)
+            return installed
+
+        monkeypatch.setattr(md, "version", fake_version)
+
+    def test_locked_by_default(self, monkeypatch):
+        monkeypatch.delenv(ld.MISTRALAI_UNLOCK_ENV, raising=False)
+        allowed, reason = ld.mistralai_unlock_status()
+        assert allowed is False
+        assert ld.MISTRALAI_UNLOCK_ENV in reason
+
+    def test_opt_in_but_not_installed(self, monkeypatch):
+        monkeypatch.setenv(ld.MISTRALAI_UNLOCK_ENV, "1")
+        self._patch_version(monkeypatch, missing=True)
+        allowed, reason = ld.mistralai_unlock_status()
+        assert allowed is False
+        assert "not installed" in reason
+
+    def test_opt_in_below_floor_refused(self, monkeypatch):
+        """The known-malicious 2.4.6 is refused even with opt-in."""
+        monkeypatch.setenv(ld.MISTRALAI_UNLOCK_ENV, "1")
+        self._patch_version(monkeypatch, installed="2.4.6")
+        allowed, reason = ld.mistralai_unlock_status()
+        assert allowed is False
+        assert "2.4.6" in reason or "below the safe floor" in reason
+
+    def test_opt_in_clean_version_allowed(self, monkeypatch):
+        monkeypatch.setenv(ld.MISTRALAI_UNLOCK_ENV, "1")
+        self._patch_version(monkeypatch, installed="2.4.8")
+        allowed, reason = ld.mistralai_unlock_status()
+        assert allowed is True
+        assert "2.4.8" in reason
+
+    def test_opt_in_newer_version_allowed(self, monkeypatch):
+        monkeypatch.setenv(ld.MISTRALAI_UNLOCK_ENV, "1")
+        self._patch_version(monkeypatch, installed="2.5.0")
+        allowed, _ = ld.mistralai_unlock_status()
+        assert allowed is True
+
+    def test_falsey_env_value_stays_locked(self, monkeypatch):
+        monkeypatch.setenv(ld.MISTRALAI_UNLOCK_ENV, "0")
+        allowed, _ = ld.mistralai_unlock_status()
+        assert allowed is False

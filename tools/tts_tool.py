@@ -1975,20 +1975,24 @@ def text_to_speech_tool(
 
         elif provider == "mistral":
             # `mistralai` PyPI package was quarantined on 2026-05-12 after a
-            # malicious 2.4.6 release. Surface a clear status message instead
-            # of attempting an import that would either fail or pull a stale
-            # cached package.
-            return json.dumps({
-                "success": False,
-                "error": (
-                    "Mistral Voxtral TTS is temporarily disabled. The "
-                    "`mistralai` PyPI package was quarantined on 2026-05-12 "
-                    "after a malicious 2.4.6 release. Switch tts.provider in "
-                    "config.yaml to 'edge', 'elevenlabs', 'openai', 'minimax', "
-                    "'gemini', 'xai', 'neutts', or 'kittentts'. Mistral "
-                    "support will return once PyPI un-quarantines the package."
-                ),
-            }, ensure_ascii=False)
+            # malicious 2.4.6 release. The ban is lifted only behind an
+            # explicit opt-in (HERMES_ALLOW_MISTRALAI) + a version floor; see
+            # tools/lazy_deps.mistralai_unlock_status().
+            from tools.lazy_deps import mistralai_unlock_status
+
+            allowed, reason = mistralai_unlock_status()
+            if not allowed:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "Mistral Voxtral TTS is disabled. " + reason + " "
+                        "Alternatively switch tts.provider in config.yaml to "
+                        "'edge', 'elevenlabs', 'openai', 'minimax', 'gemini', "
+                        "'xai', 'neutts', or 'kittentts'."
+                    ),
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Mistral Voxtral TTS...")
+            _generate_mistral_tts(text, file_str, tts_config)
 
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")

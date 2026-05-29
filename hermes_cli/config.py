@@ -5392,7 +5392,16 @@ def show_config():
     print()
     print(color("◆ Display", Colors.CYAN, Colors.BOLD))
     display = config.get('display', {})
-    print(f"  Personality:  {display.get('personality', 'kawaii')}")
+    if not isinstance(display, dict):
+        display = {}
+    agent_cfg = config.get('agent', {})
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+    system_prompt = str(agent_cfg.get('system_prompt') or '').strip()
+    personalities = agent_cfg.get('personalities', {})
+    personalities_count = len(personalities) if isinstance(personalities, dict) else 0
+    print(f"  System prompt: {'set' if system_prompt else 'none'}")
+    print(f"  Personalities: {personalities_count} configured")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
     ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}

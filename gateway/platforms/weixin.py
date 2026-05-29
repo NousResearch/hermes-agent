@@ -1397,6 +1397,11 @@ class WeixinAdapter(BasePlatformAdapter):
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         await self.handle_message(event)
 
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Weixin gates DM/group access at intake via dm_policy/group_policy."""
+        return True
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
         if self._dm_policy == "disabled":
             return False

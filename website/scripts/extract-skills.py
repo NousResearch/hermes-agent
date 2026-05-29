@@ -343,6 +343,15 @@ def extract_unified_index_skills():
         category = _guess_category(tags)
         extra = entry.get("extra", {}) or {}
 
+        # A skills.sh.json grouping sidecar (if the tap ships one) gives us a
+        # real, human-readable category — prefer it over the tag heuristic.
+        # extra["category"] holds the grouping title, e.g. "Inference AI".
+        sidecar_category = extra.get("category") if isinstance(extra, dict) else None
+        category_label_override = ""
+        if isinstance(sidecar_category, str) and sidecar_category.strip():
+            category_label_override = sidecar_category.strip()
+            category = category_label_override.lower().replace(" ", "-")
+
         # Author hint from extras when available (skills.sh has installs;
         # clawhub doesn't expose author).
         author = ""
@@ -358,7 +367,8 @@ def extract_unified_index_skills():
             "description": description,
             "overview": "",
             "category": category,
-            "categoryLabel": "",  # filled in _consolidate_small_categories
+            "categoryLabel": category_label_override,  # set from sidecar, else filled in _consolidate_small_categories
+            "fixedCategory": bool(category_label_override),  # sidecar categories are exempt from small-cat collapse
             "source": source_label,
             "tags": tags,
             "platforms": [],
@@ -491,10 +501,17 @@ def _consolidate_small_categories(skills: list) -> list:
             s["category"] = "other"
             s["categoryLabel"] = "Other"
 
-    counts = Counter(s["category"] for s in skills)
+    # Skills with a sidecar-declared category (skills.sh.json grouping) keep
+    # their category even if it's the only skill in it — the tap explicitly
+    # chose that label, so it's not a heuristic guess to collapse away.
+    counts = Counter(
+        s["category"] for s in skills if not s.get("fixedCategory")
+    )
     small_cats = {cat for cat, n in counts.items() if n < MIN_CATEGORY_SIZE}
 
     for s in skills:
+        if s.get("fixedCategory"):
+            continue
         if s["category"] in small_cats:
             s["category"] = "other"
             s["categoryLabel"] = "Other"

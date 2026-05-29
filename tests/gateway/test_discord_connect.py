@@ -71,6 +71,31 @@ import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
+def _make_discord_message(*, content: str, user_id: str = "42", message_id: str = "m1"):
+    channel = SimpleNamespace(
+        id=123,
+        name="general",
+        guild=SimpleNamespace(id=456, name="Guild"),
+        send=AsyncMock(),
+    )
+    author = SimpleNamespace(
+        id=user_id,
+        bot=False,
+        name="OwnerCandidate",
+        display_name="OwnerCandidate",
+    )
+    return SimpleNamespace(
+        id=message_id,
+        author=author,
+        channel=channel,
+        guild=channel.guild,
+        content=content,
+        attachments=[],
+        mentions=[],
+        type=discord_platform.discord.MessageType.default,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _speed_up_command_sync_mutation_pacing(monkeypatch):
     monkeypatch.setattr(
@@ -178,6 +203,83 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
     assert am is not None, "connect() must pass an AllowedMentions to commands.Bot"
     assert am.everyone is False
     assert am.roles is False
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_verify_code_message_bypasses_discord_user_allowlist(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    intents = SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False,
+        members=False, voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        created["bot"] = FakeBot(intents=intents, allowed_mentions=allowed_mentions)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    monkeypatch.setattr(adapter, "_run_post_connect_initialization", AsyncMock())
+    redeem = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(discord_platform, "redeem_verify_code", redeem, raising=False)
+    adapter._is_allowed_user = MagicMock(return_value=False)
+    adapter._handle_message = AsyncMock()
+
+    assert await adapter.connect() is True
+    message = _make_discord_message(content="verify 123456", user_id="42")
+
+    await created["bot"]._events["on_message"](message)
+
+    redeem.assert_awaited_once_with(platform="discord", code="123456", user_id="42")
+    message.channel.send.assert_awaited_once_with("✅ 已將你加為 owner，現在可以開始對話")
+    adapter._is_allowed_user.assert_not_called()
+    adapter._handle_message.assert_not_awaited()
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_non_verify_discord_message_keeps_existing_flow(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    intents = SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False,
+        members=False, voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        created["bot"] = FakeBot(intents=intents, allowed_mentions=allowed_mentions)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    monkeypatch.setattr(adapter, "_run_post_connect_initialization", AsyncMock())
+    redeem = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(discord_platform, "redeem_verify_code", redeem, raising=False)
+    adapter._is_allowed_user = MagicMock(return_value=True)
+    adapter._handle_message = AsyncMock()
+
+    assert await adapter.connect() is True
+    message = _make_discord_message(content="hello", user_id="42", message_id="m2")
+
+    await created["bot"]._events["on_message"](message)
+
+    redeem.assert_not_awaited()
+    adapter._is_allowed_user.assert_called_once()
+    adapter._handle_message.assert_awaited_once_with(message)
 
     await adapter.disconnect()
 

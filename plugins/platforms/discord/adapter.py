@@ -51,6 +51,7 @@ from gateway.config import Platform, PlatformConfig
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from gateway.verify_command import parse_verify_command, redeem_verify_code, verify_ack_text
 from utils import atomic_json_write
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -797,6 +798,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
                 else:
+                    verify_cmd = parse_verify_command(message.content)
+                    if verify_cmd:
+                        result = await redeem_verify_code(
+                            platform="discord",
+                            code=verify_cmd["code"],
+                            user_id=str(message.author.id),
+                        )
+                        await message.channel.send(verify_ack_text(result))
+                        return
+
                     # Non-bot: enforce the configured user/role allowlists.
                     # Pass guild + is_dm so role checks are scoped to the
                     # originating guild (prevents cross-guild DM bypass, see

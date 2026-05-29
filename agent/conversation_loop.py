@@ -2625,6 +2625,31 @@ def run_conversation(
                     )
                     continue
 
+                # ── Bedrock AnthropicBedrock SDK streaming failure ──
+                # The Anthropic SDK's stream accumulator raises RuntimeError
+                # "Unexpected event order" when Bedrock returns an error event
+                # before message_start (throttling, overload, validation).
+                # Fall back to the native Converse API path for the rest of
+                # this session — it handles these errors gracefully.  Ref: #28156.
+                if (
+                    isinstance(api_error, RuntimeError)
+                    and "unexpected event order" in str(api_error).lower()
+                    and getattr(agent, "provider", "") == "bedrock"
+                    and agent.api_mode == "anthropic_messages"
+                    and not getattr(agent, "_bedrock_converse_fallback_attempted", False)
+                ):
+                    agent._bedrock_converse_fallback_attempted = True
+                    agent.api_mode = "bedrock_converse"
+                    agent._bedrock_region = getattr(agent, "_bedrock_region", None) or "us-east-1"
+                    agent.client = None  # Drop the AnthropicBedrock client
+                    agent._client_kwargs = {}
+                    agent._vprint(
+                        f"{agent.log_prefix}⚠️  AnthropicBedrock SDK streaming failed — "
+                        f"falling back to native Converse API for this session.",
+                        force=True,
+                    )
+                    continue
+
                 status_code = getattr(api_error, "status_code", None)
                 error_context = agent._extract_api_error_context(api_error)
 

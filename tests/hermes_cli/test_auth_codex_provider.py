@@ -238,6 +238,11 @@ def test_save_codex_tokens_targets_canonical_root_in_profile_mode(tmp_path, monk
     root_home = tmp_path / "hermes"
     profile_home = root_home / "profiles" / "worker"
     profile_home.mkdir(parents=True)
+    (root_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {"nous": {"access_token": "nous-at"}},
+    }))
     monkeypatch.setenv("HERMES_HOME", str(profile_home))
 
     _save_codex_tokens({"access_token": "profile-at", "refresh_token": "profile-rt"})
@@ -247,6 +252,7 @@ def test_save_codex_tokens_targets_canonical_root_in_profile_mode(tmp_path, monk
     assert state["tokens"]["access_token"] == "profile-at"
     assert state["tokens"]["refresh_token"] == "profile-rt"
     assert state["refresh_owner"] == CODEX_REFRESH_OWNER
+    assert root_auth["active_provider"] == "nous"
     assert not (profile_home / "auth.json").exists()
     assert _read_codex_tokens()["tokens"]["refresh_token"] == "profile-rt"
 

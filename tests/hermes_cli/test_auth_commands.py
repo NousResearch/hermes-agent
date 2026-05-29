@@ -1126,6 +1126,58 @@ def test_auth_remove_codex_manual_source_suppresses_reseed(tmp_path, monkeypatch
     assert "openai-codex" not in updated.get("providers", {})
 
 
+def test_auth_remove_codex_device_code_clears_canonical_root_in_profile_mode(tmp_path, monkeypatch):
+    """Removing Codex auth from a profile must clear the shared root token family."""
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, {"device_code"}),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "profile-shared-at",
+                        "refresh_token": "profile-shared-rt",
+                    },
+                },
+            },
+            "credential_pool": {
+                "openai-codex": [{
+                    "id": "shared-codex",
+                    "label": "shared-codex",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "device_code",
+                    "access_token": "profile-shared-at",
+                    "refresh_token": "profile-shared-rt",
+                }],
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import AuthError, resolve_codex_runtime_credentials
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
+
+    updated = json.loads((root_home / "auth.json").read_text())
+    assert "openai-codex" not in updated.get("providers", {})
+    assert updated.get("credential_pool", {}).get("openai-codex") == []
+    assert "device_code" in updated["suppressed_sources"]["openai-codex"]
+    assert not (profile_home / "auth.json").exists()
+    with pytest.raises(AuthError) as exc:
+        resolve_codex_runtime_credentials()
+    assert exc.value.code == "codex_auth_missing"
+
+
 def test_auth_add_codex_clears_suppression_marker(tmp_path, monkeypatch):
     """Re-linking codex via `hermes auth add openai-codex` must clear any suppression marker."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

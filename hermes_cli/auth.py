@@ -3498,7 +3498,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
         state["refresh_owner"] = CODEX_REFRESH_OWNER
-        _save_provider_state(auth_store, "openai-codex", state)
+        _store_provider_state(auth_store, "openai-codex", state, set_active=False)
         _sync_codex_pool_entries(auth_store, tokens, last_refresh)
         _save_auth_store(auth_store, auth_file=auth_file)
 

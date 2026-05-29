@@ -5797,6 +5797,7 @@ class HermesCLI:
         image later with ``vision_analyze`` if needed.
         """
         import asyncio as _asyncio
+        from agent.image_routing import format_image_attachment_block
         from tools.vision_tools import vision_analyze_tool
 
         analysis_prompt = (
@@ -5806,6 +5807,9 @@ class HermesCLI:
         )
 
         enriched_parts = []
+        attachment_block = format_image_attachment_block([str(p) for p in images if p.exists()])
+        if attachment_block:
+            enriched_parts.append(attachment_block)
         for img_path in images:
             if not img_path.exists():
                 continue

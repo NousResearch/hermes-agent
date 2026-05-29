@@ -393,6 +393,47 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
     }.get(suffix, "image/jpeg")
 
 
+def image_attachment_metadata(path: str) -> Optional[Dict[str, Any]]:
+    """Return stable local-file metadata for an inbound image attachment.
+
+    The gateway includes this metadata in user-visible text so skills can
+    upload the exact cached file without asking the model to infer a path
+    from mixed multimodal markers such as ``[Image]``.
+    """
+    p = Path(path).expanduser()
+    try:
+        if not p.exists() or not p.is_file():
+            return None
+        stat = p.stat()
+        with p.open("rb") as fh:
+            head = fh.read(32)
+    except Exception as exc:
+        logger.warning("image_routing: failed to inspect %s — %s", path, exc)
+        return None
+    return {
+        "local_image_path": str(p if p.is_absolute() else p.resolve()),
+        "size_bytes": int(stat.st_size),
+        "mime_type": _guess_mime(p, raw=head),
+    }
+
+
+def format_image_attachment_block(image_paths: List[str]) -> str:
+    """Format machine-readable attachment metadata blocks for readable images."""
+    blocks: List[str] = []
+    for raw_path in image_paths:
+        meta = image_attachment_metadata(raw_path)
+        if not meta:
+            continue
+        blocks.append(
+            "[Hermes image attachment]\n"
+            f"local_image_path={meta['local_image_path']}\n"
+            f"size_bytes={meta['size_bytes']}\n"
+            f"mime_type={meta['mime_type']}\n"
+            "[/Hermes image attachment]"
+        )
+    return "\n\n".join(blocks)
+
+
 def _file_to_data_url(path: Path) -> Optional[str]:
     """Encode a local image as a base64 data URL at its native size.
 
@@ -423,7 +464,7 @@ def build_native_content_parts(
     """Build an OpenAI-style ``content`` list for a user turn.
 
     Shape:
-      [{"type": "text", "text": "...\\n\\n[Image attached at: /local/path]"},
+      [{"type": "text", "text": "...\\n\\n[Hermes image attachment]..."},
        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
        {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
        ...]
@@ -432,17 +473,12 @@ def build_native_content_parts(
     Remote URLs (``http(s)://``) are passed through verbatim — the provider
     fetches them server-side. The model still sees the pixels either way.
 
-    For each successfully attached image, a hint is appended to the text
-    part:
-
-      * local path → ``[Image attached at: <path>]``
-      * URL        → ``[Image attached: <url>]``
-
-    The hint gives the model a string handle so MCP/skill tools that take
-    an image path or URL argument can be invoked on the same image without
-    an extra round-trip. This parallels the text-mode hint produced by
-    ``Runner._enrich_message_with_vision`` (``vision_analyze using image_url:
-    <path>``) so behaviour is consistent across both image input modes.
+    Stable local-file metadata for each successfully attached local image is
+    appended to the text part. The model still sees the pixels via the
+    ``image_url`` part (full native vision); the metadata gives MCP/skill
+    flows the exact path, byte size, and MIME type needed for deterministic
+    uploads without an extra round-trip or brittle path parsing. Remote URLs
+    keep their compact URL hint because no local file metadata exists.
 
     Images are attached at their native size. If a provider rejects the
     request because an image is too large (e.g. Anthropic's 5 MB per-image
@@ -490,9 +526,12 @@ def build_native_content_parts(
     if attached_paths or attached_urls:
         base_text = text or "What do you see in this image?"
         hint_lines: List[str] = []
-        hint_lines.extend(f"[Image attached at: {p}]" for p in attached_paths)
+        attachment_block = format_image_attachment_block(attached_paths)
+        if attachment_block:
+            hint_lines.append(attachment_block)
         hint_lines.extend(f"[Image attached: {u}]" for u in attached_urls)
-        combined_text = f"{base_text}\n\n" + "\n".join(hint_lines)
+        hint_text = "\n\n".join(hint_lines)
+        combined_text = f"{base_text}\n\n{hint_text}" if hint_text else base_text
         parts: List[Dict[str, Any]] = [{"type": "text", "text": combined_text}]
         parts.extend(image_parts)
         return parts, skipped
@@ -508,4 +547,6 @@ __all__ = [
     "decide_image_input_mode",
     "build_native_content_parts",
     "extract_image_refs",
+    "format_image_attachment_block",
+    "image_attachment_metadata",
 ]

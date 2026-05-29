@@ -17,6 +17,7 @@ from agent.image_routing import (
     build_native_content_parts,
     decide_image_input_mode,
     extract_image_refs,
+    format_image_attachment_block,
 )
 
 
@@ -302,6 +303,13 @@ def _png_bytes() -> bytes:
 
 
 class TestBuildNativeContentParts:
+    def _assert_attachment_block(self, text: str, img: Path, mime: str = "image/png"):
+        assert "[Hermes image attachment]" in text
+        assert f"local_image_path={img}" in text
+        assert f"size_bytes={img.stat().st_size}" in text
+        assert f"mime_type={mime}" in text
+        assert "[/Hermes image attachment]" in text
+
     def test_text_then_image(self, tmp_path: Path):
         img = tmp_path / "cat.png"
         img.write_bytes(_png_bytes())
@@ -309,12 +317,18 @@ class TestBuildNativeContentParts:
         assert skipped == []
         assert len(parts) == 2
         assert parts[0]["type"] == "text"
-        # User caption is preserved and a per-image path hint is appended so
-        # the model can use the local path as a string argument for tools
-        # that take ``image_url: str`` (issue #18960).
-        assert parts[0]["text"] == f"hello\n\n[Image attached at: {img}]"
+        # User caption is preserved and stable metadata is appended so tools
+        # can upload the exact local image file (issue #18960).
+        assert parts[0]["text"].startswith("hello\n\n")
+        self._assert_attachment_block(parts[0]["text"], img)
         assert parts[1]["type"] == "image_url"
         assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_format_image_attachment_block_includes_upload_metadata(self, tmp_path: Path):
+        img = tmp_path / "cat.png"
+        img.write_bytes(_png_bytes())
+        block = format_image_attachment_block([str(img)])
+        self._assert_attachment_block(block, img)
 
     def test_empty_text_inserts_default_prompt(self, tmp_path: Path):
         img = tmp_path / "cat.jpg"
@@ -322,11 +336,10 @@ class TestBuildNativeContentParts:
         parts, skipped = build_native_content_parts("", [str(img)])
         assert skipped == []
         # Even with empty user text, we insert a neutral prompt so the turn
-        # isn't just pixels, and the path hint is appended after.
+        # isn't just pixels, and the attachment metadata is appended after.
         assert parts[0]["type"] == "text"
-        assert parts[0]["text"] == (
-            f"What do you see in this image?\n\n[Image attached at: {img}]"
-        )
+        assert parts[0]["text"].startswith("What do you see in this image?\n\n")
+        self._assert_attachment_block(parts[0]["text"], img, mime="image/png")
         assert parts[1]["type"] == "image_url"
 
     def test_missing_file_is_skipped(self, tmp_path: Path):
@@ -346,8 +359,7 @@ class TestBuildNativeContentParts:
         img.write_bytes(_png_bytes())
         parts, _ = build_native_content_parts("attach this", [str(img)])
         text_part = next(p for p in parts if p.get("type") == "text")
-        assert "[Image attached at:" in text_part["text"]
-        assert str(img) in text_part["text"]
+        self._assert_attachment_block(text_part["text"], img)
         # User caption is preserved verbatim ahead of the hint.
         assert text_part["text"].startswith("attach this")
 
@@ -363,7 +375,7 @@ class TestBuildNativeContentParts:
         )
         assert skipped == [str(missing)]
         text_part = next(p for p in parts if p.get("type") == "text")
-        assert text_part["text"].count("[Image attached at:") == 1
+        assert text_part["text"].count("[Hermes image attachment]") == 1
         assert str(good) in text_part["text"]
         assert str(missing) not in text_part["text"]
 
@@ -378,7 +390,7 @@ class TestBuildNativeContentParts:
         assert len(image_parts) == 2
         # Both paths surface in the text part, one per line.
         text_part = next(p for p in parts if p.get("type") == "text")
-        assert text_part["text"].count("[Image attached at:") == 2
+        assert text_part["text"].count("[Hermes image attachment]") == 2
         assert str(img1) in text_part["text"]
         assert str(img2) in text_part["text"]
 
@@ -612,7 +624,8 @@ class TestBuildNativeContentPartsURLs:
         assert image_parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
         assert image_parts[1]["image_url"]["url"] == "https://example.com/remote.jpg"
         text = parts[0]["text"]
-        assert "[Image attached at:" in text
+        assert "[Hermes image attachment]" in text
+        assert f"local_image_path={img}" in text
         assert "[Image attached: https://example.com/remote.jpg]" in text
 
     def test_empty_url_list_is_no_op(self, tmp_path: Path):

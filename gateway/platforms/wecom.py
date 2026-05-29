@@ -1588,7 +1588,7 @@ def qr_scan_for_bot_info(
     while time.monotonic() < deadline:
         try:
             req = urllib.request.Request(query_url, headers={"User-Agent": "HermesAgent/1.0"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:  # SSRF: add IP block check
                 result = json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
             logger.debug("WeCom QR poll error: %s", exc)

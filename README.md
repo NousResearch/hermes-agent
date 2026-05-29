@@ -12,9 +12,9 @@
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
 </p>
 
-**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** Hermes is designed to be more than a chat wrapper around a model: it is a durable agent runtime that lives in your terminal, your messaging apps, and your servers; learns from experience through memory, sessions, and skills; and keeps working across machines, models, and conversations.
 
-Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NovitaAI](https://novita.ai) (AI-native cloud for Model API, Agent Sandbox, and GPU Cloud), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
+Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NovitaAI](https://novita.ai) (AI-native cloud for Model API, Agent Sandbox, and GPU Cloud), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in. Run it on a laptop, a $5 VPS, a GPU cluster, or serverless infrastructure that hibernates when idle; talk to the same agent from CLI, Telegram, Discord, Slack, WhatsApp, Signal, or the web dashboard.
 
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
@@ -25,6 +25,20 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 <tr><td><b>Runs anywhere, not just your laptop</b></td><td>Six terminal backends — local, Docker, SSH, Singularity, Modal, and Daytona. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
 <tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
 </table>
+
+## Blueprint
+
+Hermes is built around one core idea: an AI agent should be a long-lived operating layer, not a disposable prompt session. The blueprint is:
+
+- **Model-agnostic by default** — bring any frontier, open, local, or custom endpoint and switch providers without rewriting workflows.
+- **Interface-agnostic by design** — the same agent can run in the CLI, web dashboard, Telegram, Discord, Slack, WhatsApp, Signal, and scheduled jobs.
+- **Context that compounds** — memories, user profiles, session search, and project context files let Hermes remember what matters without forcing you to restate everything.
+- **Skills as procedural memory** — when an agent discovers a useful workflow, it can save and improve it as a reusable skill instead of relearning it next time.
+- **Tool use with receipts** — terminal commands, file edits, browser actions, messages, cron jobs, and subagents are executed through auditable tools, with results visible in the conversation.
+- **Autonomy with control points** — interrupt running work, redirect it mid-turn, require approvals for risky commands, isolate execution in containers or remote backends, and inspect logs afterward.
+- **A platform for many agents** — delegate subtasks, run background jobs, coordinate multi-profile workers through Kanban, and export trajectories for research and future training.
+
+The goal is a practical path from “chat with a model” to “operate a persistent, self-improving agent that can safely do work where you already live.”
 
 ---
 

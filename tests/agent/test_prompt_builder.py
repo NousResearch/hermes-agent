@@ -2,6 +2,7 @@
 
 import builtins
 import importlib
+import json
 import logging
 import sys
 
@@ -264,6 +265,66 @@ class TestBuildSkillsSystemPrompt:
         assert "python-debug" in result
         assert "Debug Python scripts" in result
         assert "available_skills" in result
+
+    def test_adaptive_prompt_catalog_folds_low_activity_skills(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n"
+            "  prompt_catalog:\n"
+            "    mode: adaptive\n"
+            "    hot_limit: 1\n"
+            "    always_show: [keep-me]\n"
+        )
+        tools_dir = tmp_path / "skills" / "tools"
+        for name, desc in {
+            "cold-skill": "Rarely used helper",
+            "hot-skill": "Frequently used helper",
+            "keep-me": "Pinned helper",
+        }.items():
+            skill_dir = tools_dir / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+        (tmp_path / "skills" / ".usage.json").write_text(
+            json.dumps({"hot-skill": {"view_count": 10}})
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "hot-skill" in result
+        assert "Frequently used helper" in result
+        assert "keep-me" in result
+        assert "Pinned helper" in result
+        assert "cold-skill" not in result
+        assert "1 low-frequency skill hidden" in result
+        assert 'skills_list(category="tools")' in result
+
+    def test_adaptive_prompt_catalog_cache_rebuilds_when_usage_changes(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n"
+            "  prompt_catalog:\n"
+            "    mode: adaptive\n"
+            "    hot_limit: 1\n"
+        )
+        skill_dir = tmp_path / "skills" / "tools" / "becomes-hot"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: becomes-hot\ndescription: Hot after use\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "becomes-hot" not in first
+        assert "1 low-frequency skill hidden" in first
+
+        (tmp_path / "skills" / ".usage.json").write_text(
+            json.dumps({"becomes-hot": {"use_count": 1}})
+        )
+
+        second = build_skills_system_prompt()
+        assert "becomes-hot" in second
+        assert "Hot after use" in second
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

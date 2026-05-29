@@ -1107,18 +1107,11 @@ Do the legacy thing.
 class TestSkillViewCollisionDetection:
     """Regression tests for skill_view name collision handling.
 
-    When a skill name resolves to multiple paths across the local skills
-    dir and external_dirs, skill_view must refuse to guess. Silent
-    shadowing — where ``/skills`` shows the local version but
-    ``skill_view`` loads the external one — is the bug class this guards
-    against. Reproduces with `skills.external_dirs` registered in
-    config.yaml and a same-name skill nested under a category locally.
-
-    Adapted from a regression suite originally proposed by @polkn in PR
-    #6136 (which used local-first precedence). The collision-refusal
-    behavior preserves the same protection without silently picking a
-    side, and gives the user an actionable hint (use the categorized
-    path) to recover.
+    Prompt construction renders local skills first and skips same-named
+    external skills. skill_view should follow the same precedence so a skill
+    listed in the prompt can be loaded by name. Ambiguity is still surfaced
+    when two candidates have the same precedence, such as two external skill
+    dirs defining the same name.
     """
 
     def _patch_dirs(self, local_dir, external_dirs):
@@ -1131,9 +1124,9 @@ class TestSkillViewCollisionDetection:
             ),
         )
 
-    def test_nested_local_collides_with_top_level_external(self, tmp_path):
-        """The original bug scenario: nested local + top-level external,
-        same name. Now refuses with both paths surfaced."""
+    def test_nested_local_takes_precedence_over_top_level_external(self, tmp_path):
+        """Nested local + top-level external with the same name loads local,
+        matching the prompt catalog's local-first rendering."""
         local_dir = tmp_path / "local"
         external_dir = tmp_path / "external"
         local_dir.mkdir()
@@ -1152,18 +1145,12 @@ class TestSkillViewCollisionDetection:
             raw = skill_view("explore-codebase")
 
         result = json.loads(raw)
-        assert result["success"] is False
-        assert "Ambiguous skill name 'explore-codebase'" in result["error"]
-        assert "matches" in result
-        assert len(result["matches"]) == 2
-        # Both paths surfaced
-        assert any("foundations/runtime" in p for p in result["matches"])
-        assert any("external" in p for p in result["matches"])
-        assert "hint" in result
+        assert result["success"] is True
+        assert "LOCAL VERSION" in result["content"]
+        assert "EXTERNAL VERSION" not in result["content"]
 
-    def test_top_level_local_collides_with_external(self, tmp_path):
-        """Top-level local + top-level external with the same name also
-        refuses — same-name shadowing is ambiguous regardless of nesting."""
+    def test_top_level_local_takes_precedence_over_external(self, tmp_path):
+        """Top-level local + top-level external with the same name loads local."""
         local_dir = tmp_path / "local"
         external_dir = tmp_path / "external"
         local_dir.mkdir()
@@ -1177,13 +1164,43 @@ class TestSkillViewCollisionDetection:
             raw = skill_view("shared-name")
 
         result = json.loads(raw)
-        assert result["success"] is False
-        assert "Ambiguous" in result["error"]
-        assert len(result["matches"]) == 2
+        assert result["success"] is True
+        assert "LOCAL VERSION" in result["content"]
+        assert "EXTERNAL VERSION" not in result["content"]
 
-    def test_collision_resolvable_via_categorized_path(self, tmp_path):
-        """User can recover from a collision by passing the full
-        categorized path — the bare name is ambiguous, the path is not."""
+    def test_categorized_local_takes_precedence_over_same_external_path(self, tmp_path):
+        """The hint to pass a categorized path works even when an external
+        dir has the same category/name layout."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(
+            local_dir,
+            "explore-codebase",
+            category="foundations/runtime",
+            body="LOCAL VERSION",
+        )
+        _make_skill(
+            external_dir,
+            "explore-codebase",
+            category="foundations/runtime",
+            body="EXTERNAL VERSION",
+        )
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("foundations/runtime/explore-codebase")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "LOCAL VERSION" in result["content"]
+        assert "EXTERNAL VERSION" not in result["content"]
+
+    def test_categorized_path_selects_local_nested_skill(self, tmp_path):
+        """A categorized path selects the intended local nested skill when an
+        external skill has the same bare name elsewhere."""
         local_dir = tmp_path / "local"
         external_dir = tmp_path / "external"
         local_dir.mkdir()

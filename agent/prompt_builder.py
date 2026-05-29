@@ -9,10 +9,11 @@ import logging
 import os
 import threading
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
-from typing import Optional
+from hermes_constants import get_config_path, get_hermes_home, get_skills_dir, is_wsl
+from typing import Any, Optional
 
 from agent.skill_utils import (
     extract_skill_conditions,
@@ -22,6 +23,7 @@ from agent.skill_utils import (
     iter_skill_index_files,
     parse_frontmatter,
     skill_matches_platform,
+    yaml_load,
 )
 from utils import atomic_json_write
 
@@ -952,6 +954,247 @@ def _write_skills_snapshot(
         logger.debug("Could not write skills prompt snapshot: %s", e)
 
 
+_DEFAULT_PROMPT_CATALOG_CONFIG: dict[str, Any] = {
+    "mode": "full",
+    "hot_limit": 80,
+    "recent_days": 45,
+    "cold_policy": "category_summary",
+    "always_show": ("hermes-agent",),
+}
+
+
+def _coerce_nonnegative_int(value, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
+
+
+def _normalize_string_tuple(value: Any, default: Any = ()) -> tuple[str, ...]:
+    if value is None:
+        value = default
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        return tuple(str(v).strip() for v in default if str(v).strip())
+    return tuple(str(v).strip() for v in value if str(v).strip())
+
+
+def _load_skills_prompt_catalog_config() -> dict[str, Any]:
+    """Read the lightweight skills.prompt_catalog config block.
+
+    The default is the historical full catalog. Users can opt into adaptive
+    rendering with::
+
+        skills:
+          prompt_catalog:
+            mode: adaptive
+    """
+    result = dict(_DEFAULT_PROMPT_CATALOG_CONFIG)
+    config_path = get_config_path()
+    if not config_path.exists():
+        return result
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug("Could not read skills prompt catalog config %s: %s", config_path, e)
+        return result
+    if not isinstance(parsed, dict):
+        return result
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return result
+    prompt_cfg = skills_cfg.get("prompt_catalog")
+    if not isinstance(prompt_cfg, dict):
+        return result
+
+    mode = str(prompt_cfg.get("mode", result["mode"])).strip().lower()
+    if mode in {"full", "adaptive"}:
+        result["mode"] = mode
+    result["hot_limit"] = _coerce_nonnegative_int(
+        prompt_cfg.get("hot_limit"), result["hot_limit"]
+    )
+    result["recent_days"] = _coerce_nonnegative_int(
+        prompt_cfg.get("recent_days"), result["recent_days"]
+    )
+    cold_policy = str(prompt_cfg.get("cold_policy", result["cold_policy"])).strip().lower()
+    result["cold_policy"] = (
+        cold_policy if cold_policy in {"category_summary"} else "category_summary"
+    )
+    if "always_show" in prompt_cfg:
+        result["always_show"] = _normalize_string_tuple(prompt_cfg.get("always_show"))
+    else:
+        result["always_show"] = _normalize_string_tuple(result["always_show"])
+    return result
+
+
+def _prompt_catalog_cache_key(config: dict) -> tuple:
+    return (
+        config.get("mode", "full"),
+        int(config.get("hot_limit", 0) or 0),
+        int(config.get("recent_days", 0) or 0),
+        config.get("cold_policy", "category_summary"),
+        tuple(sorted(config.get("always_show") or ())),
+    )
+
+
+def _skills_usage_signature(skills_dir: Path) -> tuple | None:
+    usage_path = skills_dir / ".usage.json"
+    try:
+        stat = usage_path.stat()
+    except OSError:
+        return None
+    return (str(usage_path.resolve()), stat.st_mtime_ns, stat.st_size)
+
+
+def _load_skills_usage(skills_dir: Path) -> dict[str, dict]:
+    usage_path = skills_dir / ".usage.json"
+    if not usage_path.exists():
+        return {}
+    try:
+        data = json.loads(usage_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug("Could not read skill usage %s: %s", usage_path, e)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): v for k, v in data.items() if isinstance(v, dict)}
+
+
+def _usage_activity_count(record: dict) -> int:
+    total = 0
+    for key in ("use_count", "view_count", "patch_count"):
+        try:
+            total += int(record.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _parse_usage_timestamp(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _latest_usage_timestamp(record: dict) -> datetime | None:
+    latest = None
+    for key in ("last_used_at", "last_viewed_at", "last_patched_at"):
+        parsed = _parse_usage_timestamp(record.get(key))
+        if parsed and (latest is None or parsed > latest):
+            latest = parsed
+    return latest
+
+
+def _expanded_skill_names_for_adaptive_catalog(
+    skills_by_category: dict[str, list[tuple[str, str]]],
+    skills_dir: Path,
+    catalog_config: dict,
+) -> set[str]:
+    always_show = set(_normalize_string_tuple(catalog_config.get("always_show")))
+    hot_limit = int(catalog_config.get("hot_limit") or 0)
+    if hot_limit <= 0:
+        return always_show
+
+    usage = _load_skills_usage(skills_dir)
+    if not usage:
+        return always_show
+
+    now = datetime.now(timezone.utc)
+    recent_days = int(catalog_config.get("recent_days") or 0)
+    ranked: list[tuple[bool, int, float, str]] = []
+    seen_names: set[str] = set()
+    for rows in skills_by_category.values():
+        for name, _desc in rows:
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            record = usage.get(name)
+            if not isinstance(record, dict):
+                continue
+            count = _usage_activity_count(record)
+            latest = _latest_usage_timestamp(record)
+            is_recent = False
+            latest_ts = 0.0
+            if latest is not None:
+                latest_ts = latest.timestamp()
+                is_recent = (now - latest).total_seconds() <= recent_days * 86400
+            if count <= 0 and not is_recent:
+                continue
+            ranked.append((is_recent, count, latest_ts, name))
+
+    ranked.sort(reverse=True)
+    hot_names = {name for *_score, name in ranked[:hot_limit]}
+    return always_show | hot_names
+
+
+def _dedupe_sorted_skill_rows(rows: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    seen: set[str] = set()
+    result: list[tuple[str, str]] = []
+    for name, desc in sorted(rows, key=lambda x: x[0]):
+        if name in seen:
+            continue
+        seen.add(name)
+        result.append((name, desc))
+    return result
+
+
+def _skill_is_expanded(category: str, name: str, expanded_names: set[str]) -> bool:
+    return name in expanded_names or f"{category}/{name}" in expanded_names
+
+
+def _render_skill_index_lines(
+    skills_by_category: dict[str, list[tuple[str, str]]],
+    category_descriptions: dict[str, str],
+    skills_dir: Path,
+    catalog_config: dict,
+) -> list[str]:
+    adaptive = catalog_config.get("mode") == "adaptive"
+    expanded_names = (
+        _expanded_skill_names_for_adaptive_catalog(
+            skills_by_category, skills_dir, catalog_config
+        )
+        if adaptive
+        else None
+    )
+
+    index_lines: list[str] = []
+    for category in sorted(skills_by_category.keys()):
+        cat_desc = category_descriptions.get(category, "")
+        if cat_desc:
+            index_lines.append(f"  {category}: {cat_desc}")
+        else:
+            index_lines.append(f"  {category}:")
+
+        folded_count = 0
+        for name, desc in _dedupe_sorted_skill_rows(skills_by_category[category]):
+            if adaptive and expanded_names is not None and not _skill_is_expanded(
+                category, name, expanded_names
+            ):
+                folded_count += 1
+                continue
+            if desc:
+                index_lines.append(f"    - {name}: {desc}")
+            else:
+                index_lines.append(f"    - {name}")
+
+        if adaptive and folded_count:
+            plural = "skill" if folded_count == 1 else "skills"
+            category_arg = json.dumps(category, ensure_ascii=False)
+            index_lines.append(
+                f"    - {folded_count} low-frequency {plural} hidden; "
+                f"use skills_list(category={category_arg}) to inspect."
+            )
+    return index_lines
+
+
 def _build_snapshot_entry(
     skill_file: Path,
     skills_dir: Path,
@@ -1070,6 +1313,12 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    catalog_config = _load_skills_prompt_catalog_config()
+    usage_signature = (
+        _skills_usage_signature(skills_dir)
+        if catalog_config.get("mode") == "adaptive"
+        else None
+    )
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1077,6 +1326,8 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        _prompt_catalog_cache_key(catalog_config),
+        usage_signature,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1213,23 +1464,19 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
-        index_lines = []
-        for category in sorted(skills_by_category.keys()):
-            cat_desc = category_descriptions.get(category, "")
-            if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
-            else:
-                index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
-            seen = set()
-            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-                if name in seen:
-                    continue
-                seen.add(name)
-                if desc:
-                    index_lines.append(f"    - {name}: {desc}")
-                else:
-                    index_lines.append(f"    - {name}")
+        index_lines = _render_skill_index_lines(
+            skills_by_category,
+            category_descriptions,
+            skills_dir,
+            catalog_config,
+        )
+        adaptive_catalog_hint = ""
+        if catalog_config.get("mode") == "adaptive":
+            adaptive_catalog_hint = (
+                "This skill catalog is adaptive: low-frequency skills may be summarized "
+                "by category. If a category looks relevant but no listed skill matches, "
+                "call skills_list(category=\"...\") before deciding no skill applies.\n"
+            )
 
         result = (
             "## Skills (mandatory)\n"
@@ -1243,6 +1490,7 @@ def build_skills_system_prompt(
             "Skills also encode the user's preferred approach, conventions, and quality standards "
             "for tasks like code review, planning, and testing — load them even for tasks you "
             "already know how to do, because the skill defines how it should be done here.\n"
+            + adaptive_catalog_hint +
             "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
             "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "

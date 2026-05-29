@@ -914,18 +914,17 @@ def skill_view(
         skill_dir = None
         skill_md = None
 
-        # Collision detection: collect ALL candidates across every dir using
-        # every lookup strategy (direct path, recursive by parent dir name,
-        # legacy flat <name>.md). If more than one matches, refuse and tell
-        # the caller — silent shadowing of a local skill by a same-named
-        # external skill is a real bug class (`/skills` shows one, agent
-        # loaded the other) so we surface it loudly instead of guessing.
+        # Collision handling mirrors prompt_builder: the local skills dir has
+        # precedence over external_dirs, because the system prompt renders the
+        # same way. If multiple candidates remain at the same precedence level
+        # (for example two local categories with the same skill name, or two
+        # external dirs defining the same skill), refuse and surface paths.
         from agent.skill_utils import iter_skill_index_files
 
-        candidates: List[Tuple[Optional[Path], Path]] = []  # (skill_dir, skill_md)
+        candidates: List[Tuple[int, Optional[Path], Path]] = []  # (root_index, skill_dir, skill_md)
         seen_md: set = set()
 
-        def _record(sd: Optional[Path], smd: Path) -> None:
+        def _record(root_index: int, sd: Optional[Path], smd: Path) -> None:
             try:
                 key = smd.resolve()
             except Exception:
@@ -933,16 +932,16 @@ def skill_view(
             if key in seen_md:
                 return
             seen_md.add(key)
-            candidates.append((sd, smd))
+            candidates.append((root_index, sd, smd))
 
-        for search_dir in all_dirs:
+        for root_index, search_dir in enumerate(all_dirs):
             # Strategy 1: direct path (e.g., "mlops/axolotl" or bare "axolotl"
             # at the top of the dir).
             direct_path = search_dir / name
             if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
-                _record(direct_path, direct_path / "SKILL.md")
+                _record(root_index, direct_path, direct_path / "SKILL.md")
             elif direct_path.with_suffix(".md").exists():
-                _record(None, direct_path.with_suffix(".md"))
+                _record(root_index, None, direct_path.with_suffix(".md"))
 
             # Strategy 1b: categorized form for plugin namespace fall-through
             # (e.g., a "myplugin:explore" name with no plugin registered also
@@ -950,33 +949,36 @@ def skill_view(
             if local_category_name:
                 categorized_path = search_dir / local_category_name
                 if categorized_path.is_dir() and (categorized_path / "SKILL.md").exists():
-                    _record(categorized_path, categorized_path / "SKILL.md")
+                    _record(root_index, categorized_path, categorized_path / "SKILL.md")
                 elif categorized_path.with_suffix(".md").exists():
-                    _record(None, categorized_path.with_suffix(".md"))
+                    _record(root_index, None, categorized_path.with_suffix(".md"))
 
             # Strategy 2: recursive by directory name (catches nested skills
             # like "foundations/runtime/explore-codebase" called by bare name).
             for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
                 if found_skill_md.parent.name == name:
-                    _record(found_skill_md.parent, found_skill_md)
+                    _record(root_index, found_skill_md.parent, found_skill_md)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
             for found_md in search_dir.rglob(f"{name}.md"):
                 if found_md.name != "SKILL.md":
-                    _record(None, found_md)
+                    _record(root_index, None, found_md)
 
-        if len(candidates) > 1:
-            paths = [str(smd) for _, smd in candidates]
+        local_candidates = [(sd, smd) for root_index, sd, smd in candidates if root_index == 0]
+        resolved_candidates = local_candidates or [(sd, smd) for _, sd, smd in candidates]
+
+        if len(resolved_candidates) > 1:
+            paths = [str(smd) for _, smd in resolved_candidates]
             logging.getLogger(__name__).warning(
                 "Skill name collision for '%s': %d candidates — %s",
-                name, len(candidates), "; ".join(paths),
+                name, len(resolved_candidates), "; ".join(paths),
             )
             return json.dumps(
                 {
                     "success": False,
                     "error": (
-                        f"Ambiguous skill name '{name}': {len(candidates)} skills "
-                        "match across your local skills dir and external_dirs. "
+                        f"Ambiguous skill name '{name}': {len(resolved_candidates)} skills "
+                        "match at the same precedence level. "
                         "Refusing to guess — load one explicitly by its categorized path."
                     ),
                     "matches": paths,
@@ -989,8 +991,8 @@ def skill_view(
                 ensure_ascii=False,
             )
 
-        if candidates:
-            skill_dir, skill_md = candidates[0]
+        if resolved_candidates:
+            skill_dir, skill_md = resolved_candidates[0]
 
         if not skill_md or not skill_md.exists():
             available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]

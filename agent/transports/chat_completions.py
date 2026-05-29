@@ -303,6 +303,21 @@ class ChatCompletionsTransport(ProviderTransport):
             "messages": sanitized,
         }
 
+        # Temperature:
+        #   omit_temperature  → don't send (model manages its own temperature)
+        #   fixed_temperature → override (from _fixed_temperature_for_model())
+        #   temperature       → user-configured (from config or CLI)
+        #   otherwise         → don't send (let provider use its default)
+        _omit = params.get("omit_temperature", False)
+        _fixed = params.get("fixed_temperature")
+        _user_temp = params.get("temperature")
+        if _omit:
+            pass
+        elif _fixed is not None:
+            api_kwargs["temperature"] = _fixed
+        elif _user_temp is not None:
+            api_kwargs["temperature"] = _user_temp
+
         timeout = params.get("timeout")
         if timeout is not None:
             api_kwargs["timeout"] = timeout

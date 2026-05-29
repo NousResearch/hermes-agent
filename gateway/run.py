@@ -5018,16 +5018,33 @@ class GatewayRunner:
                             )
                         elif kind == "blocked":
                             reason = ""
+                            human_mention = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                                raw_reason = str(ev.payload["reason"]).strip()
+                                marker = "user-action-required:"
+                                if raw_reason.lower().startswith(marker):
+                                    raw_reason = raw_reason[len(marker):].strip()
+                                    configured_mention = os.getenv(
+                                        "HERMES_KANBAN_USER_ACTION_MENTION",
+                                        "",
+                                    ).strip()
+                                    if configured_mention:
+                                        human_mention = f" {configured_mention}"
+                                reason = f": {raw_reason[:160]}"
+                            msg = f"⏸{human_mention} {tag}Kanban {sub['task_id']} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
+                            fingerprint = ""
+                            if ev.payload and ev.payload.get("failure_fingerprint"):
+                                fingerprint = f"\nfingerprint: {str(ev.payload['failure_fingerprint'])[:120]}"
+                            trigger = ""
+                            if ev.payload and ev.payload.get("trigger_outcome"):
+                                trigger = f" ({str(ev.payload['trigger_outcome'])})"
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
+                                f"✖ {tag}Kanban {sub['task_id']} gave up{trigger}; "
+                                f"review or reassign before retrying{fingerprint}{err}"
                             )
                         elif kind == "crashed":
                             msg = (

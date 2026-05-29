@@ -26,7 +26,7 @@ Six columns, left to right:
 - **Todo** — created but waiting on dependencies, or not yet assigned.
 - **Ready** — assigned and waiting for the dispatcher to claim.
 - **In progress** — a worker is actively running the task. With "Lanes by profile" on (the default), this column sub-groups by assignee so you can see at a glance what each worker is doing.
-- **Blocked** — a worker asked for human input, or the circuit breaker tripped.
+- **Blocked** — a worker intentionally asked for human input, or the circuit breaker stopped retry after repeated failures.
 - **Done** — completed.
 
 The top bar has filters for search, tenant, and assignee, plus a `Lanes by profile` toggle and a `Nudge dispatcher` button that runs one dispatch tick right now instead of waiting for the daemon's next interval. Clicking any card opens its drawer on the right.
@@ -240,7 +240,7 @@ hermes kanban create "Deploy to staging (missing creds)" \
     --max-retries 3
 ```
 
-The dispatcher tries to spawn the worker. Spawn fails (`RuntimeError: AWS_ACCESS_KEY_ID not set`). The dispatcher releases the claim, increments a failure counter, and tries again next tick. Because this example sets `--max-retries 3`, the circuit trips after three consecutive failures: the task goes to `blocked` with outcome `gave_up`. If you omit the flag, Hermes uses `kanban.failure_limit` (default: 2). No more retries until a human unblocks it.
+The dispatcher tries to spawn the worker. Spawn fails (`RuntimeError: AWS_ACCESS_KEY_ID not set`). The dispatcher releases the claim, increments a failure counter, and tries again next tick. Those early `spawn_failed`, `crashed`, or `timed_out` events are autonomous retry signals, not user-action blockers. Because this example sets `--max-retries 3`, the circuit trips after three consecutive failures: the task goes to `blocked` with outcome `gave_up`. If you omit the flag, Hermes uses `kanban.failure_limit` (default: 2). No more retries until a human or reviewer profile inspects the failure, fixes or reassigns the task, and unblocks it.
 
 Click the blocked task:
 
@@ -261,7 +261,7 @@ hermes kanban runs t_ef5d
 #       ! AWS_ACCESS_KEY_ID not set in deploy-bot env
 ```
 
-If Telegram / Discord / Slack is wired in, a gateway notification fires on the `gave_up` event so you hear about the outage without having to check the board.
+If Telegram / Discord / Slack is wired in, a gateway notification fires on the `gave_up` event so you hear about the outage without having to check the board. The message names the trigger outcome when available, so timeout loops and spawn failures are not both described as spawn problems.
 
 ### Crash recovery — worker dies mid-flight
 

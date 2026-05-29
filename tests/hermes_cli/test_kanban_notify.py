@@ -223,6 +223,147 @@ async def test_notifier_second_blocked_delivers(kanban_home):
     )
 
 
+@pytest.mark.asyncio
+async def test_notifier_mentions_only_user_action_required_blockers(kanban_home, monkeypatch):
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    monkeypatch.setenv("HERMES_KANBAN_USER_ACTION_MENTION", "<@hiro>")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="login recovery", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.block_task(conn, tid, reason="user-action-required: refresh browser login")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    msg = fake_adapter.send.call_args[0][1]
+    assert "<@hiro>" in msg
+    assert "user-action-required" not in msg
+    assert "refresh browser login" in msg
+
+
+@pytest.mark.asyncio
+async def test_notifier_does_not_mention_recoverable_retry_events(kanban_home, monkeypatch):
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    monkeypatch.setenv("HERMES_KANBAN_USER_ACTION_MENTION", "<@hiro>")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="retry recovery", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb._append_event(conn, tid, "timed_out", {"limit_seconds": 60})
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    msg = fake_adapter.send.call_args[0][1]
+    assert "<@hiro>" not in msg
+    assert "will retry" in msg
+
+
+@pytest.mark.asyncio
+async def test_notifier_gave_up_reports_failure_fingerprint_for_agent_review(kanban_home):
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="profile failure", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb._append_event(
+            conn,
+            tid,
+            "gave_up",
+            {
+                "trigger_outcome": "spawn_failed",
+                "failure_fingerprint": "auth-missing:worker1",
+                "error": "profile auth missing",
+            },
+        )
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    msg = fake_adapter.send.call_args[0][1]
+    assert "gave up" in msg
+    assert "review or reassign" in msg
+    assert "auth-missing:worker1" in msg
+
+
 # ---------------------------------------------------------------------------
 # Regression: gateway watchers must not double-init the kanban DB.
 #

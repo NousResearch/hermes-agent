@@ -78,8 +78,7 @@ MAX_STDERR_BYTES = 10_000    # 10 KB
 # match either a safe prefix or, on Windows, an OS-essential name.
 _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                       "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                      "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
-                      "HERMES_")
+                      "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
 _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                       "PASSWD", "AUTH")
 

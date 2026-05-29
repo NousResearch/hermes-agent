@@ -118,6 +118,7 @@ class TestMemoryProviderABC:
         p.on_memory_write("add", "memory", "test")
         p.queue_prefetch("query")
         p.sync_turn("user", "assistant")
+        p.sync_passive_event("observed", source_label="mcp:test")
         p.shutdown()
 
 
@@ -277,6 +278,32 @@ class TestMemoryManager:
         mgr.sync_all("user", "assistant")
         # p1 failed but p2 still synced
         assert p2.synced_turns == [("user", "assistant")]
+
+    def test_sync_passive_event_all_uses_provider_hook(self):
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin")
+        p2 = FakeMemoryProvider("external")
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+
+        mgr.sync_passive_event_all(
+            '{"event": "ping"}',
+            session_id="sess-1",
+            source_label="mcp:notif_srv",
+        )
+
+        assert p1.synced_turns == [
+            (
+                "Hermes observed a passive event from mcp:notif_srv.",
+                '{"event": "ping"}',
+            )
+        ]
+        assert p2.synced_turns == [
+            (
+                "Hermes observed a passive event from mcp:notif_srv.",
+                '{"event": "ping"}',
+            )
+        ]
 
     # -- Tool routing -------------------------------------------------------
 

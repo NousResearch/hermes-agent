@@ -410,6 +410,29 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+    def sync_passive_event_all(
+        self,
+        content: str,
+        *,
+        session_id: str = "",
+        source_label: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Sync an out-of-band observed event to all providers."""
+        for provider in self._providers:
+            try:
+                provider.sync_passive_event(
+                    content,
+                    session_id=session_id,
+                    source_label=source_label,
+                    metadata=metadata,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Memory provider '%s' sync_passive_event failed: %s",
+                    provider.name, e,
+                )
+
     # -- Tools ---------------------------------------------------------------
 
     def get_all_tool_schemas(self) -> List[Dict[str, Any]]:

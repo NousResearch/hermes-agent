@@ -30,6 +30,7 @@ Example config::
         headers:
           Authorization: "Bearer sk-..."
         timeout: 180
+                passthrough: [wecom, weixin]
       searxng:
         url: "http://localhost:8000/sse"
         transport: sse       # use SSE transport instead of Streamable HTTP
@@ -176,6 +177,8 @@ _MCP_HTTP_AVAILABLE = False
 _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
+_MCP_NEW_HTTP = False
+_MCP_STREAMABLE_HTTP_MODULE: Any | None = None
 # Conservative fallback for SDK builds that don't export LATEST_PROTOCOL_VERSION.
 # Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
 # HTTP transport path even on older-but-supported SDK versions.
@@ -185,6 +188,7 @@ try:
     from mcp.client.stdio import stdio_client
     _MCP_AVAILABLE = True
     try:
+        import mcp.client.streamable_http as _MCP_STREAMABLE_HTTP_MODULE
         from mcp.client.streamable_http import streamablehttp_client
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
@@ -235,6 +239,129 @@ except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
 
 
+def _install_streamable_http_transport_patch(module: Any | None) -> None:
+    """Patch SDK GET-stream reconnect exhaustion into a hard transport failure.
+
+    The upstream SDK retries GET stream reconnection a small number of times
+    and then returns quietly. That leaves Hermes in a degraded state where
+    POST-based MCP RPCs can still work but passive server-push notifications
+    are permanently lost. Patch the transport so reconnect exhaustion raises,
+    letting Hermes' outer MCP reconnect loop rebuild the full HTTP session.
+    """
+    if module is None or getattr(module, "_hermes_get_stream_patch_installed", False):
+        return
+
+    transport_cls = getattr(module, "StreamableHTTPTransport", None)
+    aconnect_sse = getattr(module, "aconnect_sse", None)
+    if transport_cls is None or aconnect_sse is None:
+        return
+
+    original_handle_get_stream = getattr(transport_cls, "handle_get_stream", None)
+    if original_handle_get_stream is None or getattr(
+        original_handle_get_stream,
+        "_hermes_get_stream_patch",
+        False,
+    ):
+        return
+
+    async def _patched_handle_get_stream(self, client, read_stream_writer) -> None:
+        last_event_id: str | None = None
+        retry_interval_ms: int | None = None
+        attempt = 0
+        connected_once = False
+        max_attempts = max(
+            1,
+            int(getattr(module, "MAX_RECONNECTION_ATTEMPTS", 2) or 2),
+        )
+        default_delay_ms = int(
+            getattr(module, "DEFAULT_RECONNECTION_DELAY_MS", 1000) or 1000
+        )
+        last_event_id_header = str(
+            getattr(module, "LAST_EVENT_ID", "last-event-id")
+        )
+
+        while True:
+            try:
+                if not self.session_id:
+                    return
+
+                headers = self._prepare_headers()
+                if last_event_id:
+                    headers[last_event_id_header] = last_event_id
+
+                async with aconnect_sse(
+                    client,
+                    "GET",
+                    self.url,
+                    headers=headers,
+                ) as event_source:
+                    event_source.response.raise_for_status()
+                    if connected_once:
+                        module.logger.info("GET stream reconnected successfully")
+                    else:
+                        module.logger.debug("GET SSE connection established")
+                    connected_once = True
+                    attempt = 0
+
+                    async for sse in event_source.aiter_sse():
+                        if sse.id:
+                            last_event_id = sse.id  # pragma: no cover
+                        if sse.retry is not None:
+                            retry_interval_ms = sse.retry  # pragma: no cover
+
+                        await self._handle_sse_event(sse, read_stream_writer)
+
+                delay_ms = (
+                    retry_interval_ms
+                    if retry_interval_ms is not None
+                    else default_delay_ms
+                )
+                module.logger.info(
+                    "GET stream disconnected, reconnecting in %dms...",
+                    delay_ms,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                delay_ms = (
+                    retry_interval_ms
+                    if retry_interval_ms is not None
+                    else default_delay_ms
+                )
+                attempt += 1
+                if attempt >= max_attempts:
+                    module.logger.error(
+                        "GET stream reconnection exhausted after %d/%d attempts; "
+                        "forcing full MCP session reconnect: %s",
+                        attempt,
+                        max_attempts,
+                        exc,
+                    )
+                    raise RuntimeError(
+                        "GET stream reconnection exhausted after "
+                        f"{attempt}/{max_attempts} attempts: {exc}"
+                    ) from exc
+                module.logger.warning(
+                    "GET stream disconnected, reconnecting in %dms "
+                    "(attempt %d/%d): %s",
+                    delay_ms,
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+
+            await asyncio.sleep(delay_ms / 1000.0)
+
+    _patched_handle_get_stream._hermes_get_stream_patch = True
+    _patched_handle_get_stream._hermes_original = original_handle_get_stream
+    transport_cls.handle_get_stream = _patched_handle_get_stream
+    module._hermes_get_stream_patch_installed = True
+
+
+if _MCP_HTTP_AVAILABLE:
+    _install_streamable_http_transport_patch(_MCP_STREAMABLE_HTTP_MODULE)
+
+
 def _check_message_handler_support() -> bool:
     """Check if ClientSession accepts ``message_handler`` kwarg.
 
@@ -262,6 +389,15 @@ _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+_MCP_PASSTHROUGH_METHOD = "notifications/message"
+_MCP_QUIET_NOTIFICATION_METHODS = frozenset({
+    "notifications/tools/list_changed",
+    "notifications/prompts/list_changed",
+    "notifications/resources/list_changed",
+    "notifications/progress",
+    "notifications/cancelled",
+    "notifications/initialized",
+})
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
@@ -287,6 +423,194 @@ _CREDENTIAL_PATTERN = re.compile(
 # Supports any non-} characters in the variable name (hyphens, dots, etc.)
 # so providers like MY-VAR or my.var work correctly.
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+
+def _json_default(value: Any) -> Any:
+    """Best-effort JSON serializer for MCP notification params."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json", exclude_none=False)
+    if hasattr(value, "dict"):
+        return value.dict()
+    if isinstance(value, set):
+        return list(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _jsonify_passthrough_params(params: Any) -> str:
+    """Serialize MCP notification params without interpreting their shape."""
+    if hasattr(params, "model_dump"):
+        params = params.model_dump(mode="json", exclude_none=False)
+    elif hasattr(params, "dict"):
+        params = params.dict()
+    return json.dumps(params, ensure_ascii=False, default=_json_default)
+
+
+def _extract_passthrough_markdown(params: Any) -> str | None:
+    """Extract ``params.markdown`` when alert pushes provide a Markdown payload."""
+    normalized = params
+    if hasattr(normalized, "model_dump"):
+        normalized = normalized.model_dump(mode="json", exclude_none=False)
+    elif hasattr(normalized, "dict"):
+        normalized = normalized.dict()
+
+    markdown = None
+    if isinstance(normalized, dict):
+        markdown = normalized.get("markdown")
+    elif hasattr(normalized, "markdown"):
+        markdown = getattr(normalized, "markdown")
+
+    return markdown if isinstance(markdown, str) else None
+
+
+def _build_passthrough_payload_text(params: Any) -> tuple[str, str]:
+    """Build passthrough text, preferring ``markdown`` over raw JSON."""
+    markdown = _extract_passthrough_markdown(params)
+    if markdown is not None:
+        return markdown, "markdown"
+    return _jsonify_passthrough_params(params), "json"
+
+
+def _truncate_log_text(text: Any, max_chars: int = 240) -> str:
+    """Return a single-line truncated string for structured log fields."""
+    rendered = str(text or "").replace("\n", "\\n")
+    if len(rendered) <= max_chars:
+        return rendered
+    return rendered[: max_chars - 3] + "..."
+
+
+def _get_raw_mcp_message_root(message: Any) -> Any | None:
+    """Extract the JSON-RPC root object from a transport message."""
+    if isinstance(message, dict):
+        wrapped = message.get("message")
+        if isinstance(wrapped, dict) and "root" in wrapped:
+            return wrapped.get("root")
+        return message.get("root")
+
+    wrapped = getattr(message, "message", None)
+    if wrapped is not None and hasattr(wrapped, "root"):
+        return wrapped.root
+    if hasattr(message, "root"):
+        return message.root
+    return None
+
+
+def _get_raw_mcp_message_method(message: Any) -> str | None:
+    """Return the JSON-RPC method string when the transport item is a notification."""
+    root = _get_raw_mcp_message_root(message)
+    if isinstance(root, dict):
+        method = root.get("method")
+    else:
+        method = getattr(root, "method", None)
+    if isinstance(method, str) and method:
+        return method
+    return None
+
+
+def _get_raw_mcp_message_params(message: Any) -> tuple[bool, Any]:
+    """Return whether ``params`` exists on the raw transport message and its value."""
+    root = _get_raw_mcp_message_root(message)
+    if isinstance(root, dict):
+        return ("params" in root, root.get("params"))
+    if root is None:
+        return False, None
+    if hasattr(root, "params"):
+        return True, getattr(root, "params")
+    return False, None
+
+
+def _summarize_raw_mcp_message(message: Any) -> str:
+    """Build a compact summary for passthrough diagnostics."""
+    root = _get_raw_mcp_message_root(message)
+    method = _get_raw_mcp_message_method(message)
+    has_params, _params = _get_raw_mcp_message_params(message)
+    root_type = type(root).__name__ if root is not None else type(message).__name__
+    try:
+        if hasattr(root, "model_dump"):
+            preview_obj = root.model_dump(mode="json", exclude_none=False)
+        elif hasattr(root, "dict"):
+            preview_obj = root.dict()
+        else:
+            preview_obj = root
+        preview = _truncate_log_text(
+            json.dumps(preview_obj, ensure_ascii=False, default=_json_default)
+        )
+    except Exception as exc:
+        preview = f"<unserializable {root_type}: {exc}>"
+    return (
+        f"root_type={root_type} method={method!r} "
+        f"has_params={has_params} preview={preview}"
+    )
+
+
+def _extract_passthrough_params(message: Any) -> Any | None:
+    """Return params for raw ``notifications/message`` events."""
+    if _get_raw_mcp_message_method(message) != _MCP_PASSTHROUGH_METHOD:
+        return None
+    has_params, params = _get_raw_mcp_message_params(message)
+    if not has_params:
+        return None
+    return params
+
+
+def _normalize_passthrough_targets(value: Any, label: str) -> list[str]:
+    """Normalize ``mcp_servers.<name>.passthrough`` to a list of targets."""
+    if value in (None, [], ()): 
+        return []
+    if not isinstance(value, (list, tuple, set)):
+        logger.warning(
+            "MCP config %s must be a list of gateway platforms; ignoring %r",
+            label,
+            value,
+        )
+        return []
+
+    targets: list[str] = []
+    for item in value:
+        target = str(item or "").strip().lower()
+        if not target:
+            continue
+        targets.append(target)
+    return targets
+
+
+class _PassthroughInterceptingReadStream:
+    """Transparent read-stream wrapper that swallows custom passthrough notifications."""
+
+    def __init__(self, read_stream: Any, handler, server_name: str):
+        self._read_stream = read_stream
+        self._handler = handler
+        self._server_name = server_name
+
+    async def __aenter__(self):
+        await self._read_stream.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return await self._read_stream.__aexit__(exc_type, exc_val, exc_tb)
+
+    async def aclose(self):
+        if hasattr(self._read_stream, "aclose"):
+            await self._read_stream.aclose()
+
+    def __aiter__(self):
+        return self._iter_messages()
+
+    async def _iter_messages(self):
+        async for message in self._read_stream:
+            try:
+                if await self._handler(message):
+                    continue
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "MCP server '%s': passthrough intercept failed",
+                    self._server_name,
+                )
+            yield message
+
+    def __getattr__(self, name: str):
+        return getattr(self._read_stream, name)
 
 
 # ---------------------------------------------------------------------------
@@ -1108,7 +1432,7 @@ class MCPServerTask:
         "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
-        "_rpc_lock", "_pending_refresh_tasks",
+        "_rpc_lock", "_pending_refresh_tasks", "_passthrough_targets",
         "initialize_result",
     )
 
@@ -1146,6 +1470,7 @@ class MCPServerTask:
         # ``.capabilities.prompts``) instead of assuming every ``ClientSession``
         # method attribute corresponds to a supported server method. See #18051.
         self.initialize_result: Optional[Any] = None
+        self._passthrough_targets: list[str] = []
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -1211,6 +1536,97 @@ class MCPServerTask:
             except Exception:
                 logger.exception("Error in MCP message handler for '%s'", self.name)
         return _handler
+
+    async def _handle_passthrough_notification(self, message: Any) -> bool:
+        """Handle raw custom notifications before the SDK validates them."""
+        method = _get_raw_mcp_message_method(message)
+        if method != _MCP_PASSTHROUGH_METHOD:
+            if self._passthrough_targets and method and method.startswith("notifications/"):
+                log_level = (
+                    logging.DEBUG
+                    if method in _MCP_QUIET_NOTIFICATION_METHODS
+                    else logging.INFO
+                )
+                logger.log(
+                    log_level,
+                    "MCP server '%s': received notification '%s' but passthrough only forwards '%s'. %s",
+                    self.name,
+                    method,
+                    _MCP_PASSTHROUGH_METHOD,
+                    _summarize_raw_mcp_message(message),
+                )
+            return False
+
+        has_params, params = _get_raw_mcp_message_params(message)
+        if not has_params:
+            logger.warning(
+                "MCP server '%s': received %s without params; not forwarding. %s",
+                self.name,
+                _MCP_PASSTHROUGH_METHOD,
+                _summarize_raw_mcp_message(message),
+            )
+            return True
+
+        if not self._passthrough_targets:
+            logger.warning(
+                "MCP server '%s': received %s but no passthrough targets are configured. %s",
+                self.name,
+                _MCP_PASSTHROUGH_METHOD,
+                _summarize_raw_mcp_message(message),
+            )
+            return True
+
+        try:
+            payload_text, payload_source = _build_passthrough_payload_text(params)
+        except Exception:
+            logger.exception(
+                "MCP server '%s': failed to serialize %s payload. %s",
+                self.name,
+                _MCP_PASSTHROUGH_METHOD,
+                _summarize_raw_mcp_message(message),
+            )
+            return True
+
+        logger.info(
+            "MCP server '%s': received %s for passthrough targets=%s payload_source=%s payload_bytes=%d payload_preview=%s",
+            self.name,
+            _MCP_PASSTHROUGH_METHOD,
+            ",".join(self._passthrough_targets),
+            payload_source,
+            len(payload_text.encode("utf-8")),
+            _truncate_log_text(payload_text),
+        )
+        try:
+            from gateway.mcp_passthrough import forward_mcp_passthrough_notification
+
+            await forward_mcp_passthrough_notification(
+                server_name=self.name,
+                payload_json=payload_text,
+                targets=self._passthrough_targets,
+            )
+            logger.info(
+                "MCP server '%s': completed passthrough forwarding for %s to targets=%s",
+                self.name,
+                _MCP_PASSTHROUGH_METHOD,
+                ",".join(self._passthrough_targets),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "MCP server '%s': failed to forward %s",
+                self.name,
+                _MCP_PASSTHROUGH_METHOD,
+            )
+        return True
+
+    def _wrap_read_stream(self, read_stream: Any) -> Any:
+        """Wrap the raw MCP read stream so custom notifications can be intercepted."""
+        return _PassthroughInterceptingReadStream(
+            read_stream,
+            self._handle_passthrough_notification,
+            self.name,
+        )
 
     async def _refresh_tools(self):
         """Re-fetch tools from the server and update the registry.
@@ -1392,6 +1808,7 @@ class MCPServerTask:
                 read_stream,
                 write_stream,
             ):
+                intercepted_read_stream = self._wrap_read_stream(read_stream)
                 # Capture the newly spawned subprocess PID for force-kill cleanup.
                 new_pids = _snapshot_child_pids() - pids_before
                 if new_pids:
@@ -1399,7 +1816,7 @@ class MCPServerTask:
                         for _pid in new_pids:
                             _stdio_pids[_pid] = self.name
                 async with ClientSession(
-                    read_stream, write_stream, **sampling_kwargs
+                    intercepted_read_stream, write_stream, **sampling_kwargs
                 ) as session:
                     self.initialize_result = await session.initialize()
                     self.session = session
@@ -1530,8 +1947,9 @@ class MCPServerTask:
 
                 _sse_kwargs["httpx_client_factory"] = _mcp_http_client_factory
             async with sse_client(**_sse_kwargs) as (read_stream, write_stream):
+                intercepted_read_stream = self._wrap_read_stream(read_stream)
                 async with ClientSession(
-                    read_stream, write_stream, **sampling_kwargs
+                    intercepted_read_stream, write_stream, **sampling_kwargs
                 ) as session:
                     self.initialize_result = await session.initialize()
                     self.session = session
@@ -1581,7 +1999,8 @@ class MCPServerTask:
                 async with streamable_http_client(url, http_client=http_client) as (
                     read_stream, write_stream, _get_session_id,
                 ):
-                    async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                    intercepted_read_stream = self._wrap_read_stream(read_stream)
+                    async with ClientSession(intercepted_read_stream, write_stream, **sampling_kwargs) as session:
                         self.initialize_result = await session.initialize()
                         self.session = session
                         await self._discover_tools()
@@ -1604,7 +2023,8 @@ class MCPServerTask:
             async with streamablehttp_client(url, **_http_kwargs) as (
                 read_stream, write_stream, _get_session_id,
             ):
-                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                intercepted_read_stream = self._wrap_read_stream(read_stream)
+                async with ClientSession(intercepted_read_stream, write_stream, **sampling_kwargs) as session:
                     self.initialize_result = await session.initialize()
                     self.session = session
                     await self._discover_tools()
@@ -1637,6 +2057,17 @@ class MCPServerTask:
         self._config = config
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
         self._auth_type = (config.get("auth") or "").lower().strip()
+        self._passthrough_targets = _normalize_passthrough_targets(
+            config.get("passthrough"),
+            f"mcp_servers.{self.name}.passthrough",
+        )
+        if self._passthrough_targets:
+            logger.info(
+                "MCP server '%s': passthrough enabled for targets=%s (method=%s)",
+                self.name,
+                ",".join(self._passthrough_targets),
+                _MCP_PASSTHROUGH_METHOD,
+            )
 
         # Set up sampling handler if enabled and SDK types are available
         sampling_config = config.get("sampling", {})

@@ -1577,6 +1577,64 @@ class TestHTTPConfig:
 class TestReconnection:
     """Tests for automatic reconnection behavior in MCPServerTask.run()."""
 
+    @pytest.mark.asyncio
+    async def test_streamable_http_get_reconnect_exhaustion_raises(self):
+        """GET push-stream exhaustion must bubble so Hermes rebuilds the session."""
+        from tools.mcp_tool import _install_streamable_http_transport_patch
+
+        class DummyTransport:
+            def __init__(self):
+                self.session_id = "sess-1"
+                self.url = "https://example.com/mcp"
+
+            def _prepare_headers(self):
+                return {}
+
+            async def _handle_sse_event(self, sse, read_stream_writer):
+                return None
+
+            async def handle_get_stream(self, client, read_stream_writer):
+                raise AssertionError("patch not installed")
+
+        class DummyEventSource:
+            def __init__(self):
+                self.response = SimpleNamespace(
+                    raise_for_status=MagicMock(side_effect=RuntimeError("boom"))
+                )
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def aiter_sse(self):
+                if False:
+                    yield None
+
+        fake_module = SimpleNamespace(
+            StreamableHTTPTransport=DummyTransport,
+            aconnect_sse=lambda *args, **kwargs: DummyEventSource(),
+            LAST_EVENT_ID="last-event-id",
+            DEFAULT_RECONNECTION_DELAY_MS=10,
+            MAX_RECONNECTION_ATTEMPTS=2,
+            logger=MagicMock(),
+        )
+
+        _install_streamable_http_transport_patch(fake_module)
+        transport = fake_module.StreamableHTTPTransport()
+
+        with patch("tools.mcp_tool.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            with pytest.raises(
+                RuntimeError,
+                match=r"GET stream reconnection exhausted after 2/2 attempts: boom",
+            ):
+                await transport.handle_get_stream(MagicMock(), MagicMock())
+
+        assert fake_module.logger.warning.call_count == 1
+        fake_module.logger.error.assert_called_once()
+        assert sleep_mock.await_count == 1
+
     def test_reconnect_on_disconnect(self):
         """After initial success, a connection drop triggers reconnection."""
         from tools.mcp_tool import MCPServerTask

@@ -26,6 +26,7 @@ Optional hooks (override to opt in):
   on_session_end(messages)               — end-of-session extraction
   on_session_switch(new_session_id, **kwargs) — mid-process session_id rotation
   on_pre_compress(messages) -> str       — extract before context compression
+    sync_passive_event(content, **kwargs)  — persist out-of-band observed events
   on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
 """
@@ -129,6 +130,28 @@ class MemoryProvider(ABC):
         completed turn, including any assistant tool calls and tool results.
         Providers that do not need raw turn context can ignore it.
         """
+
+    def sync_passive_event(
+        self,
+        content: str,
+        *,
+        session_id: str = "",
+        source_label: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist an out-of-band observed event.
+
+        Default behavior adapts the passive event into a synthetic turn so
+        existing providers (Mem0, Hindsight, Honcho, etc.) ingest it without
+        needing provider-specific changes. Providers that support a more
+        structured event model can override this hook.
+        """
+        if not content:
+            return
+        note = "Hermes observed a passive event."
+        if source_label:
+            note = f"Hermes observed a passive event from {source_label}."
+        self.sync_turn(note, content, session_id=session_id)
 
     @abstractmethod
     def get_tool_schemas(self) -> List[Dict[str, Any]]:

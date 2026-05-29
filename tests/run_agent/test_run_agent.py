@@ -2756,6 +2756,40 @@ class TestHandleMaxIterations:
         ]
         assert len(stub_ids) >= 1, f"No stub result for assistant tool_call: {stub_ids}"
 
+    def test_summary_strips_strict_schema_foreign_fields(self, agent):
+        """Regression: the max-iterations summary request must NOT carry
+        Chat-Completions-schema-foreign keys — tool_name (SQLite FTS
+        bookkeeping), codex_* reasoning carriers, or internal _-prefixed
+        scaffolding. Strict gateways (Fireworks-backed OpenCode Go, Mistral,
+        Kimi) reject these with 'Extra inputs are not permitted, field:
+        messages[N].tool_name'. The transport's convert_messages() strips
+        them on the main loop; this hand-built summary path must mirror it."""
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call_1", "function": {"name": "execute_code", "arguments": "{}"}}],
+                "codex_reasoning_items": [{"id": "rs_1"}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result", "tool_name": "execute_code"},
+            {"role": "assistant", "content": "Done.", "_empty_recovery_synthetic": True},
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get("messages", [])
+        for m in sent_msgs:
+            assert "tool_name" not in m, m
+            assert "codex_reasoning_items" not in m, m
+            assert "codex_message_items" not in m, m
+            assert not any(isinstance(k, str) and k.startswith("_") for k in m), m
+        # Internal history is untouched — the path copies each message.
+        assert messages[2]["tool_name"] == "execute_code"
+        assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
+
     def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
         agent.base_url = "https://api.openai.com/v1"
         agent._base_url_lower = agent.base_url.lower()

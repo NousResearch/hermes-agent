@@ -34,8 +34,8 @@ class TestResolveContextCwd:
         assert resolve_context_cwd() == tmp_path
 
     def test_returns_none_when_unset(self, monkeypatch):
-        # None is load-bearing: it tells the caller to skip context-file discovery
-        # (don't slurp the gateway install dir's AGENTS.md).
+        # Unset → None; the caller (build_context_files_prompt) then getcwds —
+        # the local-CLI #19242 contract. Discovery still runs; it is NOT skipped.
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
         assert resolve_context_cwd() is None
 

@@ -29,25 +29,24 @@ hermes fallback
 
 `hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain. Changes persist under the top-level `fallback_providers:` list in `config.yaml`.
 
-If you'd rather edit the YAML directly, add a `fallback_model` section to `~/.hermes/config.yaml`:
+If you'd rather edit the YAML directly, add a top-level `fallback_providers` list to `~/.hermes/config.yaml`:
 
 ```yaml
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
 ```
 
-Both `provider` and `model` are **required**. If either is missing, the fallback is disabled.
+Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
 :::note `fallback_model` vs `fallback_providers`
-`fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat. `fallback_providers` (plural, list) supports multiple fallbacks tried in order; `hermes fallback` writes to this key. When both are set, Hermes merges them with `fallback_providers` taking priority.
+`fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
 :::
 
 ### Supported Providers
 
 | Provider | Value | Requirements |
 |----------|-------|-------------|
-| AI Gateway | `ai-gateway` | `AI_GATEWAY_API_KEY` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes setup --portal` (fresh) or `hermes auth add nous` (OAuth) |
 | OpenAI Codex | `openai-codex` | `hermes model` (ChatGPT OAuth) |
@@ -91,11 +90,11 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 For a custom OpenAI-compatible endpoint, add `base_url` and optionally `key_env`:
 
 ```yaml
-fallback_model:
-  provider: custom
-  model: my-local-model
-  base_url: http://localhost:8000/v1
-  key_env: MY_LOCAL_KEY              # env var name containing the API key
+fallback_providers:
+  - provider: custom
+    model: my-local-model
+    base_url: http://localhost:8000/v1
+    key_env: MY_LOCAL_KEY            # env var name containing the API key
 ```
 
 ### When Fallback Triggers
@@ -129,9 +128,9 @@ model:
   provider: anthropic
   default: claude-sonnet-4-6
 
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
 ```
 
 **Nous Portal as fallback for OpenRouter:**
@@ -140,25 +139,25 @@ model:
   provider: openrouter
   default: anthropic/claude-opus-4
 
-fallback_model:
-  provider: nous
-  model: nous-hermes-3
+fallback_providers:
+  - provider: nous
+    model: nous-hermes-3
 ```
 
 **Local model as fallback for cloud:**
 ```yaml
-fallback_model:
-  provider: custom
-  model: llama-3.1-70b
-  base_url: http://localhost:8000/v1
-  key_env: LOCAL_API_KEY
+fallback_providers:
+  - provider: custom
+    model: llama-3.1-70b
+    base_url: http://localhost:8000/v1
+    key_env: LOCAL_API_KEY
 ```
 
 **Codex OAuth as fallback:**
 ```yaml
-fallback_model:
-  provider: openai-codex
-  model: gpt-5.3-codex
+fallback_providers:
+  - provider: openai-codex
+    model: gpt-5.3-codex
 ```
 
 ### Where Fallback Works
@@ -167,12 +166,12 @@ fallback_model:
 |---------|-------------------|
 | CLI sessions | ✔ |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
-| Subagent delegation | ✘ (subagents do not inherit fallback config) |
-| Cron jobs | ✘ (run with a fixed provider) |
+| Subagent delegation | ✔ (subagents inherit the parent fallback chain) |
+| Cron jobs | ✔ (cron agents inherit configured fallback providers) |
 | Auxiliary tasks (vision, compression) | ✘ (use their own provider chain — see below) |
 
 :::tip
-There are no environment variables for `fallback_model` — it is configured exclusively through `config.yaml`. This is intentional: fallback configuration is a deliberate choice, not something a stale shell export should override.
+There are no environment variables for the primary fallback chain — configure it exclusively through `config.yaml` or `hermes fallback`. This is intentional: fallback configuration is a deliberate choice, not something a stale shell export should override.
 :::
 
 ---
@@ -253,20 +252,20 @@ auxiliary:
     base_url: null                                    # Custom OpenAI-compatible endpoint
 ```
 
-And the fallback model uses:
+And the primary fallback chain uses:
 
 ```yaml
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
-  # base_url: http://localhost:8000/v1               # Optional custom endpoint
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
+    # base_url: http://localhost:8000/v1             # Optional custom endpoint
 ```
 
 All three — auxiliary, compression, fallback — work the same way: set `provider` to pick who handles the request, `model` to pick which model, and `base_url` to point at a custom endpoint (overrides provider).
 
 ### Provider Options for Auxiliary Tasks
 
-These options apply to `auxiliary:`, `compression:`, and `fallback_model:` configs only — `"main"` is **not** a valid value for your top-level `model.provider`. For custom endpoints, use `provider: custom` in your `model:` section (see [AI Providers](/integrations/providers)).
+These options apply to `auxiliary:`, `compression:`, and `fallback_providers:` entries only — `"main"` is **not** a valid value for your top-level `model.provider`. For custom endpoints, use `provider: custom` in your `model:` section (see [AI Providers](/integrations/providers)).
 
 | Provider | Description | Requirements |
 |----------|-------------|-------------|
@@ -363,7 +362,7 @@ If no provider is available for compression, Hermes drops middle conversation tu
 
 ## Delegation Provider Override
 
-Subagents spawned by `delegate_task` do **not** use the primary fallback model. However, they can be routed to a different provider:model pair for cost optimization:
+Subagents spawned by `delegate_task` inherit the parent agent's primary fallback chain. You can still route subagents to a different primary provider:model pair for cost optimization:
 
 ```yaml
 delegation:
@@ -379,7 +378,7 @@ See [Subagent Delegation](/user-guide/features/delegation) for full configuratio
 
 ## Cron Job Providers
 
-Cron jobs run with whatever provider is configured at execution time. They do not support a fallback model. To use a different provider for cron jobs, configure `provider` and `model` overrides on the cron job itself:
+Cron jobs inherit your configured `fallback_providers` chain (or legacy `fallback_model`) when they create an agent. To use a different primary provider for a cron job, configure `provider` and `model` overrides on the cron job itself:
 
 ```python
 cronjob(
@@ -399,7 +398,7 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 
 | Feature | Fallback Mechanism | Config Location |
 |---------|-------------------|----------------|
-| Main agent model | `fallback_model` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_model:` (top-level) |
+| Main agent model | `fallback_providers` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_providers:` (top-level list) |
 | Auxiliary tasks (any) — auto users | Full auto-detection chain (main agent model first, then provider chain) on capacity errors | `auxiliary.<task>.provider: auto` |
 | Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors only | `auxiliary.<task>.fallback_chain` |
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |

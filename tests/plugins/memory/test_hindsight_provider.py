@@ -197,9 +197,31 @@ class TestConfig:
         assert provider._recall_max_input_chars == 800
         assert provider._tags is None
         assert provider._recall_tags is None
+        # Default recall narrowed to observation-only; world/experience are
+        # aggregate facts that often crowd out concrete-event signal during
+        # auto-recall. Users opt back in via the recall_types config key.
+        assert provider._recall_types == ["observation"]
         assert provider._bank_mission == ""
         assert provider._bank_retain_mission is None
         assert provider._retain_context == "conversation between Hermes Agent and the User"
+
+    def test_recall_types_default_is_observation_only(self, provider):
+        """Auto-recall must filter to observation by default."""
+        assert provider._recall_types == ["observation"]
+
+    def test_recall_types_explicit_list_overrides_default(self, provider_with_config):
+        p = provider_with_config(recall_types=["world", "experience", "observation"])
+        assert p._recall_types == ["world", "experience", "observation"]
+
+    def test_recall_types_csv_string_accepted(self, provider_with_config):
+        """For parity with recall_tags, comma-separated strings work too."""
+        p = provider_with_config(recall_types="observation, world")
+        assert p._recall_types == ["observation", "world"]
+
+    def test_recall_types_empty_list_falls_back_to_default(self, provider_with_config):
+        """An empty list shouldn't disable the filter (would be wider than default)."""
+        p = provider_with_config(recall_types=[])
+        assert p._recall_types == ["observation"]
 
     def test_custom_config_values(self, provider_with_config):
         p = provider_with_config(
@@ -994,7 +1016,6 @@ class TestSessionSwitchBufferFlush:
         old session to settle before clearing _prefetch_result, otherwise
         the thread can race and re-populate the field after the clear."""
         import threading
-        import time as _time
 
         gate = threading.Event()
         finished = threading.Event()

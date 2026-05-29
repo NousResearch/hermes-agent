@@ -213,7 +213,6 @@ registry.dispatch(name, args, **kwargs)
 - singularity
 - modal
 - daytona
-- vercel_sandbox
 
 还支持：
 

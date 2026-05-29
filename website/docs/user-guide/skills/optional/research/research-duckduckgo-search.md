@@ -21,7 +21,7 @@ Free web search via DuckDuckGo — text, news, images, videos. No API key needed
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `search`, `duckduckgo`, `web-search`, `free`, `fallback` |
-| Related skills | [`arxiv`](/user-guide/skills/bundled/research/research-arxiv) |
+| Related skills | [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv) |
 
 ## Reference: full SKILL.md
 

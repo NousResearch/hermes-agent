@@ -1,8 +1,6 @@
 """Tests for agent.models_dev — models.dev registry integration."""
-import json
 from unittest.mock import patch, MagicMock
 
-import pytest
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
@@ -94,7 +92,6 @@ class TestProviderMapping:
         assert PROVIDER_TO_MODELS_DEV["copilot"] == "github-copilot"
         assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun"
         assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
-        assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
 
     def test_xai_oauth_uses_xai_catalog(self):
         assert PROVIDER_TO_MODELS_DEV["xai"] == "xai"

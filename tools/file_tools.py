@@ -254,6 +254,43 @@ _file_ops_cache: dict = {}
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
 
+# Track consecutive patch failures per (task_id, resolved_path).  Used to
+# escalate the hint when the model repeatedly fails to patch the same file
+# (typical cause: stale view of file contents, ambiguous old_string, or
+# the file was modified externally between the agent's read and patch
+# attempt).  Reset on a successful patch to that path.
+_patch_failure_lock = threading.Lock()
+_patch_failure_tracker: dict = {}  # {task_id: {resolved_path: count}}
+
+
+def _record_patch_failure(task_id: str, resolved_path: str) -> int:
+    """Increment and return the consecutive-failure count for this path."""
+    with _patch_failure_lock:
+        task_failures = _patch_failure_tracker.setdefault(task_id, {})
+        # Cap dict size per task to avoid unbounded growth in long sessions
+        # where the agent fails on many distinct files.  64 distinct
+        # failing files per task is generous; older entries get evicted.
+        if len(task_failures) >= 64 and resolved_path not in task_failures:
+            try:
+                first_key = next(iter(task_failures))
+                del task_failures[first_key]
+            except StopIteration:
+                pass
+        task_failures[resolved_path] = task_failures.get(resolved_path, 0) + 1
+        return task_failures[resolved_path]
+
+
+def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
+    """Clear consecutive-failure counts for the given paths."""
+    if not resolved_paths:
+        return
+    with _patch_failure_lock:
+        task_failures = _patch_failure_tracker.get(task_id)
+        if not task_failures:
+            return
+        for rp in resolved_paths:
+            task_failures.pop(rp, None)
+
 # Per-task bounds for the containers inside each _read_tracker[task_id].
 # A CLI session uses one stable task_id for its lifetime; without these
 # caps, a 10k-read session would accumulate ~1.5MB of dict/set state that
@@ -430,13 +467,12 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+            if env_type in {"docker", "singularity", "modal", "daytona"}:
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),
                     "container_disk": config.get("container_disk", 51200),
                     "container_persistent": config.get("container_persistent", True),
-                    "vercel_runtime": config.get("vercel_runtime", ""),
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
@@ -1020,12 +1056,43 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     _r = _path_to_resolved.get(_p)
                     if _r:
                         file_state.note_write(task_id, _r)
+                # Successful patch: clear any prior consecutive-failure
+                # counters for the touched paths so a future failure on
+                # the same path starts the escalation cycle fresh.
+                _reset_patch_failures(task_id, [
+                    _r for _r in (_path_to_resolved.get(_p) for _p in _paths_to_check) if _r
+                ])
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
         # Suppressed when patch_replace already attached a rich "Did you mean?"
         # snippet (which is strictly more useful than the generic hint).
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
-            if "Did you mean one of these sections?" not in str(result_dict["error"]):
+            # Track per-file consecutive failures for replace mode.  The
+            # ``path`` arg only exists for replace mode; for V4A patches
+            # we'd need to walk the headers, but in practice V4A failures
+            # are far rarer and the existing _hint covers them adequately.
+            failure_count = 0
+            if mode == "replace" and path:
+                resolved = _path_to_resolved.get(path) or path
+                failure_count = _record_patch_failure(task_id, resolved)
+
+            if failure_count >= 3:
+                # Escalating hint after multiple consecutive failures on the
+                # same path.  Most common cause is a stale view of the file —
+                # the model is retrying with the same old_string against
+                # content that has since changed.  Surface the failure count
+                # so the model recognises it's in a loop and breaks out by
+                # re-reading or falling back to write_file.
+                result_dict["_hint"] = (
+                    f"This is failure #{failure_count} patching {path!r}. "
+                    "Stop retrying with variations of the same old_string. "
+                    "Either: (1) re-read the file fresh to verify current "
+                    "content, (2) use a longer / more unique old_string with "
+                    "surrounding context lines, or (3) use write_file to "
+                    "replace the entire file if the targeted region is hard "
+                    "to anchor."
+                )
+            elif "Did you mean one of these sections?" not in str(result_dict["error"]):
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "
                     "content, or search_files to locate the text."

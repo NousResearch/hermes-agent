@@ -1167,7 +1167,12 @@ class CredentialPool:
                                             "relogin_required": True,
                                             "at": datetime.now(timezone.utc).isoformat(),
                                         }
-                                        _save_provider_state(auth_store, "openai-codex", state)
+                                        _store_provider_state(
+                                            auth_store,
+                                            "openai-codex",
+                                            state,
+                                            set_active=False,
+                                        )
                                         _save_auth_store(auth_store, auth_file=auth_file)
                     except Exception as clear_exc:
                         logger.debug(

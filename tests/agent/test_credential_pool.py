@@ -2801,6 +2801,42 @@ def test_codex_manual_pool_refresh_serializes_across_processes(tmp_path, monkeyp
     assert requests == ["refresh-0"]
 
 
+def test_codex_manual_pool_refresh_serializes_within_named_profile(tmp_path, monkeypatch):
+    """Profile-local manual OAuth entries serialize without leaking into the root pool."""
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    old_access = _jwt_with_claims({"exp": int(time.time()) - 60})
+    fresh_access = _jwt_with_claims({"exp": int(time.time()) + 3600})
+    (profile_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "manual-profile-codex",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": old_access,
+                "refresh_token": "refresh-0",
+            }],
+        },
+    }, indent=2))
+
+    results, requests, _user_agents = _run_concurrent_codex_pool_refreshes(
+        [str(profile_home)] * 2,
+        fresh_access,
+    )
+
+    assert results == [("ok", "refresh-1"), ("ok", "refresh-1")]
+    assert requests == ["refresh-0"]
+    root_payload = json.loads((root_home / "auth.json").read_text())
+    assert root_payload["credential_pool"]["openai-codex"] == []
+    profile_payload = json.loads((profile_home / "auth.json").read_text())
+    profile_entry = profile_payload["credential_pool"]["openai-codex"][0]
+    assert profile_entry["id"] == "manual-profile-codex"
+    assert profile_entry["refresh_token"] == "refresh-1"
+
+
 def test_codex_pool_refresh_serializes_with_singleton_refresh(tmp_path, monkeypatch):
     """Pool refresh must adopt a token rotated by the singleton path."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -3183,6 +3219,44 @@ def test_codex_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     # A second try_refresh_current must not call refresh_codex_oauth_pure again.
     assert pool.try_refresh_current() is None
     assert refresh_calls["count"] == 1
+
+
+def test_codex_profile_terminal_refresh_preserves_root_active_provider(tmp_path, monkeypatch):
+    """A named-profile quarantine must not change the root profile selection."""
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    auth_store = _codex_auth_store("old-access-token", "old-refresh-token")
+    auth_store["active_provider"] = "nous"
+    from hermes_cli.auth import CODEX_REFRESH_OWNER
+    auth_store["providers"]["openai-codex"]["refresh_owner"] = CODEX_REFRESH_OWNER
+    (root_home / "auth.json").write_text(json.dumps(auth_store, indent=2))
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    pool = load_pool("openai-codex")
+    assert pool.select() is not None
+
+    def _terminal_refresh_failure(*_args, **_kwargs):
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="openai-codex",
+            code="codex_refresh_failed",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _terminal_refresh_failure)
+
+    assert pool.try_refresh_current() is None
+
+    root_payload = json.loads((root_home / "auth.json").read_text())
+    assert root_payload["active_provider"] == "nous"
+    codex_state = root_payload["providers"]["openai-codex"]
+    assert not codex_state["tokens"].get("refresh_token")
+    assert root_payload["credential_pool"]["openai-codex"] == []
 
 
 def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypatch):

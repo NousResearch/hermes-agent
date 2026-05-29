@@ -100,7 +100,10 @@ CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 DEFAULT_CODEX_OAUTH_REFRESH_TIMEOUT_SECONDS = 20.0
 CODEX_OAUTH_USER_AGENT = f"hermes-cli/{_HERMES_VERSION}"
 CODEX_REFRESH_OWNER = "hermes-auth-store-v1"
-SHARED_CREDENTIAL_POOL_PROVIDERS = frozenset({"openai-codex"})
+SHARED_CREDENTIAL_POOL_SOURCES = {
+    "openai-codex": frozenset({"device_code"}),
+}
+SHARED_CREDENTIAL_POOL_PROVIDERS = frozenset(SHARED_CREDENTIAL_POOL_SOURCES)
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
 XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
@@ -1239,19 +1242,52 @@ def get_auth_provider_display_name(provider_id: str) -> str:
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
+def _is_shared_credential_pool_entry(provider_id: str, entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return entry.get("source") in SHARED_CREDENTIAL_POOL_SOURCES.get(provider_id, ())
+
+
+def _merge_shared_credential_pool_entries(
+    provider_id: str,
+    local_entries: Any,
+    global_entries: Any,
+) -> List[Dict[str, Any]]:
+    shared_entries = (
+        [
+            entry for entry in global_entries
+            if _is_shared_credential_pool_entry(provider_id, entry)
+        ]
+        if isinstance(global_entries, list)
+        else []
+    )
+    profile_entries = (
+        [
+            entry for entry in local_entries
+            if isinstance(entry, dict)
+            and not _is_shared_credential_pool_entry(provider_id, entry)
+        ]
+        if isinstance(local_entries, list)
+        else []
+    )
+    return shared_entries + profile_entries
+
+
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
     In profile mode, most providers keep profile-local pools and fall back to
-    global-root entries only when the profile has none. Providers in
-    ``SHARED_CREDENTIAL_POOL_PROVIDERS`` use the global-root pool exclusively:
-    their single-use OAuth refresh tokens cannot be safely copied into
-    independently refreshed profile-local stores.
+    global-root entries only when the profile has none. Sources listed in
+    ``SHARED_CREDENTIAL_POOL_SOURCES`` use the global-root pool: their
+    single-use OAuth refresh tokens cannot be safely copied into independently
+    refreshed profile-local stores. Independent manual entries stay local to
+    the profile that created them.
 
     Profile entries win for non-shared providers: the global fallback applies
     only when the profile has zero entries for that provider.
 
-    Writes for shared providers also target the global root.
+    Writes split shared sources into the global root and independent sources
+    into the active profile.
     """
     auth_store = _load_auth_store()
     pool = auth_store.get("credential_pool")
@@ -1268,12 +1304,19 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
         merged = dict(pool)
         if _global_auth_file_path() is not None:
             for shared_provider in SHARED_CREDENTIAL_POOL_PROVIDERS:
-                merged.pop(shared_provider, None)
+                combined = _merge_shared_credential_pool_entries(
+                    shared_provider,
+                    pool.get(shared_provider),
+                    global_pool.get(shared_provider),
+                )
+                if combined:
+                    merged[shared_provider] = combined
+                else:
+                    merged.pop(shared_provider, None)
         for gp_key, gp_entries in global_pool.items():
             if not isinstance(gp_entries, list) or not gp_entries:
                 continue
             if gp_key in SHARED_CREDENTIAL_POOL_PROVIDERS:
-                merged[gp_key] = list(gp_entries)
                 continue
             # Per-provider shadowing: profile wins whenever it has ANY entries.
             existing = merged.get(gp_key)
@@ -1283,8 +1326,11 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return merged
 
     if provider_id in SHARED_CREDENTIAL_POOL_PROVIDERS and _global_auth_file_path() is not None:
-        global_entries = global_pool.get(provider_id)
-        return list(global_entries) if isinstance(global_entries, list) else []
+        return _merge_shared_credential_pool_entries(
+            provider_id,
+            pool.get(provider_id),
+            global_pool.get(provider_id),
+        )
 
     provider_entries = pool.get(provider_id)
     if isinstance(provider_entries, list) and provider_entries:
@@ -1301,6 +1347,51 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
     credentials. Callers may pass raw dictionaries, so sanitize here even when
     ``PooledCredential.to_dict()`` already did the same work upstream.
     """
+    sanitized_entries = [
+        sanitize_borrowed_credential_payload(entry, provider_id)
+        if isinstance(entry, dict) else entry
+        for entry in entries
+    ]
+    if provider_id in SHARED_CREDENTIAL_POOL_PROVIDERS and _global_auth_file_path() is not None:
+        shared_auth_file = _codex_auth_file_path()
+        profile_auth_file = _auth_file_path()
+        shared_entries = [
+            entry for entry in sanitized_entries
+            if _is_shared_credential_pool_entry(provider_id, entry)
+        ]
+        profile_entries = [
+            entry for entry in sanitized_entries
+            if not _is_shared_credential_pool_entry(provider_id, entry)
+        ]
+        with _codex_auth_store_lock():
+            shared_auth_store = _load_auth_store(shared_auth_file)
+            shared_pool = shared_auth_store.get("credential_pool")
+            if not isinstance(shared_pool, dict):
+                shared_pool = {}
+                shared_auth_store["credential_pool"] = shared_pool
+            existing_shared_entries = shared_pool.get(provider_id)
+            root_profile_entries = (
+                [
+                    entry for entry in existing_shared_entries
+                    if not _is_shared_credential_pool_entry(provider_id, entry)
+                ]
+                if isinstance(existing_shared_entries, list)
+                else []
+            )
+            shared_pool[provider_id] = root_profile_entries + shared_entries
+            _save_auth_store(shared_auth_store, auth_file=shared_auth_file)
+
+            if profile_entries or profile_auth_file.exists():
+                with _auth_store_lock():
+                    profile_auth_store = _load_auth_store(profile_auth_file)
+                    profile_pool = profile_auth_store.get("credential_pool")
+                    if not isinstance(profile_pool, dict):
+                        profile_pool = {}
+                        profile_auth_store["credential_pool"] = profile_pool
+                    profile_pool[provider_id] = profile_entries
+                    return _save_auth_store(profile_auth_store, auth_file=profile_auth_file)
+        return shared_auth_file
+
     shared_auth_file = (
         _codex_auth_file_path()
         if provider_id in SHARED_CREDENTIAL_POOL_PROVIDERS
@@ -1313,11 +1404,7 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
         if not isinstance(pool, dict):
             pool = {}
             auth_store["credential_pool"] = pool
-        pool[provider_id] = [
-            sanitize_borrowed_credential_payload(entry, provider_id)
-            if isinstance(entry, dict) else entry
-            for entry in entries
-        ]
+        pool[provider_id] = sanitized_entries
         return _save_auth_store(auth_store, auth_file=shared_auth_file)
 
 

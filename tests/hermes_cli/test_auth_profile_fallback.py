@@ -109,8 +109,8 @@ def test_profile_with_entries_fully_shadows_global(profile_env):
     assert entries[0]["access_token"] == "sk-or-profile"
 
 
-def test_codex_pool_uses_global_root_even_when_profile_has_entries(profile_env):
-    """Single-use Codex OAuth tokens must not be copied into profile-local pools."""
+def test_codex_pool_shares_only_global_device_code_entry(profile_env):
+    """Only the canonical Codex token family is shared across named profiles."""
     from hermes_cli.auth import read_credential_pool
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
@@ -120,6 +120,12 @@ def test_codex_pool_uses_global_root_even_when_profile_has_entries(profile_env):
             "auth_type": "oauth",
             "access_token": "global-at",
             "refresh_token": "global-rt",
+        }, {
+            "id": "root-manual-codex",
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "access_token": "root-manual-at",
+            "refresh_token": "root-manual-rt",
         }],
     }))
     _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
@@ -129,11 +135,23 @@ def test_codex_pool_uses_global_root_even_when_profile_has_entries(profile_env):
             "auth_type": "oauth",
             "access_token": "stale-profile-at",
             "refresh_token": "stale-profile-rt",
+        }, {
+            "id": "profile-manual-codex",
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "access_token": "profile-manual-at",
+            "refresh_token": "profile-manual-rt",
         }],
     }))
 
-    assert [entry["id"] for entry in read_credential_pool("openai-codex")] == ["glob-codex"]
-    assert [entry["id"] for entry in read_credential_pool(None)["openai-codex"]] == ["glob-codex"]
+    assert [entry["id"] for entry in read_credential_pool("openai-codex")] == [
+        "glob-codex",
+        "profile-manual-codex",
+    ]
+    assert [entry["id"] for entry in read_credential_pool(None)["openai-codex"]] == [
+        "glob-codex",
+        "profile-manual-codex",
+    ]
 
 
 def test_per_provider_shadowing_is_independent(profile_env):
@@ -479,18 +497,54 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
     assert [e["id"] for e in read_credential_pool("openrouter")] == ["prof-new"]
 
 
-def test_write_codex_credential_pool_targets_global_root(profile_env):
+def test_write_codex_credential_pool_splits_shared_and_profile_entries(profile_env):
     from hermes_cli.auth import read_credential_pool, write_credential_pool
 
-    write_credential_pool("openai-codex", [{
-        "id": "shared-codex",
-        "source": "manual:dashboard_device_code",
-        "auth_type": "oauth",
-        "access_token": "shared-at",
-        "refresh_token": "shared-rt",
-    }])
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "root-manual",
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "access_token": "root-manual-at",
+            "refresh_token": "root-manual-rt",
+        }],
+    }))
+
+    write_credential_pool("openai-codex", [
+        {
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "shared-at",
+            "refresh_token": "shared-rt",
+        },
+        {
+            "id": "profile-dashboard",
+            "source": "manual:dashboard_device_code",
+            "auth_type": "oauth",
+            "access_token": "dashboard-at",
+            "refresh_token": "dashboard-rt",
+        },
+        {
+            "id": "profile-api-key",
+            "source": "manual:api_key",
+            "auth_type": "api_key",
+            "access_token": "sk-profile",
+        },
+    ])
 
     global_data = json.loads((profile_env["global"] / "auth.json").read_text())
-    assert global_data["credential_pool"]["openai-codex"][0]["id"] == "shared-codex"
-    assert not (profile_env["profile"] / "auth.json").exists()
-    assert [e["id"] for e in read_credential_pool("openai-codex")] == ["shared-codex"]
+    assert [e["id"] for e in global_data["credential_pool"]["openai-codex"]] == [
+        "root-manual",
+        "shared-codex",
+    ]
+    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert [e["id"] for e in profile_data["credential_pool"]["openai-codex"]] == [
+        "profile-dashboard",
+        "profile-api-key",
+    ]
+    assert [e["id"] for e in read_credential_pool("openai-codex")] == [
+        "shared-codex",
+        "profile-dashboard",
+        "profile-api-key",
+    ]

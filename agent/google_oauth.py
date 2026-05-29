@@ -549,7 +549,7 @@ def _post_form(url: str, data: Dict[str, str], timeout: float) -> Dict[str, Any]
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # SSRF: add IP block check
             raw = response.read().decode("utf-8", errors="replace")
             return json.loads(raw)
     except urllib.error.HTTPError as exc:

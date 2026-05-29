@@ -256,5 +256,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34911",
     "pr_number": 34911,
     "run_id": "20260529_222349"
+  },
+  "SSRF-google_oauth.py-632": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34912",
+    "pr_number": 34912,
+    "run_id": "20260529_222349"
   }
 }

@@ -42,6 +42,34 @@ def test_human_gate_approval_prompt_contains_required_context_and_buttons():
     assert kap.parse_custom_id(body["components"][0]["components"][0]["custom_id"]) == ("t_gate", "approve")
 
 
+def test_human_gate_prompt_redacts_secret_looking_reason_and_metadata():
+    task = {"id": "t_gate", "title": "Ship production config", "assignee": "forge"}
+    payload = {
+        "reason": "human-gate: deploy with token=sk-live-secret and email matthew@example.com",
+        "metadata": {
+            "human_approval_required": True,
+            "what_is_approved": "use api_key='abc123secret' for a long approval explanation " + ("with details " * 80),
+            "if_approved": "password: correct-horse-battery-staple; continue deployment",
+            "risk_rollback": "rollback_token=ghp_abcdefghijklmnopqrstuvwxyz123456",
+        },
+    }
+
+    req = kap.build_approval_request(task, payload, {"project_title": "Build Lane"})
+    body = kap.build_message_payload(req)
+    content = body["content"]
+
+    assert "sk-live-secret" not in content
+    assert "matthew@example.com" not in content
+    assert "abc123secret" not in content
+    assert "correct-horse-battery-staple" not in content
+    assert "ghp_abcdefghijklmnopqrstuvwxyz123456" not in content
+    assert "[redacted]" in content
+    assert "…[truncated]" in content
+    for line in content.splitlines():
+        if line.startswith(("**Approve:**", "**If approved:**", "**Risk / rollback:**", "**Source:")):
+            assert len(line) <= 260
+
+
 def test_approval_decision_comments_and_unblocks(tmp_path):
     db_path = tmp_path / "kanban.db"
     with kb.connect_closing(db_path=db_path) as conn:

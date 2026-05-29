@@ -16,9 +16,11 @@ from typing import Any, Iterable
 
 PROJECT_STATUS = {"idea", "active", "blocked", "review", "done", "archived"}
 PROJECT_BODY_MARKER_RE = re.compile(r"^Project Hub slug:\s*(?P<slug>[a-zA-Z0-9][a-zA-Z0-9_-]{0,100})\s*$", re.M)
+PROJECT_TITLE_BODY_MARKER_RE = re.compile(r"^Project title:\s*(?P<title>.+?)\s*$", re.M)
 THREAD_BODY_MARKER_RE = re.compile(r"^Discord thread id:\s*(?P<thread>[0-9]{6,})\s*$", re.M)
 ROOT_BODY_MARKER_RE = re.compile(r"^Kanban root task id:\s*(?P<root>t_[a-f0-9]+|[A-Za-z0-9_-]+)\s*$", re.M)
 STAGE_BODY_MARKER_RE = re.compile(r"^Kanban stage:\s*(?P<stage>.+?)\s*$", re.M)
+RUN_KEY_BODY_MARKER_RE = re.compile(r"^Run key:\s*(?P<run_key>.+?)\s*$", re.M)
 
 ROUTINE_EVENT_KINDS = {"created", "promoted", "claimed", "spawned", "heartbeat", "unblocked", "archived"}
 THREAD_EVENT_KINDS = {"completed", "blocked", "failed", "crashed", "timed_out", "spawn_failed", "gave_up", "commented"}
@@ -80,6 +82,7 @@ def extract_task_project_metadata(task: dict[str, Any], payload: dict[str, Any] 
         "project_status": ("project_status", "status"),
         "stage_name": ("stage_name", "stage", "stage_id"),
         "execution_wave_id": ("execution_wave_id", "wave_id"),
+        "run_key": ("run_key", "build_lane_run_key"),
         "dsr_visible": ("dsr_visible", "dsr_include"),
     }
     for target, keys in aliases.items():
@@ -89,9 +92,11 @@ def extract_task_project_metadata(task: dict[str, Any], payload: dict[str, Any] 
                 out[target] = value
                 break
     out.setdefault("project_hub_slug", _body_marker(body, PROJECT_BODY_MARKER_RE))
+    out.setdefault("project_title", _body_marker(body, PROJECT_TITLE_BODY_MARKER_RE))
     out.setdefault("discord_thread_id", _body_marker(body, THREAD_BODY_MARKER_RE))
     out.setdefault("kanban_root_task_id", _body_marker(body, ROOT_BODY_MARKER_RE))
     out.setdefault("stage_name", _body_marker(body, STAGE_BODY_MARKER_RE))
+    out.setdefault("run_key", _body_marker(body, RUN_KEY_BODY_MARKER_RE))
     if out.get("project_title") in (None, "") and out.get("project_hub_slug"):
         out["project_title"] = task.get("title") or out.get("project_hub_slug")
     if out.get("kanban_root_task_id") in (None, "") and out.get("project_hub_slug"):
@@ -243,6 +248,56 @@ def should_post_project_thread_event(kind: str, payload: dict[str, Any] | None =
     return False
 
 
+def project_thread_key(project: dict[str, Any]) -> str:
+    """Stable Discord thread-state key for a Project Hub run.
+
+    Project Hub slugs are long-lived; Build Lane can create multiple runs for
+    the same slug. Prefer an explicit run key, then the Kanban root id, so fresh
+    starter-helper runs do not collapse into an older forum thread.
+    """
+    slug = str(project.get("project_hub_slug") or "unknown")
+    run_key = project.get("run_key") or project.get("execution_wave_id")
+    if run_key:
+        return f"{slug}:{run_key}"
+    root = project.get("kanban_root_task_id")
+    if root:
+        return f"{slug}:{root}"
+    return slug
+
+
+
+def format_project_thread_starter(project: dict[str, Any]) -> str:
+    """Return the first Discord forum/thread message for a Project Hub run.
+
+    The starter post is the only parent-channel-visible artifact for Discord
+    forum channels, so keep it compact but structured enough for humans,
+    project-thread consumers, and DSR readers to recover the Project Hub slug,
+    Kanban root, and visibility contract without scraping later worker posts.
+    """
+    title = project.get("project_title") or project.get("project_hub_slug") or "Kanban project"
+    slug = project.get("project_hub_slug") or "unknown"
+    root = project.get("kanban_root_task_id") or "unknown"
+    status = project.get("project_status") or "active"
+    stage = project.get("stage_name") or project.get("stage")
+    run_key = project.get("run_key") or project.get("execution_wave_id")
+    task_ids = project.get("task_ids") or []
+    lines = [
+        f"Project thread: {title}",
+        f"Project Hub: `{slug}`",
+        f"Kanban root: `{root}`",
+        f"Status: `{status}`",
+    ]
+    if stage:
+        lines.append(f"Current stage: `{stage}`")
+    if run_key:
+        lines.append(f"Run key: `{run_key}`")
+    if task_ids:
+        lines.append(f"Tracked tasks: {len(task_ids)}")
+    lines.append("DSR: project-linked updates with `dsr_visible`/`dsr_include` metadata are eligible for daily-status consumers.")
+    return "\n".join(lines)[:1800]
+
+
+
 def format_project_thread_update(task: dict[str, Any], kind: str, payload: dict[str, Any] | None, project: dict[str, Any]) -> str:
     payload = payload or {}
     title = task.get("title") or task.get("id") or "task"
@@ -381,6 +436,11 @@ def dsr_project_activity(con: sqlite3.Connection, start_ts: int, end_ts: int, li
         out.append({
             "project_hub_slug": meta.get("project_hub_slug"),
             "project_title": meta.get("project_title") or task.get("title"),
+            "kanban_root_task_id": meta.get("kanban_root_task_id"),
+            "stage_name": meta.get("stage_name"),
+            "run_key": meta.get("run_key"),
+            "discord_thread_id": meta.get("discord_thread_id"),
+            "dsr_visible": bool(payload_meta.get("dsr_visible") or payload_meta.get("dsr_include")),
             "task_id": task.get("id"),
             "title": task.get("title"),
             "assignee": task.get("assignee"),
@@ -399,6 +459,8 @@ __all__ = [
     "project_metadata_markers",
     "resolve_project_context",
     "should_post_project_thread_event",
+    "project_thread_key",
+    "format_project_thread_starter",
     "format_project_thread_update",
     "project_rows",
     "archive_completed_project_tasks",

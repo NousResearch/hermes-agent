@@ -759,45 +759,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 so route their custom_id prefix here and leave every other
                 interaction to discord.py's normal command/component machinery.
                 """
-                data = getattr(interaction, "data", None) or {}
-                custom_id = data.get("custom_id") if isinstance(data, dict) else None
-                if not custom_id:
-                    return
                 try:
-                    from hermes_cli.kanban_discord_approvals import (
-                        apply_approval_decision,
-                        parse_custom_id,
-                    )
-                    parsed = parse_custom_id(str(custom_id))
-                    if not parsed:
-                        return
-                    task_id, action = parsed
-                    if not _component_check_auth(
+                    await handle_kanban_approval_interaction(
                         interaction,
                         adapter_self._allowed_user_ids,
                         adapter_self._allowed_role_ids,
-                    ):
-                        await interaction.response.send_message(
-                            "You're not authorized to approve Kanban gates~",
-                            ephemeral=True,
-                        )
-                        return
-                    actor = f"{getattr(interaction.user, 'display_name', '')} ({getattr(interaction.user, 'id', '')})"
-                    result = apply_approval_decision(task_id, action, actor)
-                    label = {
-                        "approve": "Approved",
-                        "deny": "Denied",
-                        "needs_changes": "Needs changes requested",
-                    }[action]
-                    for child in getattr(interaction.message, "components", []) or []:
-                        for item in getattr(child, "children", []) or []:
-                            try:
-                                item.disabled = True
-                            except Exception:
-                                pass
-                    content = (getattr(interaction.message, "content", "") or "")
-                    content = f"{content}\n\n**Decision:** {label} by {getattr(interaction.user, 'display_name', 'unknown')} (`{result}`)"[:1900]
-                    await interaction.response.edit_message(content=content, view=None)
+                    )
                 except Exception as exc:
                     logger.exception("Failed to handle Kanban approval component: %s", exc)
                     try:
@@ -5086,6 +5053,52 @@ def _component_check_auth(
             return True
 
     return False
+
+
+async def handle_kanban_approval_interaction(
+    interaction,
+    allowed_user_ids: Optional[set],
+    allowed_role_ids: Optional[set],
+    *,
+    db_path: Optional[_Path] = None,
+) -> bool:
+    """Handle a persistent Kanban approval component, if the custom_id matches."""
+    data = getattr(interaction, "data", None) or {}
+    custom_id = data.get("custom_id") if isinstance(data, dict) else None
+    if not custom_id:
+        return False
+    from hermes_cli.kanban_discord_approvals import (
+        apply_approval_decision,
+        parse_custom_id,
+    )
+
+    parsed = parse_custom_id(str(custom_id))
+    if not parsed:
+        return False
+    task_id, action = parsed
+    if not _component_check_auth(interaction, allowed_user_ids, allowed_role_ids):
+        await interaction.response.send_message(
+            "You're not authorized to approve Kanban gates~",
+            ephemeral=True,
+        )
+        return True
+    actor = f"{getattr(interaction.user, 'display_name', '')} ({getattr(interaction.user, 'id', '')})"
+    result = apply_approval_decision(task_id, action, actor, db_path=db_path)
+    label = {
+        "approve": "Approved",
+        "deny": "Denied",
+        "needs_changes": "Needs changes requested",
+    }[action]
+    for child in getattr(getattr(interaction, "message", None), "components", []) or []:
+        for item in getattr(child, "children", []) or []:
+            try:
+                item.disabled = True
+            except Exception:
+                pass
+    content = (getattr(getattr(interaction, "message", None), "content", "") or "")
+    content = f"{content}\n\n**Decision:** {label} by {getattr(interaction.user, 'display_name', 'unknown')} (`{result}`)"[:1900]
+    await interaction.response.edit_message(content=content, view=None)
+    return True
 
 
 def _define_discord_view_classes() -> None:

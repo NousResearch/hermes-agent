@@ -322,5 +322,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34922",
     "pr_number": 34922,
     "run_id": "20260529_222349"
+  },
+  "SSRF-evm_client.py-363": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34923",
+    "pr_number": 34923,
+    "run_id": "20260529_222349"
   }
 }

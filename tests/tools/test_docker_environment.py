@@ -252,12 +252,13 @@ class _FakePopen:
         return self.returncode
 
 
-def _make_execute_only_env(forward_env=None):
+def _make_execute_only_env(forward_env=None, env_values=None):
     env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
     env.cwd = "/root"
     env.timeout = 60
     env._forward_env = forward_env or []
-    env._env = {}
+    env._env = docker_env._normalize_env_dict(env_values or {})
+    env._env.setdefault("HERMES_HOME", "/root/.hermes")
     env._prepare_command = lambda command: (command, None)
     env._timeout_result = lambda timeout: {"output": f"timed out after {timeout}", "returncode": 124}
     env._container_id = "test-container"
@@ -320,15 +321,73 @@ def test_docker_env_appears_in_run_command(monkeypatch):
     assert "GNUPGHOME=/root/.gnupg" in run_args_str
 
 
+def test_docker_env_defaults_hermes_home_in_run_command(monkeypatch):
+    """Docker sandboxes should resolve Hermes home to the mounted tree by default."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env()
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+    assert "-e" in run_args
+    env_flags = [
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
+        if flag == "-e"
+    ]
+    assert "HERMES_HOME=/root/.hermes" in env_flags
+
+
+def test_docker_env_preserves_explicit_hermes_home(monkeypatch):
+    """Users can still override container HERMES_HOME via terminal.docker_env."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(env={"HERMES_HOME": "/workspace/hermes"})
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+    env_flags = [
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
+        if flag == "-e"
+    ]
+    assert "HERMES_HOME=/workspace/hermes" in env_flags
+    assert "HERMES_HOME=/root/.hermes" not in env_flags
+
+
 def test_docker_env_appears_in_init_env_args(monkeypatch):
     """Explicit docker_env values should appear in _build_init_env_args."""
-    env = _make_execute_only_env()
-    env._env = {"MY_VAR": "my_value"}
+    env = _make_execute_only_env(env_values={"MY_VAR": "my_value"})
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
 
     assert "MY_VAR=my_value" in args_str
+
+
+def test_init_env_args_defaults_hermes_home(monkeypatch):
+    """The init-session snapshot should inherit the Docker Hermes home default."""
+    env = _make_execute_only_env()
+
+    args = env._build_init_env_args()
+    args_str = " ".join(args)
+
+    assert "HERMES_HOME=/root/.hermes" in args_str
+
+
+def test_init_env_args_preserves_explicit_hermes_home(monkeypatch):
+    """Explicit HERMES_HOME should survive into init-session env args."""
+    env = _make_execute_only_env(env_values={"HERMES_HOME": "/workspace/hermes"})
+
+    args = env._build_init_env_args()
+    args_str = " ".join(args)
+
+    assert "HERMES_HOME=/workspace/hermes" in args_str
+    assert "HERMES_HOME=/root/.hermes" not in args_str
 
 
 def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
@@ -455,6 +514,26 @@ def test_run_as_host_user_passes_uid_gid(monkeypatch):
     assert run_args[idx + 1] == "1234:5678", (
         f"expected --user 1234:5678, got --user {run_args[idx + 1]}"
     )
+
+
+def test_run_as_host_user_keeps_default_hermes_home(monkeypatch):
+    """Host-user containers should still look up skills and credentials under /root/.hermes."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.os, "getuid", lambda: 1234, raising=False)
+    monkeypatch.setattr(docker_env.os, "getgid", lambda: 5678, raising=False)
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(run_as_host_user=True)
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+    env_flags = [
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
+        if flag == "-e"
+    ]
+    assert "HERMES_HOME=/root/.hermes" in env_flags
 
 
 def test_run_as_host_user_drops_setuid_setgid_caps(monkeypatch):

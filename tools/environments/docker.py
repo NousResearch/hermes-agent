@@ -32,6 +32,7 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DEFAULT_CONTAINER_HERMES_HOME = "/root/.hermes"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -476,6 +477,7 @@ class DockerEnvironment(BaseEnvironment):
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
+        self._env.setdefault("HERMES_HOME", _DEFAULT_CONTAINER_HERMES_HOME)
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
         logger.info(f"DockerEnvironment volumes: {volumes}")

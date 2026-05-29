@@ -31,7 +31,7 @@ This checkout (`hermes-agent-upstream-sync`) is not generic upstream marketing �
 
 Upstream Hermes still provides the core agent loop, TUI, toolsets, skills hub, memory providers, delegation, and cron. This fork adds the **operations layer** that makes those features survive on native Windows without WSL.
 
-Current baseline: merged `upstream/main` through `9eadb6805` on 2026-05-27, then kept the fork-side Windows reliability and operations layer. This sync includes upstream Docker ownership/env fixes, Docker voice-mode runtime handling, the Nous-approved MCP catalog/picker, TUI session orchestration, Codex Responses recovery fixes, `/reload-mcp` cached-agent refresh, and `hermes update --branch` support. For future updates, compare against `upstream/main` via `git fetch upstream main` and the Python sync helpers under `scripts/`.
+Current baseline: merged `upstream/main` through `1b1e30510` on 2026-05-29, then kept the fork-side Windows reliability and operations layer. This sync includes upstream Docker dashboard hardening, dashboard OAuth/Nous Portal auth surfaces, Krea image generation, security-guidance plugin work, MCP npm/npx path fixes, web/dashboard reload fixes, provider fallback and billing guidance fixes, and the completed-turn memory `messages` API. The fork-side Ebbinghaus idle sleep cycle is preserved and now coexists with that official memory sync API. For future updates, compare against `upstream/main` via `git fetch upstream main` and the Python sync helpers under `scripts/`.
 
 ---
 
@@ -55,6 +55,7 @@ Current baseline: merged `upstream/main` through `9eadb6805` on 2026-05-27, then
 | **OpenCode Zen `auto-free`** | Virtual model sentinel resolves to the first live free ID from `https://opencode.ai/zen/v1/models`. On `Free usage exceeded` and similar limits, Hermes walks the deduped free catalog automatically. Skill: `skills/autonomous-ai-agents/opencode-free-rotation/`. |
 | **Live catalog refresh** | `scripts/refresh_opencode_free_catalog.py` pulls the current Zen free list; use in cron or before long sessions. |
 | **OpenClaw → OpenCode key bridge** | Shared `OPENCODE_API_KEY` (OpenClaw `.env` or `auth-profiles.json`) satisfies `OPENCODE_ZEN_API_KEY` when the Zen-specific key is unset. See `hermes_cli/auth.py` and `tests/hermes_cli/test_opencode_openclaw_bridge.py`. |
+| **Ebbinghaus idle sleep** | Optional `memory.sleep` config runs a lazy `ebbinghaus_memory(action="sleep")` cycle after idle time, consolidating high-salience memories and pruning low-value traces while staying compatible with upstream completed-turn memory context. |
 | **llama.cpp TurboQuant fallback** | `hermes_cli/llama_fallback_runtime.py` autostarts `llama-server` when the fallback chain reaches `llama-cpp`. RTX3080 script: `scripts/windows/start-hermes-llama-fallback-rtx3080.ps1` (ngram-mod speculative, `f16v_turbo4` KV). Example config: `docs/migration/opencode_free_webui_config.example.yaml`. |
 | **hermes-webui companion** | `scripts/windows/start-hermes-webui.ps1` bootstraps a sibling `hermes-webui` checkout (default `~/Desktop/hermes-webui`) with `config/hermes-webui.env.example`. WebUI reads raw `config.yaml`; `auto-free` displays as-is but resolves at agent runtime. |
 | **VRChat Neuro / autonomy harness** | `skills/gaming/neuro-vrchat/` + `tools/vrchat_*` + `scripts/vrchat_*` — Neuro API websocket bridge, observation queue, preflight, runtime doctor, private smoke, completion audit. Uses vendored `vendor/neuro-sdk` protocol reference. Profile safety gate blocks live OSC/audio until explicitly armed. |
@@ -265,8 +266,8 @@ This fork intentionally keeps a small Windows/operations layer on top of upstrea
 
 ```powershell
 git fetch upstream main
-py -3 scripts\sync_upstream.py --dry-run
-py -3 scripts\sync_upstream.py --merge
+py -3 scripts\sync_all.py --dry-run
+py -3 scripts\sync_all.py --merge --target main --allow-preflight-blockers
 py -3 scripts\sync_upstream.py --pytest-only
 ```
 

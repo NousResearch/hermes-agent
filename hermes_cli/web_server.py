@@ -160,6 +160,22 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def should_require_auth(host: str, allow_public: bool) -> bool:
+    """Return True iff the dashboard OAuth auth gate must be active.
+
+    Truth table:
+      host == loopback                              → False (no auth)
+      host != loopback AND allow_public (--insecure)→ False (legacy escape hatch)
+      host != loopback AND NOT allow_public         → True  (gate engages)
+
+    "Loopback" matches the same set used by ``--insecure`` enforcement in
+    ``start_server``: 127.0.0.1, localhost, ::1. RFC1918 / CGNAT / link-local
+    are deliberately treated as PUBLIC — a hostile device on the same LAN is
+    exactly the threat model the gate is designed for.
+    """
+    return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
@@ -234,9 +250,29 @@ async def host_header_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+# ---------------------------------------------------------------------------
+# Dashboard OAuth auth gate — engaged only when start_server flags the
+# bind as non-loopback-without-insecure.  No-op pass-through in loopback
+# mode so the legacy auth_middleware (below) handles those binds via
+# the injected ``_SESSION_TOKEN``.  Registered between host_header and
+# auth_middleware so the order is: host check → cookie auth → token auth.
+# ---------------------------------------------------------------------------
+
+
+@app.middleware("http")
+async def _dashboard_auth_gate(request: Request, call_next):
+    from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
+    return await gated_auth_middleware(request, call_next)
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
+    # When the OAuth gate is active, cookie-based auth (gated_auth_middleware
+    # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
+    # and is skipped here so the gate's session attachment isn't overridden.
+    if getattr(request.app.state, "auth_required", False):
+        return await call_next(request)
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
@@ -266,12 +302,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
-    },
-    "terminal.vercel_runtime": {
-        "type": "select",
-        "description": "Vercel Sandbox runtime",
-        "options": ["node24", "node22", "python3.13"],  # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
+        "options": ["local", "docker", "ssh", "modal", "daytona", "singularity"],
     },
     "terminal.modal_mode": {
         "type": "select",
@@ -622,6 +653,19 @@ async def get_status():
     except Exception:
         pass
 
+    # Dashboard auth gate (Phase 7): surface whether the gate is engaged
+    # and which providers are registered so ``hermes status`` and the
+    # SPA's StatusPage can show "OAuth gate ON via Nous Research" or
+    # "loopback only — no auth gate" with no extra round trips.
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    auth_providers: list[str] = []
+    try:
+        from hermes_cli.dashboard_auth import list_providers as _list_providers
+        auth_providers = [p.name for p in _list_providers()]
+    except Exception:
+        # Module not importable yet (early startup) — leave as [].
+        pass
+
     return {
         "version": __version__,
         "release_date": __release_date__,
@@ -638,6 +682,8 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+        "auth_required": auth_required,
+        "auth_providers": auth_providers,
     }
 
 
@@ -3330,8 +3376,20 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback clients only.
+    Loopback mode: only loopback clients allowed — the legacy
+    ``?token=<_SESSION_TOKEN>`` path is the only auth we have, so we
+    don't want LAN hosts guessing tokens.
+
+    Gated mode: any peer is allowed — uvicorn's ``proxy_headers=True``
+    (enabled when the OAuth gate is active so cookies can pick up
+    ``X-Forwarded-Proto``) rewrites ``ws.client.host`` to the
+    X-Forwarded-For value, which is the real internet client IP. The
+    OAuth gate + single-use ``?ticket=`` is the auth at that point; the
+    Host/Origin guard in :func:`_ws_host_origin_is_allowed` is what
+    blocks DNS-rebinding here, not the peer IP.
     """
+    if getattr(app.state, "auth_required", False):
+        return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
@@ -3369,6 +3427,50 @@ def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
 def _ws_request_is_allowed(ws: "WebSocket") -> bool:
     """Return True when the WebSocket upgrade matches dashboard boundaries."""
     return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
+
+
+def _ws_auth_ok(ws: "WebSocket") -> bool:
+    """Validate WS-upgrade auth in either loopback or gated mode.
+
+    Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
+    parameter, constant-time compared.
+
+    Gated (public bind, no ``--insecure``): ``?ticket=<single-use>`` query
+    parameter consumed against the dashboard-auth ticket store. The legacy
+    token path is unconditionally rejected in this mode (the SPA bundle
+    isn't carrying the token any longer).
+
+    Returns True if the WS should be accepted; callers close with the
+    appropriate WS code (4401) on False. Audit-logs the rejection so
+    operators can debug "WS keeps closing" issues from the log.
+    """
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    if auth_required:
+        ticket = ws.query_params.get("ticket", "")
+        if not ticket:
+            return False
+        # Lazy import — keeps this function importable in test harnesses
+        # that don't bring in the dashboard_auth layer.
+        from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+        from hermes_cli.dashboard_auth.ws_tickets import (
+            TicketInvalid,
+            consume_ticket,
+        )
+
+        try:
+            consume_ticket(ticket)
+            return True
+        except TicketInvalid as exc:
+            audit_log(
+                AuditEvent.WS_TICKET_REJECTED,
+                reason=str(exc),
+                ip=(ws.client.host if ws.client else ""),
+                path=ws.url.path,
+            )
+            return False
+
+    token = ws.query_params.get("token", "")
+    return hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -3424,7 +3526,21 @@ def _resolve_chat_argv(
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:
-    """ws:// URL the PTY child should publish events to, or None when unbound."""
+    """ws:// URL the PTY child should publish events to, or None when unbound.
+
+    Loopback / ``--insecure``: uses ``?token=<_SESSION_TOKEN>``.
+
+    Gated mode: mints a single-use ticket via the dashboard-auth ticket
+    store (server-side mint, no HTTP round trip — the PTY child is a
+    server-spawned process and we trust it). The ticket binds to the
+    pseudo-user ``"pty-sidecar"`` so audit logs can distinguish these from
+    browser-initiated tickets.
+
+    The single-use lifetime means the PTY child cannot reconnect without a
+    new sidecar URL. PTY children open ``/api/pub`` once at startup; if
+    reconnect semantics ever become important, this should be upgraded to
+    a long-lived process-scoped token.
+    """
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
 
@@ -3432,7 +3548,15 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
         return None
 
     netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
-    qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
+
+    if getattr(app.state, "auth_required", False):
+        # Gated mode — mint a ticket so the WS upgrade survives _ws_auth_ok.
+        from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+
+        ticket = mint_ticket(user_id="pty-sidecar", provider="server-internal")
+        qs = urllib.parse.urlencode({"ticket": ticket, "channel": channel})
+    else:
+        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
 
     return f"ws://{netloc}/api/pub?{qs}"
 
@@ -3465,9 +3589,7 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # --- auth + loopback check (before accept so we can close cleanly) ---
-    token = ws.query_params.get("token", "")
-    expected = _SESSION_TOKEN
-    if not hmac.compare_digest(token.encode(), expected.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
@@ -3585,8 +3707,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    token = ws.query_params.get("token", "")
-    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
@@ -3617,8 +3738,7 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    token = ws.query_params.get("token", "")
-    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
@@ -3646,8 +3766,7 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    token = ws.query_params.get("token", "")
-    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
@@ -3687,24 +3806,13 @@ async def events_ws(ws: WebSocket) -> None:
 def _normalise_prefix(raw: Optional[str]) -> str:
     """Normalise an X-Forwarded-Prefix header value.
 
-    Returns a string like ``"/hermes"`` (no trailing slash) or ``""`` when
-    no prefix is set / the header is malformed. We deliberately reject
-    anything containing ``..`` or non-printable bytes so a hostile proxy
-    can't inject HTML via the prefix.
+    Thin re-export of :func:`hermes_cli.dashboard_auth.prefix.normalise_prefix`
+    — the single source of truth lives in the dashboard_auth package so
+    the gate middleware, the OAuth routes, the cookie helpers, and the
+    SPA mount all agree on validation rules.
     """
-    if not raw:
-        return ""
-    p = raw.strip()
-    if not p:
-        return ""
-    if not p.startswith("/"):
-        p = "/" + p
-    p = p.rstrip("/")
-    if "//" in p or ".." in p or any(c in p for c in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
-        return ""
-    if len(p) > 64:
-        return ""
-    return p
+    from hermes_cli.dashboard_auth.prefix import normalise_prefix
+    return normalise_prefix(raw)
 
 
 def mount_spa(application: FastAPI):
@@ -3737,14 +3845,33 @@ def mount_spa(application: FastAPI):
 
         ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
         or empty string when served at root.
+
+        When the OAuth auth gate is active (``app.state.auth_required``),
+        the legacy ``_SESSION_TOKEN`` is NOT injected — the SPA reads
+        identity from ``/api/auth/me`` over cookie auth instead.  The
+        ``__HERMES_AUTH_REQUIRED__`` flag lets the SPA pick the right
+        auth scheme for /api/pty and /api/ws (ticket vs token).
         """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
-        token_script = (
-            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
-            f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-            f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
-        )
+        gated = bool(getattr(app.state, "auth_required", False))
+        gated_js = "true" if gated else "false"
+        if gated:
+            bootstrap_script = (
+                f"<script>"
+                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+                f'window.__HERMES_BASE_PATH__="{prefix}";'
+                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"</script>"
+            )
+        else:
+            bootstrap_script = (
+                f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+                f'window.__HERMES_BASE_PATH__="{prefix}";'
+                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"</script>"
+            )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the
             # browser fetches them through the same proxy prefix.
@@ -3754,7 +3881,7 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
-        html = html.replace("</head>", f"{token_script}</head>", 1)
+        html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
         return HTMLResponse(
             html,
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
@@ -4688,6 +4815,13 @@ def _mount_plugin_api_routes():
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
 
+# Mount the dashboard auth routes (/login, /auth/*, /api/auth/*) before the
+# SPA catch-all so /{full_path:path} doesn't swallow them.  These are
+# always mounted — the gate middleware decides whether to enforce auth,
+# not whether the routes exist.
+from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
+app.include_router(_dashboard_auth_router)
+
 mount_spa(app)
 
 
@@ -4705,14 +4839,65 @@ def start_server(
     global _DASHBOARD_EMBEDDED_CHAT_ENABLED
     _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
 
-    _LOCALHOST = ("127.0.0.1", "localhost", "::1")
-    if host not in _LOCALHOST and not allow_public:
-        raise SystemExit(
-            f"Refusing to bind to {host} — the dashboard exposes API keys "
-            f"and config without robust authentication.\n"
-            f"Use --insecure to override (NOT recommended on untrusted networks)."
+    # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
+    # injection / WS-auth paths can branch on it consistently.  Phase 3.5
+    # uses this to decide whether to refuse the bind, log the gate-on
+    # banner, and enable uvicorn proxy_headers.
+    app.state.auth_required = should_require_auth(host, allow_public)
+
+    if app.state.auth_required:
+        # Phase 3.5: the gate engages on non-loopback binds.  The legacy
+        # "refusing to bind" guard is replaced by "require at least one
+        # provider to be registered, else fail closed".
+        from hermes_cli.dashboard_auth import list_providers
+        if not list_providers():
+            # Surface the *specific* reason any bundled provider declined
+            # to register (e.g. missing HERMES_DASHBOARD_OAUTH_CLIENT_ID).
+            # Each provider plugin that ships with Hermes Agent exposes a
+            # module-level ``LAST_SKIP_REASON`` string for this purpose;
+            # without it the operator would only see "no providers" which
+            # is misleading when the provider IS installed but unconfigured.
+            skip_reasons: list[str] = []
+            try:
+                from plugins.dashboard_auth import nous as _nous_plugin
+
+                if _nous_plugin.LAST_SKIP_REASON:
+                    skip_reasons.append(
+                        f"  • nous: {_nous_plugin.LAST_SKIP_REASON}"
+                    )
+            except Exception:
+                pass
+
+            if skip_reasons:
+                raise SystemExit(
+                    f"Refusing to bind dashboard to {host} — the OAuth auth "
+                    f"gate engages on non-loopback binds, but no auth "
+                    f"providers are registered.\n"
+                    f"\n"
+                    f"Bundled providers reported these issues:\n"
+                    + "\n".join(skip_reasons)
+                    + "\n"
+                    f"\n"
+                    f"Or pass --insecure to skip the auth gate (NOT "
+                    f"recommended on untrusted networks)."
+                )
+            raise SystemExit(
+                f"Refusing to bind dashboard to {host} — the OAuth auth "
+                f"gate engages on non-loopback binds, but no auth providers "
+                f"are registered and no bundled plugin reported a reason "
+                f"(was the dashboard_auth/nous plugin removed?).\n"
+                f"Install a DashboardAuthProvider plugin, or pass --insecure "
+                f"to skip the auth gate (NOT recommended on untrusted "
+                f"networks)."
+            )
+        _log.info(
+            "Dashboard binding to %s with OAuth auth gate enabled. "
+            "Providers: %s",
+            host,
+            ", ".join(p.name for p in list_providers()),
         )
-    if host not in _LOCALHOST:
+    elif host not in _LOOPBACK_HOST_VALUES and allow_public:
+        # --insecure path — no auth, loud warning.
         _log.warning(
             "Binding to %s with --insecure — the dashboard has no robust "
             "authentication. Only use on trusted networks.", host,
@@ -4757,7 +4942,13 @@ def start_server(
             )
 
     print(f"  Hermes Web UI → http://{host}:{port}")
-    # proxy_headers=False so _ws_client_is_allowed sees the real connection peer
-    # rather than X-Forwarded-For's rewritten value (which would defeat the
-    # loopback gate when behind a reverse proxy).
-    uvicorn.run(app, host=host, port=port, log_level="warning", proxy_headers=False)
+    # proxy_headers defaults to False so _ws_client_is_allowed sees the real
+    # connection peer rather than X-Forwarded-For's rewritten value (which
+    # would defeat the loopback gate when behind a reverse proxy).  When the
+    # OAuth gate is active we are explicitly running behind a TLS terminator
+    # (Fly.io) and need X-Forwarded-Proto to decide cookie Secure flags, so
+    # we flip proxy_headers on for that mode.
+    uvicorn.run(
+        app, host=host, port=port, log_level="warning",
+        proxy_headers=bool(app.state.auth_required),
+    )

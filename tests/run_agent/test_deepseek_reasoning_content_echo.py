@@ -481,3 +481,85 @@ class TestNeedsKimiToolReasoning:
         )
         # model name contains 'moonshot' but host is openrouter — should be False
         assert agent._needs_kimi_tool_reasoning() is False
+
+
+class TestReapplyReasoningEchoForProviderSwitch:
+    """Mid-conversation fallover to a require-side provider must re-pad.
+
+    ``api_messages`` is built once, before the retry loop, while the *primary*
+    provider is active. When a fallback then switches to DeepSeek/Kimi/MiMo,
+    assistant turns that were built under a non-require primary (e.g. Codex,
+    which uses encrypted reasoning, not ``reasoning_content``) go out bare and
+    the new provider 400s with "reasoning_content must be passed back".
+
+    ``reapply_reasoning_echo_for_provider`` re-applies the pad against the
+    *current* provider right before the request is built. It is idempotent and
+    a no-op unless the active provider enforces echo-back.
+    """
+
+    @staticmethod
+    def _codex_built_history() -> list[dict]:
+        """Assistant turns as built under a Codex primary: some carry a
+        reasoning summary (stored as reasoning_content), some are bare."""
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "do the thing"},
+            {  # turn that emitted a reasoning summary
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "summary from codex",
+                "tool_calls": [{"id": "c1", "function": {"name": "terminal"}}],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+            {  # bare tool-call turn (Codex emitted no summary)
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c2", "function": {"name": "terminal"}}],
+            },
+            {"role": "tool", "tool_call_id": "c2", "content": "ok"},
+        ]
+
+    def test_switch_to_deepseek_pads_bare_turns(self) -> None:
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-pro")
+        msgs = self._codex_built_history()
+        padded = reapply_reasoning_echo_for_provider(agent, msgs)
+        assert padded == 1
+        bare = [m for m in msgs if m.get("role") == "assistant" and not m.get("reasoning_content")]
+        assert bare == []
+        # existing summary preserved verbatim, not clobbered with the pad
+        assert msgs[2]["reasoning_content"] == "summary from codex"
+        assert msgs[4]["reasoning_content"] == " "
+
+    def test_noop_under_non_require_provider(self) -> None:
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+
+        agent = _make_agent(
+            provider="openai-codex",
+            model="gpt-5.5",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        msgs = self._codex_built_history()
+        padded = reapply_reasoning_echo_for_provider(agent, msgs)
+        assert padded == 0
+        # the bare turn stays bare — Codex doesn't want reasoning_content
+        assert "reasoning_content" not in msgs[4]
+
+    def test_idempotent(self) -> None:
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-pro")
+        msgs = self._codex_built_history()
+        assert reapply_reasoning_echo_for_provider(agent, msgs) == 1
+        assert reapply_reasoning_echo_for_provider(agent, msgs) == 0
+
+    def test_non_assistant_messages_untouched(self) -> None:
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-pro")
+        msgs = self._codex_built_history()
+        reapply_reasoning_echo_for_provider(agent, msgs)
+        assert "reasoning_content" not in msgs[0]  # system
+        assert "reasoning_content" not in msgs[1]  # user
+        assert "reasoning_content" not in msgs[3]  # tool

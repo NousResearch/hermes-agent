@@ -1,7 +1,7 @@
 """Tests for the API server bind-address startup guard.
 
 Validates that is_network_accessible() correctly classifies addresses and
-that connect() refuses to start on non-loopback without API_SERVER_KEY.
+that connect() refuses to start without API_SERVER_KEY.
 """
 
 import socket
@@ -111,13 +111,14 @@ class TestConnectBindGuard:
         result = await adapter.connect()
         assert result is False
 
-    def test_allows_loopback_without_key(self):
-        """Loopback with no key should pass the guard."""
+    @pytest.mark.asyncio
+    async def test_refuses_loopback_without_key(self):
+        """Loopback binds are still an auth boundary and require API_SERVER_KEY."""
         adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"host": "127.0.0.1"}))
         assert adapter._api_key == ""
-        # The guard condition: is_network_accessible(host) AND NOT api_key
-        # For loopback, is_network_accessible is False so the guard does not block.
         assert is_network_accessible(adapter._host) is False
+        result = await adapter.connect()
+        assert result is False
 
     @pytest.mark.asyncio
     async def test_allows_wildcard_with_key(self):

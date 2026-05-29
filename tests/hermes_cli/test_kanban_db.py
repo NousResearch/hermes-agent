@@ -5,7 +5,10 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import sqlite3
+import sys
 import time
+import types
+import unittest.mock
 from pathlib import Path
 
 import pytest
@@ -46,6 +49,43 @@ def test_init_creates_expected_tables(kanban_home):
         ).fetchall()
     names = {r["name"] for r in rows}
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
+
+
+def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
+    """All kanban connections should use the explicit busy-timeout knob.
+
+    A worker stampede should wait for SQLite's writer lock instead of failing
+    immediately with ``database is locked`` during first-connect/WAL/schema
+    setup.  The timeout must be queryable via PRAGMA so CLI, gateway, and tool
+    connections behave the same way.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_BUSY_TIMEOUT_MS", "123456")
+
+    with kb.connect() as conn:
+        row = conn.execute("PRAGMA busy_timeout").fetchone()
+
+    assert row[0] == 123456
+
+
+def test_cross_process_init_lock_uses_windows_byte_range_lock(tmp_path, monkeypatch):
+    """Windows must use a real process lock, not a no-op sidecar open."""
+    calls: list[tuple[int, int, int]] = []
+    fake_msvcrt = types.SimpleNamespace(
+        LK_LOCK=1,
+        LK_UNLCK=2,
+        locking=lambda fd, mode, nbytes: calls.append((fd, mode, nbytes)),
+    )
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+
+    db_path = tmp_path / "kanban.db"
+    with kb._cross_process_init_lock(db_path):
+        assert calls == [(calls[0][0], fake_msvcrt.LK_LOCK, 1)]
+
+    assert [call[1:] for call in calls] == [
+        (fake_msvcrt.LK_LOCK, 1),
+        (fake_msvcrt.LK_UNLCK, 1),
+    ]
 
 
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
@@ -562,6 +602,80 @@ def test_detect_crashed_workers_isolated_failure_normal_retry(
             assert task.status == "ready", (
                 f"task {tid} should stay ready (isolated), got {task.status}"
             )
+
+
+def test_detect_crashed_workers_skips_freshly_claimed_tasks(
+    kanban_home, monkeypatch,
+):
+    """Grace period prevents reclaim of freshly-started tasks."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.delenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", raising=False)
+
+    now = 1_000_000.0
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="grace test", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='running', worker_pid=?, "
+            "claim_lock=?, started_at=? WHERE id=?",
+            (99999, f"{host}:w", int(now), tid),
+        )
+        conn.commit()
+
+        # With time = now (just claimed), grace period should suppress reclaim.
+        crashed = kb.detect_crashed_workers(conn)
+        assert tid not in crashed, "should not reclaim freshly-started task"
+
+        # With time = now + 60 (past default 30s grace), should reclaim.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 60)
+        crashed = kb.detect_crashed_workers(conn)
+        assert tid in crashed, "should reclaim task past grace period"
+
+
+def test_detect_crashed_workers_grace_period_env_override(
+    kanban_home, monkeypatch,
+):
+    """HERMES_KANBAN_CRASH_GRACE_SECONDS env var adjusts the window."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "5")
+
+    now = 2_000_000.0
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="env override test", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='running', worker_pid=?, "
+            "claim_lock=?, started_at=? WHERE id=?",
+            (99999, f"{host}:w", int(now), tid),
+        )
+        conn.commit()
+
+        # 3s after claim: within 5s grace → no reclaim.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 3)
+        assert tid not in kb.detect_crashed_workers(conn)
+
+        # 6s after claim: past 5s grace → reclaim.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 6)
+        assert tid in kb.detect_crashed_workers(conn)
+
+
+def test_resolve_crash_grace_seconds_handles_bad_env(monkeypatch):
+    """Bad env values fall back to DEFAULT_CRASH_GRACE_SECONDS."""
+    import hermes_cli.kanban_db as _kb
+
+    for bad_val in ("notanumber", "-5", ""):
+        monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", bad_val)
+        result = _kb._resolve_crash_grace_seconds()
+        assert result == _kb.DEFAULT_CRASH_GRACE_SECONDS, (
+            f"expected default for {bad_val!r}, got {result}"
+        )
 
 
 def test_max_runtime_uses_current_run_start_after_retry(kanban_home, monkeypatch):
@@ -2097,16 +2211,30 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
 # NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
 # ---------------------------------------------------------------------------
 
-def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
+def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch, caplog):
     """kanban_db.connect() must handle ``locking protocol`` on NFS/SMB.
 
     Without this fallback, the gateway's kanban dispatcher crashes every
     60s and the kanban migration (``consecutive_failures`` ADD COLUMN) is
     retried forever — which is what the real-world user report shows
     (see hermes-agent issue #22032).
+
+    NOTE: We do NOT use the ``kanban_home`` fixture here because that
+    fixture pre-initializes the DB via ``kb.init_db()`` — putting the
+    file in WAL on disk. The Bug D safety guard now refuses to downgrade
+    to DELETE when the on-disk header is already WAL, so testing the
+    NFS-fallback path requires a truly-fresh DB file (NFS scenario in
+    production: first connection of the first process ever to touch the
+    file, where downgrading is safe because nobody else has WAL state
+    yet).
     """
     import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     # Clear module cache so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()
@@ -3187,6 +3315,44 @@ def test_connect_refuses_corrupt_existing_file(tmp_path):
 
     with pytest.raises(kb.KanbanDbCorruptError):
         kb.connect(db_path=db_path)
+
+
+def test_repeated_corrupt_open_reuses_single_backup(tmp_path):
+    """Repeated quarantines of the same corrupt bytes must not amplify disk usage.
+
+    Regression for the gateway dispatcher's 5-min retry loop on shared kanban
+    DBs across multi-profile fleets: each retry on an unchanged corrupt file
+    used to create a fresh ``.corrupt.<timestamp>.bak`` until disk filled. The
+    content-addressed backup name is deterministic in the DB's sha256, so
+    N retries of the same bytes share one backup.
+    """
+    db_path = tmp_path / "kanban.db"
+    original = _write_corrupt_db(db_path)
+
+    backups: set[Path] = set()
+    for _ in range(10):
+        kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+        with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+            kb.connect(db_path=db_path)
+        assert excinfo.value.backup_path is not None
+        backups.add(excinfo.value.backup_path)
+
+    assert len(backups) == 1, f"expected 1 deterministic backup, got {len(backups)}"
+    (backup,) = backups
+    assert backup.exists()
+    assert backup.read_bytes() == original
+
+    # Mutate the corrupt bytes — fingerprint changes, separate backup preserved.
+    with db_path.open("r+b") as f:
+        f.seek(4096)
+        f.write(b"\xAB" * 64)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo2:
+        kb.connect(db_path=db_path)
+    second_backup = excinfo2.value.backup_path
+    assert second_backup is not None
+    assert second_backup != backup
+    assert second_backup.exists()
 
 
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):

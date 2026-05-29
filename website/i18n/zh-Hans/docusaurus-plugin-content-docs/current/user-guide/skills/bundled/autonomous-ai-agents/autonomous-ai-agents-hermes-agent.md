@@ -401,7 +401,6 @@ Profiles 使用 `~/.hermes/profiles/<name>/`，布局相同。
 | Alibaba / DashScope | API key | `DASHSCOPE_API_KEY` |
 | Xiaomi MiMo | API key | `XIAOMI_API_KEY` |
 | Kilo Code | API key | `KILOCODE_API_KEY` |
-| AI Gateway (Vercel) | API key | `AI_GATEWAY_API_KEY` |
 | OpenCode Zen | API key | `OPENCODE_ZEN_API_KEY` |
 | OpenCode Go | API key | `OPENCODE_GO_API_KEY` |
 | Qwen OAuth | OAuth | `hermes auth add qwen-oauth` |
@@ -922,7 +921,7 @@ monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
 关于宿主 OS、用户 home、cwd、终端后端和 shell（Windows 上的 bash vs PowerShell）的事实性指导从 `agent/prompt_builder.py::build_environment_hints()` 输出。WSL 提示和每个后端的探测逻辑也在此处。约定：
 
 - **本地终端后端** → 输出宿主信息（OS、`$HOME`、cwd）+ Windows 特有说明（hostname ≠ username，`terminal` 使用 bash 而非 PowerShell）。
-- **远程终端后端**（`_REMOTE_TERMINAL_BACKENDS` 中的任何内容：`docker, singularity, modal, daytona, ssh, vercel_sandbox, managed_modal`）→ **完全抑制**宿主信息，仅描述后端。通过 `tools.environments.get_environment(...).execute(...)` 在后端内运行实时 `uname`/`whoami`/`pwd` 探测，每进程缓存在 `_BACKEND_PROBE_CACHE` 中，探测超时时使用静态回退。
+- **远程终端后端**（`_REMOTE_TERMINAL_BACKENDS` 中的任何内容：`docker, singularity, modal, daytona, ssh, managed_modal`）→ **完全抑制**宿主信息，仅描述后端。通过 `tools.environments.get_environment(...).execute(...)` 在后端内运行实时 `uname`/`whoami`/`pwd` 探测，每进程缓存在 `_BACKEND_PROBE_CACHE` 中，探测超时时使用静态回退。
 - **prompt 编写的关键事实：** 当 `TERMINAL_ENV != "local"` 时，*每个*文件工具（`read_file`、`write_file`、`patch`、`search_files`）都在后端容器内运行，而非宿主上。在这种情况下，系统 prompt 绝不能描述宿主——agent 无法访问它。
 
 完整设计说明、确切输出字符串和测试陷阱：`references/prompt-builder-environment-hints.md`。

@@ -37,7 +37,18 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Fix A: prelude error fallback
+# Fix A: prelude error surfacing via wire `error` events
+#
+# With the migration to ``responses.create(stream=True)`` raw event iteration,
+# the SDK's high-level state-machine RuntimeError no longer mediates between
+# the wire and us — we read the wire directly.  When the chatgpt.com Codex
+# backend (or xAI, codex-lb, custom relays) emits a ``type=error`` frame as
+# its first event, our consumer raises ``_StreamErrorEvent`` straight from
+# the wire payload, which carries the real provider message in ``.body`` /
+# ``.message`` shape for ``_summarize_api_error`` to consume.  This is
+# strictly better than the old "SDK raises RuntimeError → we retry → fall
+# back to a second non-stream call" two-phase dance, because the error
+# surfaces on the first event instead of after one wasted round trip.
 # ---------------------------------------------------------------------------
 
 
@@ -60,105 +71,104 @@ def _make_codex_agent():
 
 
 @pytest.mark.parametrize(
-    "prelude_event_type",
+    "provider_message",
     [
-        "error",                  # xAI OAuth multi-turn
-        "codex.rate_limits",      # codex-lb relays (#14634)
-        "response.in_progress",   # custom Responses relays (#8133)
+        "You do not have an active Grok subscription",
+        "rate limit exceeded",
+        "model not available",
     ],
 )
-def test_codex_stream_prelude_error_falls_back_to_create_stream(prelude_event_type):
-    """The SDK's prelude RuntimeError must trigger the non-stream fallback.
+def test_codex_stream_wire_error_event_surfaces_stream_error_event(provider_message):
+    """A wire ``type=error`` SSE frame raises ``_StreamErrorEvent`` with the
+    provider's real message in the body."""
+    from run_agent import _StreamErrorEvent
 
-    When the first SSE event isn't ``response.created``, openai-python
-    raises RuntimeError before our event loop sees anything.  We must
-    detect that, retry once, then fall back to ``create(stream=True)``
-    which surfaces the real provider error or a real response.
-    """
     agent = _make_codex_agent()
 
-    prelude_error = RuntimeError(
-        f"Expected to have received `response.created` before `{prelude_event_type}`"
-    )
+    class _ErrorCreateStream:
+        def __iter__(self_inner):
+            yield SimpleNamespace(type="error", message=provider_message, code="forbidden")
+
+        def close(self_inner):
+            pass
 
     mock_client = MagicMock()
-    mock_client.responses.stream.side_effect = prelude_error
+    mock_client.responses.create.return_value = _ErrorCreateStream()
 
-    fallback_response = SimpleNamespace(
-        output=[SimpleNamespace(
-            type="message",
-            content=[SimpleNamespace(type="output_text", text="fallback ok")],
-        )],
-        status="completed",
-    )
+    with pytest.raises(_StreamErrorEvent) as excinfo:
+        agent._run_codex_stream({}, client=mock_client)
 
-    with patch.object(
-        agent, "_run_codex_create_stream_fallback", return_value=fallback_response
-    ) as mock_fallback:
-        result = agent._run_codex_stream({}, client=mock_client)
-
-    assert result is fallback_response
-    mock_fallback.assert_called_once_with({}, client=mock_client)
+    assert provider_message in str(excinfo.value)
+    assert excinfo.value.body["error"]["message"] == provider_message
 
 
-def test_codex_stream_prelude_error_retries_once_before_fallback():
-    """The retry path must fire one extra stream attempt before falling back."""
+def test_codex_stream_retries_remote_protocol_error_once():
+    """Transport errors (``httpx.RemoteProtocolError``) trigger a single retry.
+
+    Previously this was on the ``responses.stream(...)`` helper; now it's on
+    ``responses.create(stream=True)`` itself.  The user-facing behavior is the
+    same: one retry, then re-raise if the second attempt also fails.
+    """
+    import httpx
+
     agent = _make_codex_agent()
-
     call_count = {"n": 0}
 
-    def stream_side_effect(**kwargs):
+    def create_side_effect(**kwargs):
         call_count["n"] += 1
-        raise RuntimeError(
-            "Expected to have received `response.created` before `error`"
+        raise httpx.RemoteProtocolError(
+            "peer closed connection without sending complete message body"
         )
 
     mock_client = MagicMock()
-    mock_client.responses.stream.side_effect = stream_side_effect
+    mock_client.responses.create.side_effect = create_side_effect
 
-    fallback_response = SimpleNamespace(output=[], status="completed")
-    with patch.object(
-        agent, "_run_codex_create_stream_fallback", return_value=fallback_response
-    ) as mock_fallback:
+    with pytest.raises(httpx.RemoteProtocolError):
         agent._run_codex_stream({}, client=mock_client)
 
-    # max_stream_retries=1 → one retry + final attempt → 2 stream calls,
-    # THEN the fallback path runs.
+    # max_stream_retries=1 → one retry + final attempt → 2 create calls total.
     assert call_count["n"] == 2
-    mock_fallback.assert_called_once()
 
 
 def test_codex_stream_unrelated_runtimeerror_still_raises():
-    """RuntimeErrors that aren't prelude/postlude shape must propagate."""
+    """RuntimeErrors that aren't transport errors must propagate.
+
+    With the event-driven path there's no separate fallback function to
+    short-circuit into; any RuntimeError from ``responses.create()`` or the
+    consumer surfaces directly.
+    """
     agent = _make_codex_agent()
 
     mock_client = MagicMock()
-    mock_client.responses.stream.side_effect = RuntimeError("something else broke")
+    mock_client.responses.create.side_effect = RuntimeError("something else broke")
 
-    with patch.object(agent, "_run_codex_create_stream_fallback") as mock_fallback:
-        with pytest.raises(RuntimeError, match="something else broke"):
-            agent._run_codex_stream({}, client=mock_client)
-
-    mock_fallback.assert_not_called()
+    with pytest.raises(RuntimeError, match="something else broke"):
+        agent._run_codex_stream({}, client=mock_client)
 
 
-def test_codex_stream_postlude_error_still_falls_back():
-    """Existing ``response.completed`` fallback must not regress."""
+def test_codex_stream_truncated_no_terminal_event_raises():
+    """Streams that end without a terminal event AND no items raise.
+
+    Preserves the "Codex Responses stream did not emit a terminal response"
+    signal callers use to distinguish "stream truncated mid-flight" from
+    "stream completed with empty body".  Previously surfaced by the SDK's
+    ``RuntimeError("Didn't receive a `response.completed` event.")``; now
+    surfaced directly by the event consumer.
+    """
     agent = _make_codex_agent()
 
+    class _EmptyStream:
+        def __iter__(self_inner):
+            return iter(())
+
+        def close(self_inner):
+            pass
+
     mock_client = MagicMock()
-    mock_client.responses.stream.side_effect = RuntimeError(
-        "Didn't receive a `response.completed` event."
-    )
+    mock_client.responses.create.return_value = _EmptyStream()
 
-    fallback_response = SimpleNamespace(output=[], status="completed")
-    with patch.object(
-        agent, "_run_codex_create_stream_fallback", return_value=fallback_response
-    ) as mock_fallback:
-        result = agent._run_codex_stream({}, client=mock_client)
-
-    assert result is fallback_response
-    mock_fallback.assert_called_once()
+    with pytest.raises(RuntimeError, match="did not emit a terminal response"):
+        agent._run_codex_stream({}, client=mock_client)
 
 
 # ---------------------------------------------------------------------------
@@ -904,3 +914,171 @@ def test_grok_4_still_resolves_to_256k():
         # must be "grok-4" (or a more specific variant family if one is
         # ever added).  The 256k contract must hold.
         assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 256_000
+
+
+# ---------------------------------------------------------------------------
+# Cross-issuer reasoning replay guard
+#
+# When a session switches model providers mid-conversation (e.g. user runs
+# /model gpt-5.5 after several turns on grok-4.3), the persisted reasoning
+# items carry encrypted_content that only the issuing endpoint can decrypt.
+# Replaying them against the new endpoint deterministically returns HTTP 400
+# invalid_encrypted_content and breaks every subsequent turn. The cross-issuer
+# guard stamps each reasoning item with its issuer on normalize and drops
+# foreign-issuer items on replay.
+# ---------------------------------------------------------------------------
+
+
+def _stamped_assistant_msg(issuer_kind, *, text="hi", encrypted="enc_blob", rs_id="rs_001"):
+    return {
+        "role": "assistant",
+        "content": text,
+        "codex_reasoning_items": [
+            {
+                "type": "reasoning",
+                "id": rs_id,
+                "encrypted_content": encrypted,
+                "summary": [],
+                "_issuer_kind": issuer_kind,
+            }
+        ],
+    }
+
+
+def test_cross_issuer_reasoning_is_dropped_on_replay():
+    """Reasoning minted by one Responses endpoint must not be replayed to
+    another. This is the regression for the chatgpt-backend vs xAI-OAuth
+    swap that returned invalid_encrypted_content on every turn after the
+    user changed model mid-session.
+    """
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    msgs = [
+        {"role": "user", "content": "hi"},
+        _stamped_assistant_msg("xai_responses", encrypted="grok_blob"),
+        {"role": "user", "content": "next"},
+    ]
+
+    # Calling against codex_backend — the grok-issued blob must be dropped.
+    items = _chat_messages_to_responses_input(
+        msgs, current_issuer_kind="codex_backend"
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert reasoning == [], (
+        "Reasoning items stamped with a foreign _issuer_kind must be dropped "
+        "before the API rejects the whole request with invalid_encrypted_content."
+    )
+
+
+def test_same_issuer_reasoning_is_still_replayed():
+    """Same-endpoint reasoning replay is the documented happy path (May 2026
+    reversal). The cross-issuer guard must not regress it.
+    """
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    msgs = [
+        {"role": "user", "content": "hi"},
+        _stamped_assistant_msg("xai_responses", encrypted="grok_blob"),
+        {"role": "user", "content": "next"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        msgs, current_issuer_kind="xai_responses"
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert len(reasoning) == 1
+    assert reasoning[0]["encrypted_content"] == "grok_blob"
+    # The internal stamp must not leak to the API payload.
+    assert "_issuer_kind" not in reasoning[0]
+
+
+def test_unstamped_reasoning_is_replayed_for_backwards_compat():
+    """Reasoning items persisted before this patch don't carry _issuer_kind.
+    They must still be replayed (legacy-compatible behaviour).
+    """
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "hello",
+            "codex_reasoning_items": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_legacy",
+                    "encrypted_content": "legacy_blob",
+                    "summary": [],
+                }
+            ],
+        },
+        {"role": "user", "content": "next"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        msgs, current_issuer_kind="codex_backend"
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert len(reasoning) == 1
+    assert reasoning[0]["encrypted_content"] == "legacy_blob"
+
+
+def test_normalize_codex_response_stamps_issuer_on_reasoning():
+    """Reasoning captured from a response must be stamped with the issuer so
+    a later replay against a different endpoint can drop it.
+    """
+    from types import SimpleNamespace
+
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        id="rs_new",
+        encrypted_content="fresh_blob",
+        summary=[],
+    )
+    message_item = SimpleNamespace(
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="ok")],
+        id="msg_1",
+    )
+    response = SimpleNamespace(output=[reasoning_item, message_item], status="completed")
+
+    msg, _ = _normalize_codex_response(response, issuer_kind="xai_responses")
+    assert msg.codex_reasoning_items and len(msg.codex_reasoning_items) == 1
+    assert msg.codex_reasoning_items[0]["_issuer_kind"] == "xai_responses"
+    assert msg.codex_reasoning_items[0]["encrypted_content"] == "fresh_blob"
+
+
+def test_transport_round_trip_drops_foreign_reasoning():
+    """Full transport flow: build_kwargs against codex_backend after grok turns
+    must produce an `input` array that contains zero foreign reasoning items.
+    """
+    from agent.transports.codex import ResponsesApiTransport
+
+    transport = ResponsesApiTransport()
+    messages = [
+        {"role": "system", "content": "you are hermes"},
+        {"role": "user", "content": "hi"},
+        _stamped_assistant_msg("xai_responses", encrypted="grok_blob"),
+        {"role": "user", "content": "엑스다임 프로젝트 파악, 스킬로 정리."},
+    ]
+
+    kwargs = transport.build_kwargs(
+        model="gpt-5.5",
+        messages=messages,
+        tools=None,
+        is_codex_backend=True,
+        is_xai_responses=False,
+        is_github_responses=False,
+        base_url="https://chatgpt.com/backend-api/codex",
+        instructions="you are hermes",
+    )
+
+    reasoning = [it for it in kwargs["input"] if it.get("type") == "reasoning"]
+    assert reasoning == [], (
+        "Cross-issuer reasoning leaked through build_kwargs — this is the "
+        "exact regression that broke session 40de1ae0 on 2026-05-25 01:09."
+    )

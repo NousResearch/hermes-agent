@@ -51,6 +51,9 @@ def test_provider_profiles_register():
     _clear_provider_caches()
     from providers import list_providers
 
+    plugins_dir = REPO_ROOT / "plugins" / "model-providers"
+    plugin_dir_count = sum(1 for c in plugins_dir.iterdir() if c.is_dir())
+
     profiles = list_providers()
     names = sorted(p.name for p in profiles)
     assert len(names) == len(set(names)), f"Duplicate provider profiles: {names}"

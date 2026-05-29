@@ -263,9 +263,27 @@ class TestGatewayRuntimeStatus:
             (
                 target,
                 payload,
-                {"indent": None, "separators": (",", ":")},
+                {
+                    "indent": None,
+                    "separators": (",", ":"),
+                    "create_mode": status._RUNTIME_METADATA_CREATE_MODE,
+                },
             )
         ]
+
+    def test_write_json_file_first_create_is_world_readable(self, tmp_path, monkeypatch):
+        import stat as _stat
+
+        if os.name != "posix":
+            return
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        target = tmp_path / "gateway_state.json"
+
+        status._write_json_file(target, {"gateway_state": "running"})
+
+        mode = _stat.S_IMODE(target.stat().st_mode)
+        assert mode == status._RUNTIME_METADATA_CREATE_MODE
 
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):
         """Regression: setdefault() preserved stale PID from previous process (#1631)."""

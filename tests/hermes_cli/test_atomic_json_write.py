@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 from pathlib import Path
 from unittest.mock import patch
 
@@ -157,3 +158,21 @@ class TestAtomicJsonWrite:
         result = json.loads(target.read_text())
         assert "writer" in result
         assert len(result["data"]) == 100
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX-only mode assertion")
+    def test_first_create_keeps_default_temp_permissions_without_create_mode(self, tmp_path):
+        target = tmp_path / "default_mode.json"
+
+        atomic_json_write(target, {"ok": True})
+
+        mode = stat.S_IMODE(target.stat().st_mode)
+        assert mode == 0o600
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX-only mode assertion")
+    def test_first_create_applies_explicit_create_mode(self, tmp_path):
+        target = tmp_path / "explicit_mode.json"
+
+        atomic_json_write(target, {"ok": True}, create_mode=0o644)
+
+        mode = stat.S_IMODE(target.stat().st_mode)
+        assert mode == 0o644

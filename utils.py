@@ -58,6 +58,23 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         pass
 
 
+def _restore_atomic_write_mode(
+    path: Path,
+    original_mode: "int | None",
+    create_mode: "int | None" = None,
+) -> None:
+    """Restore an existing mode or apply an explicit mode for first creates.
+
+    Atomic writes swap a freshly-created temp file into place. When the target
+    did not exist before the write, there is no preserved mode to restore, so
+    callers that need a specific first-create mode must opt in explicitly.
+    """
+    if original_mode is not None:
+        _restore_file_mode(path, original_mode)
+    elif create_mode is not None:
+        _restore_file_mode(path, create_mode)
+
+
 def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """Atomically move *tmp_path* onto *target*, preserving symlinks.
 
@@ -87,6 +104,7 @@ def atomic_json_write(
     data: Any,
     *,
     indent: int = 2,
+    create_mode: int | None = None,
     **dump_kwargs: Any,
 ) -> None:
     """Write JSON data to a file atomically.
@@ -99,6 +117,9 @@ def atomic_json_write(
         path: Target file path (will be created or overwritten).
         data: JSON-serializable data to write.
         indent: JSON indentation (default 2).
+        create_mode: Optional permission bits to apply when atomically
+            creating a brand-new target file. Existing files keep their
+            original mode.
         **dump_kwargs: Additional keyword args forwarded to json.dump(), such
             as default=str for non-native types.
     """
@@ -125,7 +146,7 @@ def atomic_json_write(
             os.fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
-        _restore_file_mode(real_path, original_mode)
+        _restore_atomic_write_mode(Path(real_path), original_mode, create_mode)
     except BaseException:
         # Intentionally catch BaseException so temp-file cleanup still runs for
         # KeyboardInterrupt/SystemExit before re-raising the original signal.
@@ -143,6 +164,7 @@ def atomic_yaml_write(
     default_flow_style: bool = False,
     sort_keys: bool = False,
     extra_content: str | None = None,
+    create_mode: int | None = None,
 ) -> None:
     """Write YAML data to a file atomically.
 
@@ -157,6 +179,9 @@ def atomic_yaml_write(
         sort_keys: Whether to sort dict keys (default False).
         extra_content: Optional string to append after the YAML dump
             (e.g. commented-out sections for user reference).
+        create_mode: Optional permission bits to apply when atomically
+            creating a brand-new target file. Existing files keep their
+            original mode.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -177,7 +202,7 @@ def atomic_yaml_write(
             os.fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
-        _restore_file_mode(real_path, original_mode)
+        _restore_atomic_write_mode(Path(real_path), original_mode, create_mode)
     except BaseException:
         # Match atomic_json_write: cleanup must also happen for process-level
         # interruptions before we re-raise them.

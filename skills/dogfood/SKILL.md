@@ -29,7 +29,7 @@ The user provides:
 
 ## Workflow
 
-Follow this 5-phase systematic workflow:
+Follow this 6-phase systematic workflow:
 
 ### Phase 1: Plan
 
@@ -61,11 +61,14 @@ For each page or feature in your plan:
    browser_snapshot()
    ```
 
-3. **Check the console** for JavaScript errors:
+3. **Check the console** for JavaScript errors and failed network requests:
    ```
    browser_console(clear=true)
    ```
-   Do this after every navigation and after every significant interaction. Silent JS errors are high-value findings.
+   Do this after every navigation and after every significant interaction. Silent JS errors are high-value findings. Capture two distinct kinds of evidence from the console output and keep them separate when recording an issue:
+   - **Console evidence** — uncaught exceptions, unhandled promise rejections, warnings.
+   - **Network evidence** — failed requests surfaced in the console (4xx/5xx responses, CORS failures, mixed-content blocks). Note the request URL and status code.
+   Copy the exact text verbatim; you will paste it into the issue's evidence fields.
 
 4. **Take an annotated screenshot** to visually assess the page and identify interactive elements:
    ```
@@ -96,17 +99,21 @@ For every issue found:
    ```
    Save the `screenshot_path` from the response — you will reference it in the report.
 
-2. **Record the details**:
+2. **Record the details** — capture every field the report template needs so it can be filled without guessing later:
    - URL where the issue occurs
-   - Steps to reproduce
+   - Steps to reproduce (numbered)
    - Expected behavior
    - Actual behavior
-   - Console errors (if any)
-   - Screenshot path
+   - **Console evidence** — verbatim console errors, or "None observed"
+   - **Network evidence** — failed requests with URL and status code, or "None observed"
+   - Screenshot path (from the `screenshot_path` in the `browser_vision` response)
 
 3. **Classify the issue** using the issue taxonomy (see `references/issue-taxonomy.md`):
-   - Severity: Critical / High / Medium / Low
-   - Category: Functional / Visual / Accessibility / Console / UX / Content
+   - **Severity:** Critical / High / Medium / Low
+   - **Category:** Functional / Visual / Accessibility / Console / UX / Content
+   - **Reproduction confidence:** Confirmed (reproduced 2+ times) / Likely (seen once) / Intermittent (could not reproduce reliably). To reach "Confirmed", re-run the reproduction steps at least once.
+   - **Suggested owner:** Frontend / Backend/API / Design / Content / Infra — the area most likely to own the root cause.
+   - **Next action:** the concrete fix or investigation you recommend.
 
 ### Phase 4: Categorize
 
@@ -114,27 +121,46 @@ For every issue found:
 2. De-duplicate — merge issues that are the same bug manifesting in different places.
 3. Assign final severity and category to each issue.
 4. Sort by severity (Critical first, then High, Medium, Low).
-5. Count issues by severity and category for the executive summary.
+5. Count issues **both** by severity and by category for the breakdown section. The two counts must each sum to the same total.
+6. Distill the three-line executive summary: a one-sentence overall **verdict**, the single most important **headline** finding, and the recommended **next action**.
 
 ### Phase 5: Report
 
 Generate the final report using the template at `templates/dogfood-report-template.md`.
 
-The report must include:
-1. **Executive summary** with total issue count, breakdown by severity, and testing scope
-2. **Per-issue sections** with:
+This report is meant to be readable in messaging platforms, so **use no Markdown tables** — the template expresses everything as labeled fields and bullet lists. The report must include:
+
+1. **Three-line executive summary** — Verdict, Headline, Next action (one sentence each).
+2. **Issue breakdown** — counts by severity and by category, as bullet lists (no tables). Both lists sum to the same total.
+3. **Per-issue blocks** (no tables, sorted Critical → Low), each with:
    - Issue number and title
-   - Severity and category badges
+   - Severity and category
    - URL where observed
-   - Description of the issue
-   - Steps to reproduce
-   - Expected vs actual behavior
-   - Screenshot references (use `MEDIA:<screenshot_path>` for inline images)
-   - Console errors if relevant
-3. **Summary table** of all issues
-4. **Testing notes** — what was tested, what was not, any blockers
+   - Reproduction confidence, suggested owner, and next action
+   - Description, numbered steps to reproduce, expected vs actual behavior
+   - **Evidence — Screenshot** (`MEDIA:<screenshot_path>` for inline images)
+   - **Evidence — Console** (verbatim, or "None observed")
+   - **Evidence — Network** (failed requests with status codes, or "None observed")
+4. **All issues at a glance** — one bullet per issue.
+5. **Coverage matrix** — one bullet per page/feature marked Tested / Partial / Not tested, with flows exercised or reason skipped, plus any blockers.
+6. **Artifact inventory** — the report path and every screenshot with a note on what it shows.
+7. **Final smoke-check checklist** — the verification gate completed in Phase 6.
 
 Save the report to `{output_dir}/report.md`.
+
+### Phase 6: Verify Completeness
+
+Before finalizing, **explicitly verify the report against the smoke-check checklist** at the bottom of the template. Do not deliver the report until every box can be checked:
+
+- Executive summary is exactly three lines (Verdict / Headline / Next action).
+- The severity breakdown and the category breakdown each sum to the same total, and that total matches the number of per-issue blocks.
+- Every issue has severity, category, reproduction confidence, suggested owner, and next action.
+- Every issue has at least one populated evidence field (screenshot, console, or network).
+- Every `MEDIA:` screenshot path points to a file that actually exists in `{output_dir}/screenshots/`.
+- The coverage matrix lists both tested and not-tested areas.
+- The report contains no Markdown tables.
+
+If any check fails, return to the relevant phase, gather the missing evidence or fix the count, and re-verify. Only then deliver the report.
 
 ## Tools Reference
 

@@ -12,6 +12,7 @@ from gateway.platforms.base import (
     MessageEvent,
     safe_url_for_log,
     utf16_len,
+    _log_safe_path,
     _prefix_within_utf16_limit,
 )
 
@@ -1050,3 +1051,52 @@ class TestProxyKwargsForAiohttp:
             sess_kw, req_kw = proxy_kwargs_for_aiohttp("http://proxy:8080")
             assert sess_kw == {}
             assert req_kw == {"proxy": "http://proxy:8080"}
+
+
+class TestMediaDeliveryDiagnosability:
+    """Diagnosable rejection logging + crafted-path robustness (#33251)."""
+
+    def test_rejected_path_appears_in_log(self, tmp_path, caplog):
+        outside = tmp_path / "outside.ogg"
+        outside.write_bytes(b"OggS")
+        with patch.dict(os.environ, {"HERMES_MEDIA_DELIVERY_STRICT": "1",
+                                     "HERMES_MEDIA_TRUST_RECENT_FILES": "0"}), \
+                patch("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", ()):
+            with caplog.at_level("WARNING"):
+                out = BasePlatformAdapter.filter_media_delivery_paths([(str(outside), False)])
+        assert out == []
+        # The dropped path must be in the log so operators can diagnose it.
+        assert str(outside) in caplog.text
+
+    def test_crafted_null_path_does_not_abort_batch(self, tmp_path, monkeypatch):
+        """One crafted ~\\x00 path must not drop every other attachment."""
+        good = tmp_path / "good.png"
+        good.write_bytes(b"\x89PNG")
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+        out = BasePlatformAdapter.filter_media_delivery_paths([
+            ("~\x00evil.png", False),
+            (str(good), False),
+        ])
+        assert out == [(str(good.resolve()), False)]
+
+    def test_extract_media_tolerates_crafted_null_path(self):
+        """extract_media must not raise on a crafted ~\\x00 MEDIA tag."""
+        content = "here\nMEDIA:`~\x00evil.png`\ntrailing"
+        # Must not raise ValueError("embedded null byte").
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert all("\x00" not in p for p, _ in media)
+
+    def test_log_safe_path_neutralises_line_breaks(self):
+        forged = "/tmp/a.png\nWARNING forged second line"
+        assert "\n" not in _log_safe_path(forged)
+        # Unicode separators that split log lines are also neutralised.
+        for sep in ("\u2028", "\u2029", "\x85"):
+            assert sep not in _log_safe_path(f"/tmp/a{sep}b.png")
+
+    def test_canonical_cache_roots_present(self):
+        from gateway.platforms.base import MEDIA_DELIVERY_SAFE_ROOTS
+        roots = {str(r) for r in MEDIA_DELIVERY_SAFE_ROOTS}
+        assert any(r.endswith("cache/images") for r in roots)
+        assert any(r.endswith("cache/documents") for r in roots)
+        # Legacy layout still present.
+        assert any(r.endswith("image_cache") for r in roots)

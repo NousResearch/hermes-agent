@@ -600,18 +600,32 @@ def run_conversation(
             system_prompt=active_system_prompt or "",
             tools=agent.tools or None,
         )
+        _compressor = agent.context_compressor
+        _defer_preflight = getattr(
+            _compressor,
+            "should_defer_preflight_to_real_usage",
+            lambda _tokens: False,
+        )
 
-        if agent.context_compressor.should_compress(_preflight_tokens):
+        if _defer_preflight(_preflight_tokens):
+            logger.info(
+                "Skipping preflight compression: rough estimate ~%s >= %s, "
+                "but last real provider prompt was %s after compression",
+                f"{_preflight_tokens:,}",
+                f"{_compressor.threshold_tokens:,}",
+                f"{_compressor.last_real_prompt_tokens:,}",
+            )
+        elif _compressor.should_compress(_preflight_tokens):
             logger.info(
                 "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                 f"{_preflight_tokens:,}",
-                f"{agent.context_compressor.threshold_tokens:,}",
+                f"{_compressor.threshold_tokens:,}",
                 agent.model,
-                f"{agent.context_compressor.context_length:,}",
+                f"{_compressor.context_length:,}",
             )
             agent._emit_status(
                 f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                f">= {agent.context_compressor.threshold_tokens:,} threshold. "
+                f">= {_compressor.threshold_tokens:,} threshold. "
                 "This may take a moment."
             )
             # May need multiple passes for very large sessions with small
@@ -646,8 +660,8 @@ def run_conversation(
                     system_prompt=active_system_prompt or "",
                     tools=agent.tools or None,
                 )
-                if _preflight_tokens < agent.context_compressor.threshold_tokens:
-                    break  # Under threshold
+                if not _compressor.should_compress(_preflight_tokens):
+                    break  # Under threshold or anti-thrash guard stopped it
 
     # Plugin hook: pre_llm_call
     # Fired once per turn before the tool-calling loop.  Plugins can
@@ -3862,6 +3876,11 @@ def run_conversation(
                     # inflate completion_tokens with reasoning,
                     # causing premature compression.  (#12026)
                     _real_tokens = _compressor.last_prompt_tokens
+                elif _compressor.last_prompt_tokens == -1:
+                    # Compression just ran and no API-reported prompt count
+                    # has arrived yet. Avoid treating a schema-heavy rough
+                    # post-compression estimate as real context pressure.
+                    _real_tokens = 0
                 else:
                     # Include tool schemas — with 50+ tools enabled
                     # these add 20-30K tokens the messages-only

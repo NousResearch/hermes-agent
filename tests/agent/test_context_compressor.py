@@ -41,6 +41,8 @@ class TestShouldCompress:
 
 class TestUpdateFromResponse:
     def test_updates_fields(self, compressor):
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_compression_rough_tokens = 90_000
         compressor.update_from_response({
             "prompt_tokens": 5000,
             "completion_tokens": 1000,
@@ -48,10 +50,37 @@ class TestUpdateFromResponse:
         })
         assert compressor.last_prompt_tokens == 5000
         assert compressor.last_completion_tokens == 1000
+        assert compressor.last_real_prompt_tokens == 5000
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
+        assert compressor.awaiting_real_usage_after_compression is False
 
     def test_missing_fields_default_zero(self, compressor):
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
+
+
+class TestPreflightDeferral:
+    def test_defers_when_recent_real_usage_fit_and_rough_growth_is_small(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 50_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(93_000) is True
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 93_000
+
+    def test_does_not_defer_when_rough_growth_is_large(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 50_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(100_000) is False
+
+    def test_does_not_defer_without_recent_real_usage(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 0
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(93_000) is False
 
 
 

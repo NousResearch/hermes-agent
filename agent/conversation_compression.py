@@ -575,19 +575,18 @@ def compress_context(
             force=True,
         )
 
-    # Update token estimate after compaction so pressure calculations
-    # use the post-compression count, not the stale pre-compression one.
-    # Use estimate_request_tokens_rough() so tool schemas are included —
-    # with 50+ tools enabled, schemas alone can add 20-30K tokens, and
-    # omitting them delays the next compression cycle far past the
-    # configured threshold (issue #14695).
+    # Keep the post-compression rough estimate for diagnostics, but do not
+    # treat it as provider-reported prompt usage. Schema-heavy rough estimates
+    # can remain above threshold even after the next real API request fits.
     _compressed_est = estimate_request_tokens_rough(
         compressed,
         system_prompt=new_system_prompt or "",
         tools=agent.tools or None,
     )
-    agent.context_compressor.last_prompt_tokens = _compressed_est
+    agent.context_compressor.last_compression_rough_tokens = _compressed_est
+    agent.context_compressor.last_prompt_tokens = -1
     agent.context_compressor.last_completion_tokens = 0
+    agent.context_compressor.awaiting_real_usage_after_compression = True
 
     # Clear the file-read dedup cache.  After compression the original
     # read content is summarised away — if the model re-reads the same
@@ -599,7 +598,7 @@ def compress_context(
         pass
 
     logger.info(
-        "context compression done: session=%s messages=%d->%d tokens=~%s",
+        "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
         agent.session_id or "none", _pre_msg_count, len(compressed),
         f"{_compressed_est:,}",
     )

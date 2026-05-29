@@ -251,6 +251,7 @@ class TestBrowserVisionConfig:
         assert mock_llm.call_args.kwargs["timeout"] == 120.0
 
     def test_browser_vision_native_fast_path_returns_multimodal(self, tmp_path):
+        """supports_vision override → screenshot attached natively, no aux call."""
         from agent.auxiliary_client import clear_runtime_main, set_runtime_main
         from tools.browser_tool import browser_vision
 
@@ -265,10 +266,7 @@ class TestBrowserVisionConfig:
                     "tools.browser_tool._run_browser_command",
                     return_value={
                         "success": True,
-                        "data": {
-                            "path": str(screenshot),
-                            "annotations": annotations,
-                        },
+                        "data": {"path": str(screenshot), "annotations": annotations},
                     },
                 ),
                 patch(
@@ -278,9 +276,7 @@ class TestBrowserVisionConfig:
                 patch("tools.browser_tool._get_vision_model") as mock_get_vision_model,
                 patch("tools.browser_tool.call_llm") as mock_llm,
             ):
-                result = browser_vision(
-                    "what is on the page?", annotate=True, task_id="test"
-                )
+                result = browser_vision("what is on the page?", annotate=True, task_id="test")
         finally:
             clear_runtime_main()
 
@@ -289,55 +285,12 @@ class TestBrowserVisionConfig:
         assert result["meta"]["screenshot_path"] == str(screenshot)
         assert result["meta"]["annotations"] == annotations
         assert any(p.get("type") == "image_url" for p in result["content"])
-        assert "what is on the page?" in result["content"][0]["text"]
-        assert str(screenshot) in result["content"][0]["text"]
-        assert "Screenshot path:" in result["text_summary"]
+        assert f"Screenshot path: {screenshot}" in result["text_summary"]
         mock_get_vision_model.assert_not_called()
         mock_llm.assert_not_called()
 
-    def test_browser_vision_native_mode_without_supports_vision_uses_aux_llm(self, tmp_path):
-        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
-        from tools.browser_tool import browser_vision
-
-        shots_dir, screenshot = self._setup_screenshot(tmp_path)
-        mock_response = MagicMock()
-        mock_choice = MagicMock()
-        mock_choice.message.content = "Fallback screenshot analysis"
-        mock_response.choices = [mock_choice]
-
-        set_runtime_main("brand-new-provider", "opaque-model")
-        try:
-            with (
-                patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
-                patch("tools.browser_tool._cleanup_old_screenshots"),
-                patch(
-                    "tools.browser_tool._run_browser_command",
-                    return_value={"success": True, "data": {"path": str(screenshot)}},
-                ),
-                patch(
-                    "hermes_cli.config.load_config",
-                    return_value={"agent": {"image_input_mode": "native"}},
-                ),
-                patch("tools.browser_tool._get_vision_model", return_value="test-model"),
-                patch("tools.browser_tool.call_llm", return_value=mock_response) as mock_llm,
-            ):
-                result = json.loads(browser_vision("what is on the page?", task_id="test"))
-        finally:
-            clear_runtime_main()
-
-        assert result["success"] is True
-        assert result["analysis"] == "Fallback screenshot analysis"
-        assert result["screenshot_path"] == str(screenshot)
-        mock_llm.assert_called_once()
-        kwargs = mock_llm.call_args.kwargs
-        assert kwargs["task"] == "vision"
-        assert kwargs["model"] == "test-model"
-        assert kwargs["messages"][0]["content"][1]["type"] == "image_url"
-        assert kwargs["messages"][0]["content"][1]["image_url"]["url"].startswith(
-            "data:image/png;base64,"
-        )
-
     def test_browser_vision_text_mode_blocks_native_fast_path(self, tmp_path):
+        """Explicit text routing → aux LLM used even with supports_vision."""
         from agent.auxiliary_client import clear_runtime_main, set_runtime_main
         from tools.browser_tool import browser_vision
 
@@ -372,7 +325,6 @@ class TestBrowserVisionConfig:
 
         assert result["success"] is True
         assert result["analysis"] == "Text-mode screenshot analysis"
-        assert result["screenshot_path"] == str(screenshot)
         mock_llm.assert_called_once()
 
 

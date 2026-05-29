@@ -15,7 +15,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from hermes_cli.main import cmd_dashboard, _report_dashboard_status
+from hermes_cli.main import cmd_dashboard
 
 
 def _ns(**kw):

@@ -265,6 +265,46 @@ class TestDetectAudioEnvironment:
         assert result["warnings"] == []
         assert any("container" in n.lower() for n in result.get("notices", []))
 
+    def test_docker_with_pipewire_remote_and_no_devices_allows_voice(self, monkeypatch):
+        """PIPEWIRE_REMOTE should bypass empty PortAudio device lists in Docker."""
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.setenv("PIPEWIRE_REMOTE", "/run/user/1000/pipewire-0")
+        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+
+        sd = MagicMock()
+        sd.query_devices.return_value = []
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (sd, MagicMock()))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert result["warnings"] == []
+        assert any("host audio forwarding" in n.lower() for n in result.get("notices", []))
+
+    def test_docker_with_pipewire_remote_and_query_failure_allows_voice(self, monkeypatch):
+        """PIPEWIRE_REMOTE should bypass PortAudio query failures in Docker."""
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.setenv("PIPEWIRE_REMOTE", "/run/user/1000/pipewire-0")
+        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+
+        sd = MagicMock()
+        sd.query_devices.side_effect = RuntimeError("boom")
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (sd, MagicMock()))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert result["warnings"] == []
+        assert any("host audio forwarding" in n.lower() for n in result.get("notices", []))
+
     def test_docker_without_audio_forwarding_blocks_voice(self, monkeypatch):
         """Docker without PULSE_SERVER/PIPEWIRE_REMOTE keeps blocking voice mode."""
         monkeypatch.delenv("SSH_CLIENT", raising=False)
@@ -904,7 +944,7 @@ class TestSilenceDetection:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder, SAMPLE_RATE
+        from tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         # Use very short durations for testing
@@ -1282,7 +1322,7 @@ class TestSubprocessTimeoutKill:
     """Bug: proc.wait(timeout) raised TimeoutExpired but process was not killed."""
 
     def test_timeout_kills_process(self):
-        import subprocess, os
+        import subprocess
         proc = subprocess.Popen(["sleep", "600"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         pid = proc.pid
         assert proc.poll() is None

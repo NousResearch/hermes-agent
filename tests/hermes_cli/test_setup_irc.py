@@ -6,7 +6,6 @@ interactive setup menus.
 """
 
 import os
-import pytest
 
 from gateway.platform_registry import PlatformEntry, platform_registry
 

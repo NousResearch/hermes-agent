@@ -10,13 +10,12 @@ for Nous Subscribers only.
 Available tools:
 - web_search_tool: Search the web for information
 - web_extract_tool: Extract content from specific web pages
-- web_crawl_tool: Crawl websites with specific instructions
 
 Backend compatibility:
 - Exa: https://exa.ai (search, extract)
-- Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
+- Firecrawl: https://docs.firecrawl.dev/introduction (search, extract; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
-- Tavily: https://tavily.com (search, extract, crawl)
+- Tavily: https://tavily.com (search, extract)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -28,16 +27,13 @@ Debug Mode:
 - Captures all tool calls, results, and compression metrics
 
 Usage:
-    from web_tools import web_search_tool, web_extract_tool, web_crawl_tool
+    from web_tools import web_search_tool, web_extract_tool
     
     # Search the web
     results = web_search_tool("Python machine learning libraries", limit=3)
     
     # Extract content from URLs  
     content = web_extract_tool(["https://example.com"], format="markdown")
-    
-    # Crawl a website
-    crawl_data = web_crawl_tool("example.com", "Find contact information")
 """
 
 import json
@@ -55,21 +51,11 @@ import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_t
 if TYPE_CHECKING:
     from firecrawl import Firecrawl  # noqa: F401 — type hints only
 from plugins.web.firecrawl.provider import (
-    Firecrawl,
-    _FirecrawlProxy,
-    _FIRECRAWL_CLS_CACHE,
-    _extract_scrape_payload,
-    _extract_web_search_results,
+    Firecrawl,  # noqa: F401  # re-exported for tests that mock.patch("tools.web_tools.Firecrawl")
     _firecrawl_backend_help_suffix,
-    _get_direct_firecrawl_config,
-    _get_firecrawl_client,
+    _get_firecrawl_client,  # noqa: F401  # re-exported for tests that `from tools.web_tools import _get_firecrawl_client`
     _get_firecrawl_gateway_url,
-    _has_direct_firecrawl_config,
     _is_tool_gateway_ready,
-    _load_firecrawl_cls,
-    _normalize_result_list,
-    _raise_web_backend_configuration_error,
-    _to_plain_object,
     check_firecrawl_api_key,
 )
 # Tavily helpers re-exported for backward-compat with existing unit tests
@@ -110,9 +96,12 @@ from tools.managed_tool_gateway import (  # noqa: F401 — backward-compat names
     read_nous_access_token as _read_nous_access_token,
     resolve_managed_tool_gateway,
 )
-from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway  # noqa: F401
+from tools.tool_backend_helpers import (  # noqa: F401
+    managed_nous_tools_enabled,
+    nous_tool_gateway_unavailable_message,
+    prefers_gateway,
+)
 from tools.url_safety import is_safe_url
-from tools.website_policy import check_website_access
 import sys
 
 logger = logging.getLogger(__name__)
@@ -367,7 +356,7 @@ async def process_content_with_llm(
         if content_len > MAX_CONTENT_SIZE:
             size_mb = content_len / 1_000_000
             logger.warning("Content too large (%.1fMB > 2MB limit). Refusing to process.", size_mb)
-            return f"[Content too large to process: {size_mb:.1f}MB. Try using web_crawl with specific extraction instructions, or search for a more focused source.]"
+            return f"[Content too large to process: {size_mb:.1f}MB. Try a more focused source URL.]"
         
         # Skip processing if content is too short
         if content_len < min_length:
@@ -1130,239 +1119,6 @@ async def web_extract_tool(
         return tool_error(error_msg)
 
 
-async def web_crawl_tool(
-    url: str, 
-    instructions: str = None, 
-    depth: str = "basic", 
-    use_llm_processing: bool = True,
-    model: Optional[str] = None,
-    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
-) -> str:
-    """
-    Crawl a website with specific instructions using available crawling API backend.
-    
-    This function provides a generic interface for web crawling that can work
-    with multiple backends. Currently uses Firecrawl.
-    
-    Args:
-        url (str): The base URL to crawl (can include or exclude https://)
-        instructions (str): Instructions for what to crawl/extract using LLM intelligence (optional)
-        depth (str): Depth of extraction ("basic" or "advanced", default: "basic")
-        use_llm_processing (bool): Whether to process content with LLM for summarization (default: True)
-        model (Optional[str]): The model to use for LLM processing (defaults to current auxiliary backend model)
-        min_length (int): Minimum content length to trigger LLM processing (default: 5000)
-    
-    Returns:
-        str: JSON string containing crawled content. If LLM processing is enabled and successful,
-             the 'content' field will contain the processed markdown summary instead of raw content.
-             Each page is processed individually.
-    
-    Raises:
-        Exception: If crawling fails or API key is not set
-    """
-    debug_call_data = {
-        "parameters": {
-            "url": url,
-            "instructions": instructions,
-            "depth": depth,
-            "use_llm_processing": use_llm_processing,
-            "model": model,
-            "min_length": min_length
-        },
-        "error": None,
-        "pages_crawled": 0,
-        "pages_processed_with_llm": 0,
-        "original_response_size": 0,
-        "final_response_size": 0,
-        "compression_metrics": [],
-        "processing_applied": []
-    }
-    
-    try:
-        effective_model = model or _get_default_summarizer_model()
-        auxiliary_available = check_auxiliary_model()
-        backend = _get_backend()
-
-        # Tavily (and any future plugin advertising supports_crawl=True)
-        # dispatches through agent.web_search_registry. The crawl response
-        # shape — {"results": [{"url", "title", "content", ...}]} — is then
-        # post-processed by the shared LLM-summarization path below.
-        from agent.web_search_registry import (
-            get_active_crawl_provider,
-            get_provider as _wsp_get_provider,
-        )
-
-        crawl_provider = _wsp_get_provider(backend) if backend else None
-        if crawl_provider is not None and not crawl_provider.supports_crawl():
-            # When the configured provider is search-only AND cannot
-            # extract URLs either (brave-free / ddgs / searxng), surface a
-            # typed "search-only" error rather than silently switching to
-            # a different crawl backend. When the provider supports extract
-            # but not crawl (e.g. firecrawl), fall through to the legacy
-            # firecrawl-via-extract path below.
-            if not crawl_provider.supports_extract():
-                return json.dumps(
-                    {
-                        "success": False,
-                        "error": (
-                            f"{crawl_provider.display_name} is a search-only "
-                            "backend and cannot crawl URLs. "
-                            "Set FIRECRAWL_API_KEY for crawling, or use "
-                            "web_search instead."
-                        ),
-                    },
-                    ensure_ascii=False,
-                )
-            crawl_provider = None  # let legacy firecrawl path handle it
-        if crawl_provider is None:
-            crawl_provider = get_active_crawl_provider()
-
-        # Mirror main's upstream availability gate: when the resolved
-        # provider is configured-but-unavailable (e.g. firecrawl without
-        # FIRECRAWL_API_KEY), short-circuit BEFORE we dispatch so the
-        # error envelope matches the legacy top-level shape
-        # ``{"success": False, "error": "..."}`` rather than burying the
-        # configuration message inside a per-page ``results[]`` entry.
-        if crawl_provider is not None and not crawl_provider.is_available():
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": (
-                        "web_crawl requires Firecrawl. Set FIRECRAWL_API_KEY, "
-                        f"FIRECRAWL_API_URL{_firecrawl_backend_help_suffix()}, "
-                        "or use web_search + web_extract instead."
-                    ),
-                },
-                ensure_ascii=False,
-            )
-
-        if crawl_provider is not None:
-            # Ensure URL has protocol
-            if not url.startswith(('http://', 'https://')):
-                url = f'https://{url}'
-
-            # SSRF protection — block private/internal addresses
-            if not is_safe_url(url):
-                return json.dumps({"results": [{"url": url, "title": "", "content": "",
-                    "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
-
-            # Website policy check
-            blocked = check_website_access(url)
-            if blocked:
-                logger.info("Blocked web_crawl for %s by rule %s", blocked["host"], blocked["rule"])
-                return json.dumps({"results": [{"url": url, "title": "", "content": "", "error": blocked["message"],
-                    "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]}}]}, ensure_ascii=False)
-
-            from tools.interrupt import is_interrupted as _is_int
-            if _is_int():
-                return tool_error("Interrupted", success=False)
-
-            logger.info("Web crawl via %s: %s", crawl_provider.name, url)
-
-            # Async-or-sync dispatch — Tavily's crawl is sync, but a future
-            # async-crawl provider works transparently.
-            import inspect
-            crawl_kwargs = {"depth": depth, "limit": 20}
-            if instructions:
-                crawl_kwargs["instructions"] = instructions
-
-            if inspect.iscoroutinefunction(crawl_provider.crawl):
-                response = await crawl_provider.crawl(url, **crawl_kwargs)
-            else:
-                response = await asyncio.to_thread(
-                    crawl_provider.crawl, url, **crawl_kwargs
-                )
-
-            # Provider returns {"results": [...]} matching what the shared
-            # LLM post-processing below expects.
-            if not isinstance(response, dict):
-                response = {"results": []}
-            response.setdefault("results", [])
-
-            # Fall through to the shared LLM processing and trimming below
-            # (skip the Firecrawl-specific crawl logic)
-            pages_crawled = len(response.get('results', []))
-            logger.info("Crawled %d pages", pages_crawled)
-            debug_call_data["pages_crawled"] = pages_crawled
-            debug_call_data["original_response_size"] = len(json.dumps(response))
-
-            # Process each result with LLM if enabled
-            if use_llm_processing and auxiliary_available:
-                logger.info("Processing crawled content with LLM (parallel)...")
-                debug_call_data["processing_applied"].append("llm_processing")
-
-                async def _process_tavily_crawl(result):
-                    page_url = result.get('url', 'Unknown URL')
-                    title = result.get('title', '')
-                    content = result.get('content', '')
-                    if not content:
-                        return result, None, "no_content"
-                    original_size = len(content)
-                    processed = await process_content_with_llm(content, page_url, title, effective_model, min_length)
-                    if processed:
-                        result['raw_content'] = content
-                        result['content'] = processed
-                        metrics = {"url": page_url, "original_size": original_size, "processed_size": len(processed),
-                                   "compression_ratio": len(processed) / original_size if original_size else 1.0, "model_used": effective_model}
-                        return result, metrics, "processed"
-                    metrics = {"url": page_url, "original_size": original_size, "processed_size": original_size,
-                               "compression_ratio": 1.0, "model_used": None, "reason": "content_too_short"}
-                    return result, metrics, "too_short"
-
-                tasks = [_process_tavily_crawl(r) for r in response.get('results', [])]
-                # Use return_exceptions=True so a single task failure does not
-                # discard all other successfully processed crawl results.
-                processed_results = await asyncio.gather(*tasks, return_exceptions=True)
-                for result_item in processed_results:
-                    if isinstance(result_item, BaseException):
-                        logger.warning("Tavily crawl processing task failed: %s", result_item)
-                        continue
-                    result, metrics, status = result_item
-                    if status == "processed":
-                        debug_call_data["compression_metrics"].append(metrics)
-                        debug_call_data["pages_processed_with_llm"] += 1
-
-            if use_llm_processing and not auxiliary_available:
-                logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
-                debug_call_data["processing_applied"].append("llm_processing_unavailable")
-
-            trimmed_results = [{"url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""), "error": r.get("error"),
-                **({  "blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {})} for r in response.get("results", [])]
-            result_json = json.dumps({"results": trimmed_results}, indent=2, ensure_ascii=False)
-            cleaned_result = clean_base64_images(result_json)
-            debug_call_data["final_response_size"] = len(cleaned_result)
-            _debug.log_call("web_crawl_tool", debug_call_data)
-            _debug.save()
-            return cleaned_result
-
-        # No registered provider supports crawl AND no crawl-capable plugin
-        # is available. Surface a typed error pointing the user at the two
-        # crawl-capable providers (Firecrawl + Tavily).
-        return json.dumps(
-            {
-                "success": False,
-                "error": (
-                    "web_crawl has no available backend. "
-                    "Set FIRECRAWL_API_KEY (or FIRECRAWL_API_URL for "
-                    f"self-hosted){_firecrawl_backend_help_suffix()}, "
-                    "or set TAVILY_API_KEY for Tavily. "
-                    "Alternatively use web_search + web_extract instead."
-                ),
-            },
-            ensure_ascii=False,
-        )
-
-    except Exception as e:
-        error_msg = f"Error crawling website: {str(e)}"
-        logger.debug("%s", error_msg)
-        
-        debug_call_data["error"] = error_msg
-        _debug.log_call("web_crawl_tool", debug_call_data)
-        _debug.save()
-        
-        return tool_error(error_msg)
-
-
 # Convenience function to check Firecrawl credentials
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
@@ -1452,16 +1208,15 @@ if __name__ == "__main__":
         print("🐛 Debug mode disabled (set WEB_TOOLS_DEBUG=true to enable)")
     
     print("\nBasic usage:")
-    print("  from web_tools import web_search_tool, web_extract_tool, web_crawl_tool")
+    print("  from web_tools import web_search_tool, web_extract_tool")
     print("  import asyncio")
     print("")
     print("  # Search (synchronous)")
     print("  results = web_search_tool('Python tutorials')")
     print("")
-    print("  # Extract and crawl (asynchronous)")
+    print("  # Extract (asynchronous)")
     print("  async def main():")
     print("      content = await web_extract_tool(['https://example.com'])")
-    print("      crawl_data = await web_crawl_tool('example.com', 'Find docs')")
     print("  asyncio.run(main())")
     
     if nous_available:
@@ -1470,9 +1225,8 @@ if __name__ == "__main__":
         print("  content = await web_extract_tool(['https://python.org/about/'])")
         print("")
         print("  # Customize processing parameters")
-        print("  crawl_data = await web_crawl_tool(")
-        print("      'docs.python.org',")
-        print("      'Find key concepts',")
+        print("  content = await web_extract_tool(")
+        print("      ['https://docs.python.org'],")
         print("      model='google/gemini-3-flash-preview',")
         print("      min_length=3000")
         print("  )")

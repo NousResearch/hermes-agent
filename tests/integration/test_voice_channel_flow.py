@@ -24,7 +24,6 @@ try:
         import ctypes.util
         opus_path = ctypes.util.find_library("opus")
         if not opus_path:
-            import sys
             for p in ("/opt/homebrew/lib/libopus.dylib", "/usr/local/lib/libopus.dylib"):
                 import os
                 if os.path.isfile(p):

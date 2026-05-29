@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Optional
 
 
 def register_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -249,7 +248,6 @@ def _cmd_restart() -> int:
 
 def _cmd_which(server_id: str) -> int:
     from agent.lsp.install import INSTALL_RECIPES, hermes_lsp_bin_dir
-    import os
     import shutil as _shutil
 
     recipe = INSTALL_RECIPES.get(server_id)

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import sys
 import webbrowser
-from typing import Optional
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import load_config

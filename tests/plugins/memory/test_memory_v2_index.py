@@ -157,8 +157,12 @@ def test_rebuild_from_store_indexes_project_cards_candidates_and_events(tmp_path
 
     counts = index.rebuild_from_store(store)
 
-    assert counts == {"project_cards": 1, "candidates": 1, "raw_events": 1, "source_refs": 0, "memory_items": 0}
+    assert counts == {"project_cards": 1, "candidates": 1, "raw_events": 1, "source_refs": 1, "memory_items": 0}
     assert index.count_memories() == 3
+    source = store.list_source_refs()[0]
+    indexed_source = index.source_ref(source.id)
+    assert indexed_source is not None
+    assert indexed_source["uri"] == f"raw_event:{source.id}"
     assert index.search("benchmark first", limit=5)[0]["id"] == "cand_eval_contract"
     assert index.search("retrieval logs", limit=5)[0]["type"] == "raw_event"
 

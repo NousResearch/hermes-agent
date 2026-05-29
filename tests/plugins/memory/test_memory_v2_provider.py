@@ -389,14 +389,16 @@ def test_manual_reject_updates_candidate_status_and_index(tmp_path):
     assert indexed["status"] == "rejected"
 
 
-def test_manual_promote_promotes_specific_candidate_and_show_source_uses_raw_event_fallback(tmp_path):
+def test_manual_promote_promotes_specific_candidate_and_show_source_uses_canonical_source_ref(tmp_path):
     provider = _new_provider()
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
     provider.sync_turn("Remember that Dylan prefers manual memory controls.", "Queued.", session_id="session-1")
     candidate = provider.store.list_candidates()[0]
+    event_id = provider.store.read_raw_events()[0]["id"]
 
     promoted = json.loads(provider.handle_tool_call("memory_v2_promote", {"candidate_id": candidate.id}))
     source = json.loads(provider.handle_tool_call("memory_v2_show_source", {"id": promoted["promoted_ids"][0]}))
+    direct_source = json.loads(provider.handle_tool_call("memory_v2_show_source", {"id": event_id}))
 
     assert promoted["success"] is True
     assert promoted["promoted"] == 1
@@ -404,9 +406,12 @@ def test_manual_promote_promotes_specific_candidate_and_show_source_uses_raw_eve
     assert provider.store.list_candidates()[0].gate_decision.value == "promoted"
     assert source["success"] is True
     assert source["record"]["id"] == promoted["promoted_ids"][0]
-    assert source["sources"][0]["id"] == provider.store.read_raw_events()[0]["id"]
-    assert source["sources"][0]["type"] == "raw_event"
-    assert "manual memory controls" in source["sources"][0]["event"]["user_content"]
+    assert source["sources"][0]["id"] == event_id
+    assert source["sources"][0]["type"] == "message"
+    assert source["sources"][0]["uri"] == f"raw_event:{event_id}"
+    assert "manual memory controls" in source["sources"][0]["quote"]
+    assert direct_source["record"]["type"] == "source_ref"
+    assert direct_source["sources"][0] == source["sources"][0]
 
 
 def test_manual_promote_refuses_missing_or_dangling_sources_unless_forced(tmp_path):

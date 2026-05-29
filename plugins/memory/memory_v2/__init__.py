@@ -258,6 +258,8 @@ class MemoryV2Provider(MemoryProvider):
             }
         )
         self.index.index_raw_event(event)
+        if source := self.store.read_source_ref(str(event["id"])):
+            self.index.index_source_ref(source)
 
         candidate = self._candidate_from_turn(user_text, event_id=str(event["id"]))
         if candidate is not None:
@@ -570,9 +572,6 @@ class MemoryV2Provider(MemoryProvider):
                 payload = dict(loop)
                 payload.setdefault("type", "open_loop")
                 return payload
-        for event in self.store.read_raw_events():
-            if str(event.get("id") or "") == record_id:
-                return {"id": record_id, "type": "raw_event", "source_refs": [record_id], "event": event}
         return None
 
     def _source_payload(self, source_id: str) -> Dict[str, Any] | None:

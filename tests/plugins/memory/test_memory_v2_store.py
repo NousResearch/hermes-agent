@@ -21,6 +21,7 @@ from plugins.memory.memory_v2.store import MemoryV2Store
 EXPECTED_STORE_DIRS = [
     "working",
     "core",
+    "sources",
     "inbox",
     "semantic/projects",
     "semantic/environment",
@@ -62,6 +63,30 @@ def test_append_and_read_raw_events_jsonl(tmp_path):
     assert second["id"] != first["id"]
     assert [event["type"] for event in events] == ["turn", "tool"]
     assert events[0]["session_id"] == "session-1"
+
+
+def test_append_raw_event_materializes_canonical_source_ref(tmp_path):
+    store = MemoryV2Store(tmp_path / "memory_v2")
+    store.initialize()
+
+    event = store.append_raw_event(
+        {
+            "type": "turn",
+            "session_id": "session-1",
+            "user_content": "Remember that source refs should be canonical.",
+            "assistant_content": "Queued.",
+        }
+    )
+
+    source = store.read_source_ref(event["id"])
+    assert source is not None
+    assert source.id == event["id"]
+    assert source.type.value == "message"
+    assert source.uri == f"raw_event:{event['id']}"
+    assert source.title == "Raw turn evidence from session session-1"
+    assert source.observed_at == event["created_at"]
+    assert source.quote == "Remember that source refs should be canonical."
+    assert (tmp_path / "memory_v2" / "sources" / f"{event['id']}.yaml").is_file()
 
 
 def test_append_raw_event_rejects_non_object_payload(tmp_path):

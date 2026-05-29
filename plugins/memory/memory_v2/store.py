@@ -134,6 +134,7 @@ class MemoryV2Store:
         payload.setdefault("id", f"event_{uuid.uuid4().hex}")
         payload.setdefault("created_at", utc_now_iso())
         self._append_jsonl(self.raw_events_path, payload)
+        self.write_source_ref(self._source_ref_from_raw_event(payload))
         return payload
 
     def read_raw_events(self, *, limit: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -333,6 +334,32 @@ class MemoryV2Store:
 
     def _source_ref_path(self, source_id: str) -> Path:
         return self.sources_dir / f"{self._safe_yaml_stem(source_id, 'source id')}.yaml"
+
+    @staticmethod
+    def _source_ref_from_raw_event(event: Dict[str, Any]) -> SourceRef:
+        event_id = str(event.get("id") or "").strip()
+        event_type = str(event.get("type") or "").strip().lower()
+        session_id = str(event.get("session_id") or "").strip()
+        created_at = str(event.get("created_at") or "")
+        if event_type == "tool":
+            source_type = "tool_result"
+            tool_name = str(event.get("tool") or "tool").strip() or "tool"
+            title = f"Raw tool evidence from session {session_id}" if session_id else "Raw tool evidence"
+            quote = tool_name
+        else:
+            source_type = "message"
+            title = f"Raw turn evidence from session {session_id}" if session_id else "Raw turn evidence"
+            quote = str(event.get("user_content") or event.get("content") or event.get("assistant_content") or "").strip()
+        if len(quote) > 500:
+            quote = quote[:497].rstrip() + "..."
+        return SourceRef(
+            id=event_id,
+            type=source_type,
+            uri=f"raw_event:{event_id}",
+            title=title,
+            observed_at=created_at,
+            quote=quote or None,
+        )
 
     @staticmethod
     def _safe_yaml_stem(value: str, field_name: str) -> str:

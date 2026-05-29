@@ -4847,6 +4847,25 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             if text:
                 _say(text)
 
+    # #34312 / #34335: detect when web/node_modules is from a previous
+    # version with shifted dep layouts (lucide-react and friends move
+    # icon files between versions; tsc / vite end up missing from
+    # .bin/). The classic symptom is
+    #   sh: line 1: tsc: command not found
+    # or
+    #   Could not resolve "./icons/X.js" from node_modules/lucide-react
+    # after `hermes update`. The bug is an in-place npm install over an
+    # incompatible existing tree.
+    #
+    # Strategy:
+    #   1. Try the deterministic install first (npm ci when lockfile is
+    #      present — fastest path that should always work for fresh
+    #      installs and clean updates). The install runs from the workspace
+    #      root (and, under Termux, with the workspace-install context)
+    #      so monorepo/workspace layouts resolve correctly.
+    #   2. If that fails AND node_modules exists, wipe node_modules and
+    #      retry with the same cwd/args. The cost is a slower update; the
+    #      win is updates that never leave the dashboard in a crash-loop.
     npm_cwd = _workspace_root(web_dir)
     # Scope the install to the web workspace only so that the full workspace
     # graph (including apps/desktop with its Electron + node-pty deps) is never
@@ -4857,12 +4876,35 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     npm_workspace_args: tuple[str, ...] = () if npm_cwd == web_dir else ("--workspace", "web")
     if _is_termux_startup_environment():
         npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
+    _npm_install_extra_args = (*npm_workspace_args, "--silent")
     r1 = _run_npm_install_deterministic(
         npm,
         npm_cwd,
-        extra_args=(*npm_workspace_args, "--silent"),
+        extra_args=_npm_install_extra_args,
         env=build_env,
     )
+    if r1.returncode != 0:
+        node_modules = web_dir / "node_modules"
+        if node_modules.exists():
+            _say(
+                "  ⚠ Web UI npm install failed on existing node_modules — "
+                "wiping and retrying clean (#34312)..."
+            )
+            try:
+                import shutil as _shutil
+                _shutil.rmtree(node_modules)
+            except OSError as _wipe_exc:
+                _say(f"  ⚠ Could not wipe node_modules: {_wipe_exc}")
+            else:
+                r1 = _run_npm_install_deterministic(
+                    npm,
+                    npm_cwd,
+                    extra_args=_npm_install_extra_args,
+                    env=build_env,
+                )
+                if r1.returncode == 0:
+                    _say("  ✓ Web UI clean install succeeded")
+
     if r1.returncode != 0:
         _say(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
@@ -4870,7 +4912,10 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         )
         _relay(r1)
         if fatal:
-            _say("  Run manually:  npm install --workspace web && npm run build -w web")
+            _say(
+                "  Run manually:  rm -rf web/node_modules && "
+                "npm install --workspace web && npm run build -w web"
+            )
         return False
     # First attempt — stream output via idle-timeout helper (issue #33788).
     # capture_output=True on a long Vite build looks identical to a hang;

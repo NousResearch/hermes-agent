@@ -1042,9 +1042,12 @@ def run_conversation(
                                 sort_keys=True,
                             ),
                         }}
-                    except Exception:
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        raw_args = tc["function"].get("arguments", "")
+                        if not isinstance(raw_args, str):
+                            raw_args = json.dumps(raw_args) if raw_args else "{}"
                         tc["function"]["arguments"] = _repair_tool_call_arguments(
-                            tc["function"]["arguments"],
+                            raw_args,
                             tc["function"].get("name", "?"),
                         )
                 new_tcs.append(tc)

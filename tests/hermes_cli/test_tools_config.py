@@ -1209,7 +1209,7 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
     }
     fake_toolsets["hermes-_test_platform"] = {
         "description": "test composite",
-        "tools": ["web_search", "web_extract", "terminal", "process", "_test_special_tool"],
+        "tools": ["web_search", "web_extract", "brave_search", "terminal", "process", "_test_special_tool"],
         "includes": [],
     }
 

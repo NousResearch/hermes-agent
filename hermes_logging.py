@@ -296,19 +296,39 @@ def setup_verbose_logging() -> None:
 # ---------------------------------------------------------------------------
 
 class _ManagedRotatingFileHandler(RotatingFileHandler):
-    """RotatingFileHandler that ensures group-writable perms in managed mode.
+    """RotatingFileHandler that ensures group-writable perms in managed mode
+    AND survives external rotation.
 
-    In managed mode (NixOS), the stateDir uses setgid (2770) so new files
-    inherit the hermes group. However, both _open() (initial creation) and
-    doRollover() create files via open(), which uses the process umask —
-    typically 0022, producing 0644. This subclass applies chmod 0660 after
-    both operations so the gateway and interactive users can share log files.
+    Two responsibilities:
+
+    1.  In managed mode (NixOS), the stateDir uses setgid (2770) so new files
+        inherit the hermes group. However, both ``_open()`` (initial creation)
+        and ``doRollover()`` create files via ``open()``, which uses the
+        process umask — typically 0022, producing 0644. This subclass applies
+        ``chmod 0660`` after both operations so the gateway and interactive
+        users can share log files.
+
+    2.  ``RotatingFileHandler`` keeps an open file descriptor.  If anything
+        rotates the file *externally* (``logrotate``, manual ``mv``,
+        another process rotating under us, a transient unlink), our fd
+        keeps pointing at the renamed/unlinked inode and every subsequent
+        write goes to ``gateway.log.1`` instead of ``gateway.log`` — silent
+        log loss for the file every operator expects to read.  Before each
+        emit we ``stat`` ``baseFilename`` and compare it against the open
+        stream's inode; on mismatch we reopen.  This is the same pattern
+        as stdlib ``WatchedFileHandler.reopenIfNeeded()``, adapted for
+        rotating handlers.
     """
 
     def __init__(self, *args, **kwargs):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
         super().__init__(*args, **kwargs)
+        # Snapshot the inode of the currently open stream so emit() can
+        # detect external rotation without an extra fstat per write.
+        self._stat_dev: Optional[int] = None
+        self._stat_ino: Optional[int] = None
+        self._record_stream_stat()
 
     def _chmod_if_managed(self):
         if self._managed:
@@ -316,6 +336,70 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
                 os.chmod(self.baseFilename, 0o660)
             except OSError:
                 pass
+
+    def _record_stream_stat(self) -> None:
+        """Snapshot dev/ino of ``baseFilename`` so we can detect external rotation."""
+        try:
+            st = os.stat(self.baseFilename)
+            self._stat_dev, self._stat_ino = st.st_dev, st.st_ino
+        except OSError:
+            self._stat_dev, self._stat_ino = None, None
+
+    def _reopen_if_externally_rotated(self) -> None:
+        """Reopen the stream when ``baseFilename`` no longer matches our fd.
+
+        Triggered when ``baseFilename`` was renamed (logrotate), unlinked,
+        or replaced by a different inode.  Silent + best-effort: any error
+        falls back to the existing (possibly stale) stream so logging keeps
+        working instead of dying on a stat failure.
+        """
+        try:
+            st = os.stat(self.baseFilename)
+        except FileNotFoundError:
+            # File was rotated/unlinked underneath us.  Close + reopen so a
+            # fresh inode is created at the expected path.
+            try:
+                if self.stream is not None:
+                    self.stream.close()
+            except Exception:
+                pass
+            self.stream = None  # type: ignore[assignment]
+            try:
+                self.stream = self._open()
+                self._record_stream_stat()
+            except Exception:
+                # Couldn't reopen — leave stream=None; next emit will
+                # bail rather than write to a stale inode.
+                pass
+            return
+        except OSError:
+            return  # transient — try again on the next emit
+
+        if self._stat_dev is None or self._stat_ino is None:
+            self._stat_dev, self._stat_ino = st.st_dev, st.st_ino
+            return
+
+        if (st.st_dev, st.st_ino) != (self._stat_dev, self._stat_ino):
+            # baseFilename now points at a DIFFERENT inode than the one we
+            # hold open.  Close the old stream and open the new file.
+            try:
+                if self.stream is not None:
+                    self.stream.close()
+            except Exception:
+                pass
+            self.stream = None  # type: ignore[assignment]
+            try:
+                self.stream = self._open()
+                self._stat_dev, self._stat_ino = st.st_dev, st.st_ino
+            except Exception:
+                pass
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # Cheap-ish stat-per-record check; the kernel caches inode metadata
+        # so the syscall is sub-microsecond on a hot file.
+        if self.stream is not None or os.path.exists(self.baseFilename):
+            self._reopen_if_externally_rotated()
+        super().emit(record)
 
     def _open(self):
         stream = super()._open()
@@ -325,6 +409,9 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     def doRollover(self):
         super().doRollover()
         self._chmod_if_managed()
+        # Our own rollover writes a new baseFilename; refresh the snapshot
+        # so the next emit doesn't mistake it for external rotation.
+        self._record_stream_stat()
 
 
 def _add_rotating_handler(

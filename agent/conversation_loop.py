@@ -396,9 +396,10 @@ def run_conversation(
     except Exception:
         pass
 
-    # Tag all log records on this thread with the session ID so
-    # ``hermes logs --session <id>`` can filter a single conversation.
-    set_session_context(agent.session_id)
+    # Tag all log records on this thread with the session ID and platform so
+    # ``hermes logs --session <id>`` can filter a single conversation and
+    # the platform origin is visible at a glance.
+    set_session_context(agent.session_id, platform=getattr(agent, "platform", None))
 
     # Bind the skill write-origin ContextVar for this thread so tool
     # handlers (e.g. skill_manage create) can tell whether they are

@@ -699,7 +699,7 @@ def _set_session_context(session_key: str) -> list:
     try:
         from gateway.session_context import set_session_vars
 
-        return set_session_vars(session_key=session_key)
+        return set_session_vars(platform="tui", session_key=session_key)
     except Exception:
         return []
 

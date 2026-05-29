@@ -18,9 +18,11 @@ Component separation:
     agent.log remains the catch-all (everything goes there).
 
 Session context:
-    Call ``set_session_context(session_id)`` at the start of a conversation
-    and ``clear_session_context()`` when done.  All log lines emitted on
-    that thread will include ``[session_id]`` for filtering/correlation.
+    Call ``set_session_context(session_id, platform=None)`` at the start of a
+    conversation and ``clear_session_context()`` when done.  All log lines
+    emitted on that thread will include ``[session_id]`` (or
+    ``[platform|session_id]`` when a platform is provided) for
+    filtering/correlation.
 """
 
 import logging
@@ -69,18 +71,22 @@ _NOISY_LOGGERS = (
 # Public session context API
 # ---------------------------------------------------------------------------
 
-def set_session_context(session_id: str) -> None:
-    """Set the session ID for the current thread.
+def set_session_context(session_id: str, platform: Optional[str] = None) -> None:
+    """Set the session ID and optional platform for the current thread.
 
     All subsequent log records on this thread will include ``[session_id]``
-    in the formatted output.  Call at the start of ``run_conversation()``.
+    (or ``[platform|session_id]`` when platform is provided) in the formatted
+    output.  Call at the start of ``run_conversation()``.
     """
     _session_context.session_id = session_id
+    if platform:
+        _session_context.platform = platform
 
 
 def clear_session_context() -> None:
-    """Clear the session ID for the current thread."""
+    """Clear the session ID and platform for the current thread."""
     _session_context.session_id = None
+    _session_context.platform = None
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +113,12 @@ def _install_session_record_factory() -> None:
     def _session_record_factory(*args, **kwargs):
         record = current_factory(*args, **kwargs)
         sid = getattr(_session_context, "session_id", None)
-        record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
+        platform = getattr(_session_context, "platform", None)
+        if sid:
+            tag = f" [{platform}|{sid}]" if platform else f" [{sid}]"
+        else:
+            tag = ""
+        record.session_tag = tag  # type: ignore[attr-defined]
         return record
 
     _session_record_factory._hermes_session_injector = True  # type: ignore[attr-defined]

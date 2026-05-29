@@ -33,6 +33,7 @@ from acp.schema import (
     InitializeResponse,
     ListSessionsResponse,
     LoadSessionResponse,
+    McpCapabilities,
     McpServerHttp,
     McpServerSse,
     McpServerStdio,
@@ -842,6 +843,7 @@ class HermesACPAgent(acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
+                mcp_capabilities=McpCapabilities(http=True, sse=True),
                 prompt_capabilities=PromptCapabilities(image=True),
                 session_capabilities=SessionCapabilities(
                     fork=SessionForkCapabilities(),

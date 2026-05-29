@@ -166,15 +166,25 @@ class TestClarifyPrimitive:
         assert a is not None and a.clarify_id == "idA"
         assert b is not None and b.clarify_id == "idB"
 
-    def test_clarify_timeout_config_default(self):
-        """get_clarify_timeout returns 600 by default."""
+    def test_clarify_timeout_config_default(self, monkeypatch):
+        """get_clarify_timeout returns 3600 by default."""
         from tools import clarify_gateway as cm
 
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+
         timeout = cm.get_clarify_timeout()
-        # Default 600s OR whatever is in the user's loaded config.
-        # Floor check: must be a positive int, not crashed.
-        assert isinstance(timeout, int)
-        assert timeout > 0
+        assert timeout == cm.DEFAULT_CLARIFY_TIMEOUT_SECONDS == 3600
+
+    def test_clarify_timeout_config_override_preserved(self, monkeypatch):
+        """agent.clarify_timeout still overrides the one-hour default."""
+        from tools import clarify_gateway as cm
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"clarify_timeout": 42}},
+        )
+
+        assert cm.get_clarify_timeout() == 42
 
 
 class TestGatewayTextIntercept:

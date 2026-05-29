@@ -13968,7 +13968,7 @@ class GatewayRunner:
     # /approve & /deny — explicit dangerous-command approval
     # ------------------------------------------------------------------
 
-    _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
+    _APPROVAL_TIMEOUT_SECONDS = 3600  # 1 hour
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — unblock waiting agent thread(s).

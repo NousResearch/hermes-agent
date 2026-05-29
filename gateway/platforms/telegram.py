@@ -3408,6 +3408,53 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         return error
 
+
+    async def _convert_to_telegram_voice_ogg(self, audio_path: str) -> Optional[str]:
+        """Best-effort transcode to OGG/Opus for Telegram voice bubbles."""
+        fd, out_path = tempfile.mkstemp(prefix="hermes_tg_voice_", suffix=".ogg")
+        os.close(fd)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                audio_path,
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "64k",
+                "-vbr",
+                "on",
+                "-compression_level",
+                "10",
+                "-f",
+                "ogg",
+                out_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            if proc.returncode == 0 and os.path.getsize(out_path) > 0:
+                return out_path
+            logger.warning(
+                "[%s] MP3/M4A -> OGG/Opus conversion failed (rc=%s): %s",
+                self.name,
+                proc.returncode,
+                stderr.decode("utf-8", errors="replace")[:300],
+            )
+        except FileNotFoundError:
+            logger.warning("[%s] ffmpeg not found; Telegram voice conversion skipped", self.name)
+        except Exception as e:
+            logger.warning("[%s] Telegram voice conversion failed: %s", self.name, e, exc_info=True)
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+        return None
+
     async def send_voice(
         self,
         chat_id: str,
@@ -3421,12 +3468,19 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         
+        converted_audio_path = None
         try:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
-            
+
+            ext = os.path.splitext(audio_path)[1].lower()
+            if ext in {".mp3", ".m4a"}:
+                converted_audio_path = await self._convert_to_telegram_voice_ogg(audio_path)
+                if converted_audio_path:
+                    audio_path = converted_audio_path
+                    ext = os.path.splitext(audio_path)[1].lower()
+
             with open(audio_path, "rb") as audio_file:
-                ext = os.path.splitext(audio_path)[1].lower()
                 # .ogg / .opus files -> send as voice (round playable bubble)
                 if ext in {".ogg", ".opus"}:
                     _voice_thread = self._metadata_thread_id(metadata)
@@ -3498,6 +3552,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
+        finally:
+            if converted_audio_path:
+                try:
+                    os.unlink(converted_audio_path)
+                except OSError:
+                    pass
 
     async def send_multiple_images(
         self,

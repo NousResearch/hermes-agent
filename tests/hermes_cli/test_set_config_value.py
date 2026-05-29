@@ -146,9 +146,11 @@ class TestFalsyValues:
 
     def test_zero_routes_to_config(self, _isolated_hermes_home):
         """Setting a config key to '0' should write 0 to config.yaml."""
-        set_config_value("verbose", "0")
+        # Use a real DEFAULT_CONFIG sub-key so schema validation passes — the
+        # original test used ``verbose`` which is not in the known schema.
+        set_config_value("agent.gateway_timeout", "0")
         config = _read_config(_isolated_hermes_home)
-        assert "verbose: 0" in config
+        assert "gateway_timeout: 0" in config
 
     def test_config_command_rejects_missing_value(self):
         """config set with no value arg (None) should still exit."""
@@ -346,20 +348,23 @@ class TestListNavigation:
     def test_deeper_nesting_through_list(self, _isolated_hermes_home):
         """Navigation path mixing dict → list → dict → scalar."""
         self._write_config(_isolated_hermes_home, (
-            "platforms:\n"
-            "  telegram:\n"
-            "    allowlist:\n"
+            "telegram:\n"
+            "  allowlist:\n"
             "    - name: alice\n"
             "      role: admin\n"
             "    - name: bob\n"
             "      role: user\n"
         ))
 
-        set_config_value("platforms.telegram.allowlist.1.role", "admin")
+        # NOTE: original test path was ``platforms.telegram.allowlist.1.role``,
+        # which #34067 schema validation correctly rejects (platform configs
+        # live at the top level, not under a ``platforms`` namespace). Use
+        # the canonical path.
+        set_config_value("telegram.allowlist.1.role", "admin")
 
         import yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
-        allowlist = reloaded["platforms"]["telegram"]["allowlist"]
+        allowlist = reloaded["telegram"]["allowlist"]
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
@@ -457,3 +462,128 @@ class TestSecretRedactionInDisplay:
 
         captured = capsys.readouterr()
         assert "Set model.reasoning_effort = high" in captured.out
+
+# #34067: Schema validation for unknown keys
+# ---------------------------------------------------------------------------
+
+class TestSchemaValidation:
+    """#34067: ``hermes config set`` must refuse to silently write unknown
+    keys to config.yaml. The headline case in the issue was
+    ``gateway.discord.gateway_restart_notification`` being silently accepted
+    even though the correct path is ``discord.gateway_restart_notification``
+    (platform configs live at the top level, not nested under ``gateway``).
+    """
+
+    def test_unknown_top_level_key_is_refused(self, _isolated_hermes_home, capsys):
+        """An entirely-unknown top-level key triggers SystemExit(2) with a
+        red error message."""
+        with pytest.raises(SystemExit) as exc_info:
+            set_config_value("totally_made_up_key", "value")
+        assert exc_info.value.code == 2
+        out = capsys.readouterr().out
+        assert "Unknown config key" in out
+        assert "totally_made_up_key" in out
+        # And nothing was written to config.yaml.
+        assert "totally_made_up_key" not in _read_config(_isolated_hermes_home)
+
+    def test_unknown_subkey_is_refused(self, _isolated_hermes_home, capsys):
+        """The headline #34067 bug: ``gateway`` is a valid top-level key but
+        ``gateway.discord`` is not a valid sub-key (gateway only has
+        strict/media_delivery_allow_dirs/trust_recent_files/...)."""
+        with pytest.raises(SystemExit) as exc_info:
+            set_config_value("gateway.discord.gateway_restart_notification", "false")
+        assert exc_info.value.code == 2
+        out = capsys.readouterr().out
+        assert "Unknown config key" in out
+        assert "gateway.discord.gateway_restart_notification" in out
+        # Nothing was written.
+        assert "discord" not in _read_config(_isolated_hermes_home).split("gateway:")[-1] if "gateway:" in _read_config(_isolated_hermes_home) else True
+
+    def test_platforms_prefix_suggests_top_level(self, _isolated_hermes_home, capsys):
+        """``platforms.discord.foo`` should suggest ``discord.foo`` since
+        DEFAULT_CONFIG puts platform configs at the top level, not under
+        a ``platforms:`` namespace."""
+        with pytest.raises(SystemExit):
+            set_config_value("platforms.discord.gateway_restart_notification", "false")
+        out = capsys.readouterr().out
+        assert "Did you mean" in out
+        assert "discord.gateway_restart_notification" in out
+
+    def test_close_typo_suggests_correct_key(self, _isolated_hermes_home, capsys):
+        """Typo'd top-level keys should get a fuzzy-match suggestion."""
+        with pytest.raises(SystemExit):
+            set_config_value("disco", "false")
+        out = capsys.readouterr().out
+        assert "Did you mean" in out
+        assert "discord" in out
+
+    def test_typoed_subkey_suggests_sibling(self, _isolated_hermes_home, capsys):
+        """``agent.max_turn`` should suggest ``agent.max_turns``."""
+        with pytest.raises(SystemExit):
+            set_config_value("agent.max_turn", "100")
+        out = capsys.readouterr().out
+        assert "agent.max_turns" in out
+
+    def test_force_bypasses_validation(self, _isolated_hermes_home):
+        """``--force`` allows writing unknown keys (forward-compat with
+        config keys that a newer Hermes version adds)."""
+        # Should not raise.
+        set_config_value("brand_new_future_key", "value", force=True)
+        # And the value WAS written.
+        content = _read_config(_isolated_hermes_home)
+        assert "brand_new_future_key" in content
+
+    def test_known_top_level_key_accepted(self, _isolated_hermes_home):
+        """Sanity check: real config keys still work."""
+        set_config_value("terminal.backend", "docker")
+        content = _read_config(_isolated_hermes_home)
+        assert "backend: docker" in content
+
+    def test_known_platform_config_accepted(self, _isolated_hermes_home):
+        """Schema-defined-extensible top-level keys (platform configs) accept
+        any sub-key path because PlatformConfig has dynamic ``extra`` fields."""
+        # discord is a platform config — sub-keys accept anything.
+        set_config_value("discord.gateway_restart_notification", "false")
+        content = _read_config(_isolated_hermes_home)
+        assert "gateway_restart_notification: false" in content
+
+    def test_open_dict_mcp_servers_accepts_any_subkey(self, _isolated_hermes_home):
+        """``mcp_servers.<user-named-server>.<field>`` must work for any
+        user-supplied server name."""
+        set_config_value("mcp_servers.my-server.command", "npx")
+        content = _read_config(_isolated_hermes_home)
+        assert "my-server" in content
+        assert "command: npx" in content
+
+
+class TestValidateConfigKey:
+    """Unit tests for the validator itself."""
+
+    @pytest.mark.parametrize("key", [
+        "model",
+        "terminal.backend",
+        "agent.max_turns",
+        "discord.gateway_restart_notification",
+        "telegram.bot_token",
+        "mcp_servers.foo.command",
+        "providers.openrouter.api_key",
+        "gateway.strict",
+    ])
+    def test_known_keys_pass(self, key):
+        from hermes_cli.config import _validate_config_key
+        is_known, _ = _validate_config_key(key)
+        assert is_known, f"Expected {key!r} to validate as known"
+
+    @pytest.mark.parametrize("key,expected_in_suggestion", [
+        ("gateway.discord.gateway_restart_notification", None),  # no close suggestion
+        ("platforms.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
+        ("disco", "discord"),
+        ("agent.max_turn", "agent.max_turns"),
+    ])
+    def test_unknown_keys_with_suggestion(self, key, expected_in_suggestion):
+        from hermes_cli.config import _validate_config_key
+        is_known, suggestion = _validate_config_key(key)
+        assert not is_known, f"Expected {key!r} to validate as unknown"
+        if expected_in_suggestion is not None:
+            assert suggestion is not None and expected_in_suggestion in suggestion, \
+                f"Expected suggestion to contain {expected_in_suggestion!r}, got {suggestion!r}"

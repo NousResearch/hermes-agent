@@ -2087,12 +2087,35 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
+    # Honour kanban.default_assignee as the fallback for unassigned ready
+    # tasks (#27145) and kanban.max_in_progress_per_profile as the
+    # per-profile concurrency cap (#21582). Same semantics as the
+    # gateway dispatch path.
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
+        _raw_per_profile = _kanban_cfg.get("max_in_progress_per_profile", None)
+        try:
+            max_in_progress_per_profile = (
+                int(_raw_per_profile) if _raw_per_profile is not None else None
+            )
+            if max_in_progress_per_profile is not None and max_in_progress_per_profile < 1:
+                max_in_progress_per_profile = None
+        except (TypeError, ValueError):
+            max_in_progress_per_profile = None
+    except Exception:
+        default_assignee = None
+        max_in_progress_per_profile = None
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,
             dry_run=args.dry_run,
             max_spawn=args.max,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+            default_assignee=default_assignee,
+            max_in_progress_per_profile=max_in_progress_per_profile,
         )
     if getattr(args, "json", False):
         print(json.dumps({
@@ -2108,6 +2131,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "skipped_per_profile_capped": [
+                {"task_id": tid, "assignee": who, "current": current}
+                for (tid, who, current) in res.skipped_per_profile_capped
+            ],
+            "auto_assigned_default": res.auto_assigned_default,
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -2128,8 +2156,18 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     for tid, who, ws in res.spawned:
         tag = " (dry)" if args.dry_run else ""
         print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
+    if res.auto_assigned_default:
+        print(
+            f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "
+            f"{', '.join(res.auto_assigned_default)}"
+        )
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
+    if res.skipped_per_profile_capped:
+        for tid, who, current in res.skipped_per_profile_capped:
+            print(
+                f"Deferred ({who} at per-profile cap, {current} running): {tid}"
+            )
     if res.skipped_nonspawnable:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "

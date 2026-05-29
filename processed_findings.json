@@ -82,5 +82,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34882",
     "pr_number": 34882,
     "run_id": "20260529_222349"
+  },
+  "SSRF-solana_client.py-106": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34883",
+    "pr_number": 34883,
+    "run_id": "20260529_222349"
   }
 }

@@ -6413,7 +6413,7 @@ def _http_ok(url: str, timeout: float) -> bool:
     import urllib.request
 
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # SSRF: add IP block check
             return 200 <= getattr(resp, "status", 200) < 300
     except Exception:
         return False

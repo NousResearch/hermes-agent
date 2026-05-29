@@ -2867,6 +2867,26 @@ class GatewayRunner:
         if config and hasattr(config, "get_unauthorized_dm_behavior"):
             return config.get_unauthorized_dm_behavior(platform)
         return "pair"
+
+    @staticmethod
+    def _is_strict_read_only_dobby_command(event: MessageEvent) -> bool:
+        """Return True for /dobby subcommands that must bypass all mutation paths."""
+        if event.get_command() != "dobby":
+            return False
+        parts = event.get_command_args().strip().split()
+        return not parts or parts[0].lower() in {"status", "help"}
+
+    @staticmethod
+    def _safe_dobby_profile_name(config: Any) -> Optional[str]:
+        """Read profile metadata only from already-loaded gateway-shaped config."""
+        raw_profile = None
+        if isinstance(config, dict):
+            raw_profile = config.get("profile_name") or config.get("profile")
+        elif config is not None:
+            raw_profile = getattr(config, "profile_name", None) or getattr(config, "profile", None)
+        if isinstance(raw_profile, str) and raw_profile.strip():
+            return raw_profile.strip()
+        return None
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -2928,6 +2948,9 @@ class GatewayRunner:
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+        if self._is_strict_read_only_dobby_command(event):
+            return await self._handle_dobby_command(event)
         
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
@@ -3156,6 +3179,9 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            if _cmd_def_inner and _cmd_def_inner.name == "dobby":
+                return await self._handle_dobby_command(event)
+
             # Gateway-handled info/control commands with dedicated
             # running-agent handlers.
             if _cmd_def_inner and _cmd_def_inner.name in _DEDICATED_HANDLERS:
@@ -3284,6 +3310,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "dobby":
+            return await self._handle_dobby_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -4770,6 +4799,20 @@ class GatewayRunner:
         ])
 
         return "\n".join(lines)
+
+    async def _handle_dobby_command(self, event: MessageEvent) -> str:
+        """Handle read-only /dobby command center commands."""
+        from gateway.dobby_commands import handle_dobby_command
+
+        config = getattr(self, "config", None)
+
+        return handle_dobby_command(
+            event.get_command_args(),
+            config=config,
+            adapters=getattr(self, "adapters", {}),
+            hermes_home=_hermes_home,
+            profile_name=self._safe_dobby_profile_name(config),
+        )
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""

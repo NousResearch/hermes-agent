@@ -93,6 +93,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # Idempotency: TTL cache of recently processed delivery IDs.
         # Prevents duplicate agent runs when webhook providers retry.
         self._seen_deliveries: Dict[str, float] = {}
+        self._seen_delivery_ttls: Dict[str, int] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
 
         # Rate limiting: per-route timestamps in a fixed window.
@@ -315,7 +316,26 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Validate HMAC signature (skip for INSECURE_NO_AUTH testing mode)
         secret = route_config.get("secret", self._global_secret)
-        if secret and secret != _INSECURE_NO_AUTH:
+        if route_config.get("require_signature") is True:
+            if not secret or secret == _INSECURE_NO_AUTH:
+                logger.warning(
+                    "[webhook] Signed route %s has no usable HMAC secret",
+                    route_name,
+                )
+                return web.json_response(
+                    {"error": "Invalid signature"}, status=401
+                )
+            if not self._validate_signed_route(
+                request, raw_body, secret, route_config
+            ):
+                logger.warning(
+                    "[webhook] Invalid signed-route request for route %s",
+                    route_name,
+                )
+                return web.json_response(
+                    {"error": "Invalid signature"}, status=401
+                )
+        elif secret and secret != _INSECURE_NO_AUTH:
             if not self._validate_signature(request, raw_body, secret):
                 logger.warning(
                     "[webhook] Invalid signature for route %s", route_name
@@ -359,6 +379,31 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
+        delivery_id: Optional[str] = None
+        now: Optional[float] = None
+        if route_config.get("require_signature") is True:
+            # Strict signed routes must replay-check before prompt rendering.
+            delivery_id = self._build_delivery_id(
+                request, route_name, route_config, raw_body
+            )
+            if delivery_id is None:
+                logger.warning(
+                    "[webhook] Signed route %s has no stable replay key",
+                    route_name,
+                )
+                return web.json_response(
+                    {"error": "Invalid signature"}, status=401
+                )
+            now = time.time()
+            if self._is_duplicate_delivery(delivery_id, route_config, now):
+                logger.info(
+                    "[webhook] Skipping duplicate delivery %s", delivery_id
+                )
+                return web.json_response(
+                    {"status": "duplicate", "delivery_id": delivery_id},
+                    status=200,
+                )
+
         # Format prompt from template
         prompt_template = route_config.get("prompt", "")
         prompt = self._render_prompt(
@@ -394,30 +439,33 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-        )
+        if delivery_id is None:
+            delivery_id = self._build_delivery_id(
+                request, route_name, route_config, raw_body
+            )
+            if delivery_id is None:
+                logger.warning(
+                    "[webhook] Signed route %s has no stable replay key",
+                    route_name,
+                )
+                return web.json_response(
+                    {"error": "Invalid signature"}, status=401
+                )
 
-        # ── Idempotency ─────────────────────────────────────────
-        # Skip duplicate deliveries (webhook retries).
-        now = time.time()
-        # Prune expired entries
-        self._seen_deliveries = {
-            k: v
-            for k, v in self._seen_deliveries.items()
-            if now - v < self._idempotency_ttl
-        }
-        if delivery_id in self._seen_deliveries:
-            logger.info(
-                "[webhook] Skipping duplicate delivery %s", delivery_id
-            )
-            return web.json_response(
-                {"status": "duplicate", "delivery_id": delivery_id},
-                status=200,
-            )
-        self._seen_deliveries[delivery_id] = now
+            # ── Idempotency ─────────────────────────────────────
+            # Legacy routes keep duplicate handling at the historical point.
+            now = time.time()
+            if self._is_duplicate_delivery(delivery_id, route_config, now):
+                logger.info(
+                    "[webhook] Skipping duplicate delivery %s", delivery_id
+                )
+                return web.json_response(
+                    {"status": "duplicate", "delivery_id": delivery_id},
+                    status=200,
+                )
+
+        if now is None:
+            now = time.time()
 
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).
@@ -511,6 +559,155 @@ class WebhookAdapter(BasePlatformAdapter):
             "[webhook] Secret configured but no signature header found"
         )
         return False
+
+    def _validate_signed_route(
+        self,
+        request: "web.Request",
+        body: bytes,
+        secret: str,
+        route_config: dict,
+    ) -> bool:
+        """Validate opt-in signed route policy with timestamp replay window.
+
+        The signed payload is ``<timestamp>.<raw_body>`` encoded as bytes.
+        ``timestamp`` is the exact header value, and ``raw_body`` is the
+        byte-for-byte HTTP request body.
+        """
+        if route_config.get("signature_algorithm") != "hmac-sha256":
+            return False
+
+        signature_header = route_config.get("signature_header")
+        timestamp_header = route_config.get("timestamp_header")
+        if not signature_header or not timestamp_header:
+            return False
+
+        replay_window = self._signed_route_replay_window(route_config)
+        if replay_window is None:
+            return False
+
+        signature = request.headers.get(signature_header, "")
+        timestamp = request.headers.get(timestamp_header, "")
+        if not signature or not timestamp:
+            return False
+
+        try:
+            signed_at = float(timestamp)
+        except ValueError:
+            return False
+
+        now = time.time()
+        if signed_at < now - replay_window:
+            return False
+        if signed_at > now + replay_window:
+            return False
+
+        signed_payload = timestamp.encode("utf-8") + b"." + body
+        expected = hmac.new(
+            secret.encode("utf-8"), signed_payload, hashlib.sha256
+        ).hexdigest()
+        signature = self._normalize_hmac_sha256_signature(signature)
+        return hmac.compare_digest(signature, expected)
+
+    def _normalize_hmac_sha256_signature(self, signature: str) -> str:
+        """Return the canonical hex form for accepted HMAC-SHA256 headers."""
+        if signature.startswith("sha256="):
+            return signature[len("sha256=") :]
+        return signature
+
+    def _signed_route_replay_window(self, route_config: dict) -> Optional[int]:
+        """Return the configured signed-route replay window, if valid."""
+        try:
+            replay_window = int(route_config.get("replay_window_seconds"))
+        except (TypeError, ValueError):
+            return None
+        if replay_window <= 0:
+            return None
+        return replay_window
+
+    def _build_delivery_id(
+        self,
+        request: "web.Request",
+        route_name: str,
+        route_config: dict,
+        body: bytes,
+    ) -> Optional[str]:
+        """Build the idempotency key for a webhook delivery."""
+        delivery_id = request.headers.get("X-GitHub-Delivery")
+        if not delivery_id:
+            delivery_id = request.headers.get("X-Request-ID")
+        if delivery_id:
+            return delivery_id
+
+        if route_config.get("require_signature") is True:
+            return self._signed_route_replay_key(
+                request, route_name, route_config, body
+            )
+
+        return str(int(time.time() * 1000))
+
+    def _signed_route_replay_key(
+        self,
+        request: "web.Request",
+        route_name: str,
+        route_config: dict,
+        body: bytes,
+    ) -> Optional[str]:
+        """Build a deterministic replay key for signed routes without IDs."""
+        signature_header = route_config.get("signature_header")
+        timestamp_header = route_config.get("timestamp_header")
+        if not signature_header or not timestamp_header:
+            return None
+
+        signature = request.headers.get(signature_header, "")
+        timestamp = request.headers.get(timestamp_header, "")
+        if not signature or not timestamp:
+            return None
+
+        normalized_signature = self._normalize_hmac_sha256_signature(signature)
+        digest = hashlib.sha256()
+        digest.update(route_name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(timestamp.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(normalized_signature.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(body)
+        return "signed:" + digest.hexdigest()
+
+    def _delivery_id_ttl(self, route_config: dict) -> int:
+        """Return the cache TTL for this delivery key."""
+        if route_config.get("require_signature") is True:
+            replay_window = self._signed_route_replay_window(route_config)
+            if replay_window is not None:
+                return max(self._idempotency_ttl, replay_window)
+        return self._idempotency_ttl
+
+    def _is_duplicate_delivery(
+        self, delivery_id: str, route_config: dict, now: float
+    ) -> bool:
+        """Record a delivery ID and report whether it was already seen."""
+        self._prune_seen_deliveries(now)
+        if delivery_id in self._seen_deliveries:
+            return True
+        self._seen_deliveries[delivery_id] = now
+        self._seen_delivery_ttls[delivery_id] = self._delivery_id_ttl(
+            route_config
+        )
+        return False
+
+    def _prune_seen_deliveries(self, now: float) -> None:
+        """Drop expired delivery IDs while preserving per-key TTLs."""
+        self._seen_deliveries = {
+            key: seen_at
+            for key, seen_at in self._seen_deliveries.items()
+            if now - seen_at
+            < self._seen_delivery_ttls.get(key, self._idempotency_ttl)
+        }
+        self._seen_delivery_ttls = {
+            key: ttl
+            for key, ttl in self._seen_delivery_ttls.items()
+            if key in self._seen_deliveries
+        }
 
     # ------------------------------------------------------------------
     # Prompt rendering

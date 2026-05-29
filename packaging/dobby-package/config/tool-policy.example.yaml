@@ -1,0 +1,112 @@
+# Dobby package tool policy template.
+# Premium and experimental surfaces are disabled until the operator opts in.
+
+version: "1.0"
+default_action: "deny"
+
+risk_levels:
+  low:
+    description: "Local, read-only, or conversational actions."
+    require_approval: false
+  medium:
+    description: "Local reads or bounded state updates that may expose user data."
+    require_approval: true
+  high:
+    description: "Writes, shell commands, browser automation, outbound messages, or network access."
+    require_approval: true
+  critical:
+    description: "Credential handling, destructive actions, system changes, or public publication."
+    require_approval: true
+
+capabilities:
+  allowed_core:
+    clarify: low
+    todo: low
+    session_search: medium
+    read_file: medium
+    search_files: medium
+    vision_analyze: medium
+  disabled_by_default:
+    terminal: high
+    process: high
+    execute_code: high
+    write_file: high
+    patch: high
+    browser_navigate: high
+    browser_click: high
+    browser_type: high
+    web_search: high
+    web_extract: high
+    send_message: high
+    cronjob: high
+    delegate_task: high
+    memory: medium
+    image_generate: medium
+    text_to_speech: medium
+
+deny_policies:
+  broad_oauth:
+    github:
+      denied_scopes:
+        - "repo"
+        - "workflow"
+        - "admin:org"
+        - "delete_repo"
+      reason: "Production GitHub OAuth must be scoped per customer and reviewed before write access."
+    notion:
+      denied_scopes:
+        - "workspace.content"
+        - "workspace.user"
+        - "bot:workspace"
+      reason: "Production Notion workspace OAuth is not part of the default package."
+    google:
+      denied_scopes:
+        - "https://www.googleapis.com/auth/drive"
+        - "https://www.googleapis.com/auth/gmail.modify"
+        - "https://www.googleapis.com/auth/calendar"
+      reason: "Broad Google OAuth requires separate security and legal review."
+    slack:
+      denied_scopes:
+        - "channels:history"
+        - "groups:history"
+        - "chat:write"
+        - "admin"
+      reason: "Production Slack OAuth is not enabled by default."
+  home_automation:
+    default_action: "deny"
+    examples:
+      - "door_lock"
+      - "alarm_system"
+      - "thermostat"
+      - "lights"
+  autonomous_actions:
+    default_action: "deny"
+    denied:
+      - "purchase"
+      - "trade"
+      - "send_email"
+      - "post_public_message"
+      - "merge_pull_request"
+      - "deploy"
+  browser_automation:
+    default_enabled: false
+    default_action: "deny"
+    require_operator_approval: true
+
+premium:
+  enabled: false
+  capabilities: []
+
+experimental:
+  enabled: false
+  capabilities: []
+
+external_memory_providers:
+  enabled: false
+  providers: []
+
+attachment_handling:
+  max_files_per_message: 3
+  max_file_bytes: 8388608
+  max_text_extract_bytes: 65536
+  store_raw_files: false

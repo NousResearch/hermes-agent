@@ -1,0 +1,37 @@
+{
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "spdxVersion": "SPDX-2.3",
+  "creationInfo": {
+    "created": "1970-01-01T00:00:00Z",
+    "creators": [
+      "Tool: DELIVERY-REQUIRED-SBOM-GENERATOR"
+    ]
+  },
+  "dataLicense": "CC0-1.0",
+  "documentNamespace": "https://example.invalid/dobby-package/sbom/example",
+  "name": "Dobby Hermes Package SBOM Example - Not For Customer Delivery",
+  "documentDescribes": [
+    "SPDXRef-Package-DobbyHermesExample"
+  ],
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-DobbyHermesExample",
+      "name": "dobby-hermes-package-example",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Organization: DELIVERY-REQUIRED",
+      "versionInfo": "DELIVERY-REQUIRED"
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-DobbyHermesExample"
+    }
+  ],
+  "comment": "EXAMPLE ONLY. Regenerate an artifact-specific SBOM for every customer delivery. Delivery must block if this example file is still present as the claimed SBOM."
+}

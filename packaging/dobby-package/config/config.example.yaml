@@ -1,0 +1,100 @@
+# Dobby package configuration template.
+# This file is safe-by-default and intentionally non-live.
+
+package:
+  template_version: "1.0"
+  live_services_enabled: false
+
+model:
+  default: "<MODEL_ID>"
+  provider: "custom"
+  base_url: "<MODEL_ENDPOINT_URL>"
+  api_key_env: "OPENAI_API_KEY"
+
+toolsets:
+  - "safe"
+
+agent:
+  max_turns: 20
+  gateway_timeout: 900
+  gateway_timeout_warning: 0
+  gateway_notify_interval: 0
+
+terminal:
+  backend: "local"
+  cwd: "."
+  timeout: 60
+  env_passthrough: []
+  docker_forward_env: []
+  docker_env: {}
+  docker_volumes: []
+  docker_mount_cwd_to_workspace: false
+
+browser:
+  enabled: false
+  allow_private_urls: false
+  record_sessions: false
+
+privacy:
+  redact_pii: true
+
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+  provider: ""
+
+honcho: {}
+
+skills:
+  external_dirs: []
+
+gateway:
+  allow_all_users: false
+  passive_ingestion: false
+  allowed_users:
+    - "<DISCORD_USER_ID>"
+
+webhook:
+  enabled: true
+  require_signature: true
+  signature_algorithm: "hmac-sha256"
+  signature_header: "X-Dobby-Signature"
+  timestamp_header: "X-Dobby-Timestamp"
+  replay_window_seconds: 300
+  max_body_bytes: 262144
+  unsigned_requests: "deny"
+  replay_cache_required: true
+  allowed_routes:
+    - "/webhooks/dobby/events"
+
+discord:
+  require_mention: true
+  free_response_channels: []
+  allowed_users:
+    - "<DISCORD_USER_ID>"
+  allowed_channels:
+    - "<DISCORD_CHANNEL_ID>"
+  ignored_channels: []
+  auto_thread: true
+  reactions: true
+  passive_ingestion: false
+  message_history_ingestion: false
+  allow_mentions:
+    everyone: false
+    roles: false
+    users: true
+    replied_user: true
+  attachment_limits:
+    max_files_per_message: 3
+    max_file_bytes: 8388608
+    max_image_bytes: 5242880
+    max_document_bytes: 1048576
+    max_text_extract_bytes: 65536
+    allowed_mime_prefixes:
+      - "image/"
+      - "text/plain"
+      - "text/markdown"
+
+external_memory_providers:
+  enabled: false
+  bundled: []

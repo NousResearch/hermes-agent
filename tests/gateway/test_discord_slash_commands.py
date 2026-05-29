@@ -164,7 +164,7 @@ async def test_auto_registers_missing_gateway_commands(adapter):
 
     # These commands are gateway-available but were not in the original
     # hardcoded registration list — they should be auto-registered.
-    expected_auto = {"debug", "yolo", "reload", "profile"}
+    expected_auto = {"debug", "yolo", "reload", "profile", "dobby"}
     for name in expected_auto:
         assert name in tree_names, f"/{name} should be auto-registered on Discord"
 
@@ -196,6 +196,13 @@ async def test_auto_registered_command_with_args(adapter):
     await branch_cmd.callback(interaction, args="my-branch")
     adapter._run_simple_slash.assert_awaited_once_with(
         interaction, "/branch my-branch"
+    )
+
+    dobby_cmd = adapter._client.tree.commands["dobby"]
+    adapter._run_simple_slash.reset_mock()
+    await dobby_cmd.callback(interaction, args="status")
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction, "/dobby status"
     )
 
 
@@ -882,4 +889,3 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
-

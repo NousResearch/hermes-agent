@@ -100,6 +100,43 @@ def _generic_signature(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _dobby_signature(timestamp: str, body: bytes, secret: str) -> str:
+    """Compute X-Dobby-Signature for '<timestamp>.<raw_body>' bytes."""
+    signed_payload = timestamp.encode("utf-8") + b"." + body
+    return hmac.new(
+        secret.encode("utf-8"), signed_payload, hashlib.sha256
+    ).hexdigest()
+
+
+def _dobby_route(secret="dobby-secret"):
+    return {
+        "secret": secret,
+        "prompt": "event",
+        "require_signature": True,
+        "signature_algorithm": "hmac-sha256",
+        "signature_header": "X-Dobby-Signature",
+        "timestamp_header": "X-Dobby-Timestamp",
+        "replay_window_seconds": 300,
+    }
+
+
+def _dobby_headers(
+    timestamp: str,
+    body: bytes,
+    secret: str,
+    *,
+    prefix_signature: bool = False,
+):
+    signature = _dobby_signature(timestamp, body, secret)
+    if prefix_signature:
+        signature = "sha256=" + signature
+    return {
+        "Content-Type": "application/json",
+        "X-Dobby-Timestamp": timestamp,
+        "X-Dobby-Signature": signature,
+    }
+
+
 # ===================================================================
 # Signature validation
 # ===================================================================
@@ -169,6 +206,88 @@ class TestValidateSignature:
         sig = _generic_signature(body, secret)
         req = _mock_request(headers={"X-Webhook-Signature": sig})
         assert adapter._validate_signature(req, body, secret) is True
+
+
+class TestSignedRoutePolicy:
+    """Tests for opt-in signed route timestamp and replay-window policy."""
+
+    def test_signed_route_signature_format(self, monkeypatch):
+        """Dobby route HMAC covers '<timestamp>.<raw_body>' exactly."""
+        monkeypatch.setattr("gateway.platforms.webhook.time.time", lambda: 1000.0)
+        adapter = _make_adapter()
+        body = b'{"event":"build_failed"}'
+        timestamp = "1000"
+        secret = "dobby-secret"
+        req = _mock_request(
+            headers={
+                "X-Dobby-Timestamp": timestamp,
+                "X-Dobby-Signature": _dobby_signature(timestamp, body, secret),
+            }
+        )
+
+        assert adapter._validate_signed_route(
+            req, body, secret, _dobby_route(secret)
+        ) is True
+
+    def test_signed_route_accepts_sha256_prefixed_signature(self, monkeypatch):
+        """Dobby signatures may include the conventional sha256= prefix."""
+        monkeypatch.setattr("gateway.platforms.webhook.time.time", lambda: 1000.0)
+        adapter = _make_adapter()
+        body = b'{"event":"build_failed"}'
+        secret = "dobby-secret"
+        req = _mock_request(
+            headers=_dobby_headers(
+                "1000", body, secret, prefix_signature=True
+            )
+        )
+
+        assert adapter._validate_signed_route(
+            req, body, secret, _dobby_route(secret)
+        ) is True
+
+    @pytest.mark.parametrize(
+        ("headers", "now"),
+        [
+            ({}, 1000.0),
+            ({"X-Dobby-Timestamp": "not-a-number"}, 1000.0),
+            ({"X-Dobby-Timestamp": "699"}, 1000.0),
+            ({"X-Dobby-Timestamp": "1301"}, 1000.0),
+        ],
+    )
+    def test_signed_route_rejects_missing_invalid_stale_or_future_timestamp(
+        self, monkeypatch, headers, now
+    ):
+        """Missing, malformed, stale, and far-future timestamps fail closed."""
+        monkeypatch.setattr("gateway.platforms.webhook.time.time", lambda: now)
+        adapter = _make_adapter()
+        body = b'{"event":"build_failed"}'
+        timestamp = headers.get("X-Dobby-Timestamp", "1000")
+        headers = {
+            **headers,
+            "X-Dobby-Signature": _dobby_signature(
+                timestamp, body, "dobby-secret"
+            ),
+        }
+        req = _mock_request(headers=headers)
+
+        assert adapter._validate_signed_route(
+            req, body, "dobby-secret", _dobby_route()
+        ) is False
+
+    def test_signed_route_rejects_bad_signature(self, monkeypatch):
+        """Timestamp alone is not enough; HMAC must match the signed payload."""
+        monkeypatch.setattr("gateway.platforms.webhook.time.time", lambda: 1000.0)
+        adapter = _make_adapter()
+        req = _mock_request(
+            headers={
+                "X-Dobby-Timestamp": "1000",
+                "X-Dobby-Signature": "deadbeef",
+            }
+        )
+
+        assert adapter._validate_signed_route(
+            req, b'{"event":"build_failed"}', "dobby-secret", _dobby_route()
+        ) is False
 
 
 # ===================================================================
@@ -335,6 +454,194 @@ class TestHTTPHandling:
             data = await resp.json()
             assert data["status"] == "accepted"
             assert data["route"] == "test"
+
+    @pytest.mark.asyncio
+    async def test_signed_route_accepts_valid_timestamped_signature(
+        self, monkeypatch
+    ):
+        """Opt-in signed routes accept valid timestamp-bound HMAC requests."""
+        monkeypatch.setattr("gateway.platforms.webhook.time.time", lambda: 1000.0)
+        secret = "dobby-secret"
+        body = b'{"event_type":"build_failed"}'
+        timestamp = "1000"
+        routes = {"dobby": _dobby_route(secret)}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/dobby",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Dobby-Timestamp": timestamp,
+                    "X-Dobby-Signature": _dobby_signature(
+                        timestamp, body, secret
+                    ),
+                },
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_signed_route_rejects_duplicate_without_delivery_id(
+        self, monkeypatch
+    ):
+        """Strict signed routes derive a stable replay key when IDs are absent."""
+        now = 1000.0
+        monkeypatch.setattr(
+            "gateway.platforms.webhook.time.time", lambda: now
+        )
+        secret = "dobby-secret"
+        body = b'{"event_type":"build_failed"}'
+        routes = {"dobby": _dobby_route(secret)}
+        adapter = _make_adapter(routes=routes)
+        adapter._idempotency_ttl = 1
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = _dobby_headers("1000", body, secret)
+            resp1 = await cli.post(
+                "/webhooks/dobby", data=body, headers=headers
+            )
+            assert resp1.status == 202
+
+            now = 1002.0
+            resp2 = await cli.post(
+                "/webhooks/dobby", data=body, headers=headers
+            )
+            assert resp2.status == 200
+            data = await resp2.json()
+            assert data["status"] == "duplicate"
+            assert data["delivery_id"].startswith("signed:")
+
+        await asyncio.sleep(0)
+        assert adapter.handle_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_signed_route_accepts_different_timestamped_signature_without_id(
+        self, monkeypatch
+    ):
+        """A new timestamp/signature pair is not collapsed into the prior run."""
+        monkeypatch.setattr("gateway.platforms.webhook.time.time", lambda: 1000.0)
+        secret = "dobby-secret"
+        body = b'{"event_type":"build_failed"}'
+        routes = {"dobby": _dobby_route(secret)}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp1 = await cli.post(
+                "/webhooks/dobby",
+                data=body,
+                headers=_dobby_headers("1000", body, secret),
+            )
+            assert resp1.status == 202
+
+            resp2 = await cli.post(
+                "/webhooks/dobby",
+                data=body,
+                headers=_dobby_headers("1001", body, secret),
+            )
+            assert resp2.status == 202
+
+        await asyncio.sleep(0)
+        assert adapter.handle_message.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_signed_route_replay_key_canonicalizes_signature_prefix(
+        self, monkeypatch
+    ):
+        """Prefix/no-prefix forms of the same HMAC share a replay key."""
+        monkeypatch.setattr("gateway.platforms.webhook.time.time", lambda: 1000.0)
+        secret = "dobby-secret"
+        body = b'{"event_type":"build_failed"}'
+        routes = {"dobby": _dobby_route(secret)}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp1 = await cli.post(
+                "/webhooks/dobby",
+                data=body,
+                headers=_dobby_headers("1000", body, secret),
+            )
+            assert resp1.status == 202
+
+            resp2 = await cli.post(
+                "/webhooks/dobby",
+                data=body,
+                headers=_dobby_headers(
+                    "1000", body, secret, prefix_signature=True
+                ),
+            )
+            assert resp2.status == 200
+            data = await resp2.json()
+            assert data["status"] == "duplicate"
+
+        await asyncio.sleep(0)
+        assert adapter.handle_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_signed_route_rejects_stale_timestamp_before_routing(
+        self, monkeypatch
+    ):
+        """Stale signed payloads do not reach the agent route handler."""
+        monkeypatch.setattr("gateway.platforms.webhook.time.time", lambda: 1000.0)
+        secret = "dobby-secret"
+        body = b'{"event_type":"build_failed"}'
+        timestamp = "699"
+        routes = {"dobby": _dobby_route(secret)}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/dobby",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Dobby-Timestamp": timestamp,
+                    "X-Dobby-Signature": _dobby_signature(
+                        timestamp, body, secret
+                    ),
+                },
+            )
+            assert resp.status == 401
+            adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dynamic_require_signature_without_secret_fails_closed(
+        self, tmp_path, monkeypatch
+    ):
+        """Dynamic require_signature routes cannot bypass auth without a secret."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("gateway.platforms.webhook.time.time", lambda: 1000.0)
+
+        from gateway.platforms.webhook import _DYNAMIC_ROUTES_FILENAME
+
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
+            json.dumps({"dobby": _dobby_route(secret="")})
+        )
+        adapter = _make_adapter(secret="")
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/dobby",
+                json={"event_type": "build_failed"},
+                headers={
+                    "X-Dobby-Timestamp": "1000",
+                    "X-Dobby-Signature": "deadbeef",
+                },
+            )
+            assert resp.status == 401
+            adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_health_endpoint(self):

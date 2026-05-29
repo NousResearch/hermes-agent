@@ -1,0 +1,61 @@
+{
+  "case_id": "SAF-05",
+  "package_root": "/opt/dobby/package",
+  "env": {
+    "OPENAI_BASE_URL": "https://model.internal/v1",
+    "OPENAI_API_KEY": "broad-model-key",
+    "HERMES_MODEL": "dobby-local",
+    "DISCORD_BOT_TOKEN": "broad-discord-key",
+    "DISCORD_ALLOWED_USERS": "111111111111111111",
+    "DISCORD_ALLOWED_CHANNELS": "222222222222222222",
+    "WEBHOOK_SECRET": "broad-webhook-key",
+    "HERMES_HOME": "/var/lib/dobby/hermes-home",
+    "HERMES_REDACT_SECRETS": "true",
+    "SLACK_BOT_TOKEN": "slack-broad-key",
+    "TELEGRAM_BOT_TOKEN": "telegram-broad-key"
+  },
+  "config": {
+    "browser": {"enabled": false},
+    "privacy": {"redact_pii": true},
+    "memory": {"memory_enabled": false, "user_profile_enabled": false, "provider": ""},
+    "honcho": {},
+    "external_memory_providers": {"enabled": false},
+    "webhook": {
+      "enabled": true,
+      "require_signature": true,
+      "signature_algorithm": "hmac-sha256",
+      "unsigned_requests": "deny",
+      "allowed_routes": ["/webhooks/dobby/events"]
+    }
+  },
+  "tool_policy": {
+    "capabilities": {
+      "disabled_by_default": {
+        "browser_navigate": "high",
+        "browser_click": "high",
+        "browser_type": "high"
+      }
+    },
+    "deny_policies": {
+      "broad_oauth": {"slack": {"denied_scopes": ["chat:write"]}},
+      "browser_automation": {"default_enabled": false, "default_action": "deny"}
+    },
+    "premium": {"enabled": false},
+    "experimental": {"enabled": false},
+    "external_memory_providers": {"enabled": false}
+  },
+  "expected_status": "blocked",
+  "expected_checks": {
+    "broad_integrations": "fail"
+  },
+  "absent_raw_values": [
+    "broad-model-key",
+    "broad-discord-key",
+    "broad-webhook-key",
+    "slack-broad-key",
+    "telegram-broad-key"
+  ],
+  "report_contains": [
+    "Broad integrations must remain disabled and token-free by default."
+  ]
+}

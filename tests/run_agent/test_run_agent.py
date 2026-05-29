@@ -3295,8 +3295,13 @@ class TestRunConversation:
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 
-    def test_non_minimax_delta_overflow_still_probes_down(self, agent):
-        """Non-MiniMax providers should keep the generic probe-down behavior."""
+    def test_non_minimax_overflow_without_provider_limit_keeps_context(self, agent):
+        """Generic overflow without a provider-reported max must NOT probe-step down.
+
+        Previously a 200K configured window would silently drop to the 128K probe
+        tier on a generic overflow error.  Now we keep the configured window and
+        rely on compression — see #33669 / PR #33826.
+        """
         self._setup_agent(agent)
         agent.provider = "openrouter"
         agent.model = "some/unknown-model"
@@ -3330,7 +3335,8 @@ class TestRunConversation:
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_called_once()
-        assert agent.context_compressor.context_length == 128_000
+        # Context length preserved — no guessed probe-tier step-down.
+        assert agent.context_compressor.context_length == 200_000
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 
@@ -3874,6 +3880,33 @@ class TestNousCredentialRefresh:
         )
         assert "default_headers" not in rebuilt["kwargs"]
         assert isinstance(agent.client, _RebuiltClient)
+
+    def test_try_refresh_nous_client_credentials_accepts_explicit_auth_mode(
+        self, agent, monkeypatch
+    ):
+        agent.provider = "nous"
+        agent.api_mode = "chat_completions"
+        captured = {}
+
+        def _fake_resolve(**kwargs):
+            captured.update(kwargs)
+            return {
+                "api_key": "new-nous-key",
+                "base_url": "https://inference-api.nousresearch.com/v1",
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
+        )
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            ok = agent._try_refresh_nous_client_credentials(
+                force=False,
+                inference_auth_mode="legacy",
+            )
+
+        assert ok is True
+        assert captured["inference_auth_mode"] == "legacy"
 
 
 class TestCredentialPoolRecovery:

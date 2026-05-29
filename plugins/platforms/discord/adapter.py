@@ -4811,14 +4811,19 @@ class DiscordAdapter(BasePlatformAdapter):
         # to keep the partition rule clean.
         _channel_context = None
         _is_dm = isinstance(message.channel, discord.DMChannel)
-        if not _is_dm:
-            _needed_mention = (
-                require_mention
-                and not is_free_channel
-                and not in_bot_thread
-            )
-            _backfill_enabled = self._discord_history_backfill()
-            if _needed_mention and _backfill_enabled:
+        if not _is_dm and self._discord_history_backfill():
+            # Run backfill when there's a real gap to fill:
+            #   - mention-gated channels with no free-response override
+            #     (messages between bot turns aren't in the transcript)
+            #   - any thread (in_bot_thread bypasses the mention check, but
+            #     processing-window gaps and post-restart context still need
+            #     recovery)
+            # DMs skip entirely because every DM message triggers the bot,
+            # so the session transcript already has everything.
+            # Auto-threaded messages also skip — we just created the thread,
+            # there's nothing prior to backfill.
+            _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
+            if (_has_mention_gap or is_thread) and auto_threaded_channel is None:
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
                 )

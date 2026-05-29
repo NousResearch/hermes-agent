@@ -80,9 +80,6 @@ class MyBackendWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return False
 
-    def supports_crawl(self) -> bool:
-        return False
-
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         import httpx
 
@@ -157,12 +154,10 @@ requires_env:
 | `is_available()` | ✅ | — | 轻量可用性检查——环境变量、可选依赖等 |
 | `supports_search()` | — | `True` | `web_search` 路由的能力标志 |
 | `supports_extract()` | — | `False` | `web_extract` 路由的能力标志 |
-| `supports_crawl()` | — | `False` | 深度爬取模式的能力标志 |
 | `search(query, limit)` | 条件必须 | 抛出异常 | 当 `supports_search()` 返回 `True` 时必须实现 |
 | `extract(urls, **kwargs)` | 条件必须 | 抛出异常 | 当 `supports_extract()` 返回 `True` 时必须实现 |
-| `crawl(url, **kwargs)` | 条件必须 | 抛出异常 | 当 `supports_crawl()` 返回 `True` 时必须实现 |
 
-提供商可以在单个类中声明多种能力——Firecrawl、Tavily、Exa 和 Parallel 均实现了搜索/提取/爬取三种能力。Brave Search 和 DDGS 仅支持搜索；SearXNG 也仅支持搜索，并有文档说明的"与提取提供商配对使用"工作流。
+提供商可以在单个类中声明多种能力——Firecrawl、Tavily、Exa 和 Parallel 均实现了搜索和提取两种能力。Brave Search 和 DDGS 仅支持搜索；SearXNG 也仅支持搜索，并有文档说明的"与提取提供商配对使用"工作流。
 
 ## 响应格式
 

@@ -2514,7 +2514,7 @@ def _lmstudio_fetch_raw_models(
     headers = _lmstudio_request_headers(api_key)
     request = urllib.request.Request(server_root + "/api/v1/models", headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:  # SSRF: add IP block check
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:

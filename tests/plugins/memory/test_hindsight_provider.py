@@ -1539,6 +1539,79 @@ class TestSharedEventLoopLifecycle:
 
         provider_b.shutdown()
 
+    def test_loop_creation_registers_single_atexit_teardown(self, provider_with_config, monkeypatch):
+        """#34415 — the shared loop must register exactly one atexit teardown,
+        and only the first time the loop is created. Without a teardown hook
+        the daemon-thread loop is killed mid-flight at interpreter exit and any
+        aiohttp ClientSession / TCPConnector it still owns leaks.
+        """
+        import atexit as _atexit
+        from plugins.memory import hindsight as hindsight_mod
+
+        # Force a fresh loop so we observe the registration path.
+        hindsight_mod._shutdown_loop()
+        hindsight_mod._loop_atexit_registered = False
+
+        registered = []
+        monkeypatch.setattr(_atexit, "register", lambda fn, *a, **k: registered.append(fn) or fn)
+
+        async def _noop():
+            return 1
+
+        # First call creates the loop and should register the teardown once.
+        assert hindsight_mod._run_sync(_noop()) == 1
+        assert hindsight_mod._shutdown_loop in registered, (
+            "_get_loop did not register _shutdown_loop atexit hook (#34415)"
+        )
+        assert registered.count(hindsight_mod._shutdown_loop) == 1
+
+        # Subsequent loop access (loop already running) must NOT re-register.
+        assert hindsight_mod._run_sync(_noop()) == 1
+        assert registered.count(hindsight_mod._shutdown_loop) == 1, (
+            "teardown hook registered more than once"
+        )
+
+    def test_shutdown_loop_stops_and_closes_shared_loop(self, provider_with_config):
+        """#34415 — _shutdown_loop() must deterministically stop, join, and close
+        the shared loop so aiohttp connectors are released by the loop instead
+        of garbage-collected on a dead daemon thread at interpreter teardown.
+        """
+        from plugins.memory import hindsight as hindsight_mod
+
+        async def _noop():
+            return 1
+
+        # Prime the shared loop.
+        assert hindsight_mod._run_sync(_noop()) == 1
+        loop = hindsight_mod._loop
+        thread = hindsight_mod._loop_thread
+        assert loop is not None and loop.is_running()
+        assert thread is not None and thread.is_alive()
+
+        # Simulate interpreter exit.
+        hindsight_mod._shutdown_loop()
+
+        assert loop.is_closed(), "_shutdown_loop did not close the shared loop"
+        assert not thread.is_alive(), "_shutdown_loop did not join the loop thread"
+        # Module globals must be cleared so a later call rebuilds a fresh loop.
+        assert hindsight_mod._loop is None
+        assert hindsight_mod._loop_thread is None
+
+        # And the loop can be lazily rebuilt afterwards (idempotent / reusable).
+        assert hindsight_mod._run_sync(_noop()) == 1
+        hindsight_mod._shutdown_loop()
+
+    def test_shutdown_loop_is_safe_when_no_loop_exists(self):
+        """#34415 — calling the teardown hook with no live loop must be a no-op,
+        never raise (atexit hooks that raise are noisy and can mask real exits).
+        """
+        from plugins.memory import hindsight as hindsight_mod
+
+        hindsight_mod._shutdown_loop()  # ensure cleared
+        # Second call with nothing to do must not raise.
+        hindsight_mod._shutdown_loop()
+        assert hindsight_mod._loop is None
+
     def test_client_aclose_called_on_cloud_mode_shutdown(self, provider):
         """Per-provider session cleanup still runs even though the shared
         loop is preserved. Each provider's own aiohttp session is closed

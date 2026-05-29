@@ -196,6 +196,7 @@ def _check_api_supports_update_mode_append(api_url: str,
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
 _loop_lock = threading.Lock()
+_loop_atexit_registered = False
 
 # Sentinel pushed to the per-provider retain queue to wake the writer for a
 # clean exit. A unique object so it can never collide with a real job.
@@ -204,7 +205,7 @@ _WRITER_SENTINEL = object()
 
 def _get_loop() -> asyncio.AbstractEventLoop:
     """Return a long-lived event loop running on a background thread."""
-    global _loop, _loop_thread
+    global _loop, _loop_thread, _loop_atexit_registered
     with _loop_lock:
         if _loop is not None and _loop.is_running():
             return _loop
@@ -216,7 +217,73 @@ def _get_loop() -> asyncio.AbstractEventLoop:
 
         _loop_thread = threading.Thread(target=_run, daemon=True, name="hindsight-loop")
         _loop_thread.start()
+
+        # Register the loop teardown exactly once, the first time the loop is
+        # created. atexit runs in LIFO order, so registering here -- before any
+        # HindsightMemoryProvider has registered its own per-instance
+        # _atexit_shutdown (those happen later, on initialize()) -- guarantees
+        # _shutdown_loop() runs AFTER every provider has closed its client.
+        # Without this, the shared daemon-thread loop is torn down by the
+        # interpreter mid-flight and any aiohttp ClientSession / TCPConnector
+        # still owned by the loop is reclaimed by GC during teardown, surfacing
+        # as the "Unclosed client session" / "Unclosed connector" warnings
+        # from #10865 / #11923 / #34415.
+        if not _loop_atexit_registered:
+            _loop_atexit_registered = True
+            atexit.register(_shutdown_loop)
         return _loop
+
+
+def _shutdown_loop(timeout: float = 5.0) -> None:
+    """Stop and join the shared Hindsight event loop, draining it cleanly.
+
+    Runs once at interpreter exit (registered in :func:`_get_loop`). Per-provider
+    ``shutdown()`` already closes each provider's Hindsight client via
+    ``aclose()``; this hook then shuts down the loop deterministically so any
+    residual aiohttp ``ClientSession`` / ``TCPConnector`` owned by the loop is
+    released by the loop itself rather than garbage-collected on a dead daemon
+    thread (which is what produced the "Unclosed client session" /
+    "Unclosed connector" warnings, then a SIGKILL'd gateway, in #34415).
+    """
+    global _loop, _loop_thread
+    with _loop_lock:
+        loop = _loop
+        thread = _loop_thread
+        _loop = None
+        _loop_thread = None
+
+    if loop is None:
+        return
+
+    async def _drain() -> None:
+        # Close any async generators (aiohttp uses these internally) so their
+        # finalizers run on the loop while it is still alive.
+        try:
+            await loop.shutdown_asyncgens()
+        except Exception:
+            pass
+
+    try:
+        if loop.is_running():
+            # Drain async generators on the loop, then stop it.
+            fut = asyncio.run_coroutine_threadsafe(_drain(), loop)
+            try:
+                fut.result(timeout=timeout)
+            except Exception:
+                fut.cancel()
+            loop.call_soon_threadsafe(loop.stop)
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=timeout)
+    except Exception:
+        pass
+    finally:
+        # Close the loop so its transports/connectors are released. Guard
+        # against closing a still-running loop (raises RuntimeError).
+        try:
+            if not loop.is_running():
+                loop.close()
+        except Exception:
+            pass
 
 
 def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):

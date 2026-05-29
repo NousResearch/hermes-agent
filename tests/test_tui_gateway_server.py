@@ -5114,6 +5114,8 @@ def test_notification_poller_skips_consumed(monkeypatch):
 
 def test_notification_poller_requeues_when_busy(monkeypatch):
     """When the agent is busy, the poller requeues the event."""
+    import queue as _queue_mod
+
     from tools.process_registry import process_registry
 
     emitted = []
@@ -5122,8 +5124,13 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
     server._sessions["sid_busy"] = sess
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
 
-    while not process_registry.completion_queue.empty():
-        process_registry.completion_queue.get_nowait()
+    # Isolate the completion queue for the duration of this test. The poller
+    # reads process_registry.completion_queue by attribute at runtime, so a
+    # fresh Queue here means no concurrently-running test in the same xdist
+    # worker can put/get on the shared singleton mid-run and drain the event
+    # we expect to be requeued. monkeypatch restores the original on teardown.
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
     process_registry._completion_consumed.discard("proc_busy_test")
 
     evt = {
@@ -5133,7 +5140,7 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         "exit_code": 0,
         "output": "ok",
     }
-    process_registry.completion_queue.put(evt)
+    isolated_queue.put(evt)
 
     stop = threading.Event()
     stop.set()
@@ -5146,10 +5153,8 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         assert len(status_calls) == 1
 
         # Event was requeued (agent was busy, no turn triggered)
-        assert not process_registry.completion_queue.empty()
-        requeued = process_registry.completion_queue.get_nowait()
+        assert not isolated_queue.empty()
+        requeued = isolated_queue.get_nowait()
         assert requeued["session_id"] == "proc_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
-        while not process_registry.completion_queue.empty():
-            process_registry.completion_queue.get_nowait()

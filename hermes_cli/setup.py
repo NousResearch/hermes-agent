@@ -2720,7 +2720,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         if isinstance(model, str) and model.strip():
             return model.strip()
         if isinstance(model, dict):
-            return str(model.get("default") or model.get("model") or "configured")
+            return str(model.get("default") or model.get("name") or model.get("model") or "configured")
         return "configured"
 
     elif section_key == "terminal":

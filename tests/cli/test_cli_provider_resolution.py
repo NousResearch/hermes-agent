@@ -381,6 +381,43 @@ def test_codex_provider_uses_config_model(monkeypatch):
     assert shell.model != "should-be-ignored"
 
 
+def test_cli_uses_legacy_model_name_for_named_custom_provider(monkeypatch):
+    """Legacy/custom-provider configs may use model.name instead of model.default.
+
+    Regression test for #34500: the CLI must pass that configured model through
+    to AIAgent so OpenAI-compatible custom backends do not receive model="".
+    """
+    cli = _import_cli()
+
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {
+        "name": "claude-sonnet-4-20250514",
+        "provider": "my-litellm",
+    })
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "my-litellm",
+            "api_mode": "chat_completions",
+            "base_url": "http://litellm-proxy:4000/v1",
+            "api_key": "test-key",
+            "source": "config/custom_providers",
+        }
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+
+    shell = cli.HermesCLI(compact=True, max_turns=1)
+
+    assert shell.model == "claude-sonnet-4-20250514"
+    assert shell._init_agent() is True
+    assert shell.agent.kwargs["model"] == "claude-sonnet-4-20250514"
+
+
 def test_codex_config_model_not_replaced_by_normalization(monkeypatch):
     """When the user sets model.default in config.yaml to a specific codex
     model, _normalize_model_for_provider must NOT replace it with the latest

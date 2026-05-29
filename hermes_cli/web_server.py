@@ -853,7 +853,7 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(model_val, dict):
         # Extract context_length before flattening the dict
         ctx_len = model_val.get("context_length", 0)
-        config["model"] = model_val.get("default", model_val.get("name", ""))
+        config["model"] = model_val.get("default") or model_val.get("name") or model_val.get("model") or ""
         config["model_context_length"] = ctx_len if isinstance(ctx_len, int) else 0
     else:
         config["model_context_length"] = 0
@@ -901,7 +901,7 @@ def get_model_info():
 
         # Extract model name and provider from the config
         if isinstance(model_cfg, dict):
-            model_name = model_cfg.get("default", model_cfg.get("name", ""))
+            model_name = model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or ""
             provider = model_cfg.get("provider", "")
             base_url = model_cfg.get("base_url", "")
             config_ctx = model_cfg.get("context_length")
@@ -1038,7 +1038,7 @@ def get_auxiliary_models():
         if isinstance(model_cfg, dict):
             main = {
                 "provider": str(model_cfg.get("provider", "") or ""),
-                "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
+                "model": str(model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or ""),
             }
         else:
             main = {"provider": "", "model": str(model_cfg) if model_cfg else ""}

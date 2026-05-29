@@ -132,7 +132,7 @@ def _get_model_and_provider(config: dict) -> tuple[str, str]:
     """Extract model and provider from config."""
     model_cfg = config.get("model", "")
     if isinstance(model_cfg, dict):
-        model = model_cfg.get("default") or model_cfg.get("model") or model_cfg.get("name") or "(not set)"
+        model = model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or "(not set)"
         provider = model_cfg.get("provider") or "(auto)"
     elif isinstance(model_cfg, str):
         model = model_cfg or "(not set)"

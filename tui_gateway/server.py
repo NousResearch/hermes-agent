@@ -786,7 +786,7 @@ def _resolve_model() -> str:
         return env
     m = _load_cfg().get("model", "")
     if isinstance(m, dict):
-        return str(m.get("default", "") or "").strip()
+        return str(m.get("default") or m.get("name") or m.get("model") or "").strip()
     if isinstance(m, str) and m:
         return m.strip()
     return "anthropic/claude-sonnet-4"

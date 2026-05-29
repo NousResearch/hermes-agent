@@ -1683,7 +1683,7 @@ def _read_main_model() -> str:
         if isinstance(model_cfg, str) and model_cfg.strip():
             return model_cfg.strip()
         if isinstance(model_cfg, dict):
-            default = model_cfg.get("default", "")
+            default = model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or ""
             if isinstance(default, str) and default.strip():
                 return default.strip()
     except Exception:
@@ -2026,7 +2026,7 @@ def _try_azure_foundry(
         return None, None
 
     final_model = _normalize_resolved_model(
-        model or str(model_cfg.get("default") or ""),
+        model or str(model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or ""),
         "azure-foundry",
     )
     if not final_model:

@@ -87,7 +87,7 @@ def load_picker_context() -> ConfigContext:
     cfg = load_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, dict):
-        current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
+        current_model = model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or ""
         current_provider = model_cfg.get("provider", "") or ""
         current_base_url = model_cfg.get("base_url", "") or ""
     else:

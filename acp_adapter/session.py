@@ -582,7 +582,7 @@ class SessionManager:
         default_model = ""
         config_provider = None
         if isinstance(model_cfg, dict):
-            default_model = str(model_cfg.get("default") or default_model)
+            default_model = str(model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or default_model)
             config_provider = model_cfg.get("provider")
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()

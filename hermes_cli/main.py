@@ -506,7 +506,7 @@ def _has_any_provider_configured() -> bool:
     cfg = load_config()
     model_cfg = cfg.get("model")
     if isinstance(model_cfg, dict):
-        _model_name = (model_cfg.get("default") or "").strip()
+        _model_name = (model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or "").strip()
     elif isinstance(model_cfg, str):
         _model_name = model_cfg.strip()
     else:
@@ -2125,7 +2125,7 @@ def select_provider_and_model(args=None):
     config = load_config()
     current_model = config.get("model")
     if isinstance(current_model, dict):
-        current_model = current_model.get("default", "")
+        current_model = current_model.get("default") or current_model.get("name") or current_model.get("model") or ""
     current_model = current_model or "(not set)"
 
     # Read effective provider the same way the CLI does at startup:

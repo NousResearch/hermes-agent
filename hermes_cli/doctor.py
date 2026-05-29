@@ -595,7 +595,7 @@ def run_doctor(args):
             model_section = cfg.get("model") or {}
             provider_raw = (model_section.get("provider") or "").strip()
             provider = provider_raw.lower()
-            default_model = (model_section.get("default") or model_section.get("model") or "").strip()
+            default_model = (model_section.get("default") or model_section.get("name") or model_section.get("model") or "").strip()
 
             known_providers: set = set()
             try:

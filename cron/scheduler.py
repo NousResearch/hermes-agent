@@ -1499,7 +1499,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     if isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
+                        model = _model_cfg.get("default") or _model_cfg.get("name") or _model_cfg.get("model") or model
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 

@@ -225,7 +225,7 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
     if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
         return configured_mode
 
-    model_name = str(model_cfg.get("default") or "").strip()
+    model_name = str(model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or "").strip()
     if not model_name:
         return "chat_completions"
 
@@ -302,7 +302,7 @@ def _resolve_runtime_from_pool_entry(
     # longer matches the model actually being used — the bug that caused
     # opencode-zen /v1 to be stripped for chat_completions requests when
     # config.default was still a Claude model.
-    effective_model = (target_model or model_cfg.get("default") or "")
+    effective_model = (target_model or model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or "")
     base_url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").rstrip("/")
     api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
     api_mode = "chat_completions"
@@ -929,7 +929,7 @@ def _resolve_azure_foundry_runtime(
     # against them returns 400 "The requested operation is unsupported."
     # Upgrade api_mode when the model name matches, unless the user has
     # explicitly chosen anthropic_messages (Anthropic-style endpoint).
-    effective_model = str(target_model or model_cfg.get("default") or "").strip()
+    effective_model = str(target_model or model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or "").strip()
     if effective_model and cfg_api_mode != "anthropic_messages":
         try:
             from hermes_cli.models import azure_foundry_model_api_mode
@@ -1570,7 +1570,7 @@ def resolve_runtime_provider(
         # Dual-path routing: Claude models use AnthropicBedrock SDK for full
         # feature parity (prompt caching, thinking budgets, adaptive thinking).
         # Non-Claude models use the Converse API for multi-model support.
-        _current_model = str(model_cfg.get("default") or "").strip()
+        _current_model = str(model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or "").strip()
         if is_anthropic_bedrock_model(_current_model):
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
             runtime = {
@@ -1630,7 +1630,7 @@ def resolve_runtime_provider(
                 # from base_url for chat_completions models and 404'ing.
                 # Refs #16878.
                 from hermes_cli.models import opencode_model_api_mode
-                _effective = target_model or model_cfg.get("default", "")
+                _effective = target_model or model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or ""
                 api_mode = opencode_model_api_mode(provider, _effective)
             elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
                 api_mode = configured_mode

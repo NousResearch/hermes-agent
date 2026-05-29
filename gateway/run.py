@@ -1455,7 +1455,7 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     if isinstance(model_cfg, str):
         return model_cfg
     elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
+        return model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or ""
     return ""
 
 
@@ -8353,7 +8353,7 @@ class GatewayRunner:
                     if isinstance(_model_cfg, str):
                         _hyg_model = _model_cfg
                     elif isinstance(_model_cfg, dict):
-                        _hyg_model = _model_cfg.get("default") or _model_cfg.get("model") or _hyg_model
+                        _hyg_model = _model_cfg.get("default") or _model_cfg.get("name") or _model_cfg.get("model") or _hyg_model
                         # Read explicit context_length override from model config
                         # (same as run_agent.py lines 995-1005)
                         _raw_ctx = _model_cfg.get("context_length")
@@ -10177,7 +10177,7 @@ class GatewayRunner:
             if cfg:
                 model_cfg = cfg.get("model", {})
                 if isinstance(model_cfg, dict):
-                    current_model = model_cfg.get("default", "")
+                    current_model = model_cfg.get("default") or model_cfg.get("name") or model_cfg.get("model") or ""
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
                 user_provs = cfg.get("providers")

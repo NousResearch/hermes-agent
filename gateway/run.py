@@ -7062,6 +7062,19 @@ class GatewayRunner:
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+        try:
+            from gateway.bridge_commands import maybe_apply_gateway_bridge_binding
+            from gateway.bridge import BridgeVerdict
+            _bridge_decision = maybe_apply_gateway_bridge_binding(
+                event,
+                session_key=_quick_key,
+                session_store=self.session_store,
+                evict_cached_agent=self._evict_cached_agent,
+            )
+            if _bridge_decision is not None and _bridge_decision.verdict is BridgeVerdict.REJECT:
+                return f"Bridge input rejected: {_bridge_decision.reason}"
+        except Exception as _bridge_exc:
+            logger.debug("CLI-Telegram bridge routing skipped: %s", _bridge_exc, exc_info=True)
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()

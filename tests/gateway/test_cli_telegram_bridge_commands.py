@@ -7,6 +7,7 @@ from gateway.platforms.base import MessageEvent
 from gateway.bridge_commands import (
     handle_local_bridge_command,
     handle_gateway_bridge_command,
+    maybe_apply_gateway_bridge_binding,
 )
 from hermes_cli.commands import resolve_command
 
@@ -132,3 +133,81 @@ def test_gateway_bridge_commands_are_telegram_dm_only(tmp_path):
 
     out = handle_gateway_bridge_command(event, store=store)
     assert "Telegram DM only" in out
+
+
+class _DummySessionEntry:
+    def __init__(self, session_id):
+        self.session_id = session_id
+
+
+class _DummySessionStore:
+    def __init__(self):
+        self.created_sources = []
+        self.switches = []
+        self.current_session_id = "telegram-session"
+
+    def get_or_create_session(self, source):
+        self.created_sources.append(source)
+        return _DummySessionEntry(self.current_session_id)
+
+    def switch_session(self, session_key, target_session_id):
+        self.switches.append((session_key, target_session_id))
+        self.current_session_id = target_session_id
+        return _DummySessionEntry(target_session_id)
+
+
+def test_bound_telegram_dm_plain_text_switches_to_cli_session(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+    session_store = _DummySessionStore()
+    evicted = []
+
+    decision = maybe_apply_gateway_bridge_binding(
+        _telegram_event("continue from my phone"),
+        session_key="agent:main:telegram:dm:48264503",
+        session_store=session_store,
+        store=store,
+        evict_cached_agent=evicted.append,
+    )
+
+    assert decision is not None
+    assert decision.verdict is BridgeVerdict.ACCEPT
+    assert session_store.switches == [("agent:main:telegram:dm:48264503", "cli-session")]
+    assert evicted == ["agent:main:telegram:dm:48264503"]
+
+
+def test_bridge_does_not_remap_slash_commands_or_paused_bindings(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+    session_store = _DummySessionStore()
+
+    slash_decision = maybe_apply_gateway_bridge_binding(
+        _telegram_event("/model"),
+        session_key="agent:main:telegram:dm:48264503",
+        session_store=session_store,
+        store=store,
+    )
+    assert slash_decision is None
+    assert session_store.switches == []
+
+    store.pause_binding("bridge-cli-session", reason="test pause")
+    paused_decision = maybe_apply_gateway_bridge_binding(
+        _telegram_event("this should not reach cli"),
+        session_key="agent:main:telegram:dm:48264503",
+        session_store=session_store,
+        store=store,
+    )
+    assert paused_decision is not None
+    assert paused_decision.verdict is BridgeVerdict.REJECT
+    assert "paused" in paused_decision.reason
+    assert session_store.switches == []

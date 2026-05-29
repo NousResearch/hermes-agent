@@ -1,14 +1,16 @@
 """Safe command helpers for the CLI ↔ Telegram bridge MVP.
 
-These helpers intentionally only manage opt-in binding and emergency status/
-disable controls. They do not forward Telegram text into a live CLI/PTY.
+The bridge uses local opt-in binding plus emergency status/disable controls.
+After binding, plain Telegram DM text can continue the linked CLI-originated
+Hermes session through the normal gateway agent path. It never injects raw text
+into a live CLI/PTY.
 """
 
 from __future__ import annotations
 
 import shlex
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -113,7 +115,8 @@ def handle_local_bridge_command(
             f"Send this in the Telegram DM within {ttl}s:\n"
             f"/bridge_bind {token.token}\n"
             f"{scope_text}\n"
-            "Remote execution is still disabled until Telegram consumes this token."
+            "After Telegram consumes this token, plain DM text continues the linked Hermes session. "
+            "Slash commands keep normal gateway semantics."
         )
 
     if sub == "status":
@@ -143,6 +146,53 @@ def _decision_message(decision: BridgeDecision, success: str) -> str:
     if decision.verdict is BridgeVerdict.ACCEPT:
         return success
     return f"Bridge request rejected: {decision.reason}"
+
+
+def maybe_apply_gateway_bridge_binding(
+    event: MessageEvent,
+    *,
+    session_key: str,
+    session_store,
+    store: BridgeStateStore | None = None,
+    evict_cached_agent: Callable[[str], None] | None = None,
+) -> BridgeDecision | None:
+    """Route bound Telegram DM plain text into the linked CLI session.
+
+    Returns:
+      - None when the event is outside bridge scope (non-Telegram, non-DM,
+        unbound identity, or a slash command that should keep normal gateway
+        semantics).
+      - ACCEPT when the session key was bound to the CLI session id.
+      - REJECT when a known binding exists but pause/kill-switch blocks input.
+
+    This never injects raw text into a PTY. It only repoints the normal gateway
+    session key to the CLI-originated Hermes session so the standard agent path,
+    approval handling, queueing, and transcript machinery remain in force.
+    """
+    store = store or default_bridge_store()
+    if event.get_command():
+        return None
+    identity = _telegram_identity(event)
+    if identity is None:
+        return None
+    chat_id, user_id, thread_id = identity
+    decision = store.validate_telegram_direct_input(
+        chat_id=chat_id,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+    if decision.verdict is BridgeVerdict.REJECT:
+        if decision.reason == "no bridge binding for telegram identity":
+            return None
+        return decision
+
+    session_store.get_or_create_session(event.source)
+    switched = session_store.switch_session(session_key, decision.hermes_session_id or "")
+    if switched is None:
+        return BridgeDecision(BridgeVerdict.REJECT, "could not switch gateway session to bridge target")
+    if evict_cached_agent is not None:
+        evict_cached_agent(session_key)
+    return decision
 
 
 def handle_gateway_bridge_command(
@@ -175,7 +225,7 @@ def handle_gateway_bridge_command(
         )
         return _decision_message(
             decision,
-            f"Bridge linked to Hermes session `{decision.hermes_session_id}`. Safe A-mode is active.",
+            f"Bridge linked to Hermes session `{decision.hermes_session_id}`. Plain DM text now continues that session.",
         )
 
     if command in {"bridge_status", "bridge-status", "bridge"}:

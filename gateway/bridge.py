@@ -232,6 +232,35 @@ class BridgeStateStore:
         detail = f": {reason}" if reason else ""
         return f"Bridge {status}{detail} for Hermes session `{session}`."
 
+    def validate_telegram_direct_input(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        thread_id: Optional[str] = None,
+    ) -> BridgeDecision:
+        """Validate a bound Telegram DM before routing plain text to a CLI session.
+
+        This is intentionally stricter than normal gateway authorization. A
+        Telegram message may only continue a CLI-originated session after the
+        local side minted a token, Telegram consumed it, the binding is still
+        active, and the global kill switch is not set.
+        """
+        if self._kill_switch_active():
+            return BridgeDecision(BridgeVerdict.REJECT, "bridge kill switch is active")
+        row = self.binding_for_telegram(chat_id=chat_id, user_id=user_id, thread_id=thread_id)
+        if row is None:
+            return BridgeDecision(BridgeVerdict.REJECT, "no bridge binding for telegram identity")
+        if row["status"] != "active":
+            reason = row["pause_reason"] or row["status"]
+            return BridgeDecision(BridgeVerdict.REJECT, f"binding is paused: {reason}")
+        return BridgeDecision(
+            BridgeVerdict.ACCEPT,
+            "accepted",
+            bridge_id=row["bridge_id"],
+            hermes_session_id=row["hermes_session_id"],
+        )
+
     def accept_update(self, *, platform: str, update_id: str) -> bool:
         """Return True once per platform/update_id, False for duplicates."""
         with self._connect() as conn:

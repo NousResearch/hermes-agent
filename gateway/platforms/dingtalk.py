@@ -211,7 +211,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         # of a single class attribute to avoid cross-message clobbering when
         # multiple conversations run concurrently.
         self._message_contexts: Dict[str, Any] = {}
-        self._card_template_id: Optional[str] = extra.get("card_template_id")
+        self._card_template_id: Optional[str] = (
+            extra.get("card_template_id")
+            or os.getenv("DINGTALK_CARD_TEMPLATE_ID")
+        )
 
         # Chats for which we've already fired the Done reaction — prevents
         # double-firing across segment boundaries or parallel flows
@@ -834,23 +837,14 @@ class DingTalkAdapter(BasePlatformAdapter):
             bool(self._card_template_id and self._card_sdk),
         )
 
-        # Check metadata first (for direct webhook sends)
-        session_webhook = metadata.get("session_webhook")
-        if not session_webhook:
-            webhook_info = self._get_valid_webhook(chat_id)
-            if not webhook_info:
-                logger.warning(
-                    "[%s] No valid session_webhook for chat_id=%s",
-                    self.name, chat_id,
-                )
-                return SendResult(
-                    success=False,
-                    error="No valid session_webhook available. Reply must follow an incoming message.",
-                )
-            session_webhook, _ = webhook_info
-
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")
+
+        # AI Cards are delivered through the Card SDK and do NOT need a
+        # session webhook. Defer resolving/gating the webhook until we know
+        # the AI Card path was skipped or failed (see the fallback below),
+        # so a missing webhook no longer blocks card delivery.
+        session_webhook = metadata.get("session_webhook")
 
         # Look up the inbound message for this chat (for AI Card routing)
         current_message = self._message_contexts.get(chat_id)
@@ -891,6 +885,21 @@ class DingTalkAdapter(BasePlatformAdapter):
                 return result
 
             logger.warning("[%s] AI Card send failed, falling back to webhook", self.name)
+
+        # The webhook is required only for this fallback path — resolve and
+        # gate it here rather than up front (AI Cards above need no webhook).
+        if not session_webhook:
+            webhook_info = self._get_valid_webhook(chat_id)
+            if not webhook_info:
+                logger.warning(
+                    "[%s] No valid session_webhook for chat_id=%s",
+                    self.name, chat_id,
+                )
+                return SendResult(
+                    success=False,
+                    error="No valid session_webhook available. Reply must follow an incoming message.",
+                )
+            session_webhook, _ = webhook_info
 
         logger.debug("[%s] Sending via webhook", self.name)
         # Normalize markdown for DingTalk
@@ -1049,7 +1058,15 @@ class DingTalkAdapter(BasePlatformAdapter):
                 card_template_id=self._card_template_id,
                 out_track_id=out_track_id,
                 card_data=dingtalk_card_models.CreateCardRequestCardData(
-                    card_param_map={"content": ""},
+                    # Wide-screen layout: without sys_full_json_obj the AI
+                    # Card renders in a narrow column and wide tables / code
+                    # blocks wrap badly.
+                    card_param_map={
+                        "content": "",
+                        "sys_full_json_obj": json.dumps(
+                            {"config": {"autoLayout": True}}
+                        ),
+                    },
                 ),
                 callback_type="STREAM",
                 im_group_open_space_model=(
@@ -1100,6 +1117,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                     im_robot_open_deliver_model=(
                         dingtalk_card_models.DeliverCardRequestImRobotOpenDeliverModel(
                             space_type="IM_ROBOT",
+                            robot_code=self._robot_code,
                         )
                     ),
                 )

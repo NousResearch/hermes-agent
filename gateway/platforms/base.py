@@ -1644,6 +1644,22 @@ def resolve_channel_skills(
     return None
 
 
+def _strip_media_directives(text: str) -> str:
+    """Strip internal delivery directives ([[audio_as_voice]], [[as_document]],
+    MEDIA:<path>) so they never render as visible text.
+
+    Backstop only: run ``extract_media`` first. MEDIA cleanup uses the shared
+    ``MEDIA_TAG_CLEANUP_RE`` (only tags whose path has a known deliverable
+    extension are removed; an unknown-extension tag is intentionally left so the
+    bare-path detector downstream can still pick it up, per #34517). [[...]] is
+    exact.
+    """
+    if not text:
+        return text
+    text = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
+    return MEDIA_TAG_CLEANUP_RE.sub("", text)
+
+
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.
@@ -3884,21 +3900,20 @@ class BasePlatformAdapter(ABC):
                 # where Telegram's sendPhoto recompression destroys legibility.
                 force_document_attachments = "[[as_document]]" in response
 
+                # Pre-extract snapshot for the #29346 recovery/invariant below.
+                _response_pre_extract = response
+
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
                 media_files = self.filter_media_delivery_paths(media_files)
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
-                # Strip any remaining internal directives from message body (fixes #1561)
-                text_content = text_content.replace("[[audio_as_voice]]", "").strip()
-                text_content = text_content.replace("[[as_document]]", "").strip()
-                # Strip only MEDIA: tags whose path has a deliverable extension
-                # (shared MEDIA_TAG_CLEANUP_RE). A MEDIA: tag with an unknown
-                # extension is intentionally left in the body so extract_local_files
-                # below can still pick up the bare path — otherwise the file would
-                # be silently dropped (issue #34517).
-                text_content = MEDIA_TAG_CLEANUP_RE.sub("", text_content).strip()
+                # Strip any remaining internal directives from message body (fixes #1561).
+                # _strip_media_directives shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag
+                # with an unknown extension is intentionally left in the body for
+                # extract_local_files below to pick up rather than silently dropped (#34517).
+                text_content = _strip_media_directives(text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
@@ -3912,7 +3927,25 @@ class BasePlatformAdapter(ABC):
                     local_files = self.filter_local_delivery_paths(local_files)
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
-                
+
+                # A2 (#29346): extraction can reduce a non-empty response to
+                # empty text with no attachment, and the `if text_content` guard
+                # below then drops it silently. Recover on every platform (#33842
+                # was Discord-only); the guard avoids duplicating an attachment.
+                if not (text_content or images or local_files or media_files):
+                    # Recover from the post-extract_media `response`, not the raw
+                    # snapshot: extract_media already stripped MEDIA (incl. spaced
+                    # paths) with its full grammar, so no fragment can leak.
+                    _recovered = _strip_media_directives(response).strip()
+                    if _recovered:
+                        logger.warning(
+                            "[%s] response_delivery_recovered: extract pipeline "
+                            "reduced a non-empty response (%d chars) to empty with "
+                            "no attachment; delivering recovered original to %s",
+                            self.name, len(_response_pre_extract), event.source.chat_id,
+                        )
+                        text_content = _recovered
+
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
@@ -4109,6 +4142,20 @@ class BasePlatformAdapter(ABC):
                             )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+
+                # A3 (#29346): if a non-empty response produced nothing
+                # deliverable, fail loudly rather than dropping it in silence.
+                _anything_delivered = (
+                    delivery_attempted or _tts_caption_delivered
+                    or images or local_files or media_files
+                )
+                if not _anything_delivered and _response_pre_extract.strip():
+                    logger.error(
+                        "[%s] response_delivery_dropped: non-empty response "
+                        "(%d chars) produced no delivered message or attachment "
+                        "for %s (empty after extract, recovery yielded nothing).",
+                        self.name, len(_response_pre_extract), event.source.chat_id,
+                    )
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)

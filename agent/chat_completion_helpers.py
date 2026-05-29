@@ -2178,9 +2178,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         )
                         _close_request_client_once("stream_mid_tool_retry_cleanup")
                         try:
-                            agent._replace_primary_openai_client(
-                                reason="stream_mid_tool_retry_pool_cleanup"
-                            )
+                            if agent.api_mode == "anthropic_messages":
+                                agent._anthropic_client.close()
+                                agent._rebuild_anthropic_client()
+                            else:
+                                agent._replace_primary_openai_client(
+                                    reason="stream_mid_tool_retry_pool_cleanup"
+                                )
                         except Exception:
                             pass
                         continue
@@ -2231,9 +2235,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             # Also rebuild the primary client to purge
                             # any dead connections from the pool.
                             try:
-                                agent._replace_primary_openai_client(
-                                    reason="stream_retry_pool_cleanup"
-                                )
+                                if agent.api_mode == "anthropic_messages":
+                                    agent._anthropic_client.close()
+                                    agent._rebuild_anthropic_client()
+                                else:
+                                    agent._replace_primary_openai_client(
+                                        reason="stream_retry_pool_cleanup"
+                                    )
                             except Exception:
                                 pass
                             continue
@@ -2371,7 +2379,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Rebuild the primary client too — its connection pool
             # may hold dead sockets from the same provider outage.
             try:
-                agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+                if agent.api_mode == "anthropic_messages":
+                    agent._anthropic_client.close()
+                    agent._rebuild_anthropic_client()
+                else:
+                    agent._replace_primary_openai_client(
+                        reason="stale_stream_pool_cleanup"
+                    )
             except Exception:
                 pass
             # Reset the timer so we don't kill repeatedly while

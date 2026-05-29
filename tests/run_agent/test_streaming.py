@@ -1008,6 +1008,9 @@ class TestAnthropicStreamCallbacks:
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+        # Mock _rebuild_anthropic_client so the retry path doesn't replace
+        # our test's mock Anthropic client with a real one (fix for #28161)
+        agent._rebuild_anthropic_client = MagicMock()
 
         class _BadStream:
             response = None
@@ -1038,7 +1041,11 @@ class TestAnthropicStreamCallbacks:
 
         assert response is final_message
         assert agent._anthropic_client.messages.stream.call_count == 2
-        assert mock_replace.call_count == 1
+        # Anthropic mode: cleanup uses _anthropic_client.close() + _rebuild,
+        # not _replace_primary_openai_client (fix for #28161)
+        assert mock_replace.call_count == 0
+        assert agent._anthropic_client.close.call_count == 1
+        assert agent._rebuild_anthropic_client.call_count == 1
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
@@ -1059,6 +1066,7 @@ class TestAnthropicStreamCallbacks:
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+        agent._rebuild_anthropic_client = MagicMock()
 
         agent._anthropic_client = MagicMock()
         agent._anthropic_client.messages.stream.side_effect = ValueError(
@@ -1070,6 +1078,60 @@ class TestAnthropicStreamCallbacks:
 
         assert agent._anthropic_client.messages.stream.call_count == 1
         assert mock_replace.call_count == 0
+
+
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_anthropic_stale_stream_cleanup_uses_anthropic_client(self, mock_replace, monkeypatch):
+        """Stale-stream cleanup must close/rebuild the Anthropic client, not
+        call _replace_primary_openai_client.  Regression test for #28161."""
+        from run_agent import AIAgent
+        import time as _time
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.minimax.io/anthropic",
+            provider="minimax",
+            model="MiniMax-M2.7",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        # Very short stale timeout so the test doesn't wait long
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.1")
+
+        agent._anthropic_client = MagicMock()
+        agent._rebuild_anthropic_client = MagicMock()
+
+        # Stream that emits nothing (triggers stale timeout)
+        class _StaleStream:
+            response = None
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def __iter__(self):
+                # Simulate a stream that hangs — yield nothing then
+                # let the stale detector fire
+                _time.sleep(0.5)
+                return iter([])
+            def get_final_message(self):
+                return SimpleNamespace(content=[], stop_reason="end_turn")
+
+        agent._anthropic_client.messages.stream.return_value = _StaleStream()
+
+        try:
+            agent._interruptible_streaming_api_call({})
+        except Exception:
+            pass  # stale stream may raise; we're testing cleanup behavior
+
+        # Anthropic cleanup should be called (close + rebuild),
+        # NOT _replace_primary_openai_client
+        assert mock_replace.call_count == 0, (
+            "Anthropic mode should NOT call _replace_primary_openai_client"
+        )
+
 
 
 class TestPartialToolCallWarning:

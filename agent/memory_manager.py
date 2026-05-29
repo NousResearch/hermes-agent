@@ -25,9 +25,11 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import inspect
+import time
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -252,6 +254,83 @@ class MemoryManager:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
+        self._idle_sleep_enabled: bool = False
+        self._idle_after_seconds: float = 0.0
+        self._idle_sleep_args: Dict[str, Any] = {}
+        self._wake_greeting: str = "おはよう！"
+        self._wake_greeting_pending: bool = False
+        self._last_activity_at: float = time.monotonic()
+        self._last_sleep_at: float = 0.0
+
+    # -- Idle sleep ----------------------------------------------------------
+
+    def configure_idle_sleep(self, config: Optional[Dict[str, Any]], *, now: Optional[float] = None) -> None:
+        """Configure lazy idle-triggered memory sleep.
+
+        The sleep pass is intentionally lazy: callers invoke
+        ``maybe_sleep_for_idle()`` when a new turn arrives. If the agent was
+        idle long enough since startup or the previous user turn, memory
+        providers that expose ``ebbinghaus_memory`` receive ``action='sleep'``
+        before the new turn is processed, and a one-shot wake greeting is armed.
+        """
+        cfg = config or {}
+        self._idle_sleep_enabled = bool(cfg.get("enabled", False))
+        try:
+            self._idle_after_seconds = max(0.0, float(cfg.get("idle_after_seconds", 0) or 0))
+        except (TypeError, ValueError):
+            self._idle_after_seconds = 0.0
+        self._wake_greeting = str(cfg.get("wake_greeting") or "おはよう！")
+        sleep_args = cfg.get("sleep", {})
+        self._idle_sleep_args = dict(sleep_args) if isinstance(sleep_args, dict) else {}
+        self._last_activity_at = time.monotonic() if now is None else now
+        self._wake_greeting_pending = False
+
+    def maybe_sleep_for_idle(self, *, now: Optional[float] = None) -> Dict[str, Any]:
+        """Run an Ebbinghaus sleep cycle if the manager has been idle long enough."""
+        current = time.monotonic() if now is None else now
+        idle_seconds = max(0.0, current - self._last_activity_at)
+        if not self._idle_sleep_enabled or self._idle_after_seconds <= 0:
+            self._last_activity_at = current
+            return {"slept": False, "reason": "disabled", "idle_seconds": idle_seconds}
+        if idle_seconds < self._idle_after_seconds:
+            self._last_activity_at = current
+            return {"slept": False, "reason": "not_idle", "idle_seconds": idle_seconds}
+
+        args = {"action": "sleep", **self._idle_sleep_args}
+        results: list[Dict[str, Any]] = []
+        slept = False
+        for provider in self._providers:
+            try:
+                tool_names = {schema.get("name", "") for schema in provider.get_tool_schemas()}
+                if "ebbinghaus_memory" not in tool_names:
+                    continue
+                raw = provider.handle_tool_call("ebbinghaus_memory", args)
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                except Exception:
+                    parsed = {"raw": raw}
+                results.append({"provider": provider.name, "result": parsed})
+                slept = True
+            except Exception as e:
+                logger.debug("Memory provider '%s' idle sleep failed: %s", provider.name, e)
+                results.append({"provider": provider.name, "error": str(e)})
+
+        self._last_activity_at = current
+        if slept:
+            self._last_sleep_at = current
+            self._wake_greeting_pending = True
+        return {"slept": slept, "idle_seconds": idle_seconds, "results": results}
+
+    def consume_wake_greeting(self) -> str:
+        """Return the one-shot wake greeting after an idle sleep, then clear it."""
+        if not self._wake_greeting_pending:
+            return ""
+        self._wake_greeting_pending = False
+        return self._wake_greeting
+
+    def mark_activity(self, *, now: Optional[float] = None) -> None:
+        """Record user/activity time without running sleep."""
+        self._last_activity_at = time.monotonic() if now is None else now
 
     # -- Registration --------------------------------------------------------
 

@@ -1290,6 +1290,21 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Optional lazy idle sleep: when enabled, the next turn after the
+        # idle threshold runs ebbinghaus_memory(action='sleep') and prepends
+        # a one-shot wake greeting to the response.
+        "sleep": {
+            "enabled": False,
+            "idle_after_seconds": 300,
+            "wake_greeting": "おはよう！ボブにゃん。",
+            "sleep": {
+                "prune": True,
+                "rehearse_threshold": 0.45,
+                "forget_threshold": 0.08,
+                "salience_keep_threshold": 0.7,
+                "limit": 200,
+            },
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

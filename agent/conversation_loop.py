@@ -635,8 +635,17 @@ def run_conversation(
         agent._interrupt_message = None
         agent._interrupt_thread_signal_pending = False
 
+    # If the agent has been idle since startup or the previous user turn,
+    # run a lazy memory sleep pass before processing the new turn. This keeps
+    # CLI and gateway paths aligned without a background timer thread.
+    if agent._memory_manager:
+        try:
+            agent._memory_manager.maybe_sleep_for_idle()
+        except Exception:
+            pass
+
     # Notify memory providers of the new turn so cadence tracking works.
-    # Must happen BEFORE prefetch_all() so providers know which turn it is
+
     # and can gate context/dialectic refresh via contextCadence/dialecticCadence.
     if agent._memory_manager:
         try:
@@ -4173,6 +4182,14 @@ def run_conversation(
     # Gate: only applied when a real text response exists for this
     # turn and the user didn't interrupt.  Empty/interrupted turns
     # already have other surface text that shouldn't be augmented.
+    if final_response and not interrupted:
+        try:
+            _wake = agent._memory_manager.consume_wake_greeting() if agent._memory_manager else ""
+            if _wake:
+                final_response = _wake.rstrip() + "\n\n" + final_response.lstrip()
+        except Exception:
+            pass
+
     if final_response and not interrupted:
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}

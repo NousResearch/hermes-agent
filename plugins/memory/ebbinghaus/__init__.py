@@ -380,6 +380,76 @@ class EbbinghausMemoryStore:
             self._conn.commit()
         return {"threshold": threshold, "decayed": decayed, "pruned": pruned}
 
+    def sleep_cycle(
+        self,
+        *,
+        rehearse_threshold: float = 0.45,
+        forget_threshold: float | None = None,
+        salience_keep_threshold: float = 0.7,
+        prune: bool = False,
+        limit: int = 200,
+    ) -> dict:
+        """Run a sleep-like memory maintenance pass.
+
+        Low-retention high-salience traces are rehearsed to consolidate them;
+        low-retention low-salience traces are marked forgotten and optionally
+        pruned. This keeps the Ebbinghaus curve as the retention model while
+        adding a nightly-style consolidation/forgetting policy.
+        """
+        rehearse_threshold = _clamp(float(rehearse_threshold), 0.0, 1.0)
+        forget_threshold = (
+            self.decay_threshold if forget_threshold is None else _clamp(float(forget_threshold), 0.0, 1.0)
+        )
+        salience_keep_threshold = _clamp(float(salience_keep_threshold), 0.0, 1.0)
+        rows = self._conn.execute("SELECT * FROM memories").fetchall()
+        snapshots = [self._row_to_result(row, query_score=None) for row in rows]
+        snapshots.sort(key=lambda item: (item["retention"], -item["salience"]))
+        snapshots = snapshots[: max(1, int(limit))]
+
+        rehearsed: list[int] = []
+        forgotten: list[int] = []
+        for item in snapshots:
+            memory_id = int(item["memory_id"])
+            retention = float(item["retention"])
+            salience = float(item["salience"])
+            if retention <= rehearse_threshold and salience >= salience_keep_threshold:
+                rehearsed.append(memory_id)
+            elif retention <= forget_threshold and salience < salience_keep_threshold:
+                forgotten.append(memory_id)
+
+        if rehearsed:
+            now = self._now()
+            self._conn.executemany(
+                """
+                UPDATE memories
+                SET rehearsal_count = rehearsal_count + 1,
+                    strength = MIN(?, strength + 0.25),
+                    last_rehearsed_at = ?, updated_at = ?
+                WHERE memory_id = ?
+                """,
+                [(_MAX_STRENGTH, now, now, memory_id) for memory_id in rehearsed],
+            )
+        pruned: list[int] = []
+        if prune and forgotten:
+            pruned = forgotten[:]
+            self._conn.executemany(
+                "DELETE FROM memories WHERE memory_id = ?",
+                [(memory_id,) for memory_id in pruned],
+            )
+        if rehearsed or pruned:
+            self._conn.commit()
+
+        return {
+            "mode": "sleep_cycle",
+            "reviewed": len(snapshots),
+            "rehearse_threshold": rehearse_threshold,
+            "forget_threshold": forget_threshold,
+            "salience_keep_threshold": salience_keep_threshold,
+            "rehearsed": rehearsed,
+            "forgotten": forgotten,
+            "pruned": pruned,
+        }
+
     def list_memories(self, *, limit: int = 20) -> list[dict]:
         rows = self._conn.execute(
             "SELECT * FROM memories ORDER BY updated_at DESC LIMIT ?", (max(1, int(limit)),)
@@ -504,7 +574,7 @@ EBBINGHAUS_MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["remember", "recall", "rehearse", "forget", "decay", "list", "stats"],
+                "enum": ["remember", "recall", "rehearse", "forget", "decay", "sleep", "list", "stats"],
             },
             "content": {"type": "string", "description": "Memory content for remember."},
             "query": {"type": "string", "description": "Cue/query for recall or rehearse."},
@@ -515,7 +585,10 @@ EBBINGHAUS_MEMORY_SCHEMA = {
             "limit": {"type": "integer", "description": "Maximum result count."},
             "min_score": {"type": "number", "description": "Minimum recall score."},
             "threshold": {"type": "number", "description": "Retention threshold for decay."},
-            "prune": {"type": "boolean", "description": "Delete decayed memories."},
+            "rehearse_threshold": {"type": "number", "description": "Sleep-cycle retention threshold below which important memories are rehearsed."},
+            "forget_threshold": {"type": "number", "description": "Sleep-cycle retention threshold below which low-salience memories are forgotten."},
+            "salience_keep_threshold": {"type": "number", "description": "Sleep-cycle salience cutoff for consolidation instead of forgetting."},
+            "prune": {"type": "boolean", "description": "Delete decayed or sleep-forgotten memories."},
         },
         "required": ["action"],
     },
@@ -749,6 +822,17 @@ class EbbinghausMemoryProvider(MemoryProvider):
                         threshold=args.get("threshold"),
                         prune=bool(args.get("prune", False)),
                         limit=int(args.get("limit", 50)),
+                    ),
+                    ensure_ascii=False,
+                )
+            if action == "sleep":
+                return json.dumps(
+                    self._store.sleep_cycle(
+                        rehearse_threshold=float(args.get("rehearse_threshold", 0.45)),
+                        forget_threshold=args.get("forget_threshold"),
+                        salience_keep_threshold=float(args.get("salience_keep_threshold", 0.7)),
+                        prune=bool(args.get("prune", False)),
+                        limit=int(args.get("limit", 200)),
                     ),
                     ensure_ascii=False,
                 )

@@ -1136,6 +1136,10 @@ def init_agent(
                     except Exception:
                         pass
                     agent._memory_manager.initialize_all(**_init_kwargs)
+                    try:
+                        agent._memory_manager.configure_idle_sleep(mem_config.get("sleep", {}))
+                    except Exception as _sleep_cfg_err:
+                        _ra().logger.debug("Memory idle sleep config ignored: %s", _sleep_cfg_err)
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)

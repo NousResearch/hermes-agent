@@ -1,6 +1,7 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+import time
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -224,6 +225,45 @@ class TestMemoryManager:
         mgr.queue_prefetch_all("next turn")
         assert p1.queued_prefetches == ["next turn"]
         assert p2.queued_prefetches == ["next turn"]
+
+    def test_idle_sleep_runs_ebbinghaus_sleep_tool_and_arms_wake_greeting(self):
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ebbinghaus", tools=[{
+            "name": "ebbinghaus_memory",
+            "description": "Ebbinghaus memory",
+            "parameters": {"type": "object", "properties": {"action": {"type": "string"}}},
+        }])
+        p.handle_tool_call = MagicMock(return_value=json.dumps({"ok": True}))
+        mgr.add_provider(p)
+        mgr.configure_idle_sleep({
+            "enabled": True,
+            "idle_after_seconds": 10,
+            "wake_greeting": "おはよう！ボブにゃん。",
+            "sleep": {"prune": True, "limit": 123},
+        }, now=time.monotonic())
+
+        result = mgr.maybe_sleep_for_idle(now=mgr._last_activity_at + 11)
+
+        assert result["slept"] is True
+        p.handle_tool_call.assert_called_once_with(
+            "ebbinghaus_memory",
+            {"action": "sleep", "prune": True, "limit": 123},
+        )
+        assert mgr.consume_wake_greeting() == "おはよう！ボブにゃん。"
+        assert mgr.consume_wake_greeting() == ""
+
+    def test_idle_sleep_disabled_does_not_call_provider(self):
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ebbinghaus", tools=[{"name": "ebbinghaus_memory"}])
+        p.handle_tool_call = MagicMock(return_value=json.dumps({"ok": True}))
+        mgr.add_provider(p)
+        mgr.configure_idle_sleep({"enabled": False, "idle_after_seconds": 1}, now=time.monotonic())
+
+        result = mgr.maybe_sleep_for_idle(now=mgr._last_activity_at + 99)
+
+        assert result["slept"] is False
+        p.handle_tool_call.assert_not_called()
+        assert mgr.consume_wake_greeting() == ""
 
     def test_sync_all(self):
         mgr = MemoryManager()

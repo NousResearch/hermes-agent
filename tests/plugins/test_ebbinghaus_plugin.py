@@ -93,6 +93,71 @@ def test_decay_can_prune_forgotten_memories(tmp_path):
     store.close()
 
 
+def test_sleep_cycle_rehearses_important_memories_and_prunes_low_value_traces(tmp_path):
+    clock = {"now": 1_700_000_000.0}
+    store = EbbinghausMemoryStore(
+        tmp_path / "memory.db",
+        base_stability_days=0.5,
+        decay_threshold=0.1,
+        time_fn=lambda: clock["now"],
+    )
+    durable = store.remember(
+        "User prefers memory maintenance to model human sleep consolidation.",
+        tags="user-preference,memory-design",
+        salience=0.95,
+    )
+    ephemeral = store.remember(
+        "One-time OAuth consent URL state=abc123.",
+        tags="ephemeral,oauth",
+        salience=0.1,
+    )
+
+    clock["now"] += 8 * 86400
+    report = store.sleep_cycle(
+        prune=True,
+        rehearse_threshold=0.8,
+        forget_threshold=0.2,
+        salience_keep_threshold=0.75,
+    )
+
+    assert report["mode"] == "sleep_cycle"
+    assert durable["memory_id"] in report["rehearsed"]
+    assert ephemeral["memory_id"] in report["pruned"]
+    assert store.get(durable["memory_id"])["retention"] == pytest.approx(1.0)
+    with pytest.raises(KeyError):
+        store.get(ephemeral["memory_id"])
+
+    store.close()
+
+
+def test_provider_exposes_sleep_cycle_tool_action(tmp_path):
+    provider = EbbinghausMemoryProvider({"db_path": str(tmp_path / "provider.db")})
+    provider.initialize("session-1", hermes_home=str(tmp_path))
+
+    add_result = json.loads(
+        provider.handle_tool_call(
+            "ebbinghaus_memory",
+            {
+                "action": "remember",
+                "content": "Important preference should survive sleep consolidation.",
+                "tags": "user-preference",
+                "salience": 0.9,
+            },
+        )
+    )
+    result = json.loads(
+        provider.handle_tool_call(
+            "ebbinghaus_memory",
+            {"action": "sleep", "prune": True, "rehearse_threshold": 1.0},
+        )
+    )
+
+    assert result["mode"] == "sleep_cycle"
+    assert add_result["memory_id"] in result["rehearsed"]
+
+    provider.shutdown()
+
+
 def test_provider_tools_and_prefetch(tmp_path):
     provider = EbbinghausMemoryProvider(
         {

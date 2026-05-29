@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import sys
 import types
 from types import SimpleNamespace
@@ -243,3 +244,31 @@ def test_calendar_wakeup_config_can_narrow_overlay_but_calendar_is_forced():
     assert "memory" in enabled
     assert "calendar" in enabled
     assert "terminal" not in enabled
+
+
+def test_calendar_wakeup_watcher_logs_tick_exceptions_at_warning(monkeypatch, caplog):
+    runner = _bare_runner()
+    runner._running = True
+    monkeypatch.setattr(runner, "_calendar_wakeup_interval_seconds", lambda: 1)
+
+    from hermes_cli import calendar_db
+
+    monkeypatch.setattr(calendar_db, "requeue_stale_firing", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    sleep_calls = 0
+
+    async def fake_sleep(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(gateway_run.asyncio, "sleep", fake_sleep)
+
+    with caplog.at_level(logging.WARNING, logger=gateway_run.logger.name):
+        try:
+            asyncio.run(runner._calendar_wakeup_watcher())
+        except asyncio.CancelledError:
+            pass
+
+    assert "Calendar wakeup watcher tick error: boom" in caplog.text

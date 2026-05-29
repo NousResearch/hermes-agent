@@ -1,16 +1,20 @@
-"""PostgreSQL-backed Judy calendar.
+"""Judy calendar storage.
 
 This module is intentionally small and synchronous, matching the existing
-Gateway/tooling style. The calendar lives in the service PostgreSQL database
-used by Hermes on this install.
+Gateway/tooling style. The calendar uses PostgreSQL when configured and falls
+back to a profile-local SQLite database otherwise.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Iterable, Optional
+
+from hermes_constants import get_hermes_home
 
 
 VALID_STATUSES = {"pending", "firing", "done", "cancelled"}
@@ -28,10 +32,9 @@ def _dsn() -> str:
 def _connect():
     dsn = _dsn()
     if not dsn:
-        raise RuntimeError(
-            "Calendar PostgreSQL runtime requires HERMES_CALENDAR_POSTGRES_DSN "
-            "or HERMES_KANBAN_POSTGRES_DSN"
-        )
+        conn = _connect_sqlite_without_schema()
+        ensure_schema(conn)
+        return conn
     try:
         import psycopg
         from psycopg.rows import dict_row
@@ -39,6 +42,22 @@ def _connect():
         raise RuntimeError(f"Calendar PostgreSQL runtime requires psycopg: {exc}") from exc
     conn = psycopg.connect(dsn, row_factory=dict_row, autocommit=True)
     ensure_schema(conn)
+    return conn
+
+
+def _using_postgres() -> bool:
+    return bool(_dsn())
+
+
+def _sqlite_path() -> Path:
+    return get_hermes_home() / "data" / "judy_calendar.db"
+
+
+def _connect_sqlite_without_schema() -> sqlite3.Connection:
+    path = _sqlite_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
     return conn
 
 
@@ -53,35 +72,63 @@ def _jsonb(value: dict[str, Any]):
 def ensure_schema(conn: Any | None = None) -> None:
     own_conn = conn is None
     if conn is None:
-        conn = _connect_without_schema()
-    ddl = """
-    CREATE TABLE IF NOT EXISTS judy_calendar (
-        id BIGSERIAL PRIMARY KEY,
-        title TEXT NOT NULL,
-        description TEXT,
-        scheduled_at TIMESTAMPTZ NOT NULL,
-        recurrence TEXT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        created_by TEXT DEFAULT 'judy',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        fired_at TIMESTAMPTZ,
-        completed_at TIMESTAMPTZ,
-        session_id TEXT,
-        context JSONB NOT NULL DEFAULT '{}'::jsonb,
-        tags TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
-        notes TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_judy_calendar_status_due
-        ON judy_calendar (status, scheduled_at);
-    CREATE INDEX IF NOT EXISTS idx_judy_calendar_tags
-        ON judy_calendar USING GIN (tags);
-    """
+        conn = _connect_without_schema() if _using_postgres() else _connect_sqlite_without_schema()
+    ddl = _POSTGRES_SCHEMA if _using_postgres() else _SQLITE_SCHEMA
     try:
-        with conn.cursor() as cur:
-            cur.execute(ddl)
+        if _using_postgres():
+            with conn.cursor() as cur:
+                cur.execute(ddl)
+        else:
+            conn.executescript(ddl)
     finally:
         if own_conn:
             conn.close()
+
+
+_POSTGRES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS judy_calendar (
+    id BIGSERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT,
+    scheduled_at TIMESTAMPTZ NOT NULL,
+    recurrence TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_by TEXT DEFAULT 'judy',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    fired_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    session_id TEXT,
+    context JSONB NOT NULL DEFAULT '{}'::jsonb,
+    tags TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_judy_calendar_status_due
+    ON judy_calendar (status, scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_judy_calendar_tags
+    ON judy_calendar USING GIN (tags);
+"""
+
+
+_SQLITE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS judy_calendar (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    description TEXT,
+    scheduled_at TEXT NOT NULL,
+    recurrence TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_by TEXT DEFAULT 'judy',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    fired_at TEXT,
+    completed_at TEXT,
+    session_id TEXT,
+    context TEXT NOT NULL DEFAULT '{}',
+    tags TEXT NOT NULL DEFAULT '[]',
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_judy_calendar_status_due
+    ON judy_calendar (status, scheduled_at);
+"""
 
 
 def _connect_without_schema():
@@ -113,6 +160,10 @@ def _parse_dt(value: Any, *, field: str) -> datetime:
     if dt.tzinfo is None or dt.utcoffset() is None:
         raise ValueError(f"{field} must include a timezone")
     return dt.astimezone(timezone.utc)
+
+
+def _dt_text(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _normalize_recurrence(value: Any) -> Optional[str]:
@@ -170,8 +221,22 @@ def _row_dict(row: Any) -> dict[str, Any]:
         val = d.get(key)
         if isinstance(val, datetime):
             d[key] = val.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    d["context"] = d.get("context") or {}
-    d["tags"] = list(d.get("tags") or [])
+        elif isinstance(val, str) and val:
+            d[key] = _dt_text(_parse_dt(val, field=key))
+    context = d.get("context") or {}
+    if isinstance(context, str):
+        try:
+            context = json.loads(context)
+        except json.JSONDecodeError:
+            context = {}
+    d["context"] = context if isinstance(context, dict) else {}
+    tags = d.get("tags") or []
+    if isinstance(tags, str):
+        try:
+            tags = json.loads(tags)
+        except json.JSONDecodeError:
+            tags = []
+    d["tags"] = [str(tag) for tag in tags] if isinstance(tags, Iterable) and not isinstance(tags, (str, bytes)) else []
     return d
 
 
@@ -193,6 +258,28 @@ def add_event(
     recurrence_norm = _normalize_recurrence(recurrence)
     tags_norm = _normalize_tags(tags)
     context_norm = _normalize_context(context)
+    if not _using_postgres():
+        with _connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO judy_calendar
+                    (title, description, scheduled_at, recurrence, tags, context,
+                     created_by, session_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING *
+                """,
+                (
+                    title,
+                    description,
+                    _dt_text(scheduled),
+                    recurrence_norm,
+                    json.dumps(tags_norm),
+                    json.dumps(context_norm),
+                    created_by or "judy",
+                    session_id,
+                ),
+            )
+            return _row_dict(cur.fetchone())
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -232,19 +319,41 @@ def list_events(
     limit = max(1, min(int(limit or 50), 200))
     clauses: list[str] = []
     params: list[Any] = []
+    placeholder = "%s" if _using_postgres() else "?"
     if status_norm:
-        clauses.append("status = %s")
+        clauses.append(f"status = {placeholder}")
         params.append(status_norm)
     if from_dt:
-        clauses.append("scheduled_at >= %s")
+        clauses.append(f"scheduled_at >= {placeholder}")
         params.append(from_dt)
     if to_dt:
-        clauses.append("scheduled_at <= %s")
+        clauses.append(f"scheduled_at <= {placeholder}")
         params.append(to_dt)
     if tags_norm:
-        clauses.append("tags && %s")
-        params.append(tags_norm)
+        if _using_postgres():
+            clauses.append("tags && %s")
+            params.append(tags_norm)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    if not _using_postgres():
+        sqlite_params = [_dt_text(p) if isinstance(p, datetime) else p for p in params]
+        query_limit = "" if tags_norm else "LIMIT ?"
+        if not tags_norm:
+            sqlite_params.append(limit)
+        with _connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM judy_calendar
+                {where}
+                ORDER BY scheduled_at ASC, id ASC
+                {query_limit}
+                """,
+                tuple(sqlite_params),
+            ).fetchall()
+        normalized = [_row_dict(row) for row in rows]
+        if tags_norm:
+            wanted = set(tags_norm)
+            normalized = [row for row in normalized if wanted.intersection(row.get("tags") or [])]
+        return normalized[:limit]
     params.append(limit)
     with _connect() as conn:
         with conn.cursor() as cur:
@@ -265,6 +374,10 @@ def upcoming_events(*, limit: int = 5) -> list[dict[str, Any]]:
 
 
 def get_event(event_id: int) -> Optional[dict[str, Any]]:
+    if not _using_postgres():
+        with _connect() as conn:
+            row = conn.execute("SELECT * FROM judy_calendar WHERE id = ?", (int(event_id),)).fetchone()
+            return _row_dict(row) if row else None
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM judy_calendar WHERE id = %s", (int(event_id),))
@@ -288,14 +401,31 @@ def update_event(event_id: int, **updates: Any) -> Optional[dict[str, Any]]:
         elif key == "tags":
             value = _normalize_tags(value)
         elif key == "context":
-            value = _jsonb(_normalize_context(value))
+            value = _normalize_context(value)
         elif key == "recurrence":
             value = _normalize_recurrence(value)
-        fields.append(f"{key} = %s")
-        params.append(value)
+        if _using_postgres():
+            fields.append(f"{key} = %s")
+            params.append(_jsonb(value) if key == "context" else value)
+        else:
+            fields.append(f"{key} = ?")
+            if key == "scheduled_at":
+                params.append(_dt_text(value))
+            elif key in {"tags", "context"}:
+                params.append(json.dumps(value))
+            else:
+                params.append(value)
     if not fields:
         return get_event(event_id)
     params.append(int(event_id))
+    if not _using_postgres():
+        with _connect() as conn:
+            cur = conn.execute(
+                f"UPDATE judy_calendar SET {', '.join(fields)} WHERE id = ? RETURNING *",
+                tuple(params),
+            )
+            row = cur.fetchone()
+            return _row_dict(row) if row else None
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -307,6 +437,18 @@ def update_event(event_id: int, **updates: Any) -> Optional[dict[str, Any]]:
 
 
 def cancel_event(event_id: int) -> Optional[dict[str, Any]]:
+    if not _using_postgres():
+        with _connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE judy_calendar
+                SET status = 'cancelled'
+                WHERE id = ? AND status != 'cancelled'
+                RETURNING *
+                """,
+                (int(event_id),),
+            ).fetchone()
+            return _row_dict(row) if row else None
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -354,6 +496,40 @@ def mark_done(event_id: int, notes: Optional[str] = None, session_id: Optional[s
     recurrence = event.get("recurrence")
     completed = datetime.now(timezone.utc)
     scheduled = _parse_dt(event["scheduled_at"], field="scheduled_at")
+    if not _using_postgres():
+        with _connect() as conn:
+            if recurrence:
+                next_at = _advance(scheduled, recurrence)
+                while next_at <= completed:
+                    next_at = _advance(next_at, recurrence)
+                row = conn.execute(
+                    """
+                    UPDATE judy_calendar
+                    SET status = 'pending',
+                        scheduled_at = ?,
+                        fired_at = NULL,
+                        completed_at = ?,
+                        notes = ?,
+                        session_id = COALESCE(?, session_id)
+                    WHERE id = ?
+                    RETURNING *
+                    """,
+                    (_dt_text(next_at), _dt_text(completed), notes, session_id, int(event_id)),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    UPDATE judy_calendar
+                    SET status = 'done',
+                        completed_at = ?,
+                        notes = ?,
+                        session_id = COALESCE(?, session_id)
+                    WHERE id = ?
+                    RETURNING *
+                    """,
+                    (_dt_text(completed), notes, session_id, int(event_id)),
+                ).fetchone()
+            return _row_dict(row) if row else None
     with _connect() as conn:
         with conn.cursor() as cur:
             if recurrence:
@@ -394,6 +570,47 @@ def mark_done(event_id: int, notes: Optional[str] = None, session_id: Optional[s
 def claim_due_events(*, now: Any = None, limit: int = 10) -> list[dict[str, Any]]:
     now_dt = _parse_dt(now, field="now") if now else datetime.now(timezone.utc)
     limit = max(1, min(int(limit or 10), 50))
+    if not _using_postgres():
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            due_rows = conn.execute(
+                """
+                SELECT id FROM judy_calendar
+                WHERE status = 'pending' AND scheduled_at <= ?
+                ORDER BY scheduled_at ASC, id ASC
+                LIMIT ?
+                """,
+                (_dt_text(now_dt), limit),
+            ).fetchall()
+            ids = [int(row["id"]) for row in due_rows]
+            if not ids:
+                conn.commit()
+                return []
+            placeholders = ", ".join("?" for _ in ids)
+            conn.execute(
+                f"""
+                UPDATE judy_calendar
+                SET status = 'firing', fired_at = ?
+                WHERE id IN ({placeholders})
+                """,
+                (_dt_text(now_dt), *ids),
+            )
+            rows = conn.execute(
+                f"""
+                SELECT * FROM judy_calendar
+                WHERE id IN ({placeholders})
+                ORDER BY scheduled_at ASC, id ASC
+                """,
+                tuple(ids),
+            ).fetchall()
+            conn.commit()
+            return [_row_dict(row) for row in rows]
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -418,6 +635,17 @@ def claim_due_events(*, now: Any = None, limit: int = 10) -> list[dict[str, Any]
 
 def requeue_stale_firing(*, older_than_seconds: int = STALE_FIRING_SECONDS) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(1, int(older_than_seconds)))
+    if not _using_postgres():
+        with _connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE judy_calendar
+                SET status = 'pending', fired_at = NULL
+                WHERE status = 'firing' AND fired_at < ?
+                """,
+                (_dt_text(cutoff),),
+            )
+            return int(cur.rowcount or 0)
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -433,6 +661,18 @@ def requeue_stale_firing(*, older_than_seconds: int = STALE_FIRING_SECONDS) -> i
 
 def release_claim(event_id: int) -> Optional[dict[str, Any]]:
     """Return a firing event to pending when Gateway could not dispatch it."""
+    if not _using_postgres():
+        with _connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE judy_calendar
+                SET status = 'pending', fired_at = NULL
+                WHERE id = ? AND status = 'firing'
+                RETURNING *
+                """,
+                (int(event_id),),
+            ).fetchone()
+            return _row_dict(row) if row else None
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(

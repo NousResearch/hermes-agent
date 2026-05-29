@@ -4695,7 +4695,7 @@ class GatewayRunner:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.debug("Calendar wakeup watcher tick error: %s", exc, exc_info=True)
+                logger.warning("Calendar wakeup watcher tick error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
 
     async def _dispatch_calendar_wakeup(self, event: Dict[str, Any]) -> None:

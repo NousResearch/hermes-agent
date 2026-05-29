@@ -1323,6 +1323,178 @@ class TestToolUseEnforcementConfig:
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
 
 
+class TestTaskCompletionGuidance:
+    """Tests for the universal task-completion / no-fabrication guidance
+    (config.yaml ``agent.task_completion_guidance``).
+
+    Unlike tool_use_enforcement, this block is model-family-agnostic — it
+    targets cross-model failure modes (stopping after a stub; fabricating
+    output when blocked) and should appear for every model by default."""
+
+    def _make_agent(self, model="anthropic/claude-opus-4.8",
+                    task_completion_guidance=True, **extra_cfg):
+        agent_cfg = {"task_completion_guidance": task_completion_guidance}
+        agent_cfg.update(extra_cfg)
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": agent_cfg},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_default_injects_for_claude(self):
+        """The block must reach Claude by default — that's the
+        primary motivating model family."""
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        agent = self._make_agent(model="anthropic/claude-opus-4.8")
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE in prompt
+
+    def test_default_injects_for_deepseek(self):
+        """And for DeepSeek — the other model that failed the Sarasota
+        real-estate task by fabricating output."""
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        agent = self._make_agent(model="deepseek/deepseek-v4-flash")
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE in prompt
+
+    def test_default_injects_for_gpt(self):
+        """Also reaches model families that already get enforcement —
+        it's additive, not exclusive."""
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-5.4")
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE in prompt
+
+    def test_false_disables(self):
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        agent = self._make_agent(
+            model="anthropic/claude-opus-4.8", task_completion_guidance=False
+        )
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE not in prompt
+
+    def test_no_tools_no_injection(self):
+        """Same gate as tool_use_enforcement — no tools means no guidance.
+        The guidance refers to ``tool calls`` and ``tool output``; without
+        tools it would be advice for a capability the agent doesn't have."""
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"task_completion_guidance": True}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                enabled_toolsets=[],
+            )
+            a.client = MagicMock()
+            assert TASK_COMPLETION_GUIDANCE not in a._build_system_prompt()
+
+
+class TestEnvironmentProbeIntegration:
+    """Tests for the local Python toolchain probe wiring (config.yaml
+    ``agent.environment_probe``).  The probe itself is unit-tested in
+    tests/tools/test_env_probe.py; this class confirms it lands in the
+    system prompt when enabled and stays out when disabled."""
+
+    def _make_agent(self, model="anthropic/claude-opus-4.8",
+                    environment_probe=True):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"environment_probe": environment_probe}},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_probe_appears_when_problem_detected(self, monkeypatch):
+        """When the probe finds something off, the line lands in the prompt."""
+        from tools import env_probe
+        env_probe._reset_cache_for_tests()
+        monkeypatch.setattr(env_probe, "_python_version_of",
+                            lambda b: {"python3": "3.11.15"}.get(b))
+        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)
+        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: True)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.12")
+        monkeypatch.setattr(env_probe.shutil, "which",
+                            lambda name: None if name == "uv" else "/usr/bin/" + name)
+
+        agent = self._make_agent(environment_probe=True)
+        prompt = agent._build_system_prompt()
+        assert "Python toolchain:" in prompt
+        assert "3.11.15" in prompt
+
+    def test_probe_silent_on_clean_env(self, monkeypatch):
+        """Clean environment → probe emits nothing → no line in prompt."""
+        from tools import env_probe
+        env_probe._reset_cache_for_tests()
+        monkeypatch.setattr(env_probe, "_python_version_of",
+                            lambda b: "3.13.3" if b == "python3" else None)
+        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: True)
+        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: False)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.13")
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+
+        agent = self._make_agent(environment_probe=True)
+        prompt = agent._build_system_prompt()
+        assert "Python toolchain:" not in prompt
+
+    def test_probe_disabled_by_config(self, monkeypatch):
+        """Even with detectable problems, the probe stays out when disabled."""
+        from tools import env_probe
+        env_probe._reset_cache_for_tests()
+        monkeypatch.setattr(env_probe, "_python_version_of",
+                            lambda b: {"python3": "3.11.15"}.get(b))
+        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)
+        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: True)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.12")
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+
+        agent = self._make_agent(environment_probe=False)
+        prompt = agent._build_system_prompt()
+        assert "Python toolchain:" not in prompt
+
+
 class TestInvalidateSystemPrompt:
     def test_clears_cache(self, agent):
         agent._cached_system_prompt = "cached value"

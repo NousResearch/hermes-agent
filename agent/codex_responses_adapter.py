@@ -980,6 +980,48 @@ def _extract_responses_reasoning_text(item: Any) -> str:
     return ""
 
 
+def _format_responses_error(error_obj: Any, response_status: str) -> str:
+    """Build a human-readable error string from a Responses ``response.error`` payload.
+
+    The OpenAI Responses API carries failure details under ``response.error``
+    on terminal ``response.failed`` events, in the shape
+    ``{"code": "rate_limit_exceeded", "message": "Slow down", "param": ...}``.
+    Earlier code only surfaced ``message``, which left users staring at bare
+    strings like ``"Slow down"`` while the failure mode (rate limit vs
+    context-length vs internal_error vs model-overloaded) was hidden in
+    ``code``. We now prefix ``code`` when both are present so consumers can
+    distinguish failure modes without parsing the bare message.
+
+    Falls back to ``code`` alone when ``message`` is empty, and to a stable
+    default referencing the response status when no error payload is
+    available at all. Adapted from anomalyco/opencode#28757.
+    """
+    # Pull code and message from either dict or attribute-style payloads.
+    code: Any = None
+    message: Any = None
+    if isinstance(error_obj, dict):
+        code = error_obj.get("code")
+        message = error_obj.get("message")
+    elif error_obj is not None:
+        code = getattr(error_obj, "code", None)
+        message = getattr(error_obj, "message", None)
+
+    code_str = str(code).strip() if isinstance(code, str) else (str(code).strip() if code else "")
+    message_str = str(message).strip() if isinstance(message, str) else (str(message).strip() if message else "")
+
+    if code_str and message_str:
+        return f"{code_str}: {message_str}"
+    if message_str:
+        return message_str
+    if code_str:
+        return code_str
+    if error_obj:
+        # Last-resort: stringify whatever the provider sent so it's at least
+        # visible in logs/UI rather than silently swallowed.
+        return str(error_obj)
+    return f"Responses API returned status '{response_status}'"
+
+
 # ---------------------------------------------------------------------------
 # Full response normalization
 # ---------------------------------------------------------------------------
@@ -1023,10 +1065,7 @@ def _normalize_codex_response(
 
     if response_status in {"failed", "cancelled"}:
         error_obj = getattr(response, "error", None)
-        if isinstance(error_obj, dict):
-            error_msg = error_obj.get("message") or str(error_obj)
-        else:
-            error_msg = str(error_obj) if error_obj else f"Responses API returned status '{response_status}'"
+        error_msg = _format_responses_error(error_obj, response_status)
         raise RuntimeError(error_msg)
 
     content_parts: List[str] = []

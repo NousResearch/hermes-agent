@@ -669,6 +669,20 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Universal "finish the job" guidance — short prompt block applied to
+        # all models that targets two cross-family failure modes: (1) stopping
+        # after a stub instead of finishing the artifact, (2) fabricating
+        # plausible-looking output when a real path is blocked.  Costs ~80
+        # tokens in the cached system prompt.  Set False to disable globally.
+        "task_completion_guidance": True,
+        # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
+        # state in the system prompt when something non-default is detected
+        # (e.g. python3 has no pip module, pip→python version mismatch, PEP
+        # 668 enforcement without uv).  Costs zero tokens when the env is
+        # clean (probe emits nothing).  Skipped for remote terminal backends
+        # (docker/modal/ssh — they have their own probe).  Set False to
+        # disable entirely.
+        "environment_probe": True,
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.

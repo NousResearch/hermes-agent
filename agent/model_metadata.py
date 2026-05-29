@@ -618,7 +618,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         return _model_metadata_cache
 
     try:
-        response = requests.get(OPENROUTER_MODELS_URL, timeout=10, verify=_resolve_requests_verify())
+        response = requests.get(OPENROUTER_MODELS_URL, timeout=10, verify=_resolve_requests_verify())  # SSRF: add IP block check
         response.raise_for_status()
         data = response.json()
 

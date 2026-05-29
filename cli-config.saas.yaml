@@ -10,34 +10,31 @@
 #   - Minimal: just what the cloud gateway needs. Plan 009 owns this file.
 
 model:
-  # 2026-05-28: swap from Llama 3.3 70B → Amazon Nova Pro.
+  # Plan 018-C (2026-05-29): the canonical source of truth is the `tier`
+  # field below — `balanced` resolves to whichever Bedrock model id
+  # `army-of-one/backend/src/atlas/llm/tiers.yaml` currently points at
+  # (us.amazon.nova-pro-v1:0 as of 2026-05-29). Hermes's current config
+  # loader still requires a literal string in `default:` for the cold-start
+  # path, so we keep it in sync with the tier — the comment block below
+  # documents the rationale for the chosen model. When the Hermes config
+  # loader learns to resolve `tier:` against the shared tiers.yaml (a
+  # follow-up phase), `default:` becomes unused and can be deleted.
   #
-  # Why the swap: Llama 3.3 on Bedrock supports `Converse` with tools and
-  # `ConverseStream` without tools, but NOT both together — calling
-  # ConverseStream with a tool config raises
-  #   ValidationException: This model doesn't support tool use in streaming mode.
-  # Hermes's conversation loop streams + uses tools (Slack-side mid-turn
-  # progress updates depend on streaming), so Llama can't carry the workload.
-  # The Plan 010-B note about "verified working via aws bedrock-runtime
-  # converse" was technically true for non-streaming Converse only.
-  #
-  # Why Nova Pro specifically:
-  #   - Streaming + tools fully supported on Bedrock Converse.
+  # Why Nova Pro (the current `balanced` model):
+  #   - Streaming + tools fully supported on Bedrock Converse (Llama 3.3
+  #     forced a choice between the two; Hermes needs both for Slack
+  #     mid-turn progress + tool-use).
   #   - ~$0.80 / $3.20 per M tokens (in / out) — roughly 1/8 the Sonnet 4
-  #     price, still cheaper than Llama 3.3 70B in absolute terms.
-  #   - Bedrock-native (no Portkey hop, no extra cred plumbing).
-  #   - Multimodal (text + image + video) — gives Hermes a headroom for
-  #     future Slack-image / Voice-memo inputs without a model swap.
+  #     price.
+  #   - Bedrock-native (no Portkey hop — see Plan 018 decommission).
+  #   - Multimodal (text + image + video) — headroom for Slack-image /
+  #     voice inputs without a model swap.
   #
-  # Why NOT Mistral Large 2: better OSS license posture but ~3x Nova Pro
-  # pricing, and the strict-OSS line isn't load-bearing for cloud Hermes
-  # right now. Revisit if Bedrock pricing shifts or if the OSS-thesis
-  # crystallises into a hard requirement (Plan 010-B revision).
-  #
-  # Rollback: change to us.anthropic.claude-sonnet-4-6 + rebuild + redeploy.
-  # The bedrock_adapter call path is identical — only the model ID changes.
-  # IAM (agentic-stack-hermes-task) already grants amazon.* + us.amazon.*
-  # ARNs as of 2026-05-28; revert is safe.
+  # Rollback: bump tiers.yaml `balanced.model` (or edit `default:` here)
+  # to `us.anthropic.claude-sonnet-4-6`, rebuild, redeploy. IAM
+  # (agentic-stack-hermes-task) already grants amazon.* + us.amazon.* +
+  # us.anthropic.* ARNs as of 2026-05-28; revert is safe.
+  tier: balanced
   default: us.amazon.nova-pro-v1:0
   provider: bedrock
 

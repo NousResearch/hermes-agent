@@ -75,6 +75,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_max_tokens` | `4096` | Maximum tokens for recall results |
 | `recall_max_input_chars` | `800` | Maximum input query length for auto-recall |
 | `injection_model_id` | — | Optional Hindsight mental model ID to inject into context before recall/reflect results. Not supported in `local_embedded` mode. |
+| `injectionFrequency` | `every-turn` | How often the mental model is injected: `every-turn` (each prefetch) or `first-turn` (turn 1 only — the AI retains it in context for the session). |
 | `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |
 | `recall_tags` | — | Tags to filter when searching memories |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |
@@ -113,7 +114,11 @@ Config file: `~/.hermes/hindsight/config.json`
 - `context` — automatic injection only, no tools exposed
 - `tools` — tools only, no automatic injection
 
-When `injection_model_id` is configured, the plugin fetches that mental model from your bank and injects its content ahead of the normal recall/reflect block. The result is cached for 5 minutes and re-fetched automatically after expiry. Injection works independently of `auto_recall`, so you can surface a stable, pre-computed summary even with automatic recall turned off.
+When `injection_model_id` is configured, the plugin fetches that mental model from your bank and injects its content ahead of the normal recall/reflect block on every turn. The result is cached for 5 minutes and re-fetched automatically after expiry. Injection works independently of `auto_recall`, so you can surface a stable, pre-computed summary even with automatic recall turned off.
+
+The model is also pre-fetched at session initialization so that the **first turn** always gets the mental model, before any queued prefetch has had a chance to run.
+
+Set `injectionFrequency` to `"first-turn"` if you prefer the mental model to appear only on the first turn of a session (the AI retains it in its context window for the rest of the session, avoiding per-turn repetition):
 
 > **Note:** Mental models are created and managed in Hindsight — this feature only reads a model you have already set up. A mental model is a saved reflect response: a pre-computed summary generated from a `source_query` against your bank's memories. They can be as simple or as complex as you need. A good starting point for a user-profile model is:
 >
@@ -125,6 +130,15 @@ When `injection_model_id` is configured, the plugin fetches that mental model fr
 > - **`max_tokens: 2048`** recommended — keeps the injected model compact enough to leave room for recall results within the combined context budget
 >
 > Once the model exists, copy its ID and set it as `injection_model_id`. See the [Hindsight mental models docs](https://hindsight.vectorize.io/developer/api/mental-models) for full creation options.
+
+Example config (`$HERMES_HOME/hindsight/config.json`) with first-turn injection:
+
+```json
+{
+  "injection_model_id": "your-mental-model-id",
+  "injectionFrequency": "first-turn"
+}
+```
 
 ### Local Embedded LLM
 

@@ -10,7 +10,7 @@ import re
 import sys
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -83,6 +83,21 @@ def _make_mock_client():
     client.aretain_batch = AsyncMock()
     client.aclose = AsyncMock()
     return client
+
+
+def _urlopen_response(content=None, reflect_response=None):
+    """Return a context-manager mock for urllib.request.urlopen responses."""
+    data: dict = {}
+    if content is not None:
+        data["content"] = content
+    if reflect_response is not None:
+        data["reflect_response"] = reflect_response
+    raw = json.dumps(data).encode("utf-8")
+    mock_cm = MagicMock()
+    mock_cm.__enter__ = MagicMock(return_value=mock_cm)
+    mock_cm.__exit__ = MagicMock(return_value=False)
+    mock_cm.read = MagicMock(return_value=raw)
+    return mock_cm
 
 
 class _FakeSessionDB:
@@ -661,13 +676,11 @@ class TestPrefetch:
 
     def test_queue_prefetch_uses_injection_model_when_auto_recall_off(self, provider_with_config):
         p = provider_with_config(auto_recall=False, injection_model_id="user-profile")
-        p._client.mental_models.get_mental_model.return_value = SimpleNamespace(
-            content="User prefers terse updates."
-        )
-
-        p.queue_prefetch("test")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
+        p._reset_injection_model_cache()  # clear error cache from pre-warm attempt
+        with patch("urllib.request.urlopen", return_value=_urlopen_response(content="User prefers terse updates.")):
+            p.queue_prefetch("test")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
 
         result = p.prefetch("test")
         assert "## User Mental Model" in result
@@ -676,13 +689,11 @@ class TestPrefetch:
 
     def test_queue_prefetch_injects_mental_model_before_recall(self, provider_with_config):
         p = provider_with_config(injection_model_id="user-profile")
-        p._client.mental_models.get_mental_model.return_value = SimpleNamespace(
-            content="User prefers terse updates."
-        )
-
-        p.queue_prefetch("test")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
+        p._reset_injection_model_cache()  # clear error cache from pre-warm attempt
+        with patch("urllib.request.urlopen", return_value=_urlopen_response(content="User prefers terse updates.")):
+            p.queue_prefetch("test")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
 
         result = p.prefetch("test")
         assert result.index("## User Mental Model") < result.index("## Retrieved Memories")
@@ -690,49 +701,44 @@ class TestPrefetch:
 
     def test_queue_prefetch_caches_injection_model(self, provider_with_config):
         p = provider_with_config(injection_model_id="user-profile")
-        p._client.mental_models.get_mental_model.return_value = SimpleNamespace(
-            content="Cached profile"
-        )
+        p._reset_injection_model_cache()  # clear error cache from pre-warm attempt
+        with patch("urllib.request.urlopen", return_value=_urlopen_response(content="Cached profile")) as mock_urlopen:
+            p.queue_prefetch("first")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
+            p.prefetch("first")
 
-        p.queue_prefetch("first")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
-        p.prefetch("first")
+            p.queue_prefetch("second")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
 
-        p.queue_prefetch("second")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
-
-        assert p._client.mental_models.get_mental_model.await_count == 1
+            assert mock_urlopen.call_count == 1
 
     def test_queue_prefetch_cache_expires_after_ttl(self, provider_with_config):
         p = provider_with_config(injection_model_id="user-profile")
-        p._client.mental_models.get_mental_model.return_value = SimpleNamespace(
-            content="Fresh profile"
-        )
+        p._reset_injection_model_cache()  # clear error cache from pre-warm attempt
+        with patch("urllib.request.urlopen", return_value=_urlopen_response(content="Fresh profile")) as mock_urlopen:
+            p.queue_prefetch("first")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
+            p.prefetch("first")
 
-        p.queue_prefetch("first")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
-        p.prefetch("first")
+            # Simulate TTL expiry by back-dating the timestamp
+            import plugins.memory.hindsight as _h
+            p._cached_injection_model_fetched_at -= _h._INJECTION_MODEL_CACHE_TTL + 1
 
-        # Simulate TTL expiry by back-dating the timestamp
-        import plugins.memory.hindsight as _h
-        p._cached_injection_model_fetched_at -= _h._INJECTION_MODEL_CACHE_TTL + 1
+            p.queue_prefetch("second")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
 
-        p.queue_prefetch("second")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
-
-        assert p._client.mental_models.get_mental_model.await_count == 2
+            assert mock_urlopen.call_count == 2
 
     def test_queue_prefetch_falls_back_to_recall_when_model_fetch_fails(self, provider_with_config):
         p = provider_with_config(injection_model_id="user-profile")
-        p._client.mental_models.get_mental_model.side_effect = RuntimeError("boom")
-
-        p.queue_prefetch("test")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
+        with patch("urllib.request.urlopen", side_effect=RuntimeError("boom")):
+            p.queue_prefetch("test")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
 
         result = p.prefetch("test")
         assert "Memory 1" in result
@@ -740,22 +746,72 @@ class TestPrefetch:
 
     def test_queue_prefetch_truncates_injection_model_text(self, provider_with_config):
         p = provider_with_config(injection_model_id="user-profile")
+        p._reset_injection_model_cache()  # clear error cache from pre-warm attempt
         # Limit must be large enough that the newline after the header is past
         # the midpoint (limit//2), so we don't walk back and lose all content.
         # "## User Mental Model\n" = 21 chars; limit=40 keeps some content.
         p._prefetch_context_max_chars = 40
-        p._client.mental_models.get_mental_model.return_value = SimpleNamespace(
-            content="abcdefghijklmnopqrstuvwxyz"
-        )
-
-        p.queue_prefetch("test")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
+        with patch("urllib.request.urlopen", return_value=_urlopen_response(content="abcdefghijklmnopqrstuvwxyz")):
+            p.queue_prefetch("test")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
 
         result = p._prefetch_result  # inspect before prefetch() prepends its header
         assert len(result) <= 40
         assert "abcde" in result  # some injection content made it in
         assert not result.rstrip().endswith("##")  # no orphaned header
+
+    def test_prefetch_first_turn_fallback_returns_injection_text(self, provider_with_config):
+        """Turn 1 gets injection even though queue_prefetch() hasn't run yet."""
+        with patch("urllib.request.urlopen", return_value=_urlopen_response(content="Who the user is.")):
+            p = provider_with_config(auto_recall=False, injection_model_id="user-profile")
+            # No queue_prefetch() called — simulates first turn
+            result = p.prefetch("first query")
+        assert "## User Mental Model" in result
+        assert "Who the user is." in result
+
+    def test_prefetch_first_turn_fallback_empty_without_injection_model(self, provider_with_config):
+        """Without injection_model_id, first-turn fallback returns empty."""
+        p = provider_with_config(auto_recall=False)
+        result = p.prefetch("first query")
+        assert result == ""
+
+    def test_injection_frequency_first_turn_suppresses_subsequent_queued_prefetches(self, provider_with_config):
+        """With injectionFrequency='first-turn', queued prefetches (turn 2+) skip injection."""
+        with patch("urllib.request.urlopen", return_value=_urlopen_response(content="Profile")) as mock_urlopen:
+            p = provider_with_config(
+                auto_recall=False, injection_model_id="user-profile",
+                injectionFrequency="first-turn",
+            )
+            assert p._injection_frequency == "first-turn"
+            # Simulate turn 2: queue_prefetch() runs after the first turn completes
+            p.queue_prefetch("turn 2 query")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
+        result = p.prefetch("turn 2 query")
+        # Injection should be absent — only turn 1 (first-turn fallback) injects
+        assert "## User Mental Model" not in result
+
+    def test_injection_frequency_every_turn_injects_on_queued_prefetches(self, provider_with_config):
+        """With injectionFrequency='every-turn' (default), all queued prefetches inject."""
+        p = provider_with_config(auto_recall=False, injection_model_id="user-profile")
+        p._reset_injection_model_cache()  # clear error cache from pre-warm attempt
+        assert p._injection_frequency == "every-turn"
+        with patch("urllib.request.urlopen", return_value=_urlopen_response(content="Profile")):
+            p.queue_prefetch("turn 2 query")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
+        result = p.prefetch("turn 2 query")
+        assert "## User Mental Model" in result
+        assert "Profile" in result
+
+    def test_handle_tool_call_retain_clears_injection_model_cache(self, provider_with_config):
+        """Successful hindsight_retain clears injection model cache for re-fetch."""
+        with patch("urllib.request.urlopen", return_value=_urlopen_response(content="Profile")):
+            p = provider_with_config(injection_model_id="user-profile")
+        assert p._cached_injection_model_text == "Profile"
+        p.handle_tool_call("hindsight_retain", {"content": "new memory"})
+        assert p._cached_injection_model_text == ""
 
     def test_queue_prefetch_truncates_query(self, provider_with_config):
         p = provider_with_config(recall_max_input_chars=10)

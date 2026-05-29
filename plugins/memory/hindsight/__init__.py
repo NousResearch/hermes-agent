@@ -628,6 +628,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = ""
         self._recall_max_input_chars = 800
         self._injection_model_id = ""
+        self._injection_frequency = "every-turn"  # or "first-turn"
         self._cached_injection_model_key: tuple[str, str] | None = None
         self._cached_injection_model_text = ""
         self._cached_injection_model_fetched_at: float = 0.0
@@ -1154,23 +1155,29 @@ class HindsightMemoryProvider(MemoryProvider):
 
         text = ""
         try:
-            response = self._run_hindsight_operation(
-                lambda client: client.mental_models.get_mental_model(
-                    bank_id,
-                    self._injection_model_id,
-                    _request_timeout=float(self._timeout),
-                )
+            # Use urllib.request (sync, no aiohttp) to avoid "Unclosed client
+            # session" warnings — same approach as _fetch_hindsight_api_version.
+            import urllib.parse
+            import urllib.request
+
+            bank_enc = urllib.parse.quote(bank_id, safe="")
+            model_enc = urllib.parse.quote(self._injection_model_id, safe="")
+            url = (
+                f"{self._api_url.rstrip('/')}/v1/default/banks/{bank_enc}"
+                f"/mental-models/{model_enc}"
             )
-            text = str(getattr(response, "content", "") or "").strip()
+            req = urllib.request.Request(url)
+            if self._api_key:
+                req.add_header("Authorization", f"Bearer {self._api_key}")
+            with urllib.request.urlopen(req, timeout=float(self._timeout)) as resp:  # noqa: S310
+                payload = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(payload)
+            text = str(data.get("content") or "").strip()
             if not text:
-                reflect_response = getattr(response, "reflect_response", None)
-                if reflect_response is not None:
+                reflect_response = data.get("reflect_response")
+                if isinstance(reflect_response, dict):
                     for key in ("text", "content", "response"):
-                        value = (
-                            reflect_response.get(key)
-                            if isinstance(reflect_response, dict)
-                            else getattr(reflect_response, key, None)
-                        )
+                        value = reflect_response.get(key)
                         if value:
                             text = str(value).strip()
                             break
@@ -1374,6 +1381,13 @@ class HindsightMemoryProvider(MemoryProvider):
             )
             self._injection_model_id = ""
         self._reset_injection_model_cache()
+        self._injection_frequency = str(self._config.get("injectionFrequency", "every-turn")).strip()
+        if self._injection_frequency not in {"every-turn", "first-turn"}:
+            logger.warning(
+                "Hindsight injectionFrequency %r is invalid; defaulting to 'every-turn'.",
+                self._injection_frequency,
+            )
+            self._injection_frequency = "every-turn"
         self._retain_async = self._config.get("retain_async", True)
 
         _client_version = "unknown"
@@ -1389,10 +1403,18 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, injection_model_id=%s, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, "
+                     "injection_model_id=%s, injection_frequency=%s, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
                      self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
-                     self._injection_model_id, self._tags, self._recall_tags)
+                     self._injection_model_id, self._injection_frequency, self._tags, self._recall_tags)
+
+        # Pre-warm the injection model cache so that the first turn gets the
+        # mental model even before any queue_prefetch() has run.
+        if self._injection_model_id and self._bank_id:
+            self._load_injection_model_text(
+                enqueued_session_id=self._session_id, bank_id=self._bank_id
+            )
 
         # For local mode, start the embedded daemon in the background so it
         # doesn't block the chat. Redirect stdout/stderr to a log file to
@@ -1470,6 +1492,16 @@ class HindsightMemoryProvider(MemoryProvider):
             result = self._prefetch_result
             self._prefetch_result = ""
         if not result:
+            # First-turn fallback: queue_prefetch() runs POST-turn, so on turn 1
+            # nothing has been queued yet.  If initialize() pre-warmed the
+            # injection model cache, return it directly so turn 1 always gets
+            # the mental model even when auto_recall is disabled.
+            if self._prefetch_thread is None:
+                with self._prefetch_lock:
+                    injection_text = self._cached_injection_model_text
+                if injection_text:
+                    result = self._build_prefetch_result(injection_text=injection_text, recall_text="")
+        if not result:
             logger.debug("Prefetch: no results available")
             return ""
         logger.debug("Prefetch: returning %d chars of context", len(result))
@@ -1504,7 +1536,13 @@ class HindsightMemoryProvider(MemoryProvider):
 
         def _run():
             try:
-                injection_text = self._load_injection_model_text(enqueued_session_id=enqueued_session_id, bank_id=enqueued_bank_id)
+                # "first-turn" mode: the mental model was already delivered on
+                # turn 1 via the first-turn fallback in prefetch().  Skip
+                # injection on all subsequent queued prefetches.
+                if self._injection_frequency == "first-turn":
+                    injection_text = ""
+                else:
+                    injection_text = self._load_injection_model_text(enqueued_session_id=enqueued_session_id, bank_id=enqueued_bank_id)
                 recall_text = ""
                 if self._auto_recall:
                     if self._prefetch_method == "reflect":
@@ -1712,6 +1750,10 @@ class HindsightMemoryProvider(MemoryProvider):
                              self._bank_id, len(content), context)
                 self._run_hindsight_operation(lambda client: client.aretain(**retain_kwargs))
                 logger.debug("Tool hindsight_retain: success")
+                # Clear the injection model cache: a new retain may trigger an
+                # asynchronous model recomputation in Hindsight.  The next
+                # prefetch will re-fetch the (potentially updated) model.
+                self._reset_injection_model_cache()
                 return json.dumps({"result": "Memory stored successfully."})
             except Exception as e:
                 logger.warning("hindsight_retain failed: %s", e, exc_info=True)

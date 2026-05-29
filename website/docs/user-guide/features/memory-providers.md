@@ -359,6 +359,7 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `auto_retain` | `true` | Automatically retain conversation turns |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 | `injection_model_id` | — | Optional mental model ID to inject ahead of recalled memory context. Not supported in `local_embedded` mode. |
+| `injectionFrequency` | `every-turn` | How often the mental model is injected: `every-turn` or `first-turn` (turn 1 only; AI retains it in context). |
 | `retain_async` | `true` | Process retain asynchronously on the server |
 | `retain_context` | `conversation between Hermes Agent and the User` | Context label for retained memories |
 | `retain_tags` | — | Default tags applied to retained memories; merged with per-call tool tags |
@@ -369,7 +370,11 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `timeout` | `120` | Seconds to wait for each Hindsight API call before timing out. Increase if you see timeout errors in `errors.log` during `/sync` or session switches. |
 | `idle_timeout` | `300` | Idle timeout (seconds) for the local embedded Hindsight daemon. Only applies when `mode` is `local_embedded`. |
 
-If `injection_model_id` is set, the plugin fetches that mental model from your bank and injects its content ahead of the usual recall/reflect block. The result is cached for 5 minutes and re-fetched automatically after expiry. Injection works independently of `auto_recall`, so you can surface a stable, pre-computed summary even with automatic recall turned off.
+If `injection_model_id` is set, the plugin fetches that mental model from your bank and injects its content ahead of the usual recall/reflect block on every turn. The result is cached for 5 minutes and re-fetched automatically after expiry. Injection works independently of `auto_recall`, so you can surface a stable, pre-computed summary even with automatic recall turned off.
+
+The model is also pre-fetched at session initialization so the **first turn** always receives it, before any queued prefetch has run.
+
+Set `injectionFrequency` to `"first-turn"` if you prefer the model to be injected only on the first turn of the session (the AI retains it in its context window, avoiding per-turn repetition).
 
 > **Note:** Mental models are created and managed in Hindsight — this feature only reads a model you have already set up. A mental model is a saved reflect response: a pre-computed summary generated from a `source_query` against your bank's memories. They can be as simple or as complex as you need. A good starting point for a user-profile model is:
 >

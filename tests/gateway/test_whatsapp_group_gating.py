@@ -1,5 +1,7 @@
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
@@ -63,7 +65,62 @@ def _dm_message(body="hello", **overrides):
     return data
 
 
+def _mock_post_session():
+    response = AsyncMock()
+    response.status = 200
+    response.json = AsyncMock(return_value={"messageId": "msg-1"})
+    response_cm = AsyncMock()
+    response_cm.__aenter__.return_value = response
+    session = MagicMock()
+    session.post = MagicMock(return_value=response_cm)
+    return session
+
+
 # --- Existing tests (unchanged logic, updated helper) ---
+
+@pytest.mark.asyncio
+async def test_verify_code_message_bypasses_whatsapp_process_gate(monkeypatch):
+    import gateway.platforms.whatsapp as whatsapp_platform
+
+    adapter = _make_adapter(dm_policy="allowlist", allow_from=["other@s.whatsapp.net"])
+    adapter._bridge_port = 3000
+    adapter._http_session = _mock_post_session()
+    adapter._should_process_message = MagicMock(return_value=False)
+    redeem = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(whatsapp_platform, "redeem_verify_code", redeem, raising=False)
+
+    result = await adapter._build_message_event(_dm_message("verify 123456"))
+
+    assert result is None
+    redeem.assert_awaited_once_with(
+        platform="whatsapp",
+        code="123456",
+        user_id="6281234567890@s.whatsapp.net",
+    )
+    adapter._http_session.post.assert_called_once()
+    assert adapter._http_session.post.call_args.args[0] == "http://127.0.0.1:3000/send"
+    assert adapter._http_session.post.call_args.kwargs["json"] == {
+        "chatId": "6281234567890@s.whatsapp.net",
+        "message": "✅ 已將你加為 owner，現在可以開始對話",
+    }
+    adapter._should_process_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_verify_whatsapp_message_keeps_existing_process_gate(monkeypatch):
+    import gateway.platforms.whatsapp as whatsapp_platform
+
+    adapter = _make_adapter(dm_policy="allowlist", allow_from=["other@s.whatsapp.net"])
+    adapter._should_process_message = MagicMock(return_value=False)
+    redeem = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(whatsapp_platform, "redeem_verify_code", redeem, raising=False)
+
+    result = await adapter._build_message_event(_dm_message("hello"))
+
+    assert result is None
+    redeem.assert_not_awaited()
+    adapter._should_process_message.assert_called_once()
+
 
 def test_group_messages_can_be_opened_via_config():
     adapter = _make_adapter(require_mention=False)

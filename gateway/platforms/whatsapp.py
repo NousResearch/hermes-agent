@@ -189,6 +189,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_url,
 )
+from gateway.verify_command import parse_verify_command, redeem_verify_code, verify_ack_text
 
 
 def check_whatsapp_requirements() -> bool:
@@ -1260,6 +1261,27 @@ class WhatsAppAdapter(BasePlatformAdapter):
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
+            verify_cmd = parse_verify_command(data.get("body", ""))
+            if verify_cmd:
+                user_id = data.get("from", "") or data.get("senderId", "")
+                result = await redeem_verify_code(
+                    platform="whatsapp",
+                    code=verify_cmd["code"],
+                    user_id=user_id,
+                )
+                if self._http_session and user_id:
+                    import aiohttp
+                    async with self._http_session.post(
+                        f"http://127.0.0.1:{self._bridge_port}/send",
+                        json={
+                            "chatId": user_id,
+                            "message": verify_ack_text(result),
+                        },
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ):
+                        pass
+                return None
+
             if not self._should_process_message(data):
                 return None
 

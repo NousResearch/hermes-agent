@@ -838,8 +838,35 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                         scroll_offset = 0
                 elif key == ord("q") and not search_text:
                     return
+                elif key >= 128:
+                    # UTF-8 multi-byte sequence (CJK, etc.)
+                    # First byte determines sequence length
+                    byte_seq = bytes([key])
+                    if 0xC0 <= key <= 0xDF:
+                        seq_len = 2
+                    elif 0xE0 <= key <= 0xEF:
+                        seq_len = 3
+                    elif 0xF0 <= key <= 0xF7:
+                        seq_len = 4
+                    else:
+                        seq_len = 3  # fallback for CJK
+                    
+                    while len(byte_seq) < seq_len:
+                        next_key = stdscr.getch()
+                        if next_key == -1:
+                            break
+                        byte_seq += bytes([next_key])
+                    
+                    try:
+                        char = byte_seq.decode('utf-8')
+                        search_text += char
+                        filtered = [s for s in sessions if _match(s, search_text)]
+                        cursor = 0
+                        scroll_offset = 0
+                    except UnicodeDecodeError:
+                        pass
                 elif 32 <= key <= 126:
-                    # Printable character → add to search filter
+                    # Printable ASCII character → add to search filter
                     search_text += chr(key)
                     filtered = [s for s in sessions if _match(s, search_text)]
                     cursor = 0
@@ -13544,7 +13571,8 @@ Examples:
             source = getattr(args, "source", None)
             _browse_exclude = None if source else ["tool"]
             sessions = db.list_sessions_rich(
-                source=source, exclude_sources=_browse_exclude, limit=limit
+                source=source, exclude_sources=_browse_exclude, limit=limit,
+                order_by_last_active=True
             )
             db.close()
             if not sessions:

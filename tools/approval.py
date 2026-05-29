@@ -119,6 +119,20 @@ def _is_gateway_approval_context() -> bool:
         return True
     return bool(_get_session_platform())
 
+
+def _is_gateway_hosted_runtime_context() -> bool:
+    """True when command execution is running inside the gateway daemon.
+
+    This is broader than ``_is_gateway_approval_context()``: cron jobs clear
+    ``HERMES_SESSION_PLATFORM`` on purpose so they do not ask absent users for
+    approval, but they still execute inside the long-lived gateway process.
+    Commands that manipulate the gateway service itself can therefore kill the
+    daemon from both user sessions and cron jobs.
+    """
+    if env_var_enabled("HERMES_CRON_SESSION"):
+        return True
+    return _is_gateway_approval_context()
+
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME.
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
@@ -250,6 +264,108 @@ HARDLINE_PATTERNS_COMPILED = [
 _SUDO_STDIN_RE = re.compile(
     r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b',
     re.IGNORECASE)
+
+
+# Gateway self-management commands are safe from a normal terminal, but are a
+# self-kill footgun when launched by an agent turn that is itself hosted by the
+# gateway daemon.  The real incident this protects: a Discord-origin turn
+# spawned ``sleep 30; hermes gateway start`` in the background after finishing a
+# Hermes update.  ``gateway start`` refreshed the launchd service and sent
+# SIGTERM to the running gateway, but because the service definition was stale
+# the daemon did not come back.  Treat these as a hard runtime guard (not a
+# normal approval prompt) while the caller is gateway-hosted.
+_GATEWAY_SELF_MUTATION_PATTERNS = [
+    (
+        # hermes gateway start|stop|restart|install|uninstall|run, including
+        # absolute venv-bin paths and wrapper commands handled by _CMDPOS.
+        _CMDPOS + r'(?:\S*/)?hermes\s+gateway\s+'
+        r'(?:start|stop|restart|install|uninstall|run)\b',
+        "Hermes gateway service self-management from inside a gateway-hosted session",
+    ),
+    (
+        # python -m hermes_cli.main gateway run --replace / start / restart …
+        _CMDPOS + r'(?:\S*/)?python(?:3(?:\.\d+)?)?\s+(?:-[^\s]+\s+)*-m\s+'
+        r'hermes_cli\.main\s+gateway\s+'
+        r'(?:start|stop|restart|install|uninstall|run)\b',
+        "Hermes gateway module self-management from inside a gateway-hosted session",
+    ),
+    (
+        # execute_code / Python subprocess list form:
+        # subprocess.run(['hermes', 'gateway', 'restart'])
+        r'["\'](?:\S*/)?hermes["\']\s*,\s*["\']gateway["\']\s*,\s*'
+        r'["\'](?:start|stop|restart|install|uninstall|run)["\']',
+        "Hermes gateway subprocess self-management from inside a gateway-hosted session",
+    ),
+    (
+        # execute_code / Python shell-string form:
+        # os.system('hermes gateway restart')
+        r'["\'](?:\S*/)?hermes\s+gateway\s+'
+        r'(?:start|stop|restart|install|uninstall|run)\b',
+        "Hermes gateway shell-string self-management from inside a gateway-hosted session",
+    ),
+    (
+        # launchd service refresh/bootout/kickstart against the Hermes gateway.
+        r'\blaunchctl\s+(?:bootout|bootstrap|kickstart|enable|disable|unload|load)\b'
+        r'[^\n;]*(?:ai\.hermes\.gateway|hermes.*gateway)',
+        "launchd mutation of the Hermes gateway service from inside the gateway",
+    ),
+    (
+        # Linux service-manager equivalents.
+        r'\bsystemctl\b[^\n;]*\b(?:stop|restart|reload|disable|mask)\b'
+        r'[^\n;]*(?:hermes-gateway|ai\.hermes\.gateway|hermes.*gateway)',
+        "systemd mutation of the Hermes gateway service from inside the gateway",
+    ),
+    (
+        # Direct process-targeting by name.  Generic kill <pid> is handled by
+        # normal dangerous-command approval; these name-based variants reveal
+        # intent to kill the gateway specifically.
+        r'\b(?:pkill|killall)\b[^\n;]*(?:hermes.*gateway|gateway.*hermes|ai\.hermes\.gateway)',
+        "directly killing Hermes gateway processes from inside the gateway",
+    ),
+    (
+        # Updating Hermes from inside the gateway can replace code/service
+        # files out from under the process and often ends by restarting the
+        # gateway.  Do it from CLI or through the gateway's explicit update
+        # command path, not from an agent-issued terminal subprocess.
+        _CMDPOS + r'(?:\S*/)?hermes\s+update\b',
+        "Hermes self-update from inside a gateway-hosted session",
+    ),
+]
+_GATEWAY_SELF_MUTATION_PATTERNS_COMPILED = [
+    (re.compile(pattern, _RE_FLAGS), description)
+    for pattern, description in _GATEWAY_SELF_MUTATION_PATTERNS
+]
+
+
+def _check_gateway_self_mutation_guard(command: str) -> tuple:
+    """Block commands that can kill/restart the hosting gateway daemon."""
+    if not _is_gateway_hosted_runtime_context():
+        return (False, None)
+    normalized = _normalize_command_for_detection(command).lower()
+    for pattern_re, description in _GATEWAY_SELF_MUTATION_PATTERNS_COMPILED:
+        if pattern_re.search(normalized):
+            return (True, description)
+    return (False, None)
+
+
+def _gateway_self_mutation_block_result(description: str) -> dict:
+    return {
+        "approved": False,
+        "hardline": True,
+        "message": (
+            f"BLOCKED (gateway self-protection): {description}. "
+            "This command is running from inside the Hermes gateway daemon and "
+            "could terminate the messaging gateway before the user sees the "
+            "result. Do not retry through terminal/execute_code/background "
+            "processes. Use the gateway's explicit /restart or /update command "
+            "path, or run the service-management command from a separate local "
+            "CLI/SSH terminal after reporting the plan."
+        ),
+        "pattern_key": "gateway_self_mutation",
+        "description": description,
+        "outcome": "blocked",
+        "user_consent": False,
+    }
 
 
 def _check_sudo_stdin_guard(command: str) -> tuple:
@@ -1191,6 +1307,12 @@ def check_all_command_guards(command: str, env_type: str,
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
 
+    is_gateway_self_mutation, gateway_self_mutation_desc = _check_gateway_self_mutation_guard(command)
+    if is_gateway_self_mutation:
+        logger.warning("Gateway self-protection block: %s (command: %s)",
+                       gateway_self_mutation_desc, command[:200])
+        return _gateway_self_mutation_block_result(gateway_self_mutation_desc)
+
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
@@ -1481,6 +1603,13 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     # in check_all_command_guards / check_dangerous_command.
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
         return {"approved": True, "message": None}
+
+    # Gateway-hosted hardline self-protection applies before yolo/mode=off.
+    is_gateway_self_mutation, gateway_self_mutation_desc = _check_gateway_self_mutation_guard(code)
+    if is_gateway_self_mutation:
+        logger.warning("Gateway self-protection block in execute_code: %s",
+                       gateway_self_mutation_desc)
+        return _gateway_self_mutation_block_result(gateway_self_mutation_desc)
 
     # --yolo or approvals.mode=off: bypass (session- or process-scoped).
     approval_mode = _get_approval_mode()

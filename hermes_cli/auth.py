@@ -4043,6 +4043,54 @@ def _sync_codex_profile_legacy_aliases(
             )
 
 
+def _remove_codex_linked_legacy_aliases(refresh_token: Optional[str]) -> None:
+    """Remove manual aliases that still reference a canonical token family."""
+    if not isinstance(refresh_token, str) or not refresh_token:
+        return
+
+    def _remove_from_store(auth_store: Dict[str, Any]) -> bool:
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return False
+        entries = pool.get("openai-codex")
+        if not isinstance(entries, list):
+            return False
+        filtered = [
+            entry for entry in entries
+            if not (
+                isinstance(entry, dict)
+                and entry.get("source") == "manual:device_code"
+                and entry.get("refresh_token") == refresh_token
+            )
+        ]
+        if len(filtered) == len(entries):
+            return False
+        pool["openai-codex"] = filtered
+        return True
+
+    with _codex_auth_store_lock():
+        auth_file = _codex_auth_file_path()
+        profiles_dir = auth_file.parent / "profiles"
+        if profiles_dir.is_dir():
+            for profile_dir in sorted(profiles_dir.iterdir()):
+                profile_auth_file = profile_dir / "auth.json"
+                if not profile_dir.is_dir() or not profile_auth_file.exists():
+                    continue
+                with _file_lock(
+                    profile_auth_file.with_suffix(".lock"),
+                    threading.local(),
+                    AUTH_LOCK_TIMEOUT_SECONDS,
+                    f"Timed out waiting for Codex profile auth lock: {profile_auth_file}",
+                ):
+                    auth_store = _load_auth_store(profile_auth_file)
+                    if _remove_from_store(auth_store):
+                        _save_auth_store(auth_store, auth_file=profile_auth_file)
+
+        auth_store = _load_auth_store(auth_file)
+        if _remove_from_store(auth_store):
+            _save_auth_store(auth_store, auth_file=auth_file)
+
+
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
     """Save Codex OAuth tokens to Hermes's canonical auth store."""
     if last_refresh is None:

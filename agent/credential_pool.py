@@ -1672,21 +1672,39 @@ class CredentialPool:
         if index < 1 or index > len(self._entries):
             return None
         removed = self._entries.pop(index - 1)
+        remove_codex_family = (
+            self.provider == "openai-codex"
+            and removed.source == "device_code"
+        )
+        removed_entry_ids = {removed.id}
+        if remove_codex_family and removed.refresh_token:
+            retained_entries = []
+            for entry in self._entries:
+                if (
+                    entry.source == "manual:device_code"
+                    and entry.refresh_token == removed.refresh_token
+                ):
+                    removed_entry_ids.add(entry.id)
+                    continue
+                retained_entries.append(entry)
+            self._entries = retained_entries
         self._entries = [
             replace(entry, priority=new_priority)
             for new_priority, entry in enumerate(self._entries)
         ]
-        self._persist(
-            replace_shared_entries=(
-                self.provider == "openai-codex" and removed.source == "device_code"
-            ),
-            remove_entry_ids={removed.id},
-            update_order_entry_ids={entry.id for entry in self._entries},
-            clear_shared_provider_state=(
-                self.provider == "openai-codex" and removed.source == "device_code"
-            ),
-        )
-        if self._current_id == removed.id:
+        persist_kwargs = {
+            "replace_shared_entries": remove_codex_family,
+            "remove_entry_ids": removed_entry_ids,
+            "update_order_entry_ids": {entry.id for entry in self._entries},
+            "clear_shared_provider_state": remove_codex_family,
+        }
+        if remove_codex_family:
+            with auth_mod._codex_auth_store_lock():
+                auth_mod._remove_codex_linked_legacy_aliases(removed.refresh_token)
+                self._persist(**persist_kwargs)
+        else:
+            self._persist(**persist_kwargs)
+        if self._current_id in removed_entry_ids:
             self._current_id = None
         return removed
 

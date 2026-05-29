@@ -1179,6 +1179,96 @@ def test_auth_remove_codex_device_code_clears_canonical_root_in_profile_mode(tmp
     assert exc.value.code == "codex_auth_missing"
 
 
+def test_auth_remove_codex_device_code_clears_linked_aliases_in_all_profiles(
+    tmp_path, monkeypatch,
+):
+    """Shared removal deletes legacy aliases but preserves independent rows."""
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    sibling_home = root_home / "profiles" / "sibling"
+    profile_home.mkdir(parents=True)
+    sibling_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, {"device_code"}),
+    )
+    (root_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "shared-at",
+                    "refresh_token": "shared-rt",
+                },
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "shared-codex",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "shared-at",
+                "refresh_token": "shared-rt",
+            }, {
+                "id": "root-linked",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "root-stale-at",
+                "refresh_token": "shared-rt",
+            }, {
+                "id": "root-independent",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "root-independent-at",
+                "refresh_token": "root-independent-rt",
+            }],
+        },
+    }))
+    for profile, prefix in ((profile_home, "profile"), (sibling_home, "sibling")):
+        (profile / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [{
+                    "id": f"{prefix}-linked",
+                    "source": "manual:device_code",
+                    "auth_type": "oauth",
+                    "access_token": f"{prefix}-stale-at",
+                    "refresh_token": "shared-rt",
+                }, {
+                    "id": f"{prefix}-independent",
+                    "source": "manual:device_code",
+                    "auth_type": "oauth",
+                    "access_token": f"{prefix}-independent-at",
+                    "refresh_token": f"{prefix}-independent-rt",
+                }],
+            },
+        }))
+
+    from types import SimpleNamespace
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="openai-codex", target="shared-codex"))
+
+    root_payload = json.loads((root_home / "auth.json").read_text())
+    assert "openai-codex" not in root_payload.get("providers", {})
+    assert [
+        entry["id"] for entry in root_payload["credential_pool"]["openai-codex"]
+    ] == ["root-independent"]
+    profile_payload = json.loads((profile_home / "auth.json").read_text())
+    assert [
+        entry["id"] for entry in profile_payload["credential_pool"]["openai-codex"]
+    ] == ["profile-independent"]
+    sibling_payload = json.loads((sibling_home / "auth.json").read_text())
+    assert [
+        entry["id"] for entry in sibling_payload["credential_pool"]["openai-codex"]
+    ] == ["sibling-independent"]
+    assert [entry.id for entry in load_pool("openai-codex").entries()] == [
+        "profile-independent",
+    ]
+
+
 def test_auth_remove_codex_device_code_clears_legacy_profile_provider_state(
     tmp_path, monkeypatch,
 ):

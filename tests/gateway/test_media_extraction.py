@@ -5,6 +5,10 @@ Verifies that MEDIA tags (e.g., from TTS tool) are only extracted from
 messages in the CURRENT turn, not from the full conversation history.
 This prevents voice messages from accumulating and being sent multiple
 times per reply. (Regression test for #160)
+
+Also covers #34608: a stale MEDIA: path emitted by an execute_code /
+make_image tool several turns earlier must not leak onto a later
+text-only reply, even when the path-based dedup set fails to capture it.
 """
 
 import pytest
@@ -40,6 +44,37 @@ def extract_media_tags_fixed(result_messages, history_len):
                 if "[[audio_as_voice]]" in content:
                     has_voice_directive = True
     
+    return media_tags, has_voice_directive
+
+
+def extract_media_tags_production(result_messages, history_len, history_media_paths):
+    """Mirror of the production scan in gateway/run.py after the #34608 fix.
+
+    Primary guard: scope the scan to the current turn via ``history_len``
+    slicing (matching how ``agent_history`` is passed as
+    ``conversation_history`` into ``run_conversation``). Secondary guard:
+    path-based dedup against ``history_media_paths`` (the #160 compression-safe
+    fallback, also used when compression shrinks the list below history_len).
+    """
+    media_tags = []
+    has_voice_directive = False
+
+    if len(result_messages) >= history_len and history_len:
+        scan_msgs = result_messages[history_len:]
+    else:
+        scan_msgs = result_messages
+
+    for msg in scan_msgs:
+        if msg.get("role") == "tool" or msg.get("role") == "function":
+            content = msg.get("content", "")
+            if "MEDIA:" in content:
+                for match in re.finditer(r'MEDIA:(\S+)', content):
+                    path = match.group(1).strip().rstrip('",}')
+                    if path and path not in history_media_paths:
+                        media_tags.append(f"MEDIA:{path}")
+                if "[[audio_as_voice]]" in content:
+                    has_voice_directive = True
+
     return media_tags, has_voice_directive
 
 
@@ -178,6 +213,105 @@ class TestMediaExtraction:
         seen = set()
         unique = [t for t in tags if t not in seen and not seen.add(t)]
         assert len(unique) == 2  # After dedup: same.ogg and different.ogg
+
+
+class TestStaleToolMediaLeak:
+    """Regression tests for #34608.
+
+    A MEDIA: path emitted by an execute_code / make_image tool several turns
+    earlier remains in the full conversation message list. A later text-only
+    reply (zero MEDIA directives) must NOT attach that stale image.
+
+    The production code previously relied solely on path-based dedup against
+    paths reconstructed from the replayable transcript. When that
+    reconstruction does not byte-match the in-memory tool content (timestamp
+    stripping, observed-context withholding, compression rewrites), the stale
+    path is absent from the dedup set and leaks. Turn-scoped slicing closes
+    this class of bug deterministically.
+    """
+
+    def test_stale_execute_code_media_not_attached_to_text_only_reply(self):
+        """The exact #34608 scenario: make_image cover from an earlier turn."""
+        # Prior turn generated an image via execute_code stdout.
+        history = [
+            {"role": "user", "content": "Make a cover image"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "1", "function": {"name": "execute_code"}}]},
+            {"role": "tool", "tool_call_id": "1",
+             "content": "Generating cover...\nMEDIA:/tmp/seosmi_cover.png\nDone."},
+            {"role": "assistant", "content": "Here is your cover."},
+        ]
+        # Current turn: plain text status update, zero MEDIA directives.
+        new_messages = [
+            {"role": "user", "content": "What skill version am I on?"},
+            {"role": "assistant", "content": "You're on v0.15.1."},
+        ]
+        all_messages = history + new_messages
+        history_len = len(history)
+
+        # Simulate the dedup set FAILING to capture the stale path (the real
+        # #34608 condition: replayable-history reconstruction diverged from
+        # the in-memory tool content, so the path is not in the set).
+        history_media_paths = set()
+
+        tags, voice = extract_media_tags_production(
+            all_messages, history_len, history_media_paths
+        )
+        assert tags == [], (
+            "Stale tool MEDIA from a prior turn must not leak onto a "
+            f"later text-only reply, got {tags}"
+        )
+        assert voice is False
+
+        # The pre-fix production behaviour (scan everything, dedup only) would
+        # have leaked the stale path when the dedup set missed it.
+        broken_tags, _ = extract_media_tags_broken(all_messages)
+        assert any("seosmi_cover.png" in t for t in broken_tags), (
+            "Sanity: the unscoped scan does surface the stale path"
+        )
+
+    def test_current_turn_media_still_attached_when_dedup_set_empty(self):
+        """Turn-scoping must not suppress genuinely new media."""
+        history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        new_messages = [
+            {"role": "user", "content": "Make me a cover image"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "9", "function": {"name": "execute_code"}}]},
+            {"role": "tool", "tool_call_id": "9",
+             "content": "MEDIA:/tmp/fresh_cover.png"},
+            {"role": "assistant", "content": "Here it is."},
+        ]
+        all_messages = history + new_messages
+        tags, _ = extract_media_tags_production(
+            all_messages, len(history), set()
+        )
+        assert len(tags) == 1 and "fresh_cover.png" in tags[0]
+
+    def test_compression_shrink_falls_back_to_path_dedup(self):
+        """When the list is shorter than history_len (mid-run compression),
+        fall back to scanning everything with path-based dedup so the #160
+        compression-safe guarantee is preserved."""
+        # Post-compression list is shorter than the original history length.
+        compressed_messages = [
+            {"role": "user", "content": "summary so far..."},
+            {"role": "tool", "tool_call_id": "7",
+             "content": "MEDIA:/tmp/old_from_history.png"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        original_history_len = 12  # larger than the compressed list
+        # The old path IS captured in the dedup set here (history scan ran
+        # before compression), so it must still be excluded.
+        history_media_paths = {"/tmp/old_from_history.png"}
+        tags, _ = extract_media_tags_production(
+            compressed_messages, original_history_len, history_media_paths
+        )
+        assert tags == [], (
+            "On the compression fallback path, path-dedup must still exclude "
+            f"known-old media, got {tags}"
+        )
 
 
 if __name__ == "__main__":

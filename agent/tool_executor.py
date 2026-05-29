@@ -73,6 +73,18 @@ def _tool_search_scoped_names(agent) -> frozenset:
     set: the deferrable subset of the session's own enabled/disabled toolset
     scope.
 
+    Provider-injected tools (memory providers such as ``fact_store`` /
+    ``fact_feedback``, and context-engine tools such as ``lcm_grep``) live
+    outside ``tools.registry`` — they are appended straight onto
+    ``agent.tools`` in ``agent_init`` and dispatched via the memory manager /
+    context compressor, not the registry.  ``scoped_deferrable_names`` only
+    sees registry-backed tools, so without an explicit union these granted
+    tools are wrongly treated as out-of-scope and a model that reaches them
+    through the ``tool_call`` bridge gets "'<tool>' is not available in this
+    session".  This is provider-dependent: only models/providers routed
+    through Tool Search assembly use the bridge, which is why memory tools
+    appear to vanish after switching to such a provider (issue #34520).
+
     Result is cached on the agent and refreshed when the tool registry's
     generation changes (e.g. an MCP server reconnects), so the common case is
     a dict lookup, not a full tool-defs rebuild on every tool call.
@@ -86,10 +98,33 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
+
+    # Provider-injected tools granted to this session but invisible to the
+    # registry-based scope computation.  Memory tools are resolved via the
+    # manager's own membership check (same source of truth the dispatcher
+    # uses); context-engine tools are tracked in a dedicated set at init.
+    #
+    # The memory-name union mirrors the injection gate in ``agent_init`` so
+    # the bridge path can't reintroduce the #5544 leak: tools are only in
+    # scope when they were actually injected (``enabled_toolsets`` is None,
+    # or names "memory").  ``_context_engine_tool_names`` is already only
+    # populated when its own gate passed, so it is safe to union directly.
+    _provider_names: set = set()
+    _mem_mgr = getattr(agent, "_memory_manager", None)
+    if _mem_mgr is not None and (enabled is None or "memory" in enabled):
+        try:
+            _provider_names.update(_mem_mgr.get_all_tool_names())
+        except Exception:
+            pass
+    _ce_names = getattr(agent, "_context_engine_tool_names", None)
+    if _ce_names:
+        _provider_names.update(_ce_names)
+
     cache_key = (
         getattr(_registry, "_generation", 0),
         frozenset(enabled) if enabled is not None else None,
         frozenset(disabled) if disabled is not None else None,
+        frozenset(_provider_names),
     )
     cached = getattr(agent, "_tool_search_scope_cache", None)
     if cached is not None and cached[0] == cache_key:
@@ -104,6 +139,8 @@ def _tool_search_scoped_names(agent) -> frozenset:
         names = _ts.scoped_deferrable_names(scoped_defs)
     except Exception:
         names = frozenset()
+    if _provider_names:
+        names = frozenset(names | _provider_names)
     try:
         agent._tool_search_scope_cache = (cache_key, names)
     except Exception:

@@ -536,3 +536,113 @@ class TestRegression_ToolsetScoping:
         # core tools are never deferrable
         assert "terminal" not in names
 
+
+
+class TestRegression_ProviderToolsBridgeScope:
+    """Issue #34520: provider-injected tools (memory, context engine) must be
+    invokable through the tool_call bridge.
+
+    fact_store / fact_feedback (holographic memory) and lcm_* (context
+    engine) tools are appended directly onto ``agent.tools`` in agent_init
+    and dispatched via the memory manager / context compressor — they are
+    never registered in ``tools.registry``. ``_tool_search_scoped_names``
+    derives its scope from the registry alone, so before the fix these
+    granted tools were treated as out-of-scope: a model that reached
+    fact_store through the tool_call bridge (the path used by providers
+    routed through Tool Search assembly) got "'fact_store' is not available
+    in this session". Switching to such a provider made memory tools
+    silently vanish.
+
+    The fix unions the agent's provider-injected tool names into the scope,
+    while mirroring the agent_init injection gate (memory tools only when
+    enabled_toolsets is None or names "memory") so the #5544 leak is not
+    reintroduced through the bridge path.
+    """
+
+    @staticmethod
+    def _fake_agent(*, memory_tools=None, ce_tools=None, enabled_toolsets=None,
+                    disabled_toolsets=None):
+        from types import SimpleNamespace
+
+        mem_mgr = None
+        if memory_tools is not None:
+            mem_mgr = SimpleNamespace(
+                get_all_tool_names=lambda: set(memory_tools),
+            )
+        return SimpleNamespace(
+            _memory_manager=mem_mgr,
+            _context_engine_tool_names=set(ce_tools or set()),
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            _tool_search_scope_cache=None,
+        )
+
+    def test_memory_tools_in_scope_when_unfiltered(self):
+        from agent.tool_executor import _tool_search_scoped_names
+
+        agent = self._fake_agent(memory_tools={"fact_store", "fact_feedback"})
+        names = _tool_search_scoped_names(agent)
+        assert "fact_store" in names
+        assert "fact_feedback" in names
+
+    def test_memory_tools_in_scope_when_memory_enabled(self):
+        from agent.tool_executor import _tool_search_scoped_names
+
+        agent = self._fake_agent(
+            memory_tools={"fact_store"},
+            enabled_toolsets=["terminal", "memory", "web"],
+        )
+        assert "fact_store" in _tool_search_scoped_names(agent)
+
+    def test_memory_tools_excluded_when_memory_not_enabled(self):
+        """#5544 guard: bridge scope must not leak memory tools the session
+        did not opt into (mirrors the agent_init injection gate)."""
+        from agent.tool_executor import _tool_search_scoped_names
+
+        agent = self._fake_agent(
+            memory_tools={"fact_store"},
+            enabled_toolsets=["terminal", "web"],
+        )
+        assert "fact_store" not in _tool_search_scoped_names(agent)
+
+    def test_memory_tools_excluded_when_toolsets_empty(self):
+        from agent.tool_executor import _tool_search_scoped_names
+
+        agent = self._fake_agent(memory_tools={"fact_store"}, enabled_toolsets=[])
+        assert "fact_store" not in _tool_search_scoped_names(agent)
+
+    def test_context_engine_tools_always_in_scope(self):
+        """_context_engine_tool_names is only populated when its own gate
+        passed, so it is unioned unconditionally."""
+        from agent.tool_executor import _tool_search_scoped_names
+
+        agent = self._fake_agent(
+            ce_tools={"lcm_grep", "lcm_describe"},
+            enabled_toolsets=["terminal"],
+        )
+        names = _tool_search_scoped_names(agent)
+        assert "lcm_grep" in names
+        assert "lcm_describe" in names
+
+    def test_no_provider_tools_is_noop(self):
+        from agent.tool_executor import _tool_search_scoped_names
+
+        agent = self._fake_agent()
+        names = _tool_search_scoped_names(agent)
+        assert "fact_store" not in names
+
+    def test_cache_key_separates_provider_scopes(self):
+        """A cached scope for one provider set must not be served to a
+        session with a different provider set."""
+        from agent.tool_executor import _tool_search_scoped_names
+
+        agent = self._fake_agent(memory_tools={"fact_store"})
+        first = _tool_search_scoped_names(agent)
+        assert "fact_store" in first
+
+        # Same agent object, but the memory manager now exposes a new tool.
+        agent._memory_manager.get_all_tool_names = lambda: {"fact_store", "fact_feedback"}
+        second = _tool_search_scoped_names(agent)
+        assert "fact_feedback" in second, (
+            "stale cache served after provider tool set changed"
+        )

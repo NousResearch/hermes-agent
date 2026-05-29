@@ -256,3 +256,189 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+# ── tool_repetition guardrail tests ──────────────────────────────────────────
+
+
+def test_default_tool_repetition_config_values():
+    cfg = ToolCallGuardrailConfig()
+
+    assert cfg.tool_repetition_warn_after == 5
+    assert cfg.tool_repetition_block_after == 8
+
+
+def test_config_parses_tool_repetition_thresholds_from_nested_sections():
+    cfg = ToolCallGuardrailConfig.from_mapping(
+        {
+            "warn_after": {"tool_repetition": 3},
+            "hard_stop_after": {"tool_repetition": 6},
+        }
+    )
+
+    assert cfg.tool_repetition_warn_after == 3
+    assert cfg.tool_repetition_block_after == 6
+
+
+def test_config_parses_tool_repetition_thresholds_from_flat_keys():
+    """top-level flat keys (legacy compat) still work."""
+    cfg = ToolCallGuardrailConfig.from_mapping(
+        {
+            "tool_repetition_warn_after": 4,
+            "tool_repetition_block_after": 7,
+        }
+    )
+
+    assert cfg.tool_repetition_warn_after == 4
+    assert cfg.tool_repetition_block_after == 7
+
+
+def test_warns_on_repeated_identical_mutating_tool_call_without_hard_stop():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(tool_repetition_warn_after=2, tool_repetition_block_after=8)
+    )
+    args = {"command": "ls"}
+
+    decision = None
+    # 4 identical calls; warning threshold at 2, no hard stop
+    for i in range(4):
+        assert controller.before_call("terminal", args).action == "allow"
+        decision = controller.after_call("terminal", args, '{"exit_code":0}', failed=False)
+
+    assert decision is not None
+    assert decision.action == "warn"
+    assert decision.code == "tool_repetition_warning"
+    assert decision.count == 4
+    assert controller.halt_decision is None
+    assert controller.before_call("terminal", args).action == "allow"
+
+
+def test_hard_stop_blocks_repeated_identical_mutating_tool_call_before_next():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            tool_repetition_warn_after=2,
+            tool_repetition_block_after=3,
+        )
+    )
+    args = {"command": "false"}
+
+    decision = None
+    # 2 identical "successful" calls — count=2 triggers warn (not block yet at 3)
+    for i in range(2):
+        assert controller.before_call("terminal", args).action == "allow"
+        decision = controller.after_call("terminal", args, '{"exit_code":0}', failed=False)
+
+    assert decision is not None
+    assert decision.action == "warn"
+    assert decision.code == "tool_repetition_warning"
+
+    # Third attempt: after_call count=3 triggers block
+    assert controller.before_call("terminal", args).action == "allow"
+    blocked = controller.after_call("terminal", args, '{"exit_code":0}', failed=False)
+    assert blocked.action == "block"
+    assert blocked.code == "tool_repetition_block"
+    assert blocked.count == 3
+
+    # Fourth attempt blocked BEFORE execution
+    fourth = controller.before_call("terminal", args)
+    assert fourth.action == "block"
+
+
+def test_different_args_create_different_signatures_so_repetition_independent():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            tool_repetition_warn_after=2,
+        )
+    )
+
+    # Call A with args {command: "cmd-a"} 3× → should warn
+    for _ in range(2):
+        controller.before_call("terminal", {"command": "cmd-a"})
+        controller.after_call("terminal", {"command": "cmd-a"}, "ok", failed=False)
+    decision_a = controller.after_call("terminal", {"command": "cmd-a"}, "ok", failed=False)
+    assert decision_a.code == "tool_repetition_warning"
+
+    # Call B with different args — fresh counter
+    assert controller.before_call("terminal", {"command": "cmd-b"}).action == "allow"
+    decision_b = controller.after_call("terminal", {"command": "cmd-b"}, "ok", failed=False)
+    assert decision_b.action == "allow"
+
+
+def test_single_success_between_repeated_calls_resets_repetition_counter():
+    """A different tool call breaks the repetition streak for THAT signature."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(tool_repetition_warn_after=2)
+    )
+
+    # 2 identical calls → should warn
+    controller.after_call("terminal", {"command": "ls"}, "ok", failed=False)
+    warn = controller.after_call("terminal", {"command": "ls"}, "ok", failed=False)
+    assert warn.code == "tool_repetition_warning"
+
+    # A completely different tool call does NOT reset — repetition is per-signature
+    controller.after_call("read_file", {"path": "/tmp/x"}, "contents", failed=False)
+
+    # Same terminal("ls") signature already at count 2 — still triggers
+    decision = controller.after_call("terminal", {"command": "ls"}, "ok", failed=False)
+    assert decision.code == "tool_repetition_warning"
+    assert decision.count == 3
+
+
+def test_tool_repetition_warns_for_mutating_tools_including_browser_navigate():
+    """browser_navigate is a mutating tool; repeated identical calls should warn."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(tool_repetition_warn_after=2)
+    )
+
+    decision = None
+    for _ in range(3):
+        controller.before_call("browser_navigate", {"url": "https://example.com/404"})
+        decision = controller.after_call(
+            "browser_navigate",
+            {"url": "https://example.com/404"},
+            "Page loaded: 404 Not Found",
+            failed=False,
+        )
+
+    assert decision is not None
+    assert decision.code == "tool_repetition_warning"
+    assert "browser_navigate" in decision.message
+
+
+def test_reset_for_turn_clears_tool_repetition_state():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            tool_repetition_block_after=2,
+        )
+    )
+
+    controller.after_call("terminal", {"command": "ls"}, "ok", failed=False)
+    controller.after_call("terminal", {"command": "ls"}, "ok", failed=False)
+
+    assert controller.before_call("terminal", {"command": "ls"}).action == "block"
+
+    controller.reset_for_turn()
+
+    assert controller.before_call("terminal", {"command": "ls"}).action == "allow"
+
+
+def test_failed_call_does_not_count_toward_tool_repetition():
+    """Failed calls should be handled by failure guardrails, not repetition."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            tool_repetition_warn_after=2,
+            exact_failure_warn_after=2,
+        )
+    )
+
+    # Two failed calls — triggers failure warning, NOT repetition
+    controller.after_call("terminal", {"command": "bad"}, '{"exit_code":1}', failed=True)
+    decision = controller.after_call("terminal", {"command": "bad"}, '{"exit_code":1}', failed=True)
+    assert decision.code == "repeated_exact_failure_warning"
+
+    # Repetition counter for this signature should be ZERO (failures don't count)
+    assert controller._tool_repetition_counts.get(
+        ToolCallSignature.from_call("terminal", {"command": "bad"}), 0
+    ) == 0

@@ -77,6 +77,8 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    tool_repetition_warn_after: int = 5
+    tool_repetition_block_after: int = 8
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -120,6 +122,14 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            tool_repetition_warn_after=_positive_int(
+                warn_after.get("tool_repetition", data.get("tool_repetition_warn_after")),
+                defaults.tool_repetition_warn_after,
+            ),
+            tool_repetition_block_after=_positive_int(
+                hard_stop_after.get("tool_repetition", data.get("tool_repetition_block_after")),
+                defaults.tool_repetition_block_after,
             ),
         )
 
@@ -232,6 +242,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._tool_repetition_counts: dict[ToolCallSignature, int] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -255,6 +266,23 @@ class ToolCallGuardrailController:
                 ),
                 tool_name=tool_name,
                 count=exact_count,
+                signature=signature,
+            )
+            self._halt_decision = decision
+            return decision
+
+        repetition = self._tool_repetition_counts.get(signature, 0)
+        if repetition >= self.config.tool_repetition_block_after:
+            decision = ToolGuardrailDecision(
+                action="block",
+                code="tool_repetition_block",
+                message=(
+                    f"Blocked {tool_name}: the exact same call (tool + args) was made "
+                    f"{repetition} times this turn without progress. Stop repeating it "
+                    "unchanged; change strategy or explain the blocker."
+                ),
+                tool_name=tool_name,
+                count=repetition,
                 signature=signature,
             )
             self._halt_decision = decision
@@ -346,6 +374,58 @@ class ToolCallGuardrailController:
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+
+        repetition = self._tool_repetition_counts.get(signature, 0) + 1
+        self._tool_repetition_counts[signature] = repetition
+
+        if self.config.warnings_enabled and repetition >= self.config.tool_repetition_warn_after:
+            decision = ToolGuardrailDecision(
+                action="warn",
+                code="tool_repetition_warning",
+                message=(
+                    f"{tool_name} has been called with identical arguments "
+                    f"{repetition} times this turn. This looks like a loop; "
+                    "inspect the result and change strategy instead of repeating "
+                    "it unchanged."
+                ),
+                tool_name=tool_name,
+                count=repetition,
+                signature=signature,
+            )
+            if (
+                self.config.hard_stop_enabled
+                and repetition >= self.config.tool_repetition_block_after
+            ):
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="tool_repetition_block",
+                    message=(
+                        f"Blocked {tool_name}: the exact same call (tool + args) was made "
+                        f"{repetition} times this turn without progress. Stop repeating it "
+                        "unchanged; change strategy or explain the blocker."
+                    ),
+                    tool_name=tool_name,
+                    count=repetition,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+            return decision
+
+        if self.config.hard_stop_enabled and repetition >= self.config.tool_repetition_block_after:
+            decision = ToolGuardrailDecision(
+                action="block",
+                code="tool_repetition_block",
+                message=(
+                    f"Blocked {tool_name}: the exact same call (tool + args) was made "
+                    f"{repetition} times this turn without progress. Stop repeating it "
+                    "unchanged; change strategy or explain the blocker."
+                ),
+                tool_name=tool_name,
+                count=repetition,
+                signature=signature,
+            )
+            self._halt_decision = decision
+            return decision
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)

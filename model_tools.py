@@ -20,6 +20,7 @@ Public API (signatures preserved from the original 2,400-line version):
     check_tool_availability(quiet) -> tuple
 """
 
+import copy
 import os
 import json
 import re
@@ -261,6 +262,105 @@ def _clear_tool_defs_cache() -> None:
     _tool_defs_cache.clear()
 
 
+def _current_tool_platform() -> str:
+    """Best-effort platform hint for platform-specific schema slimming."""
+    try:
+        from gateway.session_context import get_session_env
+        return (
+            os.environ.get("HERMES_PLATFORM")
+            or get_session_env("HERMES_SESSION_PLATFORM")
+            or ""
+        ).lower()
+    except Exception:
+        return (os.environ.get("HERMES_PLATFORM") or "").lower()
+
+
+def _get_tool_schema_mode() -> str:
+    """Return full|compact|minimal for tool schemas sent to the model."""
+    mode = "full"
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        prompt_cfg = cfg.get("prompt_overhead", {}) if isinstance(cfg, dict) else {}
+        tools_cfg = cfg.get("tools", {}) if isinstance(cfg, dict) else {}
+        platform = _current_tool_platform()
+        platform_modes = prompt_cfg.get("platform_tool_schema_mode") or {}
+        if platform and isinstance(platform_modes, dict) and platform_modes.get(platform):
+            mode = str(platform_modes.get(platform))
+        elif prompt_cfg.get("tool_schema_mode"):
+            mode = str(prompt_cfg.get("tool_schema_mode"))
+        elif tools_cfg.get("schema_mode"):
+            mode = str(tools_cfg.get("schema_mode"))
+    except Exception as exc:
+        logger.debug("Could not read tool schema mode: %s", exc)
+    mode = mode.lower().strip()
+    return mode if mode in {"full", "compact", "minimal"} else "full"
+
+
+def _shorten_schema_text(text: str, max_chars: int) -> str:
+    """Shorten verbose schema prose while preserving the leading instruction."""
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not cleaned or len(cleaned) <= max_chars:
+        return cleaned
+    first_sentence = re.split(r"(?<=[.!?。！？])\s+", cleaned, maxsplit=1)[0].strip()
+    if 12 <= len(first_sentence) <= max_chars:
+        return first_sentence
+    cut = cleaned[: max_chars + 1]
+    boundary = max(cut.rfind(";"), cut.rfind(","), cut.rfind(" — "), cut.rfind(" - "), cut.rfind(" "))
+    if boundary >= max_chars // 2:
+        cut = cut[:boundary]
+    else:
+        cut = cleaned[:max_chars]
+    return cut.rstrip(" ,;:-—") + "…"
+
+
+def _compact_schema_node(node: Any, mode: str, *, function_level: bool = False) -> Any:
+    """Recursively compact JSON-schema descriptions without changing shape."""
+    if isinstance(node, list):
+        return [_compact_schema_node(item, mode) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    result = {}
+    for key, value in node.items():
+        if key == "description" and isinstance(value, str):
+            if function_level:
+                result[key] = _shorten_schema_text(value, 120 if mode == "compact" else 72)
+            elif mode == "compact":
+                result[key] = _shorten_schema_text(value, 56)
+            else:
+                # Minimal mode keeps function descriptions but drops parameter prose.
+                continue
+        elif key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
+            result[key] = {
+                str(k): _compact_schema_node(v, mode)
+                for k, v in value.items()
+            }
+        else:
+            result[key] = _compact_schema_node(value, mode)
+    return result
+
+
+def _compact_tool_definitions(tool_defs: List[Dict[str, Any]], mode: str) -> List[Dict[str, Any]]:
+    """Return compact copies of OpenAI-format tool definitions."""
+    if mode == "full":
+        return tool_defs
+    compacted: List[Dict[str, Any]] = []
+    for tool_def in tool_defs:
+        cloned = copy.deepcopy(tool_def)
+        fn = cloned.get("function") if isinstance(cloned, dict) else None
+        if isinstance(fn, dict):
+            if isinstance(fn.get("description"), str):
+                fn["description"] = _shorten_schema_text(
+                    fn["description"], 120 if mode == "compact" else 72
+                )
+            params = fn.get("parameters")
+            if isinstance(params, dict):
+                fn["parameters"] = _compact_schema_node(params, mode)
+        compacted.append(cloned)
+    return compacted
+
+
 def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
@@ -301,6 +401,8 @@ def get_tool_definitions(
             registry._generation,
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
+            _current_tool_platform(),
+            _get_tool_schema_mode(),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -480,6 +582,8 @@ def _compute_tool_definitions(
         filtered_tools = sanitize_tool_schemas(filtered_tools)
     except Exception as e:  # pragma: no cover — defensive
         logger.warning("Schema sanitization skipped: %s", e)
+
+    filtered_tools = _compact_tool_definitions(filtered_tools, _get_tool_schema_mode())
 
     return filtered_tools
 

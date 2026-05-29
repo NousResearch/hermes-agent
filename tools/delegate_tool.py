@@ -1735,6 +1735,25 @@ def _run_single_child(
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
+        try:
+            from agent.uswarm_helpers import build_child_run_sidecar, is_uswarm_child_sidecar_enabled
+            from hermes_cli.config import load_config as _load_full_config
+
+            if is_uswarm_child_sidecar_enabled(_load_full_config() or {}):
+                entry["child_run_sidecar"] = build_child_run_sidecar(
+                    task_id=str(parent_task_id or ""),
+                    child_id=str(child_task_id),
+                    status=status,
+                    goal=goal,
+                    summary=summary or None,
+                    error=entry.get("error"),
+                    allowed_tools=getattr(child, "valid_tool_names", []) or [],
+                    blocked_tools=sorted(DELEGATE_BLOCKED_TOOLS),
+                    metadata={"api_calls": api_calls, "duration_seconds": duration},
+                )
+        except Exception:
+            logger.debug("uSwarm child-run sidecar generation failed", exc_info=True)
+
         # Cross-agent file-state reminder.  If this subagent wrote any
         # files the parent had already read, surface it so the parent
         # knows to re-read before editing — the scenario that motivated

@@ -1296,11 +1296,30 @@ class ShellFileOperations(FileOperations):
             if block:
                 lsp_diagnostics = block
 
+        rewrite_warning: Optional[str] = None
+        try:
+            if pre_content is not None:
+                from agent.uswarm_helpers import evaluate_rewrite_smell, is_uswarm_rewrite_smell_enabled
+                from hermes_cli.config import load_config as _load_full_config
+
+                if is_uswarm_rewrite_smell_enabled(_load_full_config() or {}):
+                    decision = evaluate_rewrite_smell(
+                        path,
+                        pre_content,
+                        content,
+                        patch_tool_available=True,
+                    )
+                    if decision.get("smell"):
+                        rewrite_warning = f"{decision.get('smell_id')}: {decision.get('reason')}"
+        except Exception:
+            rewrite_warning = None
+
         return WriteResult(
             bytes_written=bytes_written,
             dirs_created=dirs_created,
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
+            warning=rewrite_warning,
         )
     
     # =========================================================================

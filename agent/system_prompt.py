@@ -414,6 +414,48 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts.append(timestamp_line)
     _record_block(id="volatile.timestamp", content=timestamp_line, surface="environment", tier="volatile", authority=925, scope="session", origin="hermes_time.now/date + agent metadata", trust="trusted", cache_policy="turn", labels={"environment"})
 
+    try:
+        from agent.uswarm_helpers import build_context_pack, is_uswarm_context_pack_enabled
+        from hermes_cli.config import load_config as _load_config
+
+        _cfg = _load_config() or {}
+        if is_uswarm_context_pack_enabled(_cfg):
+            _context_cfg = (_cfg.get("uswarm_helpers", {}).get("context_pack", {}) or {})
+            _pack = build_context_pack(
+                (
+                    {
+                        "id": getattr(block, "id", f"block-{idx}"),
+                        "kind": getattr(block, "surface", "instruction"),
+                        "path": getattr(block, "path", None) or getattr(block, "origin", None) or getattr(block, "id", f"block-{idx}"),
+                        "content": getattr(block, "content", ""),
+                        "metadata": {
+                            "tier": getattr(block, "tier", None),
+                            "authority": getattr(block, "authority", None),
+                            "scope": getattr(block, "scope", None),
+                            "origin": getattr(block, "origin", None),
+                        },
+                    }
+                    for idx, block in enumerate(instruction_blocks)
+                ),
+                token_budget=int(_context_cfg.get("token_budget", 4000)),
+                allowed_base=str(_context_cfg.get("allowed_base") or os.getcwd()),
+            )
+            _pack_text = "uSwarm context pack (experimental):\n" + json.dumps(_pack, ensure_ascii=False, sort_keys=True)
+            _record_block(
+                id="experimental.uswarm_context_pack",
+                content=_pack_text,
+                surface="derived_context",
+                tier="context",
+                authority=300,
+                scope="session",
+                origin="agent.uswarm_helpers.build_context_pack",
+                trust="derived",
+                cache_policy="session",
+                labels={"experimental", "context-pack"},
+            )
+    except Exception:
+        pass
+
     resolved = resolve_instruction_blocks(instruction_blocks)
     agent._instruction_surface_manifest = resolved.manifest
     agent._instruction_surface_conflicts = resolved.conflicts

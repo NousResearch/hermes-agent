@@ -1244,10 +1244,7 @@ def _read_nous_auth() -> Optional[dict]:
 
 def _nous_api_key(provider: dict) -> str:
     """Extract a usable Nous inference JWT from stored auth state."""
-    try:
-        from hermes_cli.auth import _nous_invoke_jwt_is_usable
-    except Exception:
-        _nous_invoke_jwt_is_usable = None
+    from hermes_cli.auth import _nous_invoke_jwt_is_usable
 
     for token_key, expiry_key in (
         ("agent_key", "agent_key_expires_at"),
@@ -1255,10 +1252,6 @@ def _nous_api_key(provider: dict) -> str:
     ):
         token = provider.get(token_key)
         if not isinstance(token, str) or not token.strip():
-            continue
-        if _nous_invoke_jwt_is_usable is None:
-            if token.count(".") == 2:
-                return token
             continue
         if _nous_invoke_jwt_is_usable(
             token,

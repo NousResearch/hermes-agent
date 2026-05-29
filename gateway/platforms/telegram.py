@@ -4251,9 +4251,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # 3) Convert markdown links – escape the display text; inside the URL
         #    only ')' and '\' need escaping per the MarkdownV2 spec.
+        #    Reject dangerous URL schemes (javascript:, data:, vbscript:, etc.)
+        _SAFE_LINK_SCHEMES = {"http", "https", "mailto", "tel", "ftp"}
+
         def _convert_link(m):
             display = _escape_mdv2(m.group(1))
-            url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
+            url = m.group(2).strip()
+            # Block dangerous schemes
+            scheme = url.split(":", 1)[0].lower() if ":" in url else ""
+            if scheme and scheme not in _SAFE_LINK_SCHEMES:
+                return _ph(f"{display}")
+            url = url.replace('\\', '\\\\').replace(')', '\\)')
             return _ph(f'[{display}]({url})')
 
         text = re.sub(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)', _convert_link, text)

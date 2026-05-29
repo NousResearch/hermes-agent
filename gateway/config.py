@@ -876,7 +876,7 @@ def load_gateway_config() -> GatewayConfig:
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
                 if enabled_was_explicit:
                     plat_data["enabled"] = platform_cfg["enabled"]
-                if plat == Platform.SLACK and enabled_was_explicit:
+                if enabled_was_explicit:
                     extra["_enabled_explicit"] = True
                 extra.update(bridged)
 
@@ -1823,6 +1823,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 continue
             platform = Platform(entry.name)
             existing_cfg = config.platforms.get(platform)
+            if (
+                existing_cfg is not None
+                and existing_cfg.extra.get("_enabled_explicit")
+                and not existing_cfg.enabled
+            ):
+                # Respect explicit config.yaml `enabled: false` for plugin-owned
+                # platforms.  Without this guard, the registry pass can
+                # re-enable an intentionally disabled platform just because its
+                # plugin dependency check succeeds (for example Discord with no
+                # bot token configured), causing pointless gateway retries.
+                existing_cfg.extra.pop("_enabled_explicit", None)
+                continue
             # Seed candidate extras from ``env_enablement_fn`` so plugins
             # whose ``is_connected`` reads ``config.extra`` (e.g. Google
             # Chat's ``_is_connected`` checks ``config.extra["project_id"]``)

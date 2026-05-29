@@ -31,11 +31,6 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
-
-# Sentinel value used by the runtime provider system for providers that are
-# not natively known (named custom providers, third-party aggregators, etc.).
-# Must match hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
-_RUNTIME_PROVIDER_CUSTOM = "custom"
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
@@ -884,6 +879,8 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Per-call reasoning effort override (beats config, beats parent)
+    override_reasoning_effort: Optional[str] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1057,24 +1054,42 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: per-call override > delegation config > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
-    try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
-            from hermes_constants import parse_reasoning_effort
 
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is not None:
-                child_reasoning = parsed
-            else:
-                logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
-                )
-    except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+    # Priority 1: per-call reasoning_effort (beats config and parent)
+    if override_reasoning_effort:
+        from hermes_constants import parse_reasoning_effort
+
+        parsed = parse_reasoning_effort(override_reasoning_effort)
+        if parsed is not None:
+            child_reasoning = parsed
+        else:
+            logger.warning(
+                "Unknown per-call reasoning_effort '%s', falling back to config",
+                override_reasoning_effort,
+            )
+            # Fall through to config check below
+            override_reasoning_effort = None
+
+    # Priority 2: delegation config (only if no valid per-call override)
+    if not override_reasoning_effort:
+        try:
+            delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+            if delegation_effort:
+                from hermes_constants import parse_reasoning_effort
+
+                parsed = parse_reasoning_effort(delegation_effort)
+                if parsed is not None:
+                    child_reasoning = parsed
+                else:
+                    logger.warning(
+                        "Unknown delegation.reasoning_effort '%s', inheriting parent level",
+                        delegation_effort,
+                    )
+        except Exception as exc:
+            logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
@@ -1306,7 +1321,7 @@ def _dump_subagent_timeout_diagnostic(
         _w("")
 
         _w("## Notes")
-        _w("  This file is written ONLY when a subagent times out with 0 API calls.")
+        _w("  This file is written for ALL subagent timeouts (not just 0-API-call).")
         _w("  0-API-call timeouts mean the child never reached its first LLM request.")
         _w("  Common causes: oversized prompt rejected by provider, transport hang,")
         _w("  credential resolution stuck. See issue #14726 for context.")
@@ -1409,12 +1424,33 @@ def _run_single_child(
                 if _stale_count[0] >= stale_limit:
                     logger.warning(
                         "Subagent %d appears stale (no progress for %d "
-                        "heartbeat cycles, tool=%s) — stopping heartbeat",
+                        "heartbeat cycles, tool=%s) — force-closing child HTTP clients",
                         task_index,
                         _stale_count[0],
                         child_tool or "<none>",
                     )
-                    break  # stop touching parent, let gateway timeout fire
+                    # Hard-kill the child immediately instead of passively
+                    # waiting for the gateway timeout (~1800s).  A stuck
+                    # socket read won't check the interrupt flag, so force-
+                    # close the HTTP client(s) that own the socket.
+                    try:
+                        if hasattr(child, "interrupt"):
+                            child.interrupt()
+                        elif hasattr(child, "_interrupt_requested"):
+                            child._interrupt_requested = True
+                    except Exception:
+                        pass
+                    if hasattr(child, "_close_openai_client"):
+                        try:
+                            child._close_openai_client()
+                        except Exception:
+                            pass
+                    if hasattr(child, "_anthropic_client"):
+                        try:
+                            child._anthropic_client.close()
+                        except Exception:
+                            pass
+                    break
 
                 if child_tool:
                     desc = (
@@ -1436,6 +1472,7 @@ def _run_single_child(
                 pass
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+    _heartbeat_thread.start()
 
     # Register the live agent in the module-level registry so the TUI can
     # target it by subagent_id (kill, pause, status queries).  Unregistered
@@ -1466,7 +1503,6 @@ def _run_single_child(
         )
 
     try:
-        _heartbeat_thread.start()
         if child_progress_cb:
             try:
                 child_progress_cb("subagent.start", preview=goal)
@@ -1522,6 +1558,21 @@ def _run_single_child(
             except Exception:
                 pass
 
+            # Force-close the child's HTTP client(s) to unblock any blocking
+            # socket read so the worker thread can exit.  The interrupt flag
+            # above is cooperative; a stuck socket read never returns to the
+            # event loop that checks it.
+            if hasattr(child, "_close_openai_client"):
+                try:
+                    child._close_openai_client()
+                except Exception:
+                    pass
+            if hasattr(child, "_anthropic_client"):
+                try:
+                    child._anthropic_client.close()
+                except Exception:
+                    pass
+
             is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
             duration = round(time.monotonic() - child_start, 2)
             logger.warning(
@@ -1531,17 +1582,23 @@ def _run_single_child(
                 duration,
             )
 
-            # When a subagent times out BEFORE making any API call, dump a
-            # diagnostic to help users (and us) see what the child was doing.
-            # See #14726 — without this, 0-API-call hangs are black boxes.
+            # When a subagent times out, dump a diagnostic to help users
+            # (and us) see what the child was doing.  This applies to ALL
+            # subagent timeouts; previously diagnostics were only written
+            # when no API calls completed.
+            # See #14726 — 0-API-call hangs are black boxes without it.
             diagnostic_path: Optional[str] = None
             child_api_calls = 0
+            _cur_tool: Optional[str] = None
+            _last_desc: str = ""
             try:
                 _summary = child.get_activity_summary()
                 child_api_calls = int(_summary.get("api_call_count", 0) or 0)
+                _cur_tool = _summary.get("current_tool")
+                _last_desc = _summary.get("last_activity_desc", "")
             except Exception:
                 pass
-            if is_timeout and child_api_calls == 0:
+            if is_timeout:
                 diagnostic_path = _dump_subagent_timeout_diagnostic(
                     child=child,
                     task_index=task_index,
@@ -1552,7 +1609,7 @@ def _run_single_child(
                 )
                 if diagnostic_path:
                     logger.warning(
-                        "Subagent %d 0-API-call timeout — diagnostic written to %s",
+                        "Subagent %d timed out — diagnostic written to %s",
                         task_index,
                         diagnostic_path,
                     )
@@ -1581,14 +1638,19 @@ def _run_single_child(
                         f"first LLM request (prompt construction, credential "
                         f"resolution, or transport may be stuck)."
                     )
-                    if diagnostic_path:
-                        _err += f" Diagnostic: {diagnostic_path}"
                 else:
                     _err = (
                         f"Subagent timed out after {child_timeout}s with "
-                        f"{child_api_calls} API call(s) completed — likely "
-                        f"stuck on a slow API call or unresponsive network request."
+                        f"{child_api_calls} API call(s) completed"
+                        f" — likely stuck on a slow API call or unresponsive network request"
                     )
+                    # Surface which tool/activity the child was in when it froze
+                    if _cur_tool:
+                        _err += f" (tool={_cur_tool})"
+                    elif _last_desc:
+                        _err += f" (activity={_last_desc})"
+                if diagnostic_path:
+                    _err += f" Diagnostic: {diagnostic_path}"
             else:
                 _err = str(_timeout_exc)
 
@@ -1654,7 +1716,7 @@ def _run_single_child(
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
                     content = msg.get("content", "")
-                    is_error = _looks_like_error_output(content)
+                    is_error = bool(content and "error" in content[:80].lower())
                     result_meta = {
                         "result_bytes": len(content),
                         "status": "error" if is_error else "ok",
@@ -1841,13 +1903,9 @@ def _run_single_child(
 
     finally:
         # Stop the heartbeat thread so it doesn't keep touching parent activity
-        # after the child has finished (or failed).  Guard the join: .start()
-        # now lives inside the try block, so if it raised (OS thread
-        # exhaustion) the thread was never started and Thread.join() would
-        # raise RuntimeError.  ident is None until start() succeeds.
+        # after the child has finished (or failed).
         _heartbeat_stop.set()
-        if _heartbeat_thread.ident is not None:
-            _heartbeat_thread.join(timeout=5)
+        _heartbeat_thread.join(timeout=5)
 
         # Drop the TUI-facing registry entry.  Safe to call even if the
         # child was never registered (e.g. ID missing on test doubles).
@@ -1923,6 +1981,9 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     role: Optional[str] = None,
     parent_agent=None,
 ) -> str:
@@ -1992,8 +2053,10 @@ def delegate_task(
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
+    # Top-level provider/model/reasoning_effort args are passed as per-call
+    # overrides so they become the batch-wide defaults (per-task can beat them).
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
+        creds = _resolve_delegation_credentials(cfg, parent_agent, call_provider=provider, call_model=model, call_reasoning_effort=reasoning_effort)
     except ValueError as exc:
         return tool_error(str(exc))
 
@@ -2058,27 +2121,46 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
+            # Per-task provider/model/reasoning beats top-level beats config.
+            task_provider = t.get("provider") or provider
+            task_model = t.get("model") or model
+            task_reasoning = t.get("reasoning_effort") or reasoning_effort
+
+            # Resolve credentials PER TASK so heterogeneous batches work:
+            # task[0] on ollama-cloud, task[1] on openrouter, etc.
+            if task_provider or task_model or task_reasoning:
+                task_creds = _resolve_delegation_credentials(
+                    cfg, parent_agent,
+                    call_provider=task_provider,
+                    call_model=task_model,
+                    call_reasoning_effort=task_reasoning,
+                )
+            else:
+                task_creds = creds  # No per-task override — use batch-default creds
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds.get("model"),
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds.get("provider"),
+                override_base_url=task_creds.get("base_url"),
+                override_api_key=task_creds.get("api_key"),
+                override_api_mode=task_creds.get("api_mode"),
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
+                override_reasoning_effort=task_creds.get("reasoning_effort"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2098,7 +2180,12 @@ def delegate_task(
         completed_count = 0
         spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-        with ThreadPoolExecutor(max_workers=max_children) as executor:
+        # Hard wall-clock deadline for the whole batch so stuck children
+        # cannot outlive the overall timeout budget.
+        _batch_start = time.monotonic()
+        _batch_deadline = _batch_start + _get_child_timeout()
+        executor = ThreadPoolExecutor(max_workers=max_children)
+        try:
             futures = {}
             for i, t, child in children:
                 future = executor.submit(
@@ -2121,10 +2208,12 @@ def delegate_task(
 
             pending = set(futures.keys())
             while pending:
-                if getattr(parent_agent, "_interrupt_requested", False) is True:
-                    # Parent interrupted — collect whatever finished and
-                    # abandon the rest.  Children already received the
-                    # interrupt signal; we just can't wait forever.
+                _interrupted = getattr(parent_agent, "_interrupt_requested", False) is True
+                _deadline_exceeded = time.monotonic() >= _batch_deadline
+                if _interrupted or _deadline_exceeded:
+                    # Parent interrupted or batch deadline exceeded —
+                    # collect whatever finished and abandon the rest.
+                    reason = "interrupted" if _interrupted else "timeout"
                     for f in pending:
                         idx = futures[f]
                         if f.done():
@@ -2145,9 +2234,13 @@ def delegate_task(
                         else:
                             entry = {
                                 "task_index": idx,
-                                "status": "interrupted",
+                                "status": reason,
                                 "summary": None,
-                                "error": "Parent agent interrupted — child did not finish in time",
+                                "error": (
+                                    "Parent agent interrupted — child did not finish in time"
+                                    if _interrupted
+                                    else f"Batch deadline exceeded — child did not finish in time"
+                                ),
                                 "api_calls": 0,
                                 "duration_seconds": 0,
                                 "_child_role": getattr(
@@ -2156,6 +2249,29 @@ def delegate_task(
                             }
                         results.append(entry)
                         completed_count += 1
+                        # Force-close stuck children that didn't finish — a
+                        # cooperative interrupt flag won't unblock a blocking
+                        # socket read, so tear down the HTTP client(s).
+                        if not f.done():
+                            _c = _child_by_index.get(idx)
+                            if _c is not None:
+                                try:
+                                    if hasattr(_c, "interrupt"):
+                                        _c.interrupt()
+                                    elif hasattr(_c, "_interrupt_requested"):
+                                        _c._interrupt_requested = True
+                                except Exception:
+                                    pass
+                                if hasattr(_c, "_close_openai_client"):
+                                    try:
+                                        _c._close_openai_client()
+                                    except Exception:
+                                        pass
+                                if hasattr(_c, "_anthropic_client"):
+                                    try:
+                                        _c._anthropic_client.close()
+                                    except Exception:
+                                        pass
                     break
 
                 from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
@@ -2208,6 +2324,11 @@ def delegate_task(
                             )
                         except Exception as e:
                             logger.debug("Spinner update_text failed: %s", e)
+
+        finally:
+            # Don't wait — if a child thread is stuck on blocking I/O,
+            # shutdown(wait=True) will deadlock forever.
+            executor.shutdown(wait=False)
 
         # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])
@@ -2342,53 +2463,52 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+def _resolve_delegation_credentials(
+    cfg: dict,
+    parent_agent,
+    call_provider: Optional[str] = None,
+    call_model: Optional[str] = None,
+    call_reasoning_effort: Optional[str] = None,
+) -> dict:
     """Resolve credentials for subagent delegation.
 
-    If ``delegation.base_url`` is configured, subagents use that direct
-    OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
-    omitted, ``api_key`` is returned as ``None`` so ``_build_child_agent``
-    inherits the parent agent's key (``effective_api_key = override_api_key or
-    parent_api_key``). This lets providers that store their key outside
-    ``OPENAI_API_KEY`` (e.g. ``MINIMAX_API_KEY``, ``DASHSCOPE_API_KEY``) work
-    without a duplicate config entry.
+    Resolution order (strict priority):
+      1. per-call arg (call_provider / call_model / call_reasoning_effort)
+      2. delegation.* config from config.yaml
+      3. parent inherit
 
-    Otherwise, if ``delegation.provider`` is configured, the full credential
-    bundle (base_url, api_key, api_mode, provider) is resolved via the runtime
-    provider system — the same path used by CLI/gateway startup. This lets
-    subagents run on a completely different provider:model pair.
+    Provider-only override fix (CRITICAL):
+    When provider is overridden WITHOUT model, the child MUST NOT inherit
+    the parent's model (which likely doesn't exist on the new provider).
+    Instead, the runtime provider's default model is used.
 
-    If neither base_url nor provider is configured, returns None values so the
-    child inherits everything from the parent agent.
-
+    Returns dict with keys: model, provider, base_url, api_key, api_mode,
+    reasoning_effort, command, args.
     Raises ValueError with a user-friendly message on credential failure.
     """
     configured_model = str(cfg.get("model") or "").strip() or None
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
-    configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
+    # Normalize per-call provider: lowercase, handle "same" keyword
+    _call_prov = call_provider.lower().strip() if call_provider else None
+    if _call_prov == "same":
+        _call_prov = None  # "same" means keep parent provider
+        logger.debug("_resolve_delegation_credentials: provider='same' -> inheriting parent provider")
+
+    # Priority: per-call > configured > None
+    active_provider = _call_prov or configured_provider
+    model_value = call_model or configured_model  # per-call model > configured model
+    reasoning_value = call_reasoning_effort  # per-call only; config handled in _build_child_agent
+
+    # ── Direct endpoint path ──
     if configured_base_url:
-        # When delegation.api_key is not set, return None so _build_child_agent
-        # falls back to the parent agent's API key via the credential inheritance
-        # path (effective_api_key = override_api_key or parent_api_key). This
-        # lets providers that store their key in a non-OPENAI_API_KEY env var
-        # (e.g. MINIMAX_API_KEY, DASHSCOPE_API_KEY) work without requiring
-        # callers to duplicate the key under delegation.api_key.
-        api_key = configured_api_key  # None → inherited from parent in _build_child_agent
-
-        # Use the shared URL-based api_mode detector (same path the main agent's
-        # runtime resolver uses) so Anthropic-compatible direct endpoints with a
-        # /anthropic suffix — Azure AI Foundry, MiniMax, Zhipu GLM, LiteLLM
-        # proxies — pick the right transport automatically. Without this,
-        # subagents would default to chat_completions and hit 404s on endpoints
-        # that only speak the Anthropic Messages protocol. Fixes #10213.
-        from hermes_cli.runtime_provider import _detect_api_mode_for_url
+        api_key = configured_api_key  # None → inherited from parent
 
         base_lower = configured_base_url.lower()
         provider = "custom"
-        api_mode = _detect_api_mode_for_url(configured_base_url) or "chat_completions"
+        api_mode = "chat_completions"
         if (
             base_url_hostname(configured_base_url) == "chatgpt.com"
             and "/backend-api/codex" in base_lower
@@ -2402,55 +2522,131 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             provider = "custom"
             api_mode = "anthropic_messages"
 
-        # Explicit delegation.api_mode in config always wins. Lets users force
-        # a transport for non-standard endpoints the URL heuristic can't detect.
-        if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
-            api_mode = configured_api_mode
-
         return {
-            "model": configured_model,
+            "model": model_value,
             "provider": provider,
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "reasoning_effort": reasoning_value,
+            "command": None,
+            "args": [],
         }
 
-    if not configured_provider:
-        # No provider override — child inherits everything from parent
+    # ── No provider override — return model override only (if any) ──
+    if not active_provider:
         return {
-            "model": configured_model,
+            "model": model_value,
             "provider": None,
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+            "reasoning_effort": reasoning_value,
+            "command": None,
+            "args": [],
         }
 
-    # Provider is configured — resolve full credentials
+    # ── Provider override — resolve full credentials ──
+    # NEW: Auto-discover model if provider-only override (call_model not specified)
+    if call_provider and not call_model:
+        try:
+            import asyncio
+            from agent.model_registry import ModelRegistry
+            from pathlib import Path
+            
+            registry = ModelRegistry(Path.home() / ".hermes" / "model_cache")
+            
+            # Get full provider config for discovery
+            from hermes_cli.config import load_config
+            full_cfg = load_config()
+            provider_cfg = full_cfg.get("providers", {}).get(active_provider, {})
+            
+            # Attempt discovery (non-blocking via run_in_executor)
+            loop = asyncio.get_event_loop() if asyncio._get_running_loop() else None
+            if loop:
+                # Async context: use gather
+                models_coro = registry.discover_provider(
+                    active_provider,
+                    provider_cfg,
+                    {"api_key": os.environ.get(f"{active_provider.upper()}_API_KEY", "")},
+                )
+                models = asyncio.run(models_coro)
+            else:
+                # Sync context: run async in thread pool
+                import concurrent.futures
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    models = loop.run_until_complete(
+                        registry.discover_provider(
+                            active_provider,
+                            provider_cfg,
+                            {"api_key": os.environ.get(f"{active_provider.upper()}_API_KEY", "")},
+                        )
+                    )
+                finally:
+                    loop.close()
+            
+            if models:
+                model_value = models[0].id
+                logger.info(f"Auto-discovered model {model_value} for provider {active_provider}")
+        except Exception as e:
+            logger.debug(f"Auto-discovery failed for {active_provider}: {e} (falling back to config default)")
+    
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        runtime = resolve_runtime_provider(requested=configured_provider, target_model=configured_model)
+        runtime = resolve_runtime_provider(requested=active_provider, target_model=model_value)
     except Exception as exc:
         raise ValueError(
-            f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
+            f"Cannot resolve delegation provider '{active_provider}': {exc}. "
             f"Check that the provider is configured (API key set, valid provider name), "
-            f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
-            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+            f"or set delegation.base_url/delegation.api_key for a direct endpoint."
         ) from exc
 
     api_key = runtime.get("api_key", "")
     if not api_key:
         raise ValueError(
-            f"Delegation provider '{configured_provider}' resolved but has no API key. "
+            f"Delegation provider '{active_provider}' resolved but has no API key. "
             f"Set the appropriate environment variable or run 'hermes auth'."
         )
 
+    # Model priority for resolved provider:
+    #   per-call > configured > provider default (from runtime) > provider config default > parent fallback (with WARN)
+    resolved_model = model_value or runtime.get("model") or None
+    if not resolved_model:
+        # Try config.yaml providers.<provider>.default_model before falling back to parent
+        try:
+            from hermes_cli.config import load_config
+            _pcfg = load_config().get("providers", {}).get(active_provider, {})
+            if isinstance(_pcfg, dict):
+                resolved_model = _pcfg.get("default_model") or None
+        except Exception:
+            pass
+    if not resolved_model:
+        resolved_model = getattr(parent_agent, "model", None)
+        if call_provider and not call_model and resolved_model:
+            logger.warning(
+                "Provider '%s' overridden without model — no default_model configured "
+                "for this provider in config.yaml. Falling back to parent model '%s'. "
+                "Set providers.%s.default_model to avoid cross-provider model mismatches.",
+                active_provider, resolved_model, active_provider,
+            )
+        elif not call_provider and not call_model and resolved_model:
+            logger.warning(
+                "No default model found for delegation provider '%s' — "
+                "falling back to parent model '%s'. This may fail if the "
+                "parent model doesn't exist on the target provider.",
+                active_provider, resolved_model,
+            )
+
     return {
-        "model": configured_model or runtime.get("model") or None,
-        "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
+        "model": resolved_model,
+        "provider": runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
+        "reasoning_effort": reasoning_value,
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }
@@ -2736,6 +2932,18 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "provider": {
+                            "type": "string",
+                            "description": "Per-task provider override. Beats top-level provider for this task only.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Per-task model override. Beats top-level model for this task only. MODEL-ONLY: keeps existing provider bundle — pass 'provider' if model belongs to a different provider.",
+                        },
+                        "reasoning_effort": {
+                            "type": "string",
+                            "description": "Per-task reasoning effort override. Beats top-level reasoning_effort for this task only.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2743,6 +2951,54 @@ DELEGATE_TASK_SCHEMA = {
                 # delegation.max_concurrent_children (default 3) and
                 # enforced with a clear error in delegate_task().
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Override provider for child agent(s). "
+                    "When set, the child uses this provider instead of inheriting "
+                    "the parent's. "
+                    "When not set, delegation.provider from config.yaml is used, "
+                    "then inherits parent provider. "
+                    "Pass 'same' to explicitly keep the parent's provider while overriding "
+                    "only the model. "
+                    "PROVIDER OVERRIDE: triggers full credential re-resolution so "
+                    "base_url/api_key/api_mode match the new provider (discards the "
+                    "original base_url/api_key belonging to the old provider). "
+                    "NOTE: provider names are dynamic — invalid names will produce a "
+                    "clear error at resolution time."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Override model for child agent(s). "
+                    "When set alongside 'provider', the child uses this model on the "
+                    "overridden provider. "
+                    "When provider is NOT set (or 'same'), overrides the model on the "
+                    "parent/configured provider. "
+                    "When neither provider nor model is set, delegation.model from config "
+                    "or parent's model is used (in that priority). "
+                    "MODEL-ONLY: keeps the existing provider's credential bundle — "
+                    "do NOT pass a model that belongs to a different provider without "
+                    "also passing 'provider'."
+                    "IMPORTANT: when provider is overridden WITHOUT model, the child uses "
+                    "the target provider's default model — NOT the parent's model."
+                ),
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "description": (
+                    "Reasoning effort level for the child agent. "
+                    "Maps complexity to compute budget: "
+                    "Easy tasks -> minimal | low, "
+                    "Medium tasks -> medium | high, "
+                    "Hard tasks -> high | xhigh. "
+                    "Valid values: none, minimal, low, medium, high, xhigh. "
+                    "When not set, delegation.reasoning_effort from config.yaml is used, "
+                    "then inherits the parent's level. "
+                    "See system prompt 'Reasoning Effort Levels' section for guidance."
+                ),
             },
             "role": {
                 "type": "string",
@@ -2792,6 +3048,9 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        provider=args.get("provider"),
+        model=args.get("model"),
+        reasoning_effort=args.get("reasoning_effort"),
         role=args.get("role"),
         parent_agent=kw.get("parent_agent"),
     ),

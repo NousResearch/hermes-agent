@@ -151,6 +151,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**antigravity-cli**](/docs/user-guide/skills/optional/productivity/productivity-antigravity-cli) | Operate the Antigravity CLI (agy): plugins, auth, sandbox. |
 | [**canvas**](/docs/user-guide/skills/optional/productivity/productivity-canvas) | Canvas LMS integration — fetch enrolled courses and assignments using API token authentication. |
 | [**here.now**](/docs/user-guide/skills/optional/productivity/productivity-here-now) | Publish static sites to &#123;slug&#125;.here.now and store private files in cloud Drives for agent-to-agent handoff. |
 | [**memento-flashcards**](/docs/user-guide/skills/optional/productivity/productivity-memento-flashcards) | Spaced-repetition flashcard system. Create cards from facts or text, chat with flashcards using free-text answers graded by the agent, generate quizzes from YouTube transcripts, review due cards with adaptive scheduling, and export/impor... |

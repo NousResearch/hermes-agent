@@ -25,6 +25,15 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def parse_utc_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def ensure_queue(queue_root: Path) -> None:
     for state in QUEUE_STATES:
         (queue_root / state).mkdir(parents=True, exist_ok=True)
@@ -68,6 +77,7 @@ def submit_job(
     inputs: Sequence[Path] = (),
     outputs: Sequence[Path] = (),
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    require_outputs: bool = False,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ensure_queue(queue_root)
@@ -88,6 +98,7 @@ def submit_job(
         "command": validate_command(command),
         "inputs": [str(path) for path in inputs],
         "outputs": [str(path) for path in outputs],
+        "require_outputs": bool(require_outputs),
     }
     if metadata:
         job.update(metadata)
@@ -127,26 +138,28 @@ def claim_job(queue_root: Path, queued_path: Path) -> tuple[Path, dict[str, Any]
     return running_path, job
 
 
-def run_once(
-    *,
-    queue_root: Path,
-    runner: Callable[..., RunResult] = default_runner,
-) -> dict[str, Any]:
+def claim_next_job(queue_root: Path) -> tuple[Path, dict[str, Any]] | None:
     ensure_queue(queue_root)
     queued_path = next_queued_job(queue_root)
     if queued_path is None:
-        return {"processed": False, "queue_root": str(queue_root)}
+        return None
+    return claim_job(queue_root, queued_path)
 
-    running_path, job = claim_job(queue_root, queued_path)
-    command = validate_command(job.get("command") or [])
-    try:
-        result = runner(
-            command,
-            cwd=job.get("cwd"),
-            timeout_seconds=int(job.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
+
+def _missing_required_outputs(job: dict[str, Any]) -> list[str]:
+    if not job.get("require_outputs"):
+        return []
+    return [path for path in job.get("outputs", []) if not Path(path).exists()]
+
+
+def finish_job(queue_root: Path, running_path: Path, job: dict[str, Any], result: RunResult) -> dict[str, Any]:
+    missing_outputs = _missing_required_outputs(job) if result.returncode == 0 else []
+    if missing_outputs:
+        result = RunResult(
+            returncode=2,
+            stdout=result.stdout,
+            stderr=(result.stderr or "") + "\nmissing expected output: " + ", ".join(missing_outputs),
         )
-    except Exception as exc:
-        result = RunResult(returncode=-1, stderr=f"{type(exc).__name__}: {exc}")
 
     finished_status = "done" if result.returncode == 0 else "failed"
     job.update(
@@ -170,15 +183,67 @@ def run_once(
     }
 
 
+def recover_stale_running_jobs(
+    *,
+    queue_root: Path,
+    max_age_seconds: int,
+    now: str | None = None,
+) -> dict[str, Any]:
+    ensure_queue(queue_root)
+    now_dt = parse_utc_timestamp(now) or datetime.now(timezone.utc)
+    recovered = 0
+    recovered_ids: list[str] = []
+    for running_path in sorted((queue_root / "running").glob("*.json")):
+        job = read_json(running_path)
+        claimed_at = parse_utc_timestamp(job.get("claimed_at"))
+        if not claimed_at:
+            continue
+        age_seconds = (now_dt - claimed_at).total_seconds()
+        if age_seconds < max_age_seconds:
+            continue
+        result = RunResult(returncode=-2, stderr=f"stale running job recovered after {int(age_seconds)} seconds")
+        finish_job(queue_root, running_path, job, result)
+        recovered += 1
+        recovered_ids.append(str(job.get("id") or running_path.stem))
+    return {"recovered": recovered, "ids": recovered_ids, "queue_root": str(queue_root)}
+
+
+def run_once(
+    *,
+    queue_root: Path,
+    runner: Callable[..., RunResult] = default_runner,
+) -> dict[str, Any]:
+    ensure_queue(queue_root)
+    claimed = claim_next_job(queue_root)
+    if claimed is None:
+        return {"processed": False, "queue_root": str(queue_root)}
+
+    running_path, job = claimed
+    command = validate_command(job.get("command") or [])
+    try:
+        result = runner(
+            command,
+            cwd=job.get("cwd"),
+            timeout_seconds=int(job.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
+        )
+    except Exception as exc:
+        result = RunResult(returncode=-1, stderr=f"{type(exc).__name__}: {exc}")
+
+    return finish_job(queue_root, running_path, job, result)
+
+
 def run_worker(
     *,
     queue_root: Path,
     poll_seconds: float = 10.0,
     max_jobs: int | None = None,
+    recover_stale_after_seconds: int | None = None,
     runner: Callable[..., RunResult] = default_runner,
 ) -> dict[str, Any]:
     processed = 0
     while max_jobs is None or processed < max_jobs:
+        if recover_stale_after_seconds is not None:
+            recover_stale_running_jobs(queue_root=queue_root, max_age_seconds=recover_stale_after_seconds)
         result = run_once(queue_root=queue_root, runner=runner)
         if result.get("processed"):
             processed += 1
@@ -211,7 +276,7 @@ def write_windows_worker_bundle(
                 "$QueueRoot = if ([System.IO.Path]::IsPathRooted($QueueRootSpec)) { $QueueRootSpec } else { Join-Path $RepoRoot $QueueRootSpec }",
                 "Set-Location $RepoRoot",
                 "while ($true) {",
-                "  & $Python $Runner worker --queue-root $QueueRoot --max-jobs 1",
+                "  & $Python $Runner worker --queue-root $QueueRoot --max-jobs 1 --recover-stale-after-seconds 7200",
                 "  Start-Sleep -Seconds 10",
                 "}",
                 "",
@@ -229,6 +294,8 @@ def write_windows_worker_bundle(
                 f"Queue root: `{queue_root}`",
                 "",
                 "Job files move through `queued`, `running`, `done`, and `failed` directories so laptop restarts leave an auditable trail.",
+                "",
+                "Jobs left in `running/` for more than two hours are marked failed on the next worker poll.",
                 "",
             ]
         ),

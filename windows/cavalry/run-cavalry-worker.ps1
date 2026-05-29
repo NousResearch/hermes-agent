@@ -7,6 +7,6 @@ $QueueRoot = Join-Path $RepoRoot 'windows/cavalry/jobs'
 Set-Location $RepoRoot
 
 while ($true) {
-  & $Python $Runner worker --queue-root $QueueRoot --max-jobs 1
+  & $Python $Runner worker --queue-root $QueueRoot --max-jobs 1 --recover-stale-after-seconds 7200
   Start-Sleep -Seconds 10
 }

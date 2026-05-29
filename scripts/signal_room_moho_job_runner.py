@@ -17,6 +17,7 @@ from signal_room_windows_job_runner import (  # noqa: E402
     DEFAULT_TIMEOUT_SECONDS,
     RunResult,
     default_runner,
+    recover_stale_running_jobs as _recover_stale_running_jobs,
     run_once as _run_once,
     run_worker as _run_worker,
     submit_job as _submit_job,
@@ -58,6 +59,7 @@ def submit_pose_export_job(
         inputs=[project],
         outputs=[output_dir],
         timeout_seconds=timeout_seconds,
+        require_outputs=True,
         metadata=metadata,
     )
 
@@ -75,9 +77,25 @@ def run_worker(
     queue_root: Path = DEFAULT_QUEUE_ROOT,
     poll_seconds: float = 10.0,
     max_jobs: int | None = None,
+    recover_stale_after_seconds: int | None = None,
     runner: Callable[..., RunResult] = default_runner,
 ) -> dict[str, Any]:
-    return _run_worker(queue_root=queue_root, poll_seconds=poll_seconds, max_jobs=max_jobs, runner=runner)
+    return _run_worker(
+        queue_root=queue_root,
+        poll_seconds=poll_seconds,
+        max_jobs=max_jobs,
+        recover_stale_after_seconds=recover_stale_after_seconds,
+        runner=runner,
+    )
+
+
+def recover_stale_running_jobs(
+    *,
+    queue_root: Path = DEFAULT_QUEUE_ROOT,
+    max_age_seconds: int,
+    now: str | None = None,
+) -> dict[str, Any]:
+    return _recover_stale_running_jobs(queue_root=queue_root, max_age_seconds=max_age_seconds, now=now)
 
 
 def write_windows_worker_bundle(
@@ -117,6 +135,11 @@ def main() -> int:
     worker.add_argument("--queue-root", type=Path, default=DEFAULT_QUEUE_ROOT)
     worker.add_argument("--poll-seconds", type=float, default=10.0)
     worker.add_argument("--max-jobs", type=int)
+    worker.add_argument("--recover-stale-after-seconds", type=int)
+
+    recover = subparsers.add_parser("recover-stale")
+    recover.add_argument("--queue-root", type=Path, default=DEFAULT_QUEUE_ROOT)
+    recover.add_argument("--max-age-seconds", required=True, type=int)
 
     bundle = subparsers.add_parser("write-worker-bundle")
     bundle.add_argument("--queue-root", type=Path, default=DEFAULT_QUEUE_ROOT)
@@ -141,7 +164,14 @@ def main() -> int:
     elif args.command_name == "run-once":
         result = run_once(queue_root=args.queue_root)
     elif args.command_name == "worker":
-        result = run_worker(queue_root=args.queue_root, poll_seconds=args.poll_seconds, max_jobs=args.max_jobs)
+        result = run_worker(
+            queue_root=args.queue_root,
+            poll_seconds=args.poll_seconds,
+            max_jobs=args.max_jobs,
+            recover_stale_after_seconds=args.recover_stale_after_seconds,
+        )
+    elif args.command_name == "recover-stale":
+        result = recover_stale_running_jobs(queue_root=args.queue_root, max_age_seconds=args.max_age_seconds)
     else:
         result = write_windows_worker_bundle(queue_root=args.queue_root, out_dir=args.out_dir)
 

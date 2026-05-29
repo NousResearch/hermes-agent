@@ -11,3 +11,5 @@ python scripts/signal_room_cavalry_job_runner.py submit --job-id fee-machine-mot
 ```
 
 The runner uses command arrays, not shell strings. Treat queued job JSON as trusted local automation input.
+
+The worker marks jobs left in `running/` for more than two hours as failed on the next poll. That keeps laptop restarts visible instead of leaving work stranded indefinitely.

@@ -11,3 +11,5 @@ python scripts/signal_room_moho_job_runner.py submit-pose-export --job-id suit-m
 ```
 
 The job manifest records pose-export metadata for the later rig acting and pose installer gates.
+
+The worker marks jobs left in `running/` for more than two hours as failed on the next poll. Moho pose exports also require the expected output directory to exist before a job can land in `done/`.

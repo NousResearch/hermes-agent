@@ -124,6 +124,63 @@ def test_run_once_records_runner_exception_as_failed_job(tmp_path: Path) -> None
     assert not (queue_root / "running" / "exception-job.json").exists()
 
 
+def test_run_once_fails_successful_job_with_missing_required_output(tmp_path: Path) -> None:
+    module = load_module()
+    queue_root = tmp_path / "windows" / "cavalry" / "jobs"
+    missing_output = tmp_path / "missing-render.mov"
+    module.submit_job(
+        queue_root=queue_root,
+        job_id="missing-output-job",
+        command=["Cavalry.exe", "--render", "scene.cav"],
+        cwd=tmp_path,
+        outputs=[missing_output],
+        require_outputs=True,
+    )
+
+    def fake_runner(command, *, cwd, timeout_seconds):
+        return module.RunResult(returncode=0, stdout="render complete", stderr="")
+
+    result = module.run_once(queue_root=queue_root, runner=fake_runner)
+
+    assert result["processed"] is True
+    assert result["status"] == "failed"
+    failed = json.loads((queue_root / "failed" / "missing-output-job.json").read_text())
+    assert failed["returncode"] == 2
+    assert "missing expected output" in failed["stderr_tail"]
+    assert str(missing_output) in failed["stderr_tail"]
+
+
+def test_recover_stale_running_jobs_marks_old_claim_failed(tmp_path: Path) -> None:
+    module = load_module()
+    queue_root = tmp_path / "windows" / "cavalry" / "jobs"
+    module.submit_job(
+        queue_root=queue_root,
+        job_id="stale-running-job",
+        command=["Cavalry.exe", "--render", "scene.cav"],
+        cwd=tmp_path,
+    )
+
+    claimed = module.claim_next_job(queue_root)
+    assert claimed is not None
+    running_path, job = claimed
+    job["claimed_at"] = "2026-05-29T00:00:00Z"
+    running_path.write_text(json.dumps(job, indent=2) + "\n")
+
+    result = module.recover_stale_running_jobs(
+        queue_root=queue_root,
+        max_age_seconds=60,
+        now="2026-05-29T00:05:00Z",
+    )
+
+    assert result["recovered"] == 1
+    failed_path = queue_root / "failed" / "stale-running-job.json"
+    assert failed_path.exists()
+    failed = json.loads(failed_path.read_text())
+    assert failed["status"] == "failed"
+    assert failed["returncode"] == -2
+    assert "stale running job recovered" in failed["stderr_tail"]
+
+
 def test_write_windows_worker_bundle_points_to_queue_root(tmp_path: Path) -> None:
     module = load_module()
     queue_root = tmp_path / "windows" / "cavalry" / "jobs"

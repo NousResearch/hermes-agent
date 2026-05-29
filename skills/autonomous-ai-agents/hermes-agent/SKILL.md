@@ -431,8 +431,8 @@ Enable/disable via `hermes tools` (interactive) or `hermes tools enable/disable 
 | `feishu_doc` | Feishu (Lark) document tools |
 | `feishu_drive` | Feishu (Lark) drive tools |
 | `yuanbao` | Yuanbao integration tools |
-| `rl` | Reinforcement learning tools (off by default) |
 | `moa` | Mixture of Agents (off by default) |
+| `x_search` | X (Twitter) search-only Grok toolset |
 
 Full enumeration lives in `toolsets.py` as the `TOOLSETS` dict; `_HERMES_CORE_TOOLS` is the default bundle most platforms inherit from.
 

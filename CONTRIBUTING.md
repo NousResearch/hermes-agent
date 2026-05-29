@@ -167,14 +167,16 @@ hermes-agent/
 │   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
 │   ├── approval.py               # Dangerous command detection + per-session approval
 │   ├── terminal_tool.py          # Terminal orchestration (sudo, env lifecycle, backends)
-│   ├── file_operations.py        # read_file, write_file, search, patch, etc.
+│   ├── file_tools.py             # read_file, write_file, search, patch, …
+│   │                              # registrations (backed by file_operations.py)
 │   ├── web_tools.py              # web_search, web_extract (Parallel/Firecrawl + Gemini summarization)
 │   ├── vision_tools.py           # Image analysis via multimodal models
 │   ├── delegate_tool.py          # Subagent spawning and parallel task execution
 │   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access
 │   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
 │   ├── cronjob_tools.py          # Scheduled task management
-│   ├── skill_tools.py            # Skill search, load, manage
+│   ├── skills_tool.py            # Agent-facing skill search / load
+│   ├── skill_manager_tool.py     # CRUD over user/in-repo SKILL.md files
 │   └── environments/             # Terminal execution backends
 │       ├── base.py                   # BaseEnvironment ABC
 │       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
@@ -183,8 +185,10 @@ hermes-agent/
 │   ├── run.py                    # GatewayRunner — platform lifecycle, message routing, cron
 │   ├── config.py                 # Platform configuration resolution
 │   ├── session.py                # Session store, context prompts, reset policies
-│   └── platforms/                # Platform adapters
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
+│   └── platforms/                # Built-in platform adapters
+│       ├── telegram.py, slack.py, matrix.py, signal.py, feishu.py, …
+│       └── (additional adapters under plugins/platforms/{discord,teams,
+│           irc,line,mattermost,google_chat,ntfy,simplex})
 │
 ├── scripts/                  # Installer and bridge scripts
 │   ├── install.sh                # Linux/macOS installer

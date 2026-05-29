@@ -1324,65 +1324,113 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     old_model = agent.model
     old_provider = agent.provider
 
-    # Clear the per-config context_length override so the new model's
-    # actual context window is resolved via get_model_context_length()
-    # instead of inheriting the stale value from the previous model.
-    agent._config_context_length = None
+    # ── Snapshot all fields the swap+rebuild can mutate ──
+    # If the rebuild raises (bad API key, network error, build_anthropic_client
+    # failure, etc.) we restore these atomically so the agent isn't left with a
+    # new model/provider name paired with the OLD client — that mismatch causes
+    # HTTP 400s like "claude-sonnet-4-6 is not supported on openai-codex" on the
+    # next turn.  Callers in cli.py / gateway/run.py / tui_gateway/server.py
+    # catch the re-raised exception and show the user a warning; without this
+    # rollback the warning is misleading because the swap partially succeeded.
+    # Use a sentinel so we can distinguish "attribute was unset" from
+    # "attribute was None" and skip the restore for genuinely-missing
+    # attributes (tests construct bare agents via __new__ without all fields).
+    _MISSING = object()
+    _snapshot = {
+        name: getattr(agent, name, _MISSING)
+        for name in (
+            "model",
+            "provider",
+            "base_url",
+            "api_mode",
+            "api_key",
+            "client",
+            "_anthropic_client",
+            "_anthropic_api_key",
+            "_anthropic_base_url",
+            "_is_anthropic_oauth",
+            "_config_context_length",
+        )
+    }
+    # _client_kwargs is a dict — snapshot a shallow copy so mutating the
+    # live dict doesn't poison the rollback target.
+    _snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
 
-    # ── Swap core runtime fields ──
-    agent.model = new_model
-    agent.provider = new_provider
-    # Use new base_url when provided; only fall back to current when the
-    # new provider genuinely has no endpoint (e.g. native SDK providers).
-    # Without this guard the old provider's URL (e.g. Ollama's localhost
-    # address) would persist silently after switching to a cloud provider
-    # that returns an empty base_url string.
-    if base_url:
-        agent.base_url = base_url
-    agent.api_mode = api_mode
-    # Invalidate transport cache — new api_mode may need a different transport
-    if hasattr(agent, "_transport_cache"):
-        agent._transport_cache.clear()
-    if api_key:
-        agent.api_key = api_key
+    try:
+        # Clear the per-config context_length override so the new model's
+        # actual context window is resolved via get_model_context_length()
+        # instead of inheriting the stale value from the previous model.
+        agent._config_context_length = None
 
-    # ── Build new client ──
-    if api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import (
-            build_anthropic_client,
-            resolve_anthropic_token,
-            _is_oauth_token,
-        )
-        # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-        # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
-        # API key — falling back would send Anthropic credentials to third-party endpoints.
-        _is_native_anthropic = new_provider == "anthropic"
-        effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
-        agent.api_key = effective_key
-        agent._anthropic_api_key = effective_key
-        agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
-        agent._anthropic_client = build_anthropic_client(
-            effective_key, agent._anthropic_base_url,
-            timeout=get_provider_request_timeout(agent.provider, agent.model),
-        )
-        agent._is_anthropic_oauth = _is_oauth_token(effective_key) if _is_native_anthropic else False
-        agent.client = None
-        agent._client_kwargs = {}
-    else:
-        effective_key = api_key or agent.api_key
-        effective_base = base_url or agent.base_url
-        agent._client_kwargs = {
-            "api_key": effective_key,
-            "base_url": effective_base,
-        }
-        _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
-        if _sm_timeout is not None:
-            agent._client_kwargs["timeout"] = _sm_timeout
-        agent.client = agent._create_openai_client(
-            dict(agent._client_kwargs),
-            reason="switch_model",
-            shared=True,
-        )
+        # ── Swap core runtime fields ──
+        agent.model = new_model
+        agent.provider = new_provider
+        # Use new base_url when provided; only fall back to current when the
+        # new provider genuinely has no endpoint (e.g. native SDK providers).
+        # Without this guard the old provider's URL (e.g. Ollama's localhost
+        # address) would persist silently after switching to a cloud provider
+        # that returns an empty base_url string.
+        if base_url:
+            agent.base_url = base_url
+        agent.api_mode = api_mode
+        # Invalidate transport cache — new api_mode may need a different transport
+        if hasattr(agent, "_transport_cache"):
+            agent._transport_cache.clear()
+        if api_key:
+            agent.api_key = api_key
+
+        # ── Build new client ──
+        if api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import (
+                build_anthropic_client,
+                resolve_anthropic_token,
+                _is_oauth_token,
+            )
+            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
+            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
+            # API key — falling back would send Anthropic credentials to third-party endpoints.
+            _is_native_anthropic = new_provider == "anthropic"
+            effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
+            agent.api_key = effective_key
+            agent._anthropic_api_key = effective_key
+            agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+            agent._anthropic_client = build_anthropic_client(
+                effective_key, agent._anthropic_base_url,
+                timeout=get_provider_request_timeout(agent.provider, agent.model),
+            )
+            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if _is_native_anthropic else False
+            agent.client = None
+            agent._client_kwargs = {}
+        else:
+            effective_key = api_key or agent.api_key
+            effective_base = base_url or agent.base_url
+            agent._client_kwargs = {
+                "api_key": effective_key,
+                "base_url": effective_base,
+            }
+            _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
+            if _sm_timeout is not None:
+                agent._client_kwargs["timeout"] = _sm_timeout
+            agent.client = agent._create_openai_client(
+                dict(agent._client_kwargs),
+                reason="switch_model",
+                shared=True,
+            )
+    except Exception:
+        # Rollback every mutated field to the pre-swap snapshot so the agent
+        # is left consistent (old model + old provider + old client) and the
+        # caller's exception handler can surface a meaningful warning.  The
+        # exception is re-raised; cli.py / gateway/run.py / tui_gateway catch
+        # it and print "Agent swap failed; change applied to next session".
+        for _name, _value in _snapshot.items():
+            if _value is _MISSING:
+                # Attribute did not exist before the swap — don't fabricate it.
+                continue
+            try:
+                setattr(agent, _name, _value)
+            except Exception:  # noqa: BLE001
+                pass
+        raise
 
     # ── Re-evaluate prompt caching ──
     agent._use_prompt_caching, agent._use_native_cache_layout = (

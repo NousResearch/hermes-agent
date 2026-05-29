@@ -56,10 +56,61 @@ def gated_app():
 # ---------------------------------------------------------------------------
 
 
-def test_gated_status_now_requires_auth(gated_app):
-    """When gate is on, /api/status is NOT public — login bootstrap uses /api/auth/providers."""
+def test_gated_status_is_public(gated_app):
+    """``/api/status`` MUST be public under the OAuth gate.
+
+    Regression guard for the wildcard-subdomain rollout: NAS
+    (``fly-provider.ts`` ``getInstanceRuntimeStatus``) hits
+    ``/api/status`` without a cookie as its sole liveness probe. A 401
+    here surfaces every healthy agent as STARTING/down in the portal
+    UI. The endpoint returns only version + gateway/auth-gate metadata
+    (no user data, no session content), so it stays in the shared
+    ``PUBLIC_API_PATHS`` allowlist under both the legacy ``_SESSION_TOKEN``
+    gate and the OAuth gate.
+
+    The body also reports the gate's shape (``auth_required``,
+    ``auth_providers``) so the SPA's StatusPage and external monitors
+    can distinguish loopback / gated / no-providers without a separate
+    round trip.
+    """
     r = gated_app.get("/api/status")
-    assert r.status_code == 401
+    assert r.status_code == 200, (
+        f"Expected 200, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["auth_required"] is True
+    assert "version" in body
+    assert "gateway_state" in body
+
+
+@pytest.mark.parametrize("path", [
+    "/api/config/defaults",
+    "/api/config/schema",
+    "/api/model/info",
+    "/api/dashboard/themes",
+    "/api/dashboard/plugins",
+])
+def test_other_public_api_paths_are_public_under_gate(gated_app, path):
+    """The remaining ``PUBLIC_API_PATHS`` entries must also bypass the
+    gate. They're documented as non-sensitive read-only endpoints that
+    the SPA pre-loads before login (themes, config schema, model
+    metadata). A 401 / 302-to-login here would block the dashboard
+    shell from rendering pre-auth.
+
+    Accept any non-auth-failure status: 200 when the route succeeds,
+    or any route-specific error (e.g. 400 / 404 / 500 from a missing
+    dependency) — but NEVER 401, and NEVER a 302 to ``/login``.
+    """
+    r = gated_app.get(path, follow_redirects=False)
+    assert r.status_code != 401, (
+        f"{path} returned 401 under the OAuth gate — should be public"
+    )
+    if r.status_code == 302:
+        location = r.headers.get("location", "")
+        assert "/login" not in location, (
+            f"{path} redirected to {location} — should be public, "
+            "not bounced to /login"
+        )
 
 
 def test_gated_html_redirects_to_login(gated_app):
@@ -98,7 +149,7 @@ def test_gated_static_asset_path_is_public(gated_app):
 # ---------------------------------------------------------------------------
 
 
-def test_full_login_round_trip_unlocks_api_status(gated_app):
+def test_full_login_round_trip_unlocks_gated_api(gated_app):
     # 1) Click "Sign in with Stub IdP" — /auth/login redirects to the stub
     #    with a PKCE cookie on the response.
     r1 = gated_app.get("/auth/login?provider=stub", follow_redirects=False)
@@ -128,11 +179,16 @@ def test_full_login_round_trip_unlocks_api_status(gated_app):
     assert any("hermes_session_at" in c for c in set_cookies)
     assert any("hermes_session_rt" in c for c in set_cookies)
 
-    # 3) /api/status now succeeds because we're authenticated.
-    r3 = gated_app.get("/api/status")
-    assert r3.status_code == 200
-    body = r3.json()
-    assert "version" in body
+    # 3) A gated API route (``/api/sessions``) now succeeds because we
+    #    have a valid session cookie. (We deliberately don't probe
+    #    ``/api/status`` here — it's in the shared PUBLIC_API_PATHS
+    #    allowlist and would 200 even without a login, so it can't
+    #    distinguish "logged in" from "gate accidentally disabled".)
+    r3 = gated_app.get("/api/sessions")
+    assert r3.status_code == 200, (
+        f"Expected 200 for /api/sessions post-login, got {r3.status_code}: "
+        f"{r3.text}"
+    )
 
 
 def test_login_unknown_provider_returns_404(gated_app):

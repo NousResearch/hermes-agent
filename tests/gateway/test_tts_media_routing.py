@@ -121,6 +121,71 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
     adapter.send_document.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_auto_tts_rebinds_gateway_session_context_for_tts_tool(tmp_path, monkeypatch):
+    """Auto-TTS runs after the message handler has returned.
+
+    The handler path may clear gateway session contextvars before the base
+    adapter calls ``text_to_speech_tool``.  The auto-TTS call must re-bind the
+    current event context so Telegram replies generate voice-compatible audio
+    instead of falling back to contextless MP3 output.
+    """
+    from gateway.session_context import (
+        _UNSET,
+        _VAR_MAP,
+        clear_session_vars,
+        get_session_env,
+        set_session_vars,
+    )
+
+    captured_context = {}
+    adapter = _MediaRoutingAdapter()
+    adapter._auto_tts_enabled_chats.add("chat-1")
+    event = _event()
+    event.message_type = MessageType.VOICE
+    session_key = build_session_key(event.source)
+    audio_file = tmp_path / "auto-tts.ogg"
+
+    async def _handler(_event):
+        tokens = set_session_vars(
+            platform="telegram",
+            chat_id=_event.source.chat_id,
+            user_id=getattr(_event.source, "user_id", "") or "",
+            session_key=session_key,
+            message_id=getattr(_event, "message_id", "") or "",
+        )
+        clear_session_vars(tokens)
+        return "spoken reply"
+
+    def _fake_tts_tool(*, text, **_kwargs):
+        captured_context["platform"] = get_session_env("HERMES_SESSION_PLATFORM", "")
+        captured_context["chat_id"] = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        captured_context["session_key"] = get_session_env("HERMES_SESSION_KEY", "")
+        captured_context["message_id"] = get_session_env("HERMES_SESSION_MESSAGE_ID", "")
+        audio_file.write_bytes(b"ogg")
+        return '{"success": true, "file_path": "' + str(audio_file) + '"}'
+
+    adapter._message_handler = AsyncMock(side_effect=_handler)
+    adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text"))
+    monkeypatch.setattr("tools.tts_tool.check_tts_requirements", lambda: True)
+    monkeypatch.setattr("tools.tts_tool.text_to_speech_tool", _fake_tts_tool)
+
+    try:
+        await adapter._process_message_background(event, session_key)
+    finally:
+        for var in _VAR_MAP.values():
+            var.set(_UNSET)
+
+    assert captured_context == {
+        "platform": "telegram",
+        "chat_id": "chat-1",
+        "session_key": session_key,
+        "message_id": "msg-1",
+    }
+    adapter.send_voice.assert_awaited_once()
+
+
 def _fake_runner(thread_meta):
     """Build a fake GatewayRunner-like object with the helper methods needed by
     _deliver_media_from_response."""

@@ -2583,12 +2583,15 @@ def test_nous_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch
 # ── OpenAI Codex OAuth cross-process sync tests ────────────────────────────
 
 def _codex_auth_store(access: str, refresh: str) -> dict:
+    from hermes_cli.auth import CODEX_REFRESH_OWNER
+
     return {
         "version": 1,
         "active_provider": "openai-codex",
         "providers": {
             "openai-codex": {
                 "auth_mode": "chatgpt",
+                "refresh_owner": CODEX_REFRESH_OWNER,
                 "tokens": {
                     "access_token": access,
                     "refresh_token": refresh,
@@ -2987,10 +2990,17 @@ def test_codex_profile_pool_flush_does_not_restore_stale_manual_entry(tmp_path, 
 
 
 def test_codex_pool_only_device_refresh_persists_canonical_state(tmp_path, monkeypatch):
-    """A restored device-code pool row can refresh even before singleton seeding."""
+    """A claimed device-code pool row can refresh before singleton seeding."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    import hermes_cli.auth as auth_mod
+
     _write_auth_store(tmp_path, {
         "version": 1,
+        "providers": {
+            "openai-codex": {
+                "refresh_owner": auth_mod.CODEX_REFRESH_OWNER,
+            },
+        },
         "credential_pool": {
             "openai-codex": [{
                 "id": "shared-codex",
@@ -3002,7 +3012,6 @@ def test_codex_pool_only_device_refresh_persists_canonical_state(tmp_path, monke
         },
     })
 
-    import hermes_cli.auth as auth_mod
     from agent.credential_pool import load_pool
 
     monkeypatch.setattr(
@@ -3027,6 +3036,41 @@ def test_codex_pool_only_device_refresh_persists_canonical_state(tmp_path, monke
     shared = auth_payload["credential_pool"]["openai-codex"][0]
     assert shared["access_token"] == "access-NEW"
     assert shared["refresh_token"] == "refresh-NEW"
+
+
+def test_codex_pool_only_unowned_device_refresh_fails_closed(tmp_path, monkeypatch):
+    """An ambiguous restored row must never submit its refresh token."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "shared-codex",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "access-OLD",
+                "refresh_token": "refresh-OLD",
+            }],
+        },
+    })
+
+    import hermes_cli.auth as auth_mod
+    from agent.credential_pool import load_pool
+
+    monkeypatch.setattr(
+        auth_mod,
+        "refresh_codex_oauth_pure",
+        lambda *_args, **_kwargs: pytest.fail("unowned token must not be spent"),
+    )
+    pool = load_pool("openai-codex")
+
+    assert pool._refresh_entry(pool.entries()[0], force=True) is None
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    state = auth_payload["providers"]["openai-codex"]
+    assert state["last_auth_error"]["code"] == "codex_auth_refresh_owner_unclaimed"
+    assert state["tokens"] == {}
+    assert auth_payload["credential_pool"]["openai-codex"] == []
 
 
 def test_codex_round_robin_priority_updates_survive_reload(tmp_path, monkeypatch):
@@ -3525,11 +3569,14 @@ def test_xai_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypatch
 
 
 def _codex_auth_store(access_token: str, refresh_token: str) -> dict:
+    from hermes_cli.auth import CODEX_REFRESH_OWNER
+
     return {
         "version": 1,
         "active_provider": "openai-codex",
         "providers": {
             "openai-codex": {
+                "refresh_owner": CODEX_REFRESH_OWNER,
                 "tokens": {
                     "access_token": access_token,
                     "refresh_token": refresh_token,
@@ -3547,6 +3594,9 @@ def test_is_terminal_codex_oauth_refresh_error():
     )
     assert _is_terminal_codex_oauth_refresh_error(
         AuthError("No token", provider="openai-codex", code="codex_auth_missing_refresh_token", relogin_required=True)
+    )
+    assert _is_terminal_codex_oauth_refresh_error(
+        AuthError("Unclaimed", provider="openai-codex", code="codex_auth_refresh_owner_unclaimed", relogin_required=True)
     )
     assert _is_terminal_codex_oauth_refresh_error(
         AuthError("Revoked", provider="openai-codex", code="invalid_grant", relogin_required=True)

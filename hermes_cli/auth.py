@@ -3832,28 +3832,21 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
-def _codex_profiles_exist() -> bool:
-    """Return whether this Hermes root contains named profiles."""
-    return (_codex_auth_file_path().parent / "profiles").is_dir()
-
-
 def _require_codex_refresh_owner(state: Optional[Dict[str, Any]] = None) -> None:
-    """Refuse ambiguous pre-upgrade profile refreshes.
+    """Refuse ambiguous pre-upgrade refreshes.
 
-    Older Hermes versions could copy one Codex refresh-token family into
-    profile-local stores. The canonical root store cannot know which copy won
-    the last rotation, so spending its token could replay an already-consumed
-    value. A fresh Hermes device-code login claims the canonical family.
+    Older Hermes versions could import Codex CLI credentials or copy one
+    refresh-token family into profile-local stores. Hermes cannot know which
+    client or copy won the last rotation, so spending its token could replay an
+    already-consumed value. A fresh Hermes device-code login claims the family.
     """
-    if not _codex_profiles_exist():
-        return
     if state is None:
         auth_store = _load_auth_store(_codex_auth_file_path())
         state = _load_provider_state(auth_store, "openai-codex")
     if isinstance(state, dict) and state.get("refresh_owner") == CODEX_REFRESH_OWNER:
         return
     raise AuthError(
-        "Codex credentials predate profile-safe refresh ownership. "
+        "Codex credentials predate Hermes-safe refresh ownership. "
         "Run `hermes model`, choose OpenAI Codex, and reauthenticate to create "
         "a fresh Hermes-owned Codex session.",
         provider="openai-codex",
@@ -5209,7 +5202,9 @@ def _is_terminal_codex_oauth_refresh_error(exc: Exception) -> bool:
     (invalid_grant, token revoked, refresh_token_reused).
     ``codex_auth_missing_refresh_token`` means the pool entry has no refresh
     token at all — retrying will never work.
-    Both carry ``relogin_required=True``; transient failures (429, 5xx) do not.
+    ``codex_auth_refresh_owner_unclaimed`` means Hermes cannot safely spend a
+    legacy token family. These carry ``relogin_required=True``; transient
+    failures (429, 5xx) do not.
     """
     return (
         isinstance(exc, AuthError)
@@ -5217,6 +5212,7 @@ def _is_terminal_codex_oauth_refresh_error(exc: Exception) -> bool:
         and exc.code in {
             "codex_refresh_failed",
             "codex_auth_missing_refresh_token",
+            "codex_auth_refresh_owner_unclaimed",
             "invalid_grant",
             "invalid_token",
             "refresh_token_reused",

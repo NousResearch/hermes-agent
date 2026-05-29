@@ -23,21 +23,30 @@ from hermes_cli.auth import (
 )
 
 
-def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refresh_token: str = "refresh"):
+def _setup_hermes_auth(
+    hermes_home: Path,
+    *,
+    access_token: str = "access",
+    refresh_token: str = "refresh",
+    owned: bool = True,
+):
     """Write Codex tokens into the Hermes auth store."""
     hermes_home.mkdir(parents=True, exist_ok=True)
+    state = {
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        },
+        "last_refresh": "2026-02-26T00:00:00Z",
+        "auth_mode": "chatgpt",
+    }
+    if owned:
+        state["refresh_owner"] = CODEX_REFRESH_OWNER
     auth_store = {
         "version": 1,
         "active_provider": "openai-codex",
         "providers": {
-            "openai-codex": {
-                "tokens": {
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                },
-                "last_refresh": "2026-02-26T00:00:00Z",
-                "auth_mode": "chatgpt",
-            },
+            "openai-codex": state,
         },
     }
     auth_file = hermes_home / "auth.json"
@@ -379,11 +388,39 @@ def test_save_codex_tokens_does_not_write_profile_manual_entries(
     assert "Failed to sync Codex tokens to profile auth store" not in caplog.text
 
 
+def test_classic_mode_refuses_to_refresh_unclaimed_legacy_tokens(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(
+        hermes_home,
+        access_token="legacy-at",
+        refresh_token="legacy-rt",
+        owned=False,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "hermes_cli.auth._refresh_codex_auth_tokens",
+        lambda *_args, **_kwargs: pytest.fail("legacy classic token must not be spent"),
+    )
+
+    with pytest.raises(AuthError) as exc:
+        resolve_codex_runtime_credentials(force_refresh=True, refresh_if_expiring=False)
+
+    assert exc.value.code == "codex_auth_refresh_owner_unclaimed"
+    assert exc.value.relogin_required is True
+    assert "`hermes model`" in str(exc.value)
+    assert "reauthenticate" in str(exc.value)
+
+
 def test_profile_mode_refuses_to_refresh_unclaimed_legacy_tokens(tmp_path, monkeypatch):
     root_home = tmp_path / "hermes"
     profile_home = root_home / "profiles" / "worker"
     profile_home.mkdir(parents=True)
-    _setup_hermes_auth(root_home, access_token="legacy-at", refresh_token="legacy-rt")
+    _setup_hermes_auth(
+        root_home,
+        access_token="legacy-at",
+        refresh_token="legacy-rt",
+        owned=False,
+    )
     monkeypatch.setenv("HERMES_HOME", str(profile_home))
     monkeypatch.setattr(
         "hermes_cli.auth._refresh_codex_auth_tokens",

@@ -16,6 +16,8 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+from run_agent import AIAgent
+
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -2142,6 +2144,24 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 
 class TestDispatchDelegateTask(unittest.TestCase):
     """Tests for the _dispatch_delegate_task helper and full param forwarding."""
+
+    def test_tier_forwarded(self):
+        """The agent-loop dispatch helper must pass through the top-level tier."""
+        parent = object.__new__(AIAgent)
+        with patch("tools.delegate_tool.delegate_task", return_value='{"ok":true}') as mock_delegate:
+            result = AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "goal": "test",
+                    "toolsets": [],
+                    "tier": "small",
+                },
+            )
+
+        self.assertEqual(result, '{"ok":true}')
+        _, kwargs = mock_delegate.call_args
+        self.assertEqual(kwargs["tier"], "small")
+        self.assertIs(kwargs["parent_agent"], parent)
 
     @patch("tools.delegate_tool._load_config", return_value={})
     @patch("tools.delegate_tool._resolve_delegation_credentials")

@@ -154,6 +154,100 @@ def test_codex_pool_shares_only_global_device_code_entry(profile_env):
     ]
 
 
+def test_codex_profile_legacy_local_suppression_hides_shared_entry(profile_env):
+    """A pre-shared-store profile suppression still hides the canonical row."""
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import is_source_suppressed, unsuppress_credential_source
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(
+        pool={
+            "openai-codex": [{
+                "id": "glob-codex",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "global-at",
+                "refresh_token": "global-rt",
+            }],
+        },
+        providers={
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "global-at",
+                    "refresh_token": "global-rt",
+                },
+            },
+        },
+    ))
+    _write(profile_env["profile"] / "auth.json", {
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {"openai-codex": ["device_code"]},
+    })
+
+    assert is_source_suppressed("openai-codex", "device_code") is True
+    assert load_pool("openai-codex").entries() == []
+
+    assert unsuppress_credential_source("openai-codex", "device_code") is True
+    assert is_source_suppressed("openai-codex", "device_code") is False
+    assert [entry.source for entry in load_pool("openai-codex").entries()] == [
+        "device_code",
+    ]
+    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert "suppressed_sources" not in profile_data
+
+
+def test_codex_profile_read_normalizes_identityless_rows_before_remove(profile_env):
+    """Legacy rows receive durable IDs before a merged profile mutates them."""
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import CODEX_REFRESH_OWNER
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(
+        pool={
+            "openai-codex": [{
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "global-at",
+                "refresh_token": "global-rt",
+            }],
+        },
+        providers={
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "global-at",
+                    "refresh_token": "global-rt",
+                },
+                "refresh_owner": CODEX_REFRESH_OWNER,
+            },
+        },
+    ))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "access_token": "manual-at",
+            "refresh_token": "manual-rt",
+        }],
+    }))
+
+    pool = load_pool("openai-codex")
+    persisted_global = json.loads((profile_env["global"] / "auth.json").read_text())
+    persisted_profile = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert persisted_global["credential_pool"]["openai-codex"][0]["id"]
+    assert persisted_profile["credential_pool"]["openai-codex"][0]["id"]
+    manual_index = next(
+        index
+        for index, entry in enumerate(pool.entries(), start=1)
+        if entry.source == "manual:device_code"
+    )
+
+    assert pool.remove_index(manual_index) is not None
+    assert [entry.source for entry in load_pool("openai-codex").entries()] == [
+        "device_code",
+    ]
+    persisted_profile = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert persisted_profile["credential_pool"]["openai-codex"] == []
+
+
 def test_per_provider_shadowing_is_independent(profile_env):
     """Profile can override one provider while inheriting another from global."""
     from hermes_cli.auth import read_credential_pool

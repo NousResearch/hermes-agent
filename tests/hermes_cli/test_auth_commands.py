@@ -1479,6 +1479,42 @@ def test_seed_from_singletons_respects_codex_suppression(tmp_path, monkeypatch):
     assert "openai-codex" not in after.get("providers", {})
 
 
+def test_read_credential_pool_hides_suppressed_codex_device_code(tmp_path, monkeypatch):
+    """Suppression hides stale canonical rows that predate removal cleanup."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {"openai-codex": ["device_code"]},
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "stale-device",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "stale-at",
+                "refresh_token": "stale-rt",
+            }, {
+                "id": "independent",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "independent-at",
+                "refresh_token": "independent-rt",
+            }],
+        },
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    assert [
+        entry["id"] for entry in read_credential_pool("openai-codex")
+    ] == ["independent"]
+    assert [
+        entry["id"] for entry in read_credential_pool(None)["openai-codex"]
+    ] == ["independent"]
+
+
 def test_auth_remove_env_seeded_suppresses_shell_exported_var(tmp_path, monkeypatch, capsys):
     """`hermes auth remove xai 1` must stick even when the env var is exported
     by the shell (not written into ~/.hermes/.env).  Before PR for #13371 the

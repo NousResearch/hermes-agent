@@ -1260,6 +1260,18 @@ def _is_shared_credential_pool_entry(provider_id: str, entry: Any) -> bool:
     return entry.get("source") in SHARED_CREDENTIAL_POOL_SOURCES.get(provider_id, ())
 
 
+def _is_credential_source_suppressed_in_store(
+    auth_store: Dict[str, Any],
+    provider_id: str,
+    source: str,
+) -> bool:
+    suppressed = auth_store.get("suppressed_sources")
+    if not isinstance(suppressed, dict):
+        return False
+    provider_sources = suppressed.get(provider_id)
+    return isinstance(provider_sources, list) and source in provider_sources
+
+
 CredentialPoolEntryIdentity = Tuple[str, str]
 
 
@@ -1355,11 +1367,22 @@ def _merge_shared_credential_pool_entries(
     local_entries: Any,
     global_entries: Any,
     auth_store: Dict[str, Any],
+    global_auth_store: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
     shared_entries = (
         [
             entry for entry in global_entries
             if _is_shared_credential_pool_entry(provider_id, entry)
+            and not _is_credential_source_suppressed_in_store(
+                auth_store,
+                provider_id,
+                entry.get("source"),
+            )
+            and not _is_credential_source_suppressed_in_store(
+                global_auth_store,
+                provider_id,
+                entry.get("source"),
+            )
         ]
         if isinstance(global_entries, list)
         else []
@@ -1526,6 +1549,37 @@ def _merge_credential_pool_snapshot_entries(
     return merged
 
 
+def _normalize_codex_credential_pool_entry_ids() -> None:
+    """Give pre-ID Codex rows durable identities before exposing them."""
+    def _normalize_store(auth_store: Dict[str, Any]) -> bool:
+        pool = auth_store.get("credential_pool")
+        entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+        if not isinstance(entries, list):
+            return False
+        changed = False
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if isinstance(entry.get("id"), str) and entry["id"]:
+                continue
+            entry["id"] = uuid.uuid4().hex[:6]
+            changed = True
+        return changed
+
+    shared_auth_file = _codex_auth_file_path()
+    profile_auth_file = _auth_file_path()
+    with _codex_auth_store_lock():
+        shared_auth_store = _load_auth_store(shared_auth_file)
+        if _normalize_store(shared_auth_store):
+            _save_auth_store(shared_auth_store, auth_file=shared_auth_file)
+        if shared_auth_file == profile_auth_file:
+            return
+        with _auth_store_lock():
+            profile_auth_store = _load_auth_store(profile_auth_file)
+            if _normalize_store(profile_auth_store):
+                _save_auth_store(profile_auth_store, auth_file=profile_auth_file)
+
+
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
@@ -1542,6 +1596,8 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     Writes split shared sources into the global root and independent sources
     into the active profile.
     """
+    if provider_id is None or provider_id == "openai-codex":
+        _normalize_codex_credential_pool_entry_ids()
     auth_store = _load_auth_store()
     pool = auth_store.get("credential_pool")
     if not isinstance(pool, dict):
@@ -1555,6 +1611,25 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
     if provider_id is None:
         merged = dict(pool)
+        for shared_provider in SHARED_CREDENTIAL_POOL_PROVIDERS:
+            local_entries = merged.get(shared_provider)
+            if not isinstance(local_entries, list):
+                continue
+            filtered_entries = [
+                entry for entry in local_entries
+                if not (
+                    _is_shared_credential_pool_entry(shared_provider, entry)
+                    and _is_credential_source_suppressed_in_store(
+                        auth_store,
+                        shared_provider,
+                        entry.get("source"),
+                    )
+                )
+            ]
+            if filtered_entries:
+                merged[shared_provider] = filtered_entries
+            else:
+                merged.pop(shared_provider, None)
         if _global_auth_file_path() is not None:
             for shared_provider in SHARED_CREDENTIAL_POOL_PROVIDERS:
                 combined = _merge_shared_credential_pool_entries(
@@ -1562,6 +1637,7 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
                     pool.get(shared_provider),
                     global_pool.get(shared_provider),
                     auth_store,
+                    global_store,
                 )
                 if combined:
                     merged[shared_provider] = combined
@@ -1585,9 +1661,22 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
             pool.get(provider_id),
             global_pool.get(provider_id),
             auth_store,
+            global_store,
         )
 
     provider_entries = pool.get(provider_id)
+    if provider_id in SHARED_CREDENTIAL_POOL_PROVIDERS and isinstance(provider_entries, list):
+        provider_entries = [
+            entry for entry in provider_entries
+            if not (
+                _is_shared_credential_pool_entry(provider_id, entry)
+                and _is_credential_source_suppressed_in_store(
+                    auth_store,
+                    provider_id,
+                    entry.get("source"),
+                )
+            )
+        ]
     if isinstance(provider_entries, list) and provider_entries:
         return list(provider_entries)
     # Profile has no entries for this provider — fall back to global.
@@ -1776,8 +1865,16 @@ def is_source_suppressed(provider_id: str, source: str) -> bool:
             else None
         )
         auth_store = _load_auth_store(auth_file)
-        suppressed = auth_store.get("suppressed_sources", {})
-        return source in suppressed.get(provider_id, [])
+        if _is_credential_source_suppressed_in_store(auth_store, provider_id, source):
+            return True
+        if auth_file is not None and auth_file != _auth_file_path():
+            profile_auth_store = _load_auth_store()
+            return _is_credential_source_suppressed_in_store(
+                profile_auth_store,
+                provider_id,
+                source,
+            )
+        return False
     except Exception:
         return False
 
@@ -1793,8 +1890,8 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
         else None
     )
     lock = _codex_auth_store_lock if auth_file is not None else _auth_store_lock
-    with lock():
-        auth_store = _load_auth_store(auth_file)
+
+    def _unsuppress_in_store(auth_store: Dict[str, Any]) -> bool:
         suppressed = auth_store.get("suppressed_sources")
         if not isinstance(suppressed, dict):
             return False
@@ -1806,8 +1903,21 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
             suppressed.pop(provider_id, None)
         if not suppressed:
             auth_store.pop("suppressed_sources", None)
-        _save_auth_store(auth_store, auth_file=auth_file)
         return True
+
+    with lock():
+        auth_store = _load_auth_store(auth_file)
+        cleared = _unsuppress_in_store(auth_store)
+        if cleared:
+            _save_auth_store(auth_store, auth_file=auth_file)
+        if auth_file is not None and auth_file != _auth_file_path():
+            with _auth_store_lock():
+                profile_auth_store = _load_auth_store()
+                profile_cleared = _unsuppress_in_store(profile_auth_store)
+                if profile_cleared:
+                    _save_auth_store(profile_auth_store)
+                cleared |= profile_cleared
+        return cleared
 
 
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:

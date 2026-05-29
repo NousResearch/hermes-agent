@@ -3833,9 +3833,10 @@ class BasePlatformAdapter(ABC):
     def prepare_tts_text(self, text: str) -> str:
         """Prepare a spoken script for TTS.
 
-        Auto-TTS should not feed raw chat Markdown or compact symbols to the
-        speech provider.  It should receive a transcript-like script: headings
-        and bullets flattened into sentence pauses, and units like ``°C``
+        Auto-TTS should not feed raw chat Markdown, ``<think>`` reasoning
+        blocks, or compact symbols to the speech provider.  It should receive
+        a transcript-like script: reasoning blocks removed, headings and
+        bullets flattened into sentence pauses, and units like ``°C``
         expanded to words such as ``degrees Celsius``.
         """
         try:
@@ -3843,6 +3844,7 @@ class BasePlatformAdapter(ABC):
             return prepare_spoken_text(text, max_chars=4000)
         except Exception:
             # Keep auto-TTS best-effort if the normalizer ever fails.
+            text = re.sub(r'<think[\s>].*?</think>', ' ', text, flags=re.DOTALL)
             return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
 
     async def play_tts(

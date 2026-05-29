@@ -3057,9 +3057,14 @@ _EMOJI = re.compile(
     '[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D\U000E0020-\U000E007F]+'
 )
 
+# Strip <think>...</think> reasoning blocks before TTS — models with
+# /reasoning show enabled produce think blocks that shouldn't be spoken.
+_THINK_BLOCK = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
+
 
 def _strip_markdown_for_tts(text: str) -> str:
-    """Remove markdown formatting (and emoji) that shouldn't be spoken aloud."""
+    """Remove markdown, think blocks, and emoji that shouldn't be spoken."""
+    text = _THINK_BLOCK.sub(' ', text)
     text = _MD_CODE_BLOCK.sub(' ', text)
     text = _MD_LINK.sub(r'\1', text)
     text = _MD_URL.sub('', text)

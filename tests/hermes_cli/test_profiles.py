@@ -682,6 +682,32 @@ class TestWrapperScript:
         from hermes_cli.profiles import remove_wrapper_script
         assert remove_wrapper_script("nonexistent") is False
 
+    def test_custom_alias_target_on_posix(self, profile_env, monkeypatch):
+        # Custom alias name pointing at a differently-named profile: the file
+        # is named after the alias, the -p content references the profile.
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import create_wrapper_script
+        wrapper = create_wrapper_script("rq", target="redqueen")
+        assert wrapper is not None
+        assert wrapper.name == "rq"
+        content = wrapper.read_text()
+        assert content.startswith("#!/bin/sh")
+        assert "hermes -p redqueen" in content
+
+    def test_custom_alias_target_on_windows(self, profile_env, monkeypatch):
+        # Regression: custom-name aliases must still produce an executable
+        # .bat (not a clobbered #!/bin/sh) on Windows.
+        monkeypatch.setattr("sys.platform", "win32")
+        from hermes_cli.profiles import create_wrapper_script
+        wrapper = create_wrapper_script("rq", target="redqueen")
+        assert wrapper is not None
+        assert wrapper.name == "rq.bat"
+        content = wrapper.read_text()
+        assert "@echo off" in content
+        assert "hermes -p redqueen" in content
+        assert "%*" in content
+        assert "#!/bin/sh" not in content
+
 
 # ===================================================================
 # TestRenameProfile

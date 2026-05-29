@@ -77,6 +77,8 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    tool_repetition_warn_after: int = 5
+    tool_repetition_block_after: int = 8
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -120,6 +122,14 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            tool_repetition_warn_after=_positive_int(
+                warn_after.get("tool_repetition", data.get("tool_repetition_warn_after")),
+                defaults.tool_repetition_warn_after,
+            ),
+            tool_repetition_block_after=_positive_int(
+                hard_stop_after.get("tool_repetition", data.get("tool_repetition_block_after")),
+                defaults.tool_repetition_block_after,
             ),
         )
 
@@ -232,6 +242,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._tool_repetition: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -280,6 +291,27 @@ class ToolCallGuardrailController:
                     self._halt_decision = decision
                     return decision
 
+        if self._is_mutating(tool_name):
+            record = self._tool_repetition.get(signature)
+            if record is not None:
+                _result_hash, repeat_count = record
+                if repeat_count >= self.config.tool_repetition_block_after:
+                    decision = ToolGuardrailDecision(
+                        action="block",
+                        code="tool_repetition_block",
+                        message=(
+                            f"Blocked {tool_name}: this call repeated the same arguments and "
+                            f"returned the same result {repeat_count} times without making "
+                            "progress. Stop repeating it unchanged; change the arguments or "
+                            "approach, or report the blocker."
+                        ),
+                        tool_name=tool_name,
+                        count=repeat_count,
+                        signature=signature,
+                    )
+                    self._halt_decision = decision
+                    return decision
+
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
     def after_call(
@@ -299,6 +331,7 @@ class ToolCallGuardrailController:
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
             self._exact_failure_counts[signature] = exact_count
             self._no_progress.pop(signature, None)
+            self._tool_repetition.pop(signature, None)
 
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
@@ -349,6 +382,8 @@ class ToolCallGuardrailController:
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
+            if self._is_mutating(tool_name):
+                return self._track_tool_repetition(tool_name, signature, result)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         result_hash = _result_hash(result)
@@ -374,10 +409,52 @@ class ToolCallGuardrailController:
 
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
+    def _track_tool_repetition(
+        self,
+        tool_name: str,
+        signature: ToolCallSignature,
+        result: str | None,
+    ) -> ToolGuardrailDecision:
+        """Track same-signature + same-result repetition for mutating tools.
+
+        Mutating tools are excluded from the idempotent ``no_progress`` checks,
+        so a mutating call that "succeeds" with a non-error payload but never
+        makes progress (e.g. ``browser_navigate`` to a 404) would otherwise loop
+        until ``max_iterations``. This counts identical tool signature + result
+        repetitions and nudges (then optionally halts) on the dedicated
+        ``tool_repetition`` thresholds.
+        """
+        result_hash = _result_hash(result)
+        previous = self._tool_repetition.get(signature)
+        repeat_count = 1
+        if previous is not None and previous[0] == result_hash:
+            repeat_count = previous[1] + 1
+        self._tool_repetition[signature] = (result_hash, repeat_count)
+
+        if self.config.warnings_enabled and repeat_count >= self.config.tool_repetition_warn_after:
+            return ToolGuardrailDecision(
+                action="warn",
+                code="tool_repetition_warning",
+                message=(
+                    f"{tool_name} has been called {repeat_count} times with identical "
+                    "arguments and the same result, without making progress. This looks "
+                    "like a loop; change the arguments or approach instead of repeating "
+                    "the same call."
+                ),
+                tool_name=tool_name,
+                count=repeat_count,
+                signature=signature,
+            )
+
+        return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+
     def _is_idempotent(self, tool_name: str) -> bool:
         if tool_name in self.config.mutating_tools:
             return False
         return tool_name in self.config.idempotent_tools
+
+    def _is_mutating(self, tool_name: str) -> bool:
+        return tool_name in self.config.mutating_tools
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:

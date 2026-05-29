@@ -256,3 +256,158 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+def test_default_config_includes_tool_repetition_thresholds():
+    cfg = ToolCallGuardrailConfig()
+
+    assert cfg.tool_repetition_warn_after == 5
+    assert cfg.tool_repetition_block_after == 8
+
+
+def test_config_parses_tool_repetition_thresholds():
+    cfg = ToolCallGuardrailConfig.from_mapping(
+        {
+            "hard_stop_enabled": True,
+            "warn_after": {"tool_repetition": 2},
+            "hard_stop_after": {"tool_repetition": 3},
+        }
+    )
+
+    assert cfg.tool_repetition_warn_after == 2
+    assert cfg.tool_repetition_block_after == 3
+
+
+def test_mutating_tool_repeated_identical_success_warns_without_blocking_by_default():
+    # browser_navigate is a mutating tool: it is excluded from the idempotent
+    # no_progress checks, so a "successful" 404 navigate that never progresses
+    # must be caught by the dedicated tool_repetition axis instead.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(tool_repetition_warn_after=2, tool_repetition_block_after=8)
+    )
+    args = {"url": "https://example.com/missing"}
+    result = '{"status":404,"ok":true}'
+
+    decisions = []
+    for _ in range(4):
+        assert controller.before_call("browser_navigate", args).action == "allow"
+        decisions.append(controller.after_call("browser_navigate", args, result, failed=False))
+
+    assert decisions[0].action == "allow"
+    assert [d.action for d in decisions[1:]] == ["warn", "warn", "warn"]
+    assert {d.code for d in decisions[1:]} == {"tool_repetition_warning"}
+    # Soft-warning only: future calls are still allowed when hard stop is off.
+    assert controller.before_call("browser_navigate", args).action == "allow"
+    assert controller.halt_decision is None
+
+
+def test_hard_stop_enabled_blocks_mutating_tool_repetition_before_next_execution():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            tool_repetition_warn_after=2,
+            tool_repetition_block_after=2,
+        )
+    )
+    args = {"url": "https://example.com/missing"}
+    result = '{"status":404,"ok":true}'
+
+    assert controller.before_call("browser_navigate", args).action == "allow"
+    assert controller.after_call("browser_navigate", args, result, failed=False).action == "allow"
+    assert controller.before_call("browser_navigate", args).action == "allow"
+    warn = controller.after_call("browser_navigate", args, result, failed=False)
+    assert warn.action == "warn"
+    assert warn.code == "tool_repetition_warning"
+
+    blocked = controller.before_call("browser_navigate", args)
+    assert blocked.action == "block"
+    assert blocked.code == "tool_repetition_block"
+    assert blocked.count == 2
+    assert controller.halt_decision is blocked
+
+
+def test_mutating_tool_repetition_resets_when_result_changes():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(tool_repetition_warn_after=2, tool_repetition_block_after=2)
+    )
+    args = {"url": "https://example.com/page"}
+
+    assert controller.after_call("browser_navigate", args, '{"status":404}', failed=False).action == "allow"
+    # Different result for the same signature == progress; counter restarts.
+    assert controller.after_call("browser_navigate", args, '{"status":200}', failed=False).action == "allow"
+    assert controller.after_call("browser_navigate", args, '{"status":200}', failed=False).action == "warn"
+
+
+def test_mutating_tool_repetition_resets_on_failure():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            tool_repetition_warn_after=2,
+            tool_repetition_block_after=2,
+            same_tool_failure_halt_after=99,
+            exact_failure_block_after=99,
+        )
+    )
+    args = {"url": "https://example.com/page"}
+    result = '{"status":404,"ok":true}'
+
+    controller.after_call("browser_navigate", args, result, failed=False)
+    controller.after_call("browser_navigate", args, result, failed=False)
+    # A failure clears the repetition streak so a later success starts fresh.
+    controller.after_call("browser_navigate", args, '{"error":"boom"}', failed=True)
+
+    assert controller.before_call("browser_navigate", args).action == "allow"
+    assert controller.after_call("browser_navigate", args, result, failed=False).action == "allow"
+
+
+def test_idempotent_tools_use_no_progress_not_tool_repetition_axis():
+    # read_file is idempotent: repeated identical results must still be caught
+    # by idempotent_no_progress, and the tool_repetition axis must stay inert
+    # for it (tool_repetition thresholds set high so only no_progress can fire).
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            no_progress_warn_after=2,
+            tool_repetition_warn_after=99,
+        )
+    )
+    args = {"path": "/tmp/x"}
+
+    controller.after_call("read_file", args, "same", failed=False)
+    decision = controller.after_call("read_file", args, "same", failed=False)
+    assert decision.code == "idempotent_no_progress_warning"
+
+
+def test_unknown_tools_are_not_tracked_by_tool_repetition_axis():
+    # custom_tool is neither idempotent nor mutating; it must remain untouched.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            tool_repetition_warn_after=2,
+            tool_repetition_block_after=2,
+        )
+    )
+    args = {"x": 1}
+
+    for _ in range(5):
+        assert controller.before_call("custom_tool", args).action == "allow"
+        assert controller.after_call("custom_tool", args, "ok", failed=False).action == "allow"
+
+
+def test_reset_for_turn_clears_tool_repetition_state():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            tool_repetition_warn_after=2,
+            tool_repetition_block_after=2,
+        )
+    )
+    args = {"url": "https://example.com/missing"}
+    result = '{"status":404}'
+
+    controller.after_call("browser_navigate", args, result, failed=False)
+    controller.after_call("browser_navigate", args, result, failed=False)
+    assert controller.before_call("browser_navigate", args).action == "block"
+
+    controller.reset_for_turn()
+
+    assert controller.before_call("browser_navigate", args).action == "allow"

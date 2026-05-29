@@ -191,23 +191,6 @@ def _active_hallucination_events(
         elif k == kind:
             active.append(ev)
     return active
-
-
-def _latest_clean_event_ts(events: Iterable[Any]) -> int:
-    """Timestamp of the most recent clean completion / edit event.
-
-    Kept for general "has this task ever been successfully completed"
-    lookups; hallucination rules use ``_active_hallucination_events``
-    instead because they need strict ordering.
-    """
-    latest = 0
-    for ev in events:
-        if _event_kind(ev) in {"completed", "edited"}:
-            t = _event_ts(ev)
-            latest = max(latest, t)
-    return latest
-
-
 # Standard always-available actions. Every diagnostic can offer these as
 # fallbacks regardless of kind — they're the two baseline recovery
 # primitives the kernel supports.
@@ -1122,16 +1105,3 @@ def compute_task_diagnostics(
         )
     )
     return out
-
-
-def severity_of_highest(diagnostics: Iterable[Diagnostic]) -> Optional[str]:
-    """Highest severity present in the list, or None if empty. Useful
-    for card badges that need a single color."""
-    highest_idx = -1
-    highest = None
-    for d in diagnostics:
-        idx = SEVERITY_ORDER.index(d.severity) if d.severity in SEVERITY_ORDER else -1
-        if idx > highest_idx:
-            highest_idx = idx
-            highest = d.severity
-    return highest

@@ -184,39 +184,6 @@ def _resolve(configured: Optional[str]) -> Optional[BrowserProvider]:
             return provider
 
     return None
-
-
-def get_active_browser_provider() -> Optional[BrowserProvider]:
-    """Resolve the currently-active cloud browser provider.
-
-    Reads ``browser.cloud_provider`` from config.yaml; falls back per the
-    module docstring. Returns None for local mode or when no provider is
-    available.
-    """
-    try:
-        from hermes_cli.config import read_raw_config
-
-        cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {})
-    except Exception as exc:
-        logger.debug("Could not read browser config: %s", exc)
-        browser_cfg = {}
-
-    configured: Optional[str] = None
-    if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
-        try:
-            from tools.tool_backend_helpers import normalize_browser_cloud_provider
-
-            configured = normalize_browser_cloud_provider(
-                browser_cfg.get("cloud_provider")
-            )
-        except Exception as exc:
-            logger.debug("normalize_browser_cloud_provider failed: %s", exc)
-            configured = None
-
-    return _resolve(configured)
-
-
 def _reset_for_tests() -> None:
     """Clear the registry. **Test-only.**"""
     with _lock:

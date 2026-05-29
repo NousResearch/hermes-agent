@@ -4863,23 +4863,6 @@ def detect_stale_running(
         # spawn_failed / timed_out / crashed counters.
 
     return reclaimed
-
-
-def set_max_runtime(
-    conn: sqlite3.Connection,
-    task_id: str,
-    seconds: Optional[int],
-) -> bool:
-    """Set or clear the per-task max_runtime_seconds. Returns True on
-    success."""
-    with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET max_runtime_seconds = ? WHERE id = ?",
-            (int(seconds) if seconds is not None else None, task_id),
-        )
-    return cur.rowcount == 1
-
-
 def _error_fingerprint(error_text: str) -> str:
     """Normalize an error message for grouping identical failures.
 
@@ -6965,18 +6948,6 @@ def get_run(conn: sqlite3.Connection, run_id: int) -> Optional[Run]:
         "SELECT * FROM task_runs WHERE id = ?", (int(run_id),),
     ).fetchone()
     return Run.from_row(row) if row else None
-
-
-def active_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
-    """Return the currently-open run for ``task_id`` (``ended_at IS NULL``)."""
-    row = conn.execute(
-        "SELECT * FROM task_runs WHERE task_id = ? AND ended_at IS NULL "
-        "ORDER BY started_at DESC LIMIT 1",
-        (task_id,),
-    ).fetchone()
-    return Run.from_row(row) if row else None
-
-
 def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
     """Return the most recent run regardless of outcome (active or closed)."""
     row = conn.execute(

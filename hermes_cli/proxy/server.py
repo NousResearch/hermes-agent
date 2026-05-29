@@ -104,17 +104,6 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             }
         )
 
-    async def handle_models_fallback(request: "web.Request") -> "web.Response":
-        # Most clients hit /v1/models on startup. If the upstream doesn't
-        # serve /models, synthesize a minimal response so clients don't
-        # crash. The actual forwarding path handles /models when allowed.
-        return web.json_response(
-            {
-                "object": "list",
-                "data": [],
-            }
-        )
-
     async def handle_proxy(request: "web.Request") -> "web.StreamResponse":
         # Extract the path *after* /v1
         rel_path = request.match_info.get("tail", "")

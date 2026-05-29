@@ -149,13 +149,6 @@ def interruptible_api_call(agent, api_kwargs: dict):
             request_client_holder["owner_tid"] = threading.get_ident()
         return client
 
-    def _take_request_client():
-        with request_client_lock:
-            client = request_client_holder.get("client")
-            request_client_holder["client"] = None
-            request_client_holder["owner_tid"] = None
-            return client
-
     def _close_request_client_once(reason: str) -> None:
         # #29507: dispatch on the calling thread.
         #
@@ -1627,13 +1620,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # See #29507 explanation in the non-streaming variant above.
             request_client_holder["owner_tid"] = threading.get_ident()
         return client
-
-    def _take_request_client():
-        with request_client_lock:
-            client = request_client_holder.get("client")
-            request_client_holder["client"] = None
-            request_client_holder["owner_tid"] = None
-            return client
 
     def _close_request_client_once(reason: str) -> None:
         # See #29507 explanation in the non-streaming variant above. A

@@ -203,11 +203,12 @@ When Honcho is active as the memory provider, five tools become available:
 
 ## CLI Commands
 
-The `hermes honcho` subcommand is **only registered when Honcho is the active memory provider** (`memory.provider: honcho` in `config.yaml`). Run `hermes memory setup` and pick Honcho first; the subcommand appears on the next invocation.
+The `hermes honcho` subcommand is **only registered when Honcho is the active memory provider** (`memory.provider: honcho` in `config.yaml`). On a fresh install, configure Honcho directly with `hermes memory setup honcho` (or run `hermes memory setup` and pick it from the list); the `hermes honcho` subcommand then appears on the next invocation.
 
 ```bash
+hermes memory setup honcho    # Configure Honcho directly (works before activation)
 hermes honcho status          # Connection status, config, and key settings
-hermes honcho setup           # Redirects to `hermes memory setup`
+hermes honcho setup           # Redirects to `hermes memory setup` (post-activation alias)
 hermes honcho strategy        # Show or set session strategy (per-session/per-directory/per-repo/global)
 hermes honcho peer            # Show or update peer names + dialectic reasoning level
 hermes honcho mode            # Show or set recall mode (hybrid/context/tools)

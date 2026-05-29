@@ -4382,7 +4382,10 @@ class AIAgent:
             str: Final assistant response
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
-        return result["final_response"]
+        # run_conversation's error/failure return paths (API error after retries,
+        # billing/credits exhaustion, policy halt, etc.) omit "final_response";
+        # surface the error message instead of raising KeyError here.
+        return result.get("final_response") or result.get("error") or ""
 
     def _run_codex_app_server_turn(
         self,
@@ -4575,7 +4578,7 @@ def main(
     print(f"📞 API Calls: {result['api_calls']}")
     print(f"💬 Messages: {len(result['messages'])}")
     
-    if result['final_response']:
+    if result.get('final_response'):
         print("\n🎯 FINAL RESPONSE:")
         print("-" * 30)
         print(result['final_response'])

@@ -3708,10 +3708,10 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     assert calls["connect"] == 5
 
 
-def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
+def test_gateway_dispatcher_retries_corrupt_board_after_backoff(
     monkeypatch, tmp_path, caplog
 ):
-    """A corrupt-looking board is retried after the quarantine TTL expires."""
+    """A confirmed corrupt-looking board is retried after backoff expires."""
     import asyncio
     import inspect
     import logging
@@ -3749,14 +3749,14 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
     monkeypatch.setattr(_kb, "kanban_db_path", lambda board=None: corrupt_db)
 
     real_monotonic = time.monotonic
-    time_values = iter([1000.0, 1001.0, 1301.0, 1301.0])
+    time_values = iter([1000.0, 1001.0, 1031.0, 1031.0])
 
     def _monotonic_for_gateway_dispatcher():
         caller = inspect.currentframe().f_back  # type: ignore[union-attr]
         code = caller.f_code if caller is not None else None
         filename = code.co_filename if code is not None else ""
         if filename.endswith("gateway/run.py"):
-            return next(time_values, 1301.0)
+            return next(time_values, 1031.0)
         return real_monotonic()
 
     monkeypatch.setattr("gateway.run.time.monotonic", _monotonic_for_gateway_dispatcher)
@@ -3793,6 +3793,186 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
     assert sum("not a valid SQLite database" in msg for msg in messages) == 2
     assert any("database fingerprint unchanged" in msg for msg in messages)
     assert calls["tick"] == 3
+
+
+def test_gateway_dispatcher_does_not_disable_when_quick_check_passes(
+    monkeypatch, tmp_path, caplog
+):
+    """A transient open error is not latched when read-only quick_check is ok."""
+    import asyncio
+    import logging
+    import sqlite3
+
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    db_path = tmp_path / "kanban.db"
+    db_path.write_text("not used by quick_check fake", encoding="utf-8")
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": _kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(
+        _kb,
+        "read_board_metadata",
+        lambda slug: {"slug": slug},
+    )
+    monkeypatch.setattr(_kb, "kanban_db_path", lambda board=None: db_path)
+
+    calls = {"connect": 0, "tick": 0, "quick_check": 0}
+
+    def _connect(*args, **kwargs):
+        calls["connect"] += 1
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    class _QuickCheckOkConn:
+        def execute(self, sql):
+            assert sql == "PRAGMA quick_check"
+            calls["quick_check"] += 1
+            return self
+
+        def fetchone(self):
+            return ("ok",)
+
+        def close(self):
+            pass
+
+    def _sqlite_connect(*args, **kwargs):
+        return _QuickCheckOkConn()
+
+    async def _to_thread(fn, *args, **kwargs):
+        result = fn(*args, **kwargs)
+        if getattr(fn, "__name__", "") == "_tick_once":
+            calls["tick"] += 1
+            if calls["tick"] >= 2:
+                runner._running = False
+        return result
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr("gateway.run.sqlite3.connect", _sqlite_connect)
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        asyncio.run(
+            asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=3.0,
+            )
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("PRAGMA quick_check returned ok" in msg for msg in messages)
+    assert not any("not a valid SQLite database" in msg for msg in messages)
+    assert calls["tick"] == 2
+    assert calls["quick_check"] >= 2
+
+
+def test_gateway_dispatcher_corrupt_board_exponential_backoff(
+    monkeypatch, tmp_path, caplog
+):
+    """Repeated confirmed corruption doubles retry backoff for same fingerprint."""
+    import asyncio
+    import inspect
+    import logging
+    import sqlite3
+
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    corrupt_db = tmp_path / "kanban.db"
+    corrupt_db.write_text("not sqlite", encoding="utf-8")
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": _kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(
+        _kb,
+        "read_board_metadata",
+        lambda slug: {"slug": slug},
+    )
+    monkeypatch.setattr(_kb, "kanban_db_path", lambda board=None: corrupt_db)
+
+    real_monotonic = time.monotonic
+    time_values = iter([1000.0, 1029.0, 1030.0, 1030.0, 1089.0, 1090.0, 1090.0])
+
+    def _monotonic_for_gateway_dispatcher():
+        caller = inspect.currentframe().f_back  # type: ignore[union-attr]
+        code = caller.f_code if caller is not None else None
+        filename = code.co_filename if code is not None else ""
+        if filename.endswith("gateway/run.py"):
+            return next(time_values, 1090.0)
+        return real_monotonic()
+
+    calls = {"tick": 0}
+
+    def _connect(*args, **kwargs):
+        raise sqlite3.DatabaseError("file is not a database")
+
+    async def _to_thread(fn, *args, **kwargs):
+        result = fn(*args, **kwargs)
+        if getattr(fn, "__name__", "") == "_tick_once":
+            calls["tick"] += 1
+            if calls["tick"] >= 5:
+                runner._running = False
+        return result
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr("gateway.run.time.monotonic", _monotonic_for_gateway_dispatcher)
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        asyncio.run(
+            asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=3.0,
+            )
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("not a valid SQLite database" in msg for msg in messages) == 3
+    assert any("for this board for 30s" in msg for msg in messages)
+    assert any("for this board for 60s" in msg for msg in messages)
+    assert any("for this board for 120s" in msg for msg in messages)
+    assert sum("database fingerprint unchanged" in msg for msg in messages) == 2
+    assert calls["tick"] == 5
 
 
 # ---------------------------------------------------------------------------

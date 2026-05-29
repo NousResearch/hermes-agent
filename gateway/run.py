@@ -5432,9 +5432,10 @@ class GatewayRunner:
         # Avoid hot-looping corrupt-looking board DBs, but do not suppress
         # same-fingerprint retries forever: transient WAL/open races can
         # surface as "database disk image is malformed" for one tick.
-        CORRUPT_BOARD_RETRY_AFTER_SECONDS = 300
+        CORRUPT_BOARD_MIN_RETRY_AFTER_SECONDS = 30.0
+        CORRUPT_BOARD_MAX_RETRY_AFTER_SECONDS = 900.0
         disabled_corrupt_boards: dict[
-            str, tuple[tuple[str, int | None, int | None], float]
+            str, tuple[tuple[str, int | None, int | None], float, float]
         ] = {}
 
         def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
@@ -5461,6 +5462,78 @@ class GatewayRunner:
                 or "database disk image is malformed" in msg
             )
 
+        def _quick_check_confirms_corruption(
+            slug: str,
+            fingerprint: tuple[str, int | None, int | None],
+            original_exc: Exception,
+        ) -> bool:
+            """Confirm a corrupt-looking board error with read-only quick_check."""
+            path = _kb.kanban_db_path(slug)
+            quick_check_conn = None
+            try:
+                uri = path.expanduser().resolve().as_uri() + "?mode=ro"
+                quick_check_conn = sqlite3.connect(uri, uri=True, timeout=1.0)
+                row = quick_check_conn.execute("PRAGMA quick_check").fetchone()
+            except sqlite3.DatabaseError as quick_check_exc:
+                if _is_corrupt_board_db_error(quick_check_exc):
+                    return True
+                logger.warning(
+                    "kanban dispatcher: board %s database %s looked corrupt (%s), "
+                    "but read-only PRAGMA quick_check failed without confirming "
+                    "corruption (%s); treating as transient",
+                    slug,
+                    fingerprint[0],
+                    original_exc,
+                    quick_check_exc,
+                )
+                return False
+            except Exception as quick_check_exc:
+                logger.warning(
+                    "kanban dispatcher: board %s database %s looked corrupt (%s), "
+                    "but read-only PRAGMA quick_check could not confirm corruption "
+                    "(%s); treating as transient",
+                    slug,
+                    fingerprint[0],
+                    original_exc,
+                    quick_check_exc,
+                )
+                return False
+            finally:
+                if quick_check_conn is not None:
+                    try:
+                        quick_check_conn.close()
+                    except Exception:
+                        pass
+
+            result = "" if not row else str(row[0]).strip().lower()
+            if result == "ok":
+                logger.warning(
+                    "kanban dispatcher: board %s database %s looked corrupt (%s), "
+                    "but read-only PRAGMA quick_check returned ok; treating as transient",
+                    slug,
+                    fingerprint[0],
+                    original_exc,
+                )
+                return False
+            return True
+
+        def _disable_confirmed_corrupt_board(
+            slug: str,
+            fingerprint: tuple[str, int | None, int | None],
+            retry_after: float,
+        ) -> None:
+            disabled_corrupt_boards[slug] = (fingerprint, time.monotonic(), retry_after)
+            logger.error(
+                "kanban dispatcher: board %s database %s is not a valid SQLite "
+                "database after read-only PRAGMA quick_check; pausing dispatch "
+                "for this board for %.0fs or until the file changes/the gateway "
+                "restarts. Move or restore the file, then run `hermes kanban init` "
+                "if you need a fresh board.",
+                slug,
+                fingerprint[0],
+                retry_after,
+            )
+
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
@@ -5472,21 +5545,23 @@ class GatewayRunner:
             """
             conn = None
             fingerprint = _board_db_fingerprint(slug)
+            retry_after = CORRUPT_BOARD_MIN_RETRY_AFTER_SECONDS
             disabled_entry = disabled_corrupt_boards.get(slug)
             if disabled_entry is not None:
-                disabled_fingerprint, disabled_at = disabled_entry
+                disabled_fingerprint, disabled_at, disabled_retry_after = disabled_entry
                 age = time.monotonic() - disabled_at
-                if (
-                    disabled_fingerprint == fingerprint
-                    and age < CORRUPT_BOARD_RETRY_AFTER_SECONDS
-                ):
+                if disabled_fingerprint == fingerprint and age < disabled_retry_after:
                     return None
                 if disabled_fingerprint == fingerprint:
                     logger.info(
                         "kanban dispatcher: board %s database fingerprint unchanged "
-                        "after %.0fs quarantine; retrying dispatch",
+                        "after %.0fs backoff; retrying dispatch",
                         slug,
                         age,
+                    )
+                    retry_after = min(
+                        disabled_retry_after * 2.0,
+                        CORRUPT_BOARD_MAX_RETRY_AFTER_SECONDS,
                     )
                 else:
                     logger.info(
@@ -5502,7 +5577,7 @@ class GatewayRunner:
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
-                return _kb.dispatch_once(
+                result = _kb.dispatch_once(
                     conn,
                     board=slug,
                     max_spawn=max_spawn,
@@ -5510,33 +5585,19 @@ class GatewayRunner:
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
                 )
+                disabled_corrupt_boards.pop(slug, None)
+                return result
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
-                    logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; pausing dispatch for this board until "
-                        "the file changes, the gateway restarts, or the "
-                        "quarantine timer expires. Move or restore the file, "
-                        "then run `hermes kanban init` if you need a fresh board.",
-                        slug,
-                        fingerprint[0],
-                    )
+                    if _quick_check_confirms_corruption(slug, fingerprint, exc):
+                        _disable_confirmed_corrupt_board(slug, fingerprint, retry_after)
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None
             except Exception as exc:
                 if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
-                    logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; pausing dispatch for this board until "
-                        "the file changes, the gateway restarts, or the "
-                        "quarantine timer expires. Move or restore the file, "
-                        "then run `hermes kanban init` if you need a fresh board.",
-                        slug,
-                        fingerprint[0],
-                    )
+                    if _quick_check_confirms_corruption(slug, fingerprint, exc):
+                        _disable_confirmed_corrupt_board(slug, fingerprint, retry_after)
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None

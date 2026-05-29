@@ -121,7 +121,12 @@ logger = logging.getLogger(__name__)
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
 def _has_env(name: str) -> bool:
-    val = os.getenv(name)
+    try:
+        from hermes_cli.config import get_env_value
+
+        val = get_env_value(name)
+    except Exception:
+        val = os.getenv(name)
     return bool(val and val.strip())
 
 def _load_web_config() -> dict:

@@ -41,6 +41,18 @@ class TestSearXNGSearchProviderIsConfigured:
         from plugins.web.searxng.provider import SearXNGWebSearchProvider
         assert SearXNGWebSearchProvider().is_available() is False
 
+    def test_configured_when_url_only_available_via_hermes_env_lookup(self, monkeypatch):
+        monkeypatch.delenv("SEARXNG_URL", raising=False)
+        from hermes_cli import config as hermes_config
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        monkeypatch.setattr(
+            hermes_config,
+            "get_env_value",
+            lambda key: "http://config-only:8080" if key == "SEARXNG_URL" else None,
+        )
+        assert SearXNGWebSearchProvider().is_available() is True
+
     def test_provider_name(self):
         from plugins.web.searxng.provider import SearXNGWebSearchProvider
         assert SearXNGWebSearchProvider().name == "searxng"
@@ -208,6 +220,30 @@ class TestSearXNGSearchProviderSearch:
 
         assert calls[0] == "http://localhost:8080/search", f"Got: {calls[0]}"
 
+    def test_search_uses_hermes_env_lookup_when_process_env_missing(self, monkeypatch):
+        monkeypatch.delenv("SEARXNG_URL", raising=False)
+        from hermes_cli import config as hermes_config
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        monkeypatch.setattr(
+            hermes_config,
+            "get_env_value",
+            lambda key: "http://config-only:8080/" if key == "SEARXNG_URL" else None,
+        )
+        mock_resp = self._make_mock_response({"results": []})
+
+        calls = []
+
+        def capture_get(url, **kwargs):
+            calls.append(url)
+            return mock_resp
+
+        with patch("httpx.get", side_effect=capture_get):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is True
+        assert calls[0] == "http://config-only:8080/search"
+
 
 # ---------------------------------------------------------------------------
 # Integration: _is_backend_available recognizes "searxng"
@@ -256,6 +292,27 @@ class TestGetBackendSearXNG:
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         assert web_tools._get_backend() == "searxng"
 
+    def test_auto_detect_picks_searxng_when_url_only_available_via_hermes_env_lookup(
+        self, monkeypatch
+    ):
+        from hermes_cli import config as hermes_config
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+        monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+        monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.delenv("EXA_API_KEY", raising=False)
+        monkeypatch.delenv("SEARXNG_URL", raising=False)
+        monkeypatch.setattr(
+            hermes_config,
+            "get_env_value",
+            lambda key: "http://config-only:8080" if key == "SEARXNG_URL" else None,
+        )
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        assert web_tools._get_backend() == "searxng"
+
     def test_searxng_does_not_override_higher_priority_provider(self, monkeypatch):
         """Tavily (higher priority than searxng) should win in auto-detect."""
         from tools import web_tools
@@ -293,6 +350,19 @@ class TestCheckWebApiKey:
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
         assert web_tools.check_web_api_key() is False
+
+    def test_searxng_config_env_satisfies_check_web_api_key(self, monkeypatch):
+        from hermes_cli import config as hermes_config
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
+        monkeypatch.delenv("SEARXNG_URL", raising=False)
+        monkeypatch.setattr(
+            hermes_config,
+            "get_env_value",
+            lambda key: "http://config-only:8080" if key == "SEARXNG_URL" else None,
+        )
+        assert web_tools.check_web_api_key() is True
 
 
 # ---------------------------------------------------------------------------

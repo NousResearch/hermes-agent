@@ -79,6 +79,7 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled
+from agent.skill_utils import EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +102,8 @@ _PLATFORM_MAP = {
     "windows": "win32",
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
 _REMOTE_ENV_BACKENDS = frozenset(
-    {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
+    {"docker", "singularity", "modal", "ssh", "daytona"}
 )
 _secret_capture_callback = None
 
@@ -627,49 +627,6 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
-
-
-def _load_category_description(category_dir: Path) -> Optional[str]:
-    """
-    Load category description from DESCRIPTION.md if it exists.
-
-    Args:
-        category_dir: Path to the category directory
-
-    Returns:
-        Description string or None if not found
-    """
-    desc_file = category_dir / "DESCRIPTION.md"
-    if not desc_file.exists():
-        return None
-
-    try:
-        content = desc_file.read_text(encoding="utf-8")
-        # Parse frontmatter if present
-        frontmatter, body = _parse_frontmatter(content)
-
-        # Prefer frontmatter description, fall back to first non-header line
-        description = frontmatter.get("description", "")
-        if not description:
-            for line in body.strip().split("\n"):
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    description = line
-                    break
-
-        # Truncate to reasonable length
-        if len(description) > MAX_DESCRIPTION_LENGTH:
-            description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
-
-        return description if description else None
-    except (UnicodeDecodeError, PermissionError) as e:
-        logger.debug("Failed to read category description %s: %s", desc_file, e)
-        return None
-    except Exception as e:
-        logger.warning(
-            "Error parsing category description %s: %s", desc_file, e, exc_info=True
-        )
-        return None
 
 
 def skills_list(category: str = None, task_id: str = None) -> str:
@@ -1565,4 +1522,3 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
-

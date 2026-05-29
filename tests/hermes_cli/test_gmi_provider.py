@@ -183,7 +183,6 @@ class TestGmiDoctor:
             "DASHSCOPE_API_KEY",
             "MINIMAX_API_KEY",
             "MINIMAX_CN_API_KEY",
-            "AI_GATEWAY_API_KEY",
             "KILOCODE_API_KEY",
             "OPENCODE_ZEN_API_KEY",
             "OPENCODE_GO_API_KEY",

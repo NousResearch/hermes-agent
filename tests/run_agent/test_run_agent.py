@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from agent.codex_responses_adapter import _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
+from agent.codex_responses_adapter import _normalize_codex_response
 
 import run_agent
 from run_agent import AIAgent
@@ -554,23 +554,120 @@ class TestExtractReasoning:
         assert result == "from structured field"
 
 
-class TestCleanSessionContent:
-    def test_none_passthrough(self):
-        assert AIAgent._clean_session_content(None) is None
+class TestSessionJsonSnapshotOptIn:
+    """Regression: per-session JSON snapshot writer is opt-in via config.
 
-    def test_scratchpad_converted(self):
-        text = "<REASONING_SCRATCHPAD>think</REASONING_SCRATCHPAD> answer"
-        result = AIAgent._clean_session_content(text)
-        assert "<REASONING_SCRATCHPAD>" not in result
-        assert "<think>" in result
+    state.db is canonical (PR #29182).  ``sessions.write_json_snapshots``
+    defaults to False, so the agent must NOT write ``session_{sid}.json``
+    files by default — that behavior caused multi-GB sessions directories
+    on heavy users.  Users can opt back in for external tooling that reads
+    the JSON files directly.
+    """
 
-    def test_extra_newlines_cleaned(self):
-        text = "\n\n\n<think>x</think>\n\n\nafter"
-        result = AIAgent._clean_session_content(text)
-        # Should not have excessive newlines around think block
-        assert "\n\n\n" not in result
-        # Content after think block must be preserved
-        assert "after" in result
+    def test_session_json_disabled_by_default(self, agent):
+        # Default config: writer is gated off.
+        assert getattr(agent, "_session_json_enabled", False) is False, (
+            "sessions.write_json_snapshots must default to False"
+        )
+
+    def test_save_session_log_noops_when_disabled(self, agent, tmp_path):
+        # When disabled, calling the method must not write any file even
+        # if logs_dir is writable and messages are non-empty.
+        agent._session_json_enabled = False
+        agent.logs_dir = tmp_path
+        agent._session_messages = [{"role": "user", "content": "hello"}]
+        agent._save_session_log()
+        # No session_*.json must appear under logs_dir.
+        assert list(tmp_path.glob("session_*.json")) == []
+
+    def test_save_session_log_writes_when_enabled(self, agent, tmp_path):
+        # Opt-in path: with the flag on and a session_id, the writer must
+        # produce ``session_{sid}.json`` under logs_dir.
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [{"role": "user", "content": "hello"}]
+        agent._save_session_log(messages)
+        expected = tmp_path / f"session_{agent.session_id}.json"
+        assert expected.exists(), (
+            "Opt-in writer must produce session_{sid}.json under logs_dir"
+        )
+
+    def test_logs_dir_retained_for_request_dumps(self, agent):
+        # logs_dir is kept unconditionally because
+        # agent_runtime_helpers.dump_api_request_debug still writes
+        # request_dump_*.json there (debug breadcrumb path), independent of
+        # the session JSON opt-in.
+        assert hasattr(agent, "logs_dir")
+
+
+class TestSaveSessionLogRedactsSecrets:
+    """Regression: session_*.json must not contain plaintext credentials (#19798, #19845)."""
+
+    @pytest.fixture(autouse=True)
+    def _ensure_redaction_enabled(self, monkeypatch):
+        """Force redaction on regardless of host HERMES_REDACT_SECRETS state.
+        The hermetic conftest blanks the env var; the module-level
+        ``_REDACT_ENABLED`` constant is captured at import time, so we
+        flip it directly for the duration of these tests."""
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+
+    def test_redacts_api_key_in_tool_content(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "tool",
+                "content": "Response: Authorization: Bearer sk-proj-abc123def456ghi789jkl012mno",
+            },
+        ]
+        agent._save_session_log(messages)
+
+        snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "sk-proj-abc123def456ghi789jkl012mno" not in snapshot
+
+    def test_redacts_api_key_in_user_message(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [
+            {"role": "user", "content": "My key is sk-ant-api03-abc123def456ghi789jkl012mno please use it"},
+        ]
+        agent._save_session_log(messages)
+
+        snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "sk-ant-api03-abc123def456ghi789jkl012mno" not in snapshot
+
+    def test_redacts_system_prompt_credentials(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        agent._cached_system_prompt = "Use key sk-proj-realkey1234567890123456 for API calls"
+        agent._save_session_log([{"role": "user", "content": "test"}])
+
+        snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "sk-proj-realkey1234567890123456" not in snapshot
+
+    def test_redacts_list_type_multimodal_content(self, agent, tmp_path):
+        """OpenAI/Anthropic multimodal shape: content = list of {type, text|image_url} parts."""
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Key: gsk_abc123def456ghi789jkl012mno"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                ],
+            },
+        ]
+        agent._save_session_log(messages)
+
+        snapshot_text = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        snapshot = json.loads(snapshot_text)
+        parts = snapshot["messages"][0]["content"]
+        assert "gsk_abc123def456ghi789jkl012mno" not in parts[0]["text"]
+        # Image part preserved untouched
+        assert parts[1]["image_url"]["url"].startswith("data:image")
 
 
 class TestGetMessagesUpToLastAssistant:
@@ -1224,6 +1321,178 @@ class TestToolUseEnforcementConfig:
             a.client = MagicMock()
             prompt = a._build_system_prompt()
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
+
+class TestTaskCompletionGuidance:
+    """Tests for the universal task-completion / no-fabrication guidance
+    (config.yaml ``agent.task_completion_guidance``).
+
+    Unlike tool_use_enforcement, this block is model-family-agnostic — it
+    targets cross-model failure modes (stopping after a stub; fabricating
+    output when blocked) and should appear for every model by default."""
+
+    def _make_agent(self, model="anthropic/claude-opus-4.8",
+                    task_completion_guidance=True, **extra_cfg):
+        agent_cfg = {"task_completion_guidance": task_completion_guidance}
+        agent_cfg.update(extra_cfg)
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": agent_cfg},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_default_injects_for_claude(self):
+        """The block must reach Claude by default — that's the
+        primary motivating model family."""
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        agent = self._make_agent(model="anthropic/claude-opus-4.8")
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE in prompt
+
+    def test_default_injects_for_deepseek(self):
+        """And for DeepSeek — the other model that failed the Sarasota
+        real-estate task by fabricating output."""
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        agent = self._make_agent(model="deepseek/deepseek-v4-flash")
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE in prompt
+
+    def test_default_injects_for_gpt(self):
+        """Also reaches model families that already get enforcement —
+        it's additive, not exclusive."""
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-5.4")
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE in prompt
+
+    def test_false_disables(self):
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        agent = self._make_agent(
+            model="anthropic/claude-opus-4.8", task_completion_guidance=False
+        )
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE not in prompt
+
+    def test_no_tools_no_injection(self):
+        """Same gate as tool_use_enforcement — no tools means no guidance.
+        The guidance refers to ``tool calls`` and ``tool output``; without
+        tools it would be advice for a capability the agent doesn't have."""
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"task_completion_guidance": True}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                enabled_toolsets=[],
+            )
+            a.client = MagicMock()
+            assert TASK_COMPLETION_GUIDANCE not in a._build_system_prompt()
+
+
+class TestEnvironmentProbeIntegration:
+    """Tests for the local Python toolchain probe wiring (config.yaml
+    ``agent.environment_probe``).  The probe itself is unit-tested in
+    tests/tools/test_env_probe.py; this class confirms it lands in the
+    system prompt when enabled and stays out when disabled."""
+
+    def _make_agent(self, model="anthropic/claude-opus-4.8",
+                    environment_probe=True):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"environment_probe": environment_probe}},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_probe_appears_when_problem_detected(self, monkeypatch):
+        """When the probe finds something off, the line lands in the prompt."""
+        from tools import env_probe
+        env_probe._reset_cache_for_tests()
+        monkeypatch.setattr(env_probe, "_python_version_of",
+                            lambda b: {"python3": "3.11.15"}.get(b))
+        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)
+        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: True)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.12")
+        monkeypatch.setattr(env_probe.shutil, "which",
+                            lambda name: None if name == "uv" else "/usr/bin/" + name)
+
+        agent = self._make_agent(environment_probe=True)
+        prompt = agent._build_system_prompt()
+        assert "Python toolchain:" in prompt
+        assert "3.11.15" in prompt
+
+    def test_probe_silent_on_clean_env(self, monkeypatch):
+        """Clean environment → probe emits nothing → no line in prompt."""
+        from tools import env_probe
+        env_probe._reset_cache_for_tests()
+        monkeypatch.setattr(env_probe, "_python_version_of",
+                            lambda b: "3.13.3" if b == "python3" else None)
+        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: True)
+        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: False)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.13")
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+
+        agent = self._make_agent(environment_probe=True)
+        prompt = agent._build_system_prompt()
+        assert "Python toolchain:" not in prompt
+
+    def test_probe_disabled_by_config(self, monkeypatch):
+        """Even with detectable problems, the probe stays out when disabled."""
+        from tools import env_probe
+        env_probe._reset_cache_for_tests()
+        monkeypatch.setattr(env_probe, "_python_version_of",
+                            lambda b: {"python3": "3.11.15"}.get(b))
+        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)
+        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: True)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.12")
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+
+        agent = self._make_agent(environment_probe=False)
+        prompt = agent._build_system_prompt()
+        assert "Python toolchain:" not in prompt
 
 
 class TestInvalidateSystemPrompt:
@@ -1901,7 +2170,6 @@ class TestExecuteToolCalls:
         agent._interruptible_api_call = _fake_api_call
         agent._persist_session = lambda *args, **kwargs: None
         agent._save_trajectory = lambda *args, **kwargs: None
-        agent._save_session_log = lambda *args, **kwargs: None
 
         captured = io.StringIO()
         agent._print_fn = lambda *args, **kw: print(*args, file=captured, **kw)
@@ -2160,6 +2428,8 @@ class TestConcurrentToolExecution:
                 session_id=agent.session_id,
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
+                enabled_toolsets=agent.enabled_toolsets,
+                disabled_toolsets=agent.disabled_toolsets,
             )
             assert result == "result"
 
@@ -2609,6 +2879,31 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
+        self._setup_agent(agent)
+        agent.model = "qwen3.5:9b"
+        agent.provider = "custom"
+        agent.base_url = "http://host.docker.internal:11434/v1"
+        agent._ollama_num_ctx = 4096
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            caplog.at_level(logging.WARNING, logger="agent.conversation_loop"),
+        ):
+            result = agent.run_conversation("Call ps -aux")
+
+        assert result["failed"] is True
+        assert result["completed"] is False
+        assert result["api_calls"] == 0
+        assert result["turn_exit_reason"] == "ollama_runtime_context_too_small"
+        assert "Ollama loaded `qwen3.5:9b` with only 4,096 tokens" in result["final_response"]
+        assert "model.ollama_num_ctx: 65536" in result["final_response"]
+        assert not agent.client.chat.completions.create.called
+        assert "Ollama runtime context too small for Hermes tool use" in caplog.text
+        assert "runtime_context=4096" in caplog.text
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
@@ -3174,8 +3469,13 @@ class TestRunConversation:
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 
-    def test_non_minimax_delta_overflow_still_probes_down(self, agent):
-        """Non-MiniMax providers should keep the generic probe-down behavior."""
+    def test_non_minimax_overflow_without_provider_limit_keeps_context(self, agent):
+        """Generic overflow without a provider-reported max must NOT probe-step down.
+
+        Previously a 200K configured window would silently drop to the 128K probe
+        tier on a generic overflow error.  Now we keep the configured window and
+        rely on compression — see #33669 / PR #33826.
+        """
         self._setup_agent(agent)
         agent.provider = "openrouter"
         agent.model = "some/unknown-model"
@@ -3209,7 +3509,8 @@ class TestRunConversation:
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_called_once()
-        assert agent.context_compressor.context_length == 128_000
+        # Context length preserved — no guessed probe-tier step-down.
+        assert agent.context_compressor.context_length == 200_000
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 
@@ -3480,9 +3781,18 @@ class TestRunConversation:
         mock_handle_function_call.assert_not_called()
 
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
-        """Regression: kanban worker must call kanban_block when iteration
-        budget is exhausted, otherwise the dispatcher sees a protocol
-        violation and gives up after 1 failure (issue #23216)."""
+        """Regression: kanban worker must signal the dispatcher when its
+        iteration budget is exhausted, otherwise the task silently re-runs
+        forever without ever tripping the failure_limit circuit breaker
+        (issue #23216 / #29747 gap 2).
+
+        As of #29747, the exhaustion path routes through
+        ``kanban_db._record_task_failure(outcome="timed_out")`` so the
+        ``consecutive_failures`` counter increments and the dispatcher's
+        ``failure_limit`` breaker eventually trips. The legacy
+        ``kanban_block`` call was replaced because blocked-outcome runs
+        bypass the failure counter.
+        """
         self._setup_agent(agent)
         agent.max_iterations = 2
 
@@ -3501,8 +3811,14 @@ class TestRunConversation:
             tool_resp, tool_resp, summary_resp,
         ]
 
+        mock_record_failure = MagicMock(return_value=False)
+        mock_connect = MagicMock(return_value=MagicMock())
+
         with (
-            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("hermes_cli.kanban_db._record_task_failure",
+                  mock_record_failure),
+            patch("hermes_cli.kanban_db.connect", mock_connect),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -3512,23 +3828,24 @@ class TestRunConversation:
         # The agent should have reported the task as not completed.
         assert result["completed"] is False
 
-        # Among all handle_function_call invocations, one must be
-        # kanban_block with the correct task_id and a reason mentioning
-        # iteration exhaustion.
-        kanban_block_calls = [
-            c for c in mock_hfc.call_args_list
-            if c[0][0] == "kanban_block"
-        ]
-        assert len(kanban_block_calls) == 1, (
-            f"Expected exactly 1 kanban_block call, got {len(kanban_block_calls)}. "
-            f"All calls: {mock_hfc.call_args_list}"
+        # _record_task_failure should have been called exactly once for
+        # the exhaustion event, with outcome="timed_out".
+        assert mock_record_failure.call_count == 1, (
+            f"Expected exactly 1 _record_task_failure call, "
+            f"got {mock_record_failure.call_count}. "
+            f"Calls: {mock_record_failure.call_args_list}"
         )
-        call = kanban_block_calls[0]
-        assert call[0][1]["task_id"] == "t_test_task_123"
-        assert "Iteration budget exhausted" in call[0][1]["reason"]
+        call = mock_record_failure.call_args_list[0]
+        # Positional: (conn, task_id, ...)
+        assert call.args[1] == "t_test_task_123"
+        assert call.kwargs.get("outcome") == "timed_out"
+        assert call.kwargs.get("release_claim") is True
+        assert call.kwargs.get("end_run") is True
+        assert "Iteration budget exhausted" in call.kwargs.get("error", "")
 
     def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):
-        """kanban_block must NOT be called when HERMES_KANBAN_TASK is unset."""
+        """The exhaustion bridge must NOT fire when HERMES_KANBAN_TASK
+        is unset (non-kanban runs are unaffected by #29747 gap 2)."""
         self._setup_agent(agent)
         agent.max_iterations = 2
 
@@ -3545,20 +3862,20 @@ class TestRunConversation:
             tool_resp, tool_resp, summary_resp,
         ]
 
+        mock_record_failure = MagicMock(return_value=False)
+
         with (
-            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("hermes_cli.kanban_db._record_task_failure",
+                  mock_record_failure),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
             agent.run_conversation("do stuff")
 
-        kanban_block_calls = [
-            c for c in mock_hfc.call_args_list
-            if c[0][0] == "kanban_block"
-        ]
-        assert len(kanban_block_calls) == 0, (
-            "kanban_block should not be called outside kanban mode"
+        assert mock_record_failure.call_count == 0, (
+            "_record_task_failure should not be called outside kanban mode"
         )
 
 
@@ -3602,11 +3919,17 @@ class TestRetryExhaustion:
             usage=None,
         )
         agent.client.chat.completions.create.return_value = bad_resp
+        # The conversation loop was extracted out of run_agent.py and pulls
+        # in time/jittered_backoff at module level — patch BOTH so the
+        # retry waits don't burn 18+ seconds of real wall-clock time here.
+        from agent import conversation_loop as _conv_loop
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
         ):
             result = agent.run_conversation("hello")
         assert result.get("completed") is False, (
@@ -3620,11 +3943,14 @@ class TestRetryExhaustion:
         """Exhausted retries on API errors must return error result, not crash."""
         self._setup_agent(agent)
         agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
+        from agent import conversation_loop as _conv_loop
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
         ):
             result = agent.run_conversation("hello")
         assert result.get("completed") is False
@@ -3737,7 +4063,7 @@ class TestNousCredentialRefresh:
 
         assert ok is True
         assert closed["value"] is True
-        assert captured["inference_auth_mode"] == "legacy"
+        assert captured["force_refresh"] is True
         assert rebuilt["kwargs"]["api_key"] == "new-nous-key"
         assert (
             rebuilt["kwargs"]["base_url"] == "https://inference-api.nousresearch.com/v1"
@@ -3958,6 +4284,25 @@ class TestCredentialPoolRecovery:
 
         assert context["reason"] == "usage_limit_reached"
         assert context["message"] == "The usage limit has been reached"
+
+    def test_extract_api_error_context_parses_resets_in_hours_and_minutes(self, agent, monkeypatch):
+        from agent import agent_runtime_helpers
+
+        monkeypatch.setattr(agent_runtime_helpers.time, "time", lambda: 1_000.0)
+        error = SimpleNamespace(
+            body={
+                "error": {
+                    "type": "GoUsageLimitError",
+                    "message": "Weekly usage limit reached. Resets in 6hr 29min.",
+                }
+            },
+            response=SimpleNamespace(headers={}),
+        )
+
+        context = agent._extract_api_error_context(error)
+
+        assert context["reason"] == "GoUsageLimitError"
+        assert context["reset_at"] == 1_000.0 + (6 * 60 * 60) + (29 * 60)
 
     def test_recover_with_pool_passes_error_context_on_rotated_429(self, agent):
         next_entry = SimpleNamespace(label="secondary")
@@ -4276,7 +4621,6 @@ class TestSafeWriter:
 
     def test_double_wrap_prevented(self):
         """Wrapping an already-wrapped stream doesn't add layers."""
-        import sys
         from run_agent import _SafeWriter
         from io import StringIO
         inner = StringIO()
@@ -4291,22 +4635,6 @@ class TestSafeWriter:
         assert inner.getvalue() == "test"
 
 
-class TestSaveSessionLogAtomicWrite:
-    def test_uses_shared_atomic_json_helper(self, agent, tmp_path):
-        agent.session_log_file = tmp_path / "session.json"
-        messages = [{"role": "user", "content": "hello"}]
-
-        with patch("run_agent.atomic_json_write", create=True) as mock_atomic_write:
-            agent._save_session_log(messages)
-
-        mock_atomic_write.assert_called_once()
-        call_args = mock_atomic_write.call_args
-        assert call_args.args[0] == agent.session_log_file
-        payload = call_args.args[1]
-        assert payload["session_id"] == agent.session_id
-        assert payload["messages"] == messages
-        assert call_args.kwargs["indent"] == 2
-        assert call_args.kwargs["default"] is str
 
 
 # ===================================================================
@@ -5094,12 +5422,9 @@ class TestPersistUserMessageOverride:
             {"role": "assistant", "content": "Hi!"},
         ]
 
-        with patch.object(agent, "_save_session_log") as mock_save:
-            agent._persist_session(messages, [])
+        agent._persist_session(messages, [])
 
         assert messages[0]["content"] == "Hello there"
-        saved_messages = mock_save.call_args.args[0]
-        assert saved_messages[0]["content"] == "Hello there"
         first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
         assert first_db_write["content"] == "Hello there"
 

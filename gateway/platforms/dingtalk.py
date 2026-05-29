@@ -358,6 +358,19 @@ class DingTalkAdapter(BasePlatformAdapter):
             await asyncio.gather(*self._bg_tasks, return_exceptions=True)
             self._bg_tasks.clear()
 
+        # Finalize any open streaming cards before the HTTP client closes so
+        # they don't stay stuck in streaming state on DingTalk's UI after
+        # a gateway restart.  _close_streaming_siblings handles its own
+        # per-card exceptions; the outer try is a safety net for token fetch.
+        for _chat_id in list(self._streaming_cards):
+            try:
+                await self._close_streaming_siblings(_chat_id)
+            except Exception as _exc:
+                logger.debug(
+                    "[%s] Failed to finalize streaming card on disconnect for %s: %s",
+                    self.name, _chat_id, _exc,
+                )
+
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
@@ -774,7 +787,14 @@ class DingTalkAdapter(BasePlatformAdapter):
                             elif mapped == "audio":
                                 media_types.append("audio")
                                 if msg_type == MessageType.TEXT:
-                                    msg_type = MessageType.AUDIO
+                                    # DingTalk's "voice" rich-text item is a
+                                    # native voice note — route through STT.
+                                    # "audio" comes from file uploads only;
+                                    # keep those as AUDIO (no auto-STT).
+                                    if item_type == "voice":
+                                        msg_type = MessageType.VOICE
+                                    else:
+                                        msg_type = MessageType.AUDIO
                             elif mapped == "video":
                                 media_types.append("video")
                                 if msg_type == MessageType.TEXT:

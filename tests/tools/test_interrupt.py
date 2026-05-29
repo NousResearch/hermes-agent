@@ -65,7 +65,7 @@ class TestPreToolCheck:
 
     def test_all_tools_skipped_when_interrupted(self):
         """Mock an interrupted agent and verify no tools execute."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
 
         # Build a fake assistant_message with 3 tool calls
         tc1 = MagicMock()

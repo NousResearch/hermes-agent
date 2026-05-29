@@ -88,7 +88,15 @@ def test_dashboard_slot_reports_up_when_enabled(
     """Symmetry: with HERMES_DASHBOARD=1, s6-svstat reports the slot as up."""
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
-         "-e", "HERMES_DASHBOARD=1", built_image, "sleep", "120"],
+         "-e", "HERMES_DASHBOARD=1",
+         # The default dashboard host is 0.0.0.0, which now engages the
+         # OAuth auth gate. Without a provider registered (no
+         # HERMES_DASHBOARD_OAUTH_CLIENT_ID in this test env), start_server
+         # would fail closed and the slot would never come up. Pin the
+         # explicit insecure opt-in to keep this test focused on the s6
+         # supervision contract, not the auth gate.
+         "-e", "HERMES_DASHBOARD_INSECURE=1",
+         built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
     )
     # uvicorn takes a moment to bind; poll svstat.
@@ -113,7 +121,12 @@ def test_dashboard_opt_in_starts(
     """With HERMES_DASHBOARD=1, a dashboard process should be visible."""
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
-         "-e", "HERMES_DASHBOARD=1", built_image, "sleep", "120"],
+         "-e", "HERMES_DASHBOARD=1",
+         # Default bind is 0.0.0.0; pin insecure opt-in so the auth gate
+         # doesn't fail-closed before the process can come up. See
+         # test_dashboard_slot_reports_up_when_enabled for the full rationale.
+         "-e", "HERMES_DASHBOARD_INSECURE=1",
+         built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
     )
     # Poll for the dashboard subprocess to appear — the entrypoint
@@ -132,6 +145,10 @@ def test_dashboard_port_override(
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
          "-e", "HERMES_DASHBOARD=1", "-e", "HERMES_DASHBOARD_PORT=9120",
+         # Default bind is 0.0.0.0; pin insecure opt-in so the auth gate
+         # doesn't fail-closed before the port is bound. See
+         # test_dashboard_slot_reports_up_when_enabled for the full rationale.
+         "-e", "HERMES_DASHBOARD_INSECURE=1",
          built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
     )
@@ -161,7 +178,13 @@ def test_dashboard_restarts_after_crash(
     """
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
-         "-e", "HERMES_DASHBOARD=1", built_image, "sleep", "120"],
+         "-e", "HERMES_DASHBOARD=1",
+         # Default bind is 0.0.0.0; pin insecure opt-in so the auth gate
+         # doesn't fail-closed before the supervised dashboard can come up.
+         # See test_dashboard_slot_reports_up_when_enabled for the full
+         # rationale.
+         "-e", "HERMES_DASHBOARD_INSECURE=1",
+         built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
     )
     # Wait for the first dashboard to come up.
@@ -214,36 +237,67 @@ def test_dashboard_restarts_after_crash(
 # ---------------------------------------------------------------------------
 
 
-def _fetch_api_status(container: str, *, deadline_s: float = 60.0) -> dict:
-    """Poll ``/api/status`` from inside the container via the venv python.
+def _http_probe(
+    container: str,
+    path: str,
+    *,
+    deadline_s: float = 60.0,
+) -> tuple[int, str]:
+    """Poll ``http://127.0.0.1:9119<path>`` from inside the container.
 
-    The dashboard binds to ``HERMES_DASHBOARD_HOST`` (typically ``0.0.0.0``)
-    so loopback inside the container works. The image doesn't ship
-    ``curl`` but Python's stdlib ``urllib`` is good enough.
+    Returns ``(status_code, body)`` as soon as the dashboard answers any
+    HTTP response — 200, 401, 503, anything. The image doesn't ship
+    ``curl`` but the venv's stdlib ``urllib`` is good enough; we use a
+    proper ``try``/``except`` to intercept ``HTTPError`` because
+    ``urlopen`` raises on 4xx/5xx, and we treat those as legitimate
+    responses (the OAuth gate's 401 IS the success signal for the
+    gate-engaged test).
 
-    Returns the decoded JSON dict on success; raises AssertionError on
-    timeout.
+    Connection errors (uvicorn still starting, fail-closed exited) keep
+    the poll loop running until ``deadline_s`` elapses.
+
+    The probe Python program is fed over stdin (``python -``) rather
+    than ``python -c`` so we can use proper multi-line syntax with
+    ``try``/``except`` blocks without escaping hell.
+
+    Raises ``AssertionError`` on timeout.
     """
+    py_program = f"""\
+import urllib.request, urllib.error
+req = urllib.request.Request("http://127.0.0.1:9119{path}")
+try:
+    r = urllib.request.urlopen(req, timeout=5)
+    print(r.status)
+    print(r.read().decode(), end="")
+except urllib.error.HTTPError as h:
+    print(h.code)
+    print(h.read().decode(), end="")
+"""
+    # Feed the program over stdin via a heredoc so docker_exec_sh's
+    # single bash string stays clean. The 'PY' delimiter is quoted to
+    # disable shell expansion inside the heredoc body.
     probe = (
-        "/opt/hermes/.venv/bin/python -c "
-        "'import json,urllib.request as u;"
-        "print(u.urlopen(\"http://127.0.0.1:9119/api/status\",timeout=5)"
-        ".read().decode())'"
+        "/opt/hermes/.venv/bin/python - <<'PY'\n"
+        f"{py_program}"
+        "PY"
     )
     end = time.monotonic() + deadline_s
     last_err = ""
     while time.monotonic() < end:
         r = docker_exec_sh(container, probe, timeout=10)
         if r.returncode == 0 and r.stdout.strip():
+            lines = r.stdout.split("\n", 1)
             try:
-                return json.loads(r.stdout)
-            except (ValueError, json.JSONDecodeError) as exc:  # noqa: F841
-                last_err = f"json parse: {exc!r} / stdout={r.stdout!r}"
+                status = int(lines[0].strip())
+                body = lines[1] if len(lines) > 1 else ""
+                return status, body
+            except (ValueError, IndexError) as exc:
+                last_err = f"parse: {exc!r} / stdout={r.stdout!r}"
         else:
             last_err = f"rc={r.returncode} stderr={r.stderr!r}"
         time.sleep(0.5)
     raise AssertionError(
-        f"/api/status never returned valid JSON within {deadline_s}s; "
+        f"Probe of {path} never returned HTTP within {deadline_s}s; "
         f"last error: {last_err}"
     )
 
@@ -263,6 +317,17 @@ def test_dashboard_oauth_gate_engages_on_non_loopback_bind(
     flipped ``--insecure`` on for any non-loopback bind, which routed
     ``start_server`` straight back into the legacy ``allow_public=True``
     branch and disabled the gate every time.
+
+    We verify two independent observable consequences of the gate being
+    on:
+
+    1. ``/api/auth/providers`` (publicly reachable through the gate so
+       the login page can bootstrap) returns 200 with ``nous`` in the
+       provider list — proves the bundled provider registered.
+    2. ``/api/status`` (a public endpoint under the legacy
+       ``_SESSION_TOKEN`` middleware) returns 401 — proves the OAuth gate
+       runs upstream of the legacy public list and is actively
+       intercepting unauthenticated callers.
     """
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
@@ -272,15 +337,27 @@ def test_dashboard_oauth_gate_engages_on_non_loopback_bind(
          built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
     )
-    status = _fetch_api_status(container_name)
-    assert status.get("auth_required") is True, (
-        "OAuth gate must be engaged on 0.0.0.0 bind when a provider is "
-        "registered and HERMES_DASHBOARD_INSECURE is unset. Got: "
-        f"{status!r}"
+
+    # (1) Provider registry visible via the public bootstrap endpoint.
+    status_code, body = _http_probe(container_name, "/api/auth/providers")
+    assert status_code == 200, (
+        f"/api/auth/providers should return 200 when a provider is "
+        f"registered; got {status_code} body={body!r}"
     )
-    assert "nous" in status.get("auth_providers", []), (
+    payload = json.loads(body)
+    provider_names = [p.get("name") for p in payload.get("providers", [])]
+    assert "nous" in provider_names, (
         "Bundled dashboard_auth/nous provider should register when "
-        f"HERMES_DASHBOARD_OAUTH_CLIENT_ID is set. Got: {status!r}"
+        f"HERMES_DASHBOARD_OAUTH_CLIENT_ID is set. Got: {payload!r}"
+    )
+
+    # (2) /api/status is gated by the OAuth middleware → unauthenticated
+    # callers get 401, not the legacy public 200 JSON.
+    status_code, body = _http_probe(container_name, "/api/status")
+    assert status_code == 401, (
+        "OAuth gate must intercept /api/status on 0.0.0.0 bind when a "
+        "provider is registered and HERMES_DASHBOARD_INSECURE is unset. "
+        f"Got: status={status_code} body={body!r}"
     )
 
 
@@ -291,6 +368,10 @@ def test_dashboard_insecure_env_var_opts_out_of_gate(
     for operators running on trusted LANs behind a reverse proxy without
     the OAuth contract. Same opt-out shape as the rest of the s6 boolean
     envs (``HERMES_DASHBOARD``, ``HERMES_DASHBOARD_TUI``).
+
+    With the gate off, ``/api/status`` (a public endpoint under the
+    legacy ``_SESSION_TOKEN`` middleware) returns 200 with the
+    ``auth_required: false`` body — proves the gate is bypassed.
     """
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
@@ -300,7 +381,12 @@ def test_dashboard_insecure_env_var_opts_out_of_gate(
          built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
     )
-    status = _fetch_api_status(container_name)
+    status_code, body = _http_probe(container_name, "/api/status")
+    assert status_code == 200, (
+        f"/api/status should return 200 with the auth gate disabled; "
+        f"got {status_code} body={body!r}"
+    )
+    status = json.loads(body)
     assert status.get("auth_required") is False, (
         "HERMES_DASHBOARD_INSECURE=1 must disable the auth gate (explicit "
         f"opt-in for trusted-LAN deployments). Got: {status!r}"

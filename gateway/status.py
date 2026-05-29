@@ -34,6 +34,7 @@ _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
+_gateway_lock_path = None
 
 
 def _get_pid_path() -> Path:
@@ -214,7 +215,10 @@ def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
     if not pid_path.exists():
         return None
 
-    raw = pid_path.read_text().strip()
+    try:
+        raw = pid_path.read_text().strip()
+    except OSError:
+        return None
     if not raw:
         return None
 
@@ -312,11 +316,13 @@ def acquire_gateway_runtime_lock() -> bool:
     Unlike the PID file, the lock is owned by the live process itself. If the
     process dies abruptly, the OS releases the lock automatically.
     """
-    global _gateway_lock_handle
-    if _gateway_lock_handle is not None:
-        return True
-
+    global _gateway_lock_handle, _gateway_lock_path
     path = _get_gateway_lock_path()
+    if _gateway_lock_handle is not None:
+        if _gateway_lock_path == path:
+            return True
+        release_gateway_runtime_lock()
+
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "a+", encoding="utf-8")
     if not _try_acquire_file_lock(handle):
@@ -324,16 +330,19 @@ def acquire_gateway_runtime_lock() -> bool:
         return False
     _write_gateway_lock_record(handle)
     _gateway_lock_handle = handle
+    _gateway_lock_path = path
     return True
 
 
 def release_gateway_runtime_lock() -> None:
     """Release the gateway runtime lock when owned by this process."""
-    global _gateway_lock_handle
+    global _gateway_lock_handle, _gateway_lock_path
     handle = _gateway_lock_handle
     if handle is None:
+        _gateway_lock_path = None
         return
     _gateway_lock_handle = None
+    _gateway_lock_path = None
     _release_file_lock(handle)
     try:
         handle.close()
@@ -343,9 +352,9 @@ def release_gateway_runtime_lock() -> None:
 
 def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     """Return True when some process currently owns the gateway runtime lock."""
-    global _gateway_lock_handle
+    global _gateway_lock_handle, _gateway_lock_path
     resolved_lock_path = lock_path or _get_gateway_lock_path()
-    if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
+    if _gateway_lock_handle is not None and resolved_lock_path == _gateway_lock_path:
         return True
 
     if not resolved_lock_path.exists():
@@ -501,8 +510,12 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         if not stale:
             try:
                 os.kill(existing_pid, 0)
-            except (ProcessLookupError, PermissionError, OSError):
-                # Windows raises OSError with WinError 87 for invalid pid check
+            except (ProcessLookupError, PermissionError, OSError, SystemError):
+                # Windows normally raises OSError with WinError 87 for invalid
+                # pid checks, but some native Windows/Python builds surface the
+                # same failure as ``SystemError: <class 'OSError'> returned a
+                # result with an exception set``. Treat both as stale locks so
+                # gateway startup is not blocked by a dead scoped lock record.
                 stale = True
             else:
                 current_start = _get_process_start_time(existing_pid)
@@ -758,6 +771,8 @@ def get_running_pid(
 
     primary_record = _read_pid_record(resolved_pid_path)
     fallback_record = _read_gateway_lock_record(resolved_lock_path)
+    if fallback_record is None and _gateway_lock_handle is not None and _gateway_lock_path == resolved_lock_path:
+        fallback_record = _build_pid_record()
 
     for record in (primary_record, fallback_record):
         pid = _pid_from_record(record)

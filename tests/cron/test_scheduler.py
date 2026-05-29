@@ -421,6 +421,45 @@ class TestDeliverResultWrapping:
         voice_call = adapter.send_voice.call_args
         assert voice_call[1]["audio_path"] == "/tmp/cron-voice.mp3"
 
+    def test_live_adapter_shutdown_runtime_error_returns_delivery_error(self):
+        """If the gateway loop is finalizing, do not fall back into standalone delivery.
+
+        Regression: run_coroutine_threadsafe can raise
+        "cannot schedule new futures after interpreter shutdown" during gateway
+        teardown, which previously led to noisy delivery failures and leaked the
+        created coroutine.
+        """
+        from gateway.config import Platform
+
+        adapter = AsyncMock()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "shutdown-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "1234"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=RuntimeError("cannot schedule new futures after interpreter shutdown")), \
+             patch("tools.send_message_tool._send_to_platform") as send_mock:
+            result = _deliver_result(
+                job,
+                "shutdown delivery",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert "skipped during interpreter shutdown" in result
+        send_mock.assert_not_called()
+
     def test_live_adapter_routes_image_to_send_image_file(self):
         """Image MEDIA files should be routed to send_image_file, not send_voice."""
         from gateway.config import Platform
@@ -782,6 +821,51 @@ class TestRunJobSessionPersistence:
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
+
+    def test_run_job_allows_memory_when_memory_toolset_enabled(self, tmp_path):
+        """Cron jobs that opt into the memory toolset should get a memory store.
+
+        Regression: run_job previously passed skip_memory=True unconditionally,
+        so the memory tool was visible but failed at runtime with "Memory is not
+        available" for jobs that explicitly enabled memory.
+        """
+        job = {
+            "id": "memory-job",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": ["terminal", "memory", "skills"],
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["enabled_toolsets"] == ["terminal", "memory", "skills"]
+        assert kwargs["skip_memory"] is False
+
+    def test_run_job_skips_memory_when_memory_toolset_not_enabled(self, tmp_path):
+        """Cron jobs without memory keep the old no-memory behavior."""
+        job = {
+            "id": "no-memory-job",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": ["terminal", "skills"],
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["enabled_toolsets"] == ["terminal", "skills"]
+        assert kwargs["skip_memory"] is True
 
     def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
         """When a job has no explicit enabled_toolsets, the scheduler now
@@ -1816,6 +1900,55 @@ class TestDeliverResultTimeoutCancelsFuture:
         # 2. The standalone fallback delivered — no double send, no silent drop
         assert result is None, f"expected successful delivery, got error: {result!r}"
         standalone_send.assert_awaited_once()
+
+
+    def test_live_adapter_shutdown_error_does_not_fallback_to_standalone(self):
+        """Interpreter shutdown errors surfaced as adapter SendResult failures
+        must not fall through to standalone delivery, which can leak a coroutine
+        and record a noisy Telegram delivery failure during gateway teardown.
+        """
+        from concurrent.futures import Future
+        from gateway.config import Platform
+        from cron.scheduler import _deliver_result
+
+        adapter = AsyncMock()
+        send_result = MagicMock(success=False)
+        send_result.error = "Unknown error in HTTP implementation: RuntimeError('cannot schedule new futures after interpreter shutdown')"
+        adapter.send.return_value = send_result
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        completed_future = Future()
+        completed_future.set_result(send_result)
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        job = {
+            "id": "shutdown-delivery-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg),              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro),              patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert "skipped during interpreter shutdown" in result
+        standalone_send.assert_not_awaited()
 
 
 class TestSendMediaTimeoutCancelsFuture:

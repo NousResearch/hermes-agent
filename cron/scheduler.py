@@ -41,6 +41,23 @@ from hermes_time import now as _hermes_now
 logger = logging.getLogger(__name__)
 
 
+def _is_interpreter_shutdown_message(value: object) -> bool:
+    """Return True when a value describes Python finalization shutdown."""
+    return "cannot schedule new futures after interpreter shutdown" in str(value).lower()
+
+
+def _is_interpreter_shutdown_runtime_error(exc: BaseException) -> bool:
+    """Return True for executor failures caused by Python finalization.
+
+    During process shutdown, ThreadPoolExecutor.submit can raise
+    RuntimeError: cannot schedule new futures after interpreter shutdown.
+    Cron may still be finishing a due job (and saving/delivery bookkeeping)
+    during gateway/daemon teardown; treat that case as a shutdown-mode signal
+    rather than a job failure whenever we can still finish work synchronously.
+    """
+    return isinstance(exc, RuntimeError) and _is_interpreter_shutdown_message(exc)
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
@@ -117,9 +134,17 @@ SILENT_MARKER = "[SILENT]"
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = get_hermes_home()
 
-# File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
+# File-based lock prevents concurrent ticks from gateway + daemon + systemd timer.
+# Keep the legacy globals for tests/callers that patch them, while letting
+# _hermes_home monkeypatches dynamically move the lock away from a live gateway.
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+
+def _get_tick_lock_file() -> Path:
+    if _LOCK_FILE != _LOCK_DIR / ".tick.lock":
+        return _LOCK_FILE
+    return get_hermes_home() / "cron" / ".tick.lock"
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -414,10 +439,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
                 if text_to_send:
-                    future = asyncio.run_coroutine_threadsafe(
-                        runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
-                        loop,
-                    )
+                    text_coro = runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata)
+                    try:
+                        future = asyncio.run_coroutine_threadsafe(text_coro, loop)
+                    except RuntimeError:
+                        close = getattr(text_coro, "close", None)
+                        if close is not None:
+                            close()
+                        raise
                     try:
                         send_result = future.result(timeout=60)
                     except TimeoutError:
@@ -425,6 +454,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         raise
                     if send_result and not getattr(send_result, "success", True):
                         err = getattr(send_result, "error", "unknown")
+                        if _is_interpreter_shutdown_message(err):
+                            msg = f"delivery to {platform_name}:{chat_id} skipped during interpreter shutdown"
+                            logger.warning("Job '%s': %s", job["id"], msg)
+                            delivery_errors.append(msg)
+                            continue
                         logger.warning(
                             "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
                             job["id"], platform_name, chat_id, err,
@@ -439,6 +473,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
             except Exception as e:
+                if _is_interpreter_shutdown_runtime_error(e):
+                    msg = f"delivery to {platform_name}:{chat_id} skipped during interpreter shutdown"
+                    logger.warning("Job '%s': %s", job["id"], msg)
+                    delivery_errors.append(msg)
+                    continue
                 logger.warning(
                     "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
                     job["id"], platform_name, chat_id, e,
@@ -695,6 +734,20 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 if not output_files:
                     continue  # silent skip — no output yet
                 latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                # Do not feed recursive infrastructure failures back into the
+                # next run. A failed hourly commander output includes the full
+                # prior prompt/context, so context_from can otherwise amplify
+                # the same scheduler traceback forever and crowd out useful
+                # work context.
+                failed_output = "(FAILED)" in latest_output[:300]
+                shutdown_failure = "cannot schedule new futures after interpreter shutdown" in latest_output.lower()
+                script_interrupt = "KeyboardInterrupt" in latest_output and "hourly_commander_context.py" in latest_output
+                if failed_output and (shutdown_failure or script_interrupt):
+                    logger.warning(
+                        "context_from: skipping failed infrastructure output for job %r",
+                        source_job_id,
+                    )
+                    continue
                 # Truncate to 8K characters to avoid prompt bloat
                 _MAX_CONTEXT_CHARS = 8000
                 if len(latest_output) > _MAX_CONTEXT_CHARS:
@@ -770,6 +823,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
     return "\n".join(parts)
+
+
+def _cron_memory_enabled(enabled_toolsets) -> bool:
+    """Return True when a cron job explicitly enables memory-capable tools."""
+    if not enabled_toolsets:
+        return False
+    return any(str(toolset).lower() in {"memory", "all"} for toolset in enabled_toolsets)
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
@@ -991,6 +1051,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             except Exception as e:
                 logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
 
+        _cron_enabled_toolsets = _resolve_cron_enabled_toolsets(job, _cfg)
+        # Cron used to force skip_memory=not _cron_memory_enabled(enabled_toolsets), which made the memory tool
+        # appear in jobs that enabled the memory toolset but fail at runtime
+        # with "Memory is not available."  Only skip memory for cron jobs that
+        # did not opt into the memory toolset.  Writes remain explicit tool
+        # calls; enabling the toolset means the job intentionally requested
+        # durable memory access.
+        _cron_memory_requested = (
+            _cron_enabled_toolsets is None
+            or "all" in _cron_enabled_toolsets
+            or "memory" in _cron_enabled_toolsets
+        )
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -1008,14 +1081,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
-            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
+            enabled_toolsets=_cron_enabled_toolsets,
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
             # When a workdir is configured, inject AGENTS.md / CLAUDE.md /
             # .cursorrules from that directory; otherwise preserve the old
             # behaviour (don't inject SOUL.md/AGENTS.md from the scheduler cwd).
             skip_context_files=not bool(_job_workdir),
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_memory=not _cron_memory_requested,
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
@@ -1037,12 +1110,25 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        _cron_future = None
         _inactivity_timeout = False
         try:
+            try:
+                _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+            except RuntimeError as submit_exc:
+                if not _is_interpreter_shutdown_runtime_error(submit_exc):
+                    raise
+                logger.warning(
+                    "Job '%s': cron worker pool is shutting down; running synchronously",
+                    job_name,
+                )
+                _cron_pool.shutdown(wait=False, cancel_futures=True)
+                result = _cron_context.run(agent.run_conversation, prompt)
+                _cron_inactivity_limit = None
             if _cron_inactivity_limit is None:
                 # Unlimited — just wait for the result.
-                result = _cron_future.result()
+                if _cron_future is not None:
+                    result = _cron_future.result()
             else:
                 result = None
                 while True:
@@ -1207,12 +1293,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
-    _LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    lock_file = _get_tick_lock_file()
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
     try:
-        lock_fd = open(_LOCK_FILE, "w")
+        lock_fd = open(lock_file, "w")
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt:
@@ -1268,7 +1355,16 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
             try:
-                success, output, final_response, error = run_job(job)
+                run_result = run_job(job)
+                if (
+                    not isinstance(run_result, tuple)
+                    or len(run_result) != 4
+                ):
+                    raise RuntimeError(
+                        "run_job returned invalid result "
+                        f"{type(run_result).__name__}: {run_result!r}"
+                    )
+                success, output, final_response, error = run_result
 
                 output_file = save_job_output(job["id"], output)
                 if verbose:

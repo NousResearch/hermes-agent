@@ -2669,13 +2669,28 @@ def _apply_bracketed_paste_timeout_patch() -> None:
                 # bracketed-paste entry transition.
                 for i, c in enumerate(data):
                     if self_parser._in_bracketed_paste:
+                        if getattr(self_parser, "_hermes_bp_start", None) is None:
+                            self_parser._hermes_bp_start = time.monotonic()
                         _patched_vt100_feed(self_parser, data[i:])
                         break
                     self_parser._input_parser.send(c)
+                    if self_parser._in_bracketed_paste:
+                        # Start the timeout when ESC[200~ is parsed, not when
+                        # the next user keystroke arrives. Otherwise a torn
+                        # paste can sit in bracketed-paste mode for minutes;
+                        # the first recovery command typed later merely starts
+                        # the timer and is swallowed, which looks like a dead
+                        # input box in the TUI.
+                        self_parser._hermes_bp_start = time.monotonic()
+                        remaining = data[i + 1:]
+                        if remaining:
+                            _patched_vt100_feed(self_parser, remaining)
+                        break
 
         _vt100_mod.Vt100Parser.feed = _patched_vt100_feed
         _vt100_mod._hermes_bp_timeout_patched = True
         logger.debug("Applied Vt100Parser bracketed-paste timeout patch (#16263)")
+
     except Exception as exc:  # noqa: BLE001 — defensive: never break startup
         logger.debug("Bracketed-paste timeout patch skipped: %s", exc)
 

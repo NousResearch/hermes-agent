@@ -135,6 +135,26 @@ class TestBracketedPasteTimeout:
         assert not parser._in_bracketed_paste
         assert callback.call_count >= 1
 
+    def test_timeout_starts_when_paste_entry_is_seen(self):
+        """A marker-only torn paste should age while idle.
+
+        Regression for the TUI appearing frozen after /new or interrupted
+        compression: if ESC[201~ never arrives and no more bytes are read for a
+        while, the first later keystroke must trigger recovery immediately
+        instead of only starting the timeout and remaining trapped in paste mode.
+        """
+        parser, callback = self._make_parser()
+        parser.feed("\x1b[200~")
+
+        assert parser._in_bracketed_paste
+        assert parser._hermes_bp_start is not None
+        parser._hermes_bp_start = time.monotonic() - 5.0
+
+        parser.feed("/usage\r")
+
+        assert not parser._in_bracketed_paste
+        assert callback.call_count >= 1
+
     def test_torn_end_mark_recovers(self):
         """If end mark arrives split across feeds within timeout, it still works."""
         parser, callback = self._make_parser()

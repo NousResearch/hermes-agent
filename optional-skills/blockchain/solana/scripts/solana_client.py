@@ -78,7 +78,7 @@ def _http_get_json(url: str, timeout: int = 10, retries: int = 2) -> Any:
             url, headers={"Accept": "application/json", "User-Agent": "HermesAgent/1.0"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # SSRF: add IP block check
                 return json.load(resp)
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and attempt < retries:

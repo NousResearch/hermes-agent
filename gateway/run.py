@@ -11626,7 +11626,7 @@ class GatewayRunner:
         has_agent_tts = any(
             msg.get("role") == "assistant"
             and any(
-                tc.get("function", {}).get("name") == "text_to_speech"
+                (tc.get("function") or {}).get("name") == "text_to_speech"
                 for tc in (msg.get("tool_calls") or [])
             )
             for msg in agent_messages

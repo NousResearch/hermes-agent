@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 from tools.budget_config import (
     DEFAULT_RESULT_SIZE_CHARS,
-    DEFAULT_TURN_BUDGET_CHARS,
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
 )

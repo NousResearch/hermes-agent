@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import os
-from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest

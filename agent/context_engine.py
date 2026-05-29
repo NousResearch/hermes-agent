@@ -71,7 +71,12 @@ class ContextEngine(ABC):
     def update_from_response(self, usage: Dict[str, Any]) -> None:
         """Update tracked token usage from an API response.
 
-        Called after every LLM call with the usage dict from the response.
+        Called after every LLM call with a normalized usage dict. The legacy
+        keys ``prompt_tokens``, ``completion_tokens``, and ``total_tokens``
+        are always present. Newer hosts also include canonical buckets:
+        ``input_tokens``, ``output_tokens``, ``cache_read_tokens``,
+        ``cache_write_tokens``, and ``reasoning_tokens``. Engines should
+        treat those fields as optional for compatibility with older hosts.
         """
 
     @abstractmethod

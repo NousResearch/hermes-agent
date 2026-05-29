@@ -566,8 +566,11 @@ class S6ServiceManager:
           1. Sources HERMES_HOME (and any extra env) via with-contenv —
              so e.g. ``-e HERMES_HOME=/data/hermes`` is honored at run
              time, not Python-substituted at registration time (OQ8-C).
-          2. Activates the bundled venv.
-          3. Drops to the hermes user and exec's
+          2. Resets ``HOME`` to ``/opt/data`` before the privilege drop
+             so with-contenv's root HOME does not leak into the
+             unprivileged gateway process.
+          3. Activates the bundled venv.
+          4. Drops to the hermes user and exec's
              ``hermes -p <profile> gateway run`` (or just ``hermes
              gateway run`` for the default profile — see below).
 
@@ -597,11 +600,20 @@ class S6ServiceManager:
             "#!/command/with-contenv sh",
             "# shellcheck shell=sh",
             "set -e",
+            "export HOME=/opt/data",
             "cd /opt/data",
             ". /opt/hermes/.venv/bin/activate",
         ]
         for k, v in sorted(extra_env.items()):
             lines.append(f"export {k}={shlex.quote(v)}")
+        # Sentinel for the supervised-child path. Prevents recursive
+        # redirect when the supervised gateway re-enters
+        # `_gateway_command_inner` with subcmd == "run" — without it the
+        # supervisor would dispatch `gateway start` which would re-exec
+        # `gateway run --replace` which would re-dispatch `gateway
+        # start`, etc. See `_gateway_command_inner` for the matching
+        # guard.
+        lines.append("export HERMES_S6_SUPERVISED_CHILD=1")
         if profile == "default":
             lines.append("exec s6-setuidgid hermes hermes gateway run")
         else:
@@ -620,6 +632,38 @@ class S6ServiceManager:
         — so a container started with ``-e HERMES_HOME=/data/hermes``
         gets its logs under /data/hermes/logs/..., not the build-time
         default.
+
+        Output routing — the script is two action directives, applied
+        per line, in order:
+
+          1. ``1`` (forward to stdout) — propagates the line up the
+             s6-supervise pipeline to /init's stdout, which is the
+             container's stdout, which is ``docker logs``. Without
+             this, supervised stdout would be terminated inside
+             s6-log and never reach the container's log stream;
+             users would have to ``docker exec`` and ``tail`` the
+             file just to see startup banners. (Python's ``logging``
+             module defaults to stderr, which s6-supervise leaves
+             unfiltered — so warnings/errors already reach docker
+             logs. This change is specifically about the rich-console
+             banner output and other plain stdout writes.)
+          2. ``T <log_dir>`` — also write a timestamped copy to the
+             rotated log directory (``current`` + archived ``@*.s``
+             files). This is what ``hermes logs`` reads and what
+             persists across container restarts via the volume mount.
+
+        ``T`` is non-sticky: it only prefixes lines for the next
+        action directive. We deliberately put ``T`` between ``1``
+        and the log dir (not before ``1``) so:
+
+          * ``docker logs`` shows raw lines — Python's logging
+            formatter has its own timestamps, and ``docker logs
+            --timestamps`` adds a third layer when desired. No
+            double-stamping in the most common reading path.
+          * The persisted file gets s6-log's own ISO 8601 timestamp
+            so even output that lacked a Python-logger timestamp
+            (rich banners, third-party libs' raw prints) is
+            correlatable in ``current``.
         """
         import shlex
         prof = shlex.quote(profile)
@@ -630,7 +674,7 @@ class S6ServiceManager:
             f'log_dir="$HERMES_HOME/logs/gateways/{prof}"\n'
             f'mkdir -p "$log_dir"\n'
             f'chown -R hermes:hermes "$log_dir" 2>/dev/null || true\n'
-            f'exec s6-setuidgid hermes s6-log n10 s1000000 T "$log_dir"\n'
+            f'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T "$log_dir"\n'
         )
 
     # -- lifecycle ---------------------------------------------------------

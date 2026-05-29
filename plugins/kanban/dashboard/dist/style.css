@@ -67,10 +67,6 @@
   gap: 0.75rem;
   align-items: start;
   overflow-x: auto;
-  scrollbar-width: none;
-}
-.hermes-kanban-columns::-webkit-scrollbar {
-  display: none;
 }
 
 .hermes-kanban-column {
@@ -143,6 +139,8 @@
   gap: 0.45rem;
   overflow-y: auto;
   padding-right: 0.1rem;
+  flex: 1;
+  min-height: 0;
 }
 
 .hermes-kanban-empty {

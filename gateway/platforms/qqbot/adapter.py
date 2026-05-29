@@ -126,7 +126,6 @@ from gateway.platforms.qqbot.chunked_upload import (
 )
 from gateway.platforms.qqbot.keyboards import (
     ApprovalRequest,
-    ApprovalSender,
     InlineKeyboard,
     InteractionEvent,
     build_approval_keyboard,

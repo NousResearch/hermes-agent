@@ -97,15 +97,31 @@ def detect_audio_environment() -> dict:
     termux_mic_cmd = _termux_microphone_command()
     termux_app_installed = _termux_api_app_installed()
     termux_capture = bool(termux_mic_cmd and termux_app_installed)
+    has_forwarded_audio = bool(
+        os.environ.get('PULSE_SERVER') or os.environ.get('PIPEWIRE_REMOTE')
+    )
 
     # SSH detection
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
         warnings.append("Running over SSH -- no audio devices available")
 
-    # Docker/Podman container detection
+    # Docker/Podman container detection — honor host audio forwarding.
+    # When the user mounts a PulseAudio/PipeWire socket into the container
+    # and points PULSE_SERVER / PIPEWIRE_REMOTE at it, audio works fine
+    # (issue #21203).  Only block when no forwarding is configured.
     from hermes_constants import is_container
     if is_container():
-        warnings.append("Running inside Docker container -- no audio devices")
+        if has_forwarded_audio:
+            notices.append("Running inside container (Docker/Podman/LXC) with host audio forwarding")
+        else:
+            warnings.append(
+                "Running inside container (Docker/Podman/LXC) -- no audio devices.\n"
+                "  Forward host audio with one of (substitute $XDG_RUNTIME_DIR for your runtime dir,\n"
+                "  typically /run/user/$UID):\n"
+                "    PulseAudio:  -v $XDG_RUNTIME_DIR/pulse/native:$XDG_RUNTIME_DIR/pulse/native \\\n"
+                "                 -e PULSE_SERVER=unix:$XDG_RUNTIME_DIR/pulse/native\n"
+                "    PipeWire:    -e PIPEWIRE_REMOTE=$XDG_RUNTIME_DIR/pipewire-0"
+            )
 
     # WSL detection — PulseAudio bridge makes audio work in WSL.
     # Only block if PULSE_SERVER is not configured.
@@ -130,17 +146,22 @@ def detect_audio_environment() -> dict:
         try:
             devices = sd.query_devices()
             if not devices:
-                if os.environ.get('PULSE_SERVER'):
-                    notices.append("No PortAudio devices detected but PULSE_SERVER is set -- continuing")
+                if has_forwarded_audio:
+                    notices.append(
+                        "No PortAudio devices detected but host audio forwarding is configured -- continuing"
+                    )
                 elif termux_capture:
                     notices.append("No PortAudio devices detected, but Termux:API microphone capture is available")
                 else:
                     warnings.append("No audio input/output devices detected")
         except Exception:
             # In WSL with PulseAudio, device queries can fail even though
-            # recording/playback works fine. Don't block if PULSE_SERVER is set.
-            if os.environ.get('PULSE_SERVER'):
-                notices.append("Audio device query failed but PULSE_SERVER is set -- continuing")
+            # recording/playback works fine. Don't block if host audio
+            # forwarding is configured.
+            if has_forwarded_audio:
+                notices.append(
+                    "Audio device query failed but host audio forwarding is configured -- continuing"
+                )
             elif termux_capture:
                 notices.append("PortAudio device query failed, but Termux:API microphone capture is available")
             else:
@@ -1077,7 +1098,8 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append("STT provider: OK (OpenAI)")
     else:
         details_parts.append(
-            "STT provider: MISSING (pip install faster-whisper, "
+            "STT provider: MISSING (uv pip install faster-whisper — "
+            "`pip install faster-whisper` also works if pip is on PATH, "
             "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"
         )
 

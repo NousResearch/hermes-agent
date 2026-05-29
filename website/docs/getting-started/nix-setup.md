@@ -46,6 +46,22 @@ hermes chat
 
 After `nix profile install`, `hermes`, `hermes-agent`, and `hermes-acp` are on your PATH. From here, the workflow is identical to the [standard installation](./installation.md) — `hermes setup` walks you through provider selection, `hermes gateway install` sets up a launchd (macOS) or systemd user service, and config lives in `~/.hermes/`.
 
+:::warning Messaging platforms (Discord, Telegram, Slack)
+The default package doesn't include messaging platform libraries — they were moved to on-demand installation, which can't work in Nix's read-only environment. If you plan to connect the agent to Discord, Telegram, or Slack, install the `messaging` variant:
+
+```bash
+nix profile install github:NousResearch/hermes-agent#messaging
+```
+
+For all optional extras (voice, all providers, all platforms):
+
+```bash
+nix profile install github:NousResearch/hermes-agent#full
+```
+
+The `full` variant adds ~700 MB to the closure. If you only need messaging platforms, `#messaging` adds just ~33 MB.
+:::
+
 <details>
 <summary><strong>Building from a local clone</strong></summary>
 
@@ -319,6 +335,7 @@ Quick reference for the most common things Nix users want to customize:
 | Add API keys | `environmentFiles` | `[ config.sops.secrets."hermes-env".path ]` |
 | Give the agent a personality | `${services.hermes-agent.stateDir}/.hermes/SOUL.md` | manage the file directly |
 | Add MCP tool servers | `mcpServers.<name>` | See [MCP Servers](#mcp-servers) |
+| Enable Discord/Telegram/Slack | `extraDependencyGroups` | `[ "messaging" ]` |
 | Mount host directories into container | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
 | Pass GPU access to container | `container.extraOptions` | `[ "--gpus" "all" ]` |
 | Use Podman instead of Docker | `container.backend` | `"podman"` |
@@ -647,16 +664,44 @@ The package's `site-packages` is added to PYTHONPATH in the hermes wrapper. `imp
 
 ### Optional Dependency Groups (`extraDependencyGroups`)
 
-For optional extras already declared in hermes-agent's `pyproject.toml` (e.g., memory providers like `hindsight` or `honcho`), use `extraDependencyGroups` to include them in the sealed venv at build time:
+For optional extras declared in hermes-agent's `pyproject.toml`, use `extraDependencyGroups` to include them in the sealed venv at build time. This is required for any extra not in the default `[all]` set — on Nix, runtime installation into the read-only store is not possible.
 
 ```nix
+# Enable Discord, Telegram, Slack
+services.hermes-agent.extraDependencyGroups = [ "messaging" ];
+```
+
+```nix
+# Enable a memory provider
 services.hermes-agent = {
   extraDependencyGroups = [ "hindsight" ];
   settings.memory.provider = "hindsight";
 };
 ```
 
-This is resolved by uv alongside core dependencies in a single pass — no PYTHONPATH patching, no collision risk. Available groups match the `[project.optional-dependencies]` keys in `pyproject.toml` (e.g., `"hindsight"`, `"honcho"`, `"voice"`, `"matrix"`, `"mistral"`, `"bedrock"`).
+This is resolved by uv alongside core dependencies — no PYTHONPATH patching, no collision risk. Available groups:
+
+| Group | What it enables |
+|-------|-----------------|
+| `messaging` | Discord, Telegram, Slack |
+| `matrix` | Matrix/Element (mautrix with encryption; Linux only) |
+| `dingtalk` | DingTalk |
+| `feishu` | Feishu/Lark |
+| `voice` | Local speech-to-text (faster-whisper) |
+| `edge-tts` | Edge TTS provider |
+| `tts-premium` | ElevenLabs TTS |
+| `anthropic` | Native Anthropic SDK (not needed via OpenRouter) |
+| `bedrock` | AWS Bedrock (boto3) |
+| `azure-identity` | Azure Entra ID auth |
+| `honcho` | Honcho memory provider |
+| `hindsight` | Hindsight memory provider |
+| `modal` | Modal terminal backend |
+| `daytona` | Daytona terminal backend |
+| `exa` | Exa web search |
+| `firecrawl` | Firecrawl web search |
+| `fal` | FAL image generation |
+
+Or use the pre-built `#messaging` or `#full` flake packages instead of per-extra configuration (see [Quick Start](#quick-start-any-nix-user)).
 
 **When to use which:**
 
@@ -966,6 +1011,7 @@ nix-store --query --roots $(docker exec hermes-agent readlink /data/current-pack
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Cannot save configuration: managed by NixOS` | CLI guards active | Edit `configuration.nix` and `nixos-rebuild switch` |
+| `No adapter available for discord` (or telegram/slack) | Messaging deps missing from the sealed Nix venv | Install `#messaging` variant: `nix profile install ...#messaging`. For NixOS module: `extraDependencyGroups = [ "messaging" ]`. Check `journalctl -u hermes-agent` for `FeatureUnavailable` or `requirements not met` for the underlying error. |
 | Container recreated unexpectedly | `extraVolumes`, `extraOptions`, or `image` changed | Expected — writable layer resets. Reinstall packages or use a custom image |
 | `hermes version` shows old version | Container not restarted | `systemctl restart hermes-agent` |
 | Permission denied on `/var/lib/hermes` | State dir is `0750 hermes:hermes` | Use `docker exec` or `sudo -u hermes` |

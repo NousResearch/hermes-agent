@@ -1,4 +1,12 @@
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
+# Node 22 LTS source stage. Debian trixie's bundled nodejs is pinned to 20.x
+# which reached EOL in April 2026 — we copy node + npm + corepack from the
+# upstream node:22 image instead so we can stay on a supported LTS without
+# waiting for Debian 14 (forky, ~mid-2027).  Bookworm-based slim image used
+# so the produced binary links against glibc 2.36, which runs cleanly on
+# our Debian 13 (trixie, glibc 2.41) runtime.  Bumping to a new Node major
+# is a one-line ARG change; see #4977.
+FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
 FROM debian:13.4
 
 # Disable Python stdout buffering to ensure logs are printed immediately
@@ -17,7 +25,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # hermes process, the dashboard, and per-profile gateways.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli xz-utils && \
+    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
 # ---------- s6-overlay install ----------
@@ -72,6 +80,18 @@ RUN useradd -u 10000 -m -d /opt/data hermes
 
 COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 
+# Node 22 LTS: copy the node binary plus the bundled npm + corepack JS
+# installs from the upstream image.  npm and npx are recreated as symlinks
+# because they're symlinks in the source image (and need to live on PATH).
+# See node_source stage at the top of the file for the version-bump
+# rationale (#4977).
+COPY --chmod=0755 --from=node_source /usr/local/bin/node /usr/local/bin/
+COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+COPY --from=node_source /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/corepack
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
+    ln -sf /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+
 WORKDIR /opt/hermes
 
 # ---------- Layer-cached dependency install ----------
@@ -88,14 +108,15 @@ COPY ui-tui/package.json ui-tui/package-lock.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 
 # `npm_config_install_links=false` forces npm to install `file:` deps as
-# symlinks (the npm 10+ default) even on Debian's older bundled npm 9.x,
-# which defaults to `install-links=true` and installs file deps as *copies*.
-# The host-side package-lock.json is generated with a newer npm that uses
-# symlinks, so an install-as-copy produces a hidden node_modules/.package-lock.json
-# that permanently disagrees with the root lock on the @hermes/ink entry.
-# That disagreement trips the TUI launcher's `_tui_need_npm_install()`
-# check on every startup and triggers a runtime `npm install` that then
-# fails with EACCES (node_modules/ is root-owned from build time).
+# symlinks instead of copies.  This is the default since npm 10+, which is
+# what the image ships now (via the node:22 source stage).  We set it
+# explicitly anyway as defense-in-depth: the previous Debian-bundled npm
+# 9.x defaulted to install-as-copy, which produced a hidden
+# node_modules/.package-lock.json that permanently disagreed with the root
+# lock on the @hermes/ink entry, tripped the TUI launcher's
+# `_tui_need_npm_install()` check on every startup, and triggered a
+# runtime `npm install` that then failed with EACCES.  Keeping the env
+# guards against a future regression if the source npm version changes.
 ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit && \
@@ -124,10 +145,14 @@ RUN npm install --prefer-offline --no-audit && \
 # git), `[yc-bench]` (another git dep), and `[termux-all]` (Android
 # redundancy), none of which belong in the published container.
 #
+# Provider packages (anthropic, bedrock, azure-identity) are included
+# so Docker users can use these providers without requiring runtime
+# lazy-install access to PyPI (often blocked in containerized envs).
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
@@ -162,6 +187,29 @@ RUN chmod -R a+rX /opt/hermes && \
 # this a fast (~1s) egg-link creation with no resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
 
+# ---------- Bake build-time git revision ----------
+# .dockerignore excludes .git, so `git rev-parse HEAD` from inside the
+# container always returns nothing — meaning `hermes dump` reports
+# "(unknown)" and the startup banner drops its `· upstream <sha>` suffix.
+# That makes support triage from container bug reports impossible:
+# we can't tell which commit the user is actually running.
+#
+# Fix: write the commit SHA passed via the HERMES_GIT_SHA build-arg to
+# /opt/hermes/.hermes_build_sha at build time, and have
+# hermes_cli/build_info.py read it at runtime.  Both `hermes dump` and
+# banner.get_git_banner_state() try the baked SHA first, then fall back
+# to live `git rev-parse` for source installs (unchanged behaviour).
+#
+# The arg is optional — local `docker build` without --build-arg simply
+# omits the file, and the runtime falls back to live-git lookup.  CI
+# (.github/workflows/docker-publish.yml) passes ${{ github.sha }} so
+# every published image has it.
+ARG HERMES_GIT_SHA=
+RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
+        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha && \
+        chown hermes:hermes /opt/hermes/.hermes_build_sha; \
+    fi
+
 # ---------- s6-overlay service wiring ----------
 # Static services declared at build time: main-hermes + dashboard.
 # Per-profile gateway services are registered dynamically at runtime by
@@ -179,7 +227,7 @@ COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 # slots from $HERMES_HOME/profiles/<name>/ after a container restart
 # (the /run/service/ scandir is tmpfs and wiped on restart). Phase 4.
 RUN mkdir -p /etc/cont-init.d && \
-    printf '#!/bin/sh\nexec /opt/hermes/docker/stage2-hook.sh\n' \
+    printf '#!/command/with-contenv sh\nexec /opt/hermes/docker/stage2-hook.sh\n' \
         > /etc/cont-init.d/01-hermes-setup && \
     chmod +x /etc/cont-init.d/01-hermes-setup
 COPY --chmod=0755 docker/cont-init.d/015-supervise-perms /etc/cont-init.d/015-supervise-perms
@@ -188,13 +236,32 @@ COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-r
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
+
+# `docker exec` privilege-drop shim. When operators run
+# `docker exec <c> hermes ...` they default to root, and any file the
+# command writes under $HERMES_HOME (auth.json, .env, config.yaml) ends
+# up root-owned and unreadable to the supervised gateway (UID 10000).
+# The shim lives at /opt/hermes/bin/hermes, sits earliest on PATH, and
+# transparently re-exec's the real venv binary via `s6-setuidgid hermes`
+# when invoked as root. Non-root callers (supervised processes,
+# `--user hermes`, etc.) hit the short-circuit path with no overhead.
+# Recursion is impossible because the shim exec's the venv binary by
+# absolute path (/opt/hermes/.venv/bin/hermes). See the shim source for
+# the opt-out env var (HERMES_DOCKER_EXEC_AS_ROOT=1).
+COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hermes
+
 # Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported
 # the venv bin onto PATH; Architecture B's main-wrapper.sh does the
 # same for the container's main process, but `docker exec` and our
 # cont-init.d scripts don't pass through the wrapper. Expose the venv
 # bin globally so `docker exec <container> hermes ...` and any
 # subprocess that doesn't activate the venv first still find hermes.
-ENV PATH="/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
+#
+# /opt/hermes/bin is prepended ahead of the venv so the privilege-drop
+# shim wins PATH resolution. The shim's last act is to exec the venv
+# binary by absolute path, so this PATH ordering is transparent to
+# every other consumer.
+ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 

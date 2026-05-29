@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract skill metadata into website/src/data/skills.json for the Skills Hub page.
+"""Extract skill metadata into website/static/api/skills.json for the Skills Hub page.
 
 Two data sources:
 
@@ -21,6 +21,7 @@ the unified index existed).
 import json
 import os
 from collections import Counter
+from datetime import datetime, timezone
 
 import yaml
 
@@ -31,7 +32,12 @@ LOCAL_SKILL_DIRS = [
 ]
 UNIFIED_INDEX_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "skills-index.json")
 LEGACY_INDEX_CACHE_DIR = os.path.join(REPO_ROOT, "skills", "index-cache")
-OUTPUT = os.path.join(REPO_ROOT, "website", "src", "data", "skills.json")
+# Output to static/api/ so the file is CDN-served at /api/skills.json
+# rather than bundled into the page's JS chunk. At 50k+ skills the
+# bundled payload was ~26 MB; lazy-fetch keeps the initial page load
+# fast and shrinks the JS chunk back to a few hundred KB.
+OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills.json")
+META_OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills-meta.json")
 
 CATEGORY_LABELS = {
     "apple": "Apple",
@@ -280,19 +286,32 @@ def _label_for_github_identifier(identifier: str) -> str:
 
 
 def extract_unified_index_skills():
-    """Read website/static/api/skills-index.json — the canonical multi-source index."""
+    """Read website/static/api/skills-index.json — the canonical multi-source index.
+
+    Returns ``(skills, meta)`` where ``meta`` carries the index's
+    ``generated_at`` timestamp and total count so the Skills Hub page can
+    show a "Last refreshed …" badge. Returns ``(None, None)`` when the
+    index file is absent or malformed (caller falls back to the legacy
+    cache).
+    """
     if not os.path.isfile(UNIFIED_INDEX_PATH):
-        return None
+        return None, None
 
     try:
         with open(UNIFIED_INDEX_PATH, encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         print(f"[extract-skills] Failed to read unified index: {e}")
-        return None
+        return None, None
 
     if not isinstance(data, dict) or "skills" not in data:
-        return None
+        return None, None
+
+    meta = {
+        "indexGeneratedAt": data.get("generated_at", ""),
+        "indexSkillCount": data.get("skill_count", 0),
+        "indexVersion": data.get("version", 0),
+    }
 
     out = []
     for entry in data.get("skills", []):
@@ -352,7 +371,7 @@ def extract_unified_index_skills():
             "installCmd": install_cmd,
         })
 
-    return out
+    return out, meta
 
 
 def extract_legacy_cache_skills():
@@ -490,13 +509,14 @@ def _consolidate_small_categories(skills: list) -> list:
 def main():
     local = extract_local_skills()
 
-    unified = extract_unified_index_skills()
+    unified, index_meta = extract_unified_index_skills()
     if unified is not None:
         external = unified
         external_source = "unified index"
     else:
         external = extract_legacy_cache_skills()
         external_source = "legacy index-cache"
+        index_meta = None
         print(
             f"[extract-skills] WARNING: unified index not found at "
             f"{UNIFIED_INDEX_PATH}; falling back to {external_source}. "
@@ -515,18 +535,36 @@ def main():
 
     os.makedirs(os.path.dirname(OUTPUT), exist_ok=True)
     with open(OUTPUT, "w", encoding="utf-8") as f:
-        json.dump(all_skills, f, indent=2)
+        # Minified — file is served over the wire, not read by humans.
+        # At 50k+ skills the indented version was ~30% larger.
+        json.dump(all_skills, f, separators=(",", ":"), ensure_ascii=False)
+
+    # Sidecar meta file so the page can render a "Last refreshed" badge
+    # without changing the shape of skills.json.
+    by_source = Counter(s["source"] for s in all_skills)
+    meta = {
+        "extractedAt": datetime.now(timezone.utc).isoformat(),
+        "totalSkills": len(all_skills),
+        "localSkills": len(local),
+        "externalSkills": len(external),
+        "externalSource": external_source,
+        "bySource": dict(by_source.most_common()),
+    }
+    if index_meta:
+        meta.update(index_meta)
+    with open(META_OUTPUT, "w", encoding="utf-8") as f:
+        json.dump(meta, f, separators=(",", ":"), ensure_ascii=False)
 
     print(f"Extracted {len(all_skills)} skills to {OUTPUT}")
     print(f"  {len(local)} local ({sum(1 for s in local if s['source'] == 'built-in')} built-in, "
           f"{sum(1 for s in local if s['source'] == 'optional')} optional)")
     print(f"  {len(external)} from {external_source}")
 
-    # Breakdown by source
-    by_source = Counter(s["source"] for s in all_skills)
     print("By source:")
     for src, count in by_source.most_common():
         print(f"  {src}: {count}")
+    if index_meta and index_meta.get("indexGeneratedAt"):
+        print(f"Unified index built at: {index_meta['indexGeneratedAt']}")
 
 
 if __name__ == "__main__":

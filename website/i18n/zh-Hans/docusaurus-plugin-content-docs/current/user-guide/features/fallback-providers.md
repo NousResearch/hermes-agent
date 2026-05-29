@@ -47,7 +47,6 @@ fallback_model:
 
 | 提供商 | 值 | 要求 |
 |----------|-------|-------------|
-| AI Gateway | `ai-gateway` | `AI_GATEWAY_API_KEY` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes setup --portal`（全新安装）或 `hermes auth add nous`（OAuth） |
 | OpenAI Codex | `openai-codex` | `hermes model`（ChatGPT OAuth） |

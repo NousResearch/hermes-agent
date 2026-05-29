@@ -98,7 +98,8 @@ def test_kynver_agentos_auto_enables_when_configured():
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
-        patch("plugins.memory.kynver.agentos_bridge.agentos_enabled", return_value=True),
+        patch("plugins.memory.kynver.substrate.agentos_available", return_value=True),
+        patch("plugins.memory.kynver.substrate.probe_agentos_health", return_value=True),
         patch("plugins.memory.load_memory_provider", return_value=provider) as load_memory_provider,
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("run_agent.get_tool_definitions", return_value=[]),

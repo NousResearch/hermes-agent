@@ -140,6 +140,24 @@ def agentos_enabled(env: Mapping[str, str] | None = None) -> bool:
     return load_kynver_agentos_config(env).enabled
 
 
+def agentos_available(env: Mapping[str, str] | None = None) -> bool:
+    """True when credentials are present (may still fail health probe)."""
+    return load_kynver_agentos_config(env).enabled
+
+
+def probe_agentos_health(client: KynverAgentOSClient | None = None) -> bool:
+    """Lightweight health check via GET ``/stats`` (MCP AgentOS context route)."""
+
+    try:
+        c = client or KynverAgentOSClient()
+        if not c.config.enabled:
+            return False
+        c.get("/stats")
+        return True
+    except Exception:
+        return False
+
+
 def redact(text: str) -> str:
     redacted = re.sub(r"Bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", str(text))
     redacted = re.sub(

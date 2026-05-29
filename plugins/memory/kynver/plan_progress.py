@@ -18,6 +18,17 @@ from .pre_transition import (
 
 logger = logging.getLogger(__name__)
 
+_HERMES_FORGE_PREFIX = "hermes-forge"
+
+
+def progress_row_idempotency(row_key: str, todo_id: str) -> str:
+    return f"{_HERMES_FORGE_PREFIX}:progress:{row_key}:{todo_id}"
+
+
+def focus_idempotency(row_key: str, todo_id: str) -> str:
+    return f"{_HERMES_FORGE_PREFIX}:focus:{row_key}:{todo_id}"
+
+
 _STATUS_TO_ROW: dict[str, str] = {
     "pending": "todo",
     "in_progress": "in_progress",
@@ -86,6 +97,7 @@ def project_todo_write(
                 "title": str(item.get("content") or todo_id)[:500],
                 "status": _STATUS_TO_ROW.get(status, "todo"),
                 "taskId": linkage.task_id,
+                "idempotencyKey": progress_row_idempotency(row_key, todo_id),
             }
         )
 
@@ -98,6 +110,7 @@ def project_todo_write(
     )
     if focus:
         row_key = hermes_row_key(str(focus.get("id") or ""))
+        focus_tid = str(focus.get("id") or "")
         client.post(
             f"{plan_path}/progress-focus",
             {
@@ -106,6 +119,7 @@ def project_todo_write(
                 "roleLane": "implementer",
                 "executorRef": linkage.executor_ref,
                 "note": f"Hermes todo focus: {focus.get('content', '')}"[:500],
+                "idempotencyKey": focus_idempotency(row_key, focus_tid),
             },
         )
     elif not merge:

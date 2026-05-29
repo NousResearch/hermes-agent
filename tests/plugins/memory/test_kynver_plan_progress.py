@@ -8,6 +8,7 @@ import pytest
 
 from plugins.memory.kynver.operating_config import OperatingLinkage, kynver_operating_tools_enabled
 from plugins.memory.kynver.plan_progress import (
+    focus_idempotency,
     project_todo_write,
     reconcile_todos_from_kynver,
     safe_project_todo_write,
@@ -43,6 +44,7 @@ def test_project_todo_write_sets_focus_not_running():
             "roleLane": "implementer",
             "executorRef": "hermes:forge",
             "note": "Hermes todo focus: Step A",
+            "idempotencyKey": focus_idempotency("hermes-todo:a", "a"),
         },
     )
     focus_calls = [c for c in client.post.call_args_list if c.args[0].endswith("progress-focus")]

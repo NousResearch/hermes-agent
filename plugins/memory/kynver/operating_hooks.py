@@ -77,6 +77,12 @@ def register_operating_hooks(ctx) -> None:
         return
     if not kynver_operating_tools_enabled():
         return
-    ctx.register_hook("pre_tool_call", on_pre_tool_call)
-    ctx.register_hook("transform_tool_result", on_transform_tool_result)
+    from hermes_cli.plugins import register_plugin_hook
+
+    if hasattr(ctx, "register_hook"):
+        ctx.register_hook("pre_tool_call", on_pre_tool_call)
+        ctx.register_hook("transform_tool_result", on_transform_tool_result)
+    else:
+        register_plugin_hook("kynver", "pre_tool_call", on_pre_tool_call)
+        register_plugin_hook("kynver", "transform_tool_result", on_transform_tool_result)
     logger.info("Kynver operating hooks registered (plan progress + todo read-back)")

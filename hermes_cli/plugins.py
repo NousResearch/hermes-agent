@@ -44,7 +44,7 @@ import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
@@ -69,6 +69,220 @@ except ImportError:  # pragma: no cover – yaml is optional at import time
     yaml = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Generic extension providers (todo store, prompt context, memory resolution)
+# ---------------------------------------------------------------------------
+#
+# Plugins register factories here; core calls the module-level helpers below
+# without importing any specific plugin package.
+
+_ProviderEntry = tuple[int, Callable[..., Any], str]
+_todo_store_providers: List[_ProviderEntry] = []
+_prompt_context_providers: List[_ProviderEntry] = []
+_memory_provider_resolvers: List[_ProviderEntry] = []
+_memory_init_kwargs_providers: List[_ProviderEntry] = []
+_agent_configure_hooks: List[_ProviderEntry] = []
+
+
+def _register_provider(
+    registry: List[_ProviderEntry],
+    callback: Callable[..., Any],
+    *,
+    priority: int,
+    plugin_name: str,
+) -> None:
+    registry.append((priority, callback, plugin_name))
+    registry.sort(key=lambda entry: entry[0], reverse=True)
+
+
+def provide_todo_store(agent: Any, config: Mapping[str, Any] | None = None) -> Any | None:
+    """Return the highest-priority plugin todo store, or ``None`` for local default."""
+
+    discover_plugins()
+    for _priority, factory, plugin_name in _todo_store_providers:
+        try:
+            store = factory(agent, config or {})
+            if store is not None:
+                logger.debug("Todo store provided by plugin %s", plugin_name)
+                return store
+        except Exception as exc:
+            logger.warning(
+                "Todo store provider from plugin %s failed: %s",
+                plugin_name,
+                exc,
+            )
+    return None
+
+
+def collect_prompt_context_blocks(agent: Any) -> List[str]:
+    """Collect additive volatile system-prompt blocks from plugins."""
+
+    discover_plugins()
+    blocks: List[str] = []
+    for _priority, factory, plugin_name in _prompt_context_providers:
+        try:
+            result = factory(agent)
+            if isinstance(result, str) and result.strip():
+                blocks.append(result.strip())
+            elif isinstance(result, list):
+                blocks.extend(str(item).strip() for item in result if str(item).strip())
+        except Exception as exc:
+            logger.warning(
+                "Prompt context provider from plugin %s failed: %s",
+                plugin_name,
+                exc,
+            )
+    return blocks
+
+
+def resolve_memory_provider_name(
+    mem_config: Mapping[str, Any] | None,
+    full_config: Mapping[str, Any] | None = None,
+) -> str:
+    """Resolve configured memory provider, allowing plugins to default-on."""
+
+    discover_plugins()
+    for _priority, resolver, plugin_name in _memory_provider_resolvers:
+        try:
+            name = resolver(mem_config or {}, full_config=full_config or {})
+            if name:
+                return str(name).strip()
+        except Exception as exc:
+            logger.debug(
+                "Memory provider resolver from plugin %s failed: %s",
+                plugin_name,
+                exc,
+            )
+    return str((mem_config or {}).get("provider") or "").strip()
+
+
+def collect_memory_provider_init_kwargs(agent: Any) -> Dict[str, Any]:
+    """Merge plugin-supplied kwargs for memory provider initialization."""
+
+    discover_plugins()
+    merged: Dict[str, Any] = {}
+    for _priority, factory, plugin_name in _memory_init_kwargs_providers:
+        try:
+            extra = factory(agent)
+            if isinstance(extra, dict):
+                merged.update(extra)
+        except Exception as exc:
+            logger.debug(
+                "Memory init kwargs from plugin %s failed: %s",
+                plugin_name,
+                exc,
+            )
+    return merged
+
+
+def configure_agent_extensions(
+    agent: Any,
+    config: Mapping[str, Any] | None = None,
+    *,
+    platform: str | None = None,
+    skip_memory: bool = False,
+) -> None:
+    """Run plugin-registered agent configuration hooks (substrate, sessions, etc.)."""
+
+    discover_plugins()
+    for _priority, hook, plugin_name in _agent_configure_hooks:
+        try:
+            hook(agent, config or {}, platform=platform, skip_memory=skip_memory)
+        except Exception as exc:
+            logger.debug(
+                "Agent configure hook from plugin %s failed: %s",
+                plugin_name,
+                exc,
+            )
+
+
+def register_plugin_todo_store_provider(
+    plugin_name: str,
+    factory: Callable[..., Any],
+    *,
+    priority: int = 0,
+) -> None:
+    _register_provider(
+        _todo_store_providers,
+        factory,
+        priority=priority,
+        plugin_name=plugin_name,
+    )
+
+
+def register_plugin_prompt_context_provider(
+    plugin_name: str,
+    factory: Callable[..., Any],
+    *,
+    priority: int = 0,
+) -> None:
+    _register_provider(
+        _prompt_context_providers,
+        factory,
+        priority=priority,
+        plugin_name=plugin_name,
+    )
+
+
+def register_plugin_memory_provider_resolver(
+    plugin_name: str,
+    resolver: Callable[..., Any],
+    *,
+    priority: int = 0,
+) -> None:
+    _register_provider(
+        _memory_provider_resolvers,
+        resolver,
+        priority=priority,
+        plugin_name=plugin_name,
+    )
+
+
+def register_plugin_memory_init_kwargs_provider(
+    plugin_name: str,
+    factory: Callable[..., Any],
+    *,
+    priority: int = 0,
+) -> None:
+    _register_provider(
+        _memory_init_kwargs_providers,
+        factory,
+        priority=priority,
+        plugin_name=plugin_name,
+    )
+
+
+def register_plugin_agent_configure_hook(
+    plugin_name: str,
+    hook: Callable[..., Any],
+    *,
+    priority: int = 0,
+) -> None:
+    _register_provider(
+        _agent_configure_hooks,
+        hook,
+        priority=priority,
+        plugin_name=plugin_name,
+    )
+
+
+def register_plugin_hook(
+    plugin_name: str,
+    hook_name: str,
+    callback: Callable[..., Any],
+) -> None:
+    """Register a lifecycle hook (usable from memory-provider load paths)."""
+
+    if hook_name not in VALID_HOOKS:
+        logger.warning(
+            "Plugin '%s' registered unknown hook '%s'",
+            plugin_name,
+            hook_name,
+        )
+    get_plugin_manager()._hooks.setdefault(hook_name, []).append(callback)
+    logger.debug("Plugin %s registered hook: %s", plugin_name, hook_name)
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +805,80 @@ class PluginContext:
         logger.info(
             "Plugin '%s' registered dashboard-auth provider: %s (%s)",
             self.manifest.name, provider.name, provider.display_name,
+        )
+
+    # -- operating substrate providers (todo store, prompt context, memory) -
+
+    def register_todo_store_provider(
+        self,
+        factory: Callable[..., Any],
+        *,
+        priority: int = 0,
+    ) -> None:
+        """Register a factory ``(agent, config) -> TodoStore | None``.
+
+        Higher *priority* wins. Return ``None`` to defer to the next provider.
+        """
+        register_plugin_todo_store_provider(
+            self.manifest.name,
+            factory,
+            priority=priority,
+        )
+
+    def register_prompt_context_provider(
+        self,
+        factory: Callable[..., Any],
+        *,
+        priority: int = 0,
+    ) -> None:
+        """Register ``(agent) -> str | list[str]`` volatile prompt blocks."""
+
+        register_plugin_prompt_context_provider(
+            self.manifest.name,
+            factory,
+            priority=priority,
+        )
+
+    def register_memory_provider_resolver(
+        self,
+        resolver: Callable[..., Any],
+        *,
+        priority: int = 0,
+    ) -> None:
+        """Register ``(mem_config, *, full_config) -> provider name | ''``."""
+
+        register_plugin_memory_provider_resolver(
+            self.manifest.name,
+            resolver,
+            priority=priority,
+        )
+
+    def register_memory_init_kwargs_provider(
+        self,
+        factory: Callable[..., Any],
+        *,
+        priority: int = 0,
+    ) -> None:
+        """Register ``(agent) -> dict`` extras for memory provider init."""
+
+        register_plugin_memory_init_kwargs_provider(
+            self.manifest.name,
+            factory,
+            priority=priority,
+        )
+
+    def register_agent_configure_hook(
+        self,
+        hook: Callable[..., Any],
+        *,
+        priority: int = 0,
+    ) -> None:
+        """Register ``(agent, config, *, platform, skip_memory) -> None``."""
+
+        register_plugin_agent_configure_hook(
+            self.manifest.name,
+            hook,
+            priority=priority,
         )
 
     # -- video gen provider registration -------------------------------------

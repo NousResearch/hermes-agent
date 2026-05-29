@@ -905,11 +905,12 @@ class KynverMemoryProvider(MemoryProvider):
 
 
 def register(ctx) -> None:
+    from .integration import ensure_kynver_operating_seams_registered, register_operating_providers
     from .operating_config import kynver_operating_tools_enabled
-    from .operating_hooks import register_operating_hooks
 
     ctx.register_memory_provider(KynverMemoryProvider())
-    register_operating_hooks(ctx)
+    ensure_kynver_operating_seams_registered()
+    register_operating_providers(ctx)
     if agentos_enabled() and kynver_operating_tools_enabled():
         logger.info(
             "Kynver operating tools enabled (default-on when AgentOS credentials are set; "

@@ -328,6 +328,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    try:
+        from hermes_cli.plugins import collect_prompt_context_blocks
+
+        volatile_parts.extend(collect_prompt_context_blocks(agent))
+    except Exception:
+        pass
+
     from hermes_time import now as _hermes_now
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable

@@ -42,7 +42,8 @@ TASK_STATUSES = frozenset(
 )
 TODO_STATUS_TO_TASK_STATUS = {
     "pending": "ready",
-    "in_progress": "running",
+    # Hermes in_progress is plan-progress focus only — never AgentOS task running.
+    "in_progress": "ready",
     "completed": "done",
     "cancelled": "cancelled",
 }

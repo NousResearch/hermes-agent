@@ -32,7 +32,12 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
-def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm.example.com/v1"):
+def _make_agent(
+    fallback_model=None,
+    provider="custom",
+    base_url="https://my-llm.example.com/v1",
+    request_overrides=None,
+):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
@@ -46,6 +51,7 @@ def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
+            request_overrides=request_overrides,
             fallback_model=fallback_model,
         )
         agent.client = MagicMock()
@@ -74,7 +80,13 @@ class TestPrimaryRuntimeSnapshot:
         assert rt["base_url"] == "https://my-llm.example.com/v1"
         assert rt["api_mode"] == agent.api_mode
         assert "client_kwargs" in rt
+        assert "request_overrides" in rt
         assert "compressor_context_length" in rt
+
+    def test_snapshot_includes_request_overrides(self):
+        agent = _make_agent(request_overrides={"service_tier": "priority"})
+
+        assert agent._primary_runtime["request_overrides"] == {"service_tier": "priority"}
 
     def test_snapshot_includes_compressor_state(self):
         agent = _make_agent()
@@ -167,6 +179,24 @@ class TestRestorePrimaryRuntime:
         assert agent._fallback_activated is False
         assert agent.model == original_model
         assert agent.provider == original_provider
+
+    def test_restores_primary_request_overrides(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+            request_overrides={"service_tier": "priority"},
+        )
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        assert agent.request_overrides == {}
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.request_overrides == {"service_tier": "priority"}
 
     def test_resets_fallback_index(self):
         """After restore, the full fallback chain should be available again."""

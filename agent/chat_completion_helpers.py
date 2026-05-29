@@ -1155,6 +1155,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
+        # Request overrides are specific to the primary runtime selected for
+        # the current turn. Do not leak OpenAI service_tier or Anthropic speed
+        # parameters into Copilot, DeepSeek, or other fallback providers.
+        agent.request_overrides = {}
 
         # Clear the credential pool when the fallback provider doesn't match
         # the pool's provider.  The pool was seeded for the primary provider;

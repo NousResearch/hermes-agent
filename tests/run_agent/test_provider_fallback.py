@@ -103,6 +103,21 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._fallback_activated is True
 
+    def test_fallback_clears_primary_request_overrides(self):
+        fbs = [{"provider": "copilot", "model": "gpt-5.4"}]
+        agent = _make_agent(fallback_model=fbs)
+        agent.request_overrides = {"service_tier": "priority"}
+        agent._primary_runtime["request_overrides"] = {"service_tier": "priority"}
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://api.githubcopilot.com"), "gpt-5.4"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "copilot"
+        assert agent.request_overrides == {}
+
     def test_second_fallback_works(self):
         fbs = [
             {"provider": "openai", "model": "gpt-4o"},

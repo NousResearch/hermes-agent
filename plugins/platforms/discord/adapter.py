@@ -1178,14 +1178,39 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not isinstance(message.channel, discord.DMChannel) and (
                     message.mentions or _raw_self_mention
                 ):
+                    _self_user = self._client.user if self._client is not None else None
                     _self_mentioned = _raw_self_mention
-                    _other_bots_mentioned = any(
-                        m.bot and m != self._client.user
-                        for m in message.mentions
+                    _other_bot_mentions = [
+                        m for m in message.mentions
+                        if m.bot and m != _self_user
+                    ]
+                    _other_bots_mentioned = bool(_other_bot_mentions)
+
+                    _parent_id = None
+                    if hasattr(message.channel, "parent_id") and message.channel.parent_id:
+                        _parent_id = str(message.channel.parent_id)
+                    _free_channels = adapter_self._discord_free_response_channels()
+                    _channel_keys = adapter_self._discord_channel_keys(message, _parent_id)
+                    _is_free_response_channel = (
+                        "*" in _free_channels or bool(_channel_keys & _free_channels)
                     )
-                    # If other bots are mentioned but we're not → not for us
+
+                    # If other bots are mentioned but we're not, stay silent
+                    # unless this channel explicitly opted into free-response
+                    # behavior.  Free-response channels often contain quoted
+                    # bot mentions from migration notes / prior context; those
+                    # should not be mistaken for addressing another agent.
                     if _other_bots_mentioned and not _self_mentioned:
-                        return
+                        if not _is_free_response_channel:
+                            return
+                        stripped_content = (message.content or "").lstrip()
+                        if any(
+                            stripped_content.startswith(f"<@{m.id}>")
+                            or stripped_content.startswith(f"<@!{m.id}>")
+                            for m in _other_bot_mentions
+                        ):
+                            return
+
                     # If humans are mentioned but we're not → not for us
                     # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
                     # EXCEPT in free-response channels where the bot should
@@ -1193,15 +1218,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     _ignore_no_mention = os.getenv(
                         "DISCORD_IGNORE_NO_MENTION", "true"
                     ).lower() in {"true", "1", "yes"}
-                    if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
-                        _channel_id = str(message.channel.id)
-                        _parent_id = None
-                        if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                            _parent_id = str(message.channel.parent_id)
-                        _free_channels = adapter_self._discord_free_response_channels()
-                        _channel_keys = adapter_self._discord_channel_keys(message, _parent_id)
-                        if "*" not in _free_channels and not (_channel_keys & _free_channels):
-                            return
+                    if (
+                        _ignore_no_mention
+                        and not _self_mentioned
+                        and not _other_bots_mentioned
+                        and not _is_free_response_channel
+                    ):
+                        return
 
                 await self._handle_message(message, role_authorized=_role_authorized)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -754,7 +755,7 @@ def test_managed_tunnel_does_not_delete_manual_trycloudflare_url(
     monkeypatch.setattr(
         photon_tunnel,
         "start",
-        lambda: photon_tunnel.TunnelStartResult(
+        lambda *_args, **_kwargs: photon_tunnel.TunnelStartResult(
             success=True,
             public_url="https://fresh.trycloudflare.com",
             webhook_url="https://fresh.trycloudflare.com/photon/webhook",
@@ -772,6 +773,349 @@ def test_managed_tunnel_does_not_delete_manual_trycloudflare_url(
     assert registered == ["https://fresh.trycloudflare.com/photon/webhook"]
 
 
+def test_managed_tunnel_auto_installs_cloudflared(
+    tmp_path: Path, monkeypatch: Any, capsys: Any,
+) -> None:
+    home = tmp_path / "hermes"
+    home.mkdir()
+    commands: list[list[str]] = []
+    registered: list[str] = []
+    managed_binary = home / "bin" / "cloudflared"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("PHOTON_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setattr(photon_tunnel.shutil, "which", lambda _name: None)
+
+    def fake_install(*, emit: Any = None) -> str:
+        if emit:
+            emit("  cloudflared not found — installing managed copy")
+        return str(managed_binary)
+
+    class FakePopen:
+        def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+            commands.append(cmd)
+            self.pid = 4242
+            self.returncode = None
+            stdout = kwargs["stdout"]
+            stdout.write("Your quick Tunnel has been created! https://fresh.trycloudflare.com\n")
+            stdout.flush()
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(photon_tunnel, "install_managed_cloudflared", fake_install)
+    monkeypatch.setattr(photon_tunnel.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(photon_auth, "load_project_credentials", lambda: ("proj", "secret"))
+    monkeypatch.setattr(photon_auth, "list_webhooks", lambda *_args: [])
+    monkeypatch.setattr(
+        photon_auth,
+        "register_webhook",
+        lambda *_args, webhook_url: registered.append(webhook_url) or {"signingSecret": "SECRET"},
+    )
+
+    rc = photon_cli._start_managed_tunnel_and_register()
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "installing managed copy" in captured.out
+    assert commands[0][0] == str(managed_binary)
+    assert registered == ["https://fresh.trycloudflare.com/photon/webhook"]
+
+
+def test_install_managed_cloudflared_verifies_release_digest(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    home = tmp_path / "hermes"
+    home.mkdir()
+    payload = b"cloudflared-binary"
+    asset = photon_tunnel.CloudflaredAsset(
+        name="cloudflared-linux-amd64",
+        download_url="https://example.test/cloudflared",
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+        version="2026.5.2",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(photon_tunnel, "_platform_asset_name", lambda: asset.name)
+    monkeypatch.setattr(photon_tunnel, "_cloudflared_release_asset", lambda _name: asset)
+
+    def fake_download(_url: str, destination: Path) -> None:
+        destination.write_bytes(payload)
+
+    monkeypatch.setattr(photon_tunnel, "_download_url", fake_download)
+
+    installed = photon_tunnel.install_managed_cloudflared()
+
+    assert installed == str(home / "bin" / "cloudflared")
+    assert (home / "bin" / "cloudflared").read_bytes() == payload
+    manifest = json.loads(
+        (home / "bin" / "cloudflared.manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["asset_sha256"] == asset.sha256
+    assert manifest["binary_sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+def test_install_managed_cloudflared_reuses_matching_manifest(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    home = tmp_path / "hermes"
+    bin_dir = home / "bin"
+    bin_dir.mkdir(parents=True)
+    payload = b"installed-cloudflared"
+    target = bin_dir / "cloudflared"
+    target.write_bytes(payload)
+    asset = photon_tunnel.CloudflaredAsset(
+        name="cloudflared-darwin-arm64.tgz",
+        download_url="https://example.test/cloudflared.tgz",
+        sha256=hashlib.sha256(b"archive").hexdigest(),
+        size=len(b"archive"),
+        version="2026.5.2",
+    )
+    (bin_dir / "cloudflared.manifest.json").write_text(
+        json.dumps({
+            "asset": asset.name,
+            "asset_sha256": asset.sha256,
+            "binary_sha256": hashlib.sha256(payload).hexdigest(),
+            "version": asset.version,
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(photon_tunnel, "_platform_asset_name", lambda: asset.name)
+    monkeypatch.setattr(photon_tunnel, "_cloudflared_release_asset", lambda _name: asset)
+    monkeypatch.setattr(
+        photon_tunnel,
+        "_download_url",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("downloaded")),
+    )
+
+    installed = photon_tunnel.install_managed_cloudflared()
+
+    assert installed == str(target)
+    assert target.read_bytes() == payload
+
+
+def test_install_managed_cloudflared_updates_stale_manifest(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    home = tmp_path / "hermes"
+    bin_dir = home / "bin"
+    bin_dir.mkdir(parents=True)
+    target = bin_dir / "cloudflared"
+    target.write_bytes(b"old-cloudflared")
+    new_payload = b"new-cloudflared"
+    asset = photon_tunnel.CloudflaredAsset(
+        name="cloudflared-linux-amd64",
+        download_url="https://example.test/cloudflared",
+        sha256=hashlib.sha256(new_payload).hexdigest(),
+        size=len(new_payload),
+        version="2026.5.2",
+    )
+    (bin_dir / "cloudflared.manifest.json").write_text(
+        json.dumps({
+            "asset": asset.name,
+            "asset_sha256": hashlib.sha256(b"old-cloudflared").hexdigest(),
+            "binary_sha256": hashlib.sha256(b"old-cloudflared").hexdigest(),
+            "version": "2026.4.0",
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(photon_tunnel, "_platform_asset_name", lambda: asset.name)
+    monkeypatch.setattr(photon_tunnel, "_cloudflared_release_asset", lambda _name: asset)
+
+    def fake_download(_url: str, destination: Path) -> None:
+        destination.write_bytes(new_payload)
+
+    monkeypatch.setattr(photon_tunnel, "_download_url", fake_download)
+
+    installed = photon_tunnel.install_managed_cloudflared()
+
+    assert installed == str(target)
+    assert target.read_bytes() == new_payload
+    manifest = json.loads(
+        (bin_dir / "cloudflared.manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["asset_sha256"] == asset.sha256
+    assert manifest["binary_sha256"] == hashlib.sha256(new_payload).hexdigest()
+
+
+def test_install_managed_cloudflared_uses_existing_when_update_check_fails(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    home = tmp_path / "hermes"
+    bin_dir = home / "bin"
+    bin_dir.mkdir(parents=True)
+    target = bin_dir / "cloudflared"
+    target.write_bytes(b"existing-cloudflared")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(photon_tunnel, "_platform_asset_name", lambda: "cloudflared-linux-amd64")
+    monkeypatch.setattr(
+        photon_tunnel,
+        "_cloudflared_release_asset",
+        lambda _name: (_ for _ in ()).throw(RuntimeError("network down")),
+    )
+    monkeypatch.setattr(
+        photon_tunnel,
+        "_download_url",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("downloaded")),
+    )
+
+    installed = photon_tunnel.install_managed_cloudflared()
+
+    assert installed == str(target)
+    assert target.read_bytes() == b"existing-cloudflared"
+
+
+def test_install_managed_cloudflared_uses_existing_when_update_download_fails(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    home = tmp_path / "hermes"
+    bin_dir = home / "bin"
+    bin_dir.mkdir(parents=True)
+    target = bin_dir / "cloudflared"
+    target.write_bytes(b"existing-cloudflared")
+    asset = photon_tunnel.CloudflaredAsset(
+        name="cloudflared-linux-amd64",
+        download_url="https://example.test/cloudflared",
+        sha256=hashlib.sha256(b"new-cloudflared").hexdigest(),
+        size=len(b"new-cloudflared"),
+        version="2026.5.2",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(photon_tunnel, "_platform_asset_name", lambda: asset.name)
+    monkeypatch.setattr(photon_tunnel, "_cloudflared_release_asset", lambda _name: asset)
+    monkeypatch.setattr(
+        photon_tunnel,
+        "_download_url",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("download failed")),
+    )
+
+    installed = photon_tunnel.install_managed_cloudflared()
+
+    assert installed == str(target)
+    assert target.read_bytes() == b"existing-cloudflared"
+
+
+def test_install_managed_cloudflared_fails_without_existing_when_update_check_fails(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(photon_tunnel, "_platform_asset_name", lambda: "cloudflared-linux-amd64")
+    monkeypatch.setattr(
+        photon_tunnel,
+        "_cloudflared_release_asset",
+        lambda _name: (_ for _ in ()).throw(RuntimeError("network down")),
+    )
+
+    with pytest.raises(RuntimeError, match="network down"):
+        photon_tunnel.install_managed_cloudflared()
+
+
+def test_resolve_cloudflared_binary_updates_existing_managed_copy(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    home = tmp_path / "hermes"
+    bin_dir = home / "bin"
+    bin_dir.mkdir(parents=True)
+    managed_binary = bin_dir / "cloudflared"
+    managed_binary.write_bytes(b"existing-cloudflared")
+    installed: list[str] = []
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(photon_tunnel.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        photon_tunnel,
+        "install_managed_cloudflared",
+        lambda **_kwargs: installed.append("updated") or str(managed_binary),
+    )
+
+    resolved = photon_tunnel.resolve_cloudflared_binary()
+
+    assert resolved == str(managed_binary)
+    assert installed == ["updated"]
+    assert (
+        photon_tunnel.resolve_cloudflared_binary(auto_install=False)
+        == str(managed_binary)
+    )
+
+
+def test_install_managed_cloudflared_rejects_bad_digest(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    home = tmp_path / "hermes"
+    home.mkdir()
+    asset = photon_tunnel.CloudflaredAsset(
+        name="cloudflared-linux-amd64",
+        download_url="https://example.test/cloudflared",
+        sha256=hashlib.sha256(b"expected").hexdigest(),
+        size=len(b"actual"),
+        version="2026.5.2",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(photon_tunnel, "_platform_asset_name", lambda: asset.name)
+    monkeypatch.setattr(photon_tunnel, "_cloudflared_release_asset", lambda _name: asset)
+
+    def fake_download(_url: str, destination: Path) -> None:
+        destination.write_bytes(b"actual")
+
+    monkeypatch.setattr(photon_tunnel, "_download_url", fake_download)
+
+    try:
+        photon_tunnel.install_managed_cloudflared()
+    except RuntimeError as e:
+        assert "checksum mismatch" in str(e)
+    else:
+        raise AssertionError("expected checksum failure")
+    assert not (home / "bin" / "cloudflared").exists()
+
+
+def test_cloudflared_downloads_use_ssl_context(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    sentinel_context = object()
+    calls: list[Any] = []
+    monkeypatch.setattr(photon_tunnel, "_ssl_context", lambda: sentinel_context)
+
+    class FakeResponse:
+        def __init__(self, payload: bytes) -> None:
+            self.payload = payload
+            self._read = False
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def read(self, *_args: Any) -> bytes:
+            if self._read:
+                return b""
+            self._read = True
+            return self.payload
+
+    def fake_urlopen_json(request: Any, **kwargs: Any) -> FakeResponse:
+        calls.append((request, kwargs))
+        return FakeResponse(b'{"ok": true}')
+
+    monkeypatch.setattr(photon_tunnel.urllib.request, "urlopen", fake_urlopen_json)
+
+    assert photon_tunnel._urlopen_json("https://example.test/releases/latest") == {"ok": True}
+    assert calls[-1][1]["context"] is sentinel_context
+
+    def fake_urlopen_download(request: Any, **kwargs: Any) -> FakeResponse:
+        calls.append((request, kwargs))
+        return FakeResponse(b"cloudflared")
+
+    monkeypatch.setattr(photon_tunnel.urllib.request, "urlopen", fake_urlopen_download)
+    destination = tmp_path / "cloudflared"
+
+    photon_tunnel._download_url("https://example.test/cloudflared", destination)
+
+    assert destination.read_bytes() == b"cloudflared"
+    assert calls[-1][1]["context"] is sentinel_context
+
+
 def test_managed_tunnel_missing_cloudflared_is_actionable(
     tmp_path: Path, monkeypatch: Any, capsys: Any,
 ) -> None:
@@ -779,6 +1123,13 @@ def test_managed_tunnel_missing_cloudflared_is_actionable(
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(photon_tunnel.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        photon_tunnel,
+        "install_managed_cloudflared",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("download failed")
+        ),
+    )
     monkeypatch.setattr(
         photon_auth,
         "register_webhook",
@@ -789,6 +1140,7 @@ def test_managed_tunnel_missing_cloudflared_is_actionable(
 
     captured = capsys.readouterr()
     assert rc == 1
+    assert "cloudflared install failed" in captured.err
     assert "brew install cloudflared" in captured.err
     assert "hermes photon webhook register" in captured.err
 

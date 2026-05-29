@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import platform
 import re
 import shutil
 import signal
+import ssl
 import subprocess
+import tarfile
+import tempfile
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -16,6 +22,7 @@ from urllib.parse import urlparse
 DEFAULT_WEBHOOK_PORT = 8788
 DEFAULT_WEBHOOK_PATH = "/photon/webhook"
 DEFAULT_START_TIMEOUT_SECONDS = 30.0
+CLOUDFLARED_RELEASE_API = "https://api.github.com/repos/cloudflare/cloudflared/releases/latest"
 _TRYCLOUDFLARE_RE = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
 
 
@@ -29,6 +36,15 @@ class TunnelStartResult:
     error: str = ""
     log_path: Optional[Path] = None
     command: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CloudflaredAsset:
+    name: str
+    download_url: str
+    sha256: str
+    size: int
+    version: str = ""
 
 
 def hermes_home() -> Path:
@@ -49,6 +65,20 @@ def state_path() -> Path:
 
 def log_path() -> Path:
     return state_dir() / "cloudflared.log"
+
+
+def managed_bin_dir() -> Path:
+    return hermes_home() / "bin"
+
+
+def managed_cloudflared_path() -> Path:
+    suffix = ".exe" if os.name == "nt" else ""
+    return managed_bin_dir() / f"cloudflared{suffix}"
+
+
+def managed_cloudflared_manifest_path() -> Path:
+    path = managed_cloudflared_path()
+    return path.with_name(f"{path.name}.manifest.json")
 
 
 def _get_env_value(key: str) -> Optional[str]:
@@ -190,7 +220,267 @@ def _cloudflared_command(binary: str) -> list[str]:
     ]
 
 
-def start(timeout_seconds: float = DEFAULT_START_TIMEOUT_SECONDS) -> TunnelStartResult:
+def _platform_asset_name() -> str:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if machine in {"x86_64", "amd64"}:
+        arch = "amd64"
+    elif machine in {"arm64", "aarch64"}:
+        arch = "arm64"
+    elif machine.startswith("arm"):
+        arch = "arm"
+    else:
+        raise RuntimeError(f"unsupported CPU architecture for cloudflared: {machine}")
+
+    if system == "darwin":
+        if arch == "arm":
+            raise RuntimeError("cloudflared does not publish a Darwin armv7 binary")
+        return f"cloudflared-darwin-{arch}.tgz"
+    if system == "linux":
+        return f"cloudflared-linux-{arch}"
+    if system == "windows":
+        if arch != "amd64":
+            raise RuntimeError("cloudflared does not publish a Windows arm64 binary")
+        return "cloudflared-windows-amd64.exe"
+    raise RuntimeError(f"unsupported operating system for cloudflared: {system}")
+
+
+def _ssl_context() -> ssl.SSLContext:
+    try:
+        import certifi  # type: ignore
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
+def _urlopen_json(url: str) -> Any:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "hermes-agent-photon",
+        },
+    )
+    with urllib.request.urlopen(  # noqa: S310
+        request,
+        timeout=30,
+        context=_ssl_context(),
+    ) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _cloudflared_release_asset(asset_name: str) -> CloudflaredAsset:
+    data = _urlopen_json(CLOUDFLARED_RELEASE_API)
+    if not isinstance(data, dict):
+        raise RuntimeError("Cloudflare release metadata was not an object")
+    for item in data.get("assets") or []:
+        if not isinstance(item, dict) or item.get("name") != asset_name:
+            continue
+        digest = str(item.get("digest") or "")
+        if not digest.startswith("sha256:"):
+            raise RuntimeError(f"Cloudflare release asset {asset_name} has no SHA-256 digest")
+        download_url = str(item.get("browser_download_url") or "")
+        if not download_url:
+            raise RuntimeError(f"Cloudflare release asset {asset_name} has no download URL")
+        try:
+            size = int(item.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        return CloudflaredAsset(
+            name=asset_name,
+            download_url=download_url,
+            sha256=digest.removeprefix("sha256:"),
+            size=size,
+            version=str(data.get("tag_name") or ""),
+        )
+    raise RuntimeError(f"Cloudflare release asset not found: {asset_name}")
+
+
+def _download_url(url: str, destination: Path) -> None:
+    with urllib.request.urlopen(  # noqa: S310
+        url,
+        timeout=60,
+        context=_ssl_context(),
+    ) as response:
+        with destination.open("wb") as fh:
+            shutil.copyfileobj(response, fh)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_download(path: Path, asset: CloudflaredAsset) -> None:
+    if asset.size and path.stat().st_size != asset.size:
+        raise RuntimeError(
+            f"cloudflared download size mismatch for {asset.name}: "
+            f"expected {asset.size}, got {path.stat().st_size}"
+        )
+    actual = _sha256_file(path)
+    if actual.lower() != asset.sha256.lower():
+        raise RuntimeError(
+            f"cloudflared download checksum mismatch for {asset.name}"
+        )
+
+
+def _extract_cloudflared_tgz(archive: Path, destination: Path) -> None:
+    with tarfile.open(archive, "r:gz") as tf:
+        for member in tf.getmembers():
+            if Path(member.name).name != "cloudflared" or not member.isfile():
+                continue
+            src = tf.extractfile(member)
+            if src is None:
+                break
+            with destination.open("wb") as out:
+                shutil.copyfileobj(src, out)
+            return
+    raise RuntimeError("cloudflared archive did not contain a cloudflared binary")
+
+
+def _load_managed_cloudflared_manifest() -> dict[str, Any]:
+    path = managed_cloudflared_manifest_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_managed_cloudflared_manifest(
+    target: Path,
+    asset: CloudflaredAsset,
+    *,
+    binary_sha256: Optional[str] = None,
+) -> None:
+    try:
+        binary_sha256 = binary_sha256 or _sha256_file(target)
+        data = {
+            "asset": asset.name,
+            "asset_sha256": asset.sha256,
+            "binary_sha256": binary_sha256,
+            "version": asset.version,
+        }
+        path = managed_cloudflared_manifest_path()
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(data, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def _ensure_executable(path: Path) -> None:
+    try:
+        os.chmod(path, 0o755)
+    except OSError:
+        pass
+
+
+def _managed_cloudflared_matches_asset(target: Path, asset: CloudflaredAsset) -> bool:
+    try:
+        current_binary_sha256 = _sha256_file(target).lower()
+    except OSError:
+        return False
+
+    manifest = _load_managed_cloudflared_manifest()
+    if (
+        str(manifest.get("asset") or "") == asset.name
+        and str(manifest.get("asset_sha256") or "").lower() == asset.sha256.lower()
+        and str(manifest.get("binary_sha256") or "").lower() == current_binary_sha256
+    ):
+        return True
+
+    if not asset.name.endswith(".tgz") and current_binary_sha256 == asset.sha256.lower():
+        _save_managed_cloudflared_manifest(
+            target,
+            asset,
+            binary_sha256=current_binary_sha256,
+        )
+        return True
+
+    return False
+
+
+def install_managed_cloudflared(*, emit: Optional[Any] = None) -> str:
+    """Install cloudflared into the active Hermes profile and return its path."""
+    target = managed_cloudflared_path()
+    asset_name = _platform_asset_name()
+    try:
+        asset = _cloudflared_release_asset(asset_name)
+    except Exception:
+        if target.exists():
+            _ensure_executable(target)
+            return str(target)
+        raise
+
+    if target.exists() and _managed_cloudflared_matches_asset(target, asset):
+        _ensure_executable(target)
+        return str(target)
+
+    managed_bin_dir().mkdir(parents=True, exist_ok=True)
+    if emit:
+        version = f" {asset.version}" if asset.version else ""
+        if target.exists():
+            emit(f"  updating managed cloudflared copy{version} ({asset_name})")
+        else:
+            emit(f"  cloudflared not found — installing managed copy{version} ({asset_name})")
+
+    had_target = target.exists()
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-cloudflared-") as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            download_path = tmp_path / asset_name
+            _download_url(asset.download_url, download_path)
+            _verify_download(download_path, asset)
+            staged = tmp_path / target.name
+            if asset_name.endswith(".tgz"):
+                _extract_cloudflared_tgz(download_path, staged)
+            else:
+                shutil.copyfile(download_path, staged)
+            os.chmod(staged, 0o755)
+            staged.replace(target)
+    except Exception:
+        if had_target:
+            _ensure_executable(target)
+            return str(target)
+        raise
+
+    _ensure_executable(target)
+    _save_managed_cloudflared_manifest(target, asset)
+    return str(target)
+
+
+def resolve_cloudflared_binary(
+    *,
+    auto_install: bool = True,
+    emit: Optional[Any] = None,
+) -> Optional[str]:
+    binary = shutil.which("cloudflared")
+    if binary:
+        return binary
+    managed = managed_cloudflared_path()
+    if managed.exists() and not auto_install:
+        return str(managed)
+    if not auto_install:
+        return None
+    return install_managed_cloudflared(emit=emit)
+
+
+def start(
+    timeout_seconds: float = DEFAULT_START_TIMEOUT_SECONDS,
+    *,
+    auto_install: bool = True,
+    on_install: Optional[Any] = None,
+) -> TunnelStartResult:
     current = status()
     if current.get("running") and is_trycloudflare_url(str(current.get("public_url") or "")):
         public_url = str(current.get("public_url") or "")
@@ -204,7 +494,17 @@ def start(timeout_seconds: float = DEFAULT_START_TIMEOUT_SECONDS) -> TunnelStart
             log_path=log_path(),
         )
 
-    binary = shutil.which("cloudflared")
+    try:
+        binary = resolve_cloudflared_binary(
+            auto_install=auto_install,
+            emit=on_install,
+        )
+    except Exception as e:
+        return TunnelStartResult(
+            success=False,
+            error=f"cloudflared install failed: {e}",
+            log_path=log_path(),
+        )
     if not binary:
         return TunnelStartResult(
             success=False,

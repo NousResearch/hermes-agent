@@ -1,107 +1,42 @@
 # Photon iMessage platform plugin
 
-This plugin connects Hermes Agent to iMessage (and WhatsApp Business +
-future Spectrum interfaces) through [Photon][photon] — a managed
-service that handles the iMessage line allocation, delivery, and
-abuse-prevention layer so users don't have to run their own Mac
-relay.
+Photon lets you text your local Hermes Agent through iMessage and use
+that thread as your main Hermes interface. Photon owns the iMessage
+line and delivery layer; your computer runs Hermes, the webhook
+receiver, and the local tunnel Photon uses to reach it.
 
-The free tier uses Photon's shared iMessage line pool (`type: shared`)
-and is the path we recommend for everyone who doesn't already pay for a
-dedicated number.
+For daily use, the tunnel and the Hermes gateway must stay running. If
+either stops, incoming texts will not reach Hermes until both are back
+up.
 
-## Architecture
-
-```
-┌─────────────────────────┐    HMAC-signed POSTs      ┌──────────────────┐
-│  Photon Spectrum cloud  │ ──────────────────────►   │  Hermes Agent    │
-│  (iMessage line owner)  │                           │  (Python)        │
-└─────────────────────────┘    JSON over loopback     │                  │
-        ▲                  ◄──────────────────────    │  PhotonAdapter   │
-        │                                             │  + aiohttp recv  │
-        │  spectrum-ts                                │                  │
-        │  SDK (Node)                                 │  spawns + super- │
-        ▼                                             │  vises ▼         │
-┌─────────────────────────┐                           ├──────────────────┤
-│  Node sidecar           │   ◄────  X-Hermes-      ─ │  Node sidecar    │
-│  (plugins/.../sidecar)  │       Sidecar-Token       │  child process   │
-└─────────────────────────┘                           └──────────────────┘
-```
-
-Inbound traffic is webhook-only — Hermes runs an aiohttp listener
-that verifies `X-Spectrum-Signature` and dedupes on `message.id`.
-
-Outbound traffic goes through a tiny Node sidecar that runs the
-`spectrum-ts` SDK. Photon does not currently expose an HTTP
-send-message endpoint; their own docs say:
-
-> Pass `space.id` to `Space.send(...)` from a separate `spectrum-ts`
-> SDK instance to reply. **No public HTTP send endpoint exists today.**
-> — https://photon.codes/docs/webhooks/events
-
-When Photon ships an HTTP send endpoint, `_sidecar_send` is the one
-function that swaps and the sidecar disappears. The rest of the
-plugin stays the same.
-
-One implementation detail matters for shared iMessage lines: webhook
-events identify a conversation with a canonical Spectrum space id
-like `any;-;+<phone>`, while the current `spectrum-ts`
-`imessage(app).space(...)` helper resolves direct-message spaces by
-recipient address (`+<phone>`). The sidecar therefore caches
-send-capable `Space` objects from the inbound stream and, for uncached
-shared-line DMs, strips the `any;-;` prefix before sending. This
-bridges Photon's webhook shape to the SDK's outbound lookup shape
-without changing the Python gateway contract.
+The free tier uses Photon's shared iMessage line pool (`type: shared`).
+Use that unless you already pay for a dedicated Photon number.
 
 ## Quick setup
 
 ```bash
-# Log in first. Quick setup intentionally does not start this flow for you.
 hermes photon login
-
-# Then run the all-in-one local setup. Replace the placeholder with
-# your E.164 number: + followed by country code and number, no spaces.
 hermes photon quick-setup --phone '+<country-code><number>'
-```
-
-`hermes setup gateway` runs the same guided Photon flow when you choose
-Photon from the platform list. It will ask you to run
-`hermes photon login` first if no Photon token is present. After login,
-the quick setup path is idempotent: it reuses local credentials first,
-then adopts a matching Photon dashboard project named `Hermes Agent` if
-one exists, creates one if none exists, and stops if multiple matching
-projects require an explicit selection.
-
-After Spectrum user creation succeeds, setup also authorizes the same
-`--phone` value as the initial Photon sender for this Hermes gateway.
-That writes the E.164 number to `PHOTON_ALLOWED_USERS`, so the first
-iMessage from that phone goes to the agent instead of the generic DM
-pairing flow. To grant another phone access later, run
-`hermes photon allow-phone '+<country-code><number>'`.
-
-After login, quick setup performs the same work as:
-
-```bash
-# 1. Reuse/adopt/create the Photon project, create the shared user,
-#    authorize that phone for Hermes, and install the sidecar dependencies.
-hermes photon setup --phone '+<country-code><number>'
-
-# 2. Start the managed local webhook tunnel and register it with Photon.
-hermes photon webhook tunnel start
-
-# 3. Check the computed next step.
-hermes photon status
-
-# 4. Start the gateway in foreground QA mode.
 hermes gateway run -v
 ```
 
-Important: `quick-setup` does not start the Hermes gateway. It creates
-or adopts Photon resources, starts/registers the webhook tunnel, and
-writes credentials, but iMessage replies only work while
-`hermes gateway run -v` is running in a terminal or the gateway service
-is installed and started. If you used a custom `HERMES_HOME`, export the
-same value before starting the gateway.
+Use your E.164 phone number: `+` plus country code and number, with no
+spaces. Setup authorizes that phone automatically, so your first
+iMessage goes straight to Hermes. To add another phone later:
+
+```bash
+hermes photon allow-phone '+<country-code><number>'
+```
+
+`quick-setup` creates or adopts the Photon project, creates the shared
+iMessage user, installs the sidecar dependencies, starts and registers
+the managed webhook tunnel, and writes credentials to `~/.hermes/.env`.
+It is safe to run again.
+
+`quick-setup` does not start the Hermes gateway. iMessage replies work
+only while `hermes gateway run -v` is running, or while the gateway
+service is installed and started. If you use a custom `HERMES_HOME`,
+export the same value before starting the gateway.
 
 If the gateway was already running when the webhook was registered,
 restart it so the adapter loads `PHOTON_WEBHOOK_SECRET`:
@@ -109,6 +44,67 @@ restart it so the adapter loads `PHOTON_WEBHOOK_SECRET`:
 ```bash
 hermes gateway restart
 ```
+
+`hermes setup gateway` runs the same guided Photon flow when you choose
+Photon from the platform list.
+
+## Run the gateway
+
+After `quick-setup`, test the gateway in the foreground:
+
+```bash
+hermes gateway run -v
+```
+
+That is the gateway process. `-v` prints INFO-level startup and message
+logs in your terminal; press `Ctrl+C` to stop it.
+
+For always-on use, install the gateway service once and start it in the
+background:
+
+```bash
+hermes gateway install --force
+hermes gateway start
+```
+
+`gateway start` controls the installed system service. Do not run it
+and `gateway run -v` at the same time.
+
+Cloudflare Quick Tunnel URLs can change when the tunnel restarts.
+`quick-setup` starts the managed tunnel once; if the tunnel stops later,
+start it again:
+
+```bash
+hermes photon webhook tunnel start
+```
+
+`hermes photon status` shows the current readiness state and the next
+command to run.
+
+## How it works
+
+```
+iMessage phone
+    |
+    v
+Photon Spectrum cloud
+    |
+    | signed webhook through local tunnel
+    v
+Hermes gateway on your computer
+    |
+    | outbound replies through spectrum-ts sidecar
+    v
+Photon Spectrum cloud -> iMessage phone
+```
+
+- Inbound messages arrive as signed Photon webhooks. Hermes verifies
+  `X-Spectrum-Signature` and dedupes on `message.id`.
+- Outbound replies go through the Node sidecar because Photon does not
+  expose a public HTTP send-message endpoint yet.
+- Shared-line conversations can arrive with Spectrum space IDs like
+  `any;-;+<phone>`. The sidecar caches send-capable spaces and falls
+  back to the recipient address when needed.
 
 ## Project management
 
@@ -129,8 +125,10 @@ dashboard project.
 
 Cloudflare Quick Tunnel is the default local development path. It is
 temporary: the `trycloudflare.com` URL can change when the tunnel
-restarts. The managed command starts `cloudflared`, captures the public
-URL, registers the Photon webhook, and saves the local webhook secret.
+restarts. The managed command installs or updates a profile-local
+`cloudflared` binary if one is not already on PATH, starts it, captures
+the public URL, registers the Photon webhook, and saves the local webhook
+secret.
 
 ```bash
 hermes photon webhook tunnel start
@@ -159,23 +157,13 @@ registered and `PHOTON_WEBHOOK_SECRET` is present,
 the local secret is missing, delete or recreate the webhook in the Photon
 dashboard and save the new signing secret locally.
 
-## Status and gateway runtime
+## Status
 
 `hermes photon status` is the fastest way to see the current readiness
 state. The final row is a computed next step.
 
 ```bash
 hermes photon status
-
-hermes gateway run -v
-hermes gateway restart
-```
-
-For always-on local use, install/start the launchd service instead:
-
-```bash
-hermes gateway install --force
-hermes gateway start
 ```
 
 ## Detailed command reference

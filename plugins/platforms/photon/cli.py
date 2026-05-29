@@ -1045,7 +1045,7 @@ def _start_managed_tunnel_and_register() -> int:
         else ""
     )
 
-    result = photon_tunnel.start()
+    result = photon_tunnel.start(on_install=print)
     if not result.success:
         print(f"cloudflared tunnel failed: {result.error}", file=sys.stderr)
         _print_cloudflared_install_help()
@@ -1300,7 +1300,7 @@ def _docs_paths() -> str:
 
 
 def _print_cloudflared_install_help() -> None:
-    print("Install cloudflared, then re-run:", file=sys.stderr)
+    print("Install cloudflared manually, then re-run:", file=sys.stderr)
     print("  macOS (Homebrew): brew install cloudflared", file=sys.stderr)
     print("  Other platforms: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/", file=sys.stderr)
     print("Manual webhook path:", file=sys.stderr)

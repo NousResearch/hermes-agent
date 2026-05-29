@@ -47,7 +47,8 @@ when it needs to resolve an uncached outbound space.
 
 - A Photon account — sign up at [app.photon.codes][app]
 - **Node.js 20.18.1 or newer** on PATH (`node --version`)
-- `cloudflared` on PATH for the default local-dev webhook tunnel
+- Internet access to download a managed `cloudflared` binary if it is
+  not already on PATH
 - A phone number that can receive iMessage (used to bind your account)
 - For production: a stable named Cloudflare Tunnel, ngrok domain, or
   your own gateway hostname
@@ -115,7 +116,9 @@ hermes photon webhook tunnel logs     # show recent cloudflared output
 hermes photon webhook tunnel stop     # stop the local managed tunnel
 ```
 
-The command runs `cloudflared tunnel --config /dev/null --url
+The command installs or updates a managed `cloudflared` binary in the
+active Hermes profile if one is not already on PATH. It then runs
+`cloudflared tunnel --config /dev/null --url
 http://127.0.0.1:8788 --no-autoupdate`, reads the
 `https://*.trycloudflare.com` URL, appends `/photon/webhook`, registers
 that URL with Photon, and saves both `PHOTON_WEBHOOK_SECRET` and
@@ -150,8 +153,8 @@ secret locally. The managed tunnel flow deletes stale
 `trycloudflare.com` webhooks it created when the tunnel URL changes, but
 leaves user-owned/manual webhook URLs alone.
 
-If `cloudflared` is missing, Hermes prints install instructions and the
-manual `hermes photon webhook register ...` fallback.
+If the managed `cloudflared` install fails, Hermes prints manual install
+instructions and the `hermes photon webhook register ...` fallback.
 
 ## Start the gateway
 

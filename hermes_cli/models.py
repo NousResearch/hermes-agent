@@ -1963,6 +1963,59 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
 })
 
 
+def _sort_models_dev_catalog(provider: str, model_ids: list[str]) -> list[str]:
+    """Sort a models.dev-sourced model list: A-Z by base name, newest first within base.
+
+    Intended for router-like providers that rely on the models.dev catalog
+    rather than a live /v1/models endpoint (e.g. DigitalOcean, and any future
+    provider in ``_MODELS_DEV_PREFERRED``).
+
+    "Base name" is the portion of the ID before the first version-like segment
+    (a segment that starts with a digit).
+    e.g. ``anthropic-claude-opus-4.8`` and ``anthropic-claude-opus-4.5`` share
+    base ``anthropic-claude-opus``; ``openai-gpt-5.4`` and ``openai-gpt-5``
+    share base ``openai-gpt``.
+
+    Sort key: (base_name asc, release_date desc, full_id asc).
+    Models with no catalog metadata (e.g. router IDs) use full_id as base_name
+    and sort last within their alphabetical position.
+    """
+    try:
+        from agent.models_dev import fetch_models_dev
+
+        data = fetch_models_dev()
+        catalog: dict = data.get(provider, {}).get("models", {})
+    except Exception:
+        catalog = {}
+
+    def _base_name(mid: str) -> str:
+        """Strip trailing version segments (starting with a digit)."""
+        parts = mid.split("-")
+        base = []
+        for part in parts:
+            if part and part[0].isdigit():
+                break
+            base.append(part)
+        return "-".join(base) if base else mid
+
+    def sort_key(mid: str) -> tuple:
+        entry = catalog.get(mid)
+        release = ""
+        if isinstance(entry, dict):
+            release = str(entry.get("release_date") or "")
+        base = _base_name(mid)
+        # Invert date chars so newer ISO dates sort first within the base group.
+        # No metadata → \x7f → sorts last within base group.
+        date_desc = "".join(chr(0x7F - ord(c)) for c in release) if release else "\x7f"
+        return (base, date_desc, mid)
+
+    return sorted(model_ids, key=sort_key)
+
+
+def _sort_digitalocean_models(model_ids: list[str]) -> list[str]:
+    return _sort_models_dev_catalog("digitalocean", model_ids)
+
+
 def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     """Merge curated list with fresh models.dev entries for a preferred provider.
 
@@ -2149,7 +2202,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
-        return _merge_with_models_dev(normalized, curated_static)
+        merged = _merge_with_models_dev(normalized, curated_static)
+        return _sort_models_dev_catalog(normalized, merged)
     return curated_static
 
 

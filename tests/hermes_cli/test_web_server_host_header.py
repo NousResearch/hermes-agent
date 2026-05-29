@@ -246,9 +246,14 @@ class TestInsecureMode:
     def test_start_server_writes_insecure_to_app_state(self, monkeypatch):
         """start_server() must persist allow_public to app.state.insecure so
         WebSocket guards can read it at request time."""
+        import uvicorn
+
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr("hermes_cli.web_server.uvicorn.run", lambda *a, **kw: None)
+        # uvicorn is lazily imported inside start_server(), so patch
+        # uvicorn.run on the uvicorn module itself rather than on the
+        # web_server module (where the name doesn't exist yet).
+        monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: None)
 
         ws.start_server(host="127.0.0.1", port=9119, open_browser=False, allow_public=True)
         assert ws.app.state.insecure is True

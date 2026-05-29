@@ -1556,24 +1556,21 @@ def list_authenticated_providers(
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
-    # provider. Entries sharing the same endpoint (``base_url`` + ``api_key``)
-    # are grouped into a single picker row, so e.g. four Ollama entries
-    # pointing at ``http://localhost:11434/v1`` with per-model display names
-    # ("Ollama — GLM 5.1", "Ollama — Qwen3-coder", ...) appear as one
+    # provider. Entries sharing the same endpoint, credential identity, and
+    # wire protocol are grouped into a single picker row, so e.g. four Ollama
+    # entries pointing at ``http://localhost:11434/v1`` with per-model display
+    # names ("Ollama — GLM 5.1", "Ollama — Qwen3-coder", ...) appear as one
     # "Ollama" row with four models inside instead of four near-duplicates
-    # that differ only by suffix. Entries with distinct endpoints still
-    # produce separate rows.
-    #
-    # When the grouped endpoint matches ``current_base_url`` the group's
-    # slug becomes ``current_provider`` so that selecting a model from the
-    # picker flows back through the runtime provider that already holds
-    # valid credentials — no re-resolution needed.
+    # that differ only by suffix. Same-host entries with different ``key_env``
+    # or ``api_mode`` remain distinct providers.
     if custom_providers and isinstance(custom_providers, list):
         from collections import OrderedDict
 
-        # Key by (base_url, api_key) instead of slug: names frequently
-        # differ per model ("Ollama — X") while the endpoint stays the
-        # same. Slug-based grouping left them as separate rows.
+        # Key by endpoint + credential identity + wire protocol instead of
+        # slug: names frequently differ per model ("Ollama — X") while the
+        # endpoint stays the same.  Keep same-host providers with distinct
+        # env-backed credentials or API protocols separate so picker selection
+        # cannot route through the wrong credential/mode pair.
         groups: "OrderedDict[tuple, dict]" = OrderedDict()
         for entry in custom_providers:
             if not isinstance(entry, dict):
@@ -1588,9 +1585,23 @@ def list_authenticated_providers(
             ).strip().rstrip("/")
             if not raw_name or not api_url:
                 continue
-            api_key = (entry.get("api_key") or "").strip()
+            inline_api_key = (entry.get("api_key") or "").strip()
+            key_env = (entry.get("key_env") or "").strip()
+            api_key = inline_api_key or (
+                os.environ.get(key_env, "").strip() if key_env else ""
+            )
+            api_mode = str(
+                entry.get("api_mode")
+                or entry.get("transport")
+                or ""
+            ).strip().lower()
+            credential_identity = (
+                inline_api_key
+                if inline_api_key
+                else (f"env:{key_env}" if key_env else "")
+            )
 
-            group_key = (api_url, api_key)
+            group_key = (api_url, credential_identity, api_mode)
             if group_key not in groups:
                 # Strip per-model suffix so "Ollama — GLM 5.1" becomes
                 # "Ollama" for the grouped row. Em dash is the convention
@@ -1603,29 +1614,16 @@ def list_authenticated_providers(
                         break
                 if not display_name:
                     display_name = raw_name
-                # If this endpoint matches the currently active one, use
-                # ``current_provider`` as the slug so picker-driven switches
-                # route through the live credential pipeline.
-                if (
-                    current_base_url
-                    and api_url == current_base_url.strip().rstrip("/")
-                ):
-                    # Guard against bare "custom" slug left by a prior
-                    # failed switch — always resolve to the canonical
-                    # custom:<name> form.  (GH #17478)
-                    slug = (
-                        current_provider
-                        if current_provider and current_provider != "custom"
-                        else custom_provider_slug(display_name)
-                    )
-                else:
-                    slug = custom_provider_slug(display_name)
+                slug = custom_provider_slug(display_name)
                 groups[group_key] = {
                     "slug": slug,
                     "name": display_name,
                     "api_url": api_url,
+                    "api_key": api_key,
                     "models": [],
                 }
+            elif api_key and not groups[group_key].get("api_key"):
+                groups[group_key]["api_key"] = api_key
 
             # The singular ``model:`` field only holds the currently
             # active model. Hermes's own writer (main.py::_save_custom_provider)
@@ -1647,8 +1645,16 @@ def list_authenticated_providers(
                         groups[group_key]["models"].append(m)
 
         _section4_emitted_slugs: set = set()
-        for grp_key, grp in groups.items():
-            api_url, api_key = grp_key
+        _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
+        _current_base_url_group_count = sum(
+            1
+            for _grp in groups.values()
+            if _current_base_url_norm
+            and str(_grp["api_url"]).strip().rstrip("/").lower() == _current_base_url_norm
+        )
+        for grp in groups.values():
+            api_url = grp["api_url"]
+            api_key = grp.get("api_key", "")
             slug = grp["slug"]
             # If the slug is already claimed by a built-in / overlay /
             # user-provider row (sections 1-3), skip this custom group
@@ -1721,8 +1727,10 @@ def list_authenticated_providers(
                 "slug": slug,
                 "name": grp["name"],
                 "is_current": slug == current_provider or (
-                    bool(current_base_url)
-                    and _grp_url_norm == current_base_url.strip().rstrip("/").lower()
+                    current_provider == "custom"
+                    and bool(_current_base_url_norm)
+                    and _grp_url_norm == _current_base_url_norm
+                    and _current_base_url_group_count == 1
                 ),
                 "is_user_defined": True,
                 "models": grp["models"],

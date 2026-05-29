@@ -850,6 +850,11 @@ DEFAULT_CONFIG = {
             "session_key": "",
             # Rehydrate tab_id from Camofox before creating a new tab.
             "adopt_existing_tab": False,
+            # Docker Camofox opens page URLs from inside the container. Enable
+            # this to rewrite loopback page URLs (localhost/127.0.0.1/::1) to a
+            # host alias while leaving CAMOFOX_URL itself unchanged.
+            "rewrite_loopback_urls": False,
+            "loopback_host_alias": "host.docker.internal",
         },
     },
 

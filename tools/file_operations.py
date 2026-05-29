@@ -111,6 +111,8 @@ def _normalize_line_endings(text: str, target: str) -> str:
     if target == "\r\n":
         return lf_normalized.replace("\n", "\r\n")
     return text
+
+
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
     return _shared_is_write_denied(path)

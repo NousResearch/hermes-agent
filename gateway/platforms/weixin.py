@@ -656,6 +656,8 @@ def _split_table_row(line: str) -> List[str]:
     if row.endswith("|"):
         row = row[:-1]
     return [cell.strip() for cell in row.split("|")]
+
+
 def _normalize_markdown_blocks(content: str) -> str:
     lines = content.splitlines()
     result: List[str] = []

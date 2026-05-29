@@ -1186,6 +1186,8 @@ def _format_price_per_mtok(per_token_str: str) -> str:
         return "free"
     per_m = val * 1_000_000
     return f"${per_m:.2f}"
+
+
 def fetch_models_with_pricing(
     api_key: str | None = None,
     base_url: str = "https://openrouter.ai/api",

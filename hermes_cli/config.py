@@ -683,6 +683,13 @@ DEFAULT_CONFIG = {
         # (docker/modal/ssh — they have their own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
+        # Embedder-supplied environment description appended to the system
+        # prompt's environment-hints block. Lets a host that wraps Hermes
+        # (sandbox runner, managed platform) explain the runtime environment
+        # — proxy, credential handling, mount layout — without editing the
+        # identity slot (SOUL.md). Empty by default. The HERMES_ENVIRONMENT_HINT
+        # env var overrides this (build-time/container mechanism).
+        "environment_hint": "",
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.

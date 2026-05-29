@@ -848,6 +848,27 @@ def build_environment_hints() -> str:
 
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
+
+    # Embedder-supplied environment description. Lets a host that wraps Hermes
+    # (e.g. a sandbox runner / managed platform) explain the environment the
+    # agent is running in — proxy, credential handling, mount layout — without
+    # forking the identity slot (SOUL.md). Read once at prompt-build time, so
+    # it's part of the stable, cache-safe system prompt. The env var is the
+    # build-time/embedder mechanism (set in a container ENV); config.yaml
+    # ``agent.environment_hint`` is the user-facing surface. Env var wins.
+    extra = (os.getenv("HERMES_ENVIRONMENT_HINT") or "").strip()
+    if not extra:
+        try:
+            from hermes_cli.config import load_config
+
+            extra = str(
+                (load_config().get("agent", {}) or {}).get("environment_hint", "")
+            ).strip()
+        except Exception as e:
+            logger.debug("Could not read agent.environment_hint from config: %s", e)
+    if extra:
+        hints.append(extra)
+
     return "\n\n".join(hints)
 
 

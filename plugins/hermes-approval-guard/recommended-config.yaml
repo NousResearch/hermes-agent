@@ -1,0 +1,41 @@
+# ============================================================
+# Hermes Approval Guard — Recommended Configuration
+#
+# Quick start:
+#   1. Copy this section to config.yaml
+#   2. Set plugin_guard.enabled to true
+#   3. Add plugin name to plugins.enabled
+#   4. Restart Hermes
+#
+# Important: Do NOT change approvals.mode!
+#   terminal commands still handled by existing approvals.mode
+#   Plugin only covers write_file/patch/delegate_task etc.
+#   that were previously unapproved.
+#
+# To disable:
+#   plugin_guard.enabled: false
+# ============================================================
+
+# ── Plugin enable ────────────────────────────────────────────
+plugins:
+  enabled:
+    - hermes-approval-guard
+
+# ── Approval guard config ─────────────────────────────────────
+plugin_guard:
+  enabled: false                    # ← change to true to enable
+  provider: zjic                   # Approval LLM provider
+  model: qwen-3.6-27b-fast         # Fast model, ~500ms response
+  fail_open: true                  # LLM unavailable → allow (safe default)
+
+  stage1:
+    timeout: 5                     # LLM fast classification timeout (seconds)
+
+  stage2:
+    enabled: false                 # ACP Agent deep review (optional, test with off first)
+    profile: approval              # hermes acp --profile name
+    timeout: 15                    # Agent deep review timeout (seconds)
+
+  memory:
+    backend: hindsight             # hindsight | honcho | none
+    bank: approval                 # Hindsight bank name or Honcho user_id

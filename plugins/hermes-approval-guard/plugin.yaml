@@ -1,0 +1,12 @@
+name: hermes-approval-guard
+version: 0.1.0
+kind: standalone
+hooks:
+  - pre_tool_call
+description: |
+  Two-stage tool-call approval guard. Stage 1 rule engine + LLM fast
+  classification, Stage 2 ACP Agent deep review. Covers all tools
+  (terminal/write_file/patch/delegate_task/execute_code etc.), provides
+  structured denial feedback with alternatives, supports Hindsight
+  approval memory learning. Disabled by default; requires explicit
+  plugin_guard.enabled: true to activate.

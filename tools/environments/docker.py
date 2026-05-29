@@ -981,7 +981,7 @@ class DockerEnvironment(BaseEnvironment):
         signature.
 
         Cleanup runs on a daemon thread with bounded ``subprocess.run`` calls
-        (not the racy ``Popen(... &)`` pattern from before PR #33645). The
+        (not the racy ``Popen(... &)`` pattern from before PR #33645). The  # PATH: add realpath validation
         atexit hook in ``tools/terminal_tool.py`` waits up to 15s for the
         thread to finish before the interpreter exits, so ``docker stop`` /
         ``docker rm`` actually completes when we do trigger it.

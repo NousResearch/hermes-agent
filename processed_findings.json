@@ -514,5 +514,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34954",
     "pr_number": 34954,
     "run_id": "20260529_222900"
+  },
+  "PATH-local.py-25": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34955",
+    "pr_number": 34955,
+    "run_id": "20260529_222900"
   }
 }

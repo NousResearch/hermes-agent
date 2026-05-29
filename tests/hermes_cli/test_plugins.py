@@ -532,6 +532,38 @@ class TestPreToolCallBlocking:
         )
         assert get_pre_tool_call_block_message("terminal", {}) == "first blocker"
 
+    def test_session_id_forwarded_to_hook(self, monkeypatch):
+        """Verify session_id kwarg reaches the plugin hook (regression test)."""
+        captured_kwargs = {}
+
+        def _capture_hook(hook_name, **kwargs):
+            captured_kwargs.update(kwargs)
+            return []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            _capture_hook,
+        )
+        get_pre_tool_call_block_message(
+            "terminal", {}, task_id="t1", session_id="sess-42",
+        )
+        assert captured_kwargs.get("session_id") == "sess-42"
+
+    def test_session_id_defaults_to_empty_string(self, monkeypatch):
+        """When session_id is omitted, hook receives empty string default."""
+        captured_kwargs = {}
+
+        def _capture_hook(hook_name, **kwargs):
+            captured_kwargs.update(kwargs)
+            return []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            _capture_hook,
+        )
+        get_pre_tool_call_block_message("todo", {}, task_id="t1")
+        assert captured_kwargs.get("session_id") == ""
+
 
 class TestThreadToolWhitelist:
     """Tests for the thread-local tool whitelist used by background review forks."""

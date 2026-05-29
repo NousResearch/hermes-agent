@@ -530,7 +530,7 @@ async def _standalone_send(
     markdown_env = os.getenv("NTFY_MARKDOWN", "").strip().lower()
     markdown_enabled = bool(extra.get("markdown")) or markdown_env in ("1", "true", "yes")
 
-    headers = {"Content-Type": "text/plain; charset=utf-8", **_build_auth_header(token)}
+    headers = {"Content-Type": "text/plain; charset=utf-8", "X-Tags": _ECHO_TAG, **_build_auth_header(token)}
     if markdown_enabled:
         headers["X-Markdown"] = "true"
 

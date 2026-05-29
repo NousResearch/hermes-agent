@@ -88,6 +88,87 @@ class TestAuxiliaryMaxTokensParam:
             assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
 
 
+class TestBuildCallKwargsMaxTokensParam:
+    """_build_call_kwargs must emit max_completion_tokens for endpoints that
+    reject max_tokens on newer OpenAI models, keyed on the resolved request
+    hostname rather than the provider label.
+
+    Regression test for issue #34530: auxiliary context compression configured
+    with provider=github-copilot (which normalises to provider="copilot", not
+    "custom") and a GPT-5 model sent max_tokens and failed with HTTP 400
+    "Unsupported parameter: 'max_tokens' ... Use 'max_completion_tokens'".
+    """
+
+    def test_github_copilot_provider_uses_max_completion_tokens(self):
+        # github-copilot normalises to provider="copilot"; the bug was that the
+        # max_completion_tokens path was gated on provider=="custom".
+        kwargs = _build_call_kwargs(
+            provider="copilot",
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1024,
+            base_url="https://api.githubcopilot.com",
+        )
+        assert kwargs.get("max_completion_tokens") == 1024
+        assert "max_tokens" not in kwargs
+
+    def test_github_copilot_base_with_path_uses_max_completion_tokens(self):
+        kwargs = _build_call_kwargs(
+            provider="copilot",
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=512,
+            base_url="https://api.githubcopilot.com/chat/completions",
+        )
+        assert kwargs.get("max_completion_tokens") == 512
+        assert "max_tokens" not in kwargs
+
+    def test_openai_base_still_uses_max_completion_tokens(self):
+        kwargs = _build_call_kwargs(
+            provider="openai",
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=2048,
+            base_url="https://api.openai.com/v1",
+        )
+        assert kwargs.get("max_completion_tokens") == 2048
+        assert "max_tokens" not in kwargs
+
+    def test_custom_openai_base_still_uses_max_completion_tokens(self):
+        # Preserve the pre-existing provider=="custom" + api.openai.com behaviour.
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=2048,
+            base_url="https://api.openai.com/v1",
+        )
+        assert kwargs.get("max_completion_tokens") == 2048
+        assert "max_tokens" not in kwargs
+
+    def test_openrouter_still_uses_max_tokens(self):
+        kwargs = _build_call_kwargs(
+            provider="openrouter",
+            model="openai/gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=4096,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        assert kwargs.get("max_tokens") == 4096
+        assert "max_completion_tokens" not in kwargs
+
+    def test_no_base_url_non_custom_provider_uses_max_tokens(self):
+        # Defensive: an unknown host (empty) must keep max_tokens, not flip.
+        kwargs = _build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1000,
+        )
+        assert kwargs.get("max_tokens") == 1000
+        assert "max_completion_tokens" not in kwargs
+
+
 class TestNormalizeAuxProvider:
     def test_maps_github_copilot_aliases(self):
         assert _normalize_aux_provider("github") == "copilot"

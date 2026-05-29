@@ -4726,7 +4726,9 @@ def _build_call_kwargs(
 
     if max_tokens is not None:
         # Codex adapter handles max_tokens internally; OpenRouter/Nous use max_tokens.
-        # Direct OpenAI api.openai.com with newer models needs max_completion_tokens.
+        # Direct OpenAI api.openai.com and GitHub Copilot api.githubcopilot.com with
+        # newer GPT-4o/o-series/GPT-5 models reject max_tokens and require
+        # max_completion_tokens instead.
         # ZAI vision models (glm-4v-flash, glm-4v-plus, etc.) reject max_tokens with
         # error code 1210 ("API 调用参数有误") on multimodal requests — skip it.
         _model_lower = (model or "").lower()
@@ -4734,14 +4736,22 @@ def _build_call_kwargs(
             provider == "zai"
             and ("4v" in _model_lower or "5v" in _model_lower or "-v" in _model_lower)
         )
+        # Endpoints that require max_completion_tokens for newer OpenAI models,
+        # keyed on the resolved request hostname rather than the provider label.
+        # GitHub Copilot normalises to provider="copilot" (not "custom"), so a
+        # provider=="custom" gate alone misses it — mirror auxiliary_max_tokens_param,
+        # which already lists both hosts. See issue #34530.
+        _resolved_base = base_url
+        if not _resolved_base and provider == "custom":
+            _resolved_base = _current_custom_base_url()
+        _wants_max_completion = base_url_hostname(_resolved_base) in {
+            "api.openai.com",
+            "api.githubcopilot.com",
+        }
         if _skip_max_tokens:
             pass  # ZAI vision models do not accept max_tokens
-        elif provider == "custom":
-            custom_base = base_url or _current_custom_base_url()
-            if base_url_hostname(custom_base) == "api.openai.com":
-                kwargs["max_completion_tokens"] = max_tokens
-            else:
-                kwargs["max_tokens"] = max_tokens
+        elif _wants_max_completion:
+            kwargs["max_completion_tokens"] = max_tokens
         else:
             kwargs["max_tokens"] = max_tokens
 

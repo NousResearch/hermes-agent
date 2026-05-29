@@ -127,4 +127,28 @@ class ChatViewModelTest {
         assertEquals("hello", prior[0].content)
         assertTrue(prior[1].content.contains("[prior turn attachment omitted: photo.jpg]"))
     }
+
+    @Test
+    fun allFeaturesPromptRoutesDirectlyToNativeSelfTestDiagnostics() {
+        val arguments = directNativeDiagnosticArgumentsForPrompt("Run a full all features test for Hermes native tools")
+
+        requireNotNull(arguments)
+        assertEquals("agent_native_tool_self_test_report", arguments.getString("action"))
+    }
+
+    @Test
+    fun ordinaryChatPromptDoesNotBypassConfiguredEndpoint() {
+        val arguments = directNativeDiagnosticArgumentsForPrompt("Write a short welcome message")
+
+        assertEquals(null, arguments)
+    }
+
+    @Test
+    fun directNativeDiagnosticsReplyPrefersBridgeOutputText() {
+        val reply = formatDirectNativeDiagnosticsReply(
+            """{"success":true,"output":"Hermes native tool self-test\nterminal_tool: ready"}""",
+        )
+
+        assertEquals("Hermes native tool self-test\nterminal_tool: ready", reply)
+    }
 }

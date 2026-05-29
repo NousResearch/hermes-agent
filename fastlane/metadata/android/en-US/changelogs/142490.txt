@@ -1,0 +1,5 @@
+Hermes Agent Fork 0.13.124
+
+- Routes explicit Android diagnostics and all-features test prompts directly through the native Kotlin bridge from chat, even when the current endpoint is not in native-tool mode.
+- Returns the real native self-test output for terminal, system-control, accessibility, hindsight memory, and workspace file bridges instead of waiting on a provider response.
+- Keeps the 0.13.123 custom-instructions, context-recovery, adaptive-icon, keyboard, and chat rendering fixes.

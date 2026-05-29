@@ -21,6 +21,7 @@ import com.mobilefork.hermesagent.data.AppSettingsStore
 import com.mobilefork.hermesagent.data.HermesNetworkPolicy
 import com.mobilefork.hermesagent.data.StoredConversationAttachment
 import com.mobilefork.hermesagent.data.StoredConversationMessage
+import com.mobilefork.hermesagent.device.HermesDeviceDiagnosticsBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -202,6 +203,60 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val assistantPlaceholder = ChatUiMessage(assistantMessageId, "assistant", "", now + 1)
 
         viewModelScope.launch(Dispatchers.IO) {
+            val directDiagnosticArguments = if (attachments.isEmpty()) directNativeDiagnosticArgumentsForPrompt(text) else null
+            if (directDiagnosticArguments != null) {
+                persistMessages(sessionId, userMessage, assistantPlaceholder)
+                _uiState.update {
+                    it.copy(
+                        activeConversationId = sessionId,
+                        activeConversationTitle = conversationStore.currentConversation().title,
+                        conversationSummaries = loadSummaries(),
+                        messages = conversationStore.currentConversationMessages().toUiMessages(),
+                        input = "",
+                        attachments = emptyList(),
+                        isSending = true,
+                        error = "",
+                        status = "Running native Android diagnostics…",
+                        isShowingHistory = false,
+                    )
+                }
+                val content = runCatching {
+                    val action = directDiagnosticArguments.optString("action").ifBlank { "agent_native_tool_self_test_report" }
+                    HermesDeviceDiagnosticsBridge.performActionJson(
+                        context = getApplication<Application>(),
+                        action = action,
+                        arguments = directDiagnosticArguments,
+                    )
+                }.fold(
+                    onSuccess = { formatDirectNativeDiagnosticsReply(it) },
+                    onFailure = { error ->
+                        "Native Android diagnostics failed: ${error.message ?: error.javaClass.simpleName}"
+                    },
+                )
+                conversationStore.updateMessageContent(
+                    sessionId = sessionId,
+                    messageId = assistantMessageId,
+                    newContent = content,
+                )
+                _uiState.update { state ->
+                    state.copy(
+                        activeConversationTitle = conversationStore.currentConversation().title,
+                        conversationSummaries = loadSummaries(),
+                        messages = state.messages.map { message ->
+                            if (message.id == assistantMessageId) {
+                                message.copy(content = content)
+                            } else {
+                                message
+                            }
+                        },
+                        isSending = false,
+                        error = "",
+                        status = "",
+                    )
+                }
+                return@launch
+            }
+
             val runtime = ensureRuntimeReady()
             val endpoint = resolveChatEndpoint(runtime)
             if (!runtime.started || endpoint == null) {
@@ -740,6 +795,38 @@ internal fun buildPriorChatRequestMessages(messages: List<ChatUiMessage>): List<
             }
         },
     )
+}
+
+internal fun directNativeDiagnosticArgumentsForPrompt(text: String): JSONObject? {
+    val prompt = text.trim()
+    if (prompt.isBlank()) {
+        return null
+    }
+    return NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(prompt)
+        ?: NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments(prompt)
+}
+
+internal fun formatDirectNativeDiagnosticsReply(rawJson: String): String {
+    val json = runCatching { JSONObject(rawJson) }.getOrNull()
+        ?: return rawJson.take(4_000)
+    val output = json.optString("output")
+    if (output.isNotBlank()) {
+        return output
+    }
+    val cards = json.optJSONArray("cards")
+    if (cards != null && cards.length() > 0) {
+        val lines = mutableListOf<String>()
+        for (index in 0 until cards.length()) {
+            val card = cards.optJSONObject(index) ?: continue
+            val title = card.optString("title").ifBlank { "Diagnostic" }
+            val body = card.optString("body").ifBlank { card.optString("subtitle") }
+            lines.add(listOf(title, body).filter { it.isNotBlank() }.joinToString(": "))
+        }
+        if (lines.isNotEmpty()) {
+            return lines.joinToString("\n")
+        }
+    }
+    return json.toString(2).take(4_000)
 }
 
 private fun chatCompletionContentToText(value: Any?): String {

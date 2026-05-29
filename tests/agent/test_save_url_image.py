@@ -94,7 +94,7 @@ def http_server(tmp_path, monkeypatch):
 
 
 class TestSaveUrlImage:
-    def test_writes_real_bytes_to_hermes_home_cache(self, http_server):
+    def test_writes_real_bytes_to_hermes_home_cache(self, http_server, tmp_path):
         base, _ = http_server
         from agent.image_gen_provider import save_url_image
 
@@ -102,9 +102,30 @@ class TestSaveUrlImage:
 
         assert path.exists()
         assert path.read_bytes() == PNG_1PX
-        # The cache directory must be under HERMES_HOME — gateway cleanup
-        # relies on this being the canonical location.
-        assert "cache/images" in str(path)
+        # The cache directory must use Hermes' delivery-safe image cache
+        # resolver. On fresh installs this is cache/images; on legacy installs
+        # with image_cache already present, it is image_cache.
+        assert path.parent.name in {"images", "image_cache"}
+        assert str(path).startswith(str((tmp_path / ".hermes").resolve()))
+        assert path.suffix == ".png"
+
+    def test_prefers_legacy_image_cache_when_present(self, http_server, tmp_path):
+        base, _ = http_server
+        legacy = tmp_path / ".hermes" / "image_cache"
+        legacy.mkdir()
+
+        # Force the helper to re-read HERMES_HOME after creating the legacy dir.
+        import sys
+        for mod in list(sys.modules):
+            if mod.startswith("hermes_constants") or mod.startswith("agent.image_gen_provider"):
+                sys.modules.pop(mod, None)
+
+        from agent.image_gen_provider import save_url_image
+
+        path = save_url_image(f"{base}/image.png", prefix="xai_test")
+
+        assert path.exists()
+        assert legacy in path.parents
         assert path.suffix == ".png"
 
     def test_extension_inferred_from_content_type(self, http_server):

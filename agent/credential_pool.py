@@ -939,6 +939,7 @@ class CredentialPool:
                 self._mark_exhausted(entry, None)
             return None
 
+        codex_linked_alias = False
         try:
             if self.provider == "anthropic":
                 from agent.anthropic_adapter import refresh_anthropic_oauth_pure
@@ -976,7 +977,14 @@ class CredentialPool:
                     entry = synced
                     if not force and not self._entry_needs_refresh(entry):
                         return entry
-                if entry.source == "device_code":
+                codex_linked_alias = (
+                    entry.source == "manual:device_code"
+                    and auth_mod._codex_refresh_tokens_match_canonical(
+                        entry.access_token,
+                        entry.refresh_token,
+                    )
+                )
+                if entry.source == "device_code" or codex_linked_alias:
                     auth_mod._require_codex_refresh_owner()
                 else:
                     auth_mod._require_codex_refresh_token_not_superseded(
@@ -1167,7 +1175,7 @@ class CredentialPool:
                     logger.debug(
                         "Codex OAuth refresh token is terminally invalid; clearing local token state"
                     )
-                    if entry.source != "device_code":
+                    if entry.source != "device_code" and not codex_linked_alias:
                         updated = replace(
                             entry,
                             last_status=STATUS_DEAD,
@@ -1193,6 +1201,11 @@ class CredentialPool:
                                     store_refresh = str(tokens.get("refresh_token") or "").strip()
                                     entry_refresh = str(entry.refresh_token or "").strip()
                                     if not store_refresh or store_refresh == entry_refresh:
+                                        auth_mod._record_superseded_codex_refresh_token(
+                                            state,
+                                            {"refresh_token": entry_refresh},
+                                            {},
+                                        )
                                         tokens.pop("access_token", None)
                                         tokens.pop("refresh_token", None)
                                         state["tokens"] = tokens
@@ -1215,13 +1228,34 @@ class CredentialPool:
                         logger.debug(
                             "Failed to clear terminal Codex OAuth state: %s", clear_exc
                         )
-                    self._entries = [
-                        item for item in self._entries
-                        if item.source != "device_code"
-                    ]
+                    dead_alias_ids = set()
+                    remaining_entries = []
+                    for item in self._entries:
+                        if item.source == "device_code":
+                            continue
+                        if (
+                            item.source == "manual:device_code"
+                            and item.access_token == entry.access_token
+                            and item.refresh_token == entry.refresh_token
+                        ):
+                            item = replace(
+                                item,
+                                last_status=STATUS_DEAD,
+                                last_status_at=time.time(),
+                                last_error_code=401,
+                                last_error_reason=getattr(exc, "code", "unknown"),
+                                last_error_message=str(exc),
+                                last_error_reset_at=None,
+                            )
+                            dead_alias_ids.add(item.id)
+                        remaining_entries.append(item)
+                    self._entries = remaining_entries
                     if self._current_id == entry.id:
                         self._current_id = None
-                    self._persist(replace_shared_entries=True)
+                    self._persist(
+                        replace_shared_entries=True,
+                        update_status_entry_ids=dead_alias_ids,
+                    )
                     return None
             # For nous: another process may have consumed the refresh token
             # between our proactive sync and the HTTP call.  Re-sync from
@@ -1299,7 +1333,10 @@ class CredentialPool:
             last_error_reset_at=None,
         )
         self._replace_entry(entry, updated)
-        if self.provider == "openai-codex" and updated.source == "device_code":
+        if (
+            self.provider == "openai-codex"
+            and (updated.source == "device_code" or codex_linked_alias)
+        ):
             auth_store = _load_auth_store(auth_mod._codex_auth_file_path())
             state = _load_provider_state(auth_store, "openai-codex") or {}
             persisted_tokens = state.get("tokens")

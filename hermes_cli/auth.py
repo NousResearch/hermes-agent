@@ -3916,6 +3916,23 @@ def _require_codex_refresh_token_not_superseded(refresh_token: str) -> None:
         )
 
 
+def _codex_refresh_tokens_match_canonical(
+    access_token: Optional[str],
+    refresh_token: Optional[str],
+) -> bool:
+    """Return whether a pool row still aliases the canonical token family."""
+    auth_store = _load_auth_store(_codex_auth_file_path())
+    state = _load_provider_state(auth_store, "openai-codex")
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    return (
+        isinstance(tokens, dict)
+        and bool(access_token)
+        and bool(refresh_token)
+        and tokens.get("access_token") == access_token
+        and tokens.get("refresh_token") == refresh_token
+    )
+
+
 def _codex_pool_entry_matches_tokens(entry: Dict[str, Any], tokens: Any) -> bool:
     if not isinstance(tokens, dict):
         return False

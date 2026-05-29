@@ -173,11 +173,16 @@ def _probe_single_server(
     Raises on connection failure.
     """
     from tools.mcp_tool import (
+        _MCP_AVAILABLE,
         _ensure_mcp_loop,
+        _missing_mcp_sdk_message,
         _run_on_mcp_loop,
         _connect_server,
         _stop_mcp_loop,
     )
+
+    if not _MCP_AVAILABLE:
+        raise ImportError(_missing_mcp_sdk_message(name))
 
     _ensure_mcp_loop()
 

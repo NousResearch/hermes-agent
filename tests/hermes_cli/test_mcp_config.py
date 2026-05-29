@@ -437,6 +437,20 @@ class TestMcpTest:
         assert "Connected" in out
         assert "Tools discovered: 2" in out
 
+    def test_test_missing_mcp_sdk_shows_pipx_hint(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "demo": {"command": "python3", "args": ["-c", "print(1)"]},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", False):
+            cmd_mcp_test(_make_args(name="demo"))
+
+        out = capsys.readouterr().out
+        assert "Connection failed" in out
+        assert "pipx inject hermes-agent mcp" in out
+        assert "hermes-agent[mcp]" in out
+
 
 # ---------------------------------------------------------------------------
 # Tests: env var interpolation
@@ -594,4 +608,3 @@ class TestMcpLogin:
         cmd_mcp_login(_make_args(name="srv"))
         out = capsys.readouterr().out
         assert "no URL" in out or "not an OAuth" in out
-

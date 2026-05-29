@@ -337,7 +337,7 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
-    def test_create_agent_forwards_user_identity_headers(self, monkeypatch):
+    def test_create_agent_forwards_user_id(self, monkeypatch):
         captured = {}
 
         class FakeAgent:
@@ -368,14 +368,13 @@ class TestAdapterInit:
         agent = adapter._create_agent(
             session_id="api-session",
             user_id="owui-user-42",
-            user_email="user@example.com",
-            user_name="Test User",
         )
 
         assert isinstance(agent, FakeAgent)
         assert captured["user_id"] == "owui-user-42"
-        assert captured["user_email"] == "user@example.com"
-        assert captured["user_name"] == "Test User"
+        # Dead identity params (email/name) were removed — no provider consumes them.
+        assert "user_email" not in captured
+        assert "user_name" not in captured
 
 
 # ---------------------------------------------------------------------------

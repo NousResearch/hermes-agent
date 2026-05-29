@@ -37,9 +37,11 @@ from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
+    format_managed_message,
     get_config_path,
     get_env_path,
     get_hermes_home,
+    is_managed,
     load_config,
     load_env,
     save_config,
@@ -763,6 +765,22 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     return lines[-n:] if n > 0 else lines
 
 
+def _dashboard_update_unavailable_reason() -> Optional[str]:
+    """Return a user-facing reason the dashboard should not spawn ``hermes update``."""
+    if is_managed():
+        return format_managed_message("update Hermes Agent")
+
+    git_dir = PROJECT_ROOT / ".git"
+    if sys.platform != "win32" and not git_dir.exists():
+        return (
+            "Cannot update Hermes from the dashboard: this installation is not a git checkout.\n"
+            "Install or update from a terminal instead:\n"
+            "  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+        )
+
+    return None
+
+
 @app.post("/api/gateway/restart")
 async def restart_gateway():
     """Kick off a ``hermes gateway restart`` in the background."""
@@ -781,6 +799,10 @@ async def restart_gateway():
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
+    unavailable_reason = _dashboard_update_unavailable_reason()
+    if unavailable_reason:
+        raise HTTPException(status_code=409, detail=unavailable_reason)
+
     try:
         proc = _spawn_hermes_action(["update"], "hermes-update")
     except Exception as exc:

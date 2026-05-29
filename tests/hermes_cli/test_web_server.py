@@ -187,6 +187,47 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
+    def test_update_hermes_rejects_managed_install_without_spawning(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setenv("HERMES_MANAGED", "homebrew")
+        spawned = []
+        monkeypatch.setattr(
+            web_server,
+            "_spawn_hermes_action",
+            lambda *args, **kwargs: spawned.append((args, kwargs)),
+        )
+
+        resp = self.client.post("/api/hermes/update")
+
+        assert resp.status_code == 409
+        detail = resp.json()["detail"]
+        assert "managed by Homebrew" in detail
+        assert "brew upgrade hermes-agent" in detail
+        assert spawned == []
+
+    def test_update_hermes_rejects_non_git_checkout_without_spawning(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        runtime_root = tmp_path / "hermes-runtime-copy"
+        runtime_root.mkdir()
+        monkeypatch.setattr(web_server, "PROJECT_ROOT", runtime_root)
+        monkeypatch.setattr(web_server.sys, "platform", "linux")
+        spawned = []
+        monkeypatch.setattr(
+            web_server,
+            "_spawn_hermes_action",
+            lambda *args, **kwargs: spawned.append((args, kwargs)),
+        )
+
+        resp = self.client.post("/api/hermes/update")
+
+        assert resp.status_code == 409
+        detail = resp.json()["detail"]
+        assert "not a git checkout" in detail
+        assert "install" in detail.lower()
+        assert spawned == []
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200

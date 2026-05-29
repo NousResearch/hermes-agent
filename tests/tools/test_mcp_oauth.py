@@ -206,6 +206,95 @@ class TestBuildOAuthAuth:
         assert provider is not None
         assert provider.context.client_metadata.scope == "read write admin"
 
+    def test_per_provider_redirect_handler_keeps_its_own_port(self, monkeypatch, capsys):
+        pytest.importorskip("mcp")
+        import tools.mcp_oauth as mod
+
+        captured = []
+
+        class _FakeProvider:
+            def __init__(self, **kwargs):
+                captured.append(kwargs)
+
+        with patch.object(mod, "_OAUTH_AVAILABLE", True), \
+             patch.object(mod, "OAuthClientProvider", _FakeProvider), \
+             patch.object(mod, "_is_interactive", return_value=True), \
+             patch.object(mod, "_maybe_preregister_client"), \
+             patch.object(mod, "HermesTokenStorage") as mock_storage_cls:
+            mock_storage_cls.return_value = MagicMock(has_cached_tokens=lambda: True)
+            build_oauth_auth("first", "https://example.com/mcp", {"redirect_port": 51001})
+            build_oauth_auth("second", "https://example.com/mcp", {"redirect_port": 51002})
+
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mod, "_can_open_browser", lambda: False)
+        mod._oauth_port = 59999
+
+        asyncio.run(captured[0]["redirect_handler"]("https://example.com/auth"))
+        first_err = capsys.readouterr().err
+        assert "51001" in first_err
+        assert "59999" not in first_err
+
+        asyncio.run(captured[1]["redirect_handler"]("https://example.com/auth"))
+        second_err = capsys.readouterr().err
+        assert "51002" in second_err
+        assert "59999" not in second_err
+
+    def test_per_provider_callback_handler_keeps_its_own_port(self, monkeypatch):
+        pytest.importorskip("mcp")
+        import tools.mcp_oauth as mod
+
+        captured = []
+
+        class _FakeProvider:
+            def __init__(self, **kwargs):
+                captured.append(kwargs)
+
+        class _FakeHTTPServer:
+            calls = []
+
+            def __init__(self, addr, handler_cls):
+                self.__class__.calls.append(addr)
+
+            def handle_request(self):
+                return None
+
+            def server_close(self):
+                return None
+
+        class _FakeThread:
+            def __init__(self, target, daemon, args=()):
+                self.target = target
+                self.daemon = daemon
+                self.args = args
+
+            def start(self):
+                return None
+
+        def _ready_result():
+            return object(), {"auth_code": "code", "state": "state", "error": None}
+
+        with patch.object(mod, "_OAUTH_AVAILABLE", True), \
+             patch.object(mod, "OAuthClientProvider", _FakeProvider), \
+             patch.object(mod, "_is_interactive", return_value=True), \
+             patch.object(mod, "_maybe_preregister_client"), \
+             patch.object(mod, "HermesTokenStorage") as mock_storage_cls:
+            mock_storage_cls.return_value = MagicMock(has_cached_tokens=lambda: True)
+            build_oauth_auth("first", "https://example.com/mcp", {"redirect_port": 51101})
+            build_oauth_auth("second", "https://example.com/mcp", {"redirect_port": 51102})
+
+        monkeypatch.setattr(mod, "HTTPServer", _FakeHTTPServer)
+        monkeypatch.setattr(mod.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(mod, "_make_callback_handler", _ready_result)
+        mod._oauth_port = 59999
+
+        first = asyncio.run(captured[0]["callback_handler"]())
+        second = asyncio.run(captured[1]["callback_handler"]())
+
+        assert _FakeHTTPServer.calls == [("127.0.0.1", 51101), ("127.0.0.1", 51102)]
+        assert first == ("code", "state")
+        assert second == ("code", "state")
+
 
 # ---------------------------------------------------------------------------
 # Utility functions

@@ -410,11 +410,11 @@ class MCPOAuthManager:
             HermesTokenStorage,
             _OAUTH_AVAILABLE,
             _build_client_metadata,
+            _make_callback_waiter,
+            _make_redirect_handler,
             _configure_callback_port,
             _is_interactive,
             _maybe_preregister_client,
-            _redirect_handler,
-            _wait_for_callback,
         )
 
         if not _OAUTH_AVAILABLE:
@@ -431,7 +431,7 @@ class MCPOAuthManager:
                 server_name,
             )
 
-        _configure_callback_port(cfg)
+        port = _configure_callback_port(cfg)
         client_metadata = _build_client_metadata(cfg)
         _maybe_preregister_client(storage, cfg, client_metadata)
 
@@ -440,8 +440,8 @@ class MCPOAuthManager:
             server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,
-            redirect_handler=_redirect_handler,
-            callback_handler=_wait_for_callback,
+            redirect_handler=_make_redirect_handler(port),
+            callback_handler=_make_callback_waiter(port),
             timeout=float(cfg.get("timeout", 300)),
         )
 

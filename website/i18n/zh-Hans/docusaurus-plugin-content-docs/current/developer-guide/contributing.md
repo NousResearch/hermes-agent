@@ -81,7 +81,10 @@ hermes chat -q "Hello"
 ### 运行测试
 
 ```bash
-pytest tests/ -v
+scripts/run_tests.sh
+
+# 指定路径，并在 -- 后传递 pytest 参数
+scripts/run_tests.sh tests/tools/test_foo.py -- -q --tb=long
 ```
 
 ## 代码风格
@@ -185,7 +188,7 @@ refactor/description   # 代码重构
 
 ### 提交前检查
 
-1. **运行测试**：`pytest tests/ -v`
+1. **运行测试**：提交 PR 前运行 `scripts/run_tests.sh`；直接运行 `python -m pytest <target>` 仅用于已激活项目 venv 的快速本地调试
 2. **手动测试**：运行 `hermes` 并验证您修改的代码路径
 3. **检查跨平台影响**：考虑 macOS 和不同 Linux 发行版
 4. **保持 PR 聚焦**：每个 PR 只包含一个逻辑变更

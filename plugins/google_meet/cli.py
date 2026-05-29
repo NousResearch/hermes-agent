@@ -90,11 +90,12 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         from plugins.google_meet.node.cli import register_cli as _register_node_cli
         _register_node_cli(node_p)
     except Exception as e:  # pragma: no cover — defensive
+        err = str(e)
         # If the node module fails to import for any reason (optional dep
         # missing at import time etc.), leave the subparser present but
         # flag it. The argparse dispatch will surface a clear error.
-        def _node_unavailable(args):
-            print(f"hermes meet node: module unavailable ({e})")
+        def _node_unavailable(args, err=err):
+            print(f"hermes meet node: module unavailable ({err})")
             return 1
         node_p.set_defaults(func=_node_unavailable)
 

@@ -16,7 +16,7 @@ import tempfile
 import html as _html
 import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 
 logger = logging.getLogger(__name__)
 
@@ -3757,7 +3757,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_mode=self._reply_to_mode
                 )
 
-                def _reset_opened_files() -> None:
+                def _reset_opened_files(opened_files=opened_files) -> None:
                     for fh in opened_files:
                         try:
                             fh.seek(0)

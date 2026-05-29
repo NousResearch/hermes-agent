@@ -7,6 +7,8 @@ import types
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tui_gateway import server
 
 
@@ -4306,6 +4308,10 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
             ),
+            patch(
+                "hermes_cli.browser_connect.manual_chrome_debug_command",
+                return_value=None,
+            ),
         ):
             resp = server.handle_request(
                 {
@@ -4361,6 +4367,10 @@ def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
             patch(
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
+            ),
+            patch(
+                "hermes_cli.browser_connect.manual_chrome_debug_command",
+                return_value=None,
             ),
         ):
             resp = server.handle_request(

@@ -81,7 +81,10 @@ hermes chat -q "Hello"
 ### Run Tests
 
 ```bash
-pytest tests/ -v
+scripts/run_tests.sh
+
+# Target a path and pass pytest flags after --
+scripts/run_tests.sh tests/tools/test_foo.py -- -q --tb=long
 ```
 
 ## Code Style
@@ -185,7 +188,7 @@ refactor/description   # Code restructuring
 
 ### Before Submitting
 
-1. **Run tests**: `pytest tests/ -v`
+1. **Run tests**: `scripts/run_tests.sh` before opening a PR; use direct `python -m pytest <target>` only for quick local debugging with the project venv activated
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: Consider macOS and different Linux distros
 4. **Keep PRs focused**: One logical change per PR

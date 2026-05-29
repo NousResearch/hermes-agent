@@ -1,10 +1,10 @@
 {
   "name": "hermes-agent",
-  "version": "1.0.0",
-  "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
+  "version": "0.14.0",
+  "description": "Browser-tool bootstrap package for Hermes Agent, the self-improving AI agent framework.",
   "private": true,
   "scripts": {
-    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'"
+    "postinstall": "echo '✅ Browser tools ready. Run: hermes --help'"
   },
   "repository": {
     "type": "git",

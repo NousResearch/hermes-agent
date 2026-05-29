@@ -1220,6 +1220,42 @@ class TestParseTargetRefSlack:
         assert _parse_target_ref("telegram", "C0B0QV5434G")[2] is False
 
 
+class TestParseTargetRefEmail:
+    """_parse_target_ref recognizes email addresses as explicit for the email platform."""
+
+    def test_standard_email_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("email", "user@example.com")
+        assert chat_id == "user@example.com"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_email_with_dots_in_local_part(self):
+        chat_id, _, is_explicit = _parse_target_ref("email", "first.last@example.co.uk")
+        assert chat_id == "first.last@example.co.uk"
+        assert is_explicit is True
+
+    def test_email_with_plus_tag(self):
+        chat_id, _, is_explicit = _parse_target_ref("email", "user+tag@gmail.com")
+        assert chat_id == "user+tag@gmail.com"
+        assert is_explicit is True
+
+    def test_email_strips_whitespace(self):
+        chat_id, _, is_explicit = _parse_target_ref("email", "  user@example.com  ")
+        assert chat_id == "user@example.com"
+        assert is_explicit is True
+
+    def test_invalid_email_not_explicit(self):
+        assert _parse_target_ref("email", "not-an-email")[2] is False
+        assert _parse_target_ref("email", "@example.com")[2] is False
+        assert _parse_target_ref("email", "user@")[2] is False
+        assert _parse_target_ref("email", "user@.com")[2] is False
+
+    def test_email_not_explicit_for_other_platforms(self):
+        assert _parse_target_ref("telegram", "user@example.com")[2] is False
+        assert _parse_target_ref("discord", "user@example.com")[2] is False
+        assert _parse_target_ref("slack", "user@example.com")[2] is False
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 

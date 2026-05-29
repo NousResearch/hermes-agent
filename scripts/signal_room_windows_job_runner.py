@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ from typing import Any, Callable, Sequence
 DEFAULT_TIMEOUT_SECONDS = 60 * 30
 QUEUE_STATES = ("queued", "running", "done", "failed")
 POSE_FRAME_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+SAFE_JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class RunResult:
@@ -68,6 +70,13 @@ def default_job_id(lane: str) -> str:
     return f"{lane}-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
 
 
+def validate_job_id(job_id: str) -> str:
+    normalized = str(job_id or "").strip()
+    if not SAFE_JOB_ID_RE.fullmatch(normalized):
+        raise ValueError("job_id contains unsafe characters; use letters, numbers, dot, underscore, or hyphen")
+    return normalized
+
+
 def submit_job(
     *,
     lane: str,
@@ -82,7 +91,7 @@ def submit_job(
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ensure_queue(queue_root)
-    normalized_id = job_id or default_job_id(lane)
+    normalized_id = validate_job_id(job_id or default_job_id(lane))
     job_path = queue_root / "queued" / f"{normalized_id}.json"
     if job_path.exists():
         raise FileExistsError(f"queued job already exists: {job_path}")

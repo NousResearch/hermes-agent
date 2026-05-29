@@ -134,32 +134,36 @@ def main() -> int:
     bundle.add_argument("--out-dir", type=Path, default=DEFAULT_WORKER_DIR)
 
     args = parser.parse_args()
-    if args.command_name == "submit":
-        if args.command and args.command[0] == "--":
-            args.command = args.command[1:]
-        result = submit_job(
-            queue_root=args.queue_root,
-            job_id=args.job_id,
-            command=args.command,
-            cwd=args.cwd,
-            inputs=args.input,
-            outputs=args.output,
-            timeout_seconds=args.timeout_seconds,
-            require_outputs=args.require_outputs,
-        )
-    elif args.command_name == "run-once":
-        result = run_once(queue_root=args.queue_root)
-    elif args.command_name == "worker":
-        result = run_worker(
-            queue_root=args.queue_root,
-            poll_seconds=args.poll_seconds,
-            max_jobs=args.max_jobs,
-            recover_stale_after_seconds=args.recover_stale_after_seconds,
-        )
-    elif args.command_name == "recover-stale":
-        result = recover_stale_running_jobs(queue_root=args.queue_root, max_age_seconds=args.max_age_seconds)
-    else:
-        result = write_windows_worker_bundle(queue_root=args.queue_root, out_dir=args.out_dir)
+    try:
+        if args.command_name == "submit":
+            if args.command and args.command[0] == "--":
+                args.command = args.command[1:]
+            result = submit_job(
+                queue_root=args.queue_root,
+                job_id=args.job_id,
+                command=args.command,
+                cwd=args.cwd,
+                inputs=args.input,
+                outputs=args.output,
+                timeout_seconds=args.timeout_seconds,
+                require_outputs=args.require_outputs,
+            )
+        elif args.command_name == "run-once":
+            result = run_once(queue_root=args.queue_root)
+        elif args.command_name == "worker":
+            result = run_worker(
+                queue_root=args.queue_root,
+                poll_seconds=args.poll_seconds,
+                max_jobs=args.max_jobs,
+                recover_stale_after_seconds=args.recover_stale_after_seconds,
+            )
+        elif args.command_name == "recover-stale":
+            result = recover_stale_running_jobs(queue_root=args.queue_root, max_age_seconds=args.max_age_seconds)
+        else:
+            result = write_windows_worker_bundle(queue_root=args.queue_root, out_dir=args.out_dir)
+    except ValueError as exc:
+        print(json.dumps({"passed": False, "error": str(exc)}, indent=2))
+        return 2
 
     print(json.dumps(result, indent=2))
     if args.command_name == "run-once" and result.get("processed") and result.get("status") != "done":

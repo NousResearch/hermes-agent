@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 
@@ -37,6 +38,48 @@ def test_submit_job_writes_review_only_queued_manifest(tmp_path: Path) -> None:
     assert written["public_release"] is False
     assert written["attempts"] == 0
     assert written["command"][0].endswith("Cavalry.exe")
+
+
+def test_submit_job_rejects_unsafe_job_id(tmp_path: Path) -> None:
+    module = load_module()
+    queue_root = tmp_path / "windows" / "cavalry" / "jobs"
+
+    try:
+        module.submit_job(
+            queue_root=queue_root,
+            job_id="../escape",
+            command=["Cavalry.exe", "--run", "scene.cav"],
+            cwd=tmp_path,
+        )
+    except ValueError as exc:
+        assert "job_id contains unsafe characters" in str(exc)
+    else:
+        raise AssertionError("unsafe job_id should be rejected")
+
+    assert not (queue_root / "escape.json").exists()
+
+
+def test_cli_submit_rejects_unsafe_job_id_with_json_error(tmp_path: Path, monkeypatch, capsys) -> None:
+    module = load_module()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "signal_room_cavalry_job_runner.py",
+            "submit",
+            "--queue-root",
+            str(tmp_path / "jobs"),
+            "--job-id",
+            "../escape",
+            "--",
+            "Cavalry.exe",
+        ],
+    )
+
+    assert module.main() == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["passed"] is False
+    assert payload["error"] == "job_id contains unsafe characters; use letters, numbers, dot, underscore, or hyphen"
 
 
 def test_run_once_claims_job_and_records_success(tmp_path: Path) -> None:

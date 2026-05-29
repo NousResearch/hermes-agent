@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 
@@ -46,6 +47,63 @@ def test_submit_pose_export_job_writes_moho_review_metadata(tmp_path: Path) -> N
     assert written["license_status"] == "licensed internal review"
     assert written["project"] == str(project)
     assert written["output_dir"] == str(output_dir)
+
+
+def test_submit_pose_export_job_rejects_unsafe_job_id(tmp_path: Path) -> None:
+    module = load_module()
+    queue_root = tmp_path / "windows" / "moho" / "jobs"
+
+    try:
+        module.submit_pose_export_job(
+            queue_root=queue_root,
+            job_id=r"..\escape",
+            command=["Moho.exe", "--export", "scene.moho"],
+            cwd=tmp_path,
+            project=tmp_path / "scene.moho",
+            output_dir=tmp_path / "frames",
+            candidate_name="Suit_Male",
+            expected_frame_count=8,
+            license_status="licensed internal review",
+        )
+    except ValueError as exc:
+        assert "job_id contains unsafe characters" in str(exc)
+    else:
+        raise AssertionError("unsafe job_id should be rejected")
+
+    assert not (queue_root / "escape.json").exists()
+
+
+def test_cli_submit_pose_export_rejects_unsafe_job_id_with_json_error(tmp_path: Path, monkeypatch, capsys) -> None:
+    module = load_module()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "signal_room_moho_job_runner.py",
+            "submit-pose-export",
+            "--queue-root",
+            str(tmp_path / "jobs"),
+            "--job-id",
+            "../escape",
+            "--project",
+            str(tmp_path / "scene.moho"),
+            "--output-dir",
+            str(tmp_path / "frames"),
+            "--candidate-name",
+            "Suit_Male",
+            "--expected-frame-count",
+            "8",
+            "--license-status",
+            "licensed internal review",
+            "--",
+            "Moho.exe",
+        ],
+    )
+
+    assert module.main() == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["passed"] is False
+    assert payload["error"] == "job_id contains unsafe characters; use letters, numbers, dot, underscore, or hyphen"
 
 
 def test_moho_run_once_uses_shared_durable_queue(tmp_path: Path) -> None:

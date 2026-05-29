@@ -1,6 +1,16 @@
 ---
 name: serving-llms-vllm
-description: "vLLM: high-throughput LLM serving, OpenAI API, quantization."
+description: |
+  Deploy high-throughput LLM inference with vLLM: achieves 24x higher throughput
+  than HuggingFace through PagedAttention block-based KV cache and continuous
+  batching. Ships an OpenAI-compatible API server, supports GPTQ/AWQ/FP8
+  quantization, tensor parallelism across multi-GPU setups, and speculative
+  decoding. Handles production workloads with chunked prefill, prefix caching,
+  and LoRA adapter serving. Load when the user says "deploy an LLM API," "vLLM
+  server," "optimize inference throughput," "serve Llama with OpenAI endpoint,"
+  or needs to run a model under memory constraints. Invoke proactively when the
+  user is moving from research to production serving, wants to multi-tenant a
+  model, or needs to reduce inference costs through quantization or batching.
 version: 1.0.0
 author: Orchestra Research
 license: MIT

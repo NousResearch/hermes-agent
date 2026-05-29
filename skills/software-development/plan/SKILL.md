@@ -1,6 +1,15 @@
 ---
 name: plan
-description: "Plan mode: write markdown plan to .hermes/plans/, no exec."
+description: |
+  Plan mode: write a concrete, actionable markdown plan to .hermes/plans/ with
+  zero code execution or file mutations beyond the plan file itself. Gathers
+  context through read-only operations only, then produces a step-by-step
+  approach with files likely to change, test strategy, risks, tradeoffs, and
+  open questions. No implementation happens during planning. Load when the user
+  says "plan this," "write a plan first," "do not implement yet," "planning
+  mode," or wants to map out an approach before any code changes. Invoke
+  proactively when the user describes a feature or asks how to build something,
+  and write a plan instead of jumping to implementation.
 version: 1.0.0
 author: Hermes Agent
 license: MIT

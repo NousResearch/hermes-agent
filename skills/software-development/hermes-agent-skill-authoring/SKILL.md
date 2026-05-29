@@ -1,6 +1,16 @@
 ---
 name: hermes-agent-skill-authoring
-description: "Author in-repo SKILL.md: frontmatter, validator, structure."
+description: |
+  Author in-repo SKILL.md skills that ship with the Hermes Agent package: covers
+  frontmatter field requirements (name, description, version, author, license,
+  dependencies), validator checks, required body sections (overview, when to
+  use, quick reference, resources), and conventions for skills under the skills/
+  directory tree. Distinguishes in-repo skills from user-local skills in
+  ~/.hermes/skills/ and uses write_file + git add rather than skill_manage. Load
+  when the user says "create a skill," "add a skill to hermes-agent," "write a
+  new SKILL.md," "edit an existing skill," or when contributing reusable
+  workflows to the package. Invoke proactively to ensure frontmatter compliance
+  when authoring or updating skills.
 version: 1.0.0
 author: Hermes Agent
 license: MIT

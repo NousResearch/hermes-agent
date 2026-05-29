@@ -1,6 +1,15 @@
 ---
 name: systematic-debugging
-description: "4-phase root cause debugging: understand bugs before fixing."
+description: |
+  Four-phase root cause debugging process: understand (reproduce and gather
+  context), analyze (narrow the scope), hypothesize (propose specific root
+  causes), implement (fix and verify). Enforces an iron rule: no fixes without
+  completing root cause investigation first. Symptom fixes are failure. Phase 0
+  always checks simplest recovery (restart, stale PIDs, config drift) before
+  deeper investigation. Load when the user says "debug this," "fix this bug,"
+  "why is this broken," "investigate," "root cause analysis," or when error
+  messages and unexpected behavior appear. Invoke proactively and do not patch
+  code directly when the user reports errors or asks to investigate a bug.
 version: 1.1.0
 author: Hermes Agent (adapted from obra/superpowers)
 license: MIT

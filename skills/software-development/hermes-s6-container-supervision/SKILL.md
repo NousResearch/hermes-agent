@@ -1,6 +1,16 @@
 ---
 name: hermes-s6-container-supervision
-description: Modify, debug, or extend the s6-overlay supervision tree inside the Hermes Agent Docker image — adding new services, debugging profile gateways, understanding the Architecture B main-program pattern.
+description: |
+  Modify, debug, or extend the s6-overlay supervision tree inside the Hermes
+  Agent Docker image: covers adding or removing supervised services, diagnosing
+  per-profile gateway startup crashes, understanding the Architecture B
+  main-program pattern, and managing cont-init.d boot scripts (UID remap, volume
+  seeding, profile reconciliation). Load when the user says "add a Docker
+  service," "debug profile gateway," "s6-overlay," "supervision tree,"
+  "cont-init.d," or when a per-profile service fails to start or survive docker
+  restart. Invoke proactively when troubleshooting Hermes Docker container
+  lifecycle, adding background daemons to the image, or editing the Phase 4
+  gateway run-script renderer.
 version: 1.0.0
 author: Hermes Agent
 license: MIT

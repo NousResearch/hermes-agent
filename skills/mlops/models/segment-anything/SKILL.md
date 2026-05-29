@@ -1,6 +1,16 @@
 ---
 name: segment-anything-model
-description: "SAM: zero-shot image segmentation via points, boxes, masks."
+description: |
+  Segment any object in images without task-specific training using Meta AI's
+  SAM: accepts point clicks, bounding boxes, or mask prompts via SamPredictor,
+  and supports automatic mask generation for all objects in a scene. Trained on
+  1.1 billion masks across 11 million images with ViT-B (fastest), ViT-L, and
+  ViT-H (most accurate) backends, plus ONNX export for edge and browser
+  deployment. Load when the user says "segment this image," "SAM zero-shot,"
+  "point-click segmentation," "generate object masks," or needs to build an
+  interactive annotation tool. Invoke proactively when the user wants to label
+  training data, extract objects from photos, or process medical and satellite
+  imagery without collecting domain-specific annotations.
 version: 1.0.0
 author: Orchestra Research
 license: MIT

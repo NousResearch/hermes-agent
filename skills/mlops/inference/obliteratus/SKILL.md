@@ -1,6 +1,17 @@
 ---
 name: obliteratus
-description: "OBLITERATUS: abliterate LLM refusals (diff-in-means)."
+description: |
+  Remove refusal guardrails from open-weight LLMs using OBLITERATUS without
+  retraining or fine-tuning: applies mechanistic interpretability techniques
+  including diff-in-means, SVD, whitened SVD, LEACE concept erasure, SAE
+  decomposition, and Bayesian kernel projection to excise refusal directions
+  while preserving reasoning. Offers 9 CLI methods, 28 analysis modules, 116
+  model presets across 5 compute tiers, and tournament evaluation with
+  telemetry-driven recommendations. AGPL-3.0 licensed, always invoked via CLI.
+  Load when the user says "abliterate," "remove refusals," "uncensor this
+  model," "LEACE erasure," or needs to analyze a model's refusal mechanism.
+  Invoke proactively when the user wants an uncensored variant of Llama, Qwen,
+  or Mistral, or asks about mechanistic interpretability for safety behaviors.
 version: 2.0.0
 author: Hermes Agent
 license: MIT

@@ -1,6 +1,17 @@
 ---
 name: weights-and-biases
-description: "W&B: log ML experiments, sweeps, model registry, dashboards."
+description: |
+  Track and visualize ML experiments with Weights and Biases: logs metrics in
+  real-time dashboards, compares runs across hyperparameters, runs automated
+  hyperparameter sweeps with Bayesian or grid search, manages a versioned model
+  registry with artifact lineage, and enables team collaboration through shared
+  workspaces. Integrates with PyTorch, TensorFlow, HuggingFace, and 100+
+  frameworks. Used by 200,000+ ML practitioners. Load when the user says "log
+  training metrics," "W&B sweep," "compare experiment runs," "track model
+  artifacts," or needs a dashboard to monitor training progress. Invoke
+  proactively when the user starts a training job without logging, wants to
+  optimize hyperparameters, or needs to share training results with
+  collaborators.
 version: 1.0.0
 author: Orchestra Research
 license: MIT

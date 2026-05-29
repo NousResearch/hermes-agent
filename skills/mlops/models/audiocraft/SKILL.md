@@ -1,6 +1,16 @@
 ---
 name: audiocraft-audio-generation
-description: "AudioCraft: MusicGen text-to-music, AudioGen text-to-sound."
+description: |
+  Generate music and sound effects from text using Meta's AudioCraft: MusicGen
+  produces music with melody conditioning and style transfer, AudioGen creates
+  environmental sound effects, and EnCodec provides high-fidelity neural audio
+  compression at 32 kHz. Supports small (300M) through large (3.3B) model sizes
+  with full stereo output, duration control, and top-k sampling. Load when the
+  user says "generate music from text," "create sound effects with AI,"
+  "MusicGen," "AudioGen," "melody-conditioned generation," or needs to produce
+  audio assets programmatically. Invoke proactively when the user wants to
+  prototype audio generation, needs background music or foley for a project, or
+  asks about neural audio codecs and waveform generation.
 version: 1.0.0
 author: Orchestra Research
 license: MIT

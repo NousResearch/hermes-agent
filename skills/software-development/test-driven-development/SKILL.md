@@ -1,6 +1,15 @@
 ---
 name: test-driven-development
-description: "TDD: enforce RED-GREEN-REFACTOR, tests before code."
+description: |
+  Enforce strict RED-GREEN-REFACTOR discipline: write the failing test first,
+  then write only the minimal code needed to pass. No production code gets
+  written without a test defining the expected behavior. Violating the letter of
+  the rules is violating the spirit. Applies to all new features, bug fixes,
+  refactoring, and behavior changes. Load when the user says "TDD," "write a
+  test first," "red green refactor," "test the new feature," or before
+  implementing any new behavior. Invoke proactively when adding features, fixing
+  bugs, or preparing changes for review, and stop any attempt to write
+  production code before the corresponding failing test exists.
 version: 1.1.0
 author: Hermes Agent (adapted from obra/superpowers)
 license: MIT

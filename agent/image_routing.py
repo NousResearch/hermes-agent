@@ -59,10 +59,12 @@ _IMAGE_EXTS = (
 _IMAGE_EXT_PATTERN = "|".join(e.lstrip(".") for e in _IMAGE_EXTS)
 
 # Absolute / home-relative local image path. Matches the same shape gateway's
-# extract_local_files() uses: anchors to ``~/`` or ``/``, ignores matches inside
-# URLs (the ``(?<![/:\w.])`` lookbehind), and case-insensitive on the extension.
+# extract_local_files() uses, plus native Windows drive paths. The lookbehind
+# prevents matching path-shaped fragments inside URLs.
 _LOCAL_IMAGE_PATH_RE = re.compile(
-    r"(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:" + _IMAGE_EXT_PATTERN + r")\b",
+    r"(?<![/:\w.])(?:~[/\\]|/|[A-Za-z]:[/\\])[^<>\"'`\r\n]+?\.(?:"
+    + _IMAGE_EXT_PATTERN
+    + r")\b",
     re.IGNORECASE,
 )
 
@@ -109,13 +111,20 @@ def extract_image_refs(text: str) -> Tuple[List[str], List[str]]:
     def _in_code(pos: int) -> bool:
         return any(s <= pos < e for s, e in code_spans)
 
+    def _expand_local_path(raw: str) -> str:
+        if raw.startswith(("~/", "~\\")):
+            home = os.environ.get("HOME")
+            if home:
+                return os.path.normpath(os.path.join(home, raw[2:]))
+        return os.path.expanduser(raw)
+
     local_paths: list[str] = []
     seen_paths: set[str] = set()
     for match in _LOCAL_IMAGE_PATH_RE.finditer(text):
         if _in_code(match.start()):
             continue
         raw = match.group(0)
-        expanded = os.path.expanduser(raw)
+        expanded = _expand_local_path(raw)
         try:
             if not os.path.isfile(expanded):
                 continue

@@ -496,3 +496,151 @@ class TestManagedGatewayErrorTranslation:
 
         with pytest.raises(ConnectionError):
             image_tool._submit_fal_request("fal-ai/flux-2-pro", {"prompt": "x"})
+
+
+# ---------------------------------------------------------------------------
+# Local cache — generated images are downloaded so send_message can attach
+# them as MEDIA:<path>. FAL CDN URLs are short-lived; the cached copy
+# survives even after the upstream URL expires.
+# ---------------------------------------------------------------------------
+
+
+class TestExtensionGuess:
+
+    def test_content_type_wins(self, image_tool):
+        assert image_tool._guess_image_extension("https://x/y", "image/png") == "png"
+        assert image_tool._guess_image_extension("https://x/y", "image/jpeg") == "jpg"
+        assert image_tool._guess_image_extension("https://x/y", "image/webp") == "webp"
+        assert image_tool._guess_image_extension("https://x/y", "image/gif") == "gif"
+
+    def test_content_type_with_charset_suffix(self, image_tool):
+        assert image_tool._guess_image_extension("https://x/y", "image/png; charset=binary") == "png"
+
+    def test_url_path_extension_fallback(self, image_tool):
+        assert image_tool._guess_image_extension("https://fal.media/x.webp", "") == "webp"
+        assert image_tool._guess_image_extension("https://fal.media/x.jpg", "") == "jpg"
+        # ".jpeg" normalizes to "jpg"
+        assert image_tool._guess_image_extension("https://fal.media/x.jpeg", "") == "jpg"
+
+    def test_caller_fallback_used_when_no_signal(self, image_tool):
+        assert image_tool._guess_image_extension("https://fal.media/x", "", "png") == "png"
+        assert image_tool._guess_image_extension("https://fal.media/x", "", "jpg") == "jpg"
+
+    def test_invalid_fallback_defaults_to_png(self, image_tool):
+        assert image_tool._guess_image_extension("https://fal.media/x", "", "exe") == "png"
+
+
+class TestDownloadImageToCache:
+
+    def _build_mock_client(self, *, content=b"fake-bytes", headers=None, raise_exc=None):
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.content = content
+        resp.headers = headers or {"content-type": "image/png"}
+        if raise_exc is not None:
+            resp.raise_for_status = MagicMock(side_effect=raise_exc)
+        else:
+            resp.raise_for_status = MagicMock()
+
+        client = MagicMock()
+        client.__enter__ = MagicMock(return_value=client)
+        client.__exit__ = MagicMock(return_value=None)
+        client.get = MagicMock(return_value=resp)
+        return client
+
+    def test_returns_path_and_writes_bytes(self, image_tool, tmp_path, monkeypatch):
+        from pathlib import Path
+        monkeypatch.setattr(image_tool, "_image_cache_dir", lambda: tmp_path)
+        client = self._build_mock_client(content=b"\x89PNG\r\n\x1a\nimage")
+
+        with patch("httpx.Client", return_value=client):
+            local = image_tool._download_image_to_cache(
+                "https://fal.media/img.png", fallback_ext="png"
+            )
+
+        assert local is not None
+        p = Path(local)
+        assert p.exists()
+        assert p.parent == tmp_path
+        assert p.suffix == ".png"
+        assert p.read_bytes() == b"\x89PNG\r\n\x1a\nimage"
+
+    def test_picks_extension_from_content_type(self, image_tool, tmp_path, monkeypatch):
+        from pathlib import Path
+        monkeypatch.setattr(image_tool, "_image_cache_dir", lambda: tmp_path)
+        client = self._build_mock_client(headers={"content-type": "image/webp"})
+
+        with patch("httpx.Client", return_value=client):
+            local = image_tool._download_image_to_cache(
+                "https://fal.media/blob", fallback_ext="png"
+            )
+
+        assert local is not None
+        assert Path(local).suffix == ".webp"
+
+    def test_http_failure_returns_none(self, image_tool, monkeypatch):
+        client = self._build_mock_client(raise_exc=RuntimeError("503"))
+        with patch("httpx.Client", return_value=client):
+            assert image_tool._download_image_to_cache(
+                "https://fal.media/x.png", fallback_ext="png"
+            ) is None
+
+    def test_empty_url_returns_none(self, image_tool):
+        assert image_tool._download_image_to_cache("", "png") is None
+        assert image_tool._download_image_to_cache(None, "png") is None  # type: ignore[arg-type]
+
+
+class TestImageGenerateLocalPath:
+    """image_generate_tool returns the local cache path so MEDIA:<path> works."""
+
+    def _common_monkeypatch(self, image_tool, monkeypatch):
+        from unittest.mock import MagicMock
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
+
+        handler = MagicMock()
+        handler.get.return_value = {
+            "images": [{"url": "https://fal.media/img.png", "width": 1024, "height": 768}]
+        }
+        monkeypatch.setattr(image_tool, "_submit_fal_request", lambda model, arguments: handler)
+        return handler
+
+    def test_returns_local_path_when_download_succeeds(self, image_tool, tmp_path, monkeypatch):
+        import json as _json
+        from pathlib import Path
+        self._common_monkeypatch(image_tool, monkeypatch)
+        monkeypatch.setattr(
+            image_tool, "_download_image_to_cache",
+            lambda url, fallback_ext="png": str(tmp_path / "cached.png"),
+        )
+        (tmp_path / "cached.png").write_bytes(b"png")
+
+        result = _json.loads(image_tool.image_generate_tool(prompt="a cat"))
+
+        assert result["success"] is True
+        assert result["image"] == str(tmp_path / "cached.png")
+        assert result["image_url"] == "https://fal.media/img.png"
+        assert Path(result["image"]).exists()
+        assert "warning" not in result
+
+    def test_falls_back_to_url_on_download_failure(self, image_tool, monkeypatch):
+        import json as _json
+        self._common_monkeypatch(image_tool, monkeypatch)
+        monkeypatch.setattr(
+            image_tool, "_download_image_to_cache",
+            lambda url, fallback_ext="png": None,
+        )
+
+        result = _json.loads(image_tool.image_generate_tool(prompt="a cat"))
+
+        assert result["success"] is True
+        assert result["image"] == "https://fal.media/img.png"
+        assert result["image_url"] == "https://fal.media/img.png"
+        assert "warning" in result and "MEDIA" in result["warning"]
+
+    def test_schema_describes_media_handoff(self, image_tool):
+        """Agent-facing description must mention MEDIA:<path> so the LLM knows
+        the hand-off contract with send_message."""
+        desc = image_tool.IMAGE_GENERATE_SCHEMA["description"]
+        assert "MEDIA:" in desc
+        assert "image" in desc

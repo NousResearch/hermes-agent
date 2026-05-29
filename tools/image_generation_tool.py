@@ -26,8 +26,9 @@ import os
 import datetime
 import threading
 import uuid
-from typing import Any, Dict, Optional, Union
-from urllib.parse import urlencode
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple, Union
+from urllib.parse import urlencode, urlsplit
 
 # fal_client is imported lazily — see _load_fal_client(). Pulling it
 # eagerly added ~64 ms to every CLI cold start because
@@ -327,6 +328,90 @@ DEFAULT_MODEL = "fal-ai/flux-2/klein/9b"
 
 DEFAULT_ASPECT_RATIO = "landscape"
 VALID_ASPECT_RATIOS = ("landscape", "square", "portrait")
+
+
+# ---------------------------------------------------------------------------
+# Local cache (download FAL-hosted images so downstream tools — notably
+# send_message MEDIA:<path> delivery — can attach the bytes natively.
+# FAL CDN URLs are short-lived; the cached copy survives even after the
+# upstream URL expires.)
+# ---------------------------------------------------------------------------
+def _image_cache_dir() -> Path:
+    """Return the on-disk cache directory for generated images.
+
+    Mirrors ``tools.tts_tool._audio_cache_dir`` (cache/audio) and reuses
+    ``get_hermes_dir`` so legacy installs that still have ``image_cache/``
+    keep working without a migration.
+    """
+    from hermes_constants import get_hermes_dir
+    cache_root = Path(get_hermes_dir("cache/images", "image_cache"))
+    cache_root.mkdir(parents=True, exist_ok=True)
+    return cache_root
+
+
+def _guess_image_extension(url: str, content_type: str, fallback: str = "png") -> str:
+    """Pick a sensible file extension from response headers / URL.
+
+    Order: content-type → URL path extension → fallback (output_format).
+    Returned without the leading dot.
+    """
+    ctype = (content_type or "").split(";", 1)[0].strip().lower()
+    ctype_map = {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/jpg": "jpg",
+        "image/webp": "webp",
+        "image/gif": "gif",
+    }
+    if ctype in ctype_map:
+        return ctype_map[ctype]
+
+    try:
+        path = urlsplit(url).path
+        ext = os.path.splitext(path)[1].lstrip(".").lower()
+        if ext in {"png", "jpg", "jpeg", "webp", "gif"}:
+            return "jpg" if ext == "jpeg" else ext
+    except Exception:
+        pass
+
+    fb = (fallback or "").strip().lower().lstrip(".")
+    return fb if fb in {"png", "jpg", "jpeg", "webp", "gif"} else "png"
+
+
+def _download_image_to_cache(url: str, fallback_ext: str = "png") -> Optional[str]:
+    """Download ``url`` into the local image cache, return absolute path or None.
+
+    Failures are logged and swallowed — the caller falls back to surfacing
+    the original FAL URL so the agent still has something usable.
+    """
+    if not url or not isinstance(url, str):
+        return None
+    try:
+        import httpx  # httpx is already a transitive dependency (fal_client uses it).
+    except ImportError:
+        logger.warning("httpx unavailable; cannot cache image %s locally", url)
+        return None
+
+    try:
+        with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "")
+            ext = _guess_image_extension(url, content_type, fallback=fallback_ext)
+            cache_path = _image_cache_dir() / f"img_{uuid.uuid4().hex}.{ext}"
+            cache_path.write_bytes(resp.content)
+            logger.info(
+                "Cached generated image to %s (%d bytes)",
+                cache_path, len(resp.content),
+            )
+            return str(cache_path)
+    except Exception as exc:
+        logger.warning(
+            "Failed to cache generated image locally (%s); "
+            "downstream MEDIA delivery will be skipped: %s",
+            url, exc,
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -770,10 +855,26 @@ def image_generate_tool(
             len(formatted_images), generation_time, upscaled_count, model_id,
         )
 
-        response_data = {
+        # Cache the first image locally so the agent can hand the path to
+        # send_message (MEDIA:<path>) without re-downloading. FAL CDN URLs
+        # expire, so this also acts as durable storage for downstream tools.
+        primary_url = formatted_images[0]["url"] if formatted_images else None
+        fallback_ext = (output_format or meta.get("defaults", {}).get("output_format") or "png")
+        cached_path = _download_image_to_cache(primary_url, fallback_ext=fallback_ext) if primary_url else None
+
+        response_data: Dict[str, Any] = {
             "success": True,
-            "image": formatted_images[0]["url"] if formatted_images else None,
+            # ``image`` is the field the schema documents as "URL or absolute
+            # path"; downstream markdown ![](image) renders both, but only the
+            # local path can ride through MEDIA:<path> attachments.
+            "image": cached_path if cached_path else primary_url,
+            "image_url": primary_url,
         }
+        if cached_path is None and primary_url:
+            response_data["warning"] = (
+                "Image generated but could not be cached locally; "
+                "send_message MEDIA:<path> delivery will fall back to a URL link."
+            )
 
         debug_call_data["success"] = True
         debug_call_data["images_generated"] = len(formatted_images)
@@ -931,9 +1032,11 @@ IMAGE_GENERATE_SCHEMA = {
     "description": (
         "Generate high-quality images from text prompts. The underlying "
         "backend (FAL, OpenAI, etc.) and model are user-configured and not "
-        "selectable by the agent. Returns either a URL or an absolute file "
-        "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "selectable by the agent. Returns the cached local absolute path in "
+        "the `image` field (falling back to a URL when the local cache write "
+        "failed) and always echoes the upstream URL in `image_url`. Display "
+        "with markdown ![description](image), and pass the same `image` path "
+        "to send_message as MEDIA:<path> to deliver it as a native attachment."
     ),
     "parameters": {
         "type": "object",

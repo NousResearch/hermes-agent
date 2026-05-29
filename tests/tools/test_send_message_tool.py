@@ -2422,3 +2422,263 @@ class TestCheckSendMessage:
              patch("gateway.status.is_gateway_running",
                    side_effect=ImportError("simulated")):
             assert _check_send_message() is False
+
+
+# ---------------------------------------------------------------------------
+# Slack media attachments — files.getUploadURLExternal flow.
+# Previously Slack landed in the "non-media platforms" fallthrough, so
+# media_files passed to send_message would be silently omitted (with a
+# warning). Generated images from image_generate could not reach Slack.
+# ---------------------------------------------------------------------------
+
+
+def _make_slack_session(responses):
+    """Build an aiohttp.ClientSession mock that yields ``responses`` in order.
+
+    Each entry is a dict: ``{"status": int, "json": dict | None, "text": str | None}``.
+    The returned ``call_log`` lets tests inspect each POST's url + kwargs.
+    """
+    mock_resps = []
+    for r in responses:
+        mock_resp = MagicMock()
+        mock_resp.status = r.get("status", 200)
+        mock_resp.json = AsyncMock(return_value=r.get("json", {"ok": True}))
+        mock_resp.text = AsyncMock(return_value=r.get("text", ""))
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+        mock_resps.append(mock_resp)
+
+    call_log = []
+
+    def post(url, **kw):
+        call_log.append({"url": url, **kw})
+        idx = len(call_log) - 1
+        if idx >= len(mock_resps):
+            raise AssertionError(
+                f"Slack mock received unexpected extra POST #{idx + 1} to {url}"
+            )
+        return mock_resps[idx]
+
+    mock_session = MagicMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_session.post = MagicMock(side_effect=post)
+    return mock_session, call_log
+
+
+class TestSendSlackMedia:
+    """``_send_slack`` uploads media via the three-step external-upload flow."""
+
+    def test_single_image_uses_three_step_flow(self, tmp_path):
+        from tools.send_message_tool import _send_slack
+
+        img = tmp_path / "image.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake-bytes")
+
+        mock_session, call_log = _make_slack_session([
+            {"json": {
+                "ok": True,
+                "upload_url": "https://files.slack.com/upload/abc",
+                "file_id": "F123",
+            }},
+            {"status": 200, "text": "OK"},
+            {"json": {"ok": True, "files": [{"id": "F123", "title": "image.png"}]}},
+        ])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(_send_slack(
+                "xoxb-test", "C12345", "look at this",
+                media_files=[(str(img), False)],
+            ))
+
+        assert result["success"] is True
+        assert result["platform"] == "slack"
+        assert result["uploaded_file_ids"] == ["F123"]
+        urls = [c["url"] for c in call_log]
+        assert urls == [
+            "https://slack.com/api/files.getUploadURLExternal",
+            "https://files.slack.com/upload/abc",
+            "https://slack.com/api/files.completeUploadExternal",
+        ]
+        # Reservation step uses form data with filename + length
+        assert call_log[0]["data"]["filename"] == "image.png"
+        assert int(call_log[0]["data"]["length"]) == img.stat().st_size
+        # Complete-upload step ships initial_comment + channel + file ids
+        complete_payload = call_log[2]["json"]
+        assert complete_payload["channel_id"] == "C12345"
+        assert complete_payload["initial_comment"] == "look at this"
+        assert complete_payload["files"] == [{"id": "F123", "title": "image.png"}]
+
+    def test_thread_id_is_forwarded(self, tmp_path):
+        from tools.send_message_tool import _send_slack
+
+        img = tmp_path / "image.png"
+        img.write_bytes(b"fake")
+
+        mock_session, call_log = _make_slack_session([
+            {"json": {"ok": True, "upload_url": "https://files.slack.com/up/1", "file_id": "F1"}},
+            {"status": 200},
+            {"json": {"ok": True, "files": [{"id": "F1"}]}},
+        ])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(_send_slack(
+                "xoxb", "C1", "reply",
+                thread_id="1234567890.123456",
+                media_files=[(str(img), False)],
+            ))
+
+        assert result["success"] is True
+        assert call_log[-1]["json"]["thread_ts"] == "1234567890.123456"
+
+    def test_missing_file_is_skipped_with_warning(self, tmp_path):
+        from tools.send_message_tool import _send_slack
+
+        real = tmp_path / "real.png"
+        real.write_bytes(b"fake")
+
+        # Only one file is real, so only 3 mock responses are needed.
+        mock_session, _ = _make_slack_session([
+            {"json": {"ok": True, "upload_url": "https://files.slack.com/up/x", "file_id": "F1"}},
+            {"status": 200},
+            {"json": {"ok": True, "files": [{"id": "F1"}]}},
+        ])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(_send_slack(
+                "xoxb", "C1", "msg",
+                media_files=[("/tmp/does-not-exist-9999.png", False), (str(real), False)],
+            ))
+
+        assert result["success"] is True
+        warnings = result.get("warnings") or []
+        assert any("not found" in w.lower() for w in warnings)
+
+    def test_all_files_failing_returns_error(self, tmp_path):
+        from tools.send_message_tool import _send_slack
+
+        # No real files — _send_slack should never call any Slack endpoint.
+        mock_session, call_log = _make_slack_session([])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(_send_slack(
+                "xoxb", "C1", "msg",
+                media_files=[("/tmp/missing-a.png", False), ("/tmp/missing-b.png", False)],
+            ))
+
+        assert "error" in result
+        assert call_log == []
+        assert result.get("warnings")  # both files surfaced as warnings
+
+    def test_text_only_path_uses_chat_postmessage(self):
+        """Backward-compat regression: text-only sends still hit chat.postMessage."""
+        from tools.send_message_tool import _send_slack
+
+        mock_session, call_log = _make_slack_session([
+            {"json": {"ok": True, "ts": "1234567890.000200"}},
+        ])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(_send_slack("xoxb", "C1", "just text"))
+
+        assert result["success"] is True
+        assert result["message_id"] == "1234567890.000200"
+        assert call_log[0]["url"] == "https://slack.com/api/chat.postMessage"
+
+    def test_complete_upload_api_failure_returns_error(self, tmp_path):
+        from tools.send_message_tool import _send_slack
+
+        img = tmp_path / "x.png"
+        img.write_bytes(b"fake")
+
+        mock_session, _ = _make_slack_session([
+            {"json": {"ok": True, "upload_url": "https://files.slack.com/up/x", "file_id": "F1"}},
+            {"status": 200},
+            {"json": {"ok": False, "error": "channel_not_found"}},
+        ])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(_send_slack(
+                "xoxb", "C1", "msg",
+                media_files=[(str(img), False)],
+            ))
+
+        assert "error" in result
+        assert "channel_not_found" in result["error"]
+
+
+class TestSendToPlatformSlackMedia:
+    """``_send_to_platform`` routes Slack with media through ``_send_slack(media_files=...)``."""
+
+    def test_slack_media_attaches_to_last_chunk(self, tmp_path):
+        """Long captions get chunked; the media rides only on the final chunk.
+
+        Slack's MAX_MESSAGE_LENGTH is 39_000, so we exceed it on purpose to
+        force the chunking path (shorter messages skip splitting entirely).
+        """
+        from gateway.platforms.slack import SlackAdapter
+        sent_calls = []
+
+        async def fake_send(token, chat_id, message, thread_id=None, media_files=None):
+            sent_calls.append({"message": message, "media_files": media_files})
+            return {"success": True, "platform": "slack", "chat_id": chat_id, "message_id": "ts"}
+
+        img = tmp_path / "x.png"
+        img.write_bytes(b"fake")
+        long_msg = "word " * (SlackAdapter.MAX_MESSAGE_LENGTH // 3)
+        media = [(str(img), False)]
+
+        with patch("tools.send_message_tool._send_slack", fake_send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="xoxb", extra={}),
+                    "C123", long_msg, media_files=media,
+                )
+            )
+
+        assert result["success"] is True
+        assert len(sent_calls) >= 2  # actually chunked across multiple sends
+        assert sent_calls[-1]["media_files"] == media
+        # all prior chunks have no media
+        assert all(c["media_files"] in (None, []) for c in sent_calls[:-1])
+
+    def test_slack_with_media_does_not_hit_unsupported_warning(self, tmp_path):
+        """Confirms Slack is removed from the non-media-platform fallthrough."""
+        img = tmp_path / "x.png"
+        img.write_bytes(b"fake")
+        send = AsyncMock(return_value={"success": True, "platform": "slack", "message_id": "ts"})
+
+        with patch("tools.send_message_tool._send_slack", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="xoxb", extra={}),
+                    "C123", "caption", media_files=[(str(img), False)],
+                )
+            )
+
+        # No warning about attachments being omitted
+        warnings = result.get("warnings") or []
+        assert not any("omitted" in w.lower() for w in warnings)
+        send.assert_awaited()
+
+
+class TestUnsupportedPlatformWarningEnumeratesSlack:
+    """The omitted-attachments warning lists slack so the agent can switch targets."""
+
+    def test_warning_mentions_slack(self):
+        """Sending media to whatsapp (still unsupported) should surface a
+        warning that enumerates slack among the supported platforms."""
+        send = AsyncMock(return_value={"success": True, "message_id": "abc"})
+        with patch("tools.send_message_tool._send_whatsapp", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WHATSAPP,
+                    SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000}),
+                    "5551234567", "hi", media_files=[("/tmp/x.png", False)],
+                )
+            )
+
+        warnings = result.get("warnings") or []
+        assert any("slack" in w.lower() for w in warnings)

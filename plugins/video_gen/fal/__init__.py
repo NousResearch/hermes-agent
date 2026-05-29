@@ -597,7 +597,7 @@ class FALVideoGenProvider(VideoGenProvider):
             prompt=prompt,
             modality=modality_used,
             aspect_ratio=aspect_ratio if "aspect_ratio" in payload else "",
-            duration=int(payload["duration"]) if "duration" in payload else 0,
+            duration=int("".join(c for c in payload["duration"] if c.isdigit()) or "0") if "duration" in payload else 0,
             provider="fal",
             extra=extra,
         )

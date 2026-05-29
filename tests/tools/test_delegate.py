@@ -2666,5 +2666,25 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestLoadConfig(unittest.TestCase):
+    def test_persistent_config_failure_logs_warning_and_returns_empty(self):
+        """A raising load_config() must not be silent: warn, then degrade to {}."""
+        import tools.delegate_tool as dt
+        # CLI_CONFIG path absent (gateway/cron) so we fall through to persistent.
+        with patch.dict("sys.modules", {"cli": None}):  # force `from cli import` to fail
+            with patch("hermes_cli.config.load_config", side_effect=RuntimeError("corrupt yaml")):
+                with self.assertLogs(dt.logger, level="WARNING") as logs:
+                    result = dt._load_config()
+        self.assertEqual(result, {})
+        self.assertTrue(any("delegation config" in m.lower() for m in logs.output))
+
+    def test_persistent_config_success_returns_delegation_block(self):
+        import tools.delegate_tool as dt
+        with patch.dict("sys.modules", {"cli": None}):
+            with patch("hermes_cli.config.load_config",
+                       return_value={"delegation": {"model": "x"}}):
+                self.assertEqual(dt._load_config(), {"model": "x"})
+
+
 if __name__ == "__main__":
     unittest.main()

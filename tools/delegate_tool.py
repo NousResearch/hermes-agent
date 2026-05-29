@@ -2477,7 +2477,12 @@ def _load_config() -> dict:
 
         full = load_config()
         return full.get("delegation") or {}
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "Failed to load persistent delegation config (%s); delegation.* "
+            "settings will be ignored and subagents will inherit the parent.",
+            exc,
+        )
         return {}
 
 

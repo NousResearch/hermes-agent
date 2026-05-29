@@ -18,6 +18,7 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _CLIENT_DEP_SPEC,
     _load_config,
     _build_embedded_profile_env,
     _normalize_retain_tags,
@@ -38,6 +39,7 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
         "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_TIMEOUT",
         "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
+        "HINDSIGHT_API_LLM_REASONING_EFFORT",
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
     ):
@@ -295,12 +297,45 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
+    def test_embedded_profile_env_includes_reasoning_effort_from_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-5.5",
+            "llm_reasoning_effort": "xhigh",
+        })
+
+        assert env["HINDSIGHT_API_LLM_REASONING_EFFORT"] == "xhigh"
+
+    def test_embedded_profile_env_includes_reasoning_effort_from_env(self, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_API_LLM_REASONING_EFFORT", "high")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-5.5",
+        })
+
+        assert env["HINDSIGHT_API_LLM_REASONING_EFFORT"] == "high"
+
+    def test_embedded_profile_env_preserves_extra_hindsight_daemon_settings(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-5.5",
+            "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "openai",
+            "HINDSIGHT_API_RERANKER_PROVIDER": "rrf",
+            "HINDSIGHT_EMBED_API_DATABASE_URL": "pg0://hermes-test",
+        })
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "openai"
+        assert env["HINDSIGHT_API_RERANKER_PROVIDER"] == "rrf"
+        assert env["HINDSIGHT_EMBED_API_DATABASE_URL"] == "pg0://hermes-test"
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 
         class FakeHindsightEmbedded:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
+                self.config = {}
 
         monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
@@ -321,8 +356,142 @@ class TestConfig:
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
 
+    def test_get_client_populates_embedded_client_config_with_full_profile_env(self, monkeypatch):
+        captured = {}
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                self.config = {"HINDSIGHT_API_LLM_PROVIDER": kwargs["llm_provider"]}
+                captured["config"] = self.config
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {
+            "profile": "hermes",
+            "llm_provider": "openai_compatible",
+            "llm_api_key": "test-key",
+            "llm_model": "gpt-5.5",
+            "llm_reasoning_effort": "xhigh",
+            "idle_timeout": 300,
+            "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "google",
+            "HINDSIGHT_API_RERANKER_PROVIDER": "rrf",
+            "HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION": "false",
+        }
+        p._llm_base_url = "https://api-alpha.zai.is/v1"
+
+        p._get_client()
+
+        config = captured["config"]
+        assert config["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+        assert config["HINDSIGHT_API_LLM_MODEL"] == "gpt-5.5"
+        assert config["HINDSIGHT_API_LLM_BASE_URL"] == "https://api-alpha.zai.is/v1"
+        assert config["HINDSIGHT_API_LLM_REASONING_EFFORT"] == "xhigh"
+        assert config["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "google"
+        assert config["HINDSIGHT_API_RERANKER_PROVIDER"] == "rrf"
+        assert config["HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION"] == "false"
+        assert config["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "300"
+
+    def test_daemon_start_rematerializes_full_profile_env_after_embedded_registers_minimal_config(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        class FakeManager:
+            def __init__(self):
+                self.running = False
+
+            def is_running(self, profile):
+                return self.running
+
+            def stop(self, profile):
+                self.running = False
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                self.config = {
+                    "HINDSIGHT_API_LLM_PROVIDER": kwargs["llm_provider"],
+                    "HINDSIGHT_API_LLM_MODEL": kwargs["llm_model"],
+                }
+                self._manager = FakeManager()
+
+            def _ensure_started(self):
+                # Mirrors Hindsight's _register_profile behavior: it can rewrite
+                # the profile .env with only the minimal config passed to
+                # HindsightEmbedded. Hermes must restore the full env afterward.
+                profile_dir = tmp_path / ".hindsight" / "profiles"
+                profile_dir.mkdir(parents=True, exist_ok=True)
+                (profile_dir / "hermes.env").write_text(
+                    "HINDSIGHT_API_LLM_PROVIDER=openai\n"
+                    "HINDSIGHT_API_LLM_MODEL=gpt-5.5\n",
+                    encoding="utf-8",
+                )
+                self._manager.running = True
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+
+        p = HindsightMemoryProvider()
+        p._config = {
+            "mode": "local_embedded",
+            "profile": "hermes",
+            "llm_provider": "openai_compatible",
+            "llm_model": "gpt-5.5",
+            "llm_reasoning_effort": "xhigh",
+            "llm_base_url": "https://api-alpha.zai.is/v1",
+            "idle_timeout": 300,
+            "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "google",
+            "HINDSIGHT_API_RERANKER_PROVIDER": "rrf",
+        }
+        p._mode = "local_embedded"
+        p._llm_base_url = "https://api-alpha.zai.is/v1"
+        p._timeout = 300
+
+        # Use the same daemon-start sequence as initialize() but synchronously
+        # so the test can assert the final profile file contents.
+        client = p._get_client()
+        expected_env = _build_embedded_profile_env(p._config)
+        from plugins.memory.hindsight import _embedded_profile_env_path, _load_simple_env, _materialize_embedded_profile_env
+        profile_env = _embedded_profile_env_path(p._config)
+        saved = _load_simple_env(profile_env)
+        if saved != expected_env:
+            _materialize_embedded_profile_env(p._config)
+            if client._manager.is_running("hermes"):
+                client._manager.stop("hermes")
+        client._ensure_started()
+        _materialize_embedded_profile_env(p._config)
+
+        env_text = profile_env.read_text(encoding="utf-8")
+        assert "HINDSIGHT_API_LLM_REASONING_EFFORT=xhigh" in env_text
+        assert "HINDSIGHT_API_EMBEDDINGS_PROVIDER=google" in env_text
+        assert "HINDSIGHT_API_RERANKER_PROVIDER=rrf" in env_text
+        assert "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT=300" in env_text
+
 
 class TestPostSetup:
+    def test_cloud_setup_installs_bounded_client_dependency(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+
+        selections = iter([0])  # cloud
+        commands = []
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+        monkeypatch.setattr("subprocess.run", lambda cmd, **kwargs: commands.append(cmd) or SimpleNamespace(returncode=0))
+        monkeypatch.setattr("builtins.input", lambda prompt="": "")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("getpass.getpass", lambda prompt="": "cloud-key")
+        monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(hermes_home), {"memory": {}})
+
+        assert commands
+        assert _CLIENT_DEP_SPEC in commands[0]
+
     def test_local_embedded_setup_materializes_profile_env(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes-home"
         user_home = tmp_path / "user-home"
@@ -470,6 +639,7 @@ class TestToolHandlers:
         call_kwargs = provider._client.aretain.call_args.kwargs
         assert call_kwargs["bank_id"] == "test-bank"
         assert call_kwargs["content"] == "user likes dark mode"
+        assert call_kwargs["retain_async"] is True
 
     def test_retain_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])
@@ -1234,7 +1404,8 @@ class TestConfigSchema:
         keys = {f["key"] for f in schema}
         expected_keys = {
             "mode", "api_url", "api_key", "llm_provider", "llm_api_key",
-            "llm_model", "bank_id", "bank_id_template", "bank_mission", "bank_retain_mission",
+            "llm_model", "llm_reasoning_effort", "bank_id", "bank_id_template",
+            "bank_mission", "bank_retain_mission",
             "recall_budget", "memory_mode", "recall_prefetch_method",
             "retain_tags", "retain_source",
             "retain_user_prefix", "retain_assistant_prefix",
@@ -1245,6 +1416,21 @@ class TestConfigSchema:
             "recall_prompt_preamble",
         }
         assert expected_keys.issubset(keys), f"Missing: {expected_keys - keys}"
+
+
+class TestDependencyInstallSpec:
+    def test_initialize_auto_upgrade_uses_bounded_client_dependency(self, tmp_path, monkeypatch):
+        commands = []
+        monkeypatch.setattr("importlib.metadata.version", lambda package: "0.4.0")
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+        monkeypatch.setattr("subprocess.run", lambda cmd, **kwargs: commands.append(cmd) or SimpleNamespace(returncode=0))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        p = HindsightMemoryProvider()
+        p.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+
+        assert commands
+        assert _CLIENT_DEP_SPEC in commands[0]
 
 
 # ---------------------------------------------------------------------------

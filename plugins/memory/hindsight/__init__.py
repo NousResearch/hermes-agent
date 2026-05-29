@@ -49,7 +49,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
-_MIN_CLIENT_VERSION = "0.4.22"
+_MIN_CLIENT_VERSION = "0.6.1"
+_MAX_CLIENT_VERSION_EXCLUSIVE = "0.8"
+_CLIENT_DEP_SPEC = f"hindsight-client>={_MIN_CLIENT_VERSION},<{_MAX_CLIENT_VERSION_EXCLUSIVE}"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
@@ -414,6 +416,10 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     current_provider = config.get("llm_provider", "")
     current_model = config.get("llm_model", "")
     current_base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+    current_reasoning_effort = (
+        config.get("llm_reasoning_effort")
+        or os.environ.get("HINDSIGHT_API_LLM_REASONING_EFFORT", "")
+    )
 
     # The embedded daemon expects OpenAI wire format for these providers.
     daemon_provider = "openai" if current_provider in {"openai_compatible", "openrouter"} else current_provider
@@ -426,6 +432,8 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     }
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
+    if current_reasoning_effort:
+        env_values["HINDSIGHT_API_LLM_REASONING_EFFORT"] = str(current_reasoning_effort)
 
     idle_timeout = (
         config.get("idle_timeout")
@@ -436,6 +444,14 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+    for key, value in config.items():
+        if (
+            isinstance(key, str)
+            and key.startswith(("HINDSIGHT_API_", "HINDSIGHT_EMBED_"))
+            and value is not None
+            and key not in env_values
+        ):
+            env_values[key] = str(value)
     return env_values
 
 
@@ -670,8 +686,7 @@ class HindsightMemoryProvider(MemoryProvider):
         env_writes: dict = {}
 
         # Step 2: Install/upgrade deps for selected mode
-        _MIN_CLIENT_VERSION = "0.4.22"
-        cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION}"
+        cloud_dep = _CLIENT_DEP_SPEC
         local_dep = "hindsight-all"
         if mode == "local_embedded":
             deps_to_install = [local_dep]
@@ -851,6 +866,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "llm_base_url", "description": "Endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
             {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
+            {"key": "llm_reasoning_effort", "description": "Optional LLM reasoning effort forwarded to the embedded daemon (minimal/low/medium/high/xhigh)", "default": "", "when": {"mode": "local_embedded"}},
             {"key": "bank_id", "description": "Memory bank name (static fallback when bank_id_template is unset)", "default": "hermes"},
             {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},
@@ -918,6 +934,11 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._idle_timeout = idle_timeout
                 kwargs["idle_timeout"] = idle_timeout
                 self._client = HindsightEmbedded(**kwargs)
+                if hasattr(self._client, "config") and isinstance(self._client.config, dict):
+                    embedded_env_config = dict(self._config)
+                    if self._llm_base_url and not embedded_env_config.get("llm_base_url"):
+                        embedded_env_config["llm_base_url"] = self._llm_base_url
+                    self._client.config.update(_build_embedded_profile_env(embedded_env_config))
             else:
                 from hindsight_client import Hindsight
                 timeout = self._timeout or _DEFAULT_TIMEOUT
@@ -1094,15 +1115,15 @@ class HindsightMemoryProvider(MemoryProvider):
                     try:
                         subprocess.run(
                             [uv_path, "pip", "install", "--python", sys.executable,
-                             "--quiet", "--upgrade", f"hindsight-client>={_MIN_CLIENT_VERSION}"],
+                             "--quiet", "--upgrade", _CLIENT_DEP_SPEC],
                             check=True, timeout=120, capture_output=True,
                         )
-                        logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
+                        logger.info("hindsight-client upgraded to %s", _CLIENT_DEP_SPEC)
                     except Exception as e:
-                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
-                                       e, _MIN_CLIENT_VERSION)
+                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install '%s'",
+                                       e, _CLIENT_DEP_SPEC)
                 else:
-                    logger.warning("uv not found. Run: pip install 'hindsight-client>=%s'", _MIN_CLIENT_VERSION)
+                    logger.warning("uv not found. Run: pip install '%s'", _CLIENT_DEP_SPEC)
         except Exception:
             pass  # packaging not available or other issue — proceed anyway
 
@@ -1265,6 +1286,7 @@ class HindsightMemoryProvider(MemoryProvider):
                             client._manager.stop(profile)
 
                     client._ensure_started()
+                    _materialize_embedded_profile_env(self._config)
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write("\n=== Daemon started successfully ===\n")
                 except Exception as e:
@@ -1525,6 +1547,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     content,
                     context=context,
                     tags=args.get("tags"),
+                    retain_async=self._retain_async,
                 )
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)

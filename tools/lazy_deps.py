@@ -117,7 +117,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.0.1",),
-    "memory.hindsight": ("hindsight-client==0.6.1",),
+    # Hindsight local embedded installs may come from a user's editable
+    # checkout. Keep this as a bounded range instead of an exact pin so lazy
+    # ensure() does not downgrade the current newer/local Hindsight runtime,
+    # while keeping automatic installs inside the supply-chain policy window.
+    "memory.hindsight": ("hindsight-client>=0.6.1,<0.8",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),

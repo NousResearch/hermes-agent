@@ -117,6 +117,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `llm_provider` | `openai` | `openai`, `anthropic`, `gemini`, `groq`, `openrouter`, `minimax`, `ollama`, `lmstudio`, `openai_compatible` |
 | `llm_model` | per-provider | Model name (e.g. `gpt-4o-mini`, `qwen/qwen3.5-9b`) |
 | `llm_base_url` | — | Endpoint URL for `openai_compatible` (e.g. `http://192.168.1.10:8080/v1`) |
+| `llm_reasoning_effort` | — | Optional reasoning effort forwarded to the embedded Hindsight daemon as `HINDSIGHT_API_LLM_REASONING_EFFORT` (for providers/models that support it) |
 
 The LLM API key is stored in `~/.hermes/.env` as `HINDSIGHT_LLM_API_KEY`.
 
@@ -137,6 +138,7 @@ Available in `hybrid` and `tools` memory modes:
 | `HINDSIGHT_API_KEY` | API key for Hindsight Cloud |
 | `HINDSIGHT_LLM_API_KEY` | LLM API key for local mode |
 | `HINDSIGHT_API_LLM_BASE_URL` | LLM Base URL for local mode (e.g. OpenRouter) |
+| `HINDSIGHT_API_LLM_REASONING_EFFORT` | Optional reasoning effort for local embedded LLM calls |
 | `HINDSIGHT_API_URL` | Override API endpoint |
 | `HINDSIGHT_BANK_ID` | Override bank name |
 | `HINDSIGHT_BUDGET` | Override recall budget |
@@ -144,4 +146,4 @@ Available in `hybrid` and `tools` memory modes:
 
 ## Client Version
 
-Requires `hindsight-client >= 0.4.22`. The plugin auto-upgrades on session start if an older version is detected.
+Requires `hindsight-client >= 0.6.1,<0.8`. The lazy dependency range intentionally avoids exact pinning so current newer or editable local Hindsight installs are not downgraded on first use, while still bounding automatic installs.

@@ -4645,6 +4645,80 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+# Canonical keys accepted inside the top-level ``model:`` mapping. An unknown
+# key warns once (forward-compat: a warning, not a hard error — newer Hermes
+# versions may add keys an older config predates and vice-versa). Keep this in
+# sync with the reads in runtime_provider.py / model_switch.py. ``api_base`` is
+# a PERMANENT accepted alias for ``base_url`` (the de-facto LiteLLM/aider name),
+# folded into ``base_url`` at load by ``_normalize_model_api_base`` (#8919).
+_KNOWN_MODEL_KEYS = frozenset({
+    "provider", "default", "model", "base_url", "api_base", "api_key", "api_mode",
+    "context_length", "aliases", "max_tokens", "supports_vision", "name",
+    "key_env", "auth_mode", "entra", "ollama_num_ctx", "openai_runtime",
+    "stale_timeout_seconds", "timeout_seconds", "request_timeout_seconds",
+    "credential_pool", "default_model", "models",
+    "allow_agent_id_override", "allow_model_override", "allow_profile_override",
+    "allow_provider_override", "allowed_models", "allowed_providers",
+})
+
+# One-time process guards for the load-time model-surface diagnostics. Reset
+# explicitly in tests (see tests/hermes_cli/test_config_model_surface.py); each
+# test FILE runs in its own subprocess so cross-file leakage is impossible.
+_MODEL_API_BASE_INFO_EMITTED = False
+_UNKNOWN_MODEL_KEYS_WARNED: set = set()
+
+
+def _normalize_model_api_base(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Fold ``model.api_base`` into ``model.base_url`` and flag unknown keys.
+
+    ``api_base`` is a **permanent accepted alias** for ``base_url`` — it is the
+    de-facto name in the LiteLLM/aider ecosystem, so removing it would re-arm
+    the silent-ignore footgun (#8919). We normalize it to ``base_url`` at load
+    (gentle one-time INFO, **not** a deprecation) so every downstream reader
+    consults a single field. An explicit ``base_url`` is canonical: when both
+    are present, ``api_base`` is dropped silently.
+
+    Also warns once per unrecognized ``model.*`` key (forward-compat: warning,
+    not a hard error) — the top-level analogue of the ``providers.<name>``
+    unknown-key check in ``_normalize_custom_provider_entry``.
+    """
+    global _MODEL_API_BASE_INFO_EMITTED
+
+    model = config.get("model")
+    if not isinstance(model, dict):
+        # A bare-string model section (just a model name) carries no aliases.
+        return config
+
+    config = dict(config)
+    model = dict(model)
+    config["model"] = model
+
+    if "api_base" in model:
+        api_base = model.pop("api_base")
+        existing = model.get("base_url")
+        has_base_url = isinstance(existing, str) and bool(existing.strip())
+        if isinstance(api_base, str) and api_base.strip() and not has_base_url:
+            model["base_url"] = api_base
+            if not _MODEL_API_BASE_INFO_EMITTED:
+                logger.info(
+                    "model.api_base accepted as an alias for model.base_url "
+                    "(using base_url=%s)",
+                    api_base.strip(),
+                )
+                _MODEL_API_BASE_INFO_EMITTED = True
+
+    unknown = set(model.keys()) - _KNOWN_MODEL_KEYS
+    new_unknown = unknown - _UNKNOWN_MODEL_KEYS_WARNED
+    if new_unknown:
+        logger.warning(
+            "model: unknown config keys ignored: %s",
+            ", ".join(sorted(new_unknown)),
+        )
+        _UNKNOWN_MODEL_KEYS_WARNED.update(new_unknown)
+
+    return config
+
+
 def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize legacy root-level max_turns into agent.max_turns."""
     config = dict(config)
@@ -4820,7 +4894,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             except Exception as e:
                 _warn_config_parse_failure(config_path, e)
 
-        normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+        normalized = _normalize_model_api_base(
+            _normalize_root_model_keys(_normalize_max_turns_config(config))
+        )
         expanded = _expand_env_vars(normalized)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_key is not None:

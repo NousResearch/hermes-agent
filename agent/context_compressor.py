@@ -518,6 +518,10 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self.last_real_prompt_tokens = 0
+        self.last_compression_rough_tokens = 0
+        self.last_rough_tokens_when_real_prompt_fit = 0
+        self.awaiting_real_usage_after_compression = False
 
     def update_model(
         self,
@@ -615,6 +619,10 @@ class ContextCompressor(ContextEngine):
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
+        self.last_real_prompt_tokens = 0
+        self.last_compression_rough_tokens = 0
+        self.last_rough_tokens_when_real_prompt_fit = 0
+        self.awaiting_real_usage_after_compression = False
 
         self.summary_model = summary_model_override or ""
 
@@ -648,6 +656,44 @@ class ContextCompressor(ContextEngine):
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
+        if self.last_prompt_tokens > 0:
+            self.last_real_prompt_tokens = self.last_prompt_tokens
+            if self.last_prompt_tokens < self.threshold_tokens:
+                if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
+                    self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
+            else:
+                self.last_rough_tokens_when_real_prompt_fit = 0
+        self.awaiting_real_usage_after_compression = False
+
+    def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
+        """Return True when a high rough preflight estimate is known-noisy.
+
+        ``estimate_request_tokens_rough(..., tools=...)`` intentionally
+        overestimates schema-heavy requests so Hermes compresses before a
+        provider rejects the payload. After a successful compressed API call,
+        though, provider ``prompt_tokens`` are a better signal than repeating
+        compaction from the same rough schema overhead. Defer only while the
+        rough estimate has grown modestly since a request the provider proved
+        fit under the threshold.
+        """
+        if rough_tokens < self.threshold_tokens:
+            return False
+        if self.last_real_prompt_tokens <= 0:
+            return False
+        if self.last_real_prompt_tokens >= self.threshold_tokens:
+            return False
+
+        baseline = self.last_rough_tokens_when_real_prompt_fit or self.last_compression_rough_tokens
+        if baseline <= 0:
+            return False
+
+        growth = max(0, rough_tokens - baseline)
+        tolerated_growth = max(4096, int(self.threshold_tokens * 0.05))
+        if growth > tolerated_growth:
+            return False
+
+        self.last_rough_tokens_when_real_prompt_fit = max(baseline, rough_tokens)
+        return True
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.

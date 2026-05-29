@@ -954,6 +954,61 @@ def test_codex_profile_shared_remove_preserves_newer_manual_entries(profile_env)
     assert entries["concurrent-api-key"]["access_token"] == "sk-concurrent"
 
 
+def test_codex_profile_shared_remove_preserves_colliding_manual_entry(profile_env):
+    from agent.credential_pool import load_pool
+
+    _write(profile_env["global"] / "auth.json", {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "shared-at",
+                    "refresh_token": "shared-rt",
+                },
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "colliding-id",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "shared-at",
+                "refresh_token": "shared-rt",
+            }],
+        },
+    })
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "colliding-id",
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "access_token": "manual-at",
+            "refresh_token": "manual-rt",
+        }],
+    }))
+    pool = load_pool("openai-codex")
+    shared_index = next(
+        index
+        for index, entry in enumerate(pool.entries(), start=1)
+        if entry.source == "device_code"
+    )
+
+    assert pool.remove_index(shared_index) is not None
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    assert "openai-codex" not in global_data.get("providers", {})
+    assert global_data["credential_pool"]["openai-codex"] == []
+    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert profile_data["credential_pool"]["openai-codex"] == [{
+        "id": "colliding-id",
+        "source": "manual:device_code",
+        "auth_type": "oauth",
+        "access_token": "manual-at",
+        "refresh_token": "manual-rt",
+        "priority": 0,
+    }]
+
+
 def test_codex_profile_round_robin_shared_order_is_profile_local(profile_env, monkeypatch):
     from agent.credential_pool import STRATEGY_ROUND_ROBIN, load_pool
     from hermes_cli.auth import CODEX_REFRESH_OWNER
@@ -1114,7 +1169,7 @@ def test_clear_codex_auth_clears_profile_entries_and_shared_root_state(profile_e
 
 
 def test_clear_codex_auth_removes_linked_aliases_from_sibling_profiles(profile_env):
-    from hermes_cli.auth import clear_provider_auth
+    from hermes_cli.auth import _codex_refresh_token_hash, clear_provider_auth
 
     sibling = profile_env["global"] / "profiles" / "sibling"
     sibling.mkdir()
@@ -1127,6 +1182,9 @@ def test_clear_codex_auth_removes_linked_aliases_from_sibling_profiles(profile_e
                     "access_token": "shared-at",
                     "refresh_token": "shared-rt",
                 },
+                "superseded_refresh_token_hashes": [
+                    _codex_refresh_token_hash("superseded-rt"),
+                ],
             },
         },
         "credential_pool": {
@@ -1173,6 +1231,12 @@ def test_clear_codex_auth_removes_linked_aliases_from_sibling_profiles(profile_e
                 "auth_type": "oauth",
                 "access_token": "sibling-stale-at",
                 "refresh_token": "shared-rt",
+            }, {
+                "id": "sibling-superseded",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "sibling-superseded-at",
+                "refresh_token": "superseded-rt",
             }, {
                 "id": "sibling-independent",
                 "source": "manual:device_code",

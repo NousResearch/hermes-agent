@@ -1260,6 +1260,19 @@ def _is_shared_credential_pool_entry(provider_id: str, entry: Any) -> bool:
     return entry.get("source") in SHARED_CREDENTIAL_POOL_SOURCES.get(provider_id, ())
 
 
+CredentialPoolEntryIdentity = Tuple[str, str]
+
+
+def _credential_pool_entry_identity(entry: Any) -> Optional[CredentialPoolEntryIdentity]:
+    if not isinstance(entry, dict):
+        return None
+    entry_id = entry.get("id")
+    source = entry.get("source")
+    if not isinstance(entry_id, str) or not isinstance(source, str):
+        return None
+    return entry_id, source
+
+
 def _apply_profile_shared_credential_pool_order(
     provider_id: str,
     entries: List[Dict[str, Any]],
@@ -1309,7 +1322,7 @@ def _update_profile_shared_credential_pool_order(
     provider_id: str,
     entries: List[Dict[str, Any]],
     *,
-    update_order_entry_ids: Set[str],
+    update_order_entry_identities: Set[CredentialPoolEntryIdentity],
     clear: bool,
 ) -> None:
     """Persist profile-relative order for shared rows without their tokens."""
@@ -1321,7 +1334,7 @@ def _update_profile_shared_credential_pool_order(
     updates = {
         entry.get("source"): entry.get("priority")
         for entry in entries
-        if entry.get("id") in update_order_entry_ids
+        if _credential_pool_entry_identity(entry) in update_order_entry_identities
         and isinstance(entry.get("source"), str)
         and isinstance(entry.get("priority"), int)
     }
@@ -1376,8 +1389,8 @@ def _merge_shared_credential_pool_status(
     snapshot_entries: List[Dict[str, Any]],
     auth_store: Dict[str, Any],
     *,
-    update_order_entry_ids: Set[str],
-    update_status_entry_ids: Set[str],
+    update_order_entry_identities: Set[CredentialPoolEntryIdentity],
+    update_status_entry_identities: Set[CredentialPoolEntryIdentity],
 ) -> List[Dict[str, Any]]:
     """Merge shared snapshots without replaying stale OAuth tokens."""
     providers = auth_store.get("providers")
@@ -1427,16 +1440,16 @@ def _merge_shared_credential_pool_status(
             updated = dict(snapshot)
         elif isinstance(snapshot, dict):
             if (
-                current.get("id") in update_order_entry_ids
-                or snapshot.get("id") in update_order_entry_ids
+                _credential_pool_entry_identity(current) in update_order_entry_identities
+                or _credential_pool_entry_identity(snapshot) in update_order_entry_identities
             ):
                 for field in CREDENTIAL_POOL_ORDER_FIELDS:
                     if field in snapshot:
                         updated[field] = snapshot[field]
             if (
                 (
-                    current.get("id") in update_status_entry_ids
-                    or snapshot.get("id") in update_status_entry_ids
+                    _credential_pool_entry_identity(current) in update_status_entry_identities
+                    or _credential_pool_entry_identity(snapshot) in update_status_entry_identities
                 )
                 and isinstance(current_refresh, str)
                 and current_refresh
@@ -1461,39 +1474,39 @@ def _merge_credential_pool_snapshot_entries(
     current_entries: List[Dict[str, Any]],
     snapshot_entries: List[Dict[str, Any]],
     *,
-    add_entry_ids: Set[str],
-    replace_entry_ids: Set[str],
-    remove_entry_ids: Set[str],
-    update_order_entry_ids: Set[str],
-    update_status_entry_ids: Set[str],
+    add_entry_identities: Set[CredentialPoolEntryIdentity],
+    replace_entry_identities: Set[CredentialPoolEntryIdentity],
+    remove_entry_identities: Set[CredentialPoolEntryIdentity],
+    update_order_entry_identities: Set[CredentialPoolEntryIdentity],
+    update_status_entry_identities: Set[CredentialPoolEntryIdentity],
 ) -> List[Dict[str, Any]]:
     """Merge independent rows while preserving newer persisted credentials."""
-    snapshots_by_id = {
-        entry.get("id"): entry
+    snapshots_by_identity = {
+        _credential_pool_entry_identity(entry): entry
         for entry in snapshot_entries
-        if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+        if _credential_pool_entry_identity(entry) is not None
     }
     merged = []
-    current_ids = set()
+    current_identities = set()
     for current in current_entries:
-        entry_id = current.get("id")
-        current_ids.add(entry_id)
-        if entry_id in remove_entry_ids:
+        identity = _credential_pool_entry_identity(current)
+        current_identities.add(identity)
+        if identity in remove_entry_identities:
             continue
-        snapshot = snapshots_by_id.get(entry_id)
+        snapshot = snapshots_by_identity.get(identity)
         if snapshot is None:
             merged.append(dict(current))
             continue
-        if entry_id in replace_entry_ids:
+        if identity in replace_entry_identities:
             merged.append(dict(snapshot))
             continue
         updated = dict(current)
-        if entry_id in update_order_entry_ids:
+        if identity in update_order_entry_identities:
             for field in CREDENTIAL_POOL_ORDER_FIELDS:
                 if field in snapshot:
                     updated[field] = snapshot[field]
         if (
-            entry_id in update_status_entry_ids
+            identity in update_status_entry_identities
             and snapshot.get("access_token") == current.get("access_token")
             and snapshot.get("refresh_token") == current.get("refresh_token")
         ):
@@ -1506,9 +1519,9 @@ def _merge_credential_pool_snapshot_entries(
     merged.extend(
         dict(snapshot)
         for snapshot in snapshot_entries
-        if snapshot.get("id") not in current_ids
-        and snapshot.get("id") in add_entry_ids
-        and snapshot.get("id") not in remove_entry_ids
+        if _credential_pool_entry_identity(snapshot) not in current_identities
+        and _credential_pool_entry_identity(snapshot) in add_entry_identities
+        and _credential_pool_entry_identity(snapshot) not in remove_entry_identities
     )
     return merged
 
@@ -1588,11 +1601,11 @@ def write_credential_pool(
     *,
     preserve_shared_entries: bool = False,
     preserve_profile_entries: bool = False,
-    add_entry_ids: FrozenSet[str] = frozenset(),
-    replace_entry_ids: FrozenSet[str] = frozenset(),
-    remove_entry_ids: FrozenSet[str] = frozenset(),
-    update_order_entry_ids: FrozenSet[str] = frozenset(),
-    update_status_entry_ids: FrozenSet[str] = frozenset(),
+    add_entry_identities: FrozenSet[CredentialPoolEntryIdentity] = frozenset(),
+    replace_entry_identities: FrozenSet[CredentialPoolEntryIdentity] = frozenset(),
+    remove_entry_identities: FrozenSet[CredentialPoolEntryIdentity] = frozenset(),
+    update_order_entry_identities: FrozenSet[CredentialPoolEntryIdentity] = frozenset(),
+    update_status_entry_identities: FrozenSet[CredentialPoolEntryIdentity] = frozenset(),
     clear_shared_provider_state: bool = False,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
@@ -1651,12 +1664,12 @@ def write_credential_pool(
                     current_shared_entries,
                     shared_entries,
                     shared_auth_store,
-                    update_order_entry_ids=(
+                    update_order_entry_identities=(
                         set()
                         if split_shared_store
-                        else set(update_order_entry_ids)
+                        else set(update_order_entry_identities)
                     ),
-                    update_status_entry_ids=set(update_status_entry_ids),
+                    update_status_entry_identities=set(update_status_entry_identities),
                 )
             if split_shared_store:
                 shared_entries = _preserve_shared_credential_pool_order(
@@ -1667,11 +1680,11 @@ def write_credential_pool(
                 profile_entries = _merge_credential_pool_snapshot_entries(
                     root_profile_entries,
                     profile_entries,
-                    add_entry_ids=set(add_entry_ids),
-                    replace_entry_ids=set(replace_entry_ids),
-                    remove_entry_ids=set(remove_entry_ids),
-                    update_order_entry_ids=set(update_order_entry_ids),
-                    update_status_entry_ids=set(update_status_entry_ids),
+                    add_entry_identities=set(add_entry_identities),
+                    replace_entry_identities=set(replace_entry_identities),
+                    remove_entry_identities=set(remove_entry_identities),
+                    update_order_entry_identities=set(update_order_entry_identities),
+                    update_status_entry_identities=set(update_status_entry_identities),
                 )
             shared_pool[provider_id] = _sanitize_entries(
                 root_profile_entries + shared_entries
@@ -1687,7 +1700,7 @@ def write_credential_pool(
             _save_auth_store(shared_auth_store, auth_file=shared_auth_file)
 
             update_profile_shared_order = any(
-                entry.get("id") in update_order_entry_ids
+                _credential_pool_entry_identity(entry) in update_order_entry_identities
                 for entry in profile_shared_order_entries
             )
             if split_shared_store and (
@@ -1710,17 +1723,17 @@ def write_credential_pool(
                                 else []
                             ),
                             profile_entries,
-                            add_entry_ids=set(add_entry_ids),
-                            replace_entry_ids=set(replace_entry_ids),
-                            remove_entry_ids=set(remove_entry_ids),
-                            update_order_entry_ids=set(update_order_entry_ids),
-                            update_status_entry_ids=set(update_status_entry_ids),
+                            add_entry_identities=set(add_entry_identities),
+                            replace_entry_identities=set(replace_entry_identities),
+                            remove_entry_identities=set(remove_entry_identities),
+                            update_order_entry_identities=set(update_order_entry_identities),
+                            update_status_entry_identities=set(update_status_entry_identities),
                         )
                     _update_profile_shared_credential_pool_order(
                         profile_auth_store,
                         provider_id,
                         profile_shared_order_entries,
-                        update_order_entry_ids=set(update_order_entry_ids),
+                        update_order_entry_identities=set(update_order_entry_identities),
                         clear=not shared_entries,
                     )
                     profile_pool[provider_id] = _sanitize_entries(profile_entries)
@@ -4072,10 +4085,14 @@ def _sync_codex_profile_legacy_aliases(
             )
 
 
-def _remove_codex_linked_legacy_aliases(refresh_token: Optional[str]) -> None:
-    """Remove manual aliases that still reference a canonical token family."""
-    if not isinstance(refresh_token, str) or not refresh_token:
-        return
+def _remove_codex_linked_legacy_aliases(
+    refresh_token: Optional[str],
+) -> FrozenSet[str]:
+    """Remove manual aliases that reference current or superseded families."""
+    refresh_token_hashes = set()
+    refresh_token_hash = _codex_refresh_token_hash(refresh_token)
+    if refresh_token_hash is not None:
+        refresh_token_hashes.add(refresh_token_hash)
 
     def _remove_from_store(auth_store: Dict[str, Any]) -> bool:
         pool = auth_store.get("credential_pool")
@@ -4089,7 +4106,8 @@ def _remove_codex_linked_legacy_aliases(refresh_token: Optional[str]) -> None:
             if not (
                 isinstance(entry, dict)
                 and entry.get("source") == "manual:device_code"
-                and entry.get("refresh_token") == refresh_token
+                and _codex_refresh_token_hash(entry.get("refresh_token"))
+                in refresh_token_hashes
             )
         ]
         if len(filtered) == len(entries):
@@ -4099,6 +4117,21 @@ def _remove_codex_linked_legacy_aliases(refresh_token: Optional[str]) -> None:
 
     with _codex_auth_store_lock():
         auth_file = _codex_auth_file_path()
+        root_auth_store = _load_auth_store(auth_file)
+        state = _load_provider_state(root_auth_store, "openai-codex")
+        stored = (
+            state.get(CODEX_SUPERSEDED_REFRESH_TOKEN_HASHES_KEY)
+            if isinstance(state, dict)
+            else None
+        )
+        if isinstance(stored, list):
+            refresh_token_hashes.update(
+                item for item in stored
+                if isinstance(item, str) and item
+            )
+        if not refresh_token_hashes:
+            return frozenset()
+
         profiles_dir = auth_file.parent / "profiles"
         if profiles_dir.is_dir():
             for profile_dir in sorted(profiles_dir.iterdir()):
@@ -4115,9 +4148,9 @@ def _remove_codex_linked_legacy_aliases(refresh_token: Optional[str]) -> None:
                     if _remove_from_store(auth_store):
                         _save_auth_store(auth_store, auth_file=profile_auth_file)
 
-        auth_store = _load_auth_store(auth_file)
-        if _remove_from_store(auth_store):
-            _save_auth_store(auth_store, auth_file=auth_file)
+        if _remove_from_store(root_auth_store):
+            _save_auth_store(root_auth_store, auth_file=auth_file)
+    return frozenset(refresh_token_hashes)
 
 
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
@@ -4396,6 +4429,8 @@ def _pool_codex_access_token() -> str:
 
         def _entry_usable(entry: Dict[str, Any]) -> bool:
             if not isinstance(entry, dict):
+                return False
+            if entry.get("last_status") == "dead":
                 return False
             token = entry.get("access_token")
             if not isinstance(token, str) or not token.strip():

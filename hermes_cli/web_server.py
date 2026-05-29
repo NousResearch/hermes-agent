@@ -4014,6 +4014,74 @@ _THEME_LAYOUT_VARIANTS = {"standard", "cockpit", "tiled"}
 # practical reskin (the Strike Freedom demo is ~2 KiB).
 _THEME_CUSTOM_CSS_MAX = 32 * 1024
 
+_THEME_NAV_UNLISTED_MODES = {"append", "hide"}
+
+
+def _normalise_theme_nav_item(item: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(item, dict):
+        return None
+    path = item.get("path")
+    if not isinstance(path, str) or not path.startswith("/"):
+        return None
+    out: Dict[str, Any] = {"path": path.strip()}
+    label = item.get("label")
+    if isinstance(label, str) and label.strip():
+        out["label"] = label.strip()
+    icon = item.get("icon")
+    if isinstance(icon, str) and icon.strip():
+        out["icon"] = icon.strip()
+    match_src = item.get("match")
+    if isinstance(match_src, list):
+        matches = [m.strip() for m in match_src if isinstance(m, str) and m.strip().startswith("/")]
+        if matches:
+            out["match"] = matches
+    return out
+
+
+def _normalise_theme_navigation(data: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(data, dict):
+        return None
+    nav: Dict[str, Any] = {}
+
+    primary_src = data.get("primary")
+    if isinstance(primary_src, list):
+        primary = [item for item in (_normalise_theme_nav_item(i) for i in primary_src) if item]
+        if primary:
+            nav["primary"] = primary
+
+    groups_src = data.get("groups")
+    if isinstance(groups_src, list):
+        groups = []
+        for group_src in groups_src:
+            if not isinstance(group_src, dict):
+                continue
+            items_src = group_src.get("items")
+            if not isinstance(items_src, list):
+                continue
+            items = [item for item in (_normalise_theme_nav_item(i) for i in items_src) if item]
+            if not items:
+                continue
+            group_id = group_src.get("id")
+            label = group_src.get("label")
+            clean_group: Dict[str, Any] = {
+                "id": group_id.strip() if isinstance(group_id, str) and group_id.strip() else f"group-{len(groups) + 1}",
+                "label": label.strip() if isinstance(label, str) and label.strip() else "More",
+                "items": items,
+            }
+            groups.append(clean_group)
+        if groups:
+            nav["groups"] = groups
+
+    unlisted = data.get("unlisted")
+    if isinstance(unlisted, str) and unlisted in _THEME_NAV_UNLISTED_MODES:
+        nav["unlisted"] = unlisted
+
+    plugin_label = data.get("pluginSectionLabel")
+    if isinstance(plugin_label, str) and plugin_label.strip():
+        nav["pluginSectionLabel"] = plugin_label.strip()
+
+    return nav or None
+
 
 def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Normalise a user theme YAML into the wire format `ThemeProvider`
@@ -4140,6 +4208,8 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
         else "standard"
     )
 
+    navigation = _normalise_theme_navigation(data.get("navigation"))
+
     result: Dict[str, Any] = {
         "name": name,
         "label": data.get("label") or name,
@@ -4149,6 +4219,8 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
         "layout": layout,
         "layoutVariant": layout_variant,
     }
+    if navigation:
+        result["navigation"] = navigation
     if color_overrides:
         result["colorOverrides"] = color_overrides
     if assets_out:

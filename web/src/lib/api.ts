@@ -52,6 +52,7 @@ export async function fetchJSON<T>(
   if (token) {
     setSessionHeader(headers, token);
   }
+  const isLoopbackAuthProbe = url === "/api/auth/me";
   const res = await fetch(`${BASE}${url}`, {
     ...init,
     headers,
@@ -99,12 +100,15 @@ export async function fetchJSON<T>(
     // (``hermes update``, ``hermes gateway restart``, etc.). A tab kept
     // open across the restart holds the OLD token in
     // ``window.__HERMES_SESSION_TOKEN__`` from the previous HTML render,
-    // so every fetch returns 401. The HTML is served ``Cache-Control:
-    // no-store`` so a reload picks up the freshly-injected token. Trigger
-    // that reload once on the first stale-token 401 — gated mode is
-    // handled above, so reaching here in gated mode means a real
-    // middleware failure that should not reload-loop.
-    if (!window.__HERMES_AUTH_REQUIRED__ && !options?.allowUnauthorized) {
+    // so protected fetches return 401. The HTML is served
+    // ``Cache-Control: no-store`` so a reload picks up the freshly-injected
+    // token. Trigger that reload once on the first stale-token 401 — but
+    // do not do this for the optional ``/api/auth/me`` sidebar identity
+    // probe. In loopback mode that endpoint legitimately returns a plain
+    // 401 so AuthWidget can hide itself; reloading there causes a dashboard
+    // reload loop before plugins finish loading. Per-call probes can also
+    // opt out via ``allowUnauthorized``.
+    if (!window.__HERMES_AUTH_REQUIRED__ && !isLoopbackAuthProbe && !options?.allowUnauthorized) {
       let alreadyReloaded = false;
       try {
         alreadyReloaded =

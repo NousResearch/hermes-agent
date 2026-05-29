@@ -143,6 +143,36 @@ export interface ThemeColorOverrides {
   ring?: string;
 }
 
+export interface ThemeNavigationItem {
+  /** Link target. May include a query string or hash for plugin workspaces. */
+  path: string;
+  /** Display label. When omitted, a known built-in/plugin label is reused. */
+  label?: string;
+  /** Optional Lucide icon name. Unknown names fall back to the plugin icon. */
+  icon?: string;
+  /** Additional active-match targets, also allowing query/hash fragments. */
+  match?: string[];
+}
+
+export interface ThemeNavigationGroup {
+  /** Stable identifier for tests/accessibility. */
+  id: string;
+  /** Visible group label in the sidebar. */
+  label: string;
+  items: ThemeNavigationItem[];
+}
+
+export interface ThemeNavigationConfig {
+  /** Primary operator rail items. When absent, Hermes keeps the default nav. */
+  primary?: ThemeNavigationItem[];
+  /** Secondary grouped route lists, e.g. System / Settings. */
+  groups?: ThemeNavigationGroup[];
+  /** Where routes not declared above should appear. Defaults to `append`. */
+  unlisted?: "append" | "hide";
+  /** Label for any appended plugin/unlisted section. */
+  pluginSectionLabel?: string;
+}
+
 export interface DashboardTheme {
   description: string;
   label: string;
@@ -152,6 +182,8 @@ export interface DashboardTheme {
   layout: ThemeLayout;
   /** Overall shell layout. Defaults to `"standard"` when absent. */
   layoutVariant?: ThemeLayoutVariant;
+  /** Optional native sidebar IA contract for cockpit/product themes. */
+  navigation?: ThemeNavigationConfig;
   /** Named + custom asset URLs exposed as CSS vars on theme apply. */
   assets?: ThemeAssets;
   /** Raw CSS injected as a scoped `<style>` tag on theme apply, cleaned up

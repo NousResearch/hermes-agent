@@ -21,12 +21,12 @@ export function resolvePageTitle(
   pluginTabs: { path: string; label: string }[],
 ): string {
   const normalized = pathname.replace(/\/$/, "") || "/";
-  if (normalized === "/") {
-    return t.app.nav.sessions;
-  }
   const plugin = pluginTabs.find((p) => p.path === normalized);
   if (plugin) {
     return plugin.label;
+  }
+  if (normalized === "/") {
+    return t.app.nav.sessions;
   }
   const key = BUILTIN[normalized];
   if (key) {

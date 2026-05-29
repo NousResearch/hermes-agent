@@ -80,12 +80,26 @@ import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
+import type { ThemeNavigationConfig, ThemeNavigationGroup, ThemeNavigationItem } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
+}
+
+function RootPending() {
+  return (
+    <div
+      aria-busy="true"
+      aria-live="polite"
+      className="flex min-h-[12rem] items-center justify-center gap-2 text-sm text-muted-foreground"
+    >
+      <Spinner className="shrink-0" />
+      <span>Loading dashboard plugins…</span>
+    </div>
+  );
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -205,14 +219,20 @@ function buildNavItems(
   const items = [...builtIn];
 
   for (const manifest of manifests) {
-    if (manifest.tab.override) continue;
     if (manifest.tab.hidden) continue;
 
+    const itemPath = manifest.tab.override ?? manifest.tab.path;
     const pluginItem: NavItem = {
-      path: manifest.tab.path,
+      path: itemPath,
       label: manifest.label,
       icon: resolveIcon(manifest.icon),
     };
+
+    const existingIdx = items.findIndex((i) => i.path === itemPath);
+    if (existingIdx >= 0) {
+      items.splice(existingIdx, 1, pluginItem);
+      continue;
+    }
 
     const pos = manifest.tab.position ?? "end";
     if (pos === "end") {
@@ -233,38 +253,135 @@ function buildNavItems(
   return items;
 }
 
+function normalisePathname(pathname: string): string {
+  return pathname.replace(/\/$/, "") || "/";
+}
+
+function splitNavTarget(target: string): { full: string; pathname: string } {
+  try {
+    const url = new URL(target, "http://hermes.local");
+    const pathname = normalisePathname(url.pathname);
+    return {
+      full: `${pathname}${url.search}${url.hash}`,
+      pathname,
+    };
+  } catch {
+    const [rawPath = target] = target.split(/[?#]/, 1);
+    const pathname = normalisePathname(rawPath || "/");
+    return { full: target, pathname };
+  }
+}
+
+function navItemFromThemeSpec(
+  spec: ThemeNavigationItem,
+  knownItems: Map<string, NavItem>,
+): NavItem | null {
+  if (!spec.path || !spec.path.startsWith("/")) return null;
+  const target = splitNavTarget(spec.path);
+  const known = knownItems.get(spec.path) ?? knownItems.get(target.pathname);
+  return {
+    path: spec.path,
+    label: spec.label ?? known?.label ?? (target.pathname.replace(/^\//, "") || "Home"),
+    labelKey: spec.label ? undefined : known?.labelKey,
+    icon: spec.icon ? resolveIcon(spec.icon) : (known?.icon ?? Puzzle),
+    match: spec.match,
+  };
+}
+
+function applyNavigationConfig(
+  mergedItems: NavItem[],
+  builtIn: NavItem[],
+  navigation?: ThemeNavigationConfig,
+): SidebarNavModel {
+  const builtinPaths = new Set(builtIn.map((i) => i.path));
+  const defaultCoreItems: NavItem[] = [];
+  const defaultPluginItems: NavItem[] = [];
+  for (const item of mergedItems) {
+    if (builtinPaths.has(item.path)) defaultCoreItems.push(item);
+    else defaultPluginItems.push(item);
+  }
+
+  if (!navigation || (!navigation.primary && !navigation.groups)) {
+    return { coreItems: defaultCoreItems, groups: [], pluginItems: defaultPluginItems };
+  }
+
+  const knownItems = new Map<string, NavItem>();
+  for (const item of mergedItems) {
+    knownItems.set(item.path, item);
+    knownItems.set(splitNavTarget(item.path).pathname, item);
+  }
+
+  const consumed = new Set<string>();
+  const remember = (item: NavItem) => {
+    const target = splitNavTarget(item.path);
+    consumed.add(item.path);
+    consumed.add(target.pathname);
+    for (const match of item.match ?? []) {
+      const m = splitNavTarget(match);
+      consumed.add(match);
+      consumed.add(m.pathname);
+    }
+  };
+
+  const configuredPrimary = (navigation.primary ?? [])
+    .map((spec) => navItemFromThemeSpec(spec, knownItems))
+    .filter((item): item is NavItem => Boolean(item));
+  configuredPrimary.forEach(remember);
+
+  const groups = (navigation.groups ?? [])
+    .map((group: ThemeNavigationGroup, index) => {
+      const items = group.items
+        .map((spec) => navItemFromThemeSpec(spec, knownItems))
+        .filter((item): item is NavItem => Boolean(item));
+      items.forEach(remember);
+      return {
+        id: group.id || `group-${index + 1}`,
+        label: group.label || "More",
+        items,
+      };
+    })
+    .filter((group) => group.items.length > 0);
+
+  const unlisted = navigation.unlisted ?? "append";
+  const pluginItems = unlisted === "hide"
+    ? []
+    : mergedItems.filter((item) => {
+      const target = splitNavTarget(item.path);
+      return !consumed.has(item.path) && !consumed.has(target.pathname);
+    });
+
+  return {
+    coreItems: configuredPrimary.length > 0 ? configuredPrimary : defaultCoreItems,
+    groups,
+    pluginItems,
+    pluginSectionLabel: navigation.pluginSectionLabel,
+  };
+}
+
 /** Split merged nav into built-in sidebar entries vs plugin tabs, preserving plugin order hints. */
 function partitionSidebarNav(
   builtIn: NavItem[],
   manifests: PluginManifest[],
-): { coreItems: NavItem[]; pluginItems: NavItem[] } {
+  navigation?: ThemeNavigationConfig,
+): SidebarNavModel {
   const merged = buildNavItems(builtIn, manifests);
-  const builtinPaths = new Set(builtIn.map((i) => i.path));
-  const coreItems: NavItem[] = [];
-  const pluginItems: NavItem[] = [];
-  for (const item of merged) {
-    if (builtinPaths.has(item.path)) coreItems.push(item);
-    else pluginItems.push(item);
-  }
-  return { coreItems, pluginItems };
+  return applyNavigationConfig(merged, builtIn, navigation);
 }
 
 function buildRoutes(
   builtinRoutes: Record<string, ComponentType>,
   manifests: PluginManifest[],
+  pluginsLoading: boolean,
 ): Array<{
   key: string;
   path: string;
   element: ReactNode;
 }> {
   const byOverride = new Map<string, PluginManifest>();
-  const addons: PluginManifest[] = [];
 
   for (const m of manifests) {
     if (m.tab.override) {
       byOverride.set(m.tab.override, m);
-    } else {
-      addons.push(m);
     }
   }
 
@@ -273,6 +390,7 @@ function buildRoutes(
     path: string;
     element: ReactNode;
   }> = [];
+  const routedPaths = new Set<string>();
 
   for (const [path, Component] of Object.entries(builtinRoutes)) {
     const om = byOverride.get(path);
@@ -283,30 +401,26 @@ function buildRoutes(
         element: <PluginPage name={om.name} />,
       });
     } else {
-      routes.push({ key: `builtin:${path}`, path, element: <Component /> });
+      const RouteComponent = path === "/" && pluginsLoading ? RootPending : Component;
+      routes.push({ key: `builtin:${path}`, path, element: <RouteComponent /> });
     }
-  }
-
-  for (const m of addons) {
-    if (m.tab.hidden) continue;
-    if (m.tab.path === "/plugins") continue;
-    if (builtinRoutes[m.tab.path]) continue;
-    routes.push({
-      key: `plugin:${m.name}`,
-      path: m.tab.path,
-      element: <PluginPage name={m.name} />,
-    });
+    routedPaths.add(path);
   }
 
   for (const m of manifests) {
-    if (!m.tab.hidden) continue;
-    if (m.tab.path === "/plugins") continue;
-    if (builtinRoutes[m.tab.path] || m.tab.override) continue;
-    routes.push({
-      key: `plugin:hidden:${m.name}`,
-      path: m.tab.path,
-      element: <PluginPage name={m.name} />,
-    });
+    const pluginPaths = [m.tab.override, m.tab.path]
+      .filter((path): path is string => Boolean(path));
+    for (const path of pluginPaths) {
+      if (path === "/plugins") continue;
+      if (routedPaths.has(path)) continue;
+      if (builtinRoutes[path]) continue;
+      routes.push({
+        key: `plugin:${m.name}:${path}`,
+        path,
+        element: <PluginPage name={m.name} />,
+      });
+      routedPaths.add(path);
+    }
   }
 
   return routes;
@@ -389,9 +503,10 @@ export default function App() {
   const builtinRoutes = useMemo(
     () => ({
       ...BUILTIN_ROUTES_CORE,
+      "/": pluginsLoading ? RootPending : RootRedirect,
       ...(embeddedChat ? { "/chat": ChatRouteSink } : {}),
     }),
-    [embeddedChat],
+    [embeddedChat, pluginsLoading],
   );
 
   const builtinNav = useMemo(() => {
@@ -404,21 +519,25 @@ export default function App() {
   }, [embeddedChat, showTokenAnalytics]);
 
   const sidebarNav = useMemo(
-    () => partitionSidebarNav(builtinNav, manifests),
-    [builtinNav, manifests],
+    () => partitionSidebarNav(builtinNav, manifests, theme.navigation),
+    [builtinNav, manifests, theme.navigation],
   );
   const routes = useMemo(
-    () => buildRoutes(builtinRoutes, manifests),
-    [builtinRoutes, manifests],
+    () => buildRoutes(builtinRoutes, manifests, pluginsLoading),
+    [builtinRoutes, manifests, pluginsLoading],
   );
   const pluginTabMeta = useMemo(
     () =>
       manifests
         .filter((m) => !m.tab.hidden)
-        .map((m) => ({
-          path: m.tab.override ?? m.tab.path,
-          label: m.label,
-        })),
+        .flatMap((m) => {
+          const paths = [m.tab.override, m.tab.path]
+            .filter((path): path is string => Boolean(path));
+          return Array.from(new Set(paths)).map((path) => ({
+            path,
+            label: m.label,
+          }));
+        }),
     [manifests],
   );
 
@@ -593,6 +712,17 @@ export default function App() {
                 ))}
               </ul>
 
+              {sidebarNav.groups.map((group) => (
+                <SidebarNavGroup
+                  closeMobile={closeMobile}
+                  collapsed={isDesktopCollapsed}
+                  group={group}
+                  key={group.id}
+                  t={t}
+                  tooltipWarmRef={tooltipWarmRef}
+                />
+              ))}
+
               {sidebarNav.pluginItems.length > 0 && (
                 <div
                   aria-labelledby="hermes-sidebar-plugin-nav-heading"
@@ -607,7 +737,7 @@ export default function App() {
                     )}
                     id="hermes-sidebar-plugin-nav-heading"
                   >
-                    {t.app.pluginNavSection}
+                    {sidebarNav.pluginSectionLabel ?? t.app.pluginNavSection}
                   </span>
 
                   <ul className="flex flex-col">
@@ -632,6 +762,8 @@ export default function App() {
               status={sidebarStatus}
               tooltipWarmRef={tooltipWarmRef}
             />
+
+            {layoutVariant === "cockpit" && <PluginSlot name="sidebar" />}
 
             <div
               className={cn(
@@ -752,6 +884,65 @@ export default function App() {
   );
 }
 
+function SidebarNavGroup({
+  closeMobile,
+  collapsed,
+  group,
+  tooltipWarmRef,
+  t,
+}: SidebarNavGroupProps) {
+  return (
+    <div
+      aria-labelledby={`hermes-sidebar-nav-group-${group.id}`}
+      className="flex flex-col border-t border-current/10 pb-2"
+      role="group"
+    >
+      <span
+        className={cn(
+          "px-5 pt-2.5 pb-1",
+          "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+          collapsed && "lg:hidden",
+        )}
+        id={`hermes-sidebar-nav-group-${group.id}`}
+      >
+        {group.label}
+      </span>
+
+      <ul className="flex flex-col">
+        {group.items.map((item) => (
+          <SidebarNavLink
+            closeMobile={closeMobile}
+            collapsed={collapsed}
+            item={item}
+            key={item.path}
+            t={t}
+            tooltipWarmRef={tooltipWarmRef}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function isNavItemActive(
+  item: NavItem,
+  location: { pathname: string; search: string; hash: string },
+): boolean {
+  const currentPath = normalisePathname(location.pathname);
+  const currentFull = `${currentPath}${location.search}${location.hash}`;
+  const target = splitNavTarget(item.path);
+  const targetFull = target.full;
+  if (currentFull === targetFull) return true;
+  for (const match of item.match ?? []) {
+    const candidate = splitNavTarget(match);
+    if (currentFull === candidate.full || currentPath === candidate.pathname) {
+      return true;
+    }
+  }
+  const hasExplicitSubroute = item.path.includes("?") || item.path.includes("#");
+  return !hasExplicitSubroute && currentPath === target.pathname;
+}
+
 function SidebarNavLink({
   closeMobile,
   collapsed,
@@ -760,6 +951,8 @@ function SidebarNavLink({
   t,
 }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
+  const location = useLocation();
+  const active = isNavItemActive(item, location);
   const liRef = useRef<HTMLLIElement>(null);
   const [hovered, setHovered] = useState(false);
 
@@ -777,17 +970,18 @@ function SidebarNavLink({
         to={path}
         end={path === "/sessions"}
         onClick={closeMobile}
+        aria-current={active ? "page" : undefined}
         aria-label={collapsed ? navLabel : undefined}
         onFocus={collapsed ? () => setHovered(true) : undefined}
         onBlur={collapsed ? () => setHovered(false) : undefined}
-        className={({ isActive }) =>
+        className={() =>
           cn(
             "group/nav relative flex items-center gap-3",
             "px-5 py-2.5",
             "font-mondwest text-display uppercase text-sm tracking-[0.12em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-            isActive
+            active
               ? "text-midground"
               : "text-text-secondary hover:text-midground",
           )
@@ -796,7 +990,7 @@ function SidebarNavLink({
           clipPath: "var(--component-tab-clip-path)",
         }}
       >
-        {({ isActive }) => (
+        {() => (
           <>
             <Icon className="h-3.5 w-3.5 shrink-0" />
 
@@ -814,7 +1008,7 @@ function SidebarNavLink({
               className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/nav:opacity-5"
             />
 
-            {isActive && (
+            {active && (
               <span
                 aria-hidden
                 className="absolute left-0 top-0 bottom-0 w-px bg-midground"
@@ -1125,13 +1319,35 @@ interface NavItem {
   icon: ComponentType<{ className?: string }>;
   label: string;
   labelKey?: string;
+  match?: string[];
   path: string;
+}
+
+interface SidebarNavGroupModel {
+  id: string;
+  items: NavItem[];
+  label: string;
+}
+
+interface SidebarNavModel {
+  coreItems: NavItem[];
+  groups: SidebarNavGroupModel[];
+  pluginItems: NavItem[];
+  pluginSectionLabel?: string;
 }
 
 interface SidebarIconWithTooltipProps {
   children: ReactNode;
   collapsed: boolean;
   label: string;
+  tooltipWarmRef: TooltipWarmRef;
+}
+
+interface SidebarNavGroupProps {
+  closeMobile: () => void;
+  collapsed: boolean;
+  group: SidebarNavGroupModel;
+  t: Translations;
   tooltipWarmRef: TooltipWarmRef;
 }
 

@@ -1477,6 +1477,23 @@ def test_board_param_routes_create_to_alt_board(multi_board_env):
         assert kb.get_task(conn, new_tid) is None
 
 
+def test_kanban_create_tool_persists_model_override(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "strong verifier",
+        "assignee": "reviewerlight-1",
+        "model_override": "openai-codex:gpt-5.5",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True, d
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, d["task_id"])
+    assert task.model_override == "openai-codex:gpt-5.5"
+
+
 def test_board_param_routes_list_to_alt_board(multi_board_env):
     """kanban_list filters by the board parameter, not env-active."""
     from tools import kanban_tools as kt

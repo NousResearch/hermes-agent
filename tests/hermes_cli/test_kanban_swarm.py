@@ -115,3 +115,24 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         assert kb.get_task(conn, created.synthesizer_id).status == "ready"
     finally:
         conn.close()
+
+
+def test_create_swarm_can_set_verifier_and_synthesizer_model_overrides(tmp_path):
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="Verify and synthesize high-risk findings.",
+            workers=[SwarmWorkerSpec(profile="researcher", title="Evidence", body="Find proof")],
+            verifier_assignee="reviewerlight-1",
+            synthesizer_assignee="analystlight-1",
+            verifier_model_override="openai-codex:gpt-5.5",
+            synthesizer_model_override="openai-codex:gpt-5.5",
+        )
+
+        verifier = kb.get_task(conn, created.verifier_id)
+        synthesizer = kb.get_task(conn, created.synthesizer_id)
+        assert verifier.model_override == "openai-codex:gpt-5.5"
+        assert synthesizer.model_override == "openai-codex:gpt-5.5"
+    finally:
+        conn.close()

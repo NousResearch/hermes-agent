@@ -666,6 +666,7 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(bool_error)
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
+    model_override = args.get("model_override")
     initial_status = args.get("initial_status") or "running"
     skills = args.get("skills")
     if isinstance(skills, str):
@@ -702,6 +703,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                model_override=str(model_override) if model_override else None,
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
@@ -1141,6 +1143,14 @@ KANBAN_CREATE_SCHEMA = {
                     "Per-task runtime cap. When exceeded, the "
                     "dispatcher SIGTERMs the worker and re-queues the "
                     "task with outcome='timed_out'."
+                ),
+            },
+            "model_override": {
+                "type": "string",
+                "description": (
+                    "Optional per-task model override passed to the "
+                    "worker as -m. Use only as an explicit cost/quality "
+                    "exception with rationale in the task body."
                 ),
             },
             "initial_status": {

@@ -325,6 +325,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
                                "the dispatcher SIGTERMs (then SIGKILLs) the worker "
                                "and re-queues the task.")
+    p_create.add_argument("--model-override", default=None,
+                          help="Per-task model override passed to the worker as -m. "
+                               "Use only as an explicit cost/quality exception.")
     p_create.add_argument("--created-by", default="user",
                           help="Author name recorded on the task (default: user)")
     p_create.add_argument("--skill", action="append", default=[], dest="skills",
@@ -364,6 +367,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_swarm.add_argument("--verifier", required=True, help="Verifier profile")
     p_swarm.add_argument("--synthesizer", required=True, help="Synthesizer/writer profile")
+    p_swarm.add_argument("--verifier-model-override", default=None,
+                         help="Optional stronger/cheaper model override for the verifier gate")
+    p_swarm.add_argument("--synthesizer-model-override", default=None,
+                         help="Optional stronger/cheaper model override for the synthesizer")
     p_swarm.add_argument("--tenant", default=None, help="Tenant namespace")
     p_swarm.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
     p_swarm.add_argument("--created-by", default=None, help="Creator/anchor profile")
@@ -1338,6 +1345,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            model_override=getattr(args, "model_override", None),
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
@@ -1380,6 +1388,8 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
             created_by=args.created_by or _profile_author(),
             priority=args.priority,
             idempotency_key=getattr(args, "idempotency_key", None),
+            verifier_model_override=getattr(args, "verifier_model_override", None),
+            synthesizer_model_override=getattr(args, "synthesizer_model_override", None),
         )
     if getattr(args, "json", False):
         print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))

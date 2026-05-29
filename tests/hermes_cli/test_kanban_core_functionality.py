@@ -3434,6 +3434,7 @@ def _make_create_ns(**overrides):
         created_by="user", workspace="scratch", tenant=None,
         priority=0, parent=None, triage=False,
         idempotency_key=None, max_runtime=None, skills=None,
+        model_override=None,
         json=False,
     )
     for k, v in overrides.items():
@@ -3496,6 +3497,28 @@ def test_cli_create_no_warn_unassigned(kanban_home, monkeypatch, capsys):
     assert kb_cli._cmd_create(ns) == 0
     err = capsys.readouterr().err
     assert "hermes gateway start" not in err
+
+
+def test_cli_create_persists_model_override(kanban_home, monkeypatch, capsys):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+    ns = _make_create_ns(
+        title="strong verifier",
+        assignee="reviewerlight-1",
+        model_override="openai-codex:gpt-5.5",
+    )
+    assert kb_cli._cmd_create(ns) == 0
+    capsys.readouterr()
+
+    with kb.connect() as conn:
+        rows = conn.execute("SELECT model_override FROM tasks WHERE title=?", ("strong verifier",)).fetchall()
+    assert [row["model_override"] for row in rows] == ["openai-codex:gpt-5.5"]
 
 
 def test_cli_daemon_without_force_prints_deprecation_exits_2(kanban_home, capsys):

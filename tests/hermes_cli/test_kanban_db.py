@@ -2778,6 +2778,19 @@ def test_create_task_with_explicit_workspace_ignores_board_default(kanban_home):
     assert t.workspace_path != "/board/default"
 
 
+def test_create_task_persists_model_override(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="strong verifier",
+            assignee="reviewerlight-1",
+            model_override="openai-codex:gpt-5.5",
+        )
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.model_override == "openai-codex:gpt-5.5"
+
+
 # ---------------------------------------------------------------------------
 # dispatch_once — max_in_progress
 # ---------------------------------------------------------------------------

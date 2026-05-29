@@ -90,6 +90,8 @@ def create_swarm(
     workspace_path: Optional[str] = None,
     priority: int = 0,
     idempotency_key: Optional[str] = None,
+    verifier_model_override: Optional[str] = None,
+    synthesizer_model_override: Optional[str] = None,
 ) -> SwarmCreated:
     """Create a durable Kanban swarm graph.
 
@@ -191,6 +193,7 @@ def create_swarm(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["requesting-code-review"],
+        model_override=verifier_model_override,
     )
 
     synthesizer_body = (
@@ -210,6 +213,7 @@ def create_swarm(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["humanizer"],
+        model_override=synthesizer_model_override,
     )
 
     created = SwarmCreated(root, worker_ids, verifier, synthesizer)

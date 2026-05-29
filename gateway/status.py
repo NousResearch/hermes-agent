@@ -914,6 +914,68 @@ def consume_planned_stop_marker_for_self() -> bool:
     )
 
 
+def planned_stop_marker_targets_self() -> bool:
+    """Return True only when a live planned-stop marker names the current process.
+
+    This is a **non-destructive** probe used by the watcher thread
+    (``gateway/run.py:_run_planned_stop_watcher``) to decide whether to
+    trigger shutdown. Unlike :func:`consume_planned_stop_marker_for_self`,
+    it never unlinks a marker that matches us — the shutdown handler does
+    the authoritative consume on its own thread.
+
+    It *does* clean up markers that can never apply to this process:
+    malformed markers and markers older than the TTL are unlinked so a
+    stale file left behind by a previous gateway instance cannot wedge
+    the new one. Markers naming a different PID/start_time are left in
+    place (they may still be consumed legitimately by the process they
+    name) but report False here.
+
+    Returns False (without raising) on any read/parse error.
+    """
+    path = _get_planned_stop_marker_path()
+    record = _read_json_file(path)
+    if not record:
+        return False
+
+    try:
+        target_pid = int(record["target_pid"])
+        target_start_time = record.get("target_start_time")
+        written_at = record.get("written_at") or ""
+    except (KeyError, TypeError, ValueError):
+        # Malformed marker can never match anyone — drop it.
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    if _marker_is_stale(written_at, _PLANNED_STOP_MARKER_TTL_S):
+        # A marker this old is past its useful life regardless of target —
+        # clean it up so it cannot crash-loop a freshly booted gateway.
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    our_pid = os.getpid()
+    if target_pid != our_pid:
+        return False
+
+    # Start-time is a PID-reuse guard. It is only meaningful when both
+    # sides actually have it: ``_get_process_start_time`` returns None on
+    # platforms without ``/proc`` (macOS, native Windows — the very
+    # platform this watcher exists for). Requiring a non-None match there
+    # would make the watcher never fire and re-break the #33778 Windows
+    # session-resume path. So: when both start_times are known they must
+    # match; when either is unknown, fall back to PID equality alone
+    # (the marker is short-lived under a 60s TTL, bounding reuse risk).
+    our_start_time = _get_process_start_time(our_pid)
+    if target_start_time is not None and our_start_time is not None:
+        return target_start_time == our_start_time
+    return True
+
+
 def clear_planned_stop_marker() -> None:
     """Remove the planned-stop marker unconditionally."""
     try:

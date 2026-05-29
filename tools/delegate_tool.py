@@ -1047,6 +1047,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    tier: str = "medium",
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1080,7 +1081,7 @@ def _build_child_agent(
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
     tui_depth = max(0, child_depth - 1)  # 0 = first-level child for the UI
 
-    delegation_cfg = _load_config()
+    delegation_cfg = _load_config(tier)
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -2187,8 +2188,13 @@ def delegate_task(
             }
         )
 
+    try:
+        tier = _normalize_delegation_tier(tier)
+    except ValueError as exc:
+        return tool_error(str(exc))
+
     # Load config
-    cfg = _load_config()
+    cfg = _load_config(tier)
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
@@ -2203,18 +2209,13 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    try:
-        tier = _normalize_delegation_tier(tier)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent, tier=tier)
+        creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
 
@@ -2301,6 +2302,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                tier=tier,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2761,41 +2763,8 @@ def _normalize_delegation_tier(tier: Optional[str]) -> str:
     return normalized
 
 
-
-def _delegation_block_has_routing(block: Optional[dict]) -> bool:
-    if not isinstance(block, dict):
-        return False
-    for key in ("model", "provider", "base_url", "api_key", "api_mode"):
-        if str(block.get(key) or "").strip():
-            return True
-    return False
-
-
-
-def _select_delegation_config_block(cfg: dict, tier: Optional[str]) -> dict:
-    normalized_tier = _normalize_delegation_tier(tier)
-    config = cfg if isinstance(cfg, dict) else {}
-    default_block = dict(config)
-
-    if normalized_tier == "small":
-        small_block = config.get("delegation_small")
-        if _delegation_block_has_routing(small_block):
-            return dict(small_block)
-    elif normalized_tier == "large":
-        large_block = config.get("delegation_large")
-        if _delegation_block_has_routing(large_block):
-            return dict(large_block)
-
-    return default_block
-
-
-
-def _resolve_delegation_credentials(cfg: dict, parent_agent, tier: Optional[str] = None) -> dict:
+def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
-
-    If ``delegation_small`` / ``delegation_large`` is requested via ``tier`` and
-    meaningfully configured, resolve credentials from that block first.
-    Otherwise fall back to ``delegation`` and finally to parent inheritance.
 
     If ``delegation.base_url`` is configured, subagents use that direct
     OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
@@ -2815,12 +2784,11 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, tier: Optional[str]
 
     Raises ValueError with a user-friendly message on credential failure.
     """
-    effective_cfg = _select_delegation_config_block(cfg, tier)
-    configured_model = str(effective_cfg.get("model") or "").strip() or None
-    configured_provider = str(effective_cfg.get("provider") or "").strip() or None
-    configured_base_url = str(effective_cfg.get("base_url") or "").strip() or None
-    configured_api_key = str(effective_cfg.get("api_key") or "").strip() or None
-    configured_api_mode = str(effective_cfg.get("api_mode") or "").strip().lower() or None
+    configured_model = str(cfg.get("model") or "").strip() or None
+    configured_provider = str(cfg.get("provider") or "").strip() or None
+    configured_base_url = str(cfg.get("base_url") or "").strip() or None
+    configured_api_key = str(cfg.get("api_key") or "").strip() or None
+    configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
     if configured_base_url:
         # When delegation.api_key is not set, return None so _build_child_agent
@@ -2909,7 +2877,65 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, tier: Optional[str]
     }
 
 
-def _load_config() -> dict:
+def _merge_delegation_config_for_tier(delegation_cfg: dict, tier_cfg: dict) -> dict:
+    """Merge a tier override into the base delegation config.
+
+    Most tier fields are ordinary per-tier overrides layered on top of the
+    base delegation settings. But when a tier switches routing by changing
+    ``provider`` or ``base_url``, the inherited routing bundle from the base
+    config must be cleared first so we don't leak incompatible credentials or
+    transports into the selected tier.
+    """
+    merged = dict(delegation_cfg)
+
+    provider_changed = (
+        "provider" in tier_cfg
+        and tier_cfg.get("provider") != delegation_cfg.get("provider")
+    )
+    base_url_changed = (
+        "base_url" in tier_cfg
+        and tier_cfg.get("base_url") != delegation_cfg.get("base_url")
+    )
+
+    if provider_changed or base_url_changed:
+        for key in (
+            "model",
+            "provider",
+            "base_url",
+            "api_key",
+            "api_mode",
+            "command",
+            "args",
+        ):
+            merged.pop(key, None)
+
+    merged.update(tier_cfg)
+    return merged
+
+
+def _load_delegation_config_for_tier(full_cfg: Optional[dict], tier: Optional[str] = None) -> dict:
+    if full_cfg is None:
+        return {}
+
+    delegation_cfg = full_cfg.get("delegation")
+    if not isinstance(delegation_cfg, dict):
+        return {}
+
+    if tier is None:
+        return delegation_cfg
+
+    tiers_cfg = delegation_cfg.get("tiers")
+    if not isinstance(tiers_cfg, dict):
+        return delegation_cfg
+
+    tier_cfg = tiers_cfg.get(tier)
+    if not isinstance(tier_cfg, dict):
+        return delegation_cfg
+
+    return _merge_delegation_config_for_tier(delegation_cfg, tier_cfg)
+
+
+def _load_config(tier: Optional[str] = None) -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
     Returns the ``delegation`` block plus optional sibling routing blocks so the
@@ -2918,19 +2944,10 @@ def _load_config() -> dict:
     resolution.
     """
 
-    def _compose_delegation_config(full_cfg: Optional[dict]) -> dict:
-        full_cfg = full_cfg or {}
-        delegation_cfg = dict(full_cfg.get("delegation") or {})
-        if full_cfg.get("delegation_small"):
-            delegation_cfg["delegation_small"] = dict(full_cfg.get("delegation_small") or {})
-        if full_cfg.get("delegation_large"):
-            delegation_cfg["delegation_large"] = dict(full_cfg.get("delegation_large") or {})
-        return delegation_cfg
-
     try:
         from cli import CLI_CONFIG
 
-        cfg = _compose_delegation_config(CLI_CONFIG)
+        cfg = _load_delegation_config_for_tier(CLI_CONFIG, tier)
         if cfg:
             return cfg
     except Exception:
@@ -2938,7 +2955,7 @@ def _load_config() -> dict:
     try:
         from hermes_cli.config import load_config
 
-        return _compose_delegation_config(load_config())
+        return _load_delegation_config_for_tier(load_config(), tier)
     except Exception:
         return {}
 
@@ -3174,10 +3191,11 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["small", "medium", "large"],
                 "description": (
-                    "Optional top-level delegation routing tier. 'small' prefers "
-                    "delegation_small when configured, 'large' prefers "
-                    "delegation_large, and omitted or 'medium' uses delegation. "
-                    "Batch mode applies one top-level tier to the whole call."
+                    "Optional delegation routing tier. Common patterns: 'medium' "
+                    "(the default) for most tasks, 'small' for lighter and quicker "
+                    "tasks (e.g. discovery), 'large' for heavier tasks that require "
+                    "advanced reasoning over speed and cost. Applies to all tasks "
+                    "in a batch."
                 ),
             },
             "tasks": {

@@ -33,6 +33,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _inherit_parent_base_url,
+    _merge_delegation_config_for_tier,
 )
 
 
@@ -1032,72 +1033,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["provider"])
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
-
-    def test_small_tier_prefers_delegation_small_block(self):
-        parent = _make_mock_parent(depth=0)
-        cfg = {
-            "model": "anthropic/claude-sonnet-4",
-            "provider": "openrouter",
-            "delegation_small": {
-                "model": "google/gemini-3-flash-preview",
-                "provider": "openrouter",
-            },
-        }
-        with patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_runtime:
-            mock_runtime.return_value = {
-                "provider": "openrouter",
-                "base_url": "https://openrouter.ai/api/v1",
-                "api_key": "small-key",
-                "api_mode": "chat_completions",
-                "model": "google/gemini-3-flash-preview",
-            }
-            creds = _resolve_delegation_credentials(cfg, parent, tier="small")
-
-        self.assertEqual(creds["model"], "google/gemini-3-flash-preview")
-        self.assertEqual(creds["provider"], "openrouter")
-        mock_runtime.assert_called_once_with(
-            requested="openrouter",
-            target_model="google/gemini-3-flash-preview",
-        )
-
-    def test_large_tier_falls_back_to_default_block_when_unset(self):
-        parent = _make_mock_parent(depth=0)
-        cfg = {
-            "model": "anthropic/claude-sonnet-4",
-            "provider": "openrouter",
-        }
-        with patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_runtime:
-            mock_runtime.return_value = {
-                "provider": "openrouter",
-                "base_url": "https://openrouter.ai/api/v1",
-                "api_key": "default-key",
-                "api_mode": "chat_completions",
-                "model": "anthropic/claude-sonnet-4",
-            }
-            creds = _resolve_delegation_credentials(cfg, parent, tier="large")
-
-        self.assertEqual(creds["model"], "anthropic/claude-sonnet-4")
-        mock_runtime.assert_called_once_with(
-            requested="openrouter",
-            target_model="anthropic/claude-sonnet-4",
-        )
-
-    def test_small_tier_inherits_parent_when_no_routing_blocks_exist(self):
-        parent = _make_mock_parent(depth=0)
-        creds = _resolve_delegation_credentials({}, parent, tier="small")
-
-        self.assertIsNone(creds["provider"])
-        self.assertIsNone(creds["base_url"])
-        self.assertIsNone(creds["api_key"])
-        self.assertIsNone(creds["api_mode"])
-        self.assertIsNone(creds["model"])
-
-    def test_invalid_tier_raises_value_error(self):
-        parent = _make_mock_parent(depth=0)
-
-        with self.assertRaisesRegex(ValueError, "Invalid delegation tier"):
-            _resolve_delegation_credentials({}, parent, tier="giant")
-
 
 
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
@@ -2997,6 +2932,79 @@ class TestFallbackModelInheritance(unittest.TestCase):
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
 
+class TestDelegationTierConfigMerge(unittest.TestCase):
+    def test_same_provider_tier_inherits_base_routing_fields(self):
+        merged = _merge_delegation_config_for_tier(
+            {
+                "model": "anthropic/claude-sonnet-4",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "base-key",
+                "api_mode": "chat_completions",
+                "max_iterations": 50,
+            },
+            {
+                "model": "google/gemini-3-flash-preview",
+                "provider": "openrouter",
+            },
+        )
+
+        self.assertEqual(merged["model"], "google/gemini-3-flash-preview")
+        self.assertEqual(merged["provider"], "openrouter")
+        self.assertEqual(merged["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(merged["api_key"], "base-key")
+        self.assertEqual(merged["api_mode"], "chat_completions")
+        self.assertEqual(merged["max_iterations"], 50)
+
+    def test_provider_switch_clears_inherited_routing_bundle(self):
+        merged = _merge_delegation_config_for_tier(
+            {
+                "model": "anthropic/claude-sonnet-4",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "base-key",
+                "api_mode": "chat_completions",
+                "command": "copilot",
+                "args": ["--acp", "--stdio"],
+                "max_iterations": 50,
+            },
+            {
+                "provider": "minimax",
+                "max_iterations": 20,
+            },
+        )
+
+        self.assertEqual(merged["provider"], "minimax")
+        self.assertNotIn("model", merged)
+        self.assertNotIn("base_url", merged)
+        self.assertNotIn("api_key", merged)
+        self.assertNotIn("api_mode", merged)
+        self.assertNotIn("command", merged)
+        self.assertNotIn("args", merged)
+        self.assertEqual(merged["max_iterations"], 20)
+
+    def test_base_url_switch_clears_inherited_provider_fields(self):
+        merged = _merge_delegation_config_for_tier(
+            {
+                "model": "anthropic/claude-sonnet-4",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "base-key",
+                "api_mode": "chat_completions",
+                "reasoning_effort": "medium",
+            },
+            {
+                "base_url": "http://localhost:1234/v1",
+                "api_mode": "anthropic_messages",
+            },
+        )
+
+        self.assertEqual(merged["base_url"], "http://localhost:1234/v1")
+        self.assertEqual(merged["api_mode"], "anthropic_messages")
+        self.assertNotIn("provider", merged)
+        self.assertNotIn("model", merged)
+        self.assertNotIn("api_key", merged)
+        self.assertEqual(merged["reasoning_effort"], "medium")
 
 if __name__ == "__main__":
     unittest.main()

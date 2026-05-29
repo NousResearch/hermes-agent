@@ -2088,23 +2088,11 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
-    },
-    # Optional alternate routing blocks selected by delegate_task(tier=...).
-    # These are intentionally small v1 surfaces: just provider/model or direct
-    # endpoint overrides, with the same precedence rules as delegation.*.
-    "delegation_small": {
-        "model": "",
-        "provider": "",
-        "base_url": "",
-        "api_key": "",
-        "api_mode": "",
-    },
-    "delegation_large": {
-        "model": "",
-        "provider": "",
-        "base_url": "",
-        "api_key": "",
-        "api_mode": "",
+        # Overrides for model/provider/base_url/api_key/api_mode/reasoning_effort based on tier
+        # Valid tiers are: small/medium/large
+        # The tier is determined by the caller of `delegate_task`
+        # Non-configured tiers fallback to the top-level delegation config
+        "tiers": {},
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

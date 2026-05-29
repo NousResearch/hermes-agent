@@ -23,7 +23,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
@@ -81,14 +81,25 @@ class CodexAppServerClient:
             spawn_env["CODEX_HOME"] = codex_home
 
         app_server_args = list(extra_args or [])
-        # Kanban workers must be able to write their handoff/status back to
-        # the board DB, which lives outside the per-task workspace. Keep the
-        # Codex sandbox on, but add the Kanban root as the only extra writable
-        # root. Without this, codex-runtime workers finish their actual work
-        # but crash/block when kanban_complete/kanban_block writes SQLite.
+        # Kanban workers must be able to write both their task artifacts and
+        # their handoff/status back to the board DB. In normal CLI use those
+        # paths are usually under the thread cwd; managed Kanban can split cwd,
+        # HERMES_KANBAN_WORKSPACE, and the board DB into separate trees. Keep
+        # the Codex sandbox on, but grant only those Kanban roots explicitly.
         if spawn_env.get("HERMES_KANBAN_TASK"):
+            writable_roots: list[str] = []
+
+            def _add_writable_root(path: Optional[str]) -> None:
+                if not path:
+                    return
+                root = os.path.abspath(os.path.expanduser(path))
+                if root not in writable_roots:
+                    writable_roots.append(root)
+
+            _add_writable_root(spawn_env.get("HERMES_KANBAN_WORKSPACE"))
+
             kanban_db = spawn_env.get("HERMES_KANBAN_DB")
-            kanban_root = (
+            _add_writable_root(
                 os.path.dirname(kanban_db)
                 if kanban_db
                 else spawn_env.get(
@@ -97,14 +108,15 @@ class CodexAppServerClient:
                         spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
                         "kanban",
                     ),
-                )
+                ),
             )
+
             app_server_args.extend(
                 [
                     "-c",
                     'sandbox_mode="workspace-write"',
                     "-c",
-                    f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
+                    f"sandbox_workspace_write.writable_roots={json.dumps(writable_roots)}",
                     "-c",
                     "sandbox_workspace_write.network_access=false",
                 ]

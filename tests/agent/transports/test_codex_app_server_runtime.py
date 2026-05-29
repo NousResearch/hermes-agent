@@ -278,6 +278,7 @@ class TestSpawnEnvIsolation:
         monkeypatch.setenv("HOME", "/users/alice")
         monkeypatch.setenv("HERMES_HOME", "/users/alice/.hermes/profiles/backend-worker")
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
+        monkeypatch.delenv("HERMES_KANBAN_WORKSPACE", raising=False)
         monkeypatch.setenv(
             "HERMES_KANBAN_DB",
             "/users/alice/.hermes/kanban/boards/smoke/kanban.db",
@@ -291,6 +292,60 @@ class TestSpawnEnvIsolation:
         assert 'sandbox_mode="workspace-write"' in cmd
         assert (
             'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]'
+            in cmd
+        )
+        assert "sandbox_workspace_write.network_access=false" in cmd
+        assert all("danger" not in part for part in cmd)
+
+    def test_kanban_worker_adds_workspace_and_board_roots(self, monkeypatch):
+        """Managed Kanban may run Codex from a staged repo while artifacts
+        belong under HERMES_KANBAN_WORKSPACE. The app-server sandbox needs both
+        roots so normal artifact writes do not request broad approval.
+        """
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
+        monkeypatch.setenv(
+            "HERMES_KANBAN_WORKSPACE",
+            "/mnt/hermes/workspaces/board/t_smoke",
+        )
+        monkeypatch.setenv(
+            "HERMES_KANBAN_DB",
+            "/users/alice/.hermes/kanban/boards/smoke/kanban.db",
+        )
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        cmd = captured["cmd"]
+        assert (
+            'sandbox_workspace_write.writable_roots=["/mnt/hermes/workspaces/board/t_smoke", '
+            '"/users/alice/.hermes/kanban/boards/smoke"]'
             in cmd
         )
         assert "sandbox_workspace_write.network_access=false" in cmd

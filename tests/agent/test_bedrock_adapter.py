@@ -1712,3 +1712,74 @@ class TestRequireBoto3VersionCheck:
         with patch.dict("sys.modules", {"boto3": fake_boto3}):
             result = _require_boto3()
             assert result is fake_boto3
+
+class TestImageBase64Decoding:
+    """Image data URLs must be decoded to raw bytes before passing to Converse API.
+
+    boto3 re-encodes at the wire layer, so passing the base64 string directly
+    results in double-encoding. Bedrock rejects with 'Failed to sanitize image'.
+    Ref: #33317.
+    """
+
+    def test_data_url_decoded_to_bytes(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        import base64
+
+        # A tiny 1x1 red PNG
+        raw_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+        )
+        data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+
+        content = [{"type": "image_url", "image_url": {"url": data_url}}]
+        blocks = _convert_content_to_converse(content)
+
+        assert len(blocks) == 1
+        img_block = blocks[0]["image"]
+        assert img_block["format"] == "png"
+        # Must be raw bytes, not a base64 string
+        assert isinstance(img_block["source"]["bytes"], bytes)
+        assert img_block["source"]["bytes"] == raw_png
+
+    def test_invalid_base64_falls_back_to_encode(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+
+        data_url = "data:image/jpeg;base64,NOT_VALID_BASE64!!!"
+        content = [{"type": "image_url", "image_url": {"url": data_url}}]
+        blocks = _convert_content_to_converse(content)
+
+        # Should not crash — falls back to encoding the string as bytes
+        assert len(blocks) == 1
+        assert isinstance(blocks[0]["image"]["source"]["bytes"], bytes)
+
+
+class TestBearerTokenRoutesToConverse:
+    """Bearer Token users must go through Converse API, not AnthropicBedrock SDK.
+
+    The AnthropicBedrock SDK only supports SigV4 signing — it cannot use
+    AWS_BEARER_TOKEN_BEDROCK. Ref: #28156.
+    """
+
+    def test_bearer_token_forces_converse_for_claude(self):
+        """Claude model + Bearer Token → bedrock_converse, not anthropic_messages."""
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "test-bearer-token-123",
+            "AWS_DEFAULT_REGION": "us-east-1",
+        }
+        with patch.dict(os.environ, env, clear=False), \
+             patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+             patch("hermes_cli.runtime_provider._get_model_config", return_value={
+                 "default": "us.anthropic.claude-sonnet-4-6",
+                 "provider": "bedrock",
+             }), \
+             patch("hermes_cli.runtime_provider.load_config", return_value={"bedrock": {}}), \
+             patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
+             patch("agent.bedrock_adapter.resolve_aws_auth_env_var", return_value="bearer-token"), \
+             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"), \
+             patch("agent.bedrock_adapter.is_anthropic_bedrock_model", return_value=True):
+            runtime = resolve_runtime_provider(requested="bedrock")
+
+        assert runtime["api_mode"] == "bedrock_converse"
+        assert "bedrock_anthropic" not in runtime

@@ -683,15 +683,16 @@ The dashboard exposes a **trash drop zone** on the kanban page — drag any card
 
 ### Worker visibility endpoints
 
-The dashboard plugin API now exposes three read-only endpoints for external monitors:
+The dashboard plugin API now exposes three read-only endpoints for external monitors, plus a control endpoint to terminate a live run:
 
 | Endpoint | Returns |
 |----------|---------|
 | `GET /api/plugins/kanban/workers/active` | Currently spawned workers with PID, profile, task id, started-at, last heartbeat |
 | `GET /api/plugins/kanban/runs/{id}` | Single-run detail — task id, status, started/ended, exit code, log path |
 | `GET /api/plugins/kanban/inspect` | Combined dispatcher snapshot — backlog, in-progress count vs. `max_in_progress`, recent events |
+| `POST /api/plugins/kanban/runs/{run_id}/terminate` | Terminates the worker process backing a live run (SIGTERM→SIGKILL via the same flow as `POST /tasks/{task_id}/reclaim`); optional JSON body `{"reason": "..."}`. Returns `{"ok": true, "run_id": ..., "task_id": ...}`; `404` if the run is unknown, `409` if it already ended. |
 
-All three are gated by the same dashboard plugin auth as the rest of the kanban plugin API.
+The three read-only endpoints and the terminate control are gated by the same dashboard plugin auth as the rest of the kanban plugin API.
 
 ### Kanban Swarm topology helper
 

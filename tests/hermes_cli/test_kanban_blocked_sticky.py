@@ -261,6 +261,108 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# --initial-status blocked must emit a ``blocked`` event so the sticky-block
+# guard recognises operator-initiated parked-blocked tasks (R3 gate, autonomy
+# boundary primitives).  Before this fix, ``create_task(initial_status=
+# "blocked")`` wrote ``tasks.status='blocked'`` but emitted no event, so
+# ``_has_sticky_block`` returned False and ``recompute_ready`` silently
+# promoted the task ``blocked → ready`` on the next dispatcher tick.
+# ---------------------------------------------------------------------------
+
+
+def test_initial_status_blocked_emits_blocked_event(kanban_home: Path) -> None:
+    """``create_task(initial_status="blocked")`` must append a ``blocked``
+    event row in addition to the ``created`` event.  Without this, the
+    sticky-block guard has no signal to distinguish operator-parked
+    blocks from circuit-breaker blocks, and the task gets auto-promoted."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="parked at creation",
+            initial_status="blocked",
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        events = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id ASC",
+            (tid,),
+        ).fetchall()
+        kinds = [row["kind"] for row in events]
+        assert kinds == ["created", "blocked"], (
+            "create_task(initial_status='blocked') must emit a blocked "
+            "event so _has_sticky_block returns True"
+        )
+
+
+def test_initial_status_blocked_survives_recompute_ready(kanban_home: Path) -> None:
+    """The whole point of ``--initial-status blocked``: the task must
+    stay blocked across dispatcher ticks, exactly like a worker-issued
+    ``kanban_block``.  Reproducer for the substrate-integrity bug where
+    autonomy-boundary primitives (``jm-autoresearch-surface``,
+    ``jm-audit-file``) were silently promoted on the first tick."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="r3-gated edit",
+            initial_status="blocked",
+        )
+        # Hammer the promotion loop — even with no parents, no worker
+        # claim, nothing in the way, the task must stay blocked because
+        # the operator explicitly parked it.
+        for _ in range(5):
+            promoted = kb.recompute_ready(conn)
+            assert promoted == 0, (
+                "initial-status-blocked task must not auto-promote"
+            )
+            assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_initial_status_blocked_unblock_clears_state(kanban_home: Path) -> None:
+    """An explicit ``hermes kanban unblock`` (or the ``kanban_unblock``
+    tool) on an initial-status-blocked task must release it the same
+    way as on a worker-initiated block.  This pins the full lifecycle:
+    park-blocked → unblock → ready."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="r3-gated edit",
+            initial_status="blocked",
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+
+        # After unblock, recompute_ready leaves the now-ready task alone
+        # (it's not in the {todo, blocked} candidate set).
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_initial_status_blocked_with_done_parents_still_sticky(kanban_home: Path) -> None:
+    """The most dangerous false-positive: an initial-status-blocked
+    child whose parents are all done must stay blocked.  This is the
+    exact path ``recompute_ready`` was designed for, which is why the
+    sticky-block guard is the gatekeeper."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        kb.complete_task(conn, parent, result="ok")
+
+        child = kb.create_task(
+            conn,
+            title="r3-gated child",
+            parents=[parent],
+            initial_status="blocked",
+        )
+        assert kb.get_task(conn, child).status == "blocked"
+
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "blocked"
+
+
+# ---------------------------------------------------------------------------
 # Schema-init recovery on legacy DBs is covered by
 # tests/hermes_cli/test_kanban_db.py::test_connect_migrates_legacy_db_before_optional_column_indexes
 # (landed via #28754 / #28781).  The original PR shipped a duplicate test

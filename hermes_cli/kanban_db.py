@@ -1964,6 +1964,27 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
+                # When a caller parks the task directly in ``blocked`` via
+                # ``initial_status="blocked"`` (the ``--initial-status
+                # blocked`` CLI flag, primarily used by R3 gates and
+                # autonomy-boundary primitives), emit an explicit
+                # ``blocked`` event so ``_has_sticky_block`` recognises
+                # the row as worker/operator-initiated and
+                # ``recompute_ready`` refuses to auto-promote it.
+                # Without this event, the sticky-block guard returns
+                # False on the first dispatcher tick and the task is
+                # silently promoted ``blocked → ready``, defeating the
+                # whole point of ``initial_status="blocked"``.
+                if task_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "initial-status: created-blocked",
+                            "source": "create_task",
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

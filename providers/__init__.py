@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 _REGISTRY: dict[str, ProviderProfile] = {}
 _ALIASES: dict[str, str] = {}
 _discovered = False
+_DISCOVERY_CACHE_KEY: tuple | None = None
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
@@ -67,16 +68,14 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
 
     Returns None if the provider has no profile (falls back to generic).
     """
-    if not _discovered:
-        _discover_providers()
+    _ensure_providers_discovered()
     canonical = _ALIASES.get(name, name)
     return _REGISTRY.get(canonical)
 
 
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name)."""
-    if not _discovered:
-        _discover_providers()
+    _ensure_providers_discovered()
     # Deduplicate: _REGISTRY has canonical names; _ALIASES points to same objects
     seen: set[int] = set()
     result: list[ProviderProfile] = []
@@ -95,6 +94,16 @@ def _user_plugins_dir() -> Path | None:
 
         d = get_hermes_home() / "plugins" / "model-providers"
         return d if d.is_dir() else None
+    except Exception:
+        return None
+
+
+def _user_plugins_root_path() -> Path | None:
+    """Return the expected user provider-plugins root, even if missing."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / "plugins" / "model-providers"
     except Exception:
         return None
 
@@ -135,6 +144,97 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
             "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
         )
         sys.modules.pop(module_name, None)
+
+
+def _path_signature(path: Path) -> tuple[int, int]:
+    """Return a stable ``(mtime_ns, size)`` signature for a path."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return (0, 0)
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _plugin_root_cache_key(root: Path) -> tuple:
+    """Build a cache key for a provider-plugin directory tree."""
+    if not root.is_dir():
+        return (str(root), "missing")
+
+    entries: list[tuple] = []
+    for child in sorted(root.iterdir(), key=lambda p: p.name):
+        if not child.is_dir() or child.name.startswith(("_", ".")):
+            continue
+        child_entry = [child.name, _path_signature(child)]
+        for filename in ("__init__.py", "plugin.yaml", "plugin.yml"):
+            file_path = child / filename
+            if file_path.exists():
+                child_entry.append((filename, _path_signature(file_path)))
+        entries.append(tuple(child_entry))
+    return (str(root), _path_signature(root), tuple(entries))
+
+
+def _legacy_modules_cache_key() -> tuple:
+    """Track legacy ``providers/*.py`` modules so edits can trigger refresh."""
+    providers_dir = Path(__file__).resolve().parent
+    entries: list[tuple] = []
+    for path in sorted(providers_dir.glob("*.py")):
+        if path.name in {"__init__.py", "base.py"} or path.name.startswith("_"):
+            continue
+        entries.append((path.name, _path_signature(path)))
+    return tuple(entries)
+
+
+def _providers_cache_key() -> tuple:
+    """Return the current discovery cache key for all provider sources."""
+    user_dir = _user_plugins_root_path()
+    user_key = (
+        _plugin_root_cache_key(user_dir)
+        if user_dir is not None
+        else ("<unknown-user-provider-root>", "missing")
+    )
+    return (
+        _plugin_root_cache_key(_BUNDLED_PLUGINS_DIR),
+        user_key,
+        _legacy_modules_cache_key(),
+    )
+
+
+def _clear_provider_modules() -> None:
+    """Evict discovered provider modules so imports re-execute cleanly."""
+    for mod in list(sys.modules.keys()):
+        if mod.startswith("plugins.model_providers") or mod.startswith(
+            "_hermes_user_provider"
+        ):
+            del sys.modules[mod]
+
+    providers_dir = Path(__file__).resolve().parent
+    for path in providers_dir.glob("*.py"):
+        if path.name in {"__init__.py", "base.py"} or path.name.startswith("_"):
+            continue
+        sys.modules.pop(f"providers.{path.stem}", None)
+
+
+def _reset_provider_discovery_state(*, clear_modules: bool) -> None:
+    """Clear provider registry state so the next discovery pass is clean."""
+    global _discovered, _DISCOVERY_CACHE_KEY
+    _REGISTRY.clear()
+    _ALIASES.clear()
+    _discovered = False
+    _DISCOVERY_CACHE_KEY = None
+    if clear_modules:
+        _clear_provider_modules()
+
+
+def _ensure_providers_discovered(force: bool = False) -> None:
+    """Discover provider plugins and refresh when their source tree changes."""
+    global _DISCOVERY_CACHE_KEY
+    key = _providers_cache_key()
+    if _discovered and not force and key == _DISCOVERY_CACHE_KEY:
+        return
+    if _discovered:
+        _reset_provider_discovery_state(clear_modules=True)
+    _discover_providers()
+    _DISCOVERY_CACHE_KEY = key
 
 
 def _discover_providers() -> None:

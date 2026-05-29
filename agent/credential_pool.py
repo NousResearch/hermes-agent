@@ -492,6 +492,7 @@ class CredentialPool:
             self.provider,
             [entry.to_dict() for entry in self._entries],
             preserve_shared_entries=not replace_shared_entries,
+            preserve_profile_entries=True,
             add_entry_ids=frozenset(add_entry_ids or ()),
             replace_entry_ids=frozenset(replace_entry_ids or ()),
             remove_entry_ids=frozenset(remove_entry_ids or ()),
@@ -2315,5 +2316,6 @@ def load_pool(provider: str) -> CredentialPool:
             provider,
             [entry.to_dict() for entry in sorted(entries, key=lambda item: item.priority)],
             preserve_shared_entries=True,
+            preserve_profile_entries=True,
         )
     return CredentialPool(provider, entries)

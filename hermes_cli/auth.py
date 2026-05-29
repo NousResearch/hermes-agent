@@ -1497,6 +1497,7 @@ def write_credential_pool(
     entries: List[Dict[str, Any]],
     *,
     preserve_shared_entries: bool = False,
+    preserve_profile_entries: bool = False,
     add_entry_ids: FrozenSet[str] = frozenset(),
     replace_entry_ids: FrozenSet[str] = frozenset(),
     remove_entry_ids: FrozenSet[str] = frozenset(),
@@ -1559,16 +1560,16 @@ def write_credential_pool(
                     update_order_entry_ids=set(update_order_entry_ids),
                     update_status_entry_ids=set(update_status_entry_ids),
                 )
-                if not split_shared_store:
-                    profile_entries = _merge_credential_pool_snapshot_entries(
-                        root_profile_entries,
-                        profile_entries,
-                        add_entry_ids=set(add_entry_ids),
-                        replace_entry_ids=set(replace_entry_ids),
-                        remove_entry_ids=set(remove_entry_ids),
-                        update_order_entry_ids=set(update_order_entry_ids),
-                        update_status_entry_ids=set(update_status_entry_ids),
-                    )
+            if not split_shared_store and preserve_profile_entries:
+                profile_entries = _merge_credential_pool_snapshot_entries(
+                    root_profile_entries,
+                    profile_entries,
+                    add_entry_ids=set(add_entry_ids),
+                    replace_entry_ids=set(replace_entry_ids),
+                    remove_entry_ids=set(remove_entry_ids),
+                    update_order_entry_ids=set(update_order_entry_ids),
+                    update_status_entry_ids=set(update_status_entry_ids),
+                )
             shared_pool[provider_id] = (
                 root_profile_entries + shared_entries
                 if split_shared_store
@@ -1587,7 +1588,7 @@ def write_credential_pool(
                     if not isinstance(profile_pool, dict):
                         profile_pool = {}
                         profile_auth_store["credential_pool"] = profile_pool
-                    if preserve_shared_entries:
+                    if preserve_profile_entries:
                         existing_profile_entries = profile_pool.get(provider_id)
                         profile_entries = _merge_credential_pool_snapshot_entries(
                             (

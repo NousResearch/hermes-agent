@@ -887,6 +887,73 @@ def test_codex_profile_shared_remove_clears_root_state_atomically(profile_env):
     ]
 
 
+def test_codex_profile_shared_remove_preserves_newer_manual_entries(profile_env):
+    from agent.credential_pool import load_pool
+
+    _write(profile_env["global"] / "auth.json", {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "shared-at",
+                    "refresh_token": "shared-rt",
+                },
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "shared-codex",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "shared-at",
+                "refresh_token": "shared-rt",
+            }],
+        },
+    })
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "manual-codex",
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "access_token": "manual-old-at",
+            "refresh_token": "manual-old-rt",
+        }],
+    }))
+    stale = load_pool("openai-codex")
+
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "manual-codex",
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "access_token": "manual-new-at",
+            "refresh_token": "manual-new-rt",
+        }, {
+            "id": "concurrent-api-key",
+            "source": "manual:api_key",
+            "auth_type": "api_key",
+            "access_token": "sk-concurrent",
+        }],
+    }))
+    shared_index = next(
+        index
+        for index, entry in enumerate(stale.entries(), start=1)
+        if entry.source == "device_code"
+    )
+    assert stale.remove_index(shared_index) is not None
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    assert "openai-codex" not in global_data.get("providers", {})
+    assert global_data["credential_pool"]["openai-codex"] == []
+    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+    entries = {
+        entry["id"]: entry
+        for entry in profile_data["credential_pool"]["openai-codex"]
+    }
+    assert entries["manual-codex"]["refresh_token"] == "manual-new-rt"
+    assert entries["concurrent-api-key"]["access_token"] == "sk-concurrent"
+
+
 def test_clear_codex_auth_clears_profile_entries_and_shared_root_state(profile_env):
     from hermes_cli.auth import clear_provider_auth, read_credential_pool
 

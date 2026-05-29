@@ -2882,6 +2882,58 @@ def test_codex_root_stale_add_does_not_restore_removed_manual_entry(tmp_path, mo
     ]
 
 
+def test_codex_root_shared_remove_preserves_newer_manual_entries(tmp_path, monkeypatch):
+    """Shared removal must not replay or drop independently mutated manual rows."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    auth_store = _codex_auth_store("shared-at", "shared-rt")
+    auth_store["credential_pool"] = {
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "shared-at",
+            "refresh_token": "shared-rt",
+        }, {
+            "id": "manual-codex",
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "access_token": "manual-old-at",
+            "refresh_token": "manual-old-rt",
+        }],
+    }
+    _write_auth_store(tmp_path, auth_store)
+
+    from agent.credential_pool import load_pool
+
+    stale = load_pool("openai-codex")
+    auth_store["credential_pool"]["openai-codex"][1]["access_token"] = "manual-new-at"
+    auth_store["credential_pool"]["openai-codex"][1]["refresh_token"] = "manual-new-rt"
+    auth_store["credential_pool"]["openai-codex"].append({
+        "id": "concurrent-api-key",
+        "source": "manual:api_key",
+        "auth_type": "api_key",
+        "access_token": "sk-concurrent",
+    })
+    _write_auth_store(tmp_path, auth_store)
+
+    shared_index = next(
+        index
+        for index, entry in enumerate(stale.entries(), start=1)
+        if entry.source == "device_code"
+    )
+    assert stale.remove_index(shared_index) is not None
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert "openai-codex" not in auth_payload.get("providers", {})
+    entries = {
+        entry["id"]: entry
+        for entry in auth_payload["credential_pool"]["openai-codex"]
+    }
+    assert entries["manual-codex"]["refresh_token"] == "manual-new-rt"
+    assert entries["concurrent-api-key"]["access_token"] == "sk-concurrent"
+    assert "shared-codex" not in entries
+
+
 def test_codex_profile_pool_flush_does_not_restore_stale_manual_entry(tmp_path, monkeypatch):
     """An unrelated profile-local add must not replay a rotated manual token."""
     root_home = tmp_path / "hermes"
@@ -3570,6 +3622,71 @@ def test_codex_manual_terminal_refresh_preserves_shared_family(tmp_path, monkeyp
     assert entries["manual-codex"]["last_status"] == STATUS_DEAD
     assert entries["manual-codex"]["last_error_reason"] == "invalid_grant"
     assert entries["shared-codex"]["refresh_token"] == "shared-refresh"
+
+
+def test_codex_shared_terminal_refresh_preserves_newer_manual_entries(tmp_path, monkeypatch):
+    """Shared quarantine must merge independently mutated manual rows."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_OAUTH_ACCESS_TOKEN", raising=False)
+    auth_store = _codex_auth_store("shared-access", "shared-refresh")
+    auth_store["credential_pool"] = {
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "priority": 0,
+            "access_token": "shared-access",
+            "refresh_token": "shared-refresh",
+        }, {
+            "id": "manual-codex",
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "priority": 1,
+            "access_token": "manual-old-access",
+            "refresh_token": "manual-old-refresh",
+        }],
+    }
+    _write_auth_store(tmp_path, auth_store)
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    stale = load_pool("openai-codex")
+    shared = next(entry for entry in stale.entries() if entry.id == "shared-codex")
+    stale._current_id = shared.id
+    auth_store["credential_pool"]["openai-codex"][1]["access_token"] = "manual-new-access"
+    auth_store["credential_pool"]["openai-codex"][1]["refresh_token"] = "manual-new-refresh"
+    auth_store["credential_pool"]["openai-codex"].append({
+        "id": "concurrent-api-key",
+        "source": "manual:api_key",
+        "auth_type": "api_key",
+        "priority": 2,
+        "access_token": "sk-concurrent",
+    })
+    _write_auth_store(tmp_path, auth_store)
+
+    def _terminal_refresh_failure(*_args, **_kwargs):
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="openai-codex",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _terminal_refresh_failure)
+
+    assert stale.try_refresh_current() is None
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = {
+        entry["id"]: entry
+        for entry in auth_payload["credential_pool"]["openai-codex"]
+    }
+    assert entries["manual-codex"]["refresh_token"] == "manual-new-refresh"
+    assert entries["concurrent-api-key"]["access_token"] == "sk-concurrent"
+    assert "shared-codex" not in entries
 
 
 def test_codex_profile_terminal_refresh_preserves_root_active_provider(tmp_path, monkeypatch):

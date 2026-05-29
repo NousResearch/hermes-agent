@@ -681,7 +681,7 @@ def fetch_endpoint_model_metadata(
         try:
             if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
                 server_url = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized
-                response = requests.get(
+                response = requests.get(  # SSRF: add IP block check
                     server_url.rstrip("/") + "/api/v1/models",
                     headers=headers,
                     timeout=10,

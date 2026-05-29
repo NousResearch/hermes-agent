@@ -131,6 +131,7 @@ AUTHOR_MAP = {
     "210765158+WuKongAI-CMU@users.noreply.github.com": "WuKongAI-CMU",
     "lichriszhang@gmail.com": "codeblackhole1024",
     "leovillalbajr@gmail.com": "Lempkey",
+    "loicnico96@gmail.com": "loicnico96",
     "nidhi2894@gmail.com": "nidhi-singh02",
     "30312689+aashizpoudel@users.noreply.github.com": "aashizpoudel",
     "oleksii.lisikh@gmail.com": "olisikh",

@@ -2539,14 +2539,25 @@ def run_conversation(
                     invalid_reasoning_config_retry_attempted = True
                     _old_reasoning = agent.reasoning_config
                     agent.reasoning_config = None
+                    # Save to session state so we can warn at the end
+                    if not hasattr(agent, '_reasoning_disabled_this_session'):
+                        agent._reasoning_disabled_this_session = True
+                        agent._reasoning_was_config = _old_reasoning
                     agent._vprint(
-                        f"{agent.log_prefix}⚠️  Provider rejected reasoning config "
-                        f"({_old_reasoning}) — retrying with reasoning disabled...",
+                        f"\n{agent.log_prefix}⚠️  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"{agent.log_prefix}⚠️  REASONING DISABLED FOR THIS SESSION\n"
+                        f"{agent.log_prefix}⚠️  Provider rejected reasoning config ({_old_reasoning}).\n"
+                        f"{agent.log_prefix}⚠️  Model will respond WITHOUT extended thinking.\n"
+                        f"{agent.log_prefix}⚠️  \n"
+                        f"{agent.log_prefix}⚠️  To re-enable reasoning:\n"
+                        f"{agent.log_prefix}⚠️    • Switch to a provider/model that supports it\n"
+                        f"{agent.log_prefix}⚠️    • Run: hermes config set provider.name <other-provider>\n"
+                        f"{agent.log_prefix}⚠️  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
                         force=True,
                     )
                     logger.warning(
                         "%sInvalid reasoning config recovery: cleared "
-                        "reasoning_config (was %s), retrying on same provider",
+                        "reasoning_config (was %s), retrying on same provider without reasoning",
                         agent.log_prefix, _old_reasoning,
                     )
                     continue

@@ -38,3 +38,14 @@ class TestResolveContextCwd:
         # (don't slurp the gateway install dir's AGENTS.md).
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
         assert resolve_context_cwd() is None
+
+    def test_returns_nonexistent_dir_unguarded(self, monkeypatch, tmp_path):
+        # Deliberate asymmetry vs resolve_agent_cwd: context discovery has no isdir
+        # guard, so a missing dir is returned (not None) — discovery just finds nothing.
+        missing = tmp_path / "gone"
+        monkeypatch.setenv("TERMINAL_CWD", str(missing))
+        assert resolve_context_cwd() == missing
+
+    def test_expands_leading_tilde(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", "~")
+        assert resolve_context_cwd() == Path(os.path.expanduser("~"))

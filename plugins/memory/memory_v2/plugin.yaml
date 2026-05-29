@@ -1,0 +1,3 @@
+name: memory_v2
+description: Local profile-scoped Memory v2 provider for routed, source-grounded, low-compute long-term memory.
+version: 0.1.0

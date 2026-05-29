@@ -1,0 +1,315 @@
+version: 1
+name: memory_v2_initial_benchmark
+description: >
+  Initial contract benchmark for Hermes Memory v2. These cases define the
+  behaviors the memory system must satisfy before implementation is considered
+  trustworthy: routed retrieval, source grounding, stale fact handling,
+  irrelevant-memory suppression, and profile isolation.
+
+metadata:
+  spec: docs/plans/memory-v2-spec.md
+  created_for: memory_v2
+  offline_required: true
+  default_packet_budget_tokens: 1500
+
+seed_memory:
+  sources:
+    - id: source_user_profile
+      type: file
+      uri: memory://core/user.yaml
+      title: Core user profile
+      observed_at: "2026-05-26T00:00:00Z"
+      quote: "Dylan prefers direct, no-BS, tool-grounded help."
+    - id: source_qwen_project
+      type: session
+      uri: session://qwen-reasoning-loop-summary
+      title: Qwen reasoning loop summary
+      observed_at: "2026-05-01T00:00:00Z"
+      quote: "Thinking mode showed latent arithmetic but strict final answers remained weak."
+    - id: source_memory_v2_thread
+      type: session
+      uri: discord://thread/1508915896054452264
+      title: Memory v2 design thread
+      observed_at: "2026-05-26T00:00:00Z"
+      quote: "Dylan asked for a robust low-compute long-term memory system inspired by recent attention research."
+    - id: source_old_voice
+      type: memory
+      uri: memory://semantic/preferences/voice-old
+      title: Old TTS voice preference
+      observed_at: "2025-12-01T00:00:00Z"
+      quote: "Dylan likes en-US-ChristopherNeural."
+    - id: source_new_voice
+      type: memory
+      uri: memory://semantic/preferences/voice-new
+      title: Current TTS voice preference
+      observed_at: "2026-04-01T00:00:00Z"
+      quote: "Dylan prefers en-US-AndrewNeural when available."
+
+  memories:
+    - id: pref_response_style
+      type: preference
+      subject: Dylan
+      predicate: prefers_response_style
+      value: direct no-BS tool-grounded help with minimal back-and-forth
+      summary: Dylan prefers direct, no-BS, tool-grounded help with minimal back-and-forth.
+      status: active
+      confidence: 0.98
+      importance: 0.95
+      source_refs: [source_user_profile]
+      tags: [user_preference, style]
+
+    - id: pref_xtweets_style
+      type: preference
+      subject: Dylan
+      predicate: prefers_xtweets_style
+      value: casual human not formal or essay-like
+      summary: Dylan prefers X/Twitter drafts to sound casual and human, not formal or essay-like.
+      status: active
+      confidence: 0.95
+      importance: 0.75
+      source_refs: [source_user_profile]
+      tags: [user_preference, social_media]
+
+    - id: project_qwen_reasoning_loop
+      type: project_state
+      subject: project:qwen-reasoning-loop
+      predicate: current_state
+      value: >
+        Qwen reasoning work is focused on distinguishing real reasoning gains
+        from verbosity/style/eval-Goodharting. Thinking traces showed latent
+        arithmetic sometimes appears before final-answer failure, so strict
+        final scoring and larger caps matter.
+      summary: >
+        Qwen reasoning loop focuses on real arithmetic/reasoning gains versus
+        style or eval-Goodharting; hidden reasoning sometimes contains correct
+        answers that do not survive strict final scoring.
+      status: active
+      confidence: 0.9
+      importance: 0.9
+      source_refs: [source_qwen_project]
+      tags: [project, qwen, reasoning, evals]
+
+    - id: project_memory_v2
+      type: project_state
+      subject: project:hermes-memory-v2
+      predicate: current_state
+      value: >
+        Memory v2 should be robust, low-compute, source-grounded, profile-safe,
+        and inspired by selective attention over prior states rather than giant
+        prompt accumulation.
+      summary: >
+        Hermes Memory v2 design: layered memory, gated writes, routed retrieval,
+        offline consolidation, source-backed semantic memory, and benchmark-first implementation.
+      status: active
+      confidence: 0.95
+      importance: 0.9
+      source_refs: [source_memory_v2_thread]
+      tags: [project, hermes, memory_v2, architecture]
+
+    - id: pref_tts_voice_old
+      type: preference
+      subject: Dylan
+      predicate: preferred_tts_voice
+      value: en-US-ChristopherNeural
+      summary: Dylan previously liked en-US-ChristopherNeural.
+      status: superseded
+      confidence: 0.8
+      importance: 0.4
+      source_refs: [source_old_voice]
+      superseded_by: pref_tts_voice_current
+      tags: [user_preference, voice, stale_fact]
+
+    - id: pref_tts_voice_current
+      type: preference
+      subject: Dylan
+      predicate: preferred_tts_voice
+      value: en-US-AndrewNeural
+      summary: Dylan prefers en-US-AndrewNeural when available for a human, confident, slightly deeper male TTS voice.
+      status: active
+      confidence: 0.95
+      importance: 0.8
+      source_refs: [source_new_voice]
+      supersedes: [pref_tts_voice_old]
+      tags: [user_preference, voice]
+
+    - id: procedure_hermes_agent_skill
+      type: procedure_ref
+      subject: Hermes
+      predicate: use_skill_for_hermes_config
+      value: hermes-agent
+      summary: Use the hermes-agent skill before configuring, modifying, or troubleshooting Hermes itself.
+      status: active
+      confidence: 0.99
+      importance: 0.85
+      source_refs: [source_user_profile]
+      tags: [procedure, skill, hermes]
+
+    - id: unrelated_school_autopilot
+      type: project_state
+      subject: project:school-autopilot
+      predicate: current_state
+      value: School Autopilot cron summarizes Schoology due dates and news.
+      summary: School Autopilot cron produces school/news summaries.
+      status: active
+      confidence: 0.9
+      importance: 0.5
+      source_refs: [source_user_profile]
+      tags: [project, schoology, cron]
+
+cases:
+  - id: preference_response_style
+    category: preference_recall
+    query: How should you usually answer Dylan?
+    expected_route: preference_recall
+    required_memory_ids: [pref_response_style]
+    forbidden_memory_ids: [unrelated_school_autopilot]
+    expected_answer_contains:
+      - direct
+      - no-BS
+      - tool-grounded
+    source_required: true
+    max_packet_tokens: 1000
+
+  - id: preference_xtweets_style
+    category: preference_recall
+    query: What style does Dylan prefer for X/Twitter drafts?
+    expected_route: preference_recall
+    required_memory_ids: [pref_xtweets_style]
+    expected_answer_contains:
+      - casual
+      - human
+      - not formal
+    source_required: true
+    max_packet_tokens: 1000
+
+  - id: project_qwen_continuity
+    category: project_continuity
+    query: Where did we leave the Qwen reasoning loop?
+    expected_route: project_continuity
+    required_memory_ids: [project_qwen_reasoning_loop]
+    expected_answer_contains:
+      - Qwen
+      - reasoning
+      - strict final
+      - hidden
+      - eval-Goodharting
+    source_required: true
+    max_packet_tokens: 1500
+
+  - id: project_memory_v2_continuity
+    category: project_continuity
+    query: What is the current plan for Hermes Memory v2?
+    expected_route: project_continuity
+    required_memory_ids: [project_memory_v2]
+    expected_answer_contains:
+      - layered memory
+      - gated writes
+      - routed retrieval
+      - source-backed
+      - benchmark
+    source_required: true
+    max_packet_tokens: 1500
+
+  - id: stale_voice_preference
+    category: stale_fact_handling
+    query: Which TTS voice should we prefer for Dylan?
+    expected_route: preference_recall
+    required_memory_ids: [pref_tts_voice_current]
+    forbidden_memory_ids_as_active: [pref_tts_voice_old]
+    expected_answer_contains:
+      - en-US-AndrewNeural
+    expected_answer_not_contains:
+      - current preference is en-US-ChristopherNeural
+    source_required: true
+    max_packet_tokens: 1000
+
+  - id: exact_source_memory_v2
+    category: exact_source_recall
+    query: Where did the Memory v2 design request come from?
+    expected_route: past_conversation_exact
+    required_memory_ids: [project_memory_v2]
+    required_source_ids: [source_memory_v2_thread]
+    expected_answer_contains:
+      - Memory v2
+      - Discord
+      - thread
+    source_required: true
+    max_packet_tokens: 1500
+
+  - id: irrelevant_memory_suppression
+    category: irrelevant_memory_suppression
+    query: Explain Kimi Linear and Attention Residuals as inspiration for memory architecture.
+    expected_route: research_recall
+    required_memory_ids: [project_memory_v2]
+    forbidden_memory_ids: [unrelated_school_autopilot]
+    expected_answer_not_contains:
+      - Schoology
+      - due dates
+      - school autopilot
+    source_required: false
+    max_packet_tokens: 1500
+
+  - id: contradiction_host_os
+    category: contradiction_detection
+    query: Remember that Hermes is running on macOS, not WSL.
+    expected_route: contradiction_check
+    setup_existing_claim:
+      id: env_host_wsl
+      type: environment
+      subject: Hermes runtime
+      predicate: host_environment
+      value: WSL
+      status: active
+    expected_behavior:
+      - flag_conflict_or_scope_difference
+      - do_not_silently_overwrite_active_fact
+      - create_candidate_requiring_review
+    max_packet_tokens: 1200
+
+  - id: procedure_skill_routing
+    category: procedure_routing
+    query: How should we troubleshoot or modify Hermes memory providers?
+    expected_route: procedure_lookup
+    required_memory_ids: [procedure_hermes_agent_skill]
+    expected_answer_contains:
+      - hermes-agent
+      - skill
+    expected_behavior:
+      - prefer_skill_pointer_over_semantic_blob
+    max_packet_tokens: 1000
+
+  - id: no_memory_generic
+    category: no_memory_needed
+    query: What is 2 + 2?
+    expected_route: no_memory_needed
+    required_memory_ids: []
+    forbidden_memory_ids:
+      - pref_response_style
+      - project_qwen_reasoning_loop
+      - project_memory_v2
+      - unrelated_school_autopilot
+    expected_behavior:
+      - no_long_term_retrieval
+    max_packet_tokens: 0
+
+  - id: profile_isolation
+    category: profile_isolation
+    query: Recall a memory from another Hermes profile.
+    expected_route: deep_recall
+    setup_other_profile_memory:
+      profile: other-profile
+      id: other_profile_secret
+      summary: This record must not be visible from the default profile.
+    forbidden_memory_ids: [other_profile_secret]
+    expected_behavior:
+      - no_cross_profile_memory_leakage
+      - explain_profile_boundary_if_relevant
+    max_packet_tokens: 1000
+
+scoring:
+  required_memory_id_weight: 3
+  forbidden_memory_penalty: 5
+  missing_source_penalty: 3
+  stale_active_penalty: 5
+  packet_budget_penalty: 2
+  minimum_passing_score_percent: 85

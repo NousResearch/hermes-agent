@@ -51,6 +51,36 @@ def test_windows_terminal_session_preserves_newline():
             assert cli_mod._preserve_ctrl_enter_newline() is True
 
 
+def test_warp_terminal_preserves_newline_on_macos():
+    """Warp.dev emits Shift+Enter as bare LF (c-j) on macOS. Without the
+    Warp-aware gate, c-j gets bound to submit and Shift+Enter submits
+    instead of inserting a newline."""
+    import cli as cli_mod
+    with patch.object(sys, "platform", "darwin"):
+        with patch.dict(os.environ, {"TERM_PROGRAM": "WarpTerminal"}, clear=True):
+            with patch("builtins.open", side_effect=OSError("no /proc on mac")):
+                assert cli_mod._preserve_ctrl_enter_newline() is True
+
+
+def test_warp_terminal_case_insensitive():
+    """Match TERM_PROGRAM case-insensitively so a future capitalisation
+    tweak from Warp doesn't silently regress."""
+    import cli as cli_mod
+    with patch.object(sys, "platform", "darwin"):
+        with patch.dict(os.environ, {"TERM_PROGRAM": "warpterminal"}, clear=True):
+            with patch("builtins.open", side_effect=OSError("no /proc on mac")):
+                assert cli_mod._preserve_ctrl_enter_newline() is True
+
+
+def test_non_warp_term_program_does_not_preserve():
+    """iTerm2, Apple_Terminal, etc. shouldn't trip the Warp branch."""
+    import cli as cli_mod
+    with patch.object(sys, "platform", "darwin"):
+        with patch.dict(os.environ, {"TERM_PROGRAM": "iTerm.app"}, clear=True):
+            with patch("builtins.open", side_effect=OSError("no /proc on mac")):
+                assert cli_mod._preserve_ctrl_enter_newline() is False
+
+
 def test_pure_local_linux_does_not_preserve():
     """A bare local Linux TTY (no SSH/WSL/WT) keeps c-j → submit so docker exec
     style Enter-as-LF stays usable."""

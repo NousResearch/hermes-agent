@@ -2475,22 +2475,28 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 
 
 def _preserve_ctrl_enter_newline() -> bool:
-    """Detect environments where Ctrl+Enter must produce a newline, not submit.
+    """Detect environments where c-j (LF) must produce a newline, not submit.
 
-    Native Windows, WSL, SSH sessions, and Windows Terminal all send Ctrl+Enter
-    as bare LF (c-j). On those terminals c-j must NOT be bound to submit;
-    binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
-    submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
+    Several terminals emit a distinct Enter-with-modifier keystroke as bare
+    LF (c-j), separate from plain Enter (c-m):
+      - Native Windows, WSL, SSH sessions, and Windows Terminal send
+        Ctrl+Enter as c-j (issue #22379).
+      - Warp (TERM_PROGRAM=WarpTerminal) sends Shift+Enter as c-j on macOS.
+
+    On those terminals c-j must NOT be bound to submit; binding it to submit
+    makes the user's intended 'newline like Alt+Enter' keystroke submit
+    instead. Local POSIX TTYs that deliver plain Enter as LF (docker exec,
     some thin PTYs without SSH) still need c-j bound to submit, so we keep
     that binding for those.
-
-    See issue #22379.
     """
     if sys.platform == "win32":
         return True
     if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
         return True
     if os.environ.get("WT_SESSION"):
+        return True
+    # Warp.dev sends Shift+Enter as c-j; keep it free for the newline handler.
+    if os.environ.get("TERM_PROGRAM", "").lower() == "warpterminal":
         return True
     if "microsoft" in os.environ.get("WSL_DISTRO_NAME", "").lower():
         return True

@@ -77,7 +77,7 @@ def check_camofox_available() -> bool:
     if not url:
         return False
     try:
-        resp = requests.get(f"{url}/health", timeout=5)
+        resp = requests.get(f"{url}/health", timeout=5)  # SSRF: add IP block check
         if resp.status_code == 200 and not _vnc_url_checked:
             try:
                 data = resp.json()

@@ -424,5 +424,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34939",
     "pr_number": 34939,
     "run_id": "20260529_222900"
+  },
+  "SSRF-browser_connect.py-164": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34940",
+    "pr_number": 34940,
+    "run_id": "20260529_222900"
   }
 }

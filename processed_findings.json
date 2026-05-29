@@ -124,5 +124,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34889",
     "pr_number": 34889,
     "run_id": "20260529_222349"
+  },
+  "SSRF-nutrition_search.py-33": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34890",
+    "pr_number": 34890,
+    "run_id": "20260529_222349"
   }
 }

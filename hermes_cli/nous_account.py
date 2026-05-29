@@ -480,7 +480,7 @@ def _fetch_nous_account_info(
         "Accept": "application/json",
     }
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=8) as resp:
+    with urllib.request.urlopen(req, timeout=8) as resp:  # SSRF: add IP block check
         payload = json.loads(resp.read().decode())
     return payload if isinstance(payload, dict) else {}
 

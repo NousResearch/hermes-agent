@@ -5,9 +5,12 @@ from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.platforms.base import MessageEvent
 from gateway.bridge_commands import (
+    bridge_tool_args_hash,
+    create_bridge_approval_prompt,
     handle_local_bridge_command,
     handle_gateway_bridge_command,
     maybe_apply_gateway_bridge_binding,
+    register_bridge_reply_input_prompt,
 )
 from hermes_cli.commands import resolve_command
 
@@ -39,9 +42,10 @@ def test_bridge_command_is_registered_for_cli_and_gateway():
     assert not cmd.cli_only
     assert not cmd.gateway_only
 
-    disconnect = resolve_command("bridge_disconnect")
-    assert disconnect is not None
-    assert disconnect.gateway_only
+    approve = resolve_command("bridge_approve")
+    assert approve is not None
+    assert approve.gateway_only
+    assert approve.args_hint == "<nonce>"
 
 
 def test_local_bridge_bind_mints_single_use_token_limited_to_expected_telegram_identity(tmp_path):
@@ -251,6 +255,117 @@ def test_bound_telegram_dm_plain_text_switches_to_cli_session(tmp_path):
     assert decision.verdict is BridgeVerdict.ACCEPT
     assert session_store.switches == [("agent:main:telegram:dm:48264503", "cli-session")]
     assert evicted == ["agent:main:telegram:dm:48264503"]
+
+
+def test_register_bridge_reply_input_prompt_records_reply_anchor_for_bound_telegram_dm(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+
+    prompt = register_bridge_reply_input_prompt(
+        _telegram_event("phone is waiting"),
+        sent_message_id="301",
+        prompt_text="Reply to this message with the next instruction.",
+        store=store,
+        ttl_seconds=600,
+    )
+
+    assert prompt.decision.verdict is BridgeVerdict.ACCEPT
+    assert prompt.bridge_id == "bridge-cli-session"
+    assert prompt.hermes_session_id == "cli-session"
+    assert prompt.message_id == "301"
+    assert "Reply to this message" in prompt.text
+
+    reply = store.validate_reply_input(
+        chat_id="48264503",
+        thread_id=None,
+        user_id="48264503",
+        reply_to_message_id="301",
+        inbound_message_id="302",
+    )
+    assert reply.verdict is BridgeVerdict.ACCEPT
+    assert reply.hermes_session_id == "cli-session"
+
+
+def test_register_bridge_reply_input_prompt_rejects_unbound_or_wrong_platform_events(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    unbound = register_bridge_reply_input_prompt(
+        _telegram_event("unbound"),
+        sent_message_id="301",
+        prompt_text="Reply here",
+        store=store,
+    )
+    assert unbound.decision.verdict is BridgeVerdict.REJECT
+    assert "binding" in unbound.decision.reason
+
+    discord_event = MessageEvent(
+        text="not telegram",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="discord-chat",
+            chat_type="dm",
+            user_id="48264503",
+        ),
+    )
+    wrong_platform = register_bridge_reply_input_prompt(
+        discord_event,
+        sent_message_id="301",
+        prompt_text="Reply here",
+        store=store,
+    )
+    assert wrong_platform.decision.verdict is BridgeVerdict.REJECT
+    assert "Telegram DM" in wrong_platform.decision.reason
+
+
+def test_create_bridge_approval_prompt_uses_single_use_nonce_bound_to_args(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+
+    prompt = create_bridge_approval_prompt(
+        _telegram_event("approval lane"),
+        turn_id="turn-1",
+        tool_call_id="tool-1",
+        tool_name="terminal",
+        tool_args={"command": "rm -rf /tmp/demo", "timeout": 30},
+        store=store,
+        ttl_seconds=300,
+    )
+
+    assert prompt.decision.verdict is BridgeVerdict.ACCEPT
+    assert prompt.approval is not None
+    assert prompt.approval.nonce in prompt.text
+    assert "/bridge_approve" in prompt.text
+    assert prompt.tool_args_hash == bridge_tool_args_hash(
+        "terminal", {"timeout": 30, "command": "rm -rf /tmp/demo"}
+    )
+
+    changed_args = store.consume_approval(
+        nonce=prompt.approval.nonce,
+        chat_id="48264503",
+        user_id="48264503",
+        hermes_session_id="cli-session",
+        tool_args_hash=bridge_tool_args_hash("terminal", {"command": "echo safe", "timeout": 30}),
+    )
+    assert changed_args.verdict is BridgeVerdict.REJECT
+    assert "changed" in changed_args.reason
+
+    ok = store.consume_approval(
+        nonce=prompt.approval.nonce,
+        chat_id="48264503",
+        user_id="48264503",
+        hermes_session_id="cli-session",
+        tool_args_hash=prompt.tool_args_hash,
+    )
+    assert ok.verdict is BridgeVerdict.ACCEPT
 
 
 def test_bridge_does_not_remap_slash_commands_or_paused_bindings(tmp_path):

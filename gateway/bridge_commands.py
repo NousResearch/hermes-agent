@@ -8,13 +8,16 @@ into a live CLI/PTY.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shlex
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home
 
-from .bridge import BridgeDecision, BridgeStateStore, BridgeVerdict
+from .bridge import BridgeApproval, BridgeDecision, BridgeStateStore, BridgeVerdict
 from .config import Platform
 from .platforms.base import MessageEvent
 
@@ -150,10 +153,143 @@ def _telegram_identity(event: MessageEvent) -> tuple[str, str, Optional[str]] | 
     return str(source.chat_id), str(source.user_id), str(source.thread_id) if source.thread_id else None
 
 
+@dataclass(frozen=True)
+class BridgeReplyInputPrompt:
+    """Result of registering a Telegram reply-to input prompt."""
+
+    decision: BridgeDecision
+    text: str
+    message_id: str
+    bridge_id: Optional[str] = None
+    hermes_session_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class BridgeApprovalPrompt:
+    """Result of creating a nonce-bound bridge approval prompt."""
+
+    decision: BridgeDecision
+    text: str
+    tool_args_hash: str
+    approval: Optional[BridgeApproval] = None
+    bridge_id: Optional[str] = None
+    hermes_session_id: Optional[str] = None
+
+
 def _decision_message(decision: BridgeDecision, success: str) -> str:
     if decision.verdict is BridgeVerdict.ACCEPT:
         return success
     return f"Bridge request rejected: {decision.reason}"
+
+
+def bridge_tool_args_hash(tool_name: str, tool_args: Any) -> str:
+    """Return a stable hash binding a bridge approval to one tool call shape."""
+    payload = {
+        "tool_name": str(tool_name),
+        "tool_args": tool_args,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def register_bridge_reply_input_prompt(
+    event: MessageEvent,
+    *,
+    sent_message_id: str,
+    prompt_text: str,
+    store: BridgeStateStore | None = None,
+    ttl_seconds: int = 600,
+) -> BridgeReplyInputPrompt:
+    """Register a bot-sent Telegram message as a one-shot reply input anchor.
+
+    The helper is deliberately fail-closed: only active bound Telegram DMs can
+    register an input prompt, and the resulting anchor must later pass
+    ``BridgeStateStore.validate_reply_input()`` before it can become input.
+    """
+    store = store or default_bridge_store()
+    identity = _telegram_identity(event)
+    if identity is None:
+        decision = BridgeDecision(BridgeVerdict.REJECT, "bridge reply input prompts are Telegram DM only")
+        return BridgeReplyInputPrompt(decision=decision, text=prompt_text, message_id=str(sent_message_id))
+
+    chat_id, user_id, thread_id = identity
+    decision = store.validate_telegram_direct_input(
+        chat_id=chat_id,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+    if decision.verdict is BridgeVerdict.REJECT:
+        return BridgeReplyInputPrompt(decision=decision, text=prompt_text, message_id=str(sent_message_id))
+
+    bridge_id = decision.bridge_id or ""
+    store.record_outbound_message(
+        bridge_id=bridge_id,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        message_id=str(sent_message_id),
+        purpose="input_prompt",
+        input_expected=True,
+        ttl_seconds=ttl_seconds,
+    )
+    return BridgeReplyInputPrompt(
+        decision=decision,
+        text=prompt_text,
+        message_id=str(sent_message_id),
+        bridge_id=bridge_id,
+        hermes_session_id=decision.hermes_session_id,
+    )
+
+
+def create_bridge_approval_prompt(
+    event: MessageEvent,
+    *,
+    turn_id: str,
+    tool_call_id: str,
+    tool_name: str,
+    tool_args: Any,
+    store: BridgeStateStore | None = None,
+    ttl_seconds: int = 300,
+) -> BridgeApprovalPrompt:
+    """Create a single-use, nonce-bound approval prompt for a bridge binding."""
+    store = store or default_bridge_store()
+    args_hash = bridge_tool_args_hash(tool_name, tool_args)
+    identity = _telegram_identity(event)
+    if identity is None:
+        decision = BridgeDecision(BridgeVerdict.REJECT, "bridge approval prompts are Telegram DM only")
+        return BridgeApprovalPrompt(decision=decision, text="", tool_args_hash=args_hash)
+
+    chat_id, user_id, thread_id = identity
+    decision = store.validate_telegram_direct_input(
+        chat_id=chat_id,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+    if decision.verdict is BridgeVerdict.REJECT:
+        return BridgeApprovalPrompt(decision=decision, text="", tool_args_hash=args_hash)
+
+    approval = store.create_approval(
+        bridge_id=decision.bridge_id or "",
+        turn_id=str(turn_id),
+        tool_call_id=str(tool_call_id),
+        tool_name=str(tool_name),
+        tool_args_hash=args_hash,
+        ttl_seconds=ttl_seconds,
+    )
+    text = (
+        "⚠️ Bridge approval required\n\n"
+        f"Tool: {tool_name}\n"
+        f"Approval nonce: {approval.nonce}\n\n"
+        f"Reply `/bridge_approve {approval.nonce}` to approve this exact tool call, "
+        "or `/deny` to cancel. The nonce is single-use and expires automatically."
+    )
+    return BridgeApprovalPrompt(
+        decision=decision,
+        text=text,
+        tool_args_hash=args_hash,
+        approval=approval,
+        bridge_id=decision.bridge_id,
+        hermes_session_id=decision.hermes_session_id,
+    )
 
 
 def maybe_apply_gateway_bridge_binding(

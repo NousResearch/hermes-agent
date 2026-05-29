@@ -83,6 +83,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("bridge-resume",)),
     CommandDef("bridge_disconnect", "Disconnect this Telegram bridge binding", "Session",
                gateway_only=True, aliases=("bridge-disconnect",)),
+    CommandDef("bridge_approve", "Approve a nonce-bound CLI-Telegram bridge tool request", "Session",
+               gateway_only=True, aliases=("bridge-approve",), args_hint="<nonce>"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -1041,6 +1043,7 @@ _SLACK_NATIVE_SKIP_COMMANDS = frozenset({
     "bridge_off",
     "bridge_pause",
     "bridge_resume",
+    "bridge_approve",
 })
 
 _SLACK_NATIVE_PRIORITY_ALIASES = ("reset", "bg", "btw", "q")

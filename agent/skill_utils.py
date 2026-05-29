@@ -538,8 +538,9 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     matches = []
     for root, dirs, files in os.walk(skills_dir, followlinks=True):
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
-        if filename in files:
-            matches.append(Path(root) / filename)
+        root_path = Path(root)
+        if filename in files and "references" not in root_path.relative_to(skills_dir).parts:
+            matches.append(root_path / filename)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):
         yield path
 

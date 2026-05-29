@@ -276,6 +276,24 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
+    def test_excludes_nested_reference_skill_indexes(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        normal_skill = tmp_path / "skills" / "tools" / "normal-skill"
+        reference_copy = normal_skill / "references" / "copy"
+        normal_skill.mkdir(parents=True)
+        reference_copy.mkdir(parents=True)
+        (normal_skill / "SKILL.md").write_text(
+            "---\nname: normal-skill\ndescription: Real top-level skill\n---\n"
+        )
+        (reference_copy / "SKILL.md").write_text(
+            "---\nname: reference-copy\ndescription: Nested reference copy\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "normal-skill" in result
+        assert "reference-copy" not in result
+
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

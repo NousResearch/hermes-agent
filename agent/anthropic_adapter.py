@@ -892,22 +892,6 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
 
     return None
-
-
-def read_claude_managed_key() -> Optional[str]:
-    """Read Claude's native managed key from ~/.claude.json for diagnostics only."""
-    claude_json = Path.home() / ".claude.json"
-    if claude_json.exists():
-        try:
-            data = json.loads(claude_json.read_text(encoding="utf-8"))
-            primary_key = data.get("primaryApiKey", "")
-            if isinstance(primary_key, str) and primary_key.strip():
-                return primary_key.strip()
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read ~/.claude.json: %s", e)
-    return None
-
-
 def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
     """Check if Claude Code credentials have a non-expired access token."""
     import time

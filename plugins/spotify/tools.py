@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+
 from hermes_cli.auth import get_auth_status
 from hermes_cli.config import load_config
 from plugins.spotify.client import (

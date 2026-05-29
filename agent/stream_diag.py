@@ -258,7 +258,7 @@ def emit_stream_drop(
         except Exception:
             pass
     try:
-        agent._emit_status(
+        agent._buffer_status(
             f"⚠️ {provider} stream {kind} ({type(error).__name__}){_suffix} "
             f"— reconnecting, retry {attempt}/{max_attempts}"
         )

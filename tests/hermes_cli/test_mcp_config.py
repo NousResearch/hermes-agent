@@ -6,12 +6,7 @@ any actual MCP servers or API keys.
 """
 
 import argparse
-import json
-import os
-import types
 from pathlib import Path
-from typing import Any, Dict, List
-from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 

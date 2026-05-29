@@ -4,7 +4,6 @@ Salvaged from PRs #5301 (qaqcvc) and #5117 (vvvanguards).
 """
 
 import json
-import pytest
 
 from plugins.memory.mem0 import Mem0MemoryProvider
 

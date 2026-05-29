@@ -11,10 +11,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from tools.vision_tools import (
     _build_native_vision_tool_result,

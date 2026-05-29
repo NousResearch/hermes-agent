@@ -2,8 +2,9 @@
 
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
+import pytest
 import yaml
 
 from hermes_cli.config import (
@@ -775,3 +776,120 @@ class TestUserMessagePreviewConfig:
         preview = DEFAULT_CONFIG["display"]["user_message_preview"]
         assert preview["first_lines"] == 2
         assert preview["last_lines"] == 2
+
+
+class TestEnvWriteDenylist:
+    """``save_env_value`` refuses to persist env-var names that
+    influence how subprocesses execute — ``LD_PRELOAD``, ``PYTHONPATH``,
+    ``PATH``, ``EDITOR``, etc. — or any ``HERMES_*`` runtime flag.
+
+    The dashboard exposes ``PUT /api/env`` to any authed caller (and
+    the session token lives in the SPA's HTML where any future plugin
+    XSS or local process could exfiltrate it). Without this gate, an
+    attacker who steals the token could plant
+    ``LD_PRELOAD=/tmp/evil.so`` in ``.env`` and own the next Hermes
+    process on next startup via the dotenv → ``os.environ`` chain in
+    ``hermes_cli/env_loader.py``.
+
+    Regression test for the dashboard pentest finding filed alongside
+    the ``web-pentest`` skill (PR #32265 / issue #32267).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _hermes_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        ensure_hermes_home()
+
+    @pytest.mark.parametrize(
+        "denied_key",
+        [
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "PYTHONSTARTUP",
+            "NODE_OPTIONS",
+            "NODE_PATH",
+            "PATH",
+            "SHELL",
+            "EDITOR",
+            "VISUAL",
+            "PAGER",
+            "BROWSER",
+            "GIT_SSH_COMMAND",
+            "GIT_EXEC_PATH",
+            "HERMES_HOME",
+            "HERMES_PROFILE",
+            "HERMES_CONFIG",
+            "HERMES_ENV",
+        ],
+    )
+    def test_denylisted_keys_rejected(self, denied_key):
+        """Each denylisted name raises ``ValueError`` and never reaches
+        the on-disk ``.env`` file."""
+        with pytest.raises(ValueError, match="denylist"):
+            save_env_value(denied_key, "anything")
+
+        # And nothing landed on disk either.
+        env = load_env()
+        assert denied_key not in env
+
+    @pytest.mark.parametrize(
+        "allowed_key",
+        [
+            "HERMES_GEMINI_CLIENT_ID",
+            "HERMES_LANGFUSE_PUBLIC_KEY",
+            "HERMES_SPOTIFY_CLIENT_ID",
+            "HERMES_QWEN_BASE_URL",
+            "HERMES_MAX_ITERATIONS",
+        ],
+    )
+    def test_hermes_integration_keys_still_writable(self, allowed_key):
+        """``HERMES_*`` overall is NOT blocked — only the four runtime
+        location names (HOME/PROFILE/CONFIG/ENV) are. Integration
+        credentials following the ``HERMES_*`` convention must keep
+        working or we'd regress every provider setup wizard that
+        currently writes one of these (auth.py, Spotify, Langfuse, …)."""
+        save_env_value(allowed_key, "test-value-123")
+        env = load_env()
+        assert env[allowed_key] == "test-value-123"
+
+    def test_legitimate_provider_key_still_works(self):
+        """The denylist must not regress on real provider key writes."""
+        save_env_value("OPENROUTER_API_KEY", "sk-or-test-1234")
+        env = load_env()
+        assert env["OPENROUTER_API_KEY"] == "sk-or-test-1234"
+
+    def test_arbitrary_user_key_still_works(self):
+        """Plugin / user-defined env vars (anything outside the
+        denylist and outside ``HERMES_*``) keep working. The denylist
+        is narrow on purpose."""
+        save_env_value("MY_PLUGIN_TOKEN", "plugin-secret-123")
+        env = load_env()
+        assert env["MY_PLUGIN_TOKEN"] == "plugin-secret-123"
+
+    def test_save_env_value_secure_inherits_denylist(self):
+        """The ``_secure`` variant goes through ``save_env_value`` so
+        it inherits the gate — verify, don't assume."""
+        with pytest.raises(ValueError, match="denylist"):
+            save_env_value_secure("LD_PRELOAD", "/tmp/evil.so")
+
+    def test_pre_existing_value_in_env_file_is_left_alone(self, tmp_path):
+        """The gate is on *write*. If ``.env`` already contains
+        ``LD_PRELOAD`` (set out-of-band by the operator before this
+        change shipped, or hand-edited), we don't blow up — we just
+        refuse to add or update it via the API."""
+        env_path = tmp_path / ".env"
+        env_path.write_text("LD_PRELOAD=/something/legit.so\n")
+
+        # load_env returns it (the read path is intentionally permissive)
+        env = load_env()
+        assert env["LD_PRELOAD"] == "/something/legit.so"
+
+        # But the write path still refuses to update it
+        with pytest.raises(ValueError, match="denylist"):
+            save_env_value("LD_PRELOAD", "/tmp/evil.so")
+

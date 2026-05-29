@@ -1111,7 +1111,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     skill_names = [str(name).strip() for name in skills if str(name).strip()]
     if not skill_names:
-        return _scan_assembled_cron_prompt(prompt, job)
+        return _scan_assembled_cron_prompt(prompt, job, has_skills=False)
 
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
@@ -1159,23 +1159,37 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
-    return _scan_assembled_cron_prompt("\n".join(parts), job)
+    return _scan_assembled_cron_prompt("\n".join(parts), job, has_skills=True)
 
 
-def _scan_assembled_cron_prompt(assembled: str, job: dict) -> str:
-    """Scan the fully-assembled cron prompt (including skill content) for
-    injection patterns. Raises ``CronPromptInjectionBlocked`` when a match
-    fires so ``run_job`` can surface a clear refusal to the operator.
+def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool = False) -> str:
+    """Scan the fully-assembled cron prompt for injection patterns. Raises
+    ``CronPromptInjectionBlocked`` when a match fires so ``run_job`` can
+    surface a clear refusal to the operator.
 
     Plugs the #3968 gap: ``_scan_cron_prompt`` runs on the user-supplied
     prompt at create/update, but skill content is loaded from disk at
     runtime and was never scanned. Since cron runs non-interactively
     (auto-approves tool calls), a malicious skill carrying an injection
     payload bypassed every gate.
-    """
-    from tools.cronjob_tools import _scan_cron_prompt
 
-    scan_error = _scan_cron_prompt(assembled)
+    Two pattern tiers:
+
+    - When ``has_skills=False`` (no skills attached) the assembled prompt
+      is essentially the user prompt + the cron hint, so the STRICT
+      ``_scan_cron_prompt`` patterns apply.
+    - When ``has_skills=True`` the assembled prompt includes loaded skill
+      markdown — often security docs / runbooks that *describe* attack
+      commands in prose. The LOOSER ``_scan_cron_skill_assembled``
+      pattern set is used: only unambiguous prompt-injection directives
+      and invisible unicode block, command-shape patterns are dropped
+      to avoid false-positives. Skill bodies are vetted at install time
+      by ``skills_guard.py``.
+    """
+    from tools.cronjob_tools import _scan_cron_prompt, _scan_cron_skill_assembled
+
+    scanner = _scan_cron_skill_assembled if has_skills else _scan_cron_prompt
+    scan_error = scanner(assembled)
     if scan_error:
         job_label = job.get("name") or job.get("id") or "<unknown>"
         logger.warning(

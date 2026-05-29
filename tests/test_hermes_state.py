@@ -2,7 +2,6 @@
 
 import time
 import pytest
-from pathlib import Path
 
 from hermes_state import SessionDB
 
@@ -2327,7 +2326,6 @@ class TestCompressionChainProjection:
 
         Returns (root_id, delegate_id, mid_id, tip_id).
         """
-        import time as _time
         # Root that gets compressed
         db.create_session("root1", "cli")
         db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
@@ -2642,7 +2640,6 @@ class TestConcurrentWriteSafety:
         """Connection timeout should be >= 30s to survive CLI/gateway contention."""
         # Access the underlying connection timeout via sqlite3 introspection.
         # There is no public API, so we check the kwarg via the module default.
-        import sqlite3
         import inspect
         from hermes_state import SessionDB as _SessionDB
         src = inspect.getsource(_SessionDB.__init__)
@@ -3021,3 +3018,223 @@ class TestFTS5ToolCallMigration:
         finally:
             session_db.close()
 
+
+# ---------------------------------------------------------------------------
+# apply_wal_with_fallback — read-only probe tests
+# ---------------------------------------------------------------------------
+
+
+class TestApplyWalProbe:
+    """Unit tests for the journal_mode probe in apply_wal_with_fallback."""
+
+    def test_skips_set_pragma_when_already_wal(self, tmp_path):
+        """Already-WAL connection must not trigger the set-pragma."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "wal.db"
+        # Prime the file into WAL mode first.
+        with sqlite3.connect(str(db_path)) as seed:
+            seed.execute("PRAGMA journal_mode=WAL")
+
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        # Only the probe should have fired; the set-pragma must NOT appear.
+        assert any("PRAGMA journal_mode" == sql.strip() for sql in conn.executed), (
+            "probe PRAGMA should have run"
+        )
+        assert not any("journal_mode=WAL" in sql for sql in conn.executed), (
+            "set-pragma must not run when already in WAL mode"
+        )
+
+    def test_sets_wal_on_fresh_connection(self, tmp_path):
+        """Probe sees 'delete', then set-pragma runs and returns 'wal'."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "fresh.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("journal_mode=WAL" in sql for sql in conn.executed), (
+            "set-pragma must fire on a fresh (non-WAL) connection"
+        )
+
+    def test_apply_wal_concurrent_connects_no_eio(self, tmp_path):
+        """20 threads calling connect() on the same DB must not see disk I/O error."""
+        import sys
+        import threading
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        db_path = tmp_path / "concurrent.db"
+        errors = []
+
+        def _connect_cycle():
+            for _ in range(5):
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    apply_wal_with_fallback(conn)
+                    conn.close()
+                except sqlite3.OperationalError as exc:
+                    if "disk i/o error" in str(exc).lower():
+                        errors.append(exc)
+
+        threads = [threading.Thread(target=_connect_cycle) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"disk I/O errors from concurrent connects: {errors}"
+
+        # Linux-only: no (deleted) WAL/SHM FDs should accumulate.
+        if sys.platform == "linux":
+            import os
+
+            fd_dir = f"/proc/{os.getpid()}/fd"
+            deleted_fds = []
+            for fd_name in os.listdir(fd_dir):
+                try:
+                    target = os.readlink(os.path.join(fd_dir, fd_name))
+                    if "(deleted)" in target and (
+                        "wal" in target.lower() or "shm" in target.lower()
+                    ):
+                        deleted_fds.append(target)
+                except OSError:
+                    pass
+            assert not deleted_fds, f"stale deleted WAL/SHM FDs: {deleted_fds}"
+
+    def test_fallback_to_delete_still_works(self, tmp_path):
+        """When set-pragma raises a WAL-incompat error, falls back to DELETE."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _IncompatConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self._call_count = 0
+
+            def execute(self, sql, params=()):
+                self._call_count += 1
+                # First call is the read probe; let it return "delete".
+                # Second call is the set-pragma; raise a WAL-incompat error.
+                if "journal_mode=WAL" in sql:
+                    raise sqlite3.OperationalError("locking protocol")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "incompat.db"
+        conn = _IncompatConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn, db_label="test.db")
+        finally:
+            conn.close()
+
+        assert result == "delete"
+
+    def test_probe_failure_falls_through_to_set_pragma(self, tmp_path):
+        """When the read probe raises OperationalError, fall through to set-pragma."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _ProbeFails(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self._first = True
+
+            def execute(self, sql, params=()):
+                if self._first and "journal_mode" in sql and "WAL" not in sql:
+                    self._first = False
+                    raise sqlite3.OperationalError("simulated probe failure")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "probe_fail.db"
+        conn = _ProbeFails(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        # Despite probe failure, set-pragma must still run and succeed.
+        assert result == "wal"
+
+    def test_no_downgrade_from_wal_to_delete_on_eio(self, tmp_path):
+        """OperationalError NOT in _WAL_INCOMPAT_MARKERS must propagate, not downgrade."""
+        import sqlite3
+        import pytest
+        from hermes_state import apply_wal_with_fallback
+
+        class _EIOConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self._first = True
+
+            def execute(self, sql, params=()):
+                # Let the probe succeed (returns "delete" for fresh DB).
+                if "journal_mode=WAL" in sql:
+                    raise sqlite3.OperationalError("some unexpected hardware failure")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "eio.db"
+        conn = _EIOConn(str(db_path))
+        try:
+            with pytest.raises(
+                sqlite3.OperationalError, match="some unexpected hardware failure"
+            ):
+                apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+    def test_returns_wal_not_delete_from_probe(self, tmp_path):
+        """Early-return only on 'wal'; 'delete' or 'memory' must fall through to set-pragma."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        # Fresh DB is in "delete" mode — probe returns "delete", must NOT early-return.
+        db_path = tmp_path / "delete_mode.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("journal_mode=WAL" in sql for sql in conn.executed), (
+            "set-pragma must fire when probe returns 'delete'"
+        )

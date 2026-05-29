@@ -11,10 +11,8 @@ Covers:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-import pytest
 
 
 def _write_config(tmp_path: Path, body: str) -> None:

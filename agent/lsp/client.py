@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
@@ -244,15 +245,27 @@ class LSPClient:
             await self._cleanup_process()
             raise
 
+    @staticmethod
+    def _win_wrap_cmd(cmd: List[str]) -> List[str]:
+        """On Windows, wrap .cmd/.bat shims so CreateProcess can run them."""
+        exe = cmd[0]
+        if exe.lower().endswith((".cmd", ".bat")):
+            return ["cmd.exe", "/c", *cmd]
+        return cmd
+
     async def _spawn(self) -> None:
         env = dict(os.environ)
         if self._env:
             env.update(self._env)
 
+        cmd = self._command
+        if sys.platform == "win32":
+            cmd = self._win_wrap_cmd(cmd)
+
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                self._command[0],
-                *self._command[1:],
+                cmd[0],
+                *cmd[1:],
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -261,7 +274,7 @@ class LSPClient:
             )
         except FileNotFoundError as e:
             raise LSPProtocolError(
-                f"LSP server binary not found: {self._command[0]} ({e})"
+                f"LSP server binary not found: {cmd[0]} ({e})"
             ) from e
 
         # Drain stderr at debug level — if we don't, the pipe buffer

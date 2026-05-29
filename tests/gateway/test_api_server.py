@@ -2392,6 +2392,41 @@ class TestEndpointAuth:
             assert resp.status == 401
 
     @pytest.mark.asyncio
+    async def test_runs_previous_response_id_rejected_without_api_key(self, adapter):
+        """Runs API should not allow server-side response chaining on an open server."""
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {"id": "resp_prev", "status": "completed"},
+                "conversation_history": [{"role": "user", "content": "secret prior turn"}],
+                "session_id": "api-session-123",
+            },
+        )
+
+        class _FakeAgent:
+            def __init__(self):
+                self.session_prompt_tokens = 0
+                self.session_completion_tokens = 0
+                self.session_total_tokens = 0
+
+            def run_conversation(self, **kwargs):
+                return {"final_response": "ok", "messages": []}
+
+        app = _create_app(adapter)
+        app.router.add_post("/v1/runs", adapter._handle_runs)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=_FakeAgent()):
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "model": "test",
+                        "input": "follow up",
+                        "previous_response_id": "resp_prev",
+                    },
+                )
+            assert resp.status == 403
+
+    @pytest.mark.asyncio
     async def test_models_requires_auth(self, auth_adapter):
         app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:

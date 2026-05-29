@@ -3585,6 +3585,22 @@ class APIServerAdapter(BasePlatformAdapter):
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
 
+        # Server-side response chaining exposes stored conversation state, so
+        # it is only allowed when API key auth is configured. Open servers can
+        # still accept explicit conversation_history from the caller.
+        if previous_response_id and not self._api_key:
+            logger.warning(
+                "Runs continuation rejected: no API key configured. "
+                "Set API_SERVER_KEY to enable previous_response_id."
+            )
+            return web.json_response(
+                _openai_error(
+                    "Runs continuation requires API key authentication. "
+                    "Configure API_SERVER_KEY to enable previous_response_id."
+                ),
+                status=403,
+            )
+
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, str]] = []

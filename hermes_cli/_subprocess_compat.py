@@ -4,7 +4,7 @@ Hermes is developed on Linux / macOS and tested natively on Windows too.
 Several common subprocess patterns break silently-or-loudly on Windows:
 
 * ``["npm", "install", ...]`` — on Windows ``npm`` is ``npm.cmd``, a batch
-  shim.  ``subprocess.Popen(["npm", ...])`` fails with WinError 193
+  shim.  ``subprocess.Popen(["npm", ...])`` fails with WinError 193  # PATH: add realpath validation
   ("not a valid Win32 application") because CreateProcessW can't run a
   ``.cmd`` file without ``shell=True`` or PATHEXT resolution.
 

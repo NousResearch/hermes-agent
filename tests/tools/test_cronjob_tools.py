@@ -581,3 +581,91 @@ class TestLocalDeliveryNotice:
         )
         assert created["deliver"] == "origin"
         assert "local-only cron job" not in created["message"]
+
+
+# =========================================================================
+# #34120: Tool-call argument aliases & better missing-schedule error
+# =========================================================================
+
+class TestCoalesceArgAliases:
+    """#34120: The cronjob tool handler must accept common parameter aliases
+    that some models (notably grok-4.3 and several xAI variants) emit when
+    they don't perfectly match the JSON schema's field names. Without this,
+    a user running 'create a cron that posts daily at 7:30 PM' would see
+    the tool call rejected with 'schedule is required for create' even
+    though the model included 'cron' or 'when' in the same call.
+    """
+
+    def test_canonical_schedule_takes_precedence(self):
+        from tools.cronjob_tools import _coalesce_arg
+        args = {"schedule": "0 9 * * *", "cron": "should-not-win"}
+        assert _coalesce_arg(args, "schedule") == "0 9 * * *"
+
+    def test_cron_alias_used_when_canonical_missing(self):
+        from tools.cronjob_tools import _coalesce_arg
+        args = {"cron": "0 9 * * *"}
+        assert _coalesce_arg(args, "schedule") == "0 9 * * *"
+
+    def test_cron_expression_alias(self):
+        from tools.cronjob_tools import _coalesce_arg
+        args = {"cron_expression": "30 19 * * *"}
+        assert _coalesce_arg(args, "schedule") == "30 19 * * *"
+
+    def test_when_alias(self):
+        from tools.cronjob_tools import _coalesce_arg
+        args = {"when": "every 2h"}
+        assert _coalesce_arg(args, "schedule") == "every 2h"
+
+    def test_empty_canonical_falls_through_to_alias(self):
+        """The grok-4.3 #34120 case: model emits BOTH schedule='' AND
+        cron='0 9 * * *'. The canonical empty string must not block the
+        alias lookup."""
+        from tools.cronjob_tools import _coalesce_arg
+        args = {"schedule": "", "cron": "0 9 * * *"}
+        assert _coalesce_arg(args, "schedule") == "0 9 * * *"
+
+    def test_null_canonical_falls_through_to_alias(self):
+        from tools.cronjob_tools import _coalesce_arg
+        args = {"schedule": None, "cron": "0 9 * * *"}
+        assert _coalesce_arg(args, "schedule") == "0 9 * * *"
+
+    def test_prompt_alias_instruction(self):
+        from tools.cronjob_tools import _coalesce_arg
+        args = {"instruction": "Run the daily report"}
+        assert _coalesce_arg(args, "prompt") == "Run the daily report"
+
+    def test_prompt_alias_task(self):
+        from tools.cronjob_tools import _coalesce_arg
+        args = {"task": "Run the daily report"}
+        assert _coalesce_arg(args, "prompt") == "Run the daily report"
+
+    def test_deliver_alias(self):
+        from tools.cronjob_tools import _coalesce_arg
+        args = {"destination": "discord:123:456"}
+        assert _coalesce_arg(args, "deliver") == "discord:123:456"
+
+    def test_no_alias_returns_none(self):
+        from tools.cronjob_tools import _coalesce_arg
+        args = {"unrelated_key": "value"}
+        assert _coalesce_arg(args, "schedule") is None
+
+    def test_no_match_for_other_canonical(self):
+        """Aliases must be scoped — a 'cron' key should not satisfy a
+        'prompt' coalesce."""
+        from tools.cronjob_tools import _coalesce_arg
+        args = {"cron": "0 9 * * *"}
+        assert _coalesce_arg(args, "prompt") is None
+
+
+class TestCronjobMissingScheduleErrorMessage:
+    """The error message must list accepted aliases so a user / agent can
+    self-debug without grepping source."""
+
+    def test_error_lists_accepted_aliases(self):
+        result = cronjob(action="create", prompt="Do the thing")
+        # tool_error returns a string with the failure shape; assert the
+        # alias hint is included.
+        assert "schedule is required for create" in result
+        assert "cron" in result
+        assert "when" in result
+        assert "0 9 * * *" in result  # example included

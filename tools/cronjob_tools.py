@@ -597,7 +597,20 @@ def cronjob(
 
         if normalized == "create":
             if not schedule:
-                return tool_error("schedule is required for create", success=False)
+                # When the schedule is missing we previously surfaced only
+                # "schedule is required for create" — unhelpful when the
+                # model thought it had passed one under an alias name (cron,
+                # when, etc., see #34120). The handler's lambda layer now
+                # coalesces those aliases, but if both canonical and alias
+                # were missing OR empty we land here. Include a brief hint.
+                return tool_error(
+                    "schedule is required for create. Pass it as 'schedule' "
+                    "(canonical), or one of the accepted aliases: "
+                    "cron, cron_expression, cron_schedule, when, time, "
+                    "frequency, interval. Examples: '30m', 'every 2h', "
+                    "'0 9 * * *', '2026-06-01T09:00:00'.",
+                    success=False,
+                )
             canonical_skills = _canonical_skills(skill, skills)
             _no_agent = bool(no_agent)
             # Job-shape validation differs by mode:
@@ -1001,30 +1014,66 @@ def check_cronjob_requirements() -> bool:
 # --- Registry ---
 from tools.registry import registry, tool_error
 
+# Tool-call argument aliases. Some models (notably grok-4.3 and several xAI
+# variants observed in #34120) emit the cron schedule under non-canonical
+# keys like ``cron``, ``cron_expression``, or ``when`` even when the JSON
+# schema clearly names the field ``schedule``. Rather than fight every
+# model's naming preference, accept the common synonyms and normalize them
+# to the canonical kwargs. This is harmless when the canonical key is also
+# present (we prefer canonical over alias).
+_CRONJOB_ARG_ALIASES: dict[str, tuple[str, ...]] = {
+    "schedule": ("cron", "cron_expression", "cron_schedule", "when", "time", "frequency", "interval"),
+    "prompt": ("instruction", "task", "message"),
+    "job_id": ("id", "jobId", "cron_id"),
+    "deliver": ("delivery", "deliver_to", "destination", "target"),
+    "skills": ("skill_list", "skill_names"),
+    "enabled_toolsets": ("toolsets", "tools"),
+    "no_agent": ("script_only", "no_llm"),
+}
+
+
+def _coalesce_arg(args: dict, canonical: str) -> Any:
+    """Return ``args[canonical]`` if present, else the first matching alias.
+
+    Empty strings and ``None`` count as "not present" so an explicit
+    ``schedule=""`` from the model still falls through to aliases (which
+    addresses the #34120 case where the model emits ``schedule: ""`` AND
+    ``cron: "0 9 * * *"`` in the same tool call).
+    """
+    val = args.get(canonical)
+    if val not in (None, ""):
+        return val
+    for alias in _CRONJOB_ARG_ALIASES.get(canonical, ()):
+        alias_val = args.get(alias)
+        if alias_val not in (None, ""):
+            return alias_val
+    return val  # preserve original None/"" so downstream falsy check fires correctly
+
+
 registry.register(
     name="cronjob",
     toolset="cronjob",
     schema=CRONJOB_SCHEMA,
     handler=lambda args, **kw: (lambda _mo=_resolve_model_override(args.get("model")): cronjob(
         action=args.get("action", ""),
-        job_id=args.get("job_id"),
-        prompt=args.get("prompt"),
-        schedule=args.get("schedule"),
+        job_id=_coalesce_arg(args, "job_id"),
+        prompt=_coalesce_arg(args, "prompt"),
+        schedule=_coalesce_arg(args, "schedule"),
         name=args.get("name"),
         repeat=args.get("repeat"),
-        deliver=args.get("deliver"),
+        deliver=_coalesce_arg(args, "deliver"),
         include_disabled=args.get("include_disabled", True),
         skill=args.get("skill"),
-        skills=args.get("skills"),
+        skills=_coalesce_arg(args, "skills"),
         model=_mo[1],
         provider=_mo[0] or args.get("provider"),
         base_url=args.get("base_url"),
         reason=args.get("reason"),
         script=args.get("script"),
         context_from=args.get("context_from"),
-        enabled_toolsets=args.get("enabled_toolsets"),
+        enabled_toolsets=_coalesce_arg(args, "enabled_toolsets"),
         workdir=args.get("workdir"),
-        no_agent=args.get("no_agent"),
+        no_agent=_coalesce_arg(args, "no_agent"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

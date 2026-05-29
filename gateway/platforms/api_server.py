@@ -962,6 +962,9 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        user_id: Optional[str] = None,
+        user_email: Optional[str] = None,
+        user_name: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -977,6 +980,9 @@ class APIServerAdapter(BasePlatformAdapter):
         key is meant to persist across transcripts so long-term memory
         providers (e.g. Honcho) can scope their per-chat state correctly
         — matching the semantics of the native gateway's ``session_key``.
+
+        ``user_id`` / ``user_email`` / ``user_name`` are OpenWebUI identity
+        headers forwarded for per-user memory scoping in the memory provider.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
@@ -1013,6 +1019,9 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+            user_id=user_id,
+            user_email=user_email,
+            user_name=user_name,
         )
         return agent
 
@@ -1731,6 +1740,13 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        # Extract OpenWebUI user identity headers for per-user memory scoping.
+        # These flow through to the memory provider so user-level memory
+        # isolation works for gateway-sourced API requests.
+        owui_user_id = request.headers.get("X-OpenWebUI-User-Id", "").strip()
+        owui_user_email = request.headers.get("X-OpenWebUI-User-Email", "").strip()
+        owui_user_name = request.headers.get("X-OpenWebUI-User-Name", "").strip()
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         #
@@ -1866,6 +1882,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                user_id=owui_user_id,
+                user_email=owui_user_email,
+                user_name=owui_user_name,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1885,6 +1904,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                user_id=owui_user_id,
+                user_email=owui_user_email,
+                user_name=owui_user_name,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3395,6 +3417,9 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        user_id: Optional[str] = None,
+        user_email: Optional[str] = None,
+        user_name: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3418,6 +3443,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                user_id=user_id,
+                user_email=user_email,
+                user_name=user_name,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

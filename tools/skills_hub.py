@@ -401,6 +401,14 @@ class GitHubSource(SkillSource):
         {"repo": "openai/skills", "path": "skills/.system/"},
         {"repo": "anthropics/skills", "path": "skills/"},
         {"repo": "huggingface/skills", "path": "skills/"},
+        # NVIDIA/skills: NVIDIA-verified skills for CUDA-X, AIQ, cuOpt,
+        # cuPyNumeric, DeepStream, NeMo, NemoClaw, etc. Each skill ships
+        # alongside a signed `skill.oms.sig`, an OMS-signed `skill-card.md`
+        # (governance card), and an `evals/` directory — synced daily from
+        # the NVIDIA product repos. Treated as `trusted` (see
+        # `tools/skills_guard.py::TRUSTED_REPOS`). Sample layout:
+        # https://github.com/NVIDIA/skills/tree/main/skills
+        {"repo": "NVIDIA/skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
     ]
 

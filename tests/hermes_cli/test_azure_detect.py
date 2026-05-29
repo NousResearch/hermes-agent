@@ -88,7 +88,8 @@ def test_extract_model_ids_bad_shape_returns_empty():
 
 def test_detect_anthropic_path_wins_without_http():
     """URL path sniff short-circuits — no HTTP call happens."""
-    with patch.object(azure_detect, "_http_get_json") as fake_get, \
+    with patch.object(azure_detect, "is_safe_url", return_value=True), \
+         patch.object(azure_detect, "_http_get_json") as fake_get, \
          patch.object(azure_detect, "_probe_anthropic_messages") as fake_probe:
         result = azure_detect.detect(
             "https://foo.services.ai.azure.com/anthropic", "key-abc",
@@ -106,7 +107,8 @@ def test_detect_openai_models_probe_success():
         assert "key-abc" == api_key
         return 200, json.loads(_openai_models_body("gpt-5.4", "claude-opus-4-6"))
 
-    with patch.object(azure_detect, "_http_get_json", side_effect=_fake_get):
+    with patch.object(azure_detect, "is_safe_url", return_value=True), \
+         patch.object(azure_detect, "_http_get_json", side_effect=_fake_get):
         result = azure_detect.detect(
             "https://my.openai.azure.com/openai/v1", "key-abc",
         )
@@ -121,7 +123,8 @@ def test_detect_openai_models_probe_empty_list_still_counts():
     def _fake_get(url, api_key, timeout=6.0, **kwargs):
         return 200, {"object": "list", "data": []}
 
-    with patch.object(azure_detect, "_http_get_json", side_effect=_fake_get):
+    with patch.object(azure_detect, "is_safe_url", return_value=True), \
+         patch.object(azure_detect, "_http_get_json", side_effect=_fake_get):
         result = azure_detect.detect(
             "https://my.openai.azure.com/openai/v1", "key-abc",
         )
@@ -135,7 +138,8 @@ def test_detect_falls_back_to_anthropic_probe():
     def _fake_get(url, api_key, timeout=6.0, **kwargs):
         return 401, None  # /models forbidden
 
-    with patch.object(azure_detect, "_http_get_json", side_effect=_fake_get), \
+    with patch.object(azure_detect, "is_safe_url", return_value=True), \
+         patch.object(azure_detect, "_http_get_json", side_effect=_fake_get), \
          patch.object(azure_detect, "_probe_anthropic_messages", return_value=True):
         result = azure_detect.detect(
             "https://my.services.ai.azure.com/v1", "key-abc",
@@ -146,7 +150,8 @@ def test_detect_falls_back_to_anthropic_probe():
 
 def test_detect_all_probes_fail_returns_none():
     """Every probe fails → api_mode is None and caller falls back to manual."""
-    with patch.object(azure_detect, "_http_get_json", return_value=(500, None)), \
+    with patch.object(azure_detect, "is_safe_url", return_value=True), \
+         patch.object(azure_detect, "_http_get_json", return_value=(500, None)), \
          patch.object(azure_detect, "_probe_anthropic_messages", return_value=False):
         result = azure_detect.detect(
             "https://some-private.example.com/", "key-abc",
@@ -154,6 +159,20 @@ def test_detect_all_probes_fail_returns_none():
     assert result.api_mode is None
     assert result.models == []
     assert "manual" in result.reason.lower()
+
+
+def test_detect_unsafe_url_rejected_without_http():
+    """SSRF guard: unsafe URL is rejected and no HTTP call is made."""
+    with patch.object(azure_detect, "is_safe_url", return_value=False), \
+         patch.object(azure_detect, "_http_get_json") as fake_get, \
+         patch.object(azure_detect, "_probe_anthropic_messages") as fake_probe:
+        result = azure_detect.detect(
+            "http://10.0.0.1/v1", "key-abc",
+        )
+    assert result.api_mode is None
+    assert "blocked" in result.reason.lower()
+    fake_get.assert_not_called()
+    fake_probe.assert_not_called()
 
 
 # ----------------------------------------------------------------------

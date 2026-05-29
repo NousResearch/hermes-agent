@@ -1,8 +1,6 @@
 """Tests for agent.models_dev — models.dev registry integration."""
-import json
 from unittest.mock import patch, MagicMock
 
-import pytest
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,

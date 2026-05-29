@@ -31,7 +31,7 @@ Three distinct failure modes the user community hit during rollout:
 """
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -500,7 +500,6 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
     the entitlement guard, recovery returns False so the error surfaces
     normally with the friendly hint from _summarize_api_error.
     """
-    from run_agent import AIAgent
     from agent.error_classifier import FailoverReason
 
     agent = _make_codex_agent()
@@ -590,7 +589,6 @@ def test_recover_with_credential_pool_skips_refresh_on_bare_403_for_xai_oauth():
 
 def test_recover_with_credential_pool_still_refreshes_genuine_auth_failure():
     """Regression guard: legitimate auth errors must still trigger refresh."""
-    from run_agent import AIAgent
     from agent.error_classifier import FailoverReason
 
     agent = _make_codex_agent()
@@ -772,7 +770,6 @@ def test_recover_with_credential_pool_refreshes_on_xai_bad_credentials_403():
     the very body that pre-fix tripped the entitlement classifier
     and short-circuited the refresh path.
     """
-    from run_agent import AIAgent
     from agent.error_classifier import FailoverReason
 
     agent = _make_codex_agent()
@@ -829,7 +826,6 @@ def test_recover_with_credential_pool_still_blocks_real_entitlement():
     survive the new disambiguator.  A real unsubscribed-account body
     has no WKE suffix and no OAuth2-validation phrase, so the
     classifier still classifies it as entitlement and short-circuits."""
-    from run_agent import AIAgent
     from agent.error_classifier import FailoverReason
 
     agent = _make_codex_agent()

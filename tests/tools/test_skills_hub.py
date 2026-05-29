@@ -1,7 +1,6 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import httpx
@@ -471,6 +470,68 @@ class TestSkillsShSource:
         assert result == "owner/repo/product-team/product-designer"
         requested_urls = [call.args[0] for call in mock_get.call_args_list]
         assert root_url not in requested_urls
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_empty_query_walks_sitemap_not_homepage(
+        self, mock_get, _mock_read_cache, _mock_write_cache,
+    ):
+        """Empty query must walk the full sitemap.
+
+        Regression for skills.sh shipping ~858/20000 skills: the previous
+        empty-query path scraped the homepage's featured strip (~200 entries),
+        and build_skills_index.py supplemented it with 28 popular keyword
+        searches to drag the count to ~850. The sitemap walker hits the
+        full ~20k catalog in one pass.
+        """
+        index_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://www.skills.sh/sitemap-misc.xml</loc></sitemap>
+  <sitemap><loc>https://www.skills.sh/sitemap-skills-1.xml</loc></sitemap>
+  <sitemap><loc>https://www.skills.sh/sitemap-skills-2.xml</loc></sitemap>
+</sitemapindex>"""
+        skills_1_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://www.skills.sh/anthropics/skills/frontend-design</loc></url>
+  <url><loc>https://www.skills.sh/anthropics/skills/pdf</loc></url>
+  <url><loc>https://www.skills.sh/vercel-labs/agent-skills/react-best-practices</loc></url>
+</urlset>"""
+        skills_2_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://www.skills.sh/microsoft/azure-skills/azure-ai</loc></url>
+  <url><loc>https://www.skills.sh/anthropics/skills/frontend-design</loc></url>
+</urlset>"""
+
+        def side_effect(url, *args, **kwargs):
+            resp = MagicMock(status_code=200)
+            if url.endswith("/sitemap.xml"):
+                resp.text = index_xml
+            elif "sitemap-skills-1" in url:
+                resp.text = skills_1_xml
+            elif "sitemap-skills-2" in url:
+                resp.text = skills_2_xml
+            else:
+                resp.status_code = 404
+                resp.text = ""
+            return resp
+
+        mock_get.side_effect = side_effect
+
+        results = self._source().search("", limit=0)
+
+        # 4 unique skills (the frontend-design dup across sitemaps collapsed).
+        assert len(results) == 4
+        identifiers = {r.identifier for r in results}
+        assert identifiers == {
+            "skills-sh/anthropics/skills/frontend-design",
+            "skills-sh/anthropics/skills/pdf",
+            "skills-sh/vercel-labs/agent-skills/react-best-practices",
+            "skills-sh/microsoft/azure-skills/azure-ai",
+        }
+        # Homepage was NOT fetched — the sitemap path is taken on empty query.
+        urls_called = [call.args[0] for call in mock_get.call_args_list]
+        assert not any(u == "https://skills.sh" or u == "https://skills.sh/" for u in urls_called)
 
 
 class TestFindSkillInRepoTree:

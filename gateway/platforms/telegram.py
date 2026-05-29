@@ -1690,7 +1690,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommandScopeAllPrivateChats,
                     BotCommandScopeAllGroupChats,
                     BotCommandScopeDefault,
-                    BotCommandScopeChat,
                 )
                 from hermes_cli.commands import telegram_menu_commands
                 # Telegram allows up to 100 commands but has an undocumented
@@ -5027,8 +5026,14 @@ class TelegramAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """Session-scoped key for text message batching.
+
+        Applies the installed topic-recovery hook first so DM-topic batches
+        coalesce on (and dispatch to) the recovered lane rather than the
+        raw inbound ``message_thread_id`` Telegram may have attached.
+        """
         from gateway.session import build_session_key
+        self._apply_topic_recovery(event)
         return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),

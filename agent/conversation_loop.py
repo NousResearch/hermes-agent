@@ -27,8 +27,6 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from agent.anthropic_adapter import _is_oauth_token
-from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -49,25 +47,17 @@ from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
-    get_next_probe_tier,
+    get_context_length_from_provider_error,
     parse_available_output_tokens_from_error,
-    parse_context_limit_from_error,
     save_context_length,
-)
-from agent.nous_rate_guard import (
-    clear_nous_rate_limit,
-    is_genuine_nous_rate_limit,
-    nous_rate_limit_remaining,
-    record_nous_rate_limit,
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
-from hermes_constants import display_hermes_home as _dhh_fn, PARTIAL_STREAM_STUB_ID
+from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
-from tools.schema_sanitizer import strip_pattern_and_format
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
@@ -213,15 +203,13 @@ def _print_billing_or_entitlement_guidance(
 def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
     """Refresh Nous runtime credentials after a fresh paid-entitlement check."""
     try:
-        from hermes_cli.auth import NOUS_INFERENCE_AUTH_MODE_LEGACY
         from hermes_cli.nous_account import get_nous_portal_account_info
 
         account_info = get_nous_portal_account_info(force_fresh=True)
         if account_info.paid_service_access is not True:
             return False
         return agent._try_refresh_nous_client_credentials(
-            force=False,
-            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+            force=True,
         )
     except Exception:
         return False
@@ -410,7 +398,6 @@ def run_conversation(
 
     # Tag all log records on this thread with the session ID so
     # ``hermes logs --session <id>`` can filter a single conversation.
-    from hermes_logging import set_session_context
     set_session_context(agent.session_id)
 
     # Bind the skill write-origin ContextVar for this thread so tool
@@ -419,7 +406,6 @@ def run_conversation(
     # a foreground user-directed turn. Set at the top of each call;
     # the review fork runs on its own thread with a fresh context,
     # so the foreground value here does not leak into it.
-    from tools.skill_provenance import set_current_write_origin
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
 
     # If the previous turn activated fallback, restore the primary
@@ -2900,9 +2886,13 @@ def run_conversation(
                         restart_with_compressed_messages = True
                         break
 
-                    # Error is about the INPUT being too large — reduce context_length.
-                    # Try to parse the actual limit from the error message
-                    parsed_limit = parse_context_limit_from_error(error_msg)
+                    # Error is about the INPUT being too large.  Only reduce
+                    # context_length when the provider explicitly reports the
+                    # real lower limit.  If the provider only says "input
+                    # exceeds the context window", keep the configured window
+                    # and try compression; guessing probe tiers can incorrectly
+                    # turn a user-configured 1M window into 256K/128K/64K.
+                    new_ctx = get_context_length_from_provider_error(error_msg, old_ctx)
                     _provider_lower = (getattr(agent, "provider", "") or "").lower()
                     _base_lower = (getattr(agent, "base_url", "") or "").rstrip("/").lower()
                     is_minimax_provider = (
@@ -2914,23 +2904,12 @@ def run_conversation(
                     )
                     minimax_delta_only_overflow = (
                         is_minimax_provider
-                        and parsed_limit is None
+                        and new_ctx is None
                         and "context window exceeds limit (" in error_msg
                     )
-                    if parsed_limit and parsed_limit < old_ctx:
-                        new_ctx = parsed_limit
-                        agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
-                    elif minimax_delta_only_overflow:
-                        new_ctx = old_ctx
-                        agent._buffer_vprint(
-                            f"Provider reported overflow amount only; "
-                            f"keeping context_length at {old_ctx:,} tokens and compressing."
-                        )
-                    else:
-                        # Step down to the next probe tier
-                        new_ctx = get_next_probe_tier(old_ctx)
 
-                    if new_ctx and new_ctx < old_ctx:
+                    if new_ctx is not None:
+                        agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
                         compressor.update_model(
                             model=agent.model,
                             context_length=new_ctx,
@@ -2940,20 +2919,22 @@ def run_conversation(
                             api_mode=agent.api_mode,
                         )
                         # Context probing flags — only set on built-in
-                        # compressor (plugin engines manage their own).
+                        # compressor (plugin engines manage their own).  This
+                        # value came from the provider, so it is safe to cache.
                         if hasattr(compressor, "_context_probed"):
                             compressor._context_probed = True
-                            # Only persist limits parsed from the provider's
-                            # error message (a real number).  Guessed fallback
-                            # tiers from get_next_probe_tier() should stay
-                            # in-memory only — persisting them pollutes the
-                            # cache with wrong values.
-                            compressor._context_probe_persistable = bool(
-                                parsed_limit and parsed_limit == new_ctx
-                            )
-                        agent._buffer_vprint(f"⚠️  Context length exceeded — stepping down: {old_ctx:,} → {new_ctx:,} tokens")
+                            compressor._context_probe_persistable = True
+                        agent._buffer_vprint(f"⚠️  Context length exceeded — using provider limit: {old_ctx:,} → {new_ctx:,} tokens")
+                    elif minimax_delta_only_overflow:
+                        agent._buffer_vprint(
+                            f"Provider reported overflow amount only; "
+                            f"keeping context_length at {old_ctx:,} tokens and compressing."
+                        )
                     else:
-                        agent._buffer_vprint(f"⚠️  Context length exceeded at minimum tier — attempting compression...")
+                        agent._buffer_vprint(
+                            f"⚠️  Context length exceeded, but provider did not report a max context length; "
+                            f"keeping context_length at {old_ctx:,} tokens and compressing."
+                        )
 
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
@@ -4320,36 +4301,54 @@ def run_conversation(
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
 
-        # If running as a kanban worker, block the task so the dispatcher
-        # knows the worker could not complete (rather than treating it as a
+        # If running as a kanban worker, signal the dispatcher that the
+        # worker could not complete (rather than treating it as a
         # protocol violation).  The agent loop strips tools before calling
         # _handle_max_iterations, so the model cannot call kanban_block
         # itself — we must do it on its behalf.
+        #
+        # We route through ``_record_task_failure(outcome="timed_out")``
+        # rather than ``kanban_block`` so this counts toward the
+        # ``consecutive_failures`` counter and the dispatcher's
+        # ``failure_limit`` circuit breaker (#29747 gap 2).  Without this,
+        # a task whose worker keeps exhausting its budget would block
+        # silently each run, get auto-promoted by the operator (or never
+        # surface), and re-block in an endless loop with no signal.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
-                _ra().handle_function_call(
-                    "kanban_block",
-                    {
-                        "task_id": _kanban_task,
-                        "reason": (
+                from hermes_cli import kanban_db as _kb
+                _conn = _kb.connect()
+                try:
+                    _kb._record_task_failure(
+                        _conn,
+                        _kanban_task,
+                        error=(
                             f"Iteration budget exhausted "
                             f"({api_call_count}/{agent.max_iterations}) — "
                             "task could not complete within the allowed "
                             "iterations"
                         ),
-                    },
-                    task_id=effective_task_id,
-                )
-                logger.info(
-                    "kanban_block called for task %s after iteration "
-                    "exhaustion (%d/%d)",
-                    _kanban_task, api_call_count, agent.max_iterations,
-                )
+                        outcome="timed_out",
+                        release_claim=True,
+                        end_run=True,
+                        event_payload_extra={
+                            "budget_used": api_call_count,
+                            "budget_max": agent.max_iterations,
+                        },
+                    )
+                    logger.info(
+                        "recorded budget-exhausted failure for task %s (%d/%d)",
+                        _kanban_task, api_call_count, agent.max_iterations,
+                    )
+                finally:
+                    try:
+                        _conn.close()
+                    except Exception:
+                        pass
             except Exception:
                 logger.warning(
-                    "Failed to call kanban_block after iteration "
-                    "exhaustion for task %s",
+                    "Failed to record budget-exhausted failure for task %s",
                     _kanban_task,
                     exc_info=True,
                 )
@@ -4567,6 +4566,7 @@ def run_conversation(
         original_user_message=original_user_message,
         final_response=final_response,
         interrupted=interrupted,
+        messages=messages,
     )
 
     # Background memory/skill review — runs AFTER the response is delivered

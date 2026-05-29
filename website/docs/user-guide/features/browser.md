@@ -185,6 +185,25 @@ Then set in `~/.hermes/.env`:
 CAMOFOX_URL=http://localhost:9377
 ```
 
+If Camofox is running in Docker and you want it to open web apps served from the host machine, enable loopback rewriting. `CAMOFOX_URL` should still point at the host-published control API, but page URLs such as `http://127.0.0.1:3000` must be opened from inside the container as `http://host.docker.internal:3000`:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  camofox:
+    rewrite_loopback_urls: true
+    loopback_host_alias: host.docker.internal  # default; use a LAN IP if needed
+```
+
+Equivalent env vars:
+
+```bash
+CAMOFOX_REWRITE_LOOPBACK_URLS=true
+CAMOFOX_LOOPBACK_HOST_ALIAS=host.docker.internal
+```
+
+The rewrite only applies to page navigation URLs with loopback hosts (`localhost`, `127.0.0.1`, `::1`). It does not change `CAMOFOX_URL`. Leave it disabled for non-Docker Camofox installs, where the browser already runs on the host and loopback URLs are correct.
+
 Or configure via `hermes tools` → Browser Automation → Camofox.
 
 When `CAMOFOX_URL` is set, all browser tools automatically route through Camofox instead of Browserbase or agent-browser.

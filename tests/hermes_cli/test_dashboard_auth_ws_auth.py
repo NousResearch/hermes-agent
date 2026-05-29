@@ -14,7 +14,6 @@ pre-existing regression unrelated to dashboard-auth.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -29,7 +28,6 @@ from fastapi.testclient import TestClient
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.ws_tickets import (
-    TicketInvalid,
     _reset_for_tests,
     consume_ticket,
     mint_ticket,

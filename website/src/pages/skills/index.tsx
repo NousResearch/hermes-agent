@@ -500,7 +500,7 @@ export default function SkillsDashboard() {
   const sources = useMemo(() => {
     const set = new Set(allSkillsLocal.map((s) => s.source));
     return SOURCE_ORDER.filter((s) => s === "all" || set.has(s));
-  }, []);
+  }, [allSkillsLocal]);
 
   const categoryEntries = useMemo(() => {
     const pool =
@@ -523,7 +523,7 @@ export default function SkillsDashboard() {
     return Array.from(map.entries())
       .sort((a, b) => b[1].count - a[1].count)
       .map(([key, { label, count }]) => ({ key, label, count }));
-  }, [sourceFilter]);
+  }, [sourceFilter, allSkillsLocal]);
 
   const filtered = useMemo(() => {
     const q = debouncedSearch.toLowerCase().trim();

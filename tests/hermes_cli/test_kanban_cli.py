@@ -13,6 +13,16 @@ from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 
 
+def test_main_propagates_kanban_exit_code(monkeypatch):
+    import sys
+    import hermes_cli.main as main_mod
+
+    monkeypatch.setattr(sys, "argv", ["hermes", "kanban", "init"])
+    monkeypatch.setattr(main_mod, "cmd_kanban", lambda args: 1)
+
+    assert main_mod.main() == 1
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"

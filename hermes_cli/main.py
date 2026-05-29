@@ -14278,7 +14278,7 @@ Examples:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
         cmd_chat(args)
-        return
+        return 0
 
     # Default to chat if no command specified
     if args.command is None:
@@ -14295,14 +14295,16 @@ Examples:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
         cmd_chat(args)
-        return
+        return 0
 
     # Execute the command
     if hasattr(args, "func"):
-        args.func(args)
-    else:
-        parser.print_help()
+        result = args.func(args)
+        return 0 if result is None else result
+
+    parser.print_help()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

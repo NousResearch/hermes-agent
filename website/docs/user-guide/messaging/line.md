@@ -84,6 +84,39 @@ gateway:
 
 That's enough — the bundled-plugin scan in `gateway/config.py` automatically picks up `plugins/platforms/line/`. No `Platform.LINE` enum edit, no `_create_adapter` registration.
 
+### Optional: map LINE users to Honcho peers
+
+LINE uses opaque `U...` user IDs for 1:1 chats. Hermes should keep those raw IDs for LINE allowlists, reply routing, delivery, and audit logs. If you use the Honcho memory provider, you can map those platform IDs to stable human peer names in `~/.hermes/honcho.json` so long-term memory lands on readable peers instead of raw LINE IDs.
+
+Personal or hybrid gateway example:
+
+```json
+{
+  "workspace": "hermes",
+  "peerName": "operator",
+  "aiPeer": "hermes",
+  "hosts": {
+    "hermes": {
+      "pinUserPeer": false,
+      "userPeerAliases": {
+        "U1234567890abcdef1234567890abcdef": "operator"
+      },
+      "runtimePeerPrefix": "line_"
+    }
+  }
+}
+```
+
+Resolver behavior:
+
+- `userPeerAliases` maps known LINE runtime IDs to short Honcho peer IDs.
+- `runtimePeerPrefix` namespaces unknown LINE users (for example `line_U...`) instead of storing bare raw IDs.
+- `pinUserPeer: true` is still available for single-operator bots where every gateway user should collapse to `peerName`.
+
+Keep `LINE_ALLOWED_USERS` as the raw LINE `U...` IDs. The alias only changes the Honcho memory peer; it does not replace LINE's platform identity. Restart the gateway after changing `honcho.json`.
+
+For multi-profile deployments, configure aliases in each profile's `$HERMES_HOME/honcho.json`: platform routing decides which Hermes profile handles the message, then that profile's Honcho config decides which memory peer receives it.
+
 ---
 
 ## Step 4: Set the webhook URL

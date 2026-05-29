@@ -7,7 +7,7 @@ from the same session and aggregate them before dispatching.
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -31,6 +31,7 @@ def _make_adapter():
     adapter._pending_messages = {}
     adapter._message_handler = AsyncMock()
     adapter.handle_message = AsyncMock()
+    adapter._bot = AsyncMock()
     return adapter
 
 
@@ -42,7 +43,58 @@ def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
     )
 
 
+def _make_update(text: str, *, user_id: int = 42, chat_id: int = 12345):
+    return SimpleNamespace(
+        update_id=99,
+        message=SimpleNamespace(
+            text=text,
+            from_user=SimpleNamespace(id=user_id),
+            chat_id=chat_id,
+        ),
+    )
+
+
 class TestTextBatching:
+    @pytest.mark.asyncio
+    async def test_verify_code_text_bypasses_telegram_allowed_user_gate(self, monkeypatch):
+        import gateway.platforms.telegram as telegram_platform
+
+        adapter = _make_adapter()
+        adapter._should_process_message = MagicMock(return_value=False)
+        adapter._enqueue_text_event = MagicMock()
+        redeem = AsyncMock(return_value={"ok": True})
+        monkeypatch.setattr(telegram_platform, "redeem_verify_code", redeem, raising=False)
+
+        await adapter._handle_text_message(_make_update("verify 123456"), MagicMock())
+
+        redeem.assert_awaited_once_with(platform="telegram", code="123456", user_id="42")
+        adapter._bot.send_message.assert_awaited_once_with(
+            chat_id=12345,
+            text="✅ 已將你加為 owner，現在可以開始對話",
+        )
+        adapter._should_process_message.assert_not_called()
+        adapter._enqueue_text_event.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_verify_text_keeps_existing_telegram_flow(self, monkeypatch):
+        import gateway.platforms.telegram as telegram_platform
+
+        adapter = _make_adapter()
+        event = _make_event("hello")
+        adapter._should_process_message = MagicMock(return_value=True)
+        adapter._build_message_event = MagicMock(return_value=event)
+        adapter._clean_bot_trigger_text = MagicMock(side_effect=lambda text: text)
+        adapter._enqueue_text_event = MagicMock()
+        redeem = AsyncMock(return_value={"ok": True})
+        monkeypatch.setattr(telegram_platform, "redeem_verify_code", redeem, raising=False)
+
+        await adapter._handle_text_message(_make_update("hello"), MagicMock())
+
+        redeem.assert_not_awaited()
+        adapter._bot.send_message.assert_not_awaited()
+        adapter._should_process_message.assert_called_once()
+        adapter._enqueue_text_event.assert_called_once_with(event)
+
     @pytest.mark.asyncio
     async def test_single_message_dispatched_after_delay(self):
         adapter = _make_adapter()

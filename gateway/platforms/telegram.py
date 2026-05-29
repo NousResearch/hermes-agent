@@ -81,6 +81,7 @@ from gateway.platforms.base import (
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     utf16_len,
 )
+from gateway.verify_command import parse_verify_command, redeem_verify_code, verify_ack_text
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
     discover_fallback_ips,
@@ -5190,11 +5191,23 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
+        verify_cmd = parse_verify_command(msg.text)
+        if verify_cmd:
+            result = await redeem_verify_code(
+                platform="telegram",
+                code=verify_cmd["code"],
+                user_id=str(msg.from_user.id),
+            )
+            await self._bot.send_message(
+                chat_id=msg.chat_id,
+                text=verify_ack_text(result),
+            )
+            return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
-        await self._ensure_forum_commands(update.message)
+        await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)

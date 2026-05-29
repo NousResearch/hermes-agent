@@ -50,6 +50,7 @@ from gateway.platforms.base import (
     safe_url_for_log,
     cache_document_from_bytes,
 )
+from gateway.verify_command import parse_verify_command, redeem_verify_code, verify_ack_text
 
 
 logger = logging.getLogger(__name__)
@@ -2109,6 +2110,22 @@ class SlackAdapter(BasePlatformAdapter):
         if event_ts and self._dedup.is_duplicate(event_ts):
             return
 
+        original_text = event.get("text", "")
+        user_id = event.get("user", "")
+        channel_id = event.get("channel", "")
+        verify_cmd = parse_verify_command(original_text)
+        if verify_cmd and user_id and channel_id:
+            result = await redeem_verify_code(
+                platform="slack",
+                code=verify_cmd["code"],
+                user_id=user_id,
+            )
+            await self._get_client(channel_id).chat_postMessage(
+                channel=channel_id,
+                text=verify_ack_text(result),
+            )
+            return
+
         # Bot message filtering (SLACK_ALLOW_BOTS / config allow_bots):
         #   "none"     — ignore all bot messages (default, backward-compatible)
         #   "mentions" — accept bot messages only when they @mention us
@@ -2134,8 +2151,6 @@ class SlackAdapter(BasePlatformAdapter):
         subtype = event.get("subtype")
         if subtype in {"message_changed", "message_deleted"}:
             return
-
-        original_text = event.get("text", "")
 
         # Slack blocks native slash commands inside threads ("/queue is not
         # supported in threads. Sorry!").  As a workaround, recognise a

@@ -122,6 +122,52 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
 
 
+class TestVerifyCommand:
+    @pytest.mark.asyncio
+    async def test_verify_code_message_posts_ack_before_slack_routing(self, adapter, monkeypatch):
+        redeem = AsyncMock(return_value={"ok": True})
+        monkeypatch.setattr(_slack_mod, "redeem_verify_code", redeem, raising=False)
+
+        event = {
+            "type": "message",
+            "text": "verify 123456",
+            "user": "U123",
+            "channel": "C123",
+            "ts": "1000.1",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        redeem.assert_awaited_once_with(platform="slack", code="123456", user_id="U123")
+        adapter._app.client.chat_postMessage.assert_awaited_once_with(
+            channel="C123",
+            text="✅ 已將你加為 owner，現在可以開始對話",
+        )
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_verify_message_keeps_existing_slack_flow(self, adapter, monkeypatch):
+        redeem = AsyncMock(return_value={"ok": True})
+        monkeypatch.setattr(_slack_mod, "redeem_verify_code", redeem, raising=False)
+        adapter._resolve_user_name = AsyncMock(return_value="Ada")
+
+        event = {
+            "type": "message",
+            "text": "hello",
+            "user": "U123",
+            "channel": "D123",
+            "channel_type": "im",
+            "team": "T123",
+            "ts": "1000.2",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        redeem.assert_not_awaited()
+        adapter._app.client.chat_postMessage.assert_not_awaited()
+        adapter.handle_message.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # TestSlashCommandSessionIsolation
 # ---------------------------------------------------------------------------

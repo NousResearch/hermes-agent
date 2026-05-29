@@ -117,22 +117,15 @@ sms = ["aiohttp==3.13.3"]
 # to it, which is already provided by the `mcp` extra.
 computer-use = ["mcp==1.26.0"]
 acp = ["agent-client-protocol==0.9.0"]
-# mistral: extra REMOVED 2026-05-12 — `mistralai` PyPI project quarantined
-# after malicious 2.4.6 release (Mini Shai-Hulud worm). Every version of
-# `mistralai` returns 404 on PyPI right now, so any pin we'd write is
-# unresolvable, which breaks `uv lock --check` in CI.
-#
-# To restore once PyPI un-quarantines:
-#   1. Verify the new release is clean (read the changelog, check Socket
-#      advisory page, confirm no malicious code review findings).
-#   2. Add back: mistral = ["mistralai==<verified-version>"]
-#   3. Re-enable Mistral in:
-#        - tools/lazy_deps.py (LAZY_DEPS["tts.mistral"], LAZY_DEPS["stt.mistral"])
-#        - hermes_cli/tools_config.py (un-hide from provider picker)
-#        - hermes_cli/web_server.py (re-add to dashboard STT options)
-#        - tools/transcription_tools.py / tools/tts_tool.py (drop disabled stubs)
-#   4. Run `uv lock` to regenerate transitives.
-#   5. Optionally re-add to [all] only after a few days of clean operation.
+# mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
+# The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
+# 2.4.6 release (Mini Shai-Hulud worm); 2.4.6 was removed from PyPI and the
+# project is serving clean releases again (2.4.7 2026-05-25, 2.4.8 2026-05-28).
+# Like other opt-in TTS/STT backends, this is lazy-installed via
+# tools/lazy_deps.py (stt.mistral / tts.mistral) at first use — deliberately
+# NOT re-added to [all] so a future quarantined release can't break fresh
+# installs (see [all] policy comment below).
+mistral = ["mistralai==2.4.8"]
 bedrock = ["boto3==1.42.89"]
 azure-identity = ["azure-identity==1.25.3"]
 termux = [
@@ -237,7 +230,7 @@ plugins = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

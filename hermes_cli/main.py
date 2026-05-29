@@ -9125,12 +9125,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # though `git pull` can't touch $HERMES_HOME, this is cheap
         # belt-and-suspenders insurance and gives the user something to
         # restore from via `/snapshot list` / `/snapshot restore <id>`.
+        pre_update_snapshot_id = None
         try:
             from hermes_cli.backup import create_quick_snapshot
 
-            snap_id = create_quick_snapshot(label="pre-update", keep=1)
-            if snap_id:
-                print(f"  ✓ Pre-update snapshot: {snap_id}")
+            pre_update_snapshot_id = create_quick_snapshot(label="pre-update", keep=1)
+            if pre_update_snapshot_id:
+                print(f"  ✓ Pre-update snapshot: {pre_update_snapshot_id}")
         except Exception as exc:
             # Never let a snapshot failure block an update.
             logger.debug("Pre-update snapshot failed: %s", exc)
@@ -9466,6 +9467,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("Skipped. Run 'hermes config migrate' later to configure.")
         else:
             print("  ✓ Configuration is up to date")
+
+        # Safety net: config-version migrations have been observed to leave
+        # cron/jobs.json valid-but-empty, silently dropping every scheduled
+        # job (issue #34600). If the live file is now empty while the
+        # pre-update snapshot held jobs, restore it and warn loudly.
+        try:
+            from hermes_cli.backup import restore_cron_jobs_if_emptied
+
+            cron_restore = restore_cron_jobs_if_emptied(pre_update_snapshot_id)
+            if cron_restore:
+                print()
+                print(
+                    "  ⚠️  cron/jobs.json was emptied during this update — "
+                    f"restored {cron_restore['job_count']} job(s) from "
+                    f"pre-update snapshot {cron_restore['snapshot_id']}."
+                )
+        except Exception as exc:
+            # Never let the cron safety net break an otherwise-good update.
+            logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
         print()
         print("✓ Update complete!")
@@ -10562,11 +10582,10 @@ def cmd_profile(args):
             if collision:
                 print(f"Error: {collision}")
                 sys.exit(1)
-            wrapper_path = create_wrapper_script(alias_name)
+            wrapper_path = create_wrapper_script(
+                alias_name, target=name if custom_name else None
+            )
             if wrapper_path:
-                # If custom name, write the profile name into the wrapper
-                if custom_name:
-                    wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {name} "$@"\n')
                 print(f"✓ Alias created: {wrapper_path}")
                 if not _is_wrapper_dir_in_path():
                     print(f"⚠ {_get_wrapper_dir()} is not in your PATH.")

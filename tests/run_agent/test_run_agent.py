@@ -2428,6 +2428,8 @@ class TestConcurrentToolExecution:
                 session_id=agent.session_id,
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
+                enabled_toolsets=agent.enabled_toolsets,
+                disabled_toolsets=agent.disabled_toolsets,
             )
             assert result == "result"
 
@@ -4061,40 +4063,13 @@ class TestNousCredentialRefresh:
 
         assert ok is True
         assert closed["value"] is True
-        assert captured["inference_auth_mode"] == "legacy"
+        assert captured["force_refresh"] is True
         assert rebuilt["kwargs"]["api_key"] == "new-nous-key"
         assert (
             rebuilt["kwargs"]["base_url"] == "https://inference-api.nousresearch.com/v1"
         )
         assert "default_headers" not in rebuilt["kwargs"]
         assert isinstance(agent.client, _RebuiltClient)
-
-    def test_try_refresh_nous_client_credentials_accepts_explicit_auth_mode(
-        self, agent, monkeypatch
-    ):
-        agent.provider = "nous"
-        agent.api_mode = "chat_completions"
-        captured = {}
-
-        def _fake_resolve(**kwargs):
-            captured.update(kwargs)
-            return {
-                "api_key": "new-nous-key",
-                "base_url": "https://inference-api.nousresearch.com/v1",
-            }
-
-        monkeypatch.setattr(
-            "hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
-        )
-
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
-            ok = agent._try_refresh_nous_client_credentials(
-                force=False,
-                inference_auth_mode="legacy",
-            )
-
-        assert ok is True
-        assert captured["inference_auth_mode"] == "legacy"
 
 
 class TestCredentialPoolRecovery:

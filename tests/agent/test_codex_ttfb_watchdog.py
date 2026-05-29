@@ -102,6 +102,47 @@ def test_ttfb_kills_when_no_stream_event(tmp_path, monkeypatch):
         stop["flag"] = True
 
 
+def test_ttfb_default_tolerates_slow_first_event(tmp_path, monkeypatch):
+    """With no env var set, the no-byte TTFB default is generous (120s), so a
+    request whose first stream event is merely slow (~2s of backend admission /
+    prefill) is NOT killed. This is the subscription-backed Codex case the tight
+    12s default used to abort mid-prefill."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    # Default behavior: no explicit TTFB override.
+    monkeypatch.delenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_MAX_SECONDS", raising=False)
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_slow_first_event(api_kwargs, client=None, on_first_delta=None):
+        # Backend is alive but slow to admit: first event lands after ~2s,
+        # well under the 120s default cutoff. Mark the first byte so the
+        # no-byte detector sees activity, then return the response.
+        time.sleep(2.0)
+        agent._codex_stream_last_event_ts = time.time()
+        return sentinel
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_slow_first_event)
+
+    resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+    assert resp is sentinel
+    assert "codex_ttfb_kill" not in closes
+
+
 def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
     """The no-first-byte watchdog should surface the same actionable hint as the
     stale-call timeout path when the model matches the silent-hang heuristic."""

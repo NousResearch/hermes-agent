@@ -226,10 +226,18 @@ plugins = [
   "*/dashboard/manifest.json",
   "*/dashboard/dist/*",
   "*/dashboard/dist/**/*",
+  # Plugin discovery (hermes_cli/plugins.py) reads a plugin.yaml/plugin.yml
+  # manifest from each bundled plugin directory to register it. Wheels only
+  # carry files declared here, so without this glob the wheel ships every
+  # plugin's Python code but none of its manifests — the scan finds zero
+  # plugins and all gateway platforms fail with "No adapter available for
+  # <platform>" (#34034), web-search providers go missing (#28149), etc.
+  "**/plugin.yaml",
+  "**/plugin.yml",
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

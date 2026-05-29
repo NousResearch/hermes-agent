@@ -2999,27 +2999,16 @@ class AIAgent:
         self,
         *,
         force: bool = True,
-        inference_auth_mode: str | None = None,
     ) -> bool:
         if self.api_mode != "chat_completions" or self.provider != "nous":
             return False
 
         try:
-            from hermes_cli.auth import (
-                NOUS_INFERENCE_AUTH_MODE_AUTO,
-                NOUS_INFERENCE_AUTH_MODE_LEGACY,
-                resolve_nous_runtime_credentials,
-            )
+            from hermes_cli.auth import resolve_nous_runtime_credentials
 
-            selected_auth_mode = inference_auth_mode or (
-                NOUS_INFERENCE_AUTH_MODE_LEGACY
-                if force
-                else NOUS_INFERENCE_AUTH_MODE_AUTO
-            )
             creds = resolve_nous_runtime_credentials(
-                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-                inference_auth_mode=selected_auth_mode,
+                force_refresh=force,
             )
         except Exception as exc:
             logger.debug("Nous credential refresh failed: %s", exc)

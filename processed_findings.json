@@ -496,5 +496,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34951",
     "pr_number": 34951,
     "run_id": "20260529_222900"
+  },
+  "SHELL-tools_config.py-745": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34952",
+    "pr_number": 34952,
+    "run_id": "20260529_222900"
   }
 }

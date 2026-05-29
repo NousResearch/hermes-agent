@@ -215,6 +215,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
+    # HERMES_SKIP_PROFILE_OVERRIDE: when set, skip all profile resolution.
+    # Used by MeshBoard stream-tap launcher to force a specific HERMES_HOME
+    # without profile redirection interfering with the proxy configuration.
+    if os.environ.get("HERMES_SKIP_PROFILE_OVERRIDE"):
+        return
     argv = sys.argv[1:]
     profile_name = None
     consume = 0

@@ -970,12 +970,22 @@ class APIServerAdapter(BasePlatformAdapter):
         Providers that scope off ``gateway_session_key`` (and Honcho's session
         resolution) keep each user's memory separate across transcripts. A
         no-op when ``user_scope`` is falsy.
+
+        Idempotent: the scoped key is echoed back to the client in the
+        ``X-Hermes-Session-Key`` response header, and clients may round-trip it
+        on the next turn. Re-appending the suffix would make the key drift every
+        turn (fragmenting long-term memory) and eventually breach
+        ``_MAX_SESSION_HEADER_LEN``, so a key that already carries this user's
+        suffix is returned unchanged.
         """
         if not user_scope:
             return gateway_session_key
-        if gateway_session_key:
-            return f"{gateway_session_key}:owui-user:{user_scope}"
-        return f"owui-user:{user_scope}"
+        suffix = f"owui-user:{user_scope}"
+        if not gateway_session_key:
+            return suffix
+        if gateway_session_key == suffix or gateway_session_key.endswith(f":{suffix}"):
+            return gateway_session_key
+        return f"{gateway_session_key}:{suffix}"
 
     # ------------------------------------------------------------------
     # Session DB helper
@@ -1954,6 +1964,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            # Namespace by user so two isolated users sharing an Idempotency-Key
+            # + identical body can't be served each other's cached response.
+            if user_scope:
+                idempotency_key = f"{user_scope}\x1f{idempotency_key}"
             fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
@@ -3010,6 +3024,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            # Namespace by user so two isolated users sharing an Idempotency-Key
+            # + identical body can't be served each other's cached response.
+            if user_scope:
+                idempotency_key = f"{user_scope}\x1f{idempotency_key}"
             fp = _make_request_fingerprint(
                 body,
                 keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],

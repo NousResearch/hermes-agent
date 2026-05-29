@@ -3642,6 +3642,41 @@ class TestPerUserMemoryIsolation:
         kw = await _post_chat(_isolation_adapter(True), {"X-OpenWebUI-User-Id": long_id})
         assert kw["user_id"] == "u" * 256
 
+    @pytest.mark.asyncio
+    async def test_idempotency_key_does_not_leak_across_users(self):
+        # Two isolated users sharing an Idempotency-Key + identical body must not
+        # be served each other's cached response.
+        adapter = _isolation_adapter(True)
+        idem = f"shared-key-{uuid.uuid4().hex}"
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hello"}]}
+
+        async def _fake_run(**kwargs):
+            return (
+                {"final_response": f"hi {kwargs.get('user_id')}", "completed": True},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_fake_run):
+                r1 = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret", "Idempotency-Key": idem,
+                             "X-OpenWebUI-User-Id": "alice"},
+                    json=body,
+                )
+                r2 = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret", "Idempotency-Key": idem,
+                             "X-OpenWebUI-User-Id": "bob"},
+                    json=body,
+                )
+                d1, d2 = await r1.json(), await r2.json()
+        c1 = d1["choices"][0]["message"]["content"]
+        c2 = d2["choices"][0]["message"]["content"]
+        assert "alice" in c1
+        assert "bob" in c2  # bob is NOT served alice's cached response
+
 
 async def _post_responses(adapter, headers):
     """Drive POST /v1/responses with _run_agent stubbed; return its kwargs."""
@@ -3701,3 +3736,13 @@ class TestScopeMemoryKey:
 
     def test_namespaces_provided_key(self):
         assert APIServerAdapter._scope_memory_key("chan-1", "alice") == "chan-1:owui-user:alice"
+
+    def test_idempotent_on_round_tripped_key(self):
+        # A client may echo back the scoped key it received; re-scoping must not
+        # append again (would drift the key and eventually breach the length cap).
+        once = APIServerAdapter._scope_memory_key("chan-1", "alice")
+        twice = APIServerAdapter._scope_memory_key(once, "alice")
+        assert once == twice == "chan-1:owui-user:alice"
+        # Bare derived key is also stable across round-trips.
+        bare = APIServerAdapter._scope_memory_key(None, "alice")
+        assert APIServerAdapter._scope_memory_key(bare, "alice") == bare == "owui-user:alice"

@@ -2911,6 +2911,22 @@ class TelegramAdapter(BasePlatformAdapter):
         self, query, data: str, chat_id: str
     ) -> None:
         """Handle model picker inline keyboard callbacks (mp:/mm:/mb:/mx:/mg:)."""
+        query_message = getattr(query, "message", None)
+        query_chat = getattr(query_message, "chat", None)
+        query_chat_type = getattr(query_chat, "type", None)
+        query_thread_id = getattr(query_message, "message_thread_id", None)
+        caller_id = str(getattr(getattr(query, "from_user", None), "id", ""))
+        caller_name = getattr(getattr(query, "from_user", None), "first_name", None)
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=caller_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to change models.")
+            return
+
         state = self._model_picker_state.get(chat_id)
         if not state:
             await query.answer(text="Picker expired — use /model again.")

@@ -74,6 +74,7 @@ class TestTelegramModelPicker:
     @pytest.mark.asyncio
     async def test_back_button_escapes_dynamic_provider_label(self):
         adapter = _make_adapter()
+        adapter._is_callback_user_authorized = MagicMock(return_value=True)
         adapter._model_picker_state["12345"] = {
             "providers": [{"slug": "provider_one", "name": "Provider One", "total_models": 1, "is_current": True}],
             "current_model": "model_1",
@@ -110,6 +111,7 @@ class TestTelegramModelPicker:
         edit_message_text block so it lived inside the except branch and
         only fired when the callback raised."""
         adapter = _make_adapter()
+        adapter._is_callback_user_authorized = MagicMock(return_value=True)
         callback = AsyncMock(return_value="Switched to `gpt-5`")
         adapter._model_picker_state["12345"] = {
             "providers": [
@@ -145,6 +147,46 @@ class TestTelegramModelPicker:
         assert "`gpt-5`" in edit_kwargs["text"]
         # State is cleaned up after a successful switch.
         assert "12345" not in adapter._model_picker_state
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_callback_cannot_switch_model(self):
+        adapter = _make_adapter()
+        adapter._is_callback_user_authorized = MagicMock(return_value=False)
+        callback = AsyncMock(return_value="Switched to `gpt-5`")
+        adapter._model_picker_state["12345"] = {
+            "providers": [
+                {"slug": "openai", "name": "OpenAI", "total_models": 1, "is_current": True}
+            ],
+            "current_model": "model_1",
+            "current_provider": "openai",
+            "session_key": "s",
+            "on_model_selected": callback,
+            "selected_provider": "openai",
+            "model_list": ["gpt-5"],
+            "msg_id": 42,
+        }
+
+        query = AsyncMock()
+        query.data = "mm:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat = MagicMock()
+        query.message.chat.type = "group"
+        query.from_user = MagicMock()
+        query.from_user.id = 999
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        callback.assert_not_awaited()
+        query.edit_message_text.assert_not_awaited()
+        query.answer.assert_awaited_once_with(text="⛔ You are not authorized to change models.")
+        assert "12345" in adapter._model_picker_state
 
     @pytest.mark.asyncio
     async def test_retries_without_thread_when_thread_not_found(self):

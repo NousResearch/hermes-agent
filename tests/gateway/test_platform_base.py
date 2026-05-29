@@ -362,6 +362,54 @@ class TestExtractMedia:
         assert "[[as_document]]" not in cleaned
 
 
+class TestMediaExtensionAllowlistParity:
+    """Regression coverage for issue #34517 — the MEDIA: extension black hole.
+
+    extract_media used to carry a narrow extension allowlist that omitted
+    .md/.json/.yaml/.xml/.html etc., while extract_local_files had a broad one.
+    Combined with an unconditional ``MEDIA:\\s*\\S+`` strip at the dispatch
+    sites, an unmatched MEDIA: tag for one of those extensions was deleted from
+    the body before extract_local_files could pick up the bare path — the file
+    was silently dropped. Both extractors now derive from the single
+    MEDIA_DELIVERY_EXTS source of truth, and the strip is anchored to that set.
+    """
+
+    DROPPED_BEFORE = ["md", "json", "yaml", "yml", "xml", "html", "htm",
+                      "tsv", "svg"]
+
+    def test_previously_dropped_extensions_now_extract(self):
+        for ext in self.DROPPED_BEFORE:
+            path = f"/tmp/report.{ext}"
+            media, _ = BasePlatformAdapter.extract_media(f"Here: MEDIA:{path}")
+            assert media == [(path, False)], f".{ext} should extract via MEDIA:"
+
+    def test_extract_media_and_local_files_share_one_extension_set(self):
+        from gateway.platforms.base import MEDIA_DELIVERY_EXTS
+        # Both functions reference MEDIA_DELIVERY_EXTS; assert the documents
+        # that motivated the bug are present in the shared set.
+        for ext in (".md", ".json", ".yaml", ".yml", ".xml", ".html", ".htm"):
+            assert ext in MEDIA_DELIVERY_EXTS
+
+    def test_unknown_extension_not_black_holed_by_cleanup(self):
+        """A MEDIA: tag with an unknown extension is NOT stripped from the
+        body — it survives so extract_local_files can still see the bare path,
+        rather than vanishing entirely (the core of issue #34517)."""
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        text = "Saved to MEDIA:/tmp/data.weirdext done"
+        media, _ = BasePlatformAdapter.extract_media(text)
+        assert media == []  # unknown extension is not a deliverable MEDIA tag
+        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text)
+        assert "/tmp/data.weirdext" in stripped  # path preserved, not dropped
+
+    def test_known_extension_tag_is_stripped_from_body(self):
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        text = "Here is your report: MEDIA:/tmp/report.md"
+        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text).strip()
+        assert "MEDIA:" not in stripped
+        assert "/tmp/report.md" not in stripped
+        assert "Here is your report:" in stripped
+
+
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
         monkeypatch.setattr(

@@ -11743,9 +11743,16 @@ class GatewayRunner:
 
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
-            media_files, _ = adapter.extract_media(response)
+            media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-            _, cleaned = adapter.extract_images(response)
+            # Chain the cleaned text through each extractor (extract_media →
+            # extract_images → extract_local_files) so MEDIA: tags and image URLs
+            # are removed before the bare-path auto-detect runs. Previously the
+            # cleaned text from extract_media was dropped (``_``) and
+            # extract_local_files scanned text that still contained MEDIA: tags,
+            # producing false-positive bare-path matches with the MEDIA: prefix
+            # glued on. This matches the chain order in gateway/platforms/base.py.
+            _, cleaned = adapter.extract_images(cleaned)
             local_files, _ = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 

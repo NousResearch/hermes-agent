@@ -8536,10 +8536,12 @@ class GatewayRunner:
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.
-        # Only inject on NEW sessions — ongoing conversations already have the
-        # skill content in their conversation history from the first message.
+        # Always inject — skill content can be lost after context compression /
+        # transcript truncation in long conversations, and re-injection on every
+        # message is safe because _build_skill_message deduplicates via the
+        # activation note.
         _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
+        if _auto:
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message

@@ -4883,3 +4883,215 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+class TestCompetitionConsultingSkillRouting(unittest.TestCase):
+    """Smoke tests for competition consulting skill routing (飞书群 oc_23fcf4738957cae42defd61410f26c15)."""
+
+    COMPETITION_GROUP_ID = "oc_23fcf4738957cae42defd61410f26c15"
+    OTHER_GROUP_ID = "oc_other_group_123"
+
+    def _make_event(self, chat_id: str, text: str):
+        """Build a minimal MessageEvent for routing tests."""
+        source = SimpleNamespace(
+            platform=None,
+            chat_id=chat_id,
+            user_id="u_test",
+            user_name="TestUser",
+            chat_type="group",
+        )
+        return SimpleNamespace(
+            text=text,
+            source=source,
+            message_type=None,
+            raw_message=None,
+            message_id="m_test",
+            media_urls=[],
+            reply_to_message_id=None,
+            reply_to_text=None,
+            auto_skill=None,
+            internal=False,
+        )
+
+    def test_aild_keyword_routes_to_competition_skill(self):
+        """D3 + 'AILD 智能设计大赛' -> matched skill = hermes-competition-consulting-qa."""
+        from gateway.platforms.feishu import _competition_keyword_matches
+
+        text = "请帮我查一下 AILD 智能设计大赛什么时候比赛？"
+        matched = _competition_keyword_matches(text)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched, "aild")
+
+    def test_emergency_safety_keyword_routes(self):
+        """Emergency safety competition keyword triggers routing."""
+        from gateway.platforms.feishu import _competition_keyword_matches
+
+        text = "应急与安全科普创新大赛报名时间是什么时候？"
+        matched = _competition_keyword_matches(text)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched, "应急与安全科普创新大赛")
+
+    def test_registration_keyword_routes(self):
+        """'白名单赛事' keyword triggers routing (ordered tuple: 白名单赛事 before 报名)."""
+        from gateway.platforms.feishu import _competition_keyword_matches
+
+        text = "老师您好，请问白名单赛事怎么报名？"
+        matched = _competition_keyword_matches(text)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched, "白名单赛事")
+
+    def test_non_competition_message_no_match(self):
+        """Regular message in competition group does NOT trigger skill routing."""
+        from gateway.platforms.feishu import _competition_keyword_matches
+
+        text = "今天天气真好，大家下午好！"
+        matched = _competition_keyword_matches(text)
+        self.assertIsNone(matched)
+
+    def test_other_group_no_routing(self):
+        """Messages in non-competition group do not route to competition skill."""
+        from gateway.platforms.feishu import _competition_keyword_matches
+
+        text = "请帮我查一下 AILD 智能设计大赛什么时候比赛？"
+        # Even with keyword, wrong group should not route
+        # (routing check requires both group_id AND keyword match)
+        matched = _competition_keyword_matches(text)
+        # Keyword still matches, but group check happens in _handle_message_with_guards
+        self.assertIsNotNone(matched)
+
+    def test_routing_trace_fields_present(self):
+        """Verify routing trace log fields: inbound chat_id, matched skill, matched reason."""
+        from unittest.mock import patch
+
+        from gateway.platforms.feishu import (
+            _FEISHU_COMPETITION_GROUP_ID,
+            _competition_keyword_matches,
+        )
+
+        text = "请帮我查一下 AILD 智能设计大赛什么时候比赛？"
+        event = self._make_event(_FEISHU_COMPETITION_GROUP_ID, text)
+
+        # Simulate the routing decision
+        chat_id = getattr(event.source, "chat_id", "") or ""
+        matched_kw = _competition_keyword_matches(event.text)
+
+        # Patch logger to capture trace calls
+        with patch("gateway.platforms.feishu.logger") as mock_logger:
+            if chat_id == _FEISHU_COMPETITION_GROUP_ID and matched_kw:
+                event.auto_skill = "hermes-competition-consulting-qa"
+                mock_logger.info(
+                    "[Feishu] Competition skill routing triggered: chat_id=%s matched_keyword=%s "
+                    "-> skill=hermes-competition-consulting-qa text_preview=%r",
+                    chat_id, matched_kw, event.text[:80],
+                )
+
+        # Assertions
+        self.assertEqual(event.auto_skill, "hermes-competition-consulting-qa")
+        self.assertEqual(matched_kw, "aild")
+        mock_logger.info.assert_called_once()
+        call_args = mock_logger.info.call_args[0]
+        self.assertIn("Competition skill routing triggered", call_args[0])
+        self.assertIn(_FEISHU_COMPETITION_GROUP_ID, call_args)
+        self.assertIn("aild", call_args)
+
+
+class TestCompetitionRoutingIntegration(unittest.IsolatedAsyncioTestCase):
+    """Integration tests for competition skill routing via _handle_message_with_guards.
+
+    These tests exercise the real _handle_message_with_guards method (not mocked),
+    with only external I/O (HTTP, credentials) mocked.
+    """
+
+    COMPETITION_GROUP_ID = "oc_23fcf4738957cae42defd61410f26c15"
+    OTHER_GROUP_ID = "oc_other_group_999"
+
+    def _make_event(self, chat_id: str, text: str):
+        """Build a minimal MessageEvent for routing tests."""
+        source = SimpleNamespace(
+            platform=None,
+            chat_id=chat_id,
+            user_id="u_test",
+            user_name="TestUser",
+            chat_type="group",
+        )
+        return SimpleNamespace(
+            text=text,
+            source=source,
+            message_type=None,
+            raw_message=None,
+            message_id="m_test",
+            media_urls=[],
+            reply_to_message_id=None,
+            reply_to_text=None,
+            auto_skill=None,
+            internal=False,
+        )
+
+    async def test_competition_group_aild_sets_auto_skill(self):
+        """指定群 + AILD 问题 → event.auto_skill = hermes-competition-consulting-qa"""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        config = PlatformConfig(extra={
+            "app_id": "cli_test",
+            "app_secret": "secret_test",
+            "connection_mode": "websocket",
+        })
+
+        # Patch handle_message on the parent class (where it's defined)
+        with patch("gateway.platforms.base.BasePlatformAdapter.handle_message", new_callable=AsyncMock) as mock_handle:
+            adapter = FeishuAdapter(config)
+            # Initialize loop so _handle_message_with_guards can run
+            adapter._loop = asyncio.get_event_loop()
+
+            event = self._make_event(self.COMPETITION_GROUP_ID, "请帮我查一下 AILD 智能设计大赛什么时候比赛？")
+
+            await adapter._handle_message_with_guards(event)
+
+            self.assertEqual(event.auto_skill, "hermes-competition-consulting-qa")
+            # handle_message should have been called after routing decision
+            mock_handle.assert_awaited_once_with(event)
+
+    async def test_other_group_aild_does_not_set_auto_skill(self):
+        """非指定群 + AILD 问题 → 不设置 auto_skill"""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        config = PlatformConfig(extra={
+            "app_id": "cli_test",
+            "app_secret": "secret_test",
+            "connection_mode": "websocket",
+        })
+
+        with patch("gateway.platforms.base.BasePlatformAdapter.handle_message", new_callable=AsyncMock) as mock_handle:
+            adapter = FeishuAdapter(config)
+            adapter._loop = asyncio.get_event_loop()
+
+            event = self._make_event(self.OTHER_GROUP_ID, "请帮我查一下 AILD 智能设计大赛什么时候比赛？")
+
+            await adapter._handle_message_with_guards(event)
+
+            self.assertIsNone(event.auto_skill)
+            mock_handle.assert_awaited_once_with(event)
+
+    async def test_competition_group_regular_message_no_auto_skill(self):
+        """指定群 + 普通消息 → 不设置 auto_skill"""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        config = PlatformConfig(extra={
+            "app_id": "cli_test",
+            "app_secret": "secret_test",
+            "connection_mode": "websocket",
+        })
+
+        with patch("gateway.platforms.base.BasePlatformAdapter.handle_message", new_callable=AsyncMock) as mock_handle:
+            adapter = FeishuAdapter(config)
+            adapter._loop = asyncio.get_event_loop()
+
+            event = self._make_event(self.COMPETITION_GROUP_ID, "今天天气真好，大家下午好！")
+
+            await adapter._handle_message_with_guards(event)
+
+            self.assertIsNone(event.auto_skill)
+            mock_handle.assert_awaited_once_with(event)

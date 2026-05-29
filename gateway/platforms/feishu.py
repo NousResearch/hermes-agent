@@ -1404,6 +1404,104 @@ def check_feishu_requirements() -> bool:
     return ensure_and_bind("platform.feishu", _import, globals(), prompt=False)
 
 
+# Competition consulting skill routing
+# Raymond private deployment: group ID configurable via env var
+_FEISHU_COMPETITION_GROUP_ID = os.getenv(
+    "FEISHU_COMPETITION_CONSULTING_GROUP_ID",
+    "oc_23fcf4738957cae42defd61410f26c15",
+)
+_FEISHU_COMPETITION_KEYWORDS = (
+    "aild",
+    "智能设计大赛",
+    "应急与安全科普创新大赛",
+    "白名单赛事",
+    "比赛时间",
+    "什么时候比赛",
+    "报名",
+    "赛项",
+    "证书",
+    "家长咨询",
+)
+
+def _competition_keyword_matches(text: str) -> str | None:
+    """Return the first matched keyword or None."""
+    if not text:
+        return None
+    lower = text.lower()
+    for kw in _FEISHU_COMPETITION_KEYWORDS:
+        if kw.lower() in lower:
+            return kw
+    return None
+
+
+# Theme material ingestion skill routing
+# Group where colleagues submit theme-related materials for automatic ingestion
+_FEISHU_THEME_MATERIAL_INGESTION_GROUP_ID = os.getenv(
+    "FEISHU_THEME_MATERIAL_INGESTION_GROUP_ID",
+    "oc_a19b4f58f14f7bea48a67610eb0bcb33",
+)
+_FEISHU_THEME_MATERIAL_TRIGGER_KEYWORDS = (
+    "录入",
+    "入库",
+    "归档",
+    "转 Markdown",
+    "整理资料",
+    "新资料",
+)
+
+# Topic definitions for theme material ingestion
+_FEISHU_THEME_TOPICS = {
+    "competition_aild": {
+        "name": "AILD 智能设计大赛",
+        "high_confidence": ("AILD", "aild.caa.org.cn", "智能设计大赛"),
+        "medium_confidence": ("aild",),
+    },
+    "competition_emergency_safety": {
+        "name": "全国青少年应急与安全科普创新大赛",
+        "high_confidence": ("nyseic.cn", "全国青少年应急与安全科普创新大赛", "应急安全"),
+        "medium_confidence": ("应急与安全",),
+    },
+    "chuangqingchun": {
+        "name": "创青春大赛",
+        "high_confidence": ("创青春", "中银杯"),
+        "medium_confidence": ("创业大赛", "中国青年创青春", "天津青年创青春"),
+    },
+}
+
+
+def _theme_material_ingestion_keyword_matches(text: str) -> str | None:
+    """Return the first matched trigger keyword or None."""
+    if not text:
+        return None
+    for kw in _FEISHU_THEME_MATERIAL_TRIGGER_KEYWORDS:
+        if kw in text:
+            return kw
+    return None
+
+
+def _should_route_to_theme_material_ingestion(
+    chat_id: str,
+    text: str,
+    has_attachments: bool,
+    is_mentioned: bool,
+) -> bool:
+    """Determine if message should route to theme material ingestion skill.
+
+    Returns True if:
+    - chat_id matches the theme material ingestion group, AND
+    - (message @mentions the bot OR contains trigger keywords OR has attachments)
+    """
+    if chat_id != _FEISHU_THEME_MATERIAL_INGESTION_GROUP_ID:
+        return False
+    if is_mentioned:
+        return True
+    if _theme_material_ingestion_keyword_matches(text):
+        return True
+    if has_attachments:
+        return True
+    return False
+
+
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
@@ -2848,8 +2946,50 @@ class FeishuAdapter(BasePlatformAdapter):
 
         Per-chat lock ensures messages in the same chat are processed one at a
         time (matches openclaw's createChatQueue serial queue behaviour).
+
+        Also performs content-based skill routing for competition consulting:
+        - If chat_id matches _FEISHU_COMPETITION_GROUP_ID
+        - AND message text contains a competition keyword
+        - Then set event.auto_skill to route to hermes-competition-consulting-qa
         """
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
+        text = getattr(event, "text", "") or ""
+
+        # Competition consulting skill routing
+        if chat_id == _FEISHU_COMPETITION_GROUP_ID:
+            matched_kw = _competition_keyword_matches(text)
+            if matched_kw:
+                event.auto_skill = "hermes-competition-consulting-qa"
+                logger.info(
+                    "[Feishu] Competition skill routing triggered: chat_id=%s matched_keyword=%s "
+                    "-> skill=hermes-competition-consulting-qa text_preview=%r",
+                    chat_id,
+                    matched_kw,
+                    text[:80],
+                )
+            else:
+                logger.debug(
+                    "[Feishu] Competition group message but no keyword match: chat_id=%s text_preview=%r",
+                    chat_id,
+                    text[:80],
+                )
+
+        # Theme material ingestion skill routing
+        # Route to theme-material-ingestion skill when:
+        # - chat_id matches the theme material ingestion group, AND
+        # - message @mentions bot OR contains trigger keywords OR has attachments
+        has_attachments = bool(getattr(event, "media_urls", None))
+        is_mentioned = False  # Simplified: trigger on keywords/attachments for now
+        if _should_route_to_theme_material_ingestion(chat_id, text, has_attachments, is_mentioned):
+            event.auto_skill = "theme-material-ingestion"
+            logger.info(
+                "[Feishu] Theme material ingestion routing triggered: chat_id=%s "
+                "text_preview=%r has_attachments=%s",
+                chat_id,
+                text[:80] if text else "",
+                has_attachments,
+            )
+
         chat_lock = self._get_chat_lock(chat_id)
         async with chat_lock:
             await self.handle_message(event)

@@ -4896,6 +4896,15 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     returning 0 without a terminal transition just loops forever.
     """
     crashed: list[str] = []
+    # On Windows the recorded worker_pid is the distlib console-script
+    # launcher shim (hermes.exe / the venv python launcher), which exits
+    # within seconds of spawning the real worker python child. _pid_alive()
+    # then reports the worker dead while it is still running orphaned, so
+    # PID-based crash detection produces a respawn storm. Fall back to
+    # claim-TTL reclamation (release_stale_claims) on Windows instead. Same
+    # launcher-shim-PID phenomenon as ``hermes update`` on Windows (#29341).
+    if os.name == "nt":
+        return crashed
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the

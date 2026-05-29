@@ -483,6 +483,7 @@ class CredentialPool:
         replace_shared_entries: bool = False,
         replace_entry_ids: Optional[Set[str]] = None,
         remove_entry_ids: Optional[Set[str]] = None,
+        update_order_entry_ids: Optional[Set[str]] = None,
         update_status_entry_ids: Optional[Set[str]] = None,
     ) -> None:
         write_credential_pool(
@@ -491,6 +492,7 @@ class CredentialPool:
             preserve_shared_entries=not replace_shared_entries,
             replace_entry_ids=frozenset(replace_entry_ids or ()),
             remove_entry_ids=frozenset(remove_entry_ids or ()),
+            update_order_entry_ids=frozenset(update_order_entry_ids or ()),
             update_status_entry_ids=frozenset(update_status_entry_ids or ()),
         )
 
@@ -1274,8 +1276,10 @@ class CredentialPool:
         )
         self._replace_entry(entry, updated)
         if self.provider == "openai-codex" and updated.source == "device_code":
-            persisted = auth_mod._read_codex_tokens(_lock=False)
-            tokens = dict(persisted["tokens"])
+            auth_store = _load_auth_store(auth_mod._codex_auth_file_path())
+            state = _load_provider_state(auth_store, "openai-codex") or {}
+            persisted_tokens = state.get("tokens")
+            tokens = dict(persisted_tokens) if isinstance(persisted_tokens, dict) else {}
             tokens["access_token"] = updated.access_token
             if updated.refresh_token:
                 tokens["refresh_token"] = updated.refresh_token
@@ -1465,7 +1469,7 @@ class CredentialPool:
             rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
             rotated.append(replace(entry, priority=len(self._entries) - 1))
             self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
-            self._persist()
+            self._persist(update_order_entry_ids={candidate.id for candidate in self._entries})
             self._current_id = entry.id
             return self.current() or entry
 
@@ -1618,6 +1622,7 @@ class CredentialPool:
                 self.provider == "openai-codex" and removed.source == "device_code"
             ),
             remove_entry_ids={removed.id},
+            update_order_entry_ids={entry.id for entry in self._entries},
         )
         if self._current_id == removed.id:
             self._current_id = None

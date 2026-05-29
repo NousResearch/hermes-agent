@@ -1177,6 +1177,81 @@ def test_auth_remove_codex_device_code_clears_canonical_root_in_profile_mode(tmp
     assert exc.value.code == "codex_auth_missing"
 
 
+def test_auth_remove_codex_device_code_clears_legacy_profile_provider_state(
+    tmp_path, monkeypatch,
+):
+    """Shared removal clears copied pre-migration profile tokens but keeps local rows."""
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, {"device_code"}),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "shared-at",
+                        "refresh_token": "shared-rt",
+                    },
+                },
+            },
+            "credential_pool": {
+                "openai-codex": [{
+                    "id": "shared-codex",
+                    "label": "shared-codex",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "device_code",
+                    "access_token": "shared-at",
+                    "refresh_token": "shared-rt",
+                }],
+            },
+        },
+    )
+    (profile_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "legacy-profile-at",
+                    "refresh_token": "legacy-profile-rt",
+                },
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "profile-manual",
+                "label": "profile-manual",
+                "auth_type": "oauth",
+                "priority": 1,
+                "source": "manual:device_code",
+                "access_token": "profile-at",
+                "refresh_token": "profile-rt",
+            }],
+        },
+    }))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="openai-codex", target="shared-codex"))
+
+    root_payload = json.loads((root_home / "auth.json").read_text())
+    assert "openai-codex" not in root_payload.get("providers", {})
+    assert root_payload["credential_pool"]["openai-codex"] == []
+    profile_payload = json.loads((profile_home / "auth.json").read_text())
+    assert "openai-codex" not in profile_payload.get("providers", {})
+    assert [entry["id"] for entry in profile_payload["credential_pool"]["openai-codex"]] == [
+        "profile-manual",
+    ]
+
+
 def test_auth_remove_codex_manual_device_code_stays_profile_local(tmp_path, monkeypatch):
     """Removing a profile-local manual Codex entry must leave the shared family intact."""
     root_home = tmp_path / "hermes"

@@ -223,6 +223,7 @@ def _clear_auth_store_provider(provider: str) -> bool:
     """Delete auth_store.providers[provider].  Returns True if deleted."""
     from hermes_cli.auth import (
         SHARED_CREDENTIAL_POOL_PROVIDERS,
+        _auth_file_path,
         _auth_store_lock,
         _codex_auth_file_path,
         _codex_auth_store_lock,
@@ -238,12 +239,22 @@ def _clear_auth_store_provider(provider: str) -> bool:
     lock = _codex_auth_store_lock if auth_file is not None else _auth_store_lock
     with lock():
         auth_store = _load_auth_store(auth_file)
+        cleared = False
         providers_dict = auth_store.get("providers")
         if isinstance(providers_dict, dict) and provider in providers_dict:
             del providers_dict[provider]
             _save_auth_store(auth_store, auth_file=auth_file)
-            return True
-    return False
+            cleared = True
+        local_auth_file = _auth_file_path()
+        if auth_file is not None and auth_file != local_auth_file:
+            with _auth_store_lock():
+                local_auth_store = _load_auth_store(local_auth_file)
+                local_providers = local_auth_store.get("providers")
+                if isinstance(local_providers, dict) and provider in local_providers:
+                    del local_providers[provider]
+                    _save_auth_store(local_auth_store, auth_file=local_auth_file)
+                    cleared = True
+        return cleared
 
 
 def _remove_nous_device_code(provider: str, removed) -> RemovalResult:

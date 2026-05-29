@@ -112,6 +112,7 @@ SHARED_CREDENTIAL_POOL_STATUS_FIELDS = frozenset({
     "last_error_message",
     "last_error_reset_at",
 })
+CREDENTIAL_POOL_ORDER_FIELDS = frozenset({"priority"})
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
 XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
@@ -1287,6 +1288,7 @@ def _merge_shared_credential_pool_status(
     snapshot_entries: List[Dict[str, Any]],
     auth_store: Dict[str, Any],
     *,
+    update_order_entry_ids: Set[str],
     update_status_entry_ids: Set[str],
 ) -> List[Dict[str, Any]]:
     """Merge shared snapshots without replaying stale OAuth tokens."""
@@ -1335,22 +1337,29 @@ def _merge_shared_credential_pool_status(
             and not _matches_canonical(current)
         ):
             updated = dict(snapshot)
-        elif (
-            isinstance(snapshot, dict)
-            and (
-                current.get("id") in update_status_entry_ids
-                or snapshot.get("id") in update_status_entry_ids
-            )
-            and isinstance(current_refresh, str)
-            and current_refresh
-            and snapshot.get("access_token") == current.get("access_token")
-            and snapshot.get("refresh_token") == current_refresh
-        ):
-            for field in SHARED_CREDENTIAL_POOL_STATUS_FIELDS:
-                if field in snapshot:
-                    updated[field] = snapshot[field]
-                else:
-                    updated.pop(field, None)
+        elif isinstance(snapshot, dict):
+            if (
+                current.get("id") in update_order_entry_ids
+                or snapshot.get("id") in update_order_entry_ids
+            ):
+                for field in CREDENTIAL_POOL_ORDER_FIELDS:
+                    if field in snapshot:
+                        updated[field] = snapshot[field]
+            if (
+                (
+                    current.get("id") in update_status_entry_ids
+                    or snapshot.get("id") in update_status_entry_ids
+                )
+                and isinstance(current_refresh, str)
+                and current_refresh
+                and snapshot.get("access_token") == current.get("access_token")
+                and snapshot.get("refresh_token") == current_refresh
+            ):
+                for field in SHARED_CREDENTIAL_POOL_STATUS_FIELDS:
+                    if field in snapshot:
+                        updated[field] = snapshot[field]
+                    else:
+                        updated.pop(field, None)
         merged.append(updated)
     merged.extend(
         dict(snapshot)
@@ -1366,6 +1375,7 @@ def _merge_credential_pool_snapshot_entries(
     *,
     replace_entry_ids: Set[str],
     remove_entry_ids: Set[str],
+    update_order_entry_ids: Set[str],
     update_status_entry_ids: Set[str],
 ) -> List[Dict[str, Any]]:
     """Merge independent rows while preserving newer persisted credentials."""
@@ -1389,6 +1399,10 @@ def _merge_credential_pool_snapshot_entries(
             merged.append(dict(snapshot))
             continue
         updated = dict(current)
+        if entry_id in update_order_entry_ids:
+            for field in CREDENTIAL_POOL_ORDER_FIELDS:
+                if field in snapshot:
+                    updated[field] = snapshot[field]
         if (
             entry_id in update_status_entry_ids
             and snapshot.get("access_token") == current.get("access_token")
@@ -1483,6 +1497,7 @@ def write_credential_pool(
     preserve_shared_entries: bool = False,
     replace_entry_ids: FrozenSet[str] = frozenset(),
     remove_entry_ids: FrozenSet[str] = frozenset(),
+    update_order_entry_ids: FrozenSet[str] = frozenset(),
     update_status_entry_ids: FrozenSet[str] = frozenset(),
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
@@ -1537,6 +1552,7 @@ def write_credential_pool(
                     current_shared_entries,
                     shared_entries,
                     shared_auth_store,
+                    update_order_entry_ids=set(update_order_entry_ids),
                     update_status_entry_ids=set(update_status_entry_ids),
                 )
                 if not split_shared_store:
@@ -1545,6 +1561,7 @@ def write_credential_pool(
                         profile_entries,
                         replace_entry_ids=set(replace_entry_ids),
                         remove_entry_ids=set(remove_entry_ids),
+                        update_order_entry_ids=set(update_order_entry_ids),
                         update_status_entry_ids=set(update_status_entry_ids),
                     )
             shared_pool[provider_id] = (
@@ -1572,6 +1589,7 @@ def write_credential_pool(
                             profile_entries,
                             replace_entry_ids=set(replace_entry_ids),
                             remove_entry_ids=set(remove_entry_ids),
+                            update_order_entry_ids=set(update_order_entry_ids),
                             update_status_entry_ids=set(update_status_entry_ids),
                         )
                     profile_pool[provider_id] = profile_entries

@@ -2898,6 +2898,81 @@ def test_codex_profile_pool_flush_does_not_restore_stale_manual_entry(tmp_path, 
     assert entries["manual-key"]["access_token"] == "sk-profile"
 
 
+def test_codex_pool_only_device_refresh_persists_canonical_state(tmp_path, monkeypatch):
+    """A restored device-code pool row can refresh even before singleton seeding."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "shared-codex",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "access-OLD",
+                "refresh_token": "refresh-OLD",
+            }],
+        },
+    })
+
+    import hermes_cli.auth as auth_mod
+    from agent.credential_pool import load_pool
+
+    monkeypatch.setattr(
+        auth_mod,
+        "refresh_codex_oauth_pure",
+        lambda *_args, **_kwargs: {
+            "access_token": "access-NEW",
+            "refresh_token": "refresh-NEW",
+            "last_refresh": "2026-05-29T00:00:00Z",
+        },
+    )
+    pool = load_pool("openai-codex")
+
+    refreshed = pool._refresh_entry(pool.entries()[0], force=True)
+
+    assert refreshed is not None
+    assert refreshed.refresh_token == "refresh-NEW"
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    state = auth_payload["providers"]["openai-codex"]
+    assert state["tokens"]["access_token"] == "access-NEW"
+    assert state["tokens"]["refresh_token"] == "refresh-NEW"
+    shared = auth_payload["credential_pool"]["openai-codex"][0]
+    assert shared["access_token"] == "access-NEW"
+    assert shared["refresh_token"] == "refresh-NEW"
+
+
+def test_codex_round_robin_priority_updates_survive_reload(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "manual-first",
+                "source": "manual:api_key",
+                "auth_type": "api_key",
+                "priority": 0,
+                "access_token": "sk-first",
+            }, {
+                "id": "manual-second",
+                "source": "manual:api_key",
+                "auth_type": "api_key",
+                "priority": 1,
+                "access_token": "sk-second",
+            }],
+        },
+    })
+
+    from agent.credential_pool import STRATEGY_ROUND_ROBIN, load_pool
+
+    pool = load_pool("openai-codex")
+    pool._strategy = STRATEGY_ROUND_ROBIN
+    assert pool.select().id == "manual-first"
+
+    reloaded = load_pool("openai-codex")
+    reloaded._strategy = STRATEGY_ROUND_ROBIN
+    assert reloaded.select().id == "manual-second"
+
+
 def test_sync_codex_entry_noop_when_tokens_match(tmp_path, monkeypatch):
     """When auth.json has the same tokens, sync should be a no-op."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

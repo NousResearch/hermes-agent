@@ -3942,7 +3942,9 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     Raises AuthError if no Codex tokens are stored.
     """
     if _lock:
-        with _codex_auth_store_lock():
+        with _codex_auth_store_lock(
+            timeout_seconds=_codex_auth_lock_timeout_seconds(),
+        ):
             auth_store = _load_auth_store(_codex_auth_file_path())
     else:
         auth_store = _load_auth_store(_codex_auth_file_path())
@@ -4384,10 +4386,9 @@ def refresh_codex_oauth_pure(
             relogin_required = True
         if code == "refresh_token_reused":
             message = (
-                "Codex refresh token was already consumed by another client "
-                "(e.g. Codex CLI or VS Code extension). "
-                "Run `codex` in your terminal to generate fresh tokens, "
-                "then run `hermes auth` to re-authenticate."
+                "Codex refresh token was already consumed. "
+                "Run `hermes model`, choose OpenAI Codex, and complete a fresh "
+                "Hermes login."
             )
             relogin_required = True
         # A 401/403 from the token endpoint always means the refresh token
@@ -4438,6 +4439,17 @@ def _codex_refresh_timeout_seconds() -> float:
             "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS",
             str(DEFAULT_CODEX_OAUTH_REFRESH_TIMEOUT_SECONDS),
         )
+    )
+
+
+def _codex_auth_lock_timeout_seconds(
+    refresh_timeout_seconds: Optional[float] = None,
+) -> float:
+    if refresh_timeout_seconds is None:
+        refresh_timeout_seconds = _codex_refresh_timeout_seconds()
+    return max(
+        float(AUTH_LOCK_TIMEOUT_SECONDS),
+        refresh_timeout_seconds + 5.0,
     )
 
 
@@ -4507,7 +4519,9 @@ def resolve_codex_runtime_credentials(
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
         # Re-read under lock to avoid racing with other Hermes processes
-        with _codex_auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+        with _codex_auth_store_lock(
+            timeout_seconds=_codex_auth_lock_timeout_seconds(refresh_timeout_seconds),
+        ):
             data = _read_codex_tokens(_lock=False)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()

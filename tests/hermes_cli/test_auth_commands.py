@@ -705,6 +705,41 @@ def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
     assert "primary" in out
 
 
+def test_auth_list_marks_only_composite_current_identity(monkeypatch, capsys):
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Entry:
+        def __init__(self, label, source):
+            self.id = "colliding-id"
+            self.label = label
+            self.auth_type = "oauth"
+            self.source = source
+            self.last_status = None
+            self.last_error_code = None
+            self.last_status_at = None
+
+    shared = _Entry("shared", "device_code")
+    manual = _Entry("manual", "manual:device_code")
+
+    class _Pool:
+        def entries(self):
+            return [shared, manual]
+
+        def peek(self):
+            return shared
+
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda _provider: _Pool())
+
+    class _Args:
+        provider = "openai-codex"
+
+    auth_list_command(_Args())
+
+    out = capsys.readouterr().out
+    assert out.count("←") == 1
+    assert "shared" in next(line for line in out.splitlines() if "←" in line)
+
+
 def test_auth_list_shows_exhausted_cooldown(monkeypatch, capsys):
     from hermes_cli.auth_commands import auth_list_command
 

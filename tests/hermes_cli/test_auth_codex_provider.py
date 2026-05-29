@@ -72,6 +72,27 @@ def test_read_codex_tokens_success(tmp_path, monkeypatch):
     assert data["tokens"]["refresh_token"] == "refresh"
 
 
+def test_read_codex_tokens_uses_refresh_aware_lock_timeout(tmp_path, monkeypatch):
+    """Readers wait long enough for another process's slow valid refresh."""
+    import hermes_cli.auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(hermes_home)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20")
+    captured = {}
+
+    @contextmanager
+    def _lock(*, timeout_seconds):
+        captured["timeout_seconds"] = timeout_seconds
+        yield
+
+    monkeypatch.setattr(auth_mod, "_codex_auth_store_lock", _lock)
+
+    assert _read_codex_tokens()["tokens"]["access_token"] == "access"
+    assert captured["timeout_seconds"] == 25.0
+
+
 def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
@@ -898,8 +919,11 @@ def test_refresh_parses_openai_nested_error_shape_refresh_token_reused(monkeypat
     err = exc_info.value
     assert err.code == "refresh_token_reused"
     assert err.relogin_required is True
-    # The existing dedicated branch should override the message with actionable guidance.
-    assert "already consumed by another client" in str(err)
+    # The dedicated branch must point at Hermes's independent login flow.
+    assert "already consumed" in str(err)
+    assert "Run `hermes model`" in str(err)
+    assert "fresh Hermes login" in str(err)
+    assert "Run `codex`" not in str(err)
 
 
 def test_refresh_parses_openai_nested_error_shape_generic_code(monkeypatch):

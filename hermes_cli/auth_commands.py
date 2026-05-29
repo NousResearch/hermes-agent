@@ -19,6 +19,7 @@ from agent.credential_pool import (
     STRATEGY_RANDOM,
     STRATEGY_LEAST_USED,
     PooledCredential,
+    _credential_identity,
     _exhausted_until,
     _normalize_custom_pool_name,
     get_pool_strategy,
@@ -444,7 +445,7 @@ def auth_list_command(args) -> None:
         print(f"{provider} ({len(entries)} credentials):")
         for idx, entry in enumerate(entries, start=1):
             marker = "  "
-            if current is not None and entry.id == current.id:
+            if current is not None and _credential_identity(entry) == _credential_identity(current):
                 marker = "← "
             status = _format_exhausted_status(entry)
             source = _display_source(entry.source)

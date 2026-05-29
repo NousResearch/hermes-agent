@@ -62,6 +62,55 @@ def _ra():
     return run_agent
 
 
+def _tool_search_scoped_names(agent) -> frozenset:
+    """Return the deferrable tool names the session may invoke via tool_call.
+
+    The Tool Search unwrap dispatches the underlying tool directly, bypassing
+    the bridge branch (and its scope check) in
+    ``model_tools.handle_function_call``. To keep a restricted-toolset session
+    (subagent, kanban worker, curated gateway session) from reaching tools it
+    was never granted, the unwrap validates the underlying name against this
+    set: the deferrable subset of the session's own enabled/disabled toolset
+    scope.
+
+    Result is cached on the agent and refreshed when the tool registry's
+    generation changes (e.g. an MCP server reconnects), so the common case is
+    a dict lookup, not a full tool-defs rebuild on every tool call.
+    """
+    try:
+        import model_tools
+        from tools import tool_search as _ts
+        from tools.registry import registry as _registry
+    except Exception:
+        return frozenset()
+
+    enabled = getattr(agent, "enabled_toolsets", None)
+    disabled = getattr(agent, "disabled_toolsets", None)
+    cache_key = (
+        getattr(_registry, "_generation", 0),
+        frozenset(enabled) if enabled is not None else None,
+        frozenset(disabled) if disabled is not None else None,
+    )
+    cached = getattr(agent, "_tool_search_scope_cache", None)
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+    try:
+        scoped_defs = model_tools.get_tool_definitions(
+            enabled_toolsets=enabled,
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        ) or []
+        names = _ts.scoped_deferrable_names(scoped_defs)
+    except Exception:
+        names = frozenset()
+    try:
+        agent._tool_search_scope_cache = (cache_key, names)
+    except Exception:
+        pass
+    return names
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -110,13 +159,28 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # The original tool_call entry on ``tool_call.function`` is left
         # untouched so the conversation transcript and the matching
         # tool_call_id are preserved exactly as the model emitted them.
+        #
+        # Scope gate: the unwrap dispatches the underlying tool directly
+        # (bypassing the bridge branch in handle_function_call and its
+        # scope check), so we enforce session toolset scope HERE. A tool
+        # the session was not granted is rejected before any checkpoint,
+        # hook, or dispatch fires.
+        _ts_scope_block = None
         try:
             from tools import tool_search as _ts
             if function_name == _ts.TOOL_CALL_NAME:
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
-                    function_name = _underlying
-                    function_args = _underlying_args
+                    if _underlying in _tool_search_scoped_names(agent):
+                        function_name = _underlying
+                        function_args = _underlying_args
+                    else:
+                        _ts_scope_block = json.dumps({
+                            "error": (
+                                f"'{_underlying}' is not available in this session. "
+                                "Use tool_search to find tools you can call."
+                            ),
+                        }, ensure_ascii=False)
         except Exception:
             pass
 
@@ -144,21 +208,25 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
         block_result = None
         blocked_by_guardrail = False
-        try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            block_message = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
-            )
-        except Exception:
-            block_message = None
-
-        if block_message is not None:
-            block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+        if _ts_scope_block is not None:
+            # Out-of-scope tool_call: reject before hooks/guardrails/dispatch.
+            block_result = _ts_scope_block
         else:
-            guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
-            if not guardrail_decision.allows_execution:
-                block_result = agent._guardrail_block_result(guardrail_decision)
-                blocked_by_guardrail = True
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                block_message = get_pre_tool_call_block_message(
+                    function_name, function_args, task_id=effective_task_id or "",
+                )
+            except Exception:
+                block_message = None
+
+            if block_message is not None:
+                block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+            else:
+                guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+                if not guardrail_decision.allows_execution:
+                    block_result = agent._guardrail_block_result(guardrail_decision)
+                    blocked_by_guardrail = True
 
         parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
 
@@ -517,26 +585,38 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         if not isinstance(function_args, dict):
             function_args = {}
 
-        # Tool Search unwrap — see _execute_tool_calls for full rationale.
+        # Tool Search unwrap — see execute_tool_calls_concurrent for full
+        # rationale, including the scope gate (the unwrap dispatches the
+        # underlying tool directly, so session toolset scope is enforced here).
+        _ts_scope_block: Optional[str] = None
         try:
             from tools import tool_search as _ts
             if function_name == _ts.TOOL_CALL_NAME:
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
-                    function_name = _underlying
-                    function_args = _underlying_args
+                    if _underlying in _tool_search_scoped_names(agent):
+                        function_name = _underlying
+                        function_args = _underlying_args
+                    else:
+                        _ts_scope_block = (
+                            f"'{_underlying}' is not available in this session. "
+                            "Use tool_search to find tools you can call."
+                        )
         except Exception:
             pass
 
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
-        try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            _block_msg = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
-            )
-        except Exception:
-            pass
+        if _ts_scope_block is not None:
+            _block_msg = _ts_scope_block
+        else:
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                _block_msg = get_pre_tool_call_block_message(
+                    function_name, function_args, task_id=effective_task_id or "",
+                )
+            except Exception:
+                pass
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:
@@ -783,6 +863,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     session_id=agent.session_id or "",
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                     skip_pre_tool_call_hook=True,
+                    enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                    disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 )
                 _spinner_result = function_result
             except Exception as tool_error:
@@ -803,6 +885,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     session_id=agent.session_id or "",
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                     skip_pre_tool_call_hook=True,
+                    enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                    disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 )
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"

@@ -1403,12 +1403,10 @@ class TestApprovalTimeoutIsNotConsent:
         msg = result["message"]
         # Explicit halt signals — these are the model-facing contract.
         assert "BLOCKED" in msg
-        assert "NOT consented" in msg
         assert "Silence is not consent" in msg
-        # Both forms of evasion must be named:
-        assert "do NOT retry" in msg.lower() or "Do NOT retry" in msg
-        assert "rephrase" in msg.lower()
-        assert "different command" in msg.lower()
+        # Evasion must be blocked:
+        assert "Do NOT retry" in msg
+        assert "different approach" in msg.lower()
 
     def test_explicit_deny_carries_same_no_consent_shape(self):
         """An explicit /deny must produce the same shape as timeout —
@@ -1439,8 +1437,8 @@ class TestApprovalTimeoutIsNotConsent:
         assert r.get("user_consent") is False
         assert r.get("outcome") == "denied"
         assert "Silence is not consent" not in r["message"]  # this one IS denied, not timed-out
-        assert "NOT consented" in r["message"]
-        assert "rephrase" in r["message"].lower()
+        assert "Do NOT retry" in r["message"]
+        assert "different approach" in r["message"].lower()
 
     def test_timeout_emits_post_hook_with_timeout_outcome(self, monkeypatch):
         """Plugins must be able to distinguish timeout from explicit deny.

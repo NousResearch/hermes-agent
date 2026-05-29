@@ -248,6 +248,29 @@ class TestTickWorkdirPartition:
 # scheduler.run_job: TERMINAL_CWD + skip_context_files wiring
 # ---------------------------------------------------------------------------
 
+class TestBuildJobPromptWorkdirPathHint:
+    def test_workdir_prompt_warns_about_container_home_expansion(self, tmp_path):
+        import cron.scheduler as sched
+
+        code_root = tmp_path / "Users" / "bryan" / "code"
+        code_root.mkdir(parents=True)
+        workdir = code_root / "obsidian-vault"
+        workdir.mkdir()
+
+        prompt = sched._build_job_prompt(
+            {
+                "id": "abc123abc123",
+                "name": "path-aware-job",
+                "prompt": "Inspect shared memory.",
+                "workdir": str(workdir),
+            }
+        )
+
+        assert f"Configured host workdir: {workdir}" in prompt
+        assert f"Shared workspace root: {code_root}" in prompt
+        assert "Do not expand `~/code` to `/root/code`" in prompt
+
+
 class TestRunJobTerminalCwd:
     """
     run_job sets TERMINAL_CWD + flips skip_context_files=False when workdir

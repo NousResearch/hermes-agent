@@ -102,6 +102,119 @@ class TestBuildJobPromptContextFrom:
         assert "Today's top story: AI is everywhere." in prompt
         assert f"Output from job '{job_a['id']}'" in prompt
 
+    def test_context_from_extracts_response_from_cron_artifact(self, cron_env):
+        """Downstream jobs should not inherit upstream prompts or cron hints."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Find news", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-04-22_10-00-00.md").write_text(
+            """# Cron Job: upstream
+
+**Job ID:** abc123
+**Run Time:** 2026-04-22 10:00:00
+**Schedule:** every 1h
+
+## Prompt
+
+[IMPORTANT: internal delivery instruction]
+
+Find private setup details.
+
+## Response
+
+Actionable upstream result.
+""",
+            encoding="utf-8",
+        )
+
+        job_b = create_job(
+            prompt="Summarize the news",
+            schedule="every 2h",
+            context_from=job_a["id"],
+        )
+
+        prompt = _build_job_prompt(job_b)
+        assert "Actionable upstream result." in prompt
+        assert "Find private setup details" not in prompt
+        assert prompt.count("[IMPORTANT:") == 1
+
+    def test_context_from_uses_outer_response_for_chained_artifact(self, cron_env):
+        """Nested upstream artifacts should not make context extraction stop early."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Validate", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-04-22_10-00-00.md").write_text(
+            """# Cron Job: validation
+
+## Prompt
+
+```
+# Cron Job: review
+
+## Response
+
+Nested review response.
+```
+
+## Response
+
+Final validation response.
+""",
+            encoding="utf-8",
+        )
+
+        job_b = create_job(
+            prompt="Queue actions",
+            schedule="every 2h",
+            context_from=job_a["id"],
+        )
+
+        prompt = _build_job_prompt(job_b)
+        assert "Final validation response." in prompt
+        assert "Nested review response." not in prompt
+
+    def test_context_from_extracts_error_from_failed_cron_artifact(self, cron_env):
+        """Failed upstream jobs should pass the failure, not the failed prompt."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Find news", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-04-22_10-00-00.md").write_text(
+            """# Cron Job: upstream (FAILED)
+
+**Job ID:** abc123
+
+## Prompt
+
+Run broad analysis.
+
+## Error
+
+```
+RuntimeError: upstream failed
+```
+""",
+            encoding="utf-8",
+        )
+
+        job_b = create_job(
+            prompt="Summarize the news",
+            schedule="every 2h",
+            context_from=job_a["id"],
+        )
+
+        prompt = _build_job_prompt(job_b)
+        assert "RuntimeError: upstream failed" in prompt
+        assert "Run broad analysis" not in prompt
+
     def test_uses_most_recent_output(self, cron_env):
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler import _build_job_prompt
@@ -198,6 +311,31 @@ class TestBuildJobPromptContextFrom:
         prompt = _build_job_prompt(job_b)
         assert "truncated" in prompt
         assert "x" * 10000 not in prompt
+
+    def test_output_truncated_at_configured_context_limit(self, cron_env, monkeypatch):
+        """Configured cron context limits should reduce upstream prompt bloat."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        monkeypatch.setattr(
+            "cron.scheduler.load_config",
+            lambda: {"cron": {"context_from_max_chars": 1200}},
+        )
+
+        job_a = create_job(prompt="Find data", schedule="every 1h")
+        out_dir = OUTPUT_DIR / job_a["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        big_output = "x" * 5000
+        (out_dir / "2026-04-22_10-00-00.md").write_text(big_output, encoding="utf-8")
+
+        job_b = create_job(
+            prompt="Process", schedule="every 2h", context_from=job_a["id"]
+        )
+        prompt = _build_job_prompt(job_b)
+        assert "truncated" in prompt
+        assert "x" * 5000 not in prompt
+        assert "x" * 1200 in prompt
+        assert "x" * 1201 not in prompt
 
     def test_graceful_when_file_deleted_between_listing_and_reading(self, cron_env):
         """Job should not crash if output file is deleted mid-read."""

@@ -33,6 +33,15 @@ INSTALL_DIR="/opt/hermes"
 mkdir -p "$HERMES_HOME"
 
 # --- UID/GID remap ---
+# Accept PUID/PGID as aliases for HERMES_UID/HERMES_GID.  NAS users (UGOS,
+# Synology, unRAID) expect the LinuxServer.io PUID/PGID convention and
+# bind-mount /opt/data from a host directory owned by their own UID; without
+# this alias those vars are silently ignored and the s6-setuidgid drop to
+# UID 10000 leaves the runtime unable to read the volume.  HERMES_UID/
+# HERMES_GID still win when both are set.  See #15290, salvages #25872.
+HERMES_UID="${HERMES_UID:-${PUID:-}}"
+HERMES_GID="${HERMES_GID:-${PGID:-}}"
+
 if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
     echo "[stage2] Changing hermes UID to $HERMES_UID"
     usermod -u "$HERMES_UID" hermes

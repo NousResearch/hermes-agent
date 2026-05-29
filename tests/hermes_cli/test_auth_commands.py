@@ -1187,16 +1187,6 @@ def test_seed_from_singletons_respects_codex_suppression(tmp_path, monkeypatch):
         "suppressed_sources": {"openai-codex": ["device_code"]},
     }))
 
-    # Make _import_codex_cli_tokens return tokens — these would normally trigger
-    # a re-seed, but suppression must skip it.
-    def _fake_import():
-        return {
-            "access_token": "would-be-reimported",
-            "refresh_token": "would-be-reimported",
-        }
-
-    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", _fake_import)
-
     from agent.credential_pool import _seed_from_singletons
 
     entries = []
@@ -1548,7 +1538,7 @@ def test_credential_sources_registry_has_expected_steps():
         "~/.claude/.credentials.json",
         "~/.hermes/.anthropic_oauth.json",
         "auth.json providers.nous",
-        "auth.json providers.openai-codex + ~/.codex/auth.json",
+        "auth.json providers.openai-codex",
         "auth.json providers.minimax-oauth",
         "~/.qwen/oauth_creds.json",
         "Custom provider config.yaml api_key field",

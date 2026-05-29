@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import base64
 import json
+import multiprocessing
+import threading
 import time
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 import pytest
 
@@ -298,11 +302,6 @@ def test_exhausted_401_entry_resets_after_five_minutes(tmp_path, monkeypatch):
 
 def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    # Prevent auto-seeding from Codex CLI tokens on the host
-    monkeypatch.setattr(
-        "hermes_cli.auth._import_codex_cli_tokens",
-        lambda: None,
-    )
     _write_auth_store(
         tmp_path,
         {
@@ -2601,6 +2600,98 @@ def _codex_auth_store(access: str, refresh: str) -> dict:
     }
 
 
+def _refresh_codex_pool_worker(
+    hermes_home: str,
+    token_url: str,
+    start_event,
+    result_queue,
+) -> None:
+    try:
+        import os
+
+        os.environ["HERMES_HOME"] = hermes_home
+
+        import hermes_cli.auth as auth_mod
+        from agent.credential_pool import load_pool
+
+        auth_mod.CODEX_OAUTH_TOKEN_URL = token_url
+        start_event.wait(timeout=10)
+        pool = load_pool("openai-codex")
+        available = pool._available_entries(clear_expired=True, refresh=True)
+        result_queue.put(("ok", available[0].refresh_token))
+    except Exception as exc:
+        result_queue.put(("error", repr(exc)))
+
+
+def _run_concurrent_codex_pool_refreshes(hermes_homes: list[str], fresh_access: str):
+    requests = []
+    user_agents = []
+    first_request_started = threading.Event()
+    release_first_request = threading.Event()
+
+    class _TokenHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = parse_qs(self.rfile.read(length).decode("utf-8"))
+            refresh_token = payload["refresh_token"][0]
+            requests.append(refresh_token)
+            user_agents.append(self.headers.get("User-Agent"))
+            if refresh_token == "refresh-0":
+                first_request_started.set()
+                assert release_first_request.wait(timeout=10)
+            body = json.dumps({
+                "access_token": fresh_access,
+                "refresh_token": "refresh-1",
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _TokenHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    token_url = f"http://127.0.0.1:{server.server_port}/oauth/token"
+
+    ctx = multiprocessing.get_context("spawn")
+    start_event = ctx.Event()
+    result_queue = ctx.Queue()
+    workers = [
+        ctx.Process(
+            target=_refresh_codex_pool_worker,
+            args=(hermes_home, token_url, start_event, result_queue),
+        )
+        for hermes_home in hermes_homes
+    ]
+    try:
+        for worker in workers:
+            worker.start()
+        start_event.set()
+        assert first_request_started.wait(timeout=10)
+        time.sleep(0.25)
+        assert requests == ["refresh-0"]
+        release_first_request.set()
+        results = [result_queue.get(timeout=10) for _ in workers]
+        for worker in workers:
+            worker.join(timeout=10)
+            assert worker.exitcode == 0
+    finally:
+        release_first_request.set()
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+            worker.join(timeout=5)
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+
+    return results, requests, user_agents
+
+
 def test_sync_codex_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypatch):
     """When auth.json has newer Codex tokens, the pool entry should adopt them."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -2639,6 +2730,133 @@ def test_sync_codex_entry_noop_when_tokens_match(tmp_path, monkeypatch):
 
     synced = pool._sync_codex_entry_from_auth_store(entry)
     assert synced is entry
+
+
+def test_codex_pool_refresh_serializes_across_spawned_processes(tmp_path, monkeypatch):
+    """Two Hermes processes must never submit the same single-use refresh token."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    old_access = _jwt_with_claims({"exp": int(time.time()) - 60})
+    fresh_access = _jwt_with_claims({"exp": int(time.time()) + 3600})
+    _write_auth_store(tmp_path, _codex_auth_store(old_access, "refresh-0"))
+
+    results, requests, user_agents = _run_concurrent_codex_pool_refreshes(
+        [str(tmp_path / "hermes")] * 2,
+        fresh_access,
+    )
+
+    assert results == [("ok", "refresh-1"), ("ok", "refresh-1")]
+    assert requests == ["refresh-0"]
+    from hermes_cli.auth import CODEX_OAUTH_USER_AGENT
+    assert user_agents == [CODEX_OAUTH_USER_AGENT]
+
+
+def test_codex_pool_refresh_serializes_across_profiles(tmp_path, monkeypatch):
+    """Named profiles must share the same Codex refresh lock and token winner."""
+    root_home = tmp_path / "hermes"
+    profiles = [root_home / "profiles" / name for name in ("alpha", "beta")]
+    for profile in profiles:
+        profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profiles[0]))
+    old_access = _jwt_with_claims({"exp": int(time.time()) - 60})
+    fresh_access = _jwt_with_claims({"exp": int(time.time()) + 3600})
+    auth_store = _codex_auth_store(old_access, "refresh-0")
+    from hermes_cli.auth import CODEX_REFRESH_OWNER
+    auth_store["providers"]["openai-codex"]["refresh_owner"] = CODEX_REFRESH_OWNER
+    root_home.mkdir(parents=True, exist_ok=True)
+    (root_home / "auth.json").write_text(json.dumps(auth_store, indent=2))
+
+    results, requests, _user_agents = _run_concurrent_codex_pool_refreshes(
+        [str(profile) for profile in profiles],
+        fresh_access,
+    )
+
+    assert results == [("ok", "refresh-1"), ("ok", "refresh-1")]
+    assert requests == ["refresh-0"]
+
+
+def test_codex_manual_pool_refresh_serializes_across_processes(tmp_path, monkeypatch):
+    """Persisted manual OAuth entries also must not replay a consumed token."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    old_access = _jwt_with_claims({"exp": int(time.time()) - 60})
+    fresh_access = _jwt_with_claims({"exp": int(time.time()) + 3600})
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "manual-codex",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": old_access,
+                "refresh_token": "refresh-0",
+            }],
+        },
+    })
+
+    results, requests, _user_agents = _run_concurrent_codex_pool_refreshes(
+        [str(tmp_path / "hermes")] * 2,
+        fresh_access,
+    )
+
+    assert results == [("ok", "refresh-1"), ("ok", "refresh-1")]
+    assert requests == ["refresh-0"]
+
+
+def test_codex_pool_refresh_serializes_with_singleton_refresh(tmp_path, monkeypatch):
+    """Pool refresh must adopt a token rotated by the singleton path."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    old_access = _jwt_with_claims({"exp": int(time.time()) - 60})
+    fresh_access = _jwt_with_claims({"exp": int(time.time()) + 3600})
+    _write_auth_store(tmp_path, _codex_auth_store(old_access, "refresh-0"))
+
+    import hermes_cli.auth as auth_mod
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    first_request_started = threading.Event()
+    release_first_request = threading.Event()
+    refresh_tokens = []
+
+    def _refresh(_access_token, refresh_token, **_kwargs):
+        refresh_tokens.append(refresh_token)
+        first_request_started.set()
+        assert release_first_request.wait(timeout=10)
+        return {
+            "access_token": fresh_access,
+            "refresh_token": "refresh-1",
+            "last_refresh": "2026-05-29T00:00:00Z",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _refresh)
+    singleton_result = {}
+    pool_result = {}
+    singleton_thread = threading.Thread(
+        target=lambda: singleton_result.update(
+            auth_mod.resolve_codex_runtime_credentials(
+                force_refresh=True,
+                refresh_if_expiring=False,
+            )
+        )
+    )
+    pool_thread = threading.Thread(
+        target=lambda: pool_result.update(
+            entries=pool._available_entries(clear_expired=True, refresh=True)
+        )
+    )
+
+    singleton_thread.start()
+    assert first_request_started.wait(timeout=10)
+    pool_thread.start()
+    time.sleep(0.1)
+    assert refresh_tokens == ["refresh-0"]
+    release_first_request.set()
+    singleton_thread.join(timeout=10)
+    pool_thread.join(timeout=10)
+
+    assert not singleton_thread.is_alive()
+    assert not pool_thread.is_alive()
+    assert refresh_tokens == ["refresh-0"]
+    assert singleton_result["api_key"] == fresh_access
+    assert pool_result["entries"][0].refresh_token == "refresh-1"
 
 
 def test_codex_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch):

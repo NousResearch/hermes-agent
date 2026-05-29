@@ -386,7 +386,7 @@ tool_timeout_sec = 600.0
 
 已知限制：
 
-- **Hermes 认证和 Codex 认证是独立的会话。** 为获得最佳体验，你需要同时运行 `codex login` 和 `hermes auth login codex`（运行时使用 Codex 的会话进行 LLM 调用）。这是 Hermes `_import_codex_cli_tokens` 中的有意设计——Hermes 不会与 Codex CLI 共享 OAuth 状态，以避免在 token 刷新时相互覆盖。
+- **Hermes 认证和 Codex 认证是独立的会话。** 为获得最佳体验，你需要同时运行 `codex login` 和 `hermes auth add openai-codex`（运行时使用 Codex 的会话进行 LLM 调用）。Hermes 不会导入或共享 Codex CLI 的 OAuth 状态，因为刷新 token 只能使用一次。
 - **`delegate_task`、`memory`、`session_search`、`todo` 在此运行时上不可用。** 它们需要运行中的 AIAgent 上下文，无状态的 MCP 回调无法提供。需要这些工具时，请使用 `/codex-runtime auto`。
 - **当 Codex 未跟踪变更集时，审批提示中没有内联 patch 预览。** Codex 的 `fileChange` 审批参数并不总是携带变更集。Hermes 会尽可能从对应的 `item/started` 通知中缓存数据，但如果审批在事件项流式传输完成之前到达，提示会回退到 Codex 提供的 `reason`。
 - **亚秒级取消无法保证。** 流式传输中途的中断（Codex 响应时按 Ctrl+C）通过 `turn/interrupt` 发送，但如果 Codex 已经刷新了最终消息，你仍会收到该响应。

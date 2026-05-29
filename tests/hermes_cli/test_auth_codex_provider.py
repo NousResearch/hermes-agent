@@ -10,11 +10,12 @@ import pytest
 
 from hermes_cli.auth import (
     AuthError,
+    CODEX_OAUTH_USER_AGENT,
+    CODEX_REFRESH_OWNER,
     DEFAULT_CODEX_BASE_URL,
     PROVIDER_REGISTRY,
     _read_codex_tokens,
     _save_codex_tokens,
-    _import_codex_cli_tokens,
     _login_openai_codex,
     refresh_codex_oauth_pure,
     resolve_codex_runtime_credentials,
@@ -233,6 +234,41 @@ def test_save_codex_tokens_roundtrip(tmp_path, monkeypatch):
     assert data["tokens"]["refresh_token"] == "rt456"
 
 
+def test_save_codex_tokens_targets_canonical_root_in_profile_mode(tmp_path, monkeypatch):
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    _save_codex_tokens({"access_token": "profile-at", "refresh_token": "profile-rt"})
+
+    root_auth = json.loads((root_home / "auth.json").read_text())
+    state = root_auth["providers"]["openai-codex"]
+    assert state["tokens"]["access_token"] == "profile-at"
+    assert state["tokens"]["refresh_token"] == "profile-rt"
+    assert state["refresh_owner"] == CODEX_REFRESH_OWNER
+    assert not (profile_home / "auth.json").exists()
+    assert _read_codex_tokens()["tokens"]["refresh_token"] == "profile-rt"
+
+
+def test_profile_mode_refuses_to_refresh_unclaimed_legacy_tokens(tmp_path, monkeypatch):
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    _setup_hermes_auth(root_home, access_token="legacy-at", refresh_token="legacy-rt")
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(
+        "hermes_cli.auth._refresh_codex_auth_tokens",
+        lambda *_args, **_kwargs: pytest.fail("legacy profile token must not be spent"),
+    )
+
+    with pytest.raises(AuthError) as exc:
+        resolve_codex_runtime_credentials(force_refresh=True, refresh_if_expiring=False)
+
+    assert exc.value.code == "codex_auth_refresh_owner_unclaimed"
+    assert exc.value.relogin_required is True
+
+
 def test_save_codex_tokens_syncs_credential_pool(tmp_path, monkeypatch):
     """Re-auth must update the credential_pool device_code entry, not just providers.
 
@@ -382,25 +418,6 @@ def test_save_codex_tokens_syncs_manual_device_code_entries(tmp_path, monkeypatc
     assert "refresh_token" not in api_key or api_key.get("refresh_token") is None
 
 
-def test_import_codex_cli_tokens(tmp_path, monkeypatch):
-    codex_home = tmp_path / "codex-cli"
-    codex_home.mkdir(parents=True, exist_ok=True)
-    (codex_home / "auth.json").write_text(json.dumps({
-        "tokens": {"access_token": "cli-at", "refresh_token": "cli-rt"},
-    }))
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    tokens = _import_codex_cli_tokens()
-    assert tokens is not None
-    assert tokens["access_token"] == "cli-at"
-    assert tokens["refresh_token"] == "cli-rt"
-
-
-def test_import_codex_cli_tokens_missing(tmp_path, monkeypatch):
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "nonexistent"))
-    assert _import_codex_cli_tokens() is None
-
-
 def test_codex_tokens_not_written_to_shared_file(tmp_path, monkeypatch):
     """Verify _save_codex_tokens writes only to Hermes auth store, not ~/.codex/."""
     hermes_home = tmp_path / "hermes"
@@ -465,6 +482,29 @@ def _patch_httpx(monkeypatch, response):
         return _StubHTTPClient(response)
 
     monkeypatch.setattr("hermes_cli.auth.httpx.Client", _factory)
+
+
+def test_refresh_sends_hermes_cli_user_agent(monkeypatch):
+    captured = {}
+
+    class _CapturingHTTPClient(_StubHTTPClient):
+        def post(self, *args, **kwargs):
+            captured.update(kwargs)
+            return super().post(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.httpx.Client",
+        lambda *args, **kwargs: _CapturingHTTPClient(
+            _StubHTTPResponse(
+                200,
+                {"access_token": "access-new", "refresh_token": "refresh-new"},
+            )
+        ),
+    )
+
+    refresh_codex_oauth_pure("access-old", "refresh-old")
+
+    assert captured["headers"]["User-Agent"] == CODEX_OAUTH_USER_AGENT
 
 
 def test_refresh_parses_openai_nested_error_shape_refresh_token_reused(monkeypatch):
@@ -630,10 +670,6 @@ def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypa
         lambda: {"base_url": DEFAULT_CODEX_BASE_URL},
     )
     monkeypatch.setattr(
-        "hermes_cli.auth._import_codex_cli_tokens",
-        lambda: {"access_token": "cli-at", "refresh_token": "cli-rt"},
-    )
-    monkeypatch.setattr(
         "hermes_cli.auth._codex_device_code_login",
         lambda: {
             "tokens": {"access_token": "fresh-at", "refresh_token": "fresh-rt"},
@@ -658,3 +694,58 @@ def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypa
 
     assert called["device_login"] == 1
     assert called["tokens"]["access_token"] == "fresh-at"
+
+
+def test_login_openai_codex_never_adopts_codex_cli_tokens(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-cli"
+    codex_home.mkdir(parents=True)
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {"access_token": "cli-at", "refresh_token": "cli-rt"},
+    }))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda: (_ for _ in ()).throw(
+            AuthError(
+                "missing",
+                provider="openai-codex",
+                code="codex_auth_missing",
+                relogin_required=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {"access_token": "fresh-at", "refresh_token": "fresh-rt"},
+            "last_refresh": "2026-05-29T00:00:00Z",
+            "base_url": DEFAULT_CODEX_BASE_URL,
+        },
+    )
+
+    saved = {}
+    monkeypatch.setattr(
+        "hermes_cli.auth._save_codex_tokens",
+        lambda tokens, last_refresh=None: saved.update(
+            tokens=dict(tokens),
+            last_refresh=last_refresh,
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._update_config_for_provider",
+        lambda *args, **kwargs: "/tmp/config.yaml",
+    )
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt="": (_ for _ in ()).throw(
+            AssertionError("Codex login should not offer to import CLI tokens")
+        ),
+    )
+
+    _login_openai_codex(SimpleNamespace(), PROVIDER_REGISTRY["openai-codex"])
+
+    assert saved["tokens"] == {
+        "access_token": "fresh-at",
+        "refresh_token": "fresh-rt",
+    }

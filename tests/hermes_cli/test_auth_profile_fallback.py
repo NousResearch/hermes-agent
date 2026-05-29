@@ -109,6 +109,33 @@ def test_profile_with_entries_fully_shadows_global(profile_env):
     assert entries[0]["access_token"] == "sk-or-profile"
 
 
+def test_codex_pool_uses_global_root_even_when_profile_has_entries(profile_env):
+    """Single-use Codex OAuth tokens must not be copied into profile-local pools."""
+    from hermes_cli.auth import read_credential_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "glob-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "global-at",
+            "refresh_token": "global-rt",
+        }],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "stale-profile-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "stale-profile-at",
+            "refresh_token": "stale-profile-rt",
+        }],
+    }))
+
+    assert [entry["id"] for entry in read_credential_pool("openai-codex")] == ["glob-codex"]
+    assert [entry["id"] for entry in read_credential_pool(None)["openai-codex"]] == ["glob-codex"]
+
+
 def test_per_provider_shadowing_is_independent(profile_env):
     """Profile can override one provider while inheriting another from global."""
     from hermes_cli.auth import read_credential_pool
@@ -450,3 +477,20 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
 
     # Subsequent read returns profile (shadows global).
     assert [e["id"] for e in read_credential_pool("openrouter")] == ["prof-new"]
+
+
+def test_write_codex_credential_pool_targets_global_root(profile_env):
+    from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+    write_credential_pool("openai-codex", [{
+        "id": "shared-codex",
+        "source": "manual:dashboard_device_code",
+        "auth_type": "oauth",
+        "access_token": "shared-at",
+        "refresh_token": "shared-rt",
+    }])
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    assert global_data["credential_pool"]["openai-codex"][0]["id"] == "shared-codex"
+    assert not (profile_env["profile"] / "auth.json").exists()
+    assert [e["id"] for e in read_credential_pool("openai-codex")] == ["shared-codex"]

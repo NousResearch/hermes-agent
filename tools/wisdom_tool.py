@@ -250,11 +250,12 @@ WISDOM_CAPTURE_SCHEMA = {
     "description": (
         "Durably save a user idea in Hermes Wisdom. Use when the user explicitly asks to remember, "
         "save, capture, note, log, preserve, or record an idea. Trigger phrases include 'remember "
-        "this', 'save this thought', 'capture this', 'note this', 'podcast idea', 'book note', "
-        "'health note', 'investing thought', and 'business idea'. Do not use for ordinary chat "
-        "unless the user clearly requests durable capture. Never claim something is saved unless "
-        "this tool succeeds. The text input is preserved as the exact original; secret-like text "
-        "is blocked rather than redacted into a changed original."
+        "this', 'save this thought', 'capture this', 'note this', 'podcast note', 'podcast idea', "
+        "'book note', 'health note', 'investing thought', and 'business idea'. Use for source-aware "
+        "capture when the user includes simple Source: or Context: lines. Do not use for ordinary "
+        "chat unless the user clearly requests durable capture. Never claim something is saved "
+        "unless this tool succeeds. The text input is preserved as the exact original; secret-like "
+        "text is blocked rather than redacted into a changed original."
     ),
     "parameters": {
         "type": "object",
@@ -313,8 +314,8 @@ WISDOM_ORIGINAL_SCHEMA = {
     "name": "wisdom_original",
     "description": (
         "Return the exact original text for a saved Wisdom capture. Use when the user asks for exact "
-        "wording, original phrasing, verbatim text, 'what exactly did I write', 'show original', or "
-        "'what were my exact words'. Do not summarize, rewrite, or clean the result."
+        "wording, show exact wording, original phrasing, verbatim text, 'what exactly did I write', "
+        "'show original', or 'what were my exact words'. Do not summarize, rewrite, or clean the result."
     ),
     "parameters": {
         "type": "object",
@@ -349,8 +350,9 @@ WISDOM_APPLY_SCHEMA = {
         "Create internal application proposals from a saved Wisdom capture. Use when the user asks to "
         "apply, transform, convert, or turn an idea into client language, a checklist, an investment "
         "rule, a health experiment, a principle, writing idea, or decision rule. Examples: 'turn that "
-        "into client language', 'make this a checklist', 'make this an investment rule', 'apply this "
-        "to x10x'. This creates internal proposals only; it does not create external tasks or reminders."
+        "into client language', 'make this a checklist', 'make this an investment rule', 'turn this "
+        "into a health experiment', 'make this a decision rule', and 'apply this to x10x'. This "
+        "creates internal proposals only; it does not create external tasks or reminders."
     ),
     "parameters": {
         "type": "object",
@@ -423,8 +425,8 @@ WISDOM_ACCEPT_SCHEMA = {
     "name": "wisdom_accept",
     "description": (
         "Mark a Wisdom capture as accepted: worth keeping, reviewing, and compounding. Use when the "
-        "user asks to accept, keep, approve, mark as useful, or mark an idea as worth compounding. "
-        "This changes review status only; it does not create external actions."
+        "user asks to accept, accept that, keep, approve, mark as useful, or mark an idea as worth "
+        "compounding. This changes review status only; it does not create external actions."
     ),
     "parameters": {
         "type": "object",
@@ -439,9 +441,9 @@ WISDOM_ACCEPT_SCHEMA = {
 WISDOM_DISMISS_SCHEMA = {
     "name": "wisdom_dismiss",
     "description": (
-        "Mark a Wisdom capture as dismissed without deleting it. Use when the user says dismiss, not "
-        "useful, noise, hide from review, deprioritize, or 'that one is not worth keeping'. The exact "
-        "original remains preserved unless separately archived."
+        "Mark a Wisdom capture as dismissed without deleting it. Use when the user says dismiss, "
+        "dismiss that, not useful, noise, hide from review, deprioritize, or 'that one is not worth "
+        "keeping'. The exact original remains preserved unless separately archived."
     ),
     "parameters": {
         "type": "object",

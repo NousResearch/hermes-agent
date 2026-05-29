@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -60,21 +61,32 @@ def capture_text(
     trigger = detect_explicit_trigger(text)
     cleaned = cleaned_text if cleaned_text is not None else (trigger.cleaned_text if trigger else text.strip())
     classification = classify_capture(text, cleaned, trigger)
+    extracted_metadata, inferred_source_type = _source_context_metadata(text)
     category_override = _valid_category(category)
     source_type_override = _valid_source_type(source_type)
-    if category_override or source_type_override:
+    metadata_source_type = _valid_source_type(inferred_source_type)
+    chosen_source_type = source_type_override or metadata_source_type
+    if category_override or chosen_source_type:
         classification = replace(
             classification,
             category=category_override or classification.category,
-            source_type=source_type_override or classification.source_type,
+            source_type=chosen_source_type or classification.source_type,
             confidence=max(classification.confidence, 0.82),
         )
     salt = ensure_salt()
     raw_metadata = _safe_metadata(metadata or {})
     if trigger:
         raw_metadata["trigger"] = trigger.prefix
+    for key, value in extracted_metadata.items():
+        raw_metadata.setdefault(key, value)
     if context_note:
-        raw_metadata["context_note"] = str(context_note)[:500]
+        safe_context_note = _metadata_value(context_note)
+        raw_metadata["context_note"] = safe_context_note
+
+    capture_metadata: dict[str, Any] = {"capture_version": 2}
+    capture_metadata.update(extracted_metadata)
+    if context_note:
+        capture_metadata["context_note"] = _metadata_value(context_note)
 
     record = db.create_capture(
         original_text=text,
@@ -85,7 +97,7 @@ def capture_text(
         session_key_hash=stable_hash(session_key, salt=salt, prefix="sess_"),
         message_ref_hash=stable_hash(message_ref, salt=salt, prefix="msg_"),
         raw_metadata=raw_metadata,
-        capture_metadata={"capture_version": 1},
+        capture_metadata=capture_metadata,
     )
     return CaptureOutcome("captured", capture=record)
 
@@ -99,6 +111,48 @@ def _safe_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, (str, int, float, bool)) or value is None:
             allowed[key_text] = value
     return allowed
+
+
+def _source_context_metadata(text: str) -> tuple[dict[str, str], SourceType | None]:
+    metadata: dict[str, str] = {}
+    source_type: SourceType | None = None
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    for line in lines[:5]:
+        label_match = re.match(r"^(source|context)\s*:\s*(.+)$", line, flags=re.IGNORECASE)
+        if label_match:
+            key = label_match.group(1).lower()
+            value = _metadata_value(label_match.group(2))
+            if value:
+                metadata[key] = value
+            continue
+
+        note_match = re.match(
+            r"^(podcast|book|article|meeting|conversation|quote)(?:\s+(?:note|idea))?\s*:\s*(.+)$",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if note_match:
+            kind = note_match.group(1).lower()
+            source_type = _valid_source_type(kind)
+            source_text, context_text = _split_inline_context(note_match.group(2))
+            if source_text and "source" not in metadata:
+                metadata["source"] = source_text
+            if context_text and "context" not in metadata:
+                metadata["context"] = context_text
+
+    return metadata, source_type
+
+
+def _split_inline_context(value: str) -> tuple[str, str | None]:
+    parts = re.split(r"\bcontext\s*:\s*", value, maxsplit=1, flags=re.IGNORECASE)
+    source = _metadata_value(parts[0])
+    context = _metadata_value(parts[1]) if len(parts) > 1 else None
+    return source, context
+
+
+def _metadata_value(value: object) -> str:
+    compact = " ".join(str(value or "").strip().split())
+    return compact.rstrip(".")[:500]
 
 
 def _valid_category(value: Category | str | None) -> Category | None:

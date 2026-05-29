@@ -1,0 +1,130 @@
+- id: business_client_reporting
+  text: "Business idea: Clients don't need rear-view mirrors, they need windshields."
+  expected_category: business
+  expected_source_type: thought
+  expected_application_types:
+    - client_language
+    - principle
+    - task_proposal
+  required_phrases:
+    client_language:
+      - "not just a record"
+      - "what should be done next"
+    principle:
+      - "reduce decision uncertainty"
+      - "past performance"
+    task_proposal:
+      - "What this means now"
+      - "client reports"
+  minimum_quality: 0.55
+- id: investing_position_sizing
+  text: "Investing thought: I confuse a good thesis with a good position size."
+  expected_category: investing
+  expected_source_type: thought
+  expected_application_types:
+    - investment_rule
+    - checklist
+    - decision_rule
+  required_phrases:
+    investment_rule:
+      - "thesis confidence"
+      - "survivability"
+      - "forced-exit risk"
+    checklist:
+      - "What loss can I survive?"
+      - "What forces exit?"
+      - "sizing by conviction or survivability"
+    decision_rule:
+      - "reduce size or pass"
+  minimum_quality: 0.55
+- id: health_sleep_decisions
+  text: "Health note: I make worse decisions after poor sleep but behave as if cognition is constant."
+  expected_category: health
+  expected_source_type: thought
+  expected_application_types:
+    - health_experiment
+    - decision_rule
+    - principle
+  required_phrases:
+    health_experiment:
+      - "sleep quality"
+      - "decision confidence for 14 days"
+    decision_rule:
+      - "Avoid major investing or business decisions"
+      - "unless urgency is real"
+    principle:
+      - "state-dependent"
+      - "Tracking question"
+  minimum_quality: 0.45
+- id: life_systems_avoidance
+  text: "Life thought: I keep building systems because it feels safer than doing the uncomfortable human thing."
+  expected_category: life
+  expected_source_type: thought
+  expected_application_types:
+    - principle
+    - writing_idea
+    - decision_rule
+  required_phrases:
+    principle:
+      - "uncomfortable action"
+      - "helping avoid"
+    writing_idea:
+      - "Reflection prompt"
+      - "What conversation or decision am I avoiding"
+    decision_rule:
+      - "uncomfortable human action first"
+  minimum_quality: 0.45
+- id: podcast_source_context
+  text: |-
+    Podcast note: Acquired - Costco episode.
+    Source: Acquired - Costco episode
+    Context: trust, low-price positioning
+    Costco's membership model creates trust because low-price positioning makes the retailer feel aligned with members.
+  expected_category: business
+  expected_source_type: podcast
+  expected_metadata:
+    source: "Acquired - Costco episode"
+    context: "trust, low-price positioning"
+  expected_application_types:
+    - client_language
+    - principle
+    - task_proposal
+  required_phrases:
+    client_language:
+      - "trust-building communication"
+    task_proposal:
+      - "process improvement"
+  minimum_quality: 0.55
+- id: book_source_context
+  text: |-
+    Book note: The Great Mental Models.
+    Context: courage and uncomfortable decisions
+    Before building a system, ask whether it is avoiding a harder human action.
+  expected_category: life
+  expected_source_type: book
+  expected_metadata:
+    source: "The Great Mental Models"
+    context: "courage and uncomfortable decisions"
+  expected_application_types:
+    - principle
+    - writing_idea
+    - decision_rule
+  required_phrases:
+    principle:
+      - "uncomfortable action"
+    writing_idea:
+      - "writing seed"
+  minimum_quality: 0.45
+- id: noisy_low_value
+  text: "Note this: random vague thing maybe later."
+  expected_category: inbox
+  expected_source_type: thought
+  expected_application_types:
+    - principle
+    - writing_idea
+  required_phrases:
+    principle:
+      - "Do not promote this yet"
+    writing_idea:
+      - "only if it still feels specific"
+  maximum_quality: 0.50

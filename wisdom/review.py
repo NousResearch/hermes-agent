@@ -45,22 +45,43 @@ _STOPWORDS = {
 }
 
 _ACTION_TERMS = {
-    "add", "apply", "build", "call", "change", "check", "create", "decide",
-    "do", "experiment", "make", "measure", "need", "review", "rule", "should",
-    "size", "sizing", "test", "track", "turn", "use",
+    "add", "aligned", "apply", "ask", "avoid", "avoiding", "build",
+    "building", "call", "change", "check", "create", "creates", "decide",
+    "do", "doing", "experiment", "identify", "make", "measure", "need",
+    "record", "reduce", "review", "rule", "should", "size", "sizing",
+    "test", "track", "turn", "use",
 }
 
 _REUSABLE_TERMS = {
-    "checklist", "client", "clients", "decision", "experiment", "framework",
-    "language", "lesson", "position", "principle", "process", "report", "reports",
-    "rule", "size", "sizing", "template", "thesis",
+    "action", "actions", "checklist", "client", "clients", "communication",
+    "decision", "decisions", "experiment", "framework", "language", "lesson",
+    "membership", "position", "positioning", "principle", "process", "report",
+    "reports", "rule", "size", "sizing", "system", "systems", "template",
+    "thesis", "trust", "windshield", "windshields",
 }
 
 _DOMAIN_TERMS = {
-    "business": {"client", "clients", "report", "reports", "sales", "x10x", "pms", "aif", "prospect", "team"},
-    "investing": {"allocation", "downside", "liquidity", "market", "position", "portfolio", "risk", "size", "sizing", "thesis", "trade"},
-    "health": {"cognition", "decision", "energy", "exercise", "food", "health", "sleep"},
-    "life": {"avoid", "avoidance", "courage", "decision", "family", "fear", "habit", "meaning", "relationship", "system", "systems"},
+    "business": {
+        "aif", "client", "clients", "communication", "decision", "low",
+        "members", "membership", "pms", "positioning", "price", "prospect",
+        "report", "reporting", "reports", "retailer", "review", "reviews",
+        "sales", "team", "trust", "uncertainty", "x10x",
+    },
+    "investing": {
+        "allocation", "downside", "exit", "forced", "liquidity", "market",
+        "position", "portfolio", "risk", "size", "sizing", "survivability",
+        "thesis", "trade",
+    },
+    "health": {
+        "cognition", "constant", "decision", "decisions", "energy", "exercise",
+        "food", "health", "poor", "recovery", "sleep", "state", "worse",
+    },
+    "life": {
+        "action", "actions", "avoid", "avoidance", "avoiding", "build",
+        "building", "courage", "decision", "decisions", "family", "fear",
+        "habit", "human", "meaning", "relationship", "system", "systems",
+        "uncomfortable",
+    },
     "inbox": set(),
 }
 

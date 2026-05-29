@@ -404,6 +404,7 @@ def capture_to_dict(capture: CaptureRecord) -> dict[str, Any]:
         "confidence": capture.confidence,
         "original_excerpt": _excerpt(capture.original_text),
         "cleaned_excerpt": _excerpt(capture.cleaned_text or ""),
+        "metadata": dict(capture.metadata),
     }
 
 
@@ -458,6 +459,7 @@ def application_to_dict(record: ApplicationRecord) -> dict[str, Any]:
         "title": record.title,
         "body": record.body,
         "status": record.status,
+        "metadata": dict(record.metadata),
     }
 
 

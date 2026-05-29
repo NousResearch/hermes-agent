@@ -18,14 +18,73 @@ _TRIGGERS: tuple[tuple[str, Category | None, SourceType | None], ...] = (
     ("health note:", "health", None),
     ("life thought:", "life", None),
     ("book note:", None, "book"),
+    ("book:", None, "book"),
+    ("podcast note:", None, "podcast"),
     ("podcast idea:", None, "podcast"),
+    ("podcast:", None, "podcast"),
 )
 
 _KEYWORDS: dict[Category, tuple[str, ...]] = {
-    "business": ("client", "x10x", "pms", "aif", "report", "sales", "team", "prospect", "business", "meeting", "ops"),
-    "investing": ("stock", "market", "option", "portfolio", "risk", "macro", "thesis", "allocation", "trade", "sizing"),
-    "health": ("sleep", "food", "energy", "exercise", "gym", "decision quality", "health", "lunch", "cognition"),
-    "life": ("family", "relationship", "happiness", "philosophy", "courage", "fear", "meaning", "habit"),
+    "business": (
+        "client",
+        "communication",
+        "trust",
+        "x10x",
+        "pms",
+        "aif",
+        "report",
+        "reporting",
+        "sales",
+        "team",
+        "prospect",
+        "business",
+        "meeting",
+        "ops",
+        "positioning",
+        "decision-making",
+    ),
+    "investing": (
+        "stock",
+        "market",
+        "option",
+        "portfolio",
+        "risk",
+        "macro",
+        "thesis",
+        "allocation",
+        "trade",
+        "sizing",
+        "position size",
+        "position sizing",
+        "liquidity",
+        "downside",
+        "behavioral edge",
+    ),
+    "health": (
+        "sleep",
+        "food",
+        "energy",
+        "exercise",
+        "gym",
+        "decision quality",
+        "health",
+        "lunch",
+        "cognition",
+        "recovery",
+    ),
+    "life": (
+        "family",
+        "relationship",
+        "happiness",
+        "philosophy",
+        "courage",
+        "fear",
+        "meaning",
+        "habit",
+        "avoidance",
+        "uncomfortable",
+        "systems",
+    ),
     "inbox": (),
 }
 
@@ -89,6 +148,18 @@ def _score_category(text: str) -> Category:
 
 def _source_type(text: str) -> SourceType:
     lowered = text.lower()
+    if (
+        lowered.startswith("podcast note:")
+        or lowered.startswith("podcast:")
+        or re.search(r"\bpodcast\s+(episode|note|idea)\b", lowered)
+    ):
+        return "podcast"
+    if (
+        lowered.startswith("book note:")
+        or lowered.startswith("book:")
+        or re.search(r"\bbook\s+(note|idea)\b", lowered)
+    ):
+        return "book"
     if lowered.startswith("quote") or " quote:" in lowered:
         return "quote"
     if "meeting" in lowered:

@@ -2,21 +2,35 @@
 
 # What Wisdom Is Now
 
-Wisdom is Hermes' local memory and judgment loop for ideas worth preserving.
+Wisdom is Hermes' local personal knowledge loop for ideas worth preserving.
 
-It is not meant to be a notes pile. The intended loop is:
+It is not Notion, Obsidian, a graph database, a dashboard, or an enterprise
+knowledge platform. It is a small Hermes-native loop:
 
 ```text
-capture -> retrieve -> review -> judge -> relate -> apply/dismiss -> compound
+capture exact words -> retrieve -> review -> apply
 ```
 
-v1 built the memory kernel: exact-original preservation, deterministic capture/classification, SQLite storage, search, deterministic interpretation, and internal application proposals.
+Exact originals remain the source of truth. Interpretations, review status, and
+application proposals are annotations.
 
-v2 made Wisdom native to Hermes/Codex by exposing the kernel as first-class model tools. You can talk naturally; `/wisdom` commands are fallback/debug controls.
+v1 built the memory kernel: exact-original preservation, deterministic
+capture/classification, SQLite storage, search, deterministic interpretation,
+and internal application proposals.
 
-v3 adds the review and quality loop. Hermes can now prioritize what deserves review, surface high-potential or unapplied ideas, suggest related captures without embeddings, and mark captures as accepted, dismissed, applied, or archived.
+v2 made Wisdom native to Hermes/Codex by exposing the kernel as first-class
+model tools. You can talk naturally; `/wisdom` commands are fallback/debug
+controls.
 
-Hermes Wisdom Kernel is a local, source-backed capture and recall subsystem for conversational personal knowledge.
+v3 added the review and quality loop. Hermes can prioritize what deserves
+review, surface high-potential or unapplied ideas, suggest related captures
+without embeddings, and mark captures as accepted, dismissed, applied, or
+archived.
+
+v4 improves application quality. When you ask what to do with an idea, Wisdom
+generates more useful deterministic proposals: client language, investment
+rules, checklists, health experiments, principles, writing seeds, and decision
+rules.
 
 Wisdom does not write to the old productivity database and does not take external actions.
 
@@ -44,13 +58,20 @@ Expected natural-language behavior:
 
 ```text
 Remember this: clients don't buy alpha, they buy peace of mind.
+Save this investing thought: I confuse a good thesis with a good position size.
+Podcast note: Acquired - Costco episode. Context: trust, low-price positioning.
 Find that idea about peace of mind.
+What have I said about position sizing?
 Show me exactly what I wrote about peace of mind.
+Show exact wording for #12.
 What should I review?
 Show related ideas.
 Accept that.
 Dismiss that.
 Turn that into client language for x10x.
+Make this an investment rule.
+Make this a checklist.
+Turn this into a health experiment.
 What have I been thinking about investing recently?
 ```
 
@@ -88,6 +109,56 @@ The exact accepted original is stored in `raw_events.original_text`.
 Wisdom does not normalize punctuation, whitespace, capitalization, emojis, or line breaks in that field. Cleaned text, titles, interpretations, and application proposals are annotations only.
 
 Secret-like captures are rejected by default instead of storing a redacted value while claiming exact preservation.
+
+## Source-Aware Capture
+
+Wisdom preserves the exact original first. It also extracts short source/context
+metadata when the wording is obvious and non-secret.
+
+Examples:
+
+Quick capture:
+
+```text
+Remember this: clients don't need rear-view mirrors, they need windshields.
+```
+
+Podcast note:
+
+```text
+Podcast note: Acquired - Costco episode.
+Context: trust, low-price positioning
+Costco's membership model creates trust because low-price positioning makes the retailer feel aligned with members.
+```
+
+Book note:
+
+```text
+Book note: The Great Mental Models.
+Context: courage and uncomfortable decisions
+Before building a system, ask whether it is avoiding a harder human action.
+```
+
+Investing thought:
+
+```text
+Investing thought: I confuse a good thesis with a good position size.
+```
+
+Business/client-language note:
+
+```text
+Business idea: Client reports should help decide what to do next, not only describe what happened.
+```
+
+Health observation:
+
+```text
+Health note: I make worse decisions after poor sleep but behave as if cognition is constant.
+```
+
+`Source:` and `Context:` are lightweight hints, not a rigid syntax. The exact
+original is stored even when no metadata is extracted.
 
 ## Commands
 
@@ -215,14 +286,86 @@ Capture never calls an LLM.
 
 `/wisdom apply <id>` and `wisdom_apply` create internal application proposals only and mark the capture as applied. They do not create Hermes todos, reminders, files, calendar entries, Telegram messages, or old productivity DB rows.
 
-v3 improves deterministic application templates by category:
+v4 deterministic application templates are domain-aware:
 
-- business: client language, principles, report/process proposals
-- investing: investment rules, checklists, decision rules
-- health: small experiments, decision-quality rules, principles
-- life: principles, writing ideas, decision rules
+- business/x10x: client language, operating principles, report/process proposals
+- investing: investment rules, checklists, risk heuristics, decision rules
+- health: small experiments, personal rules, tracking questions, decision boundaries
+- life: principles, reflection prompts, writing seeds, decision rules
 
-For richer wording, the model can use the stored proposal and produce a natural response. Durable writes still go through the deterministic Wisdom kernel.
+Examples:
+
+```text
+Capture: Clients don't need rear-view mirrors, they need windshields.
+
+Client language:
+"This review is not just a record of what happened. Its job is to help decide what should be done next."
+
+Principle:
+Client reporting should reduce decision uncertainty, not merely describe past performance.
+
+Task proposal:
+Add a "What this means now" section to client reports.
+```
+
+```text
+Capture: I confuse a good thesis with a good position size.
+
+Investment rule:
+Do not size a position based only on thesis confidence. Size it based on survivability, liquidity, downside path, and forced-exit risk.
+
+Checklist:
+1. What loss can I survive?
+2. What adverse move breaks the trade?
+3. What forces exit?
+4. Is liquidity adequate?
+5. Am I sizing by conviction or survivability?
+```
+
+For richer wording, the model can use the stored proposal and produce a natural
+response. Durable writes still go through the deterministic Wisdom kernel.
+
+## Using Wisdom in Telegram
+
+Use natural language first:
+
+```text
+Remember this: ...
+Podcast note: ...
+Find that idea about ...
+Show exact wording for #...
+What should I review?
+Turn #12 into client language for x10x.
+Make #15 an investment checklist.
+Accept that.
+Dismiss that.
+```
+
+Use `/wisdom` commands when you want explicit control or debugging:
+
+```text
+/wisdom status
+/wisdom capture <text>
+/wisdom search <query>
+/wisdom original <id>
+/wisdom apply <id>
+/wisdom review
+```
+
+Wisdom should fail open. If a normal Telegram message is not a Wisdom command or
+explicit capture, Hermes continues the normal chat path.
+
+## 7-Day Wisdom Trial
+
+Use this to decide whether Wisdom is helping rather than becoming a notes pile:
+
+1. Capture 20 real ideas in business, investing, health, or life.
+2. Review every 2-3 days.
+3. Accept or dismiss aggressively.
+4. Apply 3-5 ideas into client language, rules, checklists, experiments, or decision rules.
+5. Note whether Hermes uses Wisdom tools naturally from Telegram.
+6. Note whether application outputs are genuinely useful or generic.
+7. Keep using it only if the applied ideas change decisions or communication.
 
 ## Gateway Behavior
 

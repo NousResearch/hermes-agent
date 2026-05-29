@@ -1726,12 +1726,16 @@ See also:
 | Context | Default |
 |---------|---------|
 | **CLI (`hermes`)** | Current directory where you run the command |
-| **Messaging gateway** | Home directory `~` (override with `MESSAGING_CWD`) |
+| **Messaging gateway / cron** | Home directory `~` (override via `terminal.cwd` in `config.yaml`) |
 | **Docker / Singularity / Modal / SSH** | User's home directory inside the container or remote machine |
 
-Override the working directory:
-```bash
-# In ~/.hermes/.env or ~/.hermes/config.yaml:
-MESSAGING_CWD=/home/myuser/projects    # Gateway sessions
-TERMINAL_CWD=/workspace                # All terminal sessions
+Override the gateway / cron working directory in `~/.hermes/config.yaml`:
+
+```yaml
+terminal:
+  cwd: /home/myuser/projects   # Gateway, cron, and shell-tool default cwd
 ```
+
+:::note
+The legacy `MESSAGING_CWD` and `TERMINAL_CWD` env vars in `.env` are deprecated. The loader prints a one-shot migration warning when it sees them; please move the value to `terminal.cwd` in `config.yaml` and remove the `.env` entry. (CLI runs still always use the directory you launched `hermes` from.)
+:::

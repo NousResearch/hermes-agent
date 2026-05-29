@@ -13,7 +13,7 @@ PROPS = "MolecularWeight,XLogP,HBondDonorCount,HBondAcceptorCount,RotatableBondC
 def fetch(name):
     url = f"{BASE}/{urllib.parse.quote(name)}/property/{PROPS}/JSON"
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:
+        with urllib.request.urlopen(url, timeout=10) as r:  # SSRF: add IP block check
             return json.loads(r.read())["PropertyTable"]["Properties"][0]
     except Exception:
         return None

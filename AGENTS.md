@@ -734,7 +734,10 @@ Roles:
   `clarify`, `memory`, `send_message`, `execute_code`.
 - `role="orchestrator"` — retains `delegate_task` so it can spawn its
   own workers. Gated by `delegation.orchestrator_enabled` (default true)
-  and bounded by `delegation.max_spawn_depth` (default 2).
+  and bounded by `delegation.max_spawn_depth` (default 1 — flat;
+  raise to 2 for orchestrator→leaf, 3 for three-level. Clamped to
+  [1, 3] with a warning log if out of range; see
+  `tools/delegate_tool.py::_get_max_spawn_depth`).
 
 Key config knobs (under `delegation:` in `config.yaml`):
 `max_concurrent_children`, `max_spawn_depth`, `child_timeout_seconds`,

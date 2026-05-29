@@ -1147,16 +1147,11 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
 
-    # Share a credential pool with the child when possible so subagents can
-    # rotate credentials on rate limits instead of getting pinned to one key.
-    # EXCEPTION: when delegation routes the child to an explicit endpoint
-    # (override_base_url), do NOT attach a pool — a lease/swap (_swap_credential)
-    # would overwrite the configured base_url with the leased entry's, silently
-    # redirecting the child off the intended endpoint. Fixes #7833 / #20558.
-    if override_base_url:
-        child_pool = None
-    else:
-        child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
+    # Share a credential pool so subagents can rotate keys on rate limits.
+    # EXCEPTION: skip the pool for an explicit endpoint (override_base_url) — a
+    # lease/swap (_swap_credential) would overwrite the configured base_url and
+    # silently redirect the child off it. Fixes #7833 / #20558.
+    child_pool = None if override_base_url else _resolve_child_credential_pool(effective_provider, parent_agent)
     if child_pool is not None:
         child._credential_pool = child_pool
 
@@ -2494,11 +2489,10 @@ def _resolve_task_credentials(task: dict, cfg: dict, batch_creds: dict, parent_a
         task_cfg["model"] = task_model
     if task_provider:
         task_cfg["provider"] = task_provider
-        # A per-task provider switch must re-derive the endpoint; drop any
+        # A provider switch must re-derive its own endpoint, so drop any
         # config-level base_url/api_key/api_mode tied to the previous provider.
-        task_cfg.pop("base_url", None)
-        task_cfg.pop("api_key", None)
-        task_cfg.pop("api_mode", None)
+        for key in ("base_url", "api_key", "api_mode"):
+            task_cfg.pop(key, None)
     return _resolve_delegation_credentials(task_cfg, parent_agent)
 
 

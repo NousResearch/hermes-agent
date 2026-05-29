@@ -31,6 +31,9 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _resolve_task_credentials,
+    _load_config,
+    logger,
 )
 
 
@@ -2667,56 +2670,42 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
 
 class TestLoadConfig(unittest.TestCase):
-    def test_persistent_config_failure_logs_warning_and_returns_empty(self):
-        """A raising load_config() must not be silent: warn, then degrade to {}."""
-        import tools.delegate_tool as dt
-        # CLI_CONFIG path absent (gateway/cron) so we fall through to persistent.
-        with patch.dict("sys.modules", {"cli": None}):  # force `from cli import` to fail
-            with patch("hermes_cli.config.load_config", side_effect=RuntimeError("corrupt yaml")):
-                with self.assertLogs(dt.logger, level="WARNING") as logs:
-                    result = dt._load_config()
+    def test_persistent_config_failure_warns_and_degrades_to_empty(self):
+        # cli.CLI_CONFIG absent (gateway/cron) → falls through to the persistent path.
+        with patch.dict("sys.modules", {"cli": None}), \
+             patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")), \
+             self.assertLogs(logger, level="WARNING") as logs:
+            result = _load_config()
         self.assertEqual(result, {})
         self.assertTrue(any("delegation config" in m.lower() for m in logs.output))
 
     def test_persistent_config_success_returns_delegation_block(self):
-        import tools.delegate_tool as dt
-        with patch.dict("sys.modules", {"cli": None}):
-            with patch("hermes_cli.config.load_config",
-                       return_value={"delegation": {"model": "x"}}):
-                self.assertEqual(dt._load_config(), {"model": "x"})
+        with patch.dict("sys.modules", {"cli": None}), \
+             patch("hermes_cli.config.load_config", return_value={"delegation": {"model": "x"}}):
+            self.assertEqual(_load_config(), {"model": "x"})
 
 
 class TestExplicitEndpointSkipsPool(unittest.TestCase):
     def test_explicit_base_url_disables_credential_pool(self):
-        """A child built with an explicit override_base_url must not get a pool,
-        so a later lease/swap can't clobber the configured endpoint."""
+        """An explicit override_base_url must skip the pool so a later lease/swap
+        can't clobber the configured endpoint."""
         parent = _make_mock_parent(depth=0)
-        # Pretend a pool WOULD resolve if asked.
         with patch("tools.delegate_tool._resolve_child_credential_pool",
                    return_value=object()) as mock_pool:
             child = _build_child_agent(
-                task_index=0,
-                goal="x",
-                context=None,
-                toolsets=None,
-                model="qwen2.5-coder",
-                max_iterations=5,
-                task_count=1,
-                parent_agent=parent,
-                override_provider="custom",
-                override_base_url="http://localhost:1234/v1",
-                override_api_key="local-key",
-                override_api_mode="chat_completions",
+                task_index=0, goal="x", context=None, toolsets=None,
+                model="qwen2.5-coder", max_iterations=5, task_count=1, parent_agent=parent,
+                override_provider="custom", override_base_url="http://localhost:1234/v1",
+                override_api_key="local-key", override_api_mode="chat_completions",
             )
         self.assertIsNone(getattr(child, "_credential_pool", None))
-        mock_pool.assert_not_called()
+        mock_pool.assert_not_called()  # skipped without even resolving a pool
 
     def test_no_override_base_url_still_attaches_pool(self):
         """Regression: without an explicit endpoint, pool attachment is unchanged."""
         parent = _make_mock_parent(depth=0)
         sentinel = object()
-        with patch("tools.delegate_tool._resolve_child_credential_pool",
-                   return_value=sentinel):
+        with patch("tools.delegate_tool._resolve_child_credential_pool", return_value=sentinel):
             child = _build_child_agent(
                 task_index=0, goal="x", context=None, toolsets=None,
                 model=None, max_iterations=5, task_count=1, parent_agent=parent,
@@ -2727,70 +2716,50 @@ class TestExplicitEndpointSkipsPool(unittest.TestCase):
 
 
 class TestPerTaskCredentialResolution(unittest.TestCase):
-    def test_no_override_returns_batch_creds_identity(self):
-        from tools.delegate_tool import _resolve_task_credentials
+    def test_no_override_passes_batch_creds_through_without_resolving(self):
         parent = _make_mock_parent(depth=0)
-        batch = {"model": "m", "provider": None, "base_url": None,
-                 "api_key": None, "api_mode": None}
-        out = _resolve_task_credentials({"goal": "x"}, {}, batch, parent)
-        self.assertIs(out, batch)  # untouched when no per-task fields
+        batch = {"model": "m", "provider": None, "base_url": None, "api_key": None, "api_mode": None}
+        with patch("tools.delegate_tool._resolve_delegation_credentials") as resolver:
+            out = _resolve_task_credentials({"goal": "x"}, {}, batch, parent)
+        self.assertIs(out, batch)
+        resolver.assert_not_called()  # no per-task fields → no re-resolution
 
-    def test_per_task_model_only_keeps_config_provider(self):
-        from tools.delegate_tool import _resolve_task_credentials
+    def test_per_task_model_overrides_model_but_keeps_config_endpoint(self):
         parent = _make_mock_parent(depth=0)
         cfg = {"model": "cfg-model", "base_url": "http://localhost:1234/v1"}
         batch = _resolve_delegation_credentials(cfg, parent)
-        out = _resolve_task_credentials({"goal": "x", "model": "task-model"},
-                                        cfg, batch, parent)
+        out = _resolve_task_credentials({"goal": "x", "model": "task-model"}, cfg, batch, parent)
         self.assertEqual(out["model"], "task-model")
-        self.assertEqual(out["base_url"], "http://localhost:1234/v1")  # config endpoint kept
+        self.assertEqual(out["base_url"], "http://localhost:1234/v1")
 
-    def test_per_task_provider_redirects_endpoint(self):
-        from tools.delegate_tool import _resolve_task_credentials
+    def test_per_task_provider_drops_config_endpoint_before_resolving(self):
         parent = _make_mock_parent(depth=0)
-        cfg = {"model": "cfg-model", "base_url": "http://localhost:1234/v1",
-               "api_key": "local-key"}
+        cfg = {"model": "cfg-model", "base_url": "http://localhost:1234/v1", "api_key": "local-key"}
         batch = _resolve_delegation_credentials(cfg, parent)
-        # Switching provider per task must drop the config base_url and re-resolve.
-        # Stub the resolver (don't call through — provider resolution needs live
-        # credentials); we only assert on the cfg it receives.
-        with patch("tools.delegate_tool._resolve_delegation_credentials",
-                   return_value={"model": "cfg-model", "provider": "openrouter",
-                                 "base_url": "https://openrouter.ai/api/v1",
-                                 "api_key": "k", "api_mode": "chat_completions"}) as spy:
-            _resolve_task_credentials({"goal": "x", "provider": "openrouter"},
-                                      cfg, batch, parent)
-        passed_cfg = spy.call_args.args[0]
-        self.assertEqual(passed_cfg["provider"], "openrouter")
-        self.assertNotIn("base_url", passed_cfg)  # config endpoint dropped
-        self.assertNotIn("api_key", passed_cfg)
+        # Stub the resolver — a live provider lookup needs real credentials; the
+        # behavior under test is the cfg this helper hands it.
+        with patch("tools.delegate_tool._resolve_delegation_credentials") as resolver:
+            _resolve_task_credentials({"goal": "x", "provider": "openrouter"}, cfg, batch, parent)
+        resolved_cfg = resolver.call_args.args[0]
+        self.assertEqual(resolved_cfg["provider"], "openrouter")
+        self.assertNotIn("base_url", resolved_cfg)
+        self.assertNotIn("api_key", resolved_cfg)
 
 
 class TestPerTaskOverrideReachesChild(unittest.TestCase):
     def test_per_task_model_threads_into_build_loop(self):
-        """Per-task model must be the model _build_child_agent receives."""
+        """End-to-end: a per-task model reaches _build_child_agent; an absent one
+        stays None (the inherit signal) at the call boundary."""
         parent = _make_mock_parent(depth=0)
         seen = []
-
-        def _stub_build(**kw):
-            seen.append(kw)
-            return MagicMock()
-
         with patch("tools.delegate_tool._load_config", return_value={}), \
              patch("tools.delegate_tool._build_child_agent",
-                   side_effect=_stub_build), \
+                   side_effect=lambda **kw: seen.append(kw) or MagicMock()), \
              patch("tools.delegate_tool._run_single_child",
-                   return_value={"task_index": 0, "status": "completed",
-                                 "summary": "ok", "api_calls": 1,
-                                 "duration_seconds": 0.1}):
-            delegate_task(
-                tasks=[{"goal": "a", "model": "task-A-model"},
-                       {"goal": "b"}],
-                parent_agent=parent,
-            )
+                   return_value={"task_index": 0, "status": "completed", "summary": "ok"}):
+            delegate_task(tasks=[{"goal": "a", "model": "task-A-model"}, {"goal": "b"}],
+                          parent_agent=parent)
         self.assertEqual(seen[0]["model"], "task-A-model")
-        # inherit is signaled by None AT THE CALL BOUNDARY (parent-model
-        # fallback happens inside the patched-out _build_child_agent).
         self.assertIsNone(seen[1]["model"])
 
 

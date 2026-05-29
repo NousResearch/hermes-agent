@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { GatewayClient } from '../gatewayClient.js'
+import { classifyGatewayExit, GatewayClient } from '../gatewayClient.js'
 
 interface ListenerEntry {
   callback: (event: any) => void
@@ -92,6 +92,24 @@ class FakeWebSocket {
     }
   }
 }
+
+describe('GatewayClient exit classification', () => {
+  it('classifies stdin EOF from the spawned TUI backend as a clean parent-pipe close', () => {
+    expect(classifyGatewayExit(0, 'stdin EOF (TUI closed the command pipe)')).toMatchObject({
+      clean: true,
+      code: 0,
+      kind: 'clean_stdin_eof'
+    })
+  })
+
+  it('keeps non-zero backend exits actionable as errors', () => {
+    expect(classifyGatewayExit(1, 'gateway error: spawn failed')).toMatchObject({
+      clean: false,
+      code: 1,
+      kind: 'error'
+    })
+  })
+})
 
 describe('GatewayClient websocket attach mode', () => {
   const originalWebSocket = globalThis.WebSocket
@@ -301,7 +319,7 @@ describe('GatewayClient websocket attach mode', () => {
     const secretUrl = 'ws://gateway.test/api/ws?token=hunter2&channel=secret'
 
     process.env.HERMES_TUI_GATEWAY_URL = secretUrl
-    ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingWebSocket extends FakeWebSocket {
+    ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingWebSocket {
       constructor(url: string) {
         throw new TypeError(`Invalid URL: ${url}`)
       }
@@ -328,11 +346,10 @@ describe('GatewayClient websocket attach mode', () => {
     process.env.HERMES_TUI_SIDECAR_URL = sidecarUrl
     ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingSidecarWebSocket extends FakeWebSocket {
       constructor(url: string) {
+        super(url)
         if (url.includes('/api/pub')) {
           throw new TypeError(`Invalid URL: ${url}`)
         }
-
-        super(url)
       }
     } as unknown as typeof WebSocket
 

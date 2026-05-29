@@ -7,7 +7,7 @@ import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
-import { type GatewayClient } from '../gatewayClient.js'
+import { type GatewayClient, type GatewayExitInfo } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
   ClipboardPasteResponse,
@@ -732,11 +732,22 @@ export function useMainApp(gw: GatewayClient) {
   useEffect(() => {
     const handler = (ev: GatewayEvent) => onEventRef.current(ev)
 
-    const exitHandler = () => {
+    const exitHandler = (_code: null | number, info?: GatewayExitInfo) => {
       turnController.reset()
+
+      if (info?.clean) {
+        const label = info.kind === 'clean_stdin_eof' ? 'TUI backend closed: stdin EOF' : 'TUI backend closed: stdout pipe closed'
+
+        patchUiState({ busy: false, sid: null, status: 'TUI backend closed' })
+        turnController.pushActivity(`${label} · parent TUI/PTY closed the pipe`, 'info')
+        sys(`notice: ${label}; the messaging gateway service is not implied down.`)
+
+        return
+      }
+
       patchUiState({ busy: false, sid: null, status: 'gateway exited' })
       turnController.pushActivity('gateway exited · /logs to inspect', 'error')
-      sys('error: gateway exited')
+      sys(`error: gateway exited${info?.reason ? ` (${info.reason})` : ''}`)
     }
 
     gw.on('event', handler)
@@ -800,6 +811,7 @@ export function useMainApp(gw: GatewayClient) {
       selection,
       send,
       session,
+      setVoiceTts,
       sys
     ]
   )

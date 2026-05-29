@@ -4954,7 +4954,7 @@ class GatewayRunner:
                 def _collect():
                     deliveries: list[dict] = []
                     active_platforms = {
-                        getattr(platform, "value", str(platform)).lower()
+                        str(getattr(platform, "value", platform)).lower()
                         for platform in self.adapters.keys()
                     }
                     if not active_platforms:
@@ -5014,7 +5014,7 @@ class GatewayRunner:
                                         sub.get("task_id"), owner_profile, notifier_profile,
                                     )
                                     continue
-                                platform = (sub.get("platform") or "").lower()
+                                platform = str(sub.get("platform") or "").lower()
                                 if platform not in active_platforms:
                                     logger.debug(
                                         "kanban notifier: subscription for %s on %s skipped; adapter not connected",
@@ -5053,7 +5053,7 @@ class GatewayRunner:
                     sub = d["sub"]
                     task = d["task"]
                     board_slug = d.get("board")
-                    platform_str = (sub["platform"] or "").lower()
+                    platform_str = str(sub["platform"] or "").lower()
                     try:
                         plat = _Platform(platform_str)
                     except ValueError:

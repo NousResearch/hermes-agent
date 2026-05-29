@@ -1325,7 +1325,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    with kb.connect_closing() as conn:
+    current_board = kb.get_current_board()
+    with kb.connect_closing(board=current_board) as conn:
         task_id = kb.create_task(
             conn,
             title=args.title,
@@ -1344,6 +1345,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
             initial_status=getattr(args, "initial_status", "running"),
+            board=current_board,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

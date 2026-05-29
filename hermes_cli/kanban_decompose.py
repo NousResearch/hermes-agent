@@ -249,6 +249,58 @@ def _format_roster(roster: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _infer_project_workspace(title: str, body: str) -> Optional[str]:
+    """Infer a repo workspace from board route_keywords for default-board triage.
+
+    Default-board dashboard/CLI triage tasks can mention a repo-backed project
+    even when the root card intentionally stays on the default board. When that
+    happens, decomposed implementation/review children should still run in the
+    project checkout instead of a scratch workspace.
+    """
+    haystack = f"{title}\n{body}".casefold()
+    try:
+        boards = kb.list_boards(include_archived=False)
+    except Exception:
+        return None
+    best: tuple[int, str] | None = None
+    for meta in boards:
+        default_workdir = meta.get("default_workdir")
+        if not default_workdir:
+            continue
+        slug = str(meta.get("slug") or "")
+        keywords = meta.get("route_keywords") or []
+        if not isinstance(keywords, list):
+            keywords = []
+        score = 0
+        for kw in keywords:
+            if not isinstance(kw, str):
+                continue
+            needle = kw.strip().casefold()
+            if needle and needle in haystack:
+                score += max(1, len(needle))
+        if slug and slug.casefold() in haystack:
+            score += max(1, len(slug))
+        if score and (best is None or score > best[0]):
+            best = (score, str(default_workdir))
+    return best[1] if best else None
+
+
+def _child_should_use_project_workspace(child: dict, workspace_path: Optional[str]) -> bool:
+    if not workspace_path:
+        return False
+    text = f"{child.get('title') or ''}\n{child.get('body') or ''}".casefold()
+    # Keep pure final-notification/control-plane tasks scratch. Repo inspection,
+    # implementation, PR creation, and review tasks need the project checkout.
+    if "notification" in text or "gateway" in text:
+        return False
+    repo_terms = (
+        "repo", "repository", "implementation", "implement", "pr",
+        "pull request", "branch", "git", "github", "diff", "file",
+        "files", "validate", "validation", "review", "inspect", "code",
+    )
+    return any(term in text for term in repo_terms)
+
+
 def _normalize_assignee_choice(
     assignee: object,
     *,
@@ -296,6 +348,7 @@ def decompose_task(
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
     roster, valid_names = _build_roster()
+    inferred_project_workspace = _infer_project_workspace(task.title or "", task.body or "")
 
     try:
         from agent.auxiliary_client import (  # type: ignore
@@ -431,12 +484,16 @@ def decompose_task(
             parents = []
         # Clean parent indices: drop non-int and out-of-range.
         clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
-        children.append({
+        child_spec = {
             "title": title.strip()[:200],
             "body": body.strip(),
             "assignee": chosen,
             "parents": clean_parents,
-        })
+        }
+        if _child_should_use_project_workspace(child_spec, inferred_project_workspace):
+            child_spec["workspace_kind"] = "dir"
+            child_spec["workspace_path"] = inferred_project_workspace
+        children.append(child_spec)
 
     try:
         with kb.connect_closing() as conn:

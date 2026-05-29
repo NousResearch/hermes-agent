@@ -89,6 +89,39 @@ const asWireText = (raw: unknown): string | null => {
   return null
 }
 
+export type GatewayExitKind = 'clean_stdin_eof' | 'clean_broken_pipe' | 'websocket_close' | 'error' | 'unknown'
+
+export interface GatewayExitInfo {
+  code: null | number
+  clean: boolean
+  kind: GatewayExitKind
+  reason: string
+}
+
+export const classifyGatewayExit = (code: null | number, reason?: string): GatewayExitInfo => {
+  const cleanReason = (reason ?? '').trim()
+  const reasonForUser = cleanReason || `gateway exited${code === null ? '' : ` (${code})`}`
+  const lower = cleanReason.toLowerCase()
+
+  if (code === 0 && lower.includes('stdin eof')) {
+    return { clean: true, code, kind: 'clean_stdin_eof', reason: reasonForUser }
+  }
+
+  if (code === 0 && lower.includes('broken stdout pipe')) {
+    return { clean: true, code, kind: 'clean_broken_pipe', reason: reasonForUser }
+  }
+
+  if (lower.includes('websocket closed')) {
+    return { clean: false, code, kind: 'websocket_close', reason: reasonForUser }
+  }
+
+  if (code !== 0) {
+    return { clean: false, code, kind: 'error', reason: reasonForUser }
+  }
+
+  return { clean: false, code, kind: 'unknown', reason: reasonForUser }
+}
+
 // Matches `<scheme>://user:pass@host…` style user-info segments in
 // otherwise-malformed URLs that the WHATWG `URL` parser can't accept.
 // Used by the `redactUrl` fallback so embedded credentials are
@@ -141,11 +174,13 @@ export class GatewayClient extends EventEmitter {
   private pending = new Map<string, Pending>()
   private bufferedEvents = new CircularBuffer<GatewayEvent>(MAX_BUFFERED_EVENTS)
   private pendingExit: number | null | undefined
+  private pendingExitInfo: GatewayExitInfo | undefined
   private ready = false
   private readyTimer: ReturnType<typeof setTimeout> | null = null
   private subscribed = false
   private stdoutRl: ReturnType<typeof createInterface> | null = null
   private stderrRl: ReturnType<typeof createInterface> | null = null
+  private lastGatewayExitReason: string | undefined
 
   constructor() {
     super()
@@ -217,6 +252,8 @@ export class GatewayClient extends EventEmitter {
     this.ready = false
     this.bufferedEvents.clear()
     this.pendingExit = undefined
+    this.pendingExitInfo = undefined
+    this.lastGatewayExitReason = undefined
     this.stdoutRl?.close()
     this.stderrRl?.close()
     this.stdoutRl = null
@@ -248,13 +285,16 @@ export class GatewayClient extends EventEmitter {
   private handleTransportExit(code: null | number, reason?: string) {
     this.clearReadyTimer()
     this.closeSidecarSocket()
-    this.pushLog(`[lifecycle] transport exit code=${code ?? 'null'} reason=${reason ?? 'none'}`)
-    this.rejectPending(new Error(reason || `gateway exited${code === null ? '' : ` (${code})`}`))
+    const info = classifyGatewayExit(code, reason ?? this.lastGatewayExitReason)
+
+    this.pushLog(`[lifecycle] transport exit code=${code ?? 'null'} reason=${info.reason}`)
+    this.rejectPending(new Error(info.reason))
 
     if (this.subscribed) {
-      this.emit('exit', code)
+      this.emit('exit', code, info)
     } else {
       this.pendingExit = code
+      this.pendingExitInfo = info
     }
   }
 
@@ -355,6 +395,10 @@ export class GatewayClient extends EventEmitter {
 
       if (!line) {
         return
+      }
+
+      if (line.startsWith('[gateway-exit] ')) {
+        this.lastGatewayExitReason = line.slice('[gateway-exit] '.length).trim()
       }
 
       this.pushLog(line)
@@ -593,9 +637,11 @@ export class GatewayClient extends EventEmitter {
 
     if (this.pendingExit !== undefined) {
       const code = this.pendingExit
+      const info = this.pendingExitInfo ?? classifyGatewayExit(code)
 
       this.pendingExit = undefined
-      this.emit('exit', code)
+      this.pendingExitInfo = undefined
+      this.emit('exit', code, info)
     }
   }
 

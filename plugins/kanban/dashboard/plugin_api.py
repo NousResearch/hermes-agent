@@ -121,9 +121,114 @@ def _conn(board: Optional[str] = None):
     """
     try:
         kanban_db.init_db(board=board)
+    except kanban_db.KanbanDbCorruptError:
+        raise
     except Exception as exc:
         log.warning("kanban init_db failed: %s", exc)
     return kanban_db.connect(board=board)
+
+
+def _degraded_board_payload(exc: kanban_db.KanbanDbCorruptError, board: Optional[str]) -> dict[str, Any]:
+    """Return a dashboard-safe degraded board response for corrupt DBs."""
+    board_slug = board or kanban_db.get_current_board()
+    return {
+        "status": "degraded",
+        "board": board_slug,
+        "reason": exc.reason,
+        "db_path": str(exc.db_path),
+        "backup_path": str(exc.backup_path) if exc.backup_path else None,
+        "recommended_action": "repair board DB from latest clean backup or restore the preserved corrupt backup manually",
+        "columns": [{"name": name, "tasks": []} for name in BOARD_COLUMNS],
+        "tenants": [],
+        "assignees": [],
+        "latest_event_id": 0,
+        "now": int(time.time()),
+    }
+
+
+def _task_route_text(payload: "CreateTaskBody") -> str:
+    """Compact searchable text used for Josh-local dashboard task routing."""
+    parts = [payload.title or "", payload.body or "", payload.tenant or ""]
+    return "\n".join(str(p).casefold() for p in parts if p)
+
+
+def _route_board_for_create(payload: "CreateTaskBody", board: Optional[str]) -> Optional[str]:
+    """Route dashboard-created default-board tasks to a project board.
+
+    Conservative and metadata-driven: when the browser omits the board query
+    parameter or sends the legacy ``default`` board, a board whose ``board.json``
+    declares matching ``route_keywords`` gets the task instead. Parent links and
+    explicit workspace paths are treated as hard scope signals and are never
+    re-routed.
+    """
+    if board not in (None, "", kanban_db.DEFAULT_BOARD):
+        return board
+    if payload.parents or payload.workspace_path:
+        return board
+
+    text = _task_route_text(payload)
+    if not text:
+        return board
+
+    matches: list[tuple[int, str]] = []
+    for meta in kanban_db.list_boards(include_archived=False):
+        slug = str(meta.get("slug") or "")
+        if not slug or slug == kanban_db.DEFAULT_BOARD:
+            continue
+        keywords = meta.get("route_keywords") or []
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        score = 0
+        for raw in keywords:
+            kw = str(raw).strip().casefold()
+            if kw and kw in text:
+                score += 1
+        if score:
+            matches.append((score, slug))
+    if not matches:
+        return board
+    matches.sort(key=lambda item: (-item[0], item[1]))
+    routed = matches[0][1]
+    log.info("Kanban dashboard routed default-board task %r to board %s", payload.title, routed)
+    return routed
+
+
+def _dashboard_auto_subscribe_enabled() -> bool:
+    """Whether dashboard-created cards should subscribe to home notifications."""
+    try:
+        from hermes_cli.config import get_hermes_home
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv(hermes_home=get_hermes_home())
+    except Exception:
+        pass
+    val = os.environ.get("HERMES_KANBAN_DASHBOARD_AUTO_SUBSCRIBE_HOME", "")
+    return val.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _auto_subscribe_home_channels(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    """Subscribe a new dashboard task to every configured home channel."""
+    if not _dashboard_auto_subscribe_enabled():
+        return []
+    subscribed: list[dict] = []
+    for home in _configured_home_channels():
+        try:
+            kanban_db.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=home["platform"],
+                chat_id=home["chat_id"],
+                thread_id=home["thread_id"] or None,
+                notifier_profile=_active_profile_name(),
+            )
+            subscribed.append(home)
+        except Exception as exc:
+            log.warning(
+                "Kanban dashboard auto-subscribe failed for task %s on %s: %s",
+                task_id,
+                home.get("platform"),
+                exc,
+            )
+    return subscribed
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +493,11 @@ def get_board(
     ``current`` pointer → ``default``).
     """
     board = _resolve_board(board)
-    conn = _conn(board=board)
+    try:
+        conn = _conn(board=board)
+    except kanban_db.KanbanDbCorruptError as exc:
+        log.error("Kanban dashboard board %s is degraded: %s", board or kanban_db.get_current_board(), exc)
+        return _degraded_board_payload(exc, board)
     try:
         tasks = kanban_db.list_tasks(
             conn,
@@ -586,6 +695,7 @@ class CreateTaskBody(BaseModel):
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
+    board = _route_board_for_create(payload, board)
     conn = _conn(board=board)
     try:
         task_id = kanban_db.create_task(
@@ -603,9 +713,15 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             idempotency_key=payload.idempotency_key,
             max_runtime_seconds=payload.max_runtime_seconds,
             skills=payload.skills,
+            board=board,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
+        subscribed = _auto_subscribe_home_channels(conn, task_id)
+        if subscribed:
+            body["notify_subscriptions"] = subscribed
+        if board:
+            body["board"] = board
         # Surface a dispatcher-presence warning so the UI can show a
         # banner when a `ready` task would otherwise sit idle because no
         # gateway is running (or dispatch_in_gateway=false). Only emit
@@ -1724,6 +1840,12 @@ def _configured_home_channels() -> list[dict]:
     etc.) are honored alongside config.yaml. Returns platforms in a stable
     order and drops platforms without a home.
     """
+    try:
+        from hermes_cli.config import get_hermes_home
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv(hermes_home=get_hermes_home())
+    except Exception:
+        pass
     try:
         from gateway.config import load_gateway_config
     except Exception:

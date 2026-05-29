@@ -2351,9 +2351,122 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
 
 
 
+
+
+def test_notify_subscriptions_are_type_safe_and_lookup_normalized(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="notify typing")
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=123,
+            chat_id=456,
+            thread_id=789,
+            user_id=101112,
+            notifier_profile=None,
+        )
+        subs = kb.list_notify_subs(conn, task_id)
+        assert subs == [
+            {
+                **subs[0],
+                "task_id": task_id,
+                "platform": "123",
+                "chat_id": "456",
+                "thread_id": "789",
+                "user_id": "101112",
+                "notifier_profile": "default",
+                "last_event_id": 0,
+            }
+        ]
+
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
+                (task_id, "completed", '{"summary":"done"}', int(time.time())),
+            )
+        old_cursor, new_cursor, events = kb.claim_unseen_events_for_sub(
+            conn, task_id=task_id, platform=123, chat_id=456, thread_id=789, kinds=["completed"],
+        )
+        assert old_cursor == 0
+        assert new_cursor > 0
+        assert [ev.kind for ev in events] == ["completed"]
+        assert kb.remove_notify_sub(conn, task_id=task_id, platform=123, chat_id=456, thread_id=789)
+
+
+def test_repair_notify_subscriptions_normalizes_legacy_rows(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="legacy notify row")
+        with kb.write_txn(conn):
+            conn.execute(
+                """
+                INSERT INTO kanban_notify_subs
+                    (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at, last_event_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (task_id, "Discord", 12345, 0, 999, None, int(time.time()), "not-an-int"),
+            )
+        changed = kb.repair_notify_subscriptions(conn)
+        assert changed == 1
+        sub = kb.list_notify_subs(conn, task_id)[0]
+        assert sub["platform"] == "discord"
+        assert sub["chat_id"] == "12345"
+        assert sub["thread_id"] == "0"
+        assert sub["user_id"] == "999"
+        assert sub["notifier_profile"] == "default"
+        assert sub["last_event_id"] == 0
+
 # ---------------------------------------------------------------------------
 # NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
 # ---------------------------------------------------------------------------
+
+def test_connect_applies_wal_once_per_process_path(kanban_home, monkeypatch):
+    """Repeated short-lived connects must not churn PRAGMA journal_mode=WAL.
+
+    Gateway notifier/dispatcher loops open frequent Kanban connections. WAL
+    activation can require exclusive sidecar-file work, so doing it on every
+    open can race with other SQLite users and surface as transient disk-I/O
+    errors. Once a process has initialized a DB path, subsequent connects
+    should reuse the persisted journal mode without reapplying WAL.
+    """
+    import hermes_state
+
+    calls = []
+
+    def _fake_apply_wal(conn, *, db_label):
+        calls.append(db_label)
+        conn.execute("PRAGMA journal_mode=WAL")
+
+    monkeypatch.setattr(hermes_state, "apply_wal_with_fallback", _fake_apply_wal)
+    kb._INITIALIZED_PATHS.clear()
+
+    conn1 = kb.connect()
+    conn1.close()
+    conn2 = kb.connect()
+    conn2.close()
+
+    assert len(calls) == 1
+    assert "kanban.db" in calls[0]
+
+
+
+def test_write_txn_preserves_original_error_when_rollback_already_happened(kanban_home):
+    """Rollback cleanup must not mask the SQLite failure that caused it.
+
+    Some SQLite error paths leave autocommit mode before the context manager
+    handles the Python exception. A second ROLLBACK then raises ``cannot
+    rollback - no transaction is active``; callers need the original exception
+    for accurate root-cause logging.
+    """
+    conn = kb.connect()
+    original = RuntimeError("original sqlite failure should be preserved")
+    try:
+        with pytest.raises(RuntimeError, match="original sqlite failure"):
+            with kb.write_txn(conn):
+                conn.execute("ROLLBACK")
+                raise original
+    finally:
+        conn.close()
+
 
 def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch, caplog):
     """kanban_db.connect() must handle ``locking protocol`` on NFS/SMB.

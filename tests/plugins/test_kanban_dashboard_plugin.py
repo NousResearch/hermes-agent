@@ -47,6 +47,7 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DASHBOARD_AUTO_SUBSCRIBE_HOME", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
@@ -78,6 +79,33 @@ def test_board_empty(client):
     assert data["assignees"] == []
     assert data["latest_event_id"] == 0
 
+
+
+
+def test_board_returns_degraded_payload_for_corrupt_board(client, kanban_home):
+    mod = sys.modules["hermes_dashboard_plugin_kanban_test"]
+    db_path = kanban_home / "kanban" / "boards" / "default" / "kanban.db"
+    exc = kb.KanbanDbCorruptError(db_path, db_path.with_suffix(".bak"), "quick_check returned 'malformed'")
+
+    def _raise_corrupt(board=None):
+        raise exc
+
+    original = mod._conn
+    mod._conn = _raise_corrupt
+    try:
+        r = client.get("/api/plugins/kanban/board")
+    finally:
+        mod._conn = original
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "degraded"
+    assert data["board"] == "default"
+    assert "malformed" in data["reason"]
+    assert data["db_path"] == str(db_path)
+    assert data["backup_path"] == str(db_path.with_suffix(".bak"))
+    assert data["columns"]
+    assert all(col["tasks"] == [] for col in data["columns"])
 
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it

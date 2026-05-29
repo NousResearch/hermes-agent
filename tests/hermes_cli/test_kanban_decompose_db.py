@@ -166,3 +166,40 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
 
     assert any("Decomposed into" in (c.body or "") for c in comments)
     assert any(ev.kind == "decomposed" for ev in events)
+
+
+def test_decompose_copies_notify_subscriptions_to_children(kanban_home):
+    with kb.connect() as conn:
+        tid = _create_triage(conn)
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat1",
+            thread_id="thread1",
+            user_id="user1",
+            notifier_profile="default",
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orch",
+            children=[
+                {"title": "task A", "assignee": "researcher"},
+                {"title": "task B", "assignee": "engineer"},
+            ],
+            author="alice",
+        )
+    assert child_ids is not None
+
+    with kb.connect() as conn:
+        for child_id in child_ids:
+            subs = kb.list_notify_subs(conn, child_id)
+            assert len(subs) == 1
+            sub = subs[0]
+            assert sub["platform"] == "discord"
+            assert sub["chat_id"] == "chat1"
+            assert sub["thread_id"] == "thread1"
+            assert sub["user_id"] == "user1"
+            assert sub["notifier_profile"] == "default"
+            assert sub["last_event_id"] == 0

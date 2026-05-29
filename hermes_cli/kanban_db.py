@@ -1367,18 +1367,27 @@ def connect(
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
-                # WAL activation can take an exclusive lock while SQLite creates the
-                # sidecar files for a fresh database. Keep it in the same process-local
-                # critical section as schema initialization so concurrent gateway
-                # startup threads do not race before _INITIALIZED_PATHS is populated.
-                # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
-                # falls back to DELETE with one WARNING so kanban stays usable there.
-                # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-                from hermes_state import apply_wal_with_fallback
-                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-                # FULL (was NORMAL): fsync before each checkpoint to narrow the
-                # crash window that can leave a b-tree page header torn.
-                conn.execute("PRAGMA synchronous=FULL")
+                needs_init = resolved not in _INITIALIZED_PATHS
+                if needs_init:
+                    # WAL activation can take an exclusive lock while SQLite creates
+                    # sidecar files. Do it once per process/path with the schema
+                    # init lock held; repeatedly toggling journal mode on every
+                    # short-lived Kanban connection can throw transient SQLite
+                    # disk-I/O errors while gateway notifier/dispatcher threads are
+                    # active. Existing connections keep working with the persisted
+                    # journal mode, so per-open PRAGMA churn is unnecessary.
+                    from hermes_state import apply_wal_with_fallback
+                    apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                # FULL: fsync before each checkpoint to narrow the crash window
+                # that can leave a b-tree page header torn. Treat rare EIO here
+                # as advisory so a transient per-connection PRAGMA failure does
+                # not take down gateway notifier/dispatcher loops when the DB
+                # subsequently passes integrity checks.
+                try:
+                    conn.execute("PRAGMA synchronous=FULL")
+                except sqlite3.OperationalError as exc:
+                    if "disk i/o error" not in str(exc).lower():
+                        raise
                 conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
                 # Zero freed pages so a later torn write cannot expose stale
@@ -1387,7 +1396,6 @@ def connect(
                 # Surface corrupt cells as read errors instead of silent
                 # wrong-data returns.
                 conn.execute("PRAGMA cell_size_check=ON")
-                needs_init = resolved not in _INITIALIZED_PATHS
                 if needs_init:
                     # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
                     # migrations. Cached so subsequent connect() calls in the same
@@ -1633,6 +1641,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+        # SQLite's type affinity is intentionally loose; older gateway and
+        # dashboard paths could persist integer-like platform/chat/thread
+        # fields. Normalize rows during migration so notifier lookups and
+        # platform matching remain type-safe.
+        repair_notify_subscriptions(conn)
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -1886,21 +1899,21 @@ def write_txn(conn: sqlite3.Connection):
     task + recording an event, etc.).  A claim CAS inside this context is
     atomic -- at most one concurrent writer can succeed.
 
-    The explicit ROLLBACK on exception is wrapped in try/except so that
-    a SQLite auto-rollback (which leaves no active transaction) does not
-    shadow the original exception with a spurious rollback error.
+    Rollback is best-effort: on some SQLite error paths the connection has
+    already left the transaction by the time Python reaches the exception
+    handler. In that case a second ``ROLLBACK`` raises ``OperationalError:
+    cannot rollback - no transaction is active`` and masks the real failure
+    that the caller needs to log. Preserve the original exception instead.
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
     except Exception:
-        try:
-            conn.execute("ROLLBACK")
-        except sqlite3.OperationalError:
-            # SQLite has already auto-rolled-back the transaction (typical
-            # under EIO, lock contention, or corruption). Nothing to undo;
-            # do not let this secondary failure shadow the real one.
-            pass
+        if getattr(conn, "in_transaction", False):
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
         raise
     else:
         conn.execute("COMMIT")
@@ -4263,6 +4276,19 @@ def decompose_triage_task(
         parents_idx = child.get("parents") or []
         if not isinstance(parents_idx, list):
             raise ValueError(f"child[{idx}].parents must be a list")
+        workspace_kind = child.get("workspace_kind", "scratch")
+        if workspace_kind not in VALID_WORKSPACE_KINDS:
+            raise ValueError(
+                f"child[{idx}].workspace_kind must be one of "
+                f"{sorted(VALID_WORKSPACE_KINDS)}, got {workspace_kind!r}"
+            )
+        workspace_path = child.get("workspace_path")
+        if workspace_path is not None and not isinstance(workspace_path, str):
+            raise ValueError(f"child[{idx}].workspace_path must be a string or null")
+        if workspace_path and workspace_kind == "scratch":
+            raise ValueError(
+                f"child[{idx}] cannot set workspace_path with scratch workspace_kind"
+            )
         for p in parents_idx:
             if not isinstance(p, int) or p < 0 or p >= len(children):
                 raise ValueError(
@@ -4322,16 +4348,20 @@ def decompose_triage_task(
             title = child["title"].strip()
             body = child.get("body")
             assignee = _canonical_assignee(child.get("assignee"))
+            workspace_kind = str(child.get("workspace_kind") or "scratch")
+            workspace_path = child.get("workspace_path")
             conn.execute(
                 "INSERT INTO tasks "
-                "(id, title, body, assignee, status, workspace_kind, "
+                "(id, title, body, assignee, status, workspace_kind, workspace_path, "
                 " tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    workspace_kind,
+                    workspace_path if isinstance(workspace_path, str) and workspace_path.strip() else None,
                     tenant,
                     now,
                     (author or "decomposer"),
@@ -4342,6 +4372,42 @@ def decompose_triage_task(
                 {"by": author or "decomposer", "from_decompose_of": task_id},
             )
             child_ids.append(new_id)
+
+        # Copy notification subscriptions from the decomposed root to every
+        # child. A user who subscribes to a triage/root card expects to hear
+        # about human gates raised by the workers spawned from that card;
+        # otherwise child ``blocked`` / ``completed`` events are invisible and
+        # review-required tasks can sit unnoticed. Start child cursors at 0:
+        # the notifier only emits terminal event kinds, so already-recorded
+        # child ``created`` events do not produce noisy catch-up messages.
+        root_notify_subs = conn.execute(
+            """
+            SELECT platform, chat_id, thread_id, user_id, notifier_profile
+            FROM kanban_notify_subs
+            WHERE task_id = ?
+            """,
+            (task_id,),
+        ).fetchall()
+        if root_notify_subs:
+            for child_id in child_ids:
+                for sub in root_notify_subs:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO kanban_notify_subs
+                            (task_id, platform, chat_id, thread_id, user_id,
+                             notifier_profile, created_at, last_event_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                        """,
+                        (
+                            child_id,
+                            sub["platform"],
+                            sub["chat_id"],
+                            sub["thread_id"] or "",
+                            sub["user_id"],
+                            sub["notifier_profile"],
+                            now,
+                        ),
+                    )
 
         # Link children to their sibling parents (within the decomposed graph).
         for idx, child in enumerate(children):
@@ -6896,6 +6962,102 @@ def task_age(task: Task) -> dict:
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
 
+def _coerce_notify_text(value: Any, *, default: str = "", lower: bool = False) -> str:
+    if value is None:
+        text = default
+    else:
+        text = str(value)
+    text = text.strip()
+    if not text:
+        text = default
+    return text.lower() if lower else text
+
+
+def _coerce_notify_cursor(value: Any) -> int:
+    try:
+        cursor = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(cursor, 0)
+
+
+def _normalize_notify_sub_values(
+    *,
+    task_id: Any,
+    platform: Any,
+    chat_id: Any,
+    thread_id: Any = None,
+    user_id: Any = None,
+    notifier_profile: Any = None,
+    last_event_id: Any = 0,
+) -> dict[str, Any]:
+    return {
+        "task_id": _coerce_notify_text(task_id),
+        "platform": _coerce_notify_text(platform, lower=True),
+        "chat_id": _coerce_notify_text(chat_id),
+        "thread_id": _coerce_notify_text(thread_id),
+        "user_id": None if user_id is None else _coerce_notify_text(user_id),
+        "notifier_profile": _coerce_notify_text(notifier_profile, default="default"),
+        "last_event_id": _coerce_notify_cursor(last_event_id),
+    }
+
+
+def repair_notify_subscriptions(conn: sqlite3.Connection) -> int:
+    """Normalize existing notification rows to the canonical text shape.
+
+    SQLite permits integer values in TEXT-affinity columns. The gateway
+    notifier treats platform/chat/thread identifiers as strings, so repair at
+    the DB boundary and collapse duplicate rows introduced by type drift.
+    """
+    try:
+        rows = conn.execute("SELECT rowid, * FROM kanban_notify_subs").fetchall()
+    except sqlite3.Error:
+        return 0
+    changed = 0
+    seen: set[tuple[str, str, str, str]] = set()
+    for row in rows:
+        norm = _normalize_notify_sub_values(
+            task_id=row["task_id"],
+            platform=row["platform"],
+            chat_id=row["chat_id"],
+            thread_id=row["thread_id"],
+            user_id=row["user_id"],
+            notifier_profile=row["notifier_profile"] if "notifier_profile" in row.keys() else None,
+            last_event_id=row["last_event_id"],
+        )
+        key = (norm["task_id"], norm["platform"], norm["chat_id"], norm["thread_id"])
+        if key in seen:
+            conn.execute("DELETE FROM kanban_notify_subs WHERE rowid = ?", (row["rowid"],))
+            changed += 1
+            continue
+        seen.add(key)
+        original = {
+            "task_id": row["task_id"],
+            "platform": row["platform"],
+            "chat_id": row["chat_id"],
+            "thread_id": row["thread_id"],
+            "user_id": row["user_id"],
+            "notifier_profile": row["notifier_profile"] if "notifier_profile" in row.keys() else None,
+            "last_event_id": row["last_event_id"],
+        }
+        if any(original[k] != norm[k] for k in norm):
+            conn.execute(
+                """
+                UPDATE kanban_notify_subs
+                   SET task_id = ?, platform = ?, chat_id = ?, thread_id = ?,
+                       user_id = ?, notifier_profile = ?, last_event_id = ?
+                 WHERE rowid = ?
+                """,
+                (
+                    norm["task_id"], norm["platform"], norm["chat_id"],
+                    norm["thread_id"], norm["user_id"], norm["notifier_profile"],
+                    norm["last_event_id"], row["rowid"],
+                ),
+            )
+            changed += 1
+    return changed
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -6909,39 +7071,66 @@ def add_notify_sub(
     """Register a gateway source that wants terminal-state notifications
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
     now = int(time.time())
+    norm = _normalize_notify_sub_values(
+        task_id=task_id,
+        platform=platform,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        user_id=user_id,
+        notifier_profile=notifier_profile,
+    )
     with write_txn(conn):
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at, last_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (
+                norm["task_id"], norm["platform"], norm["chat_id"],
+                norm["thread_id"], norm["user_id"], norm["notifier_profile"],
+                now, norm["last_event_id"],
+            ),
         )
-        if notifier_profile:
-            # Self-heal legacy rows that predate notifier ownership by
-            # backfilling only when the existing value is unset.
-            conn.execute(
-                """
-                UPDATE kanban_notify_subs
-                   SET notifier_profile = ?
-                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
-                   AND (notifier_profile IS NULL OR notifier_profile = '')
-                """,
-                (notifier_profile, task_id, platform, chat_id, thread_id or ""),
-            )
+        # Self-heal legacy rows and keep notifier ownership populated.
+        conn.execute(
+            """
+            UPDATE kanban_notify_subs
+               SET notifier_profile = ?
+             WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+               AND (notifier_profile IS NULL OR notifier_profile = '')
+            """,
+            (
+                norm["notifier_profile"], norm["task_id"], norm["platform"],
+                norm["chat_id"], norm["thread_id"],
+            ),
+        )
 
 
 def list_notify_subs(
     conn: sqlite3.Connection, task_id: Optional[str] = None,
 ) -> list[dict]:
     if task_id is not None:
+        norm_task_id = _coerce_notify_text(task_id)
         rows = conn.execute(
-            "SELECT * FROM kanban_notify_subs WHERE task_id = ?", (task_id,),
+            "SELECT * FROM kanban_notify_subs WHERE task_id = ?", (norm_task_id,),
         ).fetchall()
     else:
         rows = conn.execute("SELECT * FROM kanban_notify_subs").fetchall()
-    return [dict(r) for r in rows]
+    out: list[dict] = []
+    for row in rows:
+        d = dict(row)
+        d.update(_normalize_notify_sub_values(
+            task_id=d.get("task_id"),
+            platform=d.get("platform"),
+            chat_id=d.get("chat_id"),
+            thread_id=d.get("thread_id"),
+            user_id=d.get("user_id"),
+            notifier_profile=d.get("notifier_profile"),
+            last_event_id=d.get("last_event_id"),
+        ))
+        out.append(d)
+    return out
 
 
 def remove_notify_sub(
@@ -6952,11 +7141,14 @@ def remove_notify_sub(
     chat_id: str,
     thread_id: Optional[str] = None,
 ) -> bool:
+    norm = _normalize_notify_sub_values(
+        task_id=task_id, platform=platform, chat_id=chat_id, thread_id=thread_id,
+    )
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM kanban_notify_subs WHERE task_id = ? "
             "AND platform = ? AND chat_id = ? AND thread_id = ?",
-            (task_id, platform, chat_id, thread_id or ""),
+            (norm["task_id"], norm["platform"], norm["chat_id"], norm["thread_id"]),
         )
     return cur.rowcount > 0
 
@@ -6976,21 +7168,24 @@ def unseen_events_for_sub(
     cursor is NOT advanced here; call :func:`advance_notify_cursor` after
     the gateway has successfully delivered the notifications.
     """
+    norm = _normalize_notify_sub_values(
+        task_id=task_id, platform=platform, chat_id=chat_id, thread_id=thread_id,
+    )
     row = conn.execute(
         "SELECT last_event_id FROM kanban_notify_subs "
         "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
-        (task_id, platform, chat_id, thread_id or ""),
+        (norm["task_id"], norm["platform"], norm["chat_id"], norm["thread_id"]),
     ).fetchone()
     if row is None:
         return 0, []
-    cursor = int(row["last_event_id"])
+    cursor = _coerce_notify_cursor(row["last_event_id"])
     kind_list = list(kinds) if kinds else None
     q = (
         "SELECT * FROM task_events WHERE task_id = ? AND id > ? "
         + ("AND kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
         + "ORDER BY id ASC"
     )
-    params: list[Any] = [task_id, cursor]
+    params: list[Any] = [norm["task_id"], cursor]
     if kind_list:
         params.extend(kind_list)
     rows = conn.execute(q, params).fetchall()
@@ -7034,20 +7229,23 @@ def claim_unseen_events_for_sub(
     failed before any terminal unsubscribe removed the row.
     """
     with write_txn(conn):
+        norm = _normalize_notify_sub_values(
+            task_id=task_id, platform=platform, chat_id=chat_id, thread_id=thread_id,
+        )
         row = conn.execute(
             "SELECT last_event_id FROM kanban_notify_subs "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
-            (task_id, platform, chat_id, thread_id or ""),
+            (norm["task_id"], norm["platform"], norm["chat_id"], norm["thread_id"]),
         ).fetchone()
         if row is None:
             return 0, 0, []
-        old_cursor = int(row["last_event_id"])
+        old_cursor = _coerce_notify_cursor(row["last_event_id"])
         new_cursor, events = unseen_events_for_sub(
             conn,
-            task_id=task_id,
-            platform=platform,
-            chat_id=chat_id,
-            thread_id=thread_id,
+            task_id=norm["task_id"],
+            platform=norm["platform"],
+            chat_id=norm["chat_id"],
+            thread_id=norm["thread_id"],
             kinds=kinds,
         )
         if not events:
@@ -7056,7 +7254,10 @@ def claim_unseen_events_for_sub(
             "UPDATE kanban_notify_subs SET last_event_id = ? "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
             "AND last_event_id = ?",
-            (int(new_cursor), task_id, platform, chat_id, thread_id or "", int(old_cursor)),
+            (
+                int(new_cursor), norm["task_id"], norm["platform"],
+                norm["chat_id"], norm["thread_id"], int(old_cursor),
+            ),
         )
         return old_cursor, new_cursor, events
 
@@ -7070,11 +7271,17 @@ def advance_notify_cursor(
     thread_id: Optional[str] = None,
     new_cursor: int,
 ) -> None:
+    norm = _normalize_notify_sub_values(
+        task_id=task_id, platform=platform, chat_id=chat_id, thread_id=thread_id,
+    )
     with write_txn(conn):
         conn.execute(
             "UPDATE kanban_notify_subs SET last_event_id = ? "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
-            (int(new_cursor), task_id, platform, chat_id, thread_id or ""),
+            (
+                int(new_cursor), norm["task_id"], norm["platform"],
+                norm["chat_id"], norm["thread_id"],
+            ),
         )
 
 
@@ -7094,14 +7301,17 @@ def rewind_notify_cursor(
     claim. This keeps retry behavior for transient send failures without
     clobbering newer progress.
     """
+    norm = _normalize_notify_sub_values(
+        task_id=task_id, platform=platform, chat_id=chat_id, thread_id=thread_id,
+    )
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE kanban_notify_subs SET last_event_id = ? "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
             "AND last_event_id = ?",
             (
-                int(old_cursor), task_id, platform, chat_id, thread_id or "",
-                int(claimed_cursor),
+                int(old_cursor), norm["task_id"], norm["platform"],
+                norm["chat_id"], norm["thread_id"], int(claimed_cursor),
             ),
         )
     return cur.rowcount > 0

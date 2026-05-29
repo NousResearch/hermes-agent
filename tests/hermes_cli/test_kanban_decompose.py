@@ -345,3 +345,59 @@ def test_decompose_no_aux_client_configured(kanban_home):
 
     assert outcome.ok is False
     assert "no auxiliary client" in outcome.reason
+
+
+
+def test_decompose_default_board_repo_keywords_assigns_project_workspace(kanban_home, tmp_path):
+    repo = tmp_path / "repos" / "Dow-DevOps" / "k8s"
+    repo.mkdir(parents=True)
+    kb.create_board(
+        "k8s",
+        name="Kubernetes",
+        default_workdir=str(repo),
+    )
+    meta_path = kanban_home / "kanban" / "boards" / "k8s" / "board.json"
+    meta = jsonlib.loads(meta_path.read_text())
+    meta["route_keywords"] = ["Dow-DevOps/k8s", "renovate", "diun"]
+    meta_path.write_text(jsonlib.dumps(meta), encoding="utf-8")
+
+    with kb.connect(board="default") as conn:
+        tid = kb.create_task(
+            conn,
+            title="E2E Renovate + Diun workflow for Dow-DevOps/k8s",
+            body="Create the actual PR and verify gateway notification.",
+            triage=True,
+            board="default",
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "split repo work from final notification",
+        "tasks": [
+            {"title": "Implement Renovate and Diun PR", "body": "Work in the repo and create a PR.", "assignee": "engineer", "parents": []},
+            {"title": "Verify final gateway notification", "body": "Check gateway notification evidence only.", "assignee": "orchestrator", "parents": [0]},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"orchestrator_profile": "orchestrator", "default_assignee": "orchestrator"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kb.connect(board="default") as conn:
+        impl = kb.get_task(conn, outcome.child_ids[0])
+        notify = kb.get_task(conn, outcome.child_ids[1])
+
+    assert impl.workspace_kind == "dir"
+    assert impl.workspace_path == str(repo)
+    assert notify.workspace_kind == "scratch"
+    assert notify.workspace_path is None

@@ -37,7 +37,7 @@ object HermesTaskerImportBridge {
     }
 
     fun parse(rawInput: String): HermesTaskerImportResult {
-        val xml = rawInput.trim()
+        val xml = normalizedTaskerXmlInput(rawInput)
         require(xml.startsWith("<")) { "Tasker import expects raw XML, a data:text/xml URI, or base64 XML" }
         require(xml.length <= MAX_TASKER_XML_CHARS) { "Tasker XML import is limited to $MAX_TASKER_XML_CHARS characters" }
         require(xml.indexOf('\u0000') < 0) { "Tasker XML cannot contain NUL bytes" }
@@ -105,6 +105,26 @@ object HermesTaskerImportBridge {
             importedActionCount = importedActions,
             skippedActions = skipped,
         )
+    }
+
+    private fun normalizedTaskerXmlInput(rawInput: String): String {
+        var candidate = rawInput.trim()
+        if (candidate.startsWith("```")) {
+            val lines = candidate.lines().toMutableList()
+            if (lines.isNotEmpty() && lines.first().trim().startsWith("```")) {
+                lines.removeAt(0)
+            }
+            if (lines.isNotEmpty() && lines.last().trim().startsWith("```")) {
+                lines.removeAt(lines.lastIndex)
+            }
+            candidate = lines.joinToString("\n").trim()
+        }
+        val firstXmlChar = candidate.indexOf('<')
+        val lastXmlChar = candidate.lastIndexOf('>')
+        if (firstXmlChar > 0 && lastXmlChar > firstXmlChar) {
+            candidate = candidate.substring(firstXmlChar, lastXmlChar + 1).trim()
+        }
+        return candidate
     }
 
     private fun recordFromTaskerAction(

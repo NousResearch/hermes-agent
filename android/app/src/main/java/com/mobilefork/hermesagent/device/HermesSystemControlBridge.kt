@@ -67,6 +67,8 @@ private val DEFAULT_SYSTEM_ACTIONS = listOf(
     "request_shizuku_permission",
     "start_background_runtime",
     "stop_background_runtime",
+    "start_floating_button",
+    "stop_floating_button",
 )
 
 data class HermesSystemStatus(
@@ -90,6 +92,10 @@ data class HermesSystemStatus(
     val notificationListenerConnected: Boolean = false,
     val backgroundPersistenceEnabled: Boolean = false,
     val runtimeServiceRunning: Boolean = false,
+    val floatingButtonEnabled: Boolean = false,
+    val floatingButtonRunning: Boolean = false,
+    val floatingButtonVisible: Boolean = false,
+    val floatingButtonError: String = "",
     val resizableWindowSupport: Boolean = true,
     val freeformWindowSupported: Boolean = false,
     val privilegedAccess: HermesPrivilegedAccessStatus? = null,
@@ -171,6 +177,10 @@ object HermesSystemControlBridge {
             notificationListenerConnected = HermesNotificationController.isListenerConnected(),
             backgroundPersistenceEnabled = stored.backgroundPersistenceEnabled,
             runtimeServiceRunning = HermesRuntimeService.isRunning(),
+            floatingButtonEnabled = stored.floatingButtonEnabled,
+            floatingButtonRunning = HermesFloatingButtonService.isRunning(),
+            floatingButtonVisible = HermesFloatingButtonService.isButtonVisible(),
+            floatingButtonError = HermesFloatingButtonService.lastError(),
             resizableWindowSupport = true,
             freeformWindowSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_FREEFORM_WINDOW_MANAGEMENT),
             privilegedAccess = HermesPrivilegedAccessBridge.readStatus(appContext),
@@ -263,6 +273,32 @@ object HermesSystemControlBridge {
                 DeviceStateWriter.write(appContext)
                 HermesSystemActionResult(success = true, action = action, message = "Stopped Hermes background runtime persistence")
             }
+            "start_floating_button" -> {
+                if (!Settings.canDrawOverlays(appContext)) {
+                    DeviceCapabilityStore(appContext).saveFloatingButtonEnabled(false)
+                    DeviceStateWriter.write(appContext)
+                    HermesSystemActionResult(
+                        success = false,
+                        action = action,
+                        message = "Grant Android draw-over-other-apps permission before starting the Hermes floating button.",
+                    )
+                } else {
+                    val started = HermesFloatingButtonService.start(appContext)
+                    DeviceCapabilityStore(appContext).saveFloatingButtonEnabled(started)
+                    DeviceStateWriter.write(appContext)
+                    HermesSystemActionResult(
+                        success = started,
+                        action = action,
+                        message = if (started) "Started Hermes floating button" else "Android blocked the Hermes floating button service start",
+                    )
+                }
+            }
+            "stop_floating_button" -> {
+                DeviceCapabilityStore(appContext).saveFloatingButtonEnabled(false)
+                HermesFloatingButtonService.stop(appContext)
+                DeviceStateWriter.write(appContext)
+                HermesSystemActionResult(success = true, action = action, message = "Stopped Hermes floating button")
+            }
             else -> HermesSystemActionResult(success = false, action = action, message = "Unsupported Android system action: $action")
         }
     }
@@ -344,6 +380,10 @@ object HermesSystemControlBridge {
             put("notification_listener_connected", status.notificationListenerConnected)
             put("background_persistence_enabled", status.backgroundPersistenceEnabled)
             put("runtime_service_running", status.runtimeServiceRunning)
+            put("floating_button_enabled", status.floatingButtonEnabled)
+            put("floating_button_running", status.floatingButtonRunning)
+            put("floating_button_visible", status.floatingButtonVisible)
+            put("floating_button_error", status.floatingButtonError)
             put("resizable_window_support", status.resizableWindowSupport)
             put("freeform_window_supported", status.freeformWindowSupported)
             put(

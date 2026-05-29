@@ -12,6 +12,7 @@ class AuthCatalogTest {
     fun qwenZaiAndOtherApiKeyProvidersDoNotExposeBrowserOAuthSignIn() {
         listOf(
             "openai",
+            "codex",
             "chatgpt",
             "claude",
             "gemini",

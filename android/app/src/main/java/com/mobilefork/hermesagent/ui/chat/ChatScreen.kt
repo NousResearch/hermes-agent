@@ -21,10 +21,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imeNestedScroll
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -55,6 +59,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -62,7 +67,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
@@ -84,6 +91,7 @@ import com.mobilefork.hermesagent.ui.shell.ShellActionItem
 import kotlinx.coroutines.launch
 import java.io.File
 
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChatScreen(
     modifier: Modifier = Modifier,
@@ -99,6 +107,7 @@ fun ChatScreen(
     val strings = LocalHermesStrings.current
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
     val scrollScope = rememberCoroutineScope()
     val showScrollToBottom by remember {
@@ -211,7 +220,7 @@ fun ChatScreen(
     }
 
     fun startAuthMethod(methodId: String): Boolean {
-        val supported = setOf("openrouter", "openai", "chatgpt", "claude", "gemini", "qwen", "qwen-coding-plan", "qwen-oauth", "zai", "google", "email", "phone")
+        val supported = setOf("openrouter", "openai", "codex", "chatgpt", "claude", "gemini", "qwen", "qwen-coding-plan", "qwen-oauth", "zai", "google", "email", "phone")
         if (methodId !in supported) return false
         return authViewModel.startAuth(methodId)
     }
@@ -280,6 +289,7 @@ fun ChatScreen(
     fun handleSend() {
         val input = uiState.input.trim()
         if (input.isEmpty() && uiState.attachments.isEmpty()) return
+        keyboardController?.hide()
         focusManager.clearFocus(force = true)
         if (input.isEmpty()) {
             viewModel.sendMessage()
@@ -308,16 +318,25 @@ fun ChatScreen(
 
     MaterialTheme {
         Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .imeNestedScroll(),
+                contentAlignment = Alignment.TopCenter,
+            ) {
                 val tinyVerticalViewport = maxHeight < 360.dp
                 val tinyHorizontalViewport = maxWidth < 260.dp
                 val tinyRuntimeViewport = tinyVerticalViewport || tinyHorizontalViewport
+                val density = LocalDensity.current
+                val imeVisible = WindowInsets.ime.getBottom(density) > 0
                 val contentPadding = if (tinyRuntimeViewport) {
                     PaddingValues(horizontal = 4.dp, vertical = 4.dp)
+                } else if (imeVisible) {
+                    PaddingValues(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 0.dp)
                 } else {
                     PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                 }
-                val contentSpacing = if (tinyRuntimeViewport) 4.dp else 8.dp
+                val contentSpacing = if (tinyRuntimeViewport || imeVisible) 4.dp else 8.dp
                 val messageListBottomPadding = 8.dp
                 Column(
                     modifier = Modifier
@@ -435,7 +454,7 @@ fun ChatScreen(
                         .imePadding(),
                     input = uiState.input,
                     attachments = uiState.attachments,
-                    statusText = if (tinyRuntimeViewport) "" else uiState.status,
+                    statusText = if (shouldShowComposerStatus(tinyRuntimeViewport, imeVisible)) uiState.status else "",
                     isSending = uiState.isSending,
                     isListening = uiState.isListening,
                     onInputChange = viewModel::updateInput,
@@ -1082,6 +1101,10 @@ internal fun sanitizeChatDisplayText(text: String): String {
     return cleanedLines.joinToString("\n").trimEnd()
 }
 
+internal fun shouldShowComposerStatus(tinyRuntimeViewport: Boolean, imeVisible: Boolean): Boolean {
+    return !tinyRuntimeViewport && !imeVisible
+}
+
 private fun expandCollapsedMarkdownRows(line: String): List<String> {
     if (line.count { it == '|' } < 2) {
         return listOf(line)
@@ -1104,6 +1127,10 @@ private fun markdownTableCells(line: String): List<String> {
 
 private fun cleanMarkdownInlineMarkers(text: String): String {
     return text
+        .replace(Regex("""\\\(([^\\\n]+)\\\)"""), "$1")
+        .replace(Regex("""\\\[([^\\\n]+)\\\]"""), "$1")
+        .replace(Regex("""\$\$([^$\n]+)\$\$"""), "$1")
+        .replace(Regex("""(?<!\w)\$([^$\n]+)\$(?!\w)"""), "$1")
         .replace(Regex("""\*\*([^*\n]+)\*\*"""), "$1")
         .replace(Regex("""__([^_\n]+)__"""), "$1")
         .replace(Regex("""(?<!\*)\*([^*\n]+)\*(?!\*)"""), "$1")

@@ -12,6 +12,7 @@ import com.mobilefork.hermesagent.auth.AuthRuntimeApplier
 import com.mobilefork.hermesagent.auth.OpenRouterOAuthClient
 import com.mobilefork.hermesagent.data.AuthSessionStore
 import com.mobilefork.hermesagent.device.DeviceStateWriter
+import com.mobilefork.hermesagent.device.HermesFloatingButtonService
 import com.mobilefork.hermesagent.device.HermesLauncherShortcutBridge
 import com.mobilefork.hermesagent.ui.boot.BootScreen
 import kotlinx.coroutines.Dispatchers
@@ -76,6 +77,7 @@ class MainActivity : ComponentActivity() {
     private fun writeDeviceStateAsync() {
         lifecycleScope.launch(Dispatchers.IO) {
             delay(STARTUP_DEVICE_STATE_DELAY_MS)
+            HermesFloatingButtonService.startIfDesired(applicationContext)
             DeviceStateWriter.write(applicationContext)
         }
     }

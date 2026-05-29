@@ -71,6 +71,49 @@ class HermesSseClient(
         }
     }
 
+    fun streamResponse(
+        request: ChatCompletionRequest,
+        onDelta: (String) -> Unit,
+        onComplete: () -> Unit,
+        onError: (String) -> Unit,
+        onStatus: (String) -> Unit = {},
+    ) {
+        try {
+            val payload = request.toResponsesPayload()
+            val responsesUrl = HermesEndpointUrl.responsesUrl(normalizedBaseUrl)
+            onStatus("Opening Responses stream at ${endpointLabel(responsesUrl)}")
+            networkGuard(responsesUrl)
+            val builder = Request.Builder()
+                .url(responsesUrl)
+                .header("Accept", "text/event-stream")
+                .header("Cache-Control", "no-cache")
+                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            if (!apiKey.isNullOrBlank()) {
+                builder.header("Authorization", "Bearer $apiKey")
+            }
+            if (!request.sessionId.isNullOrBlank()) {
+                builder.header(HermesApiClient.SESSION_HEADER, request.sessionId)
+            }
+
+            httpClient.newCall(builder.build()).execute().use { response ->
+                onStatus("Responses endpoint returned HTTP ${response.code}; reading SSE frames")
+                val body = response.body
+                if (!response.isSuccessful) {
+                    onError("Responses SSE request failed: ${response.code} ${response.message} ${body?.string().orEmpty().takeBodySnippet()}")
+                    return
+                }
+                val source = body?.source()
+                if (source == null) {
+                    onError("Responses SSE response body was empty")
+                    return
+                }
+                parseStream(source, onDelta, onComplete, onError, onStatus)
+            }
+        } catch (error: Exception) {
+            onError(endpointTransportErrorMessage(error))
+        }
+    }
+
     internal fun parseStream(
         source: BufferedSource,
         onDelta: (String) -> Unit,
@@ -132,6 +175,26 @@ class HermesSseClient(
 
     private fun extractStreamEvent(payload: String): StreamEvent {
         val root = JSONObject(payload)
+        val type = root.optString("type")
+        when (type) {
+            "response.output_text.delta", "response.refusal.delta" -> {
+                return StreamEvent(delta = root.optString("delta").ifBlank { null }, finishReason = null)
+            }
+            "response.completed" -> {
+                return StreamEvent(delta = null, finishReason = "stop")
+            }
+            "response.failed", "response.incomplete", "error" -> {
+                val error = root.optJSONObject("error")
+                val message = error?.optString("message")
+                    ?.ifBlank { root.optString("message") }
+                    ?.ifBlank { type }
+                    ?: type
+                throw IllegalArgumentException(message)
+            }
+        }
+        root.optString("output_text").takeIf { it.isNotBlank() }?.let { output ->
+            return StreamEvent(delta = output, finishReason = root.optString("finish_reason").ifBlank { null })
+        }
         val choices = root.optJSONArray("choices") ?: return StreamEvent(delta = null, finishReason = null)
         if (choices.length() == 0) {
             return StreamEvent(delta = null, finishReason = null)

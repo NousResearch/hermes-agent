@@ -13,15 +13,19 @@ import com.mobilefork.hermesagent.api.ChatMessage
 import com.mobilefork.hermesagent.api.HermesEndpointUrl
 import com.mobilefork.hermesagent.api.HermesApiClient
 import com.mobilefork.hermesagent.api.HermesSseClient
+import com.mobilefork.hermesagent.backend.BackendKind
 import com.mobilefork.hermesagent.backend.HermesRuntimeManager
 import com.mobilefork.hermesagent.backend.OnDeviceBackendManager
 import com.mobilefork.hermesagent.data.ConversationStore
 import com.mobilefork.hermesagent.data.AppSettings
 import com.mobilefork.hermesagent.data.AppSettingsStore
 import com.mobilefork.hermesagent.data.HermesNetworkPolicy
+import com.mobilefork.hermesagent.data.ProviderPresets
+import com.mobilefork.hermesagent.data.SecureSecretsStore
 import com.mobilefork.hermesagent.data.StoredConversationAttachment
 import com.mobilefork.hermesagent.data.StoredConversationMessage
 import com.mobilefork.hermesagent.device.HermesDeviceDiagnosticsBridge
+import com.mobilefork.hermesagent.device.HermesHindsightMemoryBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +37,26 @@ import org.json.JSONObject
 import java.io.File
 import java.net.URI
 import java.util.UUID
+
+private val DIRECT_OPENAI_COMPATIBLE_PROVIDERS = setOf(
+    "openrouter",
+    "openai",
+    "codex",
+    "gemini",
+    "alibaba",
+    "alibaba-coding-plan",
+    "qwen-oauth",
+    "zai",
+    "zai-coding-plan",
+    "groq",
+    "mistral",
+    "perplexity",
+    "cerebras",
+    "together",
+    "fireworks",
+    "deepinfra",
+)
+private val RESPONSES_API_PROVIDERS = setOf("openai", "codex")
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val conversationStore = ConversationStore(application)
@@ -238,6 +262,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     messageId = assistantMessageId,
                     newContent = content,
                 )
+                retainConversationMemory(sessionId, text, content)
                 _uiState.update { state ->
                     state.copy(
                         activeConversationTitle = conversationStore.currentConversation().title,
@@ -257,8 +282,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
-            val runtime = ensureRuntimeReady()
-            val endpoint = resolveChatEndpoint(runtime)
+            val directEndpoint = resolveDirectProviderEndpoint()
+            val runtime = if (directEndpoint == null) {
+                ensureRuntimeReady()
+            } else {
+                HermesRuntimeManager.RuntimeState(started = true)
+            }
+            val endpoint = directEndpoint ?: resolveChatEndpoint(runtime)
             if (!runtime.started || endpoint == null) {
                 _uiState.update {
                     it.copy(
@@ -286,6 +316,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 return@launch
             }
+            val memoryContext = recallConversationMemoryContext(text)
 
             persistMessages(sessionId, userMessage, assistantPlaceholder)
 
@@ -313,12 +344,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         userText = text,
                         userContentParts = userContentParts,
                         priorMessages = priorConversationMessages,
+                        relevantMemoryContext = memoryContext,
                     )
                     conversationStore.updateMessageContent(
                         sessionId = sessionId,
                         messageId = assistantMessageId,
                         newContent = result.content,
                     )
+                    retainConversationMemory(sessionId, text, result.content)
                     _uiState.update { state ->
                         state.copy(
                             activeConversationTitle = conversationStore.currentConversation().title,
@@ -365,62 +398,83 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     userContentParts = userContentParts,
                     customSystemPrompt = customSystemPrompt,
                     priorMessages = priorConversationMessages,
+                    memoryContext = memoryContext,
                 ),
                 stream = true,
                 sessionId = sessionId,
             )
             runCatching {
-                client.streamChatCompletion(
-                    request = request,
-                    onDelta = { delta ->
-                        val persistedPrefix = conversationStore.loadConversation(sessionId)
-                            ?.messages
-                            ?.firstOrNull { it.id == assistantMessageId }
-                            ?.content
-                            .orEmpty()
-                        conversationStore.updateMessageContent(
-                            sessionId = sessionId,
-                            messageId = assistantMessageId,
-                            newContent = persistedPrefix + delta,
+                val onDelta: (String) -> Unit = { delta ->
+                    val persistedPrefix = conversationStore.loadConversation(sessionId)
+                        ?.messages
+                        ?.firstOrNull { it.id == assistantMessageId }
+                        ?.content
+                        .orEmpty()
+                    conversationStore.updateMessageContent(
+                        sessionId = sessionId,
+                        messageId = assistantMessageId,
+                        newContent = persistedPrefix + delta,
+                    )
+                    _uiState.update { state ->
+                        state.copy(
+                            activeConversationTitle = conversationStore.currentConversation().title,
+                            conversationSummaries = loadSummaries(),
+                            messages = state.messages.map { message ->
+                                if (message.id == assistantMessageId) {
+                                    message.copy(content = message.content + delta)
+                                } else {
+                                    message
+                                }
+                            },
                         )
-                        _uiState.update { state ->
-                            state.copy(
-                                activeConversationTitle = conversationStore.currentConversation().title,
-                                conversationSummaries = loadSummaries(),
-                                messages = state.messages.map { message ->
-                                    if (message.id == assistantMessageId) {
-                                        message.copy(content = message.content + delta)
-                                    } else {
-                                        message
-                                    }
-                                },
-                            )
-                        }
-                    },
-                    onComplete = {
-                        _uiState.update {
-                            it.copy(
-                                isSending = false,
-                                status = "",
-                                conversationSummaries = loadSummaries(),
-                            )
-                        }
-                    },
-                    onError = { error ->
-                        tryNonStreamingEndpointFallback(
-                            endpoint = endpoint,
-                            request = request,
-                            sessionId = sessionId,
-                            assistantMessageId = assistantMessageId,
-                            streamError = error,
+                    }
+                }
+                val onComplete: () -> Unit = {
+                    val assistantContent = conversationStore.loadConversation(sessionId)
+                        ?.messages
+                        ?.firstOrNull { it.id == assistantMessageId }
+                        ?.content
+                        .orEmpty()
+                    retainConversationMemory(sessionId, text, assistantContent)
+                    _uiState.update {
+                        it.copy(
+                            isSending = false,
+                            status = "",
+                            conversationSummaries = loadSummaries(),
                         )
-                    },
-                    onStatus = { status ->
-                        _uiState.update {
-                            it.copy(status = "${endpoint.debugLabel()}: $status")
-                        }
-                    },
-                )
+                    }
+                }
+                val onError: (String) -> Unit = { error ->
+                    tryNonStreamingEndpointFallback(
+                        endpoint = endpoint,
+                        request = request,
+                        sessionId = sessionId,
+                        assistantMessageId = assistantMessageId,
+                        streamError = error,
+                    )
+                }
+                val onStatus: (String) -> Unit = { status ->
+                    _uiState.update {
+                        it.copy(status = "${endpoint.debugLabel()}: $status")
+                    }
+                }
+                if (endpoint.apiMode == EndpointApiMode.RESPONSES) {
+                    client.streamResponse(
+                        request = request,
+                        onDelta = onDelta,
+                        onComplete = onComplete,
+                        onError = onError,
+                        onStatus = onStatus,
+                    )
+                } else {
+                    client.streamChatCompletion(
+                        request = request,
+                        onDelta = onDelta,
+                        onComplete = onComplete,
+                        onError = onError,
+                        onStatus = onStatus,
+                    )
+                }
             }.onFailure { error ->
                 val message = error.message ?: error.javaClass.simpleName
                 tryNonStreamingEndpointFallback(
@@ -446,7 +500,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         _uiState.update {
             it.copy(
-                status = "${endpoint.debugLabel()}: stream issue detected; retrying non-stream chat…",
+                status = "${endpoint.debugLabel()}: stream issue detected; retrying non-stream request…",
                 error = "",
             )
         }
@@ -462,8 +516,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 },
             )
-            val result = fallbackClient.createChatCompletion(request.copy(stream = false))
-            val content = extractAssistantContentFromChatCompletion(result.rawBody)
+            val result = if (endpoint.apiMode == EndpointApiMode.RESPONSES) {
+                fallbackClient.createResponse(request.copy(stream = false))
+            } else {
+                fallbackClient.createChatCompletion(request.copy(stream = false))
+            }
+            val content = if (endpoint.apiMode == EndpointApiMode.RESPONSES) {
+                extractAssistantContentFromResponse(result.rawBody)
+            } else {
+                extractAssistantContentFromChatCompletion(result.rawBody)
+            }
             require(content.isNotBlank()) {
                 "Non-stream endpoint returned no assistant text"
             }
@@ -472,6 +534,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 messageId = assistantMessageId,
                 newContent = content,
             )
+            retainConversationMemory(sessionId, request.messages.lastOrNull { it.role == "user" }?.content.orEmpty(), content)
             _uiState.update { state ->
                 state.copy(
                     activeConversationTitle = conversationStore.currentConversation().title,
@@ -485,7 +548,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     },
                     isSending = false,
                     error = "",
-                    status = "${endpoint.debugLabel()}: recovered with non-stream chat after SSE failed.",
+                    status = "${endpoint.debugLabel()}: recovered with non-stream request after SSE failed.",
                 )
             }
             true
@@ -509,7 +572,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val apiKey: String?,
         val modelName: String,
         val nativeToolCalling: Boolean = false,
+        val apiMode: EndpointApiMode = EndpointApiMode.CHAT_COMPLETIONS,
+        val directProvider: Boolean = false,
     )
+
+    private enum class EndpointApiMode {
+        CHAT_COMPLETIONS,
+        RESPONSES,
+    }
 
     private fun ChatEndpoint.streamingStatus(hasAttachments: Boolean): String {
         val action = if (hasAttachments) "Hermes is reading the image" else "Hermes is replying"
@@ -529,7 +599,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun ChatEndpoint.debugLabel(): String {
-        val mode = if (nativeToolCalling) "on-device" else "endpoint"
+        val mode = when {
+            nativeToolCalling -> "on-device"
+            apiMode == EndpointApiMode.RESPONSES -> "responses"
+            directProvider -> "provider"
+            else -> "endpoint"
+        }
         return "$mode ${endpointHostLabel(baseUrl)} · $modelName"
     }
 
@@ -574,12 +649,73 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    private fun resolveDirectProviderEndpoint(): ChatEndpoint? {
+        val settings = AppSettingsStore(getApplication<Application>()).load()
+        if (settings.offlineAirplaneMode || BackendKind.fromPersistedValue(settings.onDeviceBackend) != BackendKind.NONE) {
+            return null
+        }
+        val provider = settings.provider.trim().lowercase()
+        if (provider !in DIRECT_OPENAI_COMPATIBLE_PROVIDERS) {
+            return null
+        }
+        val preset = ProviderPresets.find(provider)
+        val baseUrl = settings.baseUrl.ifBlank { preset?.baseUrl.orEmpty() }
+        val modelName = settings.model.ifBlank { preset?.modelHint.orEmpty() }
+        if (baseUrl.isBlank() || modelName.isBlank()) {
+            return null
+        }
+        val apiKey = SecureSecretsStore(getApplication<Application>()).loadApiKey(provider)
+        if (apiKey.isBlank()) {
+            return null
+        }
+        return ChatEndpoint(
+            baseUrl = HermesEndpointUrl.normalizeBaseUrl(baseUrl),
+            apiKey = apiKey,
+            modelName = modelName,
+            apiMode = if (provider in RESPONSES_API_PROVIDERS) EndpointApiMode.RESPONSES else EndpointApiMode.CHAT_COMPLETIONS,
+            directProvider = true,
+        )
+    }
+
     private fun ensureRuntimeReady(): HermesRuntimeManager.RuntimeState {
         val current = HermesRuntimeManager.currentState()
         if (current.started && resolveChatEndpoint(current) != null) {
             return current
         }
         return HermesRuntimeManager.ensureStarted(getApplication())
+    }
+
+    private fun retainConversationMemory(sessionId: String, userText: String, assistantText: String) {
+        val fact = conversationMemoryFact(sessionId, userText, assistantText)
+        if (fact.isBlank()) {
+            return
+        }
+        runCatching {
+            HermesHindsightMemoryBridge.performActionJson(
+                context = getApplication<Application>(),
+                rawAction = "retain",
+                arguments = JSONObject()
+                    .put("content", fact)
+                    .put("source", "chat")
+                    .put("category", "conversation")
+                    .put("tags", JSONArray().put("conversation").put("auto_recall")),
+            )
+        }
+    }
+
+    private fun recallConversationMemoryContext(userText: String): String {
+        return runCatching {
+            JSONObject(
+                HermesHindsightMemoryBridge.performActionJson(
+                    context = getApplication<Application>(),
+                    rawAction = "relevant_context",
+                    arguments = JSONObject()
+                        .put("query", userText)
+                        .put("limit", 6)
+                        .put("max_chars", 1600),
+                ),
+            ).optString("system_prompt_context")
+        }.getOrDefault("").trim()
     }
 
     private fun buildState(
@@ -733,27 +869,82 @@ internal fun extractAssistantContentFromChatCompletion(rawBody: String): String 
     return chatCompletionContentToText(messageContent ?: deltaContent).trim()
 }
 
+internal fun extractAssistantContentFromResponse(rawBody: String): String {
+    val root = JSONObject(rawBody)
+    val directOutput = root.optString("output_text").trim()
+    if (directOutput.isNotBlank()) {
+        return directOutput
+    }
+    val output = root.optJSONArray("output") ?: return ""
+    val chunks = mutableListOf<String>()
+    for (outputIndex in 0 until output.length()) {
+        val item = output.optJSONObject(outputIndex) ?: continue
+        val content = item.opt("content")
+        val text = when (content) {
+            is JSONArray -> responseContentArrayToText(content)
+            else -> chatCompletionContentToText(content)
+        }.trim()
+        if (text.isNotBlank()) {
+            chunks += text
+        }
+    }
+    return chunks.joinToString("\n").trim()
+}
+
+internal fun conversationMemoryFact(sessionId: String, userText: String, assistantText: String): String {
+    val user = userText.compactForMemory()
+    val assistant = assistantText.compactForMemory()
+    if (user.isBlank() && assistant.isBlank()) {
+        return ""
+    }
+    return buildString {
+        append("Conversation ")
+        append(sessionId.take(36))
+        append(": ")
+        if (user.isNotBlank()) {
+            append("user asked: ")
+            append(user.take(420))
+        }
+        if (assistant.isNotBlank()) {
+            if (user.isNotBlank()) append(" | ")
+            append("assistant answered: ")
+            append(assistant.take(700))
+        }
+    }.take(1_200)
+}
+
 internal fun buildChatRequestMessages(
     userText: String,
     userContentParts: List<ChatContentPart> = emptyList(),
     customSystemPrompt: String = "",
     priorMessages: List<ChatMessage> = emptyList(),
+    memoryContext: String = "",
 ): List<ChatMessage> {
     val userMessage = ChatMessage(role = "user", content = userText, contentParts = userContentParts)
     val persona = NativeToolContextCompressor.compactCustomSystemPrompt(
         AppSettings.normalizeCustomSystemPrompt(customSystemPrompt),
     )
+    val relevantMemory = NativeToolContextCompressor.compactPromotedMemoryContext(memoryContext)
     val requestMessages = mutableListOf<ChatMessage>()
-    if (persona.isBlank()) {
+    if (persona.isBlank() && relevantMemory.isBlank()) {
         requestMessages += NativeToolContextCompressor.compactPriorChatRequestMessages(priorMessages)
         requestMessages += userMessage
         return requestMessages
     }
     requestMessages += ChatMessage(
         role = "system",
-        content = "User-configured agent persona/system instructions. Apply them unless they conflict " +
-            "with the current user request, Android permissions, tool truthfulness, or safety constraints:\n" +
-            persona,
+        content = buildString {
+            if (persona.isNotBlank()) {
+                append("User-configured agent persona/system instructions. Apply them unless they conflict ")
+                append("with the current user request, Android permissions, tool truthfulness, or safety constraints:\n")
+                append(persona)
+            }
+            if (relevantMemory.isNotBlank()) {
+                if (isNotEmpty()) append("\n\n")
+                append("Relevant local memory context recalled from prior conversations. Use it when it helps the current request, and ignore stale or unrelated rows:\n")
+                append(relevantMemory)
+            }
+        },
     )
     requestMessages += NativeToolContextCompressor.compactPriorChatRequestMessages(priorMessages)
     requestMessages += userMessage
@@ -829,6 +1020,10 @@ internal fun formatDirectNativeDiagnosticsReply(rawJson: String): String {
     return json.toString(2).take(4_000)
 }
 
+private fun String.compactForMemory(): String {
+    return replace(Regex("\\s+"), " ").trim()
+}
+
 private fun chatCompletionContentToText(value: Any?): String {
     if (value == null || value == JSONObject.NULL) {
         return ""
@@ -852,5 +1047,26 @@ private fun chatCompletionContentToText(value: Any?): String {
         }
         is JSONObject -> value.optString("text").ifBlank { value.optString("content") }
         else -> value.toString()
+    }
+}
+
+private fun responseContentArrayToText(value: JSONArray): String {
+    return buildString {
+        for (index in 0 until value.length()) {
+            val item = value.opt(index)
+            val text = when (item) {
+                is JSONObject -> when (item.optString("type")) {
+                    "output_text", "input_text", "summary_text" -> item.optString("text")
+                    else -> item.optString("text")
+                        .ifBlank { item.optString("content") }
+                }
+                is String -> item
+                else -> item?.toString().orEmpty()
+            }
+            if (text.isNotBlank()) {
+                if (isNotEmpty()) append('\n')
+                append(text)
+            }
+        }
     }
 }

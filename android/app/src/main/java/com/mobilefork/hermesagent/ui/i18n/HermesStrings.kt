@@ -1157,12 +1157,12 @@ data class HermesStrings(
     }
 
     fun chatCommandHelp(): String = when (language) {
-        AppLanguage.CHINESE -> "可用应用命令：/new、/history、/clear、/accounts、/settings、/device、/portal、/auth、/signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>、/provider <id>、/model <name>、/speak last。"
-        AppLanguage.SPANISH -> "Comandos disponibles: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
-        AppLanguage.GERMAN -> "Verfügbare Befehle: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
-        AppLanguage.PORTUGUESE -> "Comandos disponíveis: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
-        AppLanguage.FRENCH -> "Commandes disponibles : /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
-        AppLanguage.ENGLISH -> "Available app commands: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
+        AppLanguage.CHINESE -> "可用应用命令：/new、/history、/clear、/accounts、/settings、/device、/portal、/auth、/signin <openrouter|openai|codex|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>、/provider <id>、/model <name>、/speak last。"
+        AppLanguage.SPANISH -> "Comandos disponibles: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|codex|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
+        AppLanguage.GERMAN -> "Verfügbare Befehle: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|codex|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
+        AppLanguage.PORTUGUESE -> "Comandos disponíveis: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|codex|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
+        AppLanguage.FRENCH -> "Commandes disponibles : /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|codex|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
+        AppLanguage.ENGLISH -> "Available app commands: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|codex|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
     }
 
     fun chatCommandOpenedAccounts(): String = when (language) {
@@ -1256,12 +1256,12 @@ data class HermesStrings(
     }
 
     fun chatCommandSignInUsage(): String = when (language) {
-        AppLanguage.CHINESE -> "用法：/signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
-        AppLanguage.SPANISH -> "Uso: /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
-        AppLanguage.GERMAN -> "Nutzung: /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
-        AppLanguage.PORTUGUESE -> "Uso: /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
-        AppLanguage.FRENCH -> "Utilisation : /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
-        AppLanguage.ENGLISH -> "Usage: /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
+        AppLanguage.CHINESE -> "用法：/signin <openrouter|openai|codex|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
+        AppLanguage.SPANISH -> "Uso: /signin <openrouter|openai|codex|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
+        AppLanguage.GERMAN -> "Nutzung: /signin <openrouter|openai|codex|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
+        AppLanguage.PORTUGUESE -> "Uso: /signin <openrouter|openai|codex|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
+        AppLanguage.FRENCH -> "Utilisation : /signin <openrouter|openai|codex|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
+        AppLanguage.ENGLISH -> "Usage: /signin <openrouter|openai|codex|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
     }
 
     fun chatCommandOpenRouterOAuth(): String = when (language) {

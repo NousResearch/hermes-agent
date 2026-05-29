@@ -254,6 +254,39 @@ class HermesSseClientTest {
         assertNull(error)
     }
 
+    @Test
+    fun streamResponse_emitsResponsesOutputTextDeltaAndCompletion() {
+        val body = """
+            event: response.output_text.delta
+            data: {"type":"response.output_text.delta","delta":"hello"}
+
+            event: response.completed
+            data: {"type":"response.completed","response":{"id":"resp_123"}}
+
+        """.trimIndent() + "\n"
+        val client = HermesSseClient(
+            baseUrl = "https://api.openai.com/v1/responses",
+            httpClient = singleResponseClient(body),
+        )
+
+        val deltas = mutableListOf<String>()
+        val statuses = mutableListOf<String>()
+        var completed = false
+        var error: String? = null
+        client.streamResponse(
+            request = sampleRequest().copy(model = "gpt-5"),
+            onDelta = { deltas += it },
+            onComplete = { completed = true },
+            onError = { error = it },
+            onStatus = { statuses += it },
+        )
+
+        assertEquals(listOf("hello"), deltas)
+        assertTrue(completed)
+        assertNull(error)
+        assertTrue(statuses.any { it.contains("Responses stream") })
+    }
+
     private fun sampleRequest(): ChatCompletionRequest {
         return ChatCompletionRequest(
             model = "gemma-4-local",

@@ -52,6 +52,7 @@ class NativeToolCallingChatClient(
         userText: String,
         userContentParts: List<ChatContentPart> = emptyList(),
         priorMessages: List<ChatMessage> = emptyList(),
+        relevantMemoryContext: String = "",
     ): Result {
         val normalizedBaseUrl = baseUrl.trimEnd('/')
         require(normalizedBaseUrl.startsWith("http://") || normalizedBaseUrl.startsWith("https://")) {
@@ -70,7 +71,10 @@ class NativeToolCallingChatClient(
         var latestToolResult = ""
         var activeToolSpecs = compactToolSpecsFor(userText)
         var messages = buildInitialNativeMessages(
-            systemMessage = systemMessage(toolsEnabled = activeToolSpecs.length() > 0),
+            systemMessage = systemMessage(
+                toolsEnabled = activeToolSpecs.length() > 0,
+                relevantMemoryContext = relevantMemoryContext,
+            ),
             priorMessages = priorMessages,
             userText = userText,
             userContentParts = userContentParts,
@@ -1279,7 +1283,7 @@ class NativeToolCallingChatClient(
             Regex("""^[A-Za-z_][A-Za-z0-9_]*\s*\(""").containsMatchIn(trim())
     }
 
-    private fun systemMessage(toolsEnabled: Boolean): JSONObject {
+    private fun systemMessage(toolsEnabled: Boolean, relevantMemoryContext: String = ""): JSONObject {
         val customSystemPrompt = AppSettingsStore(appContext).load().customSystemPrompt
         val promotedMemoryContext = if (toolsEnabled) {
             HermesHindsightMemoryBridge.promotedContextJson(appContext)
@@ -1292,6 +1296,7 @@ class NativeToolCallingChatClient(
             toolsEnabled = toolsEnabled,
             customSystemPrompt = customSystemPrompt,
             promotedMemoryContext = promotedMemoryContext.orEmpty(),
+            relevantMemoryContext = relevantMemoryContext,
         )
         return JSONObject()
             .put("role", "system")
@@ -1403,9 +1408,9 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "hindsight_memory_tool",
-                    description = "Retain, recall, reflect, inspect promoted context, or clear lightweight local memories using Hindsight-style keyword, entity, recency, salience, reinforcement, and Kai-style promotion signals.",
+                    description = "Retain, recall, reflect, build relevant prompt context, inspect promoted context, or clear lightweight local memories using Hindsight-style keyword, entity, recency, salience, reinforcement, and Kai-style promotion signals.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, retain, recall, reflect, promoted_context, or clear."))
+                        .put("action", stringProp("status, retain, recall, reflect, relevant_context, promoted_context, or clear."))
                         .put("content", stringProp("Fact or memory content for retain."))
                         .put("facts", stringProp("Optional list of fact strings for retain."))
                         .put("query", stringProp("Recall query."))
@@ -1413,7 +1418,7 @@ class NativeToolCallingChatClient(
                         .put("category", stringProp("Memory category for retain."))
                         .put("source", stringProp("Memory source such as chat, tool_result, user_preference, or device_state."))
                         .put("limit", intProp("Maximum recall rows. Defaults to 5."))
-                        .put("max_chars", intProp("Maximum promoted context characters."))
+                        .put("max_chars", intProp("Maximum relevant/promoted context characters."))
                         .put("max_entries", intProp("Maximum rows to keep after reflect.")),
                     required = JSONArray().put("action"),
                 ),
@@ -3261,6 +3266,7 @@ class NativeToolCallingChatClient(
             toolsEnabled: Boolean,
             customSystemPrompt: String = "",
             promotedMemoryContext: String = "",
+            relevantMemoryContext: String = "",
         ): String {
             val baseContent = if (toolsEnabled) {
                 "You are Hermes running inside the native Android app. " +
@@ -3295,6 +3301,7 @@ class NativeToolCallingChatClient(
             val normalizedPersona = NativeToolContextCompressor.compactCustomSystemPrompt(
                 AppSettings.normalizeCustomSystemPrompt(customSystemPrompt),
             )
+            val normalizedRelevantMemory = NativeToolContextCompressor.compactPromotedMemoryContext(relevantMemoryContext)
             val normalizedMemory = NativeToolContextCompressor.compactPromotedMemoryContext(promotedMemoryContext)
             return buildString {
                 if (normalizedPersona.isNotBlank()) {
@@ -3303,6 +3310,10 @@ class NativeToolCallingChatClient(
                     append('\n')
                 }
                 append(baseContent)
+                if (normalizedRelevantMemory.isNotBlank()) {
+                    append("\nRelevant local memory context recalled from prior conversations:\n")
+                    append(normalizedRelevantMemory)
+                }
                 if (normalizedMemory.isNotBlank()) {
                     append("\nPromoted local memory context:\n")
                     append(normalizedMemory)

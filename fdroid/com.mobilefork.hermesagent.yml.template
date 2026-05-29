@@ -23,15 +23,15 @@ Description: |-
 
     The Android app uses the com.mobilefork.hermesagent application ID to make the fork status explicit and avoid confusion with the original Hermes project.
 
-    It provides local model chat, voice input, resumable model downloads, and Android workflow tools for files, app launch, accessibility-assisted UI actions, notifications, settings helpers, shortcuts, widgets, and automation records.
+    It provides local model chat, bounded local conversation recall, voice input, resumable model downloads, and Android workflow tools for files, app launch, accessibility-assisted UI actions, notifications, settings helpers, shortcuts, widgets, and automation records.
 
 RepoType: git
 Repo: https://github.com/adybag14-cyber/hermes-agent.git
 Binaries: https://github.com/adybag14-cyber/hermes-agent/releases/download/v%v/hermes-agent-android-v%v-universal.apk
 
 Builds:
-  - versionName: 0.13.125
-    versionCode: 142590
+  - versionName: 0.13.126
+    versionCode: 142690
     commit: REPLACE_WITH_RELEASE_COMMIT_HASH
     subdir: android/app
     sudo:
@@ -47,5 +47,5 @@ AllowedAPKSigningKeys: 2cbdb94d6081413055af1e903d4c1d6714300b4240402d1d4c8182fda
 AutoUpdateMode: Version
 UpdateCheckMode: Tags
 UpdateCheckData: fdroid/com.mobilefork.hermesagent.version|versionCode=(\d+)|.|versionName=(.*)
-CurrentVersion: 0.13.125
-CurrentVersionCode: 142590
+CurrentVersion: 0.13.126
+CurrentVersionCode: 142690

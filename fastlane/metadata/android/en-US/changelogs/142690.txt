@@ -1,0 +1,7 @@
+Hermes Agent Fork 0.13.126
+
+- Fixes chat composer keyboard behavior so status chrome collapses while the IME is open, the composer follows IME insets, and send hides the keyboard cleanly.
+- Refreshes the adaptive launcher icon to stay inside the Android safe zone and removes tiny text from foreground/monochrome layers.
+- Adds OpenAI Responses HTTPS/SSE helpers, Realtime WebSocket URL helpers, and a Codex/OpenAI Responses provider setup preset.
+- Expands OpenAI-compatible provider presets for Groq, Mistral, Perplexity, Cerebras, Together, Fireworks, and DeepInfra.
+- Auto-retains completed chat turns and recalls bounded local RAG memory context into future prompts, self-heals fenced/prose-wrapped Tasker XML imports, and cleans markdown/LaTeX wrappers in chat bubbles.

@@ -86,6 +86,16 @@ object AuthCatalog {
             browserSignInSupported = false,
         ),
         AuthOption(
+            id = "codex",
+            label = "Codex / OpenAI Responses",
+            description = "Use an OpenAI or Codex API key with Responses HTTPS and Realtime WebSocket endpoint helpers.",
+            scope = AuthScope.RuntimeProvider,
+            runtimeProvider = "codex",
+            defaultBaseUrl = "https://api.openai.com/v1",
+            defaultModel = "gpt-5",
+            browserSignInSupported = false,
+        ),
+        AuthOption(
             id = "chatgpt",
             label = "ChatGPT",
             description = "Paste a ChatGPT Web access token and sync it into Hermes Android.",

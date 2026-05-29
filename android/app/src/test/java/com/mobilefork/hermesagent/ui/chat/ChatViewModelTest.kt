@@ -60,6 +60,20 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun extractAssistantContentFromResponseReadsOutputTextHelperAndItems() {
+        assertEquals(
+            "Endpoint recovered",
+            extractAssistantContentFromResponse("""{"output_text":"Endpoint recovered"}"""),
+        )
+        assertEquals(
+            "First\nSecond",
+            extractAssistantContentFromResponse(
+                """{"output":[{"type":"message","content":[{"type":"output_text","text":"First"},{"type":"output_text","text":"Second"}]}]}""",
+            ),
+        )
+    }
+
+    @Test
     fun buildChatRequestMessagesAddsSavedPersonaBeforeEndpointUserMessage() {
         val messages = buildChatRequestMessages(
             userText = "Check the local model",
@@ -72,6 +86,35 @@ class ChatViewModelTest {
         assertTrue(messages[0].content.contains("Prefer local tools"))
         assertEquals("user", messages[1].role)
         assertEquals("Check the local model", messages[1].content)
+    }
+
+    @Test
+    fun conversationMemoryFactBoundsCompletedChatTurnsForRecall() {
+        val fact = conversationMemoryFact(
+            sessionId = "session-123",
+            userText = "  How should the keyboard behave?\n\nKeep it away from the composer. ",
+            assistantText = "The composer should slide with IME insets and return to the bottom after send.",
+        )
+
+        assertTrue(fact.contains("session-123"))
+        assertTrue(fact.contains("user asked: How should the keyboard behave? Keep it away from the composer."))
+        assertTrue(fact.contains("assistant answered: The composer should slide with IME insets"))
+        assertTrue(fact.length <= 1_200)
+    }
+
+    @Test
+    fun buildChatRequestMessagesAddsRelevantMemoryContextBeforeEndpointUserMessage() {
+        val messages = buildChatRequestMessages(
+            userText = "What should I check on the phone?",
+            memoryContext = "1. User cares about physical overlay validation on the home screen.",
+        )
+
+        assertEquals(2, messages.size)
+        assertEquals("system", messages[0].role)
+        assertTrue(messages[0].content.contains("Relevant local memory context recalled from prior conversations"))
+        assertTrue(messages[0].content.contains("physical overlay validation"))
+        assertEquals("user", messages[1].role)
+        assertEquals("What should I check on the phone?", messages[1].content)
     }
 
     @Test

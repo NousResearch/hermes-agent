@@ -6,6 +6,7 @@ data class DeviceCapabilityState(
     val sharedFolderUri: String = "",
     val sharedFolderLabel: String = "",
     val backgroundPersistenceEnabled: Boolean = false,
+    val floatingButtonEnabled: Boolean = false,
 )
 
 class DeviceCapabilityStore(context: Context) {
@@ -16,6 +17,7 @@ class DeviceCapabilityStore(context: Context) {
             sharedFolderUri = preferences.getString(KEY_SHARED_FOLDER_URI, "").orEmpty(),
             sharedFolderLabel = preferences.getString(KEY_SHARED_FOLDER_LABEL, "").orEmpty(),
             backgroundPersistenceEnabled = preferences.getBoolean(KEY_BACKGROUND_PERSISTENCE_ENABLED, false),
+            floatingButtonEnabled = preferences.getBoolean(KEY_FLOATING_BUTTON_ENABLED, false),
         )
     }
 
@@ -39,10 +41,17 @@ class DeviceCapabilityStore(context: Context) {
             .apply()
     }
 
+    fun saveFloatingButtonEnabled(enabled: Boolean) {
+        preferences.edit()
+            .putBoolean(KEY_FLOATING_BUTTON_ENABLED, enabled)
+            .apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "hermes_android_device_capabilities"
         private const val KEY_SHARED_FOLDER_URI = "shared_folder_uri"
         private const val KEY_SHARED_FOLDER_LABEL = "shared_folder_label"
         private const val KEY_BACKGROUND_PERSISTENCE_ENABLED = "background_persistence_enabled"
+        private const val KEY_FLOATING_BUTTON_ENABLED = "floating_button_enabled"
     }
 }

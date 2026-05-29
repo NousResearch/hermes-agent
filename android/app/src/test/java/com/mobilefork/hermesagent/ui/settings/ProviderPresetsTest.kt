@@ -110,6 +110,31 @@ class ProviderPresetsTest {
     }
 
     @Test
+    fun nicheOpenAiCompatibleProviderCatalogIncludesRuntimeEndpointsAndEnvAliases() {
+        val expectedBaseUrls = mapOf(
+            "codex" to "https://api.openai.com/v1",
+            "groq" to "https://api.groq.com/openai/v1",
+            "mistral" to "https://api.mistral.ai/v1",
+            "perplexity" to "https://api.perplexity.ai/v1",
+            "cerebras" to "https://api.cerebras.ai/v1",
+            "together" to "https://api.together.xyz/v1",
+            "fireworks" to "https://api.fireworks.ai/inference/v1",
+            "deepinfra" to "https://api.deepinfra.com/v1/openai",
+        )
+
+        expectedBaseUrls.forEach { (providerId, baseUrl) ->
+            val preset = requireNotNull(ProviderPresets.find(providerId))
+            assertEquals(baseUrl, preset.baseUrl)
+            assertEquals(baseUrl, ProviderPresets.runtimeConfigBaseUrl(providerId, preset.baseUrl))
+            assertEquals(providerId, ProviderPresets.providerIdForSetupUrl(requireNotNull(ProviderPresets.setupTarget(providerId, 0)).url, providerId))
+        }
+        assertEquals("groq-test", ProviderPresets.parseCredentialInput("groq", "GROQ_API_KEY=groq-test").apiKey)
+        assertEquals("codex-test", ProviderPresets.parseCredentialInput("codex", "CODEX_API_KEY=codex-test").apiKey)
+        assertEquals("fw-test", ProviderPresets.parseCredentialInput("fireworks", "FIREWORKS_API_KEY=fw-test").apiKey)
+        assertEquals("deepinfra-test", ProviderPresets.parseCredentialInput("deepinfra", "DEEPINFRA_API_KEY=deepinfra-test").apiKey)
+    }
+
+    @Test
     fun providerIdForSetupUrlHonorsPreferredProviderForSharedSetupPages() {
         val qwenAccountUrl = "https://modelstudio.console.alibabacloud.com/?tab=playground"
         val zaiAccountUrl = "https://z.ai/manage-apikey/apikey-list"

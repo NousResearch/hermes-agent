@@ -56,6 +56,44 @@ class HermesHindsightMemoryBridgeTest {
     }
 
     @Test
+    fun relevantContextBuildsBoundedPromptMemoryFromPriorTurns() {
+        HermesHindsightMemoryBridge.performActionJson(
+            context,
+            "retain",
+            JSONObject()
+                .put("content", "Conversation phone-1: user asked about keyboard gaps | assistant answered: composer must follow IME insets.")
+                .put("source", "chat")
+                .put("category", "conversation")
+                .put("tags", JSONArray().put("conversation").put("auto_recall")),
+        )
+        HermesHindsightMemoryBridge.performActionJson(
+            context,
+            "retain",
+            JSONObject()
+                .put("content", "Release validation should verify signed APK checksums and F-Droid metadata.")
+                .put("source", "release")
+                .put("category", "android"),
+        )
+
+        val contextJson = JSONObject(
+            HermesHindsightMemoryBridge.performActionJson(
+                context,
+                "relevant_context",
+                JSONObject()
+                    .put("query", "keyboard composer IME")
+                    .put("limit", 4)
+                    .put("max_chars", 320),
+            ),
+        )
+
+        assertTrue(contextJson.getBoolean("success"))
+        assertEquals("local_keyword_entity_recency_salience_rag", contextJson.getString("retrieval_model"))
+        assertTrue(contextJson.getString("system_prompt_context").contains("keyboard gaps"))
+        assertTrue(contextJson.getString("system_prompt_context").length <= 320)
+        assertTrue(contextJson.getInt("recalled_memory_count") >= 1)
+    }
+
+    @Test
     fun promotesHighReuseMemoriesIntoPromptContext() {
         HermesHindsightMemoryBridge.performActionJson(
             context,

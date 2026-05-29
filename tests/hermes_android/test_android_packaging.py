@@ -134,6 +134,37 @@ def test_runtime_service_enters_foreground_before_runtime_startup():
     assert 'val notification = buildNotification(runtime)' in service
 
 
+def test_android_floating_button_service_is_foreground_overlay():
+    manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
+    service = (
+        REPO_ROOT
+        / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesFloatingButtonService.kt"
+    ).read_text(encoding="utf-8")
+    system_bridge = (
+        REPO_ROOT
+        / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesSystemControlBridge.kt"
+    ).read_text(encoding="utf-8")
+    store = (
+        REPO_ROOT
+        / "android/app/src/main/java/com/mobilefork/hermesagent/data/DeviceCapabilityStore.kt"
+    ).read_text(encoding="utf-8")
+
+    assert 'android.permission.SYSTEM_ALERT_WINDOW' in manifest
+    assert 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' in manifest
+    assert 'android:name=".device.HermesFloatingButtonService"' in manifest
+    assert 'android:foregroundServiceType="dataSync"' in manifest
+    assert "WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY" in service
+    assert "ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC" in service
+    assert "FLAG_NOT_FOCUSABLE" in service
+    assert "openHermes()" in service
+    assert "startIfDesired" in service
+    assert "isButtonVisible" in service
+    assert "start_floating_button" in system_bridge
+    assert "floating_button_running" in system_bridge
+    assert "floating_button_visible" in system_bridge
+    assert "KEY_FLOATING_BUTTON_ENABLED" in store
+
+
 def test_android_launcher_uses_adaptive_icons():
     manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
     adaptive_icon = (REPO_ROOT / "android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml").read_text(encoding="utf-8")
@@ -143,6 +174,7 @@ def test_android_launcher_uses_adaptive_icons():
     foreground = (REPO_ROOT / "android/app/src/main/res/drawable/ic_launcher_foreground.xml").read_text(encoding="utf-8")
     background = (REPO_ROOT / "android/app/src/main/res/drawable/ic_launcher_background.xml").read_text(encoding="utf-8")
     monochrome = (REPO_ROOT / "android/app/src/main/res/drawable/ic_launcher_monochrome.xml").read_text(encoding="utf-8")
+    app_logo = (REPO_ROOT / "android/app/src/main/res/drawable/hermes_agent_fork_logo.xml").read_text(encoding="utf-8")
 
     assert 'android:icon="@mipmap/ic_launcher"' in manifest
     assert 'android:roundIcon="@mipmap/ic_launcher_round"' in manifest
@@ -155,6 +187,11 @@ def test_android_launcher_uses_adaptive_icons():
     assert 'android:viewportHeight="108"' in foreground
     assert "#101827" in background
     assert 'android:fillColor="#FFFFFFFF"' in monochrome
+    assert "FDIE" not in foreground
+    assert 'android:fillColor="#FF000000"' not in monochrome
+    assert "M54,21a33,33" in foreground
+    assert "M28,82h52" not in app_logo
+    assert "M34,86h5" not in app_logo
 
 
 def test_android_anthropic_stub_warns_at_runtime():

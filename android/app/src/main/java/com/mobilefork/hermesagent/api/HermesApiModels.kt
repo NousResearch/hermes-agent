@@ -47,6 +47,37 @@ fun ChatMessage.toJsonObject(): JSONObject {
     }
 }
 
+fun ChatCompletionRequest.toChatCompletionPayload(): JSONObject {
+    return JSONObject().apply {
+        put("model", model)
+        put("stream", stream)
+        put(
+            "messages",
+            JSONArray().apply {
+                messages.forEach { message ->
+                    put(message.toJsonObject())
+                }
+            },
+        )
+    }
+}
+
+fun ChatCompletionRequest.toResponsesPayload(): JSONObject {
+    return JSONObject().apply {
+        put("model", model)
+        put("stream", stream)
+        put("store", false)
+        put(
+            "input",
+            JSONArray().apply {
+                messages.forEach { message ->
+                    put(message.toResponsesInputObject())
+                }
+            },
+        )
+    }
+}
+
 fun ChatMessage.toJsonContent(): Any {
     if (contentParts.isEmpty()) {
         return content
@@ -68,6 +99,36 @@ fun ChatMessage.toJsonContent(): Any {
                                 .put("url", part.imageUrl)
                                 .put("detail", part.detail),
                         ),
+                )
+            }
+        }
+    }
+}
+
+private fun ChatMessage.toResponsesInputObject(): JSONObject {
+    return JSONObject().apply {
+        put("role", role)
+        put("content", toResponsesInputContent())
+    }
+}
+
+private fun ChatMessage.toResponsesInputContent(): Any {
+    if (contentParts.isEmpty()) {
+        return content
+    }
+    return JSONArray().apply {
+        contentParts.forEach { part ->
+            when (part.type) {
+                "text" -> put(
+                    JSONObject()
+                        .put("type", "input_text")
+                        .put("text", part.text.ifBlank { content }),
+                )
+                "image_url" -> put(
+                    JSONObject()
+                        .put("type", "input_image")
+                        .put("image_url", part.imageUrl)
+                        .put("detail", part.detail),
                 )
             }
         }

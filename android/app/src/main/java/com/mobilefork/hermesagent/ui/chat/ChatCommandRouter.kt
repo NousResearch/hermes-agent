@@ -22,7 +22,7 @@ data class ChatCommandHost(
 )
 
 object ChatCommandRouter {
-    private val runtimeProviderAuthMethods = setOf("openrouter", "openai", "chatgpt", "claude", "gemini", "qwen", "qwen-coding-plan", "qwen-oauth", "zai")
+    private val runtimeProviderAuthMethods = setOf("openrouter", "openai", "codex", "chatgpt", "claude", "gemini", "qwen", "qwen-coding-plan", "qwen-oauth", "zai")
 
     fun execute(
         rawInput: String,
@@ -150,6 +150,7 @@ object ChatCommandRouter {
         return when (value.lowercase()) {
             "openrouter" -> "openrouter"
             "openai", "openai-api", "gpt" -> "openai"
+            "codex", "openai-codex", "codex-api" -> "codex"
             "chatgpt", "chatgpt-web", "chatgpt-token" -> "chatgpt"
             "claude", "anthropic" -> "claude"
             "gemini", "google-ai", "googleai" -> "gemini"

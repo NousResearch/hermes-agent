@@ -16,7 +16,9 @@ object HermesHindsightMemoryBridge {
     private const val PROMOTION_HIT_THRESHOLD = 5
     private const val PROMOTED_CONTEXT_LIMIT = 5
     private const val PROMOTED_CONTEXT_MAX_CHARS = 1200
-    private val ACTIONS = listOf("status", "retain", "recall", "reflect", "promoted_context", "clear")
+    private const val RELEVANT_CONTEXT_LIMIT = 6
+    private const val RELEVANT_CONTEXT_MAX_CHARS = 1600
+    private val ACTIONS = listOf("status", "retain", "recall", "reflect", "relevant_context", "promoted_context", "clear")
 
     fun performActionJson(context: Context, rawAction: String, arguments: JSONObject = JSONObject()): String {
         val action = rawAction.trim().lowercase(Locale.US).ifBlank { "status" }
@@ -25,7 +27,8 @@ object HermesHindsightMemoryBridge {
             "retain", "remember", "store" -> retainJson(context, arguments)
             "recall", "search", "retrieve" -> recallJson(context, arguments)
             "reflect", "consolidate", "compact" -> reflectJson(context, arguments)
-            "promoted_context", "context", "system_prompt_context", "prompt_context" -> promotedContextJson(context, arguments)
+            "relevant_context", "rag_context", "context", "system_prompt_context", "prompt_context" -> relevantContextJson(context, arguments)
+            "promoted_context" -> promotedContextJson(context, arguments)
             "clear", "reset" -> clearJson(context)
             else -> JSONObject()
                 .put("success", false)
@@ -189,6 +192,43 @@ object HermesHindsightMemoryBridge {
             .put("cards", JSONArray().put(card("Promoted Memory", "${promoted.size} high-reuse memory row(s) ready for prompt context.")))
     }
 
+    fun relevantContextJson(context: Context, arguments: JSONObject = JSONObject()): JSONObject {
+        val query = arguments.optString("query").ifBlank {
+            arguments.optString("text").ifBlank { arguments.optString("content") }
+        }
+        val limit = arguments.optInt("limit", RELEVANT_CONTEXT_LIMIT).coerceIn(1, MAX_LIMIT)
+        val maxChars = arguments.optInt("max_chars", RELEVANT_CONTEXT_MAX_CHARS).coerceIn(240, 5000)
+        val recall = recallJson(context, JSONObject().put("query", query).put("limit", limit))
+        val recalled = jsonObjectList(recall.optJSONArray("memories"))
+        val recalledIds = recalled.map { it.optString("id") }.toSet()
+        val promoted = promotedEntries(context)
+            .filterNot { it.optString("id") in recalledIds }
+            .take(PROMOTED_CONTEXT_LIMIT)
+            .map(::compactEntry)
+        val lines = buildList {
+            recalled.forEachIndexed { index, entry ->
+                add("${index + 1}. ${entry.optString("content")}")
+            }
+            promoted.forEachIndexed { index, entry ->
+                add("${recalled.size + index + 1}. ${entry.optString("content")}")
+            }
+        }
+        val contextText = lines.joinToString("\n").let { text ->
+            if (text.length <= maxChars) text else text.take(maxChars - 3).trimEnd() + "..."
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("action", "relevant_context")
+            .put("query", query)
+            .put("retrieval_model", "local_keyword_entity_recency_salience_rag")
+            .put("result_count", recalled.size + promoted.size)
+            .put("recalled_memory_count", recalled.size)
+            .put("promoted_memory_count", promoted.size)
+            .put("system_prompt_context", contextText)
+            .put("memories", JSONArray(recalled + promoted))
+            .put("cards", JSONArray().put(card("Relevant Memory", "${recalled.size} recalled and ${promoted.size} promoted memory row(s) prepared as bounded prompt context.")))
+    }
+
     private fun clearJson(context: Context): JSONObject {
         prefs(context).edit().remove(ENTRIES_KEY).apply()
         return JSONObject()
@@ -327,6 +367,15 @@ object HermesHindsightMemoryBridge {
         return buildList {
             for (index in 0 until array.length()) {
                 array.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }
+    }
+
+    private fun jsonObjectList(array: JSONArray?): List<JSONObject> {
+        if (array == null) return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                array.optJSONObject(index)?.let(::add)
             }
         }
     }

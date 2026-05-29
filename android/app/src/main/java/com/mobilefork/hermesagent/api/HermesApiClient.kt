@@ -45,18 +45,7 @@ class HermesApiClient(
     }
 
     fun createChatCompletion(request: ChatCompletionRequest): ChatCompletionResult {
-        val payload = JSONObject().apply {
-            put("model", request.model)
-            put("stream", request.stream)
-            put(
-                "messages",
-                JSONArray().apply {
-                    request.messages.forEach { msg ->
-                        put(msg.toJsonObject())
-                    }
-                }
-            )
-        }
+        val payload = request.toChatCompletionPayload()
         val builder = requestBuilder(HermesEndpointUrl.chatCompletionsUrl(normalizedBaseUrl))
             .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
         if (!request.sessionId.isNullOrBlank()) {
@@ -65,6 +54,20 @@ class HermesApiClient(
         httpClient.newCall(builder.build()).execute().use { response ->
             val body = response.body?.string().orEmpty()
             require(response.isSuccessful) { "Chat request failed: ${response.code} $body" }
+            return ChatCompletionResult(rawBody = body)
+        }
+    }
+
+    fun createResponse(request: ChatCompletionRequest): ChatCompletionResult {
+        val payload = request.toResponsesPayload()
+        val builder = requestBuilder(HermesEndpointUrl.responsesUrl(normalizedBaseUrl))
+            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+        if (!request.sessionId.isNullOrBlank()) {
+            builder.header(SESSION_HEADER, request.sessionId)
+        }
+        httpClient.newCall(builder.build()).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            require(response.isSuccessful) { "Responses request failed: ${response.code} $body" }
             return ChatCompletionResult(rawBody = body)
         }
     }

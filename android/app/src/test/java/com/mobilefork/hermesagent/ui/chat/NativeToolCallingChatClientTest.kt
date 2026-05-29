@@ -50,6 +50,7 @@ class NativeToolCallingChatClientTest {
             toolsEnabled = true,
             customSystemPrompt = "Stay concise and use Wi-Fi analyzer cards when signal context matters.",
             promotedMemoryContext = "User prefers local models.",
+            relevantMemoryContext = "Earlier chat: validate floating overlay on physical phone.",
         )
 
         assertTrue(content.contains("Kai-style custom agent persona/system prompt"))
@@ -84,9 +85,12 @@ class NativeToolCallingChatClientTest {
         assertTrue(content.contains("never invent class-loading failures"))
         assertTrue(content.contains("User-configured agent persona"))
         assertTrue(content.contains("Stay concise and use Wi-Fi analyzer cards"))
+        assertTrue(content.contains("Relevant local memory context"))
+        assertTrue(content.contains("validate floating overlay"))
         assertTrue(content.contains("Promoted local memory context"))
         assertTrue(content.startsWith("User-configured agent persona"))
         assertTrue(content.indexOf("User-configured agent persona") < content.indexOf("You are Hermes running inside the native Android app"))
+        assertTrue(content.indexOf("Relevant local memory context") < content.indexOf("Promoted local memory context"))
         assertTrue(content.indexOf("User-configured agent persona") < content.indexOf("Promoted local memory context"))
     }
 
@@ -96,12 +100,15 @@ class NativeToolCallingChatClientTest {
             toolsEnabled = false,
             customSystemPrompt = "persona ".repeat(400),
             promotedMemoryContext = "memory ".repeat(500),
+            relevantMemoryContext = "recall ".repeat(500),
         )
 
         assertTrue(content.contains("User-configured agent persona"))
+        assertTrue(content.contains("Relevant local memory context"))
         assertTrue(content.contains("Promoted local memory context"))
         assertTrue(content.contains("hermes context compressed"))
         assertFalse(content.contains("persona ".repeat(250)))
+        assertFalse(content.contains("recall ".repeat(300)))
         assertFalse(content.contains("memory ".repeat(300)))
     }
 

@@ -5129,7 +5129,7 @@ object HermesDeviceDiagnosticsBridge {
                     ready = true,
                     valueLabel = "${hindsightStatus.optInt("memory_count", 0)} memories",
                     detail = "${hindsightStatus.optInt("reinforced_memory_count", 0)} reinforced, ${hindsightStatus.optInt("promoted_memory_count", 0)} promoted for prompt context.",
-                    recommendation = "Use hindsight_memory_tool retain/recall/reflect/promoted_context around complex work.",
+                    recommendation = "Use hindsight_memory_tool retain/recall/relevant_context/reflect/promoted_context around complex work.",
                     fraction = ((hindsightStatus.optInt("promoted_memory_count", 0) + 1) / 5f).coerceIn(0.25f, 1f),
                 ),
             )

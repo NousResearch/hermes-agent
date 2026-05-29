@@ -53,6 +53,22 @@ class HermesEndpointUrlTest {
     }
 
     @Test
+    fun endpointHelpersBuildResponsesAndRealtimeWebSocketUrls() {
+        assertEquals(
+            "https://api.openai.com/v1/responses",
+            HermesEndpointUrl.responsesUrl("https://api.openai.com/v1/responses"),
+        )
+        assertEquals(
+            "wss://api.openai.com/v1/realtime",
+            HermesEndpointUrl.realtimeWebSocketUrl("https://api.openai.com/v1/realtime"),
+        )
+        assertEquals(
+            "ws://127.0.0.1:9000/v1/realtime",
+            HermesEndpointUrl.realtimeWebSocketUrl("ws://127.0.0.1:9000/v1/realtime"),
+        )
+    }
+
+    @Test
     fun openAiRuntimeBaseUrl_preservesProxyPrefixAndKeepsV1ForSdkCalls() {
         assertEquals(
             "https://gateway.example.com/openai/v1",

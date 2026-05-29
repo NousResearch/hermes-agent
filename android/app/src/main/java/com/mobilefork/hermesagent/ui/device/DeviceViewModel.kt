@@ -62,6 +62,8 @@ data class DeviceUiState(
     val notificationPermissionGranted: Boolean = true,
     val backgroundPersistenceEnabled: Boolean = false,
     val runtimeServiceRunning: Boolean = false,
+    val floatingButtonEnabled: Boolean = false,
+    val floatingButtonRunning: Boolean = false,
     val operatorStandbyReady: Boolean = false,
     val automationCount: Int = 0,
     val enabledAutomationCount: Int = 0,
@@ -193,6 +195,10 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
         performSystemAction(if (enabled) "start_background_runtime" else "stop_background_runtime")
     }
 
+    fun setFloatingButtonEnabled(enabled: Boolean) {
+        performSystemAction(if (enabled) "start_floating_button" else "stop_floating_button")
+    }
+
     private fun buildState(status: String = ""): DeviceUiState {
         val context = getApplication<Application>()
         val sharedFolder = capabilityStore.load()
@@ -248,6 +254,8 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
             notificationPermissionGranted = systemStatus.notificationPermissionGranted,
             backgroundPersistenceEnabled = systemStatus.backgroundPersistenceEnabled,
             runtimeServiceRunning = systemStatus.runtimeServiceRunning,
+            floatingButtonEnabled = systemStatus.floatingButtonEnabled,
+            floatingButtonRunning = systemStatus.floatingButtonRunning,
             operatorStandbyReady = standbyStatus.optBoolean("ready", false),
             automationCount = standbyStatus.optInt("automation_count", 0),
             enabledAutomationCount = standbyStatus.optInt("enabled_automation_count", 0),

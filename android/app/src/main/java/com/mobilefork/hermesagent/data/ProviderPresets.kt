@@ -94,6 +94,19 @@ object ProviderPresets {
             fallbackSetupUrls = listOf("https://platform.openai.com/docs/quickstart"),
         ),
         ProviderPreset(
+            id = "codex",
+            label = "Codex / OpenAI Responses",
+            baseUrl = "https://api.openai.com/v1",
+            modelHint = "gpt-5",
+            apiKeyUrl = "https://platform.openai.com/settings/organization/api-keys",
+            fallbackSetupUrls = listOf(
+                "https://developers.openai.com/api/docs/guides/migrate-to-responses",
+                "https://developers.openai.com/api/docs/guides/realtime",
+                "https://developers.openai.com/codex/auth",
+                "https://developers.openai.com/codex/config-reference",
+            ),
+        ),
+        ProviderPreset(
             id = "chatgpt-web",
             label = "ChatGPT Web",
             baseUrl = "https://chatgpt.com/backend-api/f",
@@ -116,6 +129,62 @@ object ProviderPresets {
             modelHint = "gemini-2.5-pro",
             apiKeyUrl = "https://aistudio.google.com/apikey",
             fallbackSetupUrls = listOf("https://ai.google.dev/gemini-api/docs/api-key"),
+        ),
+        ProviderPreset(
+            id = "groq",
+            label = "Groq",
+            baseUrl = "https://api.groq.com/openai/v1",
+            modelHint = "openai/gpt-oss-20b",
+            apiKeyUrl = "https://console.groq.com/docs/quickstart",
+            fallbackSetupUrls = listOf("https://console.groq.com/docs/"),
+        ),
+        ProviderPreset(
+            id = "mistral",
+            label = "Mistral AI",
+            baseUrl = "https://api.mistral.ai/v1",
+            modelHint = "mistral-large-latest",
+            apiKeyUrl = "https://docs.mistral.ai/getting-started/quickstart/",
+            fallbackSetupUrls = listOf("https://console.mistral.ai/"),
+        ),
+        ProviderPreset(
+            id = "perplexity",
+            label = "Perplexity Agent API",
+            baseUrl = "https://api.perplexity.ai/v1",
+            modelHint = "openai/gpt-5-mini",
+            apiKeyUrl = "https://docs.perplexity.ai/docs/grounded-llm/openai-compatibility",
+            fallbackSetupUrls = listOf("https://docs.perplexity.ai/getting-started/quickstart"),
+        ),
+        ProviderPreset(
+            id = "cerebras",
+            label = "Cerebras Inference",
+            baseUrl = "https://api.cerebras.ai/v1",
+            modelHint = "",
+            apiKeyUrl = "https://inference-docs.cerebras.ai/resources/openai",
+            fallbackSetupUrls = listOf("https://cloud.cerebras.ai/"),
+        ),
+        ProviderPreset(
+            id = "together",
+            label = "Together AI",
+            baseUrl = "https://api.together.xyz/v1",
+            modelHint = "",
+            apiKeyUrl = "https://docs.together.ai/docs/openai-api-compatibility",
+            fallbackSetupUrls = listOf("https://api.together.ai/settings/api-keys"),
+        ),
+        ProviderPreset(
+            id = "fireworks",
+            label = "Fireworks AI",
+            baseUrl = "https://api.fireworks.ai/inference/v1",
+            modelHint = "accounts/fireworks/models/llama-v3p1-8b-instruct",
+            apiKeyUrl = "https://docs.fireworks.ai/tools-sdks/openai-compatibility",
+            fallbackSetupUrls = listOf("https://fireworks.ai/account/api-keys"),
+        ),
+        ProviderPreset(
+            id = "deepinfra",
+            label = "DeepInfra",
+            baseUrl = "https://api.deepinfra.com/v1/openai",
+            modelHint = "",
+            apiKeyUrl = "https://docs.deepinfra.com/",
+            fallbackSetupUrls = listOf("https://deepinfra.com/dash/api_keys"),
         ),
         ProviderPreset(
             id = "alibaba",
@@ -260,8 +329,16 @@ object ProviderPresets {
         return when (providerId.trim().lowercase()) {
             "openrouter" -> listOf("OPENROUTER_API_KEY")
             "openai", "custom" -> listOf("OPENAI_API_KEY")
+            "codex" -> listOf("OPENAI_API_KEY", "CODEX_API_KEY")
             "anthropic" -> listOf("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN")
             "gemini" -> listOf("GOOGLE_API_KEY", "GEMINI_API_KEY")
+            "groq" -> listOf("GROQ_API_KEY")
+            "mistral" -> listOf("MISTRAL_API_KEY")
+            "perplexity" -> listOf("PERPLEXITY_API_KEY")
+            "cerebras" -> listOf("CEREBRAS_API_KEY")
+            "together" -> listOf("TOGETHER_API_KEY")
+            "fireworks" -> listOf("FIREWORKS_API_KEY")
+            "deepinfra" -> listOf("DEEPINFRA_API_KEY")
             "chatgpt-web" -> listOf("CHATGPT_WEB_ACCESS_TOKEN")
             "alibaba", "dashscope" -> listOf("DASHSCOPE_API_KEY", "QWEN_API_KEY")
             "alibaba-coding-plan" -> listOf(

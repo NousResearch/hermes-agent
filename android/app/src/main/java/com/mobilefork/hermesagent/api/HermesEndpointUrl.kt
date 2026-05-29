@@ -12,6 +12,8 @@ object HermesEndpointUrl {
         "/models",
         "/v1/responses",
         "/responses",
+        "/v1/realtime",
+        "/realtime",
         "/v1",
     )
 
@@ -34,6 +36,18 @@ object HermesEndpointUrl {
     fun modelsUrl(baseUrl: String): String = "${normalizeBaseUrl(baseUrl)}/v1/models"
 
     fun chatCompletionsUrl(baseUrl: String): String = "${normalizeBaseUrl(baseUrl)}/v1/chat/completions"
+
+    fun responsesUrl(baseUrl: String): String = "${normalizeBaseUrl(baseUrl)}/v1/responses"
+
+    fun realtimeWebSocketUrl(baseUrl: String): String {
+        val normalized = normalizeBaseUrl(baseUrl)
+        val wsBase = when {
+            normalized.startsWith("https://", ignoreCase = true) -> "wss://${normalized.drop(8)}"
+            normalized.startsWith("http://", ignoreCase = true) -> "ws://${normalized.drop(7)}"
+            else -> normalized
+        }
+        return "$wsBase/v1/realtime"
+    }
 
     fun openAiRuntimeBaseUrl(baseUrl: String): String = "${normalizeBaseUrl(baseUrl)}/v1"
 

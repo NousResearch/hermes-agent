@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
+import android.view.KeyEvent
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -105,6 +106,8 @@ class DeepAppUiVisualInstrumentedTest {
         capture("01-hermes-chat")
         composeRule.onNodeWithTag("HermesChatInput").performTextInput("Describe the attached image and then summarize the phone status.")
         capture("02-hermes-typing")
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        composeRule.waitForIdle()
 
         composeRule.onNodeWithTag("HermesNavSettings").performClick()
         composeRule.onAllNodesWithText("Settings")[0].assertIsDisplayed()

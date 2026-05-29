@@ -143,6 +143,11 @@
             android:foregroundServiceType="dataSync" />
 
         <service
+            android:name=".device.HermesFloatingButtonService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <service
             android:name=".device.HermesLogcatWatcherService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />

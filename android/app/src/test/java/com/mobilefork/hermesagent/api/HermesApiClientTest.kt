@@ -119,4 +119,60 @@ class HermesApiClientTest {
 
         assertEquals("/proxy/v1/chat/completions", server.takeRequest().path)
     }
+
+    @Test
+    fun createResponse_sendsResponsesPayloadWithStoreDisabled() {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"output_text":"ok"}"""))
+
+        val client = HermesApiClient(server.url("/").toString(), apiKey = "secret")
+        val result = client.createResponse(
+            ChatCompletionRequest(
+                model = "gpt-5",
+                messages = listOf(ChatMessage(role = "user", content = "hello")),
+                stream = false,
+                sessionId = "session-123",
+            ),
+        )
+
+        val recorded = server.takeRequest()
+        assertEquals("/v1/responses", recorded.path)
+        assertEquals("Bearer secret", recorded.getHeader("Authorization"))
+        assertEquals("session-123", recorded.getHeader(HermesApiClient.SESSION_HEADER))
+        val body = JSONObject(recorded.body.readUtf8())
+        assertEquals("gpt-5", body.getString("model"))
+        assertEquals(false, body.getBoolean("stream"))
+        assertEquals(false, body.getBoolean("store"))
+        assertEquals("hello", body.getJSONArray("input").getJSONObject(0).getString("content"))
+        assertEquals("""{"output_text":"ok"}""", result.rawBody)
+    }
+
+    @Test
+    fun createResponse_convertsImagePartsToResponsesInputContent() {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"output_text":"ok"}"""))
+
+        val client = HermesApiClient(server.url("/").toString())
+        client.createResponse(
+            ChatCompletionRequest(
+                model = "gpt-5",
+                messages = listOf(
+                    ChatMessage(
+                        role = "user",
+                        content = "describe this",
+                        contentParts = listOf(
+                            ChatContentPart(type = "text", text = "describe this"),
+                            ChatContentPart(type = "image_url", imageUrl = "data:image/png;base64,AA=="),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val content = JSONObject(server.takeRequest().body.readUtf8())
+            .getJSONArray("input")
+            .getJSONObject(0)
+            .getJSONArray("content")
+        assertEquals("input_text", content.getJSONObject(0).getString("type"))
+        assertEquals("input_image", content.getJSONObject(1).getString("type"))
+        assertEquals("data:image/png;base64,AA==", content.getJSONObject(1).getString("image_url"))
+    }
 }

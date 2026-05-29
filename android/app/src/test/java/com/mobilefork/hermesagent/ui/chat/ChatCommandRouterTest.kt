@@ -68,6 +68,21 @@ class ChatCommandRouterTest {
     }
 
     @Test
+    fun signinCodexPreparesOpenAiResponsesApiKeySetupInSettings() {
+        val host = RecordingCommandHost()
+
+        val result = ChatCommandRouter.execute("/signin codex-api", host.asHost())
+
+        assertTrue(result.handled)
+        assertEquals("codex", host.startedAuthMethods.single())
+        assertEquals(AppSection.Settings, host.sections.single())
+        assertEquals(
+            "Prepared codex API-key/token setup in Settings and opened the provider setup page in your browser. Paste the provider credential there to power Hermes.",
+            result.feedback,
+        )
+    }
+
+    @Test
     fun signinZaiAliasesPrepareApiKeySetupInSettings() {
         val host = RecordingCommandHost()
 

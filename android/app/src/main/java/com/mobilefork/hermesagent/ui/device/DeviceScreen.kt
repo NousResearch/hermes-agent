@@ -162,6 +162,7 @@ fun DeviceScreen(
                     onNotifications = ::handleNotificationAction,
                     onOverlaySettings = { viewModel.performSystemAction("open_overlay_settings") },
                     onToggleRuntime = { enabled -> viewModel.setBackgroundPersistence(enabled) },
+                    onToggleFloatingButton = { enabled -> viewModel.setFloatingButtonEnabled(enabled) },
                 )
                 WorkspaceAccessCard(
                     uiState = uiState,
@@ -518,6 +519,7 @@ private fun PermissionsAndRuntimeCard(
     onNotifications: () -> Unit,
     onOverlaySettings: () -> Unit,
     onToggleRuntime: (Boolean) -> Unit,
+    onToggleFloatingButton: (Boolean) -> Unit,
 ) {
     val strings = LocalHermesStrings.current
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
@@ -547,6 +549,18 @@ private fun PermissionsAndRuntimeCard(
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
+                strings.deviceFloatingButtonTitle(),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                strings.deviceFloatingButtonSummary(
+                    overlayPermissionGranted = uiState.overlayPermissionGranted,
+                    floatingButtonEnabled = uiState.floatingButtonEnabled,
+                    floatingButtonRunning = uiState.floatingButtonRunning,
+                ),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
                 strings.deviceResizableWindowTitle(), style = MaterialTheme.typography.titleSmall,
             )
             Text(
@@ -569,6 +583,9 @@ private fun PermissionsAndRuntimeCard(
                 }
                 Button(onClick = { onToggleRuntime(!uiState.backgroundPersistenceEnabled) }) {
                     Text(if (uiState.backgroundPersistenceEnabled) strings.deviceStopBackgroundRuntimeLabel() else strings.deviceStartBackgroundRuntimeLabel())
+                }
+                Button(onClick = { onToggleFloatingButton(!uiState.floatingButtonEnabled) }) {
+                    Text(if (uiState.floatingButtonEnabled) strings.deviceStopFloatingButtonLabel() else strings.deviceStartFloatingButtonLabel())
                 }
             }
             Text(
@@ -1106,6 +1123,33 @@ private fun HermesStrings.deviceOverlayDisabled(): String = when (language) {
     AppLanguage.ENGLISH -> "Overlay permission is disabled. Open Android settings if you want future floating controls."
 }
 
+private fun HermesStrings.deviceFloatingButtonTitle(): String = when (language) {
+    AppLanguage.CHINESE -> "浮动 Hermes 按钮"
+    AppLanguage.SPANISH -> "Botón flotante de Hermes"
+    AppLanguage.GERMAN -> "Schwebende Hermes-Schaltfläche"
+    AppLanguage.PORTUGUESE -> "Botão flutuante do Hermes"
+    AppLanguage.FRENCH -> "Bouton flottant Hermes"
+    AppLanguage.ENGLISH -> "Floating Hermes button"
+}
+
+private fun HermesStrings.deviceFloatingButtonSummary(
+    overlayPermissionGranted: Boolean,
+    floatingButtonEnabled: Boolean,
+    floatingButtonRunning: Boolean,
+): String {
+    if (!overlayPermissionGranted) {
+        return floatingOverlayPermissionHint()
+    }
+    return when (language) {
+        AppLanguage.CHINESE -> "浮动按钮${if (floatingButtonEnabled) "已启用" else "已关闭"}，服务${if (floatingButtonRunning) "正在运行" else "未运行"}。启用后，Hermes 会在主屏幕和其他应用上层保留一个可拖动入口。"
+        AppLanguage.SPANISH -> "El botón flotante está ${if (floatingButtonEnabled) "activado" else "desactivado"} y el servicio está ${if (floatingButtonRunning) "en ejecución" else "detenido"}. Cuando está activo, Hermes mantiene un acceso arrastrable en Inicio y sobre otras apps."
+        AppLanguage.GERMAN -> "Die schwebende Schaltfläche ist ${if (floatingButtonEnabled) "aktiviert" else "deaktiviert"} und der Dienst ${if (floatingButtonRunning) "läuft" else "läuft nicht"}. Aktiv hält Hermes einen ziehbaren Einstieg auf dem Startbildschirm und über anderen Apps bereit."
+        AppLanguage.PORTUGUESE -> "O botão flutuante está ${if (floatingButtonEnabled) "ativado" else "desativado"} e o serviço está ${if (floatingButtonRunning) "em execução" else "parado"}. Ativo, o Hermes mantém um atalho arrastável na tela inicial e sobre outros apps."
+        AppLanguage.FRENCH -> "Le bouton flottant est ${if (floatingButtonEnabled) "activé" else "désactivé"} et le service est ${if (floatingButtonRunning) "en cours" else "arrêté"}. Activé, Hermes garde un accès déplaçable sur l’accueil et au-dessus des autres apps."
+        AppLanguage.ENGLISH -> "Floating button is ${if (floatingButtonEnabled) "enabled" else "off"} and the service is ${if (floatingButtonRunning) "running" else "stopped"}. When enabled, Hermes keeps a draggable entry point on Home and over other apps."
+    }
+}
+
 private fun HermesStrings.deviceResizableWindowTitle(): String = when (language) {
     AppLanguage.CHINESE -> "可调整窗口支持"
     AppLanguage.SPANISH -> "Compatibilidad con ventana redimensionable"
@@ -1158,6 +1202,24 @@ private fun HermesStrings.deviceStartBackgroundRuntimeLabel(): String = when (la
     AppLanguage.PORTUGUESE -> "Iniciar runtime em segundo plano"
     AppLanguage.FRENCH -> "Démarrer le runtime en arrière-plan"
     AppLanguage.ENGLISH -> "Start background runtime"
+}
+
+private fun HermesStrings.deviceStopFloatingButtonLabel(): String = when (language) {
+    AppLanguage.CHINESE -> "停止浮动按钮"
+    AppLanguage.SPANISH -> "Detener botón flotante"
+    AppLanguage.GERMAN -> "Schaltfläche stoppen"
+    AppLanguage.PORTUGUESE -> "Parar botão flutuante"
+    AppLanguage.FRENCH -> "Arrêter le bouton flottant"
+    AppLanguage.ENGLISH -> "Stop floating button"
+}
+
+private fun HermesStrings.deviceStartFloatingButtonLabel(): String = when (language) {
+    AppLanguage.CHINESE -> "启动浮动按钮"
+    AppLanguage.SPANISH -> "Iniciar botón flotante"
+    AppLanguage.GERMAN -> "Schaltfläche starten"
+    AppLanguage.PORTUGUESE -> "Iniciar botão flutuante"
+    AppLanguage.FRENCH -> "Démarrer le bouton flottant"
+    AppLanguage.ENGLISH -> "Start floating button"
 }
 
 private fun HermesStrings.deviceBackgroundRuntimeDescription(): String = when (language) {

@@ -6,10 +6,10 @@ description: "How to build a web-search/extract/crawl backend plugin for Hermes 
 
 # Building a Web Search Provider Plugin
 
-Web-search provider plugins register a backend that services `web_search`, `web_extract`, and (optionally) deep-crawl tool calls. Built-in providers — Firecrawl, SearXNG, Tavily, Exa, Parallel, Brave Search (free tier), and DDGS — all ship as plugins under `plugins/web/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
+Web-search provider plugins register a backend that services `web_search`, `web_extract`, and (optionally) deep-crawl tool calls. Built-in providers — Firecrawl, SearXNG, Tavily, Exa, Parallel, Brave Search (free tier), xAI, and DDGS — all ship as plugins under `plugins/web/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
 
 :::tip
-Web search is one of several **backend plugins** Hermes supports. The others (with their own ABCs) are [Image Generation Provider Plugins](/docs/developer-guide/image-gen-provider-plugin), [Video Generation Provider Plugins](/docs/developer-guide/video-gen-provider-plugin), [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin), [Context Engine Plugins](/docs/developer-guide/context-engine-plugin), and [Model Provider Plugins](/docs/developer-guide/model-provider-plugin). General tool/hook/CLI plugins live in [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin).
+Web search is one of several **backend plugins** Hermes supports. The others (with their own ABCs) are [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin), [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin), [Memory Provider Plugins](/developer-guide/memory-provider-plugin), [Context Engine Plugins](/developer-guide/context-engine-plugin), and [Model Provider Plugins](/developer-guide/model-provider-plugin). General tool/hook/CLI plugins live in [Build a Hermes Plugin](/guides/build-a-hermes-plugin).
 :::
 
 ## How discovery works
@@ -80,9 +80,6 @@ class MyBackendWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return False
 
-    def supports_crawl(self) -> bool:
-        return False
-
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         import httpx
 
@@ -144,7 +141,7 @@ requires_env:
 |---|---|
 | `kind: backend` | Routes the plugin through the backend-loading path |
 | `provides_web_providers` | List of provider `name`s this plugin registers — used by the loader to advertise the plugin in `hermes tools` even before `register()` runs |
-| `requires_env` | Interactive credential prompt during `hermes plugins install` (see [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin#gate-on-environment-variables) for the rich format) |
+| `requires_env` | Interactive credential prompt during `hermes plugins install` (see [Build a Hermes Plugin](/guides/build-a-hermes-plugin#gate-on-environment-variables) for the rich format) |
 
 ## ABC reference
 
@@ -157,12 +154,10 @@ Full contract in `agent/web_search_provider.py`. Methods you may override:
 | `is_available()` | ✅ | — | Cheap availability gate — env vars, optional deps |
 | `supports_search()` | — | `True` | Capability flag for `web_search` routing |
 | `supports_extract()` | — | `False` | Capability flag for `web_extract` routing |
-| `supports_crawl()` | — | `False` | Capability flag for deep-crawl modes |
 | `search(query, limit)` | conditional | raises | Required when `supports_search()` returns `True` |
 | `extract(urls, **kwargs)` | conditional | raises | Required when `supports_extract()` returns `True` |
-| `crawl(url, **kwargs)` | conditional | raises | Required when `supports_crawl()` returns `True` |
 
-Providers can advertise multiple capabilities from a single class — Firecrawl, Tavily, Exa, and Parallel all implement all three of search/extract/crawl. Brave Search and DDGS are search-only; SearXNG is search-only with a documented "pair me with an extract provider" workflow.
+Providers can advertise multiple capabilities from a single class — Firecrawl, Tavily, Exa, and Parallel all implement both search and extract. Brave Search and DDGS are search-only; SearXNG is search-only with a documented "pair me with an extract provider" workflow.
 
 ## Response shape
 
@@ -238,7 +233,7 @@ Errors surface as the tool result; the LLM decides how to explain them. If no pr
 
 ## Lazy-installing optional dependencies
 
-If your provider wraps a third-party SDK (like DDGS does with the `ddgs` package), don't `import` it at module top level. Use `tools.lazy_deps.ensure(...)` inside `is_available()` or `search()` — Hermes will install the package on first use, gated by `security.allow_lazy_installs`. See [Build a Hermes Plugin → Lazy-install](/docs/guides/build-a-hermes-plugin#lazy-install-optional-python-dependencies) for the security model.
+If your provider wraps a third-party SDK (like DDGS does with the `ddgs` package), don't `import` it at module top level. Use `tools.lazy_deps.ensure(...)` inside `is_available()` or `search()` — Hermes will install the package on first use, gated by `security.allow_lazy_installs`. See [Build a Hermes Plugin → Lazy-install](/guides/build-a-hermes-plugin#lazy-install-optional-python-dependencies) for the security model.
 
 ## Reference implementations
 
@@ -246,6 +241,7 @@ If your provider wraps a third-party SDK (like DDGS does with the `ddgs` package
 - **`plugins/web/ddgs/`** — no-key provider that lazy-installs its SDK. Useful pattern for backends that wrap a Python package.
 - **`plugins/web/firecrawl/`** — full multi-capability provider (search + extract + crawl) with multiple format modes.
 - **`plugins/web/searxng/`** — self-hosted, URL-configured backend with no auth.
+- **`plugins/web/xai/`** — LLM-backed search via Grok's server-side `web_search` tool. Shows how to reuse an existing OAuth/env-var credential surface (`tools/xai_http.py`) without adding new env vars, and how to write a cheap `is_available()` that honors the no-network contract.
 
 ## Distribute via pip
 
@@ -255,10 +251,10 @@ If your provider wraps a third-party SDK (like DDGS does with the `ddgs` package
 my-backend-web = "my_backend_web_package"
 ```
 
-`my_backend_web_package` must expose a top-level `register` function. See [Distribute via pip](/docs/guides/build-a-hermes-plugin#distribute-via-pip) in the general plugin guide for the full setup.
+`my_backend_web_package` must expose a top-level `register` function. See [Distribute via pip](/guides/build-a-hermes-plugin#distribute-via-pip) in the general plugin guide for the full setup.
 
 ## Related pages
 
-- [Web Search](/docs/user-guide/features/web-search) — user-facing feature documentation and per-backend configuration
-- [Plugins overview](/docs/user-guide/features/plugins) — all plugin types at a glance
-- [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin) — general tools/hooks/slash commands guide
+- [Web Search](/user-guide/features/web-search) — user-facing feature documentation and per-backend configuration
+- [Plugins overview](/user-guide/features/plugins) — all plugin types at a glance
+- [Build a Hermes Plugin](/guides/build-a-hermes-plugin) — general tools/hooks/slash commands guide

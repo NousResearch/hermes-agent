@@ -75,6 +75,32 @@ Telegram bots have a **privacy mode** that is **enabled by default**. This is th
 An alternative to disabling privacy mode: promote the bot to **group admin**. Admin bots always receive all messages regardless of the privacy setting, and this avoids needing to toggle the global privacy mode.
 :::
 
+### Observe group chatter without auto-replying
+
+For OpenClaw/Yuanbao-style group behavior, configure Telegram so the bot can **see** ordinary group messages but only **responds** when directly triggered:
+
+```yaml
+telegram:
+  allowed_chats:
+    - "-1001234567890"
+  group_allowed_chats:
+    - "-1001234567890"
+  require_mention: true
+  observe_unmentioned_group_messages: true
+```
+
+With this mode enabled, unmentioned group messages from explicitly allowlisted chats/topics are appended to the shared chat/topic session transcript as observed context, but they do not dispatch the agent. `allowed_chats` gates where the bot responds; `group_allowed_chats` authorizes the shared group session used for observed context, so use the same chat IDs for this mode. A later `@botname` mention, reply to the bot, or configured mention pattern in that same allowlisted chat/topic can use that observed context. The triggered message is also tagged with `[nickname|user_id]` and gets a per-turn safety prompt so the model treats prior observed lines as context, not instructions addressed to the bot.
+
+Equivalent environment variable:
+
+```bash
+TELEGRAM_ALLOWED_CHATS=-1001234567890
+TELEGRAM_GROUP_ALLOWED_CHATS=-1001234567890
+TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
+```
+
+This requires Telegram to deliver ordinary group messages to the gateway, so disable BotFather privacy mode or promote the bot to group admin as described above.
+
 ## Step 4: Find Your User ID
 
 Hermes Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.
@@ -293,7 +319,7 @@ With STT disabled, the gateway still downloads the voice/audio attachment into H
 
 Your tools or skills can then read that path directly (e.g., hand it off to a local diarization pipeline, a richer transcription model, or upload it to long-term storage). The file extension reflects the original format Telegram delivered (`.ogg` for voice notes, `.mp3`/`.m4a`/etc. for audio attachments).
 
-This pairs naturally with the [local Bot API server](#large-files-20mb--via-local-bot-api-server) section below, which lifts Telegram's 20MB getFile ceiling to 2GB — useful when the recordings you want to process are longer than a couple of minutes.
+This pairs naturally with the [local Bot API server](#large-files-20mb-via-local-bot-api-server) section below, which lifts Telegram's 20MB getFile ceiling to 2GB — useful when the recordings you want to process are longer than a couple of minutes.
 
 ### Outgoing Voice (Text-to-Speech)
 
@@ -1206,6 +1232,14 @@ HERMES_TELEGRAM_NOTIFICATIONS=all
 ```
 
 Unknown values log a warning and fall back to `important`.
+
+## Status messages edited in place
+
+The Telegram adapter routes recurring agent status callbacks (e.g. "Compressing context…", "Calling tool…") through `send_or_update_status()`, which keeps a `{(chat_id, status_key) → message_id}` cache and **edits the existing bubble** on subsequent emits instead of appending a new one each time. Distinct `status_key` values get their own messages; distinct chats never collide. If the edit fails (e.g. the user deleted the message, or it's older than Telegram allows for edits), the cache entry is dropped and the next emit posts a fresh message and re-caches its ID. No config required — this is the default Telegram behavior. Other adapters that don't implement `send_or_update_status` fall through to plain `send()` unchanged.
+
+## Pin incoming user message during agent turn
+
+When a user sends a message that triggers an agent turn, the Telegram adapter pins that incoming message for the duration of the turn and unpins it when the response is finished — a lightweight visual indicator that the bot is actively working on the message rather than ignoring it. The pin uses `disable_notification=true` to avoid extra pings. No config required.
 
 ## Security
 

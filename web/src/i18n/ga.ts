@@ -127,6 +127,8 @@ export const ga: Translations = {
 
   sessions: {
     title: "Seisiúin",
+    history: "Stair",
+    overview: "Forbhreathnú",
     searchPlaceholder: "Cuardaigh ábhar teachtaireachta...",
     noSessions: "Gan seisiúin go fóill",
     noMatch: "Níl seisiún ar bith ag teacht le do chuardach",
@@ -269,7 +271,7 @@ export const ga: Translations = {
       "Faigh, suiteáil, cumasaigh agus nuashonraigh plugins Hermes (paireacht le `hermes plugins`).",
     identifierLabel: "URL Git nó owner/repo",
     inactive: "neamhghníomhach",
-    installBtn: "Suiteáil ó Git",
+    installBtn: "Suiteáil",
     installHeading: "Suiteáil ó GitHub / URL Git",
     installHint: "Úsáid an gearrshamhail owner/repo nó URL clóin iomlán https:// nó git@.",
     memoryProviderLabel: "Soláthraí cuimhne",
@@ -367,6 +369,8 @@ export const ga: Translations = {
     description: "Bainistigh eochracha API agus rúin atá stóráilte i",
     hideAdvanced: "Folaigh Ardroghanna",
     showAdvanced: "Taispeáin Ardroghanna",
+    showLess: "Taispeáin níos lú",
+    showMore: "Taispeáin tuilleadh",
     llmProviders: "Soláthraithe LLM",
     providersConfigured: "{configured} as {total} soláthraí cumraithe",
     getKey: "Faigh eochair",
@@ -392,7 +396,7 @@ export const ga: Translations = {
     disconnect: "Dícheangail",
     managedExternally: "Bainistithe go seachtrach",
     copied: "Cóipeáilte ✓",
-    cli: "CLI",
+    cli: "Cóipeáil",
     copyCliCommand: "Cóipeáil ordú CLI (le haghaidh úsáide seachtraí / cúltaca)",
     connect: "Ceangail",
     sessionExpires: "Téann an seisiún as feidhm i {time}",
@@ -419,7 +423,7 @@ export const ga: Translations = {
   },
 
   language: {
-    switchTo: "Athraigh go Béarla",
+    switchTo: "Athraigh teanga",
   },
 
   theme: {
@@ -654,6 +658,7 @@ export const ga: Translations = {
     columnLabels: {
       triage: "Triáiseáil",
       todo: "Le déanamh",
+      scheduled: "Sceidealta",
       ready: "Réidh",
       running: "Ar siúl",
       blocked: "Bactha",
@@ -663,6 +668,7 @@ export const ga: Translations = {
     columnHelp: {
       triage: "Smaointe amha — déanfaidh specifier an spec a chur i bhfeidhm",
       todo: "Ag fanacht ar spleáchais nó gan sannadh",
+      scheduled: "Ag fanacht ar mhoill ama atá ar eolas nó ar leanúint sceidealta",
       ready: "Tá na spleáchais sásaithe; sann próifíl le dispatch a dhéanamh",
       running: "Éilithe ag worker — ar siúl",
       blocked: "D'iarr an worker ionchur duine",

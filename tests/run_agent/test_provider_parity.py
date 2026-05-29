@@ -4,12 +4,10 @@ and handles responses properly for all supported providers.
 Ensures changes to one provider path don't silently break another.
 """
 
-import json
-import os
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 from agent.codex_responses_adapter import _chat_content_to_responses_parts, _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
@@ -311,40 +309,6 @@ class TestBuildApiKwargsKimiNoTemperatureOverride:
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "temperature" not in kwargs
-
-
-class TestBuildApiKwargsAIGateway:
-    def test_uses_chat_completions_format(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
-        messages = [{"role": "user", "content": "hi"}]
-        kwargs = agent._build_api_kwargs(messages)
-        assert "messages" in kwargs
-        assert "model" in kwargs
-        assert kwargs["messages"][-1]["content"] == "hi"
-
-    def test_no_responses_api_fields(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
-        messages = [{"role": "user", "content": "hi"}]
-        kwargs = agent._build_api_kwargs(messages)
-        assert "input" not in kwargs
-        assert "instructions" not in kwargs
-        assert "store" not in kwargs
-
-    def test_includes_reasoning_in_extra_body(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
-        messages = [{"role": "user", "content": "hi"}]
-        kwargs = agent._build_api_kwargs(messages)
-        extra = kwargs.get("extra_body", {})
-        assert "reasoning" in extra
-        assert extra["reasoning"]["enabled"] is True
-
-    def test_includes_tools(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
-        messages = [{"role": "user", "content": "hi"}]
-        kwargs = agent._build_api_kwargs(messages)
-        assert "tools" in kwargs
-        tool_names = [t["function"]["name"] for t in kwargs["tools"]]
-        assert "web_search" in tool_names
 
 
 class TestBuildApiKwargsNousPortal:

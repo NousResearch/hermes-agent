@@ -5,7 +5,6 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
-import os
 import threading
 import time
 from types import SimpleNamespace
@@ -1462,6 +1461,27 @@ class TestHTTPConfig:
 
         asyncio.run(_test())
 
+    def test_stdio_unavailable_raises_importerror_not_nameerror(self):
+        """Regression test for #30904.
+
+        When the mcp SDK isn't installed, ``_run_stdio`` previously leaked a
+        bare ``NameError: name 'StdioServerParameters' is not defined``. The
+        gate now raises a clear ``ImportError`` with install instructions,
+        mirroring ``_run_http``'s behaviour when the HTTP transport is
+        unavailable.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("local")
+        config = {"command": "python3", "args": ["/tmp/echo.py"]}
+
+        async def _test():
+            with patch("tools.mcp_tool._MCP_AVAILABLE", False):
+                with pytest.raises(ImportError, match=r"mcp.*SDK"):
+                    await server._run_stdio(config)
+
+        asyncio.run(_test())
+
     def test_http_seeds_initial_protocol_header(self):
         from tools.mcp_tool import LATEST_PROTOCOL_VERSION, MCPServerTask
 
@@ -1749,7 +1769,7 @@ class TestConfigurableTimeouts:
 
     def test_timeout_passed_to_handler(self):
         """The tool handler uses the server's configured timeout."""
-        from tools.mcp_tool import _make_tool_handler, _servers, MCPServerTask
+        from tools.mcp_tool import _make_tool_handler, _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -2204,8 +2224,6 @@ class TestUtilityToolRegistration:
 # SamplingHandler tests
 # ===========================================================================
 
-import math
-import time
 
 class _CompatType:
     def __init__(self, **kwargs):

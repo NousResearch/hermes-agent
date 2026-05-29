@@ -5,6 +5,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_RUN = REPO_ROOT / "docker" / "s6-rc.d" / "dashboard" / "run"
+WINDOWS_COMPOSE = REPO_ROOT / "docker-compose.windows.yml"
 
 
 def test_dashboard_run_resets_home_before_dropping_privileges() -> None:
@@ -46,3 +47,19 @@ def test_dashboard_run_does_not_derive_insecure_from_bind_host() -> None:
         assert truthy in text, (
             f"HERMES_DASHBOARD_INSECURE should accept truthy value {truthy!r}"
         )
+
+
+def test_windows_compose_uses_dashboard_env_opt_in_for_insecure_mode() -> None:
+    """Windows Docker Desktop needs a container-public bind for port mapping.
+
+    Keep that local-only compose path on the s6 dashboard service so the
+    insecure dashboard mode is still an explicit ``HERMES_DASHBOARD_INSECURE``
+    opt-in, not a hard-coded CLI flag hidden in the command line.
+    """
+    text = WINDOWS_COMPOSE.read_text(encoding="utf-8")
+
+    assert "HERMES_DASHBOARD=1" in text
+    assert "HERMES_DASHBOARD_HOST=0.0.0.0" in text
+    assert "HERMES_DASHBOARD_INSECURE=1" in text
+    assert 'command: ["dashboard",' not in text
+    assert '"--insecure"' not in text

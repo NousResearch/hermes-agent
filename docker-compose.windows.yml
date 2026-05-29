@@ -32,7 +32,14 @@ services:
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
+      - HERMES_DASHBOARD=1
       - HERMES_DASHBOARD_HOST=0.0.0.0
+      - HERMES_DASHBOARD_PORT=9119
+      # Windows Docker Desktop maps the container-public bind to host
+      # localhost below. Keep the no-OAuth local compose path explicit:
+      # Docker dashboard insecure mode is opt-in via this env var, never
+      # derived from HERMES_DASHBOARD_HOST.
+      - HERMES_DASHBOARD_INSECURE=1
     ports:
       - "127.0.0.1:9119:9119"
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
+    command: ["sleep", "infinity"]

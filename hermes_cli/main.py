@@ -6158,6 +6158,8 @@ def cmd_webhook(args):
     from hermes_cli.webhook import webhook_command
 
     webhook_command(args)
+
+
 def cmd_slack(args):
     """Slack integration helpers.
 

@@ -3958,6 +3958,8 @@ def _setup_whatsapp():
     from hermes_cli.main import cmd_whatsapp
     import argparse
     cmd_whatsapp(argparse.Namespace())
+
+
 def _setup_dingtalk():
     """Configure DingTalk — QR scan (recommended) or manual credential entry."""
     from hermes_cli.setup import (
@@ -4128,6 +4130,8 @@ def _setup_wecom():
 
     print()
     print_success("💬 WeCom configured!")
+
+
 def _is_service_installed() -> bool:
     """Check if the gateway is installed as a system service."""
     if supports_systemd_services():

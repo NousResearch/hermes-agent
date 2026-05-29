@@ -4863,6 +4863,8 @@ def detect_stale_running(
         # spawn_failed / timed_out / crashed counters.
 
     return reclaimed
+
+
 def _error_fingerprint(error_text: str) -> str:
     """Normalize an error message for grouping identical failures.
 
@@ -6948,6 +6950,8 @@ def get_run(conn: sqlite3.Connection, run_id: int) -> Optional[Run]:
         "SELECT * FROM task_runs WHERE id = ?", (int(run_id),),
     ).fetchone()
     return Run.from_row(row) if row else None
+
+
 def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
     """Return the most recent run regardless of outcome (active or closed)."""
     row = conn.execute(

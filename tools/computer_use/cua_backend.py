@@ -76,6 +76,8 @@ _ELEMENT_LINE_RE = re.compile(
 
 def _is_macos() -> bool:
     return sys.platform == "darwin"
+
+
 def cua_driver_binary_available() -> bool:
     """True if `cua-driver` is on $PATH or HERMES_CUA_DRIVER_CMD resolves."""
     return bool(shutil.which(_CUA_DRIVER_CMD))

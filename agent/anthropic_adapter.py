@@ -892,6 +892,8 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
 
     return None
+
+
 def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
     """Check if Claude Code credentials have a non-expired access token."""
     import time

@@ -184,6 +184,8 @@ def _resolve(configured: Optional[str]) -> Optional[BrowserProvider]:
             return provider
 
     return None
+
+
 def _reset_for_tests() -> None:
     """Clear the registry. **Test-only.**"""
     with _lock:

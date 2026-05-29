@@ -256,6 +256,8 @@ def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SEC
     policy handles cleanup.
     """
     _record_pending(urls, delay_seconds=delay_seconds)
+
+
 def _upload_paste_rs(content: str) -> str:
     """Upload to paste.rs.  Returns the paste URL.
 

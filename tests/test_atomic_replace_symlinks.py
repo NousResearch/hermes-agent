@@ -158,3 +158,81 @@ def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
     assert link.is_symlink(), "symlink must be preserved"
     assert missing.exists(), "real target should now exist"
     assert missing.read_text(encoding="utf-8") == "created-through-link\n"
+
+
+# ─── #34252: Cross-filesystem rename (EXDEV) regression ────────────────────
+
+
+def test_atomic_replace_falls_back_to_shutil_on_exdev(tmp_path: Path, monkeypatch) -> None:
+    """#34252: When os.replace raises OSError(EXDEV) — which happens when
+    ~/.hermes/ is symlinked to a different filesystem — the helper must
+    fall back to shutil.move so the write still lands. Previously this
+    raised, breaking ``hermes config set`` / model picks / dedup-state
+    persistence for any deployment with a cross-mount hermes home.
+    """
+    import errno as _errno
+
+    target = tmp_path / "target.json"
+    target.write_text('{"old": true}', encoding="utf-8")
+
+    src = _write_tmp(tmp_path, '{"new": true}')
+
+    real_os_replace = os.replace
+    call_state = {"count": 0}
+
+    def _replace_raises_exdev(src_path, dest_path):
+        call_state["count"] += 1
+        # First call (the one inside atomic_replace) raises EXDEV.
+        if call_state["count"] == 1:
+            err = OSError("Invalid cross-device link")
+            err.errno = _errno.EXDEV
+            raise err
+        return real_os_replace(src_path, dest_path)
+
+    monkeypatch.setattr(os, "replace", _replace_raises_exdev)
+
+    # Should NOT raise even though os.replace raised EXDEV.
+    real_path = atomic_replace(src, target)
+
+    # Content of target was updated via the shutil.move fallback.
+    assert json.loads(Path(real_path).read_text(encoding="utf-8")) == {"new": True}
+    # Source temp was consumed.
+    assert not src.exists()
+    # And os.replace was called once (the failed attempt before fallback).
+    assert call_state["count"] == 1
+
+
+def test_atomic_replace_reraises_non_exdev_errors(tmp_path: Path, monkeypatch) -> None:
+    """Sanity check: ANY OSError other than EXDEV must still propagate.
+    The fallback is intentionally narrow — we don't want to mask
+    permission errors or read-only-filesystem errors as silent failures."""
+    import errno as _errno
+
+    target = tmp_path / "target.json"
+    target.write_text('{"old": true}', encoding="utf-8")
+    src = _write_tmp(tmp_path, '{"new": true}')
+
+    def _replace_raises_eacces(src_path, dest_path):
+        err = OSError("Permission denied")
+        err.errno = _errno.EACCES
+        raise err
+
+    monkeypatch.setattr(os, "replace", _replace_raises_eacces)
+
+    with pytest.raises(OSError) as exc_info:
+        atomic_replace(src, target)
+    assert exc_info.value.errno == _errno.EACCES
+
+
+def test_atomic_replace_happy_path_still_uses_os_replace(tmp_path: Path) -> None:
+    """When no EXDEV occurs (the common case), the helper uses os.replace
+    directly — atomicity is preserved on same-filesystem writes, which
+    is what 99% of users actually have. Cross-fs is the fallback path."""
+    target = tmp_path / "target.json"
+    target.write_text('{"old": true}', encoding="utf-8")
+    src = _write_tmp(tmp_path, '{"new": true}')
+
+    real_path = atomic_replace(src, target)
+
+    assert json.loads(Path(real_path).read_text(encoding="utf-8")) == {"new": True}
+    assert not src.exists()

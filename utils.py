@@ -1,8 +1,10 @@
 """Shared utility functions for hermes-agent."""
 
+import errno
 import json
 import logging
 import os
+import shutil
 import stat
 import tempfile
 from pathlib import Path
@@ -78,7 +80,21 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
-    os.replace(str(tmp_path), real_path)
+    try:
+        os.replace(str(tmp_path), real_path)
+    except OSError as exc:
+        # EXDEV (errno 18): rename() can't cross mount points. Happens when
+        # the temp file was created on rootfs but ~/.hermes/ is symlinked to
+        # a different filesystem (e.g. /mnt/data/hermes-data/). Fall back to
+        # shutil.move which performs a copy+unlink internally when crossing
+        # devices. This is not atomic across devices, but it preserves the
+        # functional contract (the target ends up at the new content) and
+        # gracefully recovers from a deployment shape that os.replace can't
+        # handle. (#34252)
+        if exc.errno == errno.EXDEV:
+            shutil.move(str(tmp_path), real_path)
+        else:
+            raise
     return real_path
 
 

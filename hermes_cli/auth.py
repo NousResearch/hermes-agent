@@ -104,6 +104,7 @@ SHARED_CREDENTIAL_POOL_SOURCES = {
     "openai-codex": frozenset({"device_code"}),
 }
 SHARED_CREDENTIAL_POOL_PROVIDERS = frozenset(SHARED_CREDENTIAL_POOL_SOURCES)
+PROFILE_SHARED_CREDENTIAL_POOL_ORDER_KEY = "credential_pool_shared_order"
 SHARED_CREDENTIAL_POOL_STATUS_FIELDS = frozenset({
     "last_status",
     "last_status_at",
@@ -1257,10 +1258,88 @@ def _is_shared_credential_pool_entry(provider_id: str, entry: Any) -> bool:
     return entry.get("source") in SHARED_CREDENTIAL_POOL_SOURCES.get(provider_id, ())
 
 
+def _apply_profile_shared_credential_pool_order(
+    provider_id: str,
+    entries: List[Dict[str, Any]],
+    auth_store: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Overlay profile-relative order without copying shared OAuth material."""
+    order_store = auth_store.get(PROFILE_SHARED_CREDENTIAL_POOL_ORDER_KEY)
+    provider_order = order_store.get(provider_id) if isinstance(order_store, dict) else None
+    if not isinstance(provider_order, dict):
+        return [dict(entry) for entry in entries]
+    ordered_entries = []
+    for entry in entries:
+        updated = dict(entry)
+        priority = provider_order.get(entry.get("source"))
+        if isinstance(priority, int):
+            updated["priority"] = priority
+        ordered_entries.append(updated)
+    return ordered_entries
+
+
+def _preserve_shared_credential_pool_order(
+    current_entries: List[Dict[str, Any]],
+    snapshot_entries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Keep root shared ordering stable when a named profile writes a snapshot."""
+    current_by_source = {
+        entry.get("source"): entry
+        for entry in current_entries
+        if isinstance(entry, dict)
+    }
+    merged = []
+    for snapshot in snapshot_entries:
+        updated = dict(snapshot)
+        current = current_by_source.get(snapshot.get("source"))
+        if isinstance(current, dict):
+            for field in CREDENTIAL_POOL_ORDER_FIELDS:
+                if field in current:
+                    updated[field] = current[field]
+                else:
+                    updated.pop(field, None)
+        merged.append(updated)
+    return merged
+
+
+def _update_profile_shared_credential_pool_order(
+    auth_store: Dict[str, Any],
+    provider_id: str,
+    entries: List[Dict[str, Any]],
+    *,
+    update_order_entry_ids: Set[str],
+    clear: bool,
+) -> None:
+    """Persist profile-relative order for shared rows without their tokens."""
+    order_store = auth_store.get(PROFILE_SHARED_CREDENTIAL_POOL_ORDER_KEY)
+    if clear:
+        if isinstance(order_store, dict):
+            order_store.pop(provider_id, None)
+        return
+    updates = {
+        entry.get("source"): entry.get("priority")
+        for entry in entries
+        if entry.get("id") in update_order_entry_ids
+        and isinstance(entry.get("source"), str)
+        and isinstance(entry.get("priority"), int)
+    }
+    if not updates:
+        return
+    if not isinstance(order_store, dict):
+        order_store = {}
+        auth_store[PROFILE_SHARED_CREDENTIAL_POOL_ORDER_KEY] = order_store
+    provider_order = order_store.get(provider_id)
+    if not isinstance(provider_order, dict):
+        provider_order = {}
+        order_store[provider_id] = provider_order
+    provider_order.update(updates)
+
+
 def _merge_shared_credential_pool_entries(
     provider_id: str,
     local_entries: Any,
     global_entries: Any,
+    auth_store: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
     shared_entries = (
         [
@@ -1279,7 +1358,14 @@ def _merge_shared_credential_pool_entries(
         if isinstance(local_entries, list)
         else []
     )
-    return shared_entries + profile_entries
+    return (
+        _apply_profile_shared_credential_pool_order(
+            provider_id,
+            shared_entries,
+            auth_store,
+        )
+        + profile_entries
+    )
 
 
 def _merge_shared_credential_pool_status(
@@ -1460,6 +1546,7 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
                     shared_provider,
                     pool.get(shared_provider),
                     global_pool.get(shared_provider),
+                    auth_store,
                 )
                 if combined:
                     merged[shared_provider] = combined
@@ -1482,6 +1569,7 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
             provider_id,
             pool.get(provider_id),
             global_pool.get(provider_id),
+            auth_store,
         )
 
     provider_entries = pool.get(provider_id)
@@ -1524,6 +1612,7 @@ def write_credential_pool(
             entry for entry in sanitized_entries
             if _is_shared_credential_pool_entry(provider_id, entry)
         ]
+        profile_shared_order_entries = [dict(entry) for entry in shared_entries]
         profile_entries = [
             entry for entry in sanitized_entries
             if not _is_shared_credential_pool_entry(provider_id, entry)
@@ -1557,8 +1646,17 @@ def write_credential_pool(
                     current_shared_entries,
                     shared_entries,
                     shared_auth_store,
-                    update_order_entry_ids=set(update_order_entry_ids),
+                    update_order_entry_ids=(
+                        set()
+                        if split_shared_store
+                        else set(update_order_entry_ids)
+                    ),
                     update_status_entry_ids=set(update_status_entry_ids),
+                )
+            if split_shared_store:
+                shared_entries = _preserve_shared_credential_pool_order(
+                    current_shared_entries,
+                    shared_entries,
                 )
             if not split_shared_store and preserve_profile_entries:
                 profile_entries = _merge_credential_pool_snapshot_entries(
@@ -1579,9 +1677,19 @@ def write_credential_pool(
                 providers = shared_auth_store.get("providers")
                 if isinstance(providers, dict):
                     providers.pop(provider_id, None)
+                if shared_auth_store.get("active_provider") == provider_id:
+                    shared_auth_store["active_provider"] = None
             _save_auth_store(shared_auth_store, auth_file=shared_auth_file)
 
-            if split_shared_store and (profile_entries or profile_auth_file.exists()):
+            update_profile_shared_order = any(
+                entry.get("id") in update_order_entry_ids
+                for entry in profile_shared_order_entries
+            )
+            if split_shared_store and (
+                profile_entries
+                or profile_auth_file.exists()
+                or update_profile_shared_order
+            ):
                 with _auth_store_lock():
                     profile_auth_store = _load_auth_store(profile_auth_file)
                     profile_pool = profile_auth_store.get("credential_pool")
@@ -1603,6 +1711,13 @@ def write_credential_pool(
                             update_order_entry_ids=set(update_order_entry_ids),
                             update_status_entry_ids=set(update_status_entry_ids),
                         )
+                    _update_profile_shared_credential_pool_order(
+                        profile_auth_store,
+                        provider_id,
+                        profile_shared_order_entries,
+                        update_order_entry_ids=set(update_order_entry_ids),
+                        clear=not shared_entries,
+                    )
                     profile_pool[provider_id] = profile_entries
                     return _save_auth_store(profile_auth_store, auth_file=profile_auth_file)
         return shared_auth_file
@@ -1784,6 +1899,10 @@ def _clear_provider_auth_store(
         elif not shared_pool_only:
             del pool[target]
             cleared = True
+    profile_shared_order = auth_store.get(PROFILE_SHARED_CREDENTIAL_POOL_ORDER_KEY)
+    if isinstance(profile_shared_order, dict) and target in profile_shared_order:
+        del profile_shared_order[target]
+        cleared = True
 
     if clear_active_provider and auth_store.get("active_provider") == target:
         auth_store["active_provider"] = None
@@ -1815,7 +1934,7 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
             auth_store,
             target,
             shared_pool_only=split_shared_store,
-            clear_active_provider=not split_shared_store,
+            clear_active_provider=True,
         )
         if cleared:
             _save_auth_store(auth_store, auth_file=auth_file)

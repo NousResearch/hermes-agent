@@ -1044,6 +1044,7 @@ def test_auth_remove_codex_device_code_suppresses_reseed(tmp_path, monkeypatch):
 
     auth_store = {
         "version": 1,
+        "active_provider": "openai-codex",
         "providers": {
             "openai-codex": {
                 "tokens": {
@@ -1077,6 +1078,7 @@ def test_auth_remove_codex_device_code_suppresses_reseed(tmp_path, monkeypatch):
     assert "device_code" in suppressed["openai-codex"]
     # Tokens in providers state should also be cleared
     assert "openai-codex" not in updated.get("providers", {})
+    assert updated["active_provider"] is None
 
 
 def test_auth_remove_codex_manual_source_keeps_singleton_state(tmp_path, monkeypatch):

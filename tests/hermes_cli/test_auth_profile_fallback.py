@@ -954,6 +954,98 @@ def test_codex_profile_shared_remove_preserves_newer_manual_entries(profile_env)
     assert entries["concurrent-api-key"]["access_token"] == "sk-concurrent"
 
 
+def test_codex_profile_round_robin_shared_order_is_profile_local(profile_env, monkeypatch):
+    from agent.credential_pool import STRATEGY_ROUND_ROBIN, load_pool
+    from hermes_cli.auth import CODEX_REFRESH_OWNER
+
+    sibling = profile_env["global"] / "profiles" / "sibling"
+    sibling.mkdir()
+    _write(profile_env["global"] / "auth.json", {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "shared-at",
+                    "refresh_token": "shared-rt",
+                },
+                "refresh_owner": CODEX_REFRESH_OWNER,
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "shared-codex",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "priority": 0,
+                "access_token": "shared-at",
+                "refresh_token": "shared-rt",
+            }],
+        },
+    })
+    for profile, manual_id in (
+        (profile_env["profile"], "coder-manual"),
+        (sibling, "sibling-manual"),
+    ):
+        _write(profile / "auth.json", _make_auth_store(pool={
+            "openai-codex": [{
+                "id": manual_id,
+                "source": "manual:api_key",
+                "auth_type": "api_key",
+                "priority": 1,
+                "access_token": f"sk-{manual_id}",
+            }],
+        }))
+
+    coder = load_pool("openai-codex")
+    coder._strategy = STRATEGY_ROUND_ROBIN
+    assert coder.select().id == "shared-codex"
+
+    root_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    assert root_data["credential_pool"]["openai-codex"][0]["priority"] == 0
+    coder_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert coder_data["credential_pool_shared_order"]["openai-codex"]["device_code"] == 1
+
+    monkeypatch.setenv("HERMES_HOME", str(sibling))
+    assert [entry.id for entry in load_pool("openai-codex").entries()] == [
+        "shared-codex",
+        "sibling-manual",
+    ]
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_env["profile"]))
+    assert [entry.id for entry in load_pool("openai-codex").entries()] == [
+        "coder-manual",
+        "shared-codex",
+    ]
+
+
+def test_clear_codex_auth_clears_matching_root_active_provider(profile_env):
+    from hermes_cli.auth import clear_provider_auth
+
+    _write(profile_env["global"] / "auth.json", {
+        "version": 1,
+        "active_provider": "openai-codex",
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "shared-at",
+                    "refresh_token": "shared-rt",
+                },
+            },
+        },
+    })
+    _write(profile_env["profile"] / "auth.json", {
+        "version": 1,
+        "active_provider": "openai-codex",
+        "providers": {},
+    })
+
+    assert clear_provider_auth() is True
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    assert global_data["active_provider"] is None
+    assert "openai-codex" not in global_data["providers"]
+
+
 def test_clear_codex_auth_clears_profile_entries_and_shared_root_state(profile_env):
     from hermes_cli.auth import clear_provider_auth, read_credential_pool
 

@@ -243,15 +243,25 @@ def _clear_auth_store_provider(provider: str) -> bool:
         providers_dict = auth_store.get("providers")
         if isinstance(providers_dict, dict) and provider in providers_dict:
             del providers_dict[provider]
-            _save_auth_store(auth_store, auth_file=auth_file)
             cleared = True
+        if auth_store.get("active_provider") == provider:
+            auth_store["active_provider"] = None
+            cleared = True
+        if cleared:
+            _save_auth_store(auth_store, auth_file=auth_file)
         local_auth_file = _auth_file_path()
         if auth_file is not None and auth_file != local_auth_file:
             with _auth_store_lock():
                 local_auth_store = _load_auth_store(local_auth_file)
+                local_cleared = False
                 local_providers = local_auth_store.get("providers")
                 if isinstance(local_providers, dict) and provider in local_providers:
                     del local_providers[provider]
+                    local_cleared = True
+                if local_auth_store.get("active_provider") == provider:
+                    local_auth_store["active_provider"] = None
+                    local_cleared = True
+                if local_cleared:
                     _save_auth_store(local_auth_store, auth_file=local_auth_file)
                     cleared = True
         return cleared

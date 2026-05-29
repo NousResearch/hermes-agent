@@ -511,11 +511,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
+                err = result["error"]
+                if _is_interpreter_shutdown_message(err):
+                    msg = f"delivery to {platform_name}:{chat_id} skipped during interpreter shutdown"
+                    logger.warning("Job '%s': %s", job["id"], msg)
+                    delivery_errors.append(msg)
+                    continue
+                msg = f"delivery error: {err}"
                 logger.error("Job '%s': %s", job["id"], msg)
                 delivery_errors.append(msg)
                 continue
-
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
 
     if delivery_errors:

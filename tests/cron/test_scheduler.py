@@ -1950,6 +1950,34 @@ class TestDeliverResultTimeoutCancelsFuture:
         assert "skipped during interpreter shutdown" in result
         standalone_send.assert_not_awaited()
 
+    def test_standalone_shutdown_error_is_reported_without_generic_failure(self):
+        """Standalone Telegram delivery can surface Python finalization as a SendResult error."""
+        from gateway.config import Platform
+        from cron.scheduler import _deliver_result
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        job = {
+            "id": "standalone-shutdown-delivery-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={
+            "error": "Telegram send failed: Unknown error in HTTP implementation: RuntimeError('cannot schedule new futures after interpreter shutdown')"
+        })
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(job, "Hello world", adapters={}, loop=None)
+
+        assert "skipped during interpreter shutdown" in result
+        assert "delivery error:" not in result
+        standalone_send.assert_awaited_once()
 
 class TestSendMediaTimeoutCancelsFuture:
     """Same orphan-coroutine guarantee for _send_media_via_adapter's

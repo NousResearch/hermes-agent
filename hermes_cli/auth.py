@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -1287,15 +1287,9 @@ def _merge_shared_credential_pool_status(
     snapshot_entries: List[Dict[str, Any]],
     auth_store: Dict[str, Any],
     *,
-    update_status: bool,
+    update_status_entry_ids: Set[str],
 ) -> List[Dict[str, Any]]:
     """Merge shared snapshots without replaying stale OAuth tokens."""
-    snapshots_by_id = {
-        entry.get("id"): entry
-        for entry in snapshot_entries
-        if _is_shared_credential_pool_entry(provider_id, entry)
-        and isinstance(entry.get("id"), str)
-    }
     providers = auth_store.get("providers")
     state = providers.get(provider_id) if isinstance(providers, dict) else None
     tokens = state.get("tokens") if isinstance(state, dict) else None
@@ -1314,10 +1308,26 @@ def _merge_shared_credential_pool_status(
             and entry.get("refresh_token") == refresh_token
         )
 
+    snapshots_by_source = {}
+    for snapshot in snapshot_entries:
+        if not _is_shared_credential_pool_entry(provider_id, snapshot):
+            continue
+        source = snapshot.get("source")
+        existing = snapshots_by_source.get(source)
+        if existing is None or (
+            _matches_canonical(snapshot) and not _matches_canonical(existing)
+        ):
+            snapshots_by_source[source] = snapshot
+
     merged = []
+    merged_sources = set()
     for current in current_entries:
+        source = current.get("source")
+        if source in merged_sources:
+            continue
+        merged_sources.add(source)
         updated = dict(current)
-        snapshot = snapshots_by_id.get(current.get("id"))
+        snapshot = snapshots_by_source.get(source)
         current_refresh = current.get("refresh_token")
         if (
             isinstance(snapshot, dict)
@@ -1326,8 +1336,11 @@ def _merge_shared_credential_pool_status(
         ):
             updated = dict(snapshot)
         elif (
-            update_status
-            and isinstance(snapshot, dict)
+            isinstance(snapshot, dict)
+            and (
+                current.get("id") in update_status_entry_ids
+                or snapshot.get("id") in update_status_entry_ids
+            )
             and isinstance(current_refresh, str)
             and current_refresh
             and snapshot.get("access_token") == current.get("access_token")
@@ -1339,11 +1352,59 @@ def _merge_shared_credential_pool_status(
                 else:
                     updated.pop(field, None)
         merged.append(updated)
-    current_ids = {entry.get("id") for entry in current_entries}
+    merged.extend(
+        dict(snapshot)
+        for source, snapshot in snapshots_by_source.items()
+        if source not in merged_sources and _matches_canonical(snapshot)
+    )
+    return merged
+
+
+def _merge_credential_pool_snapshot_entries(
+    current_entries: List[Dict[str, Any]],
+    snapshot_entries: List[Dict[str, Any]],
+    *,
+    replace_entry_ids: Set[str],
+    remove_entry_ids: Set[str],
+    update_status_entry_ids: Set[str],
+) -> List[Dict[str, Any]]:
+    """Merge independent rows while preserving newer persisted credentials."""
+    snapshots_by_id = {
+        entry.get("id"): entry
+        for entry in snapshot_entries
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+    }
+    merged = []
+    current_ids = set()
+    for current in current_entries:
+        entry_id = current.get("id")
+        current_ids.add(entry_id)
+        if entry_id in remove_entry_ids:
+            continue
+        snapshot = snapshots_by_id.get(entry_id)
+        if snapshot is None:
+            merged.append(dict(current))
+            continue
+        if entry_id in replace_entry_ids:
+            merged.append(dict(snapshot))
+            continue
+        updated = dict(current)
+        if (
+            entry_id in update_status_entry_ids
+            and snapshot.get("access_token") == current.get("access_token")
+            and snapshot.get("refresh_token") == current.get("refresh_token")
+        ):
+            for field in SHARED_CREDENTIAL_POOL_STATUS_FIELDS:
+                if field in snapshot:
+                    updated[field] = snapshot[field]
+                else:
+                    updated.pop(field, None)
+        merged.append(updated)
     merged.extend(
         dict(snapshot)
         for snapshot in snapshot_entries
-        if snapshot.get("id") not in current_ids and _matches_canonical(snapshot)
+        if snapshot.get("id") not in current_ids
+        and snapshot.get("id") not in remove_entry_ids
     )
     return merged
 
@@ -1420,7 +1481,9 @@ def write_credential_pool(
     entries: List[Dict[str, Any]],
     *,
     preserve_shared_entries: bool = False,
-    update_shared_status: bool = False,
+    replace_entry_ids: FrozenSet[str] = frozenset(),
+    remove_entry_ids: FrozenSet[str] = frozenset(),
+    update_status_entry_ids: FrozenSet[str] = frozenset(),
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
@@ -1474,8 +1537,16 @@ def write_credential_pool(
                     current_shared_entries,
                     shared_entries,
                     shared_auth_store,
-                    update_status=update_shared_status,
+                    update_status_entry_ids=set(update_status_entry_ids),
                 )
+                if not split_shared_store:
+                    profile_entries = _merge_credential_pool_snapshot_entries(
+                        root_profile_entries,
+                        profile_entries,
+                        replace_entry_ids=set(replace_entry_ids),
+                        remove_entry_ids=set(remove_entry_ids),
+                        update_status_entry_ids=set(update_status_entry_ids),
+                    )
             shared_pool[provider_id] = (
                 root_profile_entries + shared_entries
                 if split_shared_store
@@ -1490,6 +1561,19 @@ def write_credential_pool(
                     if not isinstance(profile_pool, dict):
                         profile_pool = {}
                         profile_auth_store["credential_pool"] = profile_pool
+                    if preserve_shared_entries:
+                        existing_profile_entries = profile_pool.get(provider_id)
+                        profile_entries = _merge_credential_pool_snapshot_entries(
+                            (
+                                existing_profile_entries
+                                if isinstance(existing_profile_entries, list)
+                                else []
+                            ),
+                            profile_entries,
+                            replace_entry_ids=set(replace_entry_ids),
+                            remove_entry_ids=set(remove_entry_ids),
+                            update_status_entry_ids=set(update_status_entry_ids),
+                        )
                     profile_pool[provider_id] = profile_entries
                     return _save_auth_store(profile_auth_store, auth_file=profile_auth_file)
         return shared_auth_file

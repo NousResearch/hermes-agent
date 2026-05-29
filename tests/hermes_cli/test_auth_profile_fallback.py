@@ -744,6 +744,45 @@ def test_codex_profile_load_persists_newly_seeded_shared_root_entry(profile_env)
     assert shared["refresh_token"] == "shared-rt"
 
 
+def test_codex_profile_pool_flush_deduplicates_shared_source_with_stale_id(profile_env):
+    from hermes_cli.auth import write_credential_pool
+
+    _write(profile_env["global"] / "auth.json", {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "shared-at",
+                    "refresh_token": "shared-rt",
+                },
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "canonical-row",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "shared-at",
+                "refresh_token": "shared-rt",
+            }],
+        },
+    })
+
+    write_credential_pool("openai-codex", [{
+        "id": "stale-process-row",
+        "source": "device_code",
+        "auth_type": "oauth",
+        "access_token": "shared-at",
+        "refresh_token": "shared-rt",
+    }], preserve_shared_entries=True)
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    entries = global_data["credential_pool"]["openai-codex"]
+    assert len(entries) == 1
+    assert entries[0]["id"] == "canonical-row"
+    assert entries[0]["refresh_token"] == "shared-rt"
+
+
 def test_codex_profile_local_flush_does_not_clear_newer_shared_cooldown(profile_env):
     from agent.credential_pool import PooledCredential, STATUS_EXHAUSTED, load_pool
 

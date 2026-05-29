@@ -2797,6 +2797,107 @@ def test_codex_root_pool_flush_does_not_restore_stale_shared_entry(tmp_path, mon
     assert shared["refresh_token"] == "refresh-NEW"
 
 
+def test_codex_root_pool_flush_does_not_restore_stale_manual_entry(tmp_path, monkeypatch):
+    """An unrelated root-local add must not replay a rotated manual token."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "manual-codex",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "access-OLD",
+                "refresh_token": "refresh-OLD",
+            }],
+        },
+    })
+
+    from agent.credential_pool import PooledCredential, load_pool
+
+    pool = load_pool("openai-codex")
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "manual-codex",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "access-NEW",
+                "refresh_token": "refresh-NEW",
+            }],
+        },
+    })
+
+    pool.add_entry(PooledCredential.from_dict("openai-codex", {
+        "id": "manual-key",
+        "source": "manual:api_key",
+        "auth_type": "api_key",
+        "access_token": "sk-profile",
+    }))
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = {
+        entry["id"]: entry
+        for entry in auth_payload["credential_pool"]["openai-codex"]
+    }
+    assert entries["manual-codex"]["access_token"] == "access-NEW"
+    assert entries["manual-codex"]["refresh_token"] == "refresh-NEW"
+    assert entries["manual-key"]["access_token"] == "sk-profile"
+
+
+def test_codex_profile_pool_flush_does_not_restore_stale_manual_entry(tmp_path, monkeypatch):
+    """An unrelated profile-local add must not replay a rotated manual token."""
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    (profile_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "manual-codex",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "access-OLD",
+                "refresh_token": "refresh-OLD",
+            }],
+        },
+    }, indent=2))
+
+    from agent.credential_pool import PooledCredential, load_pool
+
+    pool = load_pool("openai-codex")
+    (profile_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "manual-codex",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "access-NEW",
+                "refresh_token": "refresh-NEW",
+            }],
+        },
+    }, indent=2))
+
+    pool.add_entry(PooledCredential.from_dict("openai-codex", {
+        "id": "manual-key",
+        "source": "manual:api_key",
+        "auth_type": "api_key",
+        "access_token": "sk-profile",
+    }))
+
+    auth_payload = json.loads((profile_home / "auth.json").read_text())
+    entries = {
+        entry["id"]: entry
+        for entry in auth_payload["credential_pool"]["openai-codex"]
+    }
+    assert entries["manual-codex"]["access_token"] == "access-NEW"
+    assert entries["manual-codex"]["refresh_token"] == "refresh-NEW"
+    assert entries["manual-key"]["access_token"] == "sk-profile"
+
+
 def test_sync_codex_entry_noop_when_tokens_match(tmp_path, monkeypatch):
     """When auth.json has the same tokens, sync should be a no-op."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -3005,7 +3106,7 @@ def test_codex_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatc
         last_error_reset_at=now + 3600,
     )
     pool._replace_entry(entry, exhausted)
-    pool._persist(update_shared_status=True)
+    pool._persist(update_status_entry_ids={exhausted.id})
 
     # Sanity: before the reauth, _available_entries refuses to return
     # this entry because last_error_reset_at is in the future.
@@ -3047,7 +3148,7 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
         last_error_reset_at=now + 3600,
     )
     pool._replace_entry(entry, exhausted)
-    pool._persist(update_shared_status=True)
+    pool._persist(update_status_entry_ids={exhausted.id})
 
     # auth.json unchanged → sync returns same entry → exhausted_until check
     # still skips it.

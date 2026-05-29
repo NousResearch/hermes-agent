@@ -502,12 +502,63 @@ async def _send_via_adapter(
             try:
                 metadata = {"thread_id": thread_id} if thread_id else None
                 result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                media_warnings = []
+                for media_path, is_voice in media_files or []:
+                    try:
+                        ext = os.path.splitext(str(media_path))[1].lower()
+                        if ext in _IMAGE_EXTS and not force_document:
+                            media_result = await adapter.send_image_file(
+                                chat_id=chat_id,
+                                image_path=media_path,
+                                metadata=metadata,
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            media_result = await adapter.send_video(
+                                chat_id=chat_id,
+                                video_path=media_path,
+                                metadata=metadata,
+                            )
+                        elif ext in _VOICE_EXTS and is_voice:
+                            media_result = await adapter.send_voice(
+                                chat_id=chat_id,
+                                audio_path=media_path,
+                                metadata=metadata,
+                            )
+                        elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
+                            media_result = await adapter.send_audio(
+                                chat_id=chat_id,
+                                audio_path=media_path,
+                                metadata=metadata,
+                            )
+                        else:
+                            media_result = await adapter.send_document(
+                                chat_id=chat_id,
+                                file_path=media_path,
+                                metadata=metadata,
+                            )
+                    except Exception as media_exc:
+                        media_warnings.append(
+                            _sanitize_error_text(f"Failed to send media {media_path}: {media_exc}")
+                        )
+                        continue
+                    if not getattr(media_result, "success", False):
+                        media_warnings.append(
+                            _sanitize_error_text(
+                                f"Failed to send media {media_path}: "
+                                f"{getattr(media_result, 'error', 'unknown error')}"
+                            )
+                        )
+                    elif getattr(media_result, "message_id", None):
+                        result = media_result
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 return {"error": f"Plugin platform send failed: {e}"}
             if result.success:
-                return {"success": True, "message_id": result.message_id}
+                payload = {"success": True, "message_id": result.message_id}
+                if media_warnings:
+                    payload["warnings"] = media_warnings
+                return payload
             return {"error": f"Adapter send failed: {result.error}"}
 
     platform_name = platform.value if hasattr(platform, "value") else str(platform)

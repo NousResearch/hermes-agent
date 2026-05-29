@@ -1368,3 +1368,120 @@ def test_container_finished_at_returns_none_on_zero_value():
     ):
         result = docker_env._container_finished_at("/usr/bin/docker", "never-finished")
     assert result is None
+
+
+def test_credential_mount_skipped_when_source_is_directory(monkeypatch, tmp_path, caplog):
+    """Credential mount should be skipped when source path is a directory.
+
+    In Docker-in-Docker scenarios, Docker may auto-create the source path as
+    a directory when it doesn't exist on the host.  Mounting a directory over
+    a file destination causes exit 125.
+    """
+    # Create a directory that looks like a corrupted credential file path
+    corrupted_dir = tmp_path / "google_token.json"
+    corrupted_dir.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    # Mock get_credential_file_mounts to return the corrupted entry
+    fake_mounts = [
+        {"host_path": str(corrupted_dir), "container_path": "/root/.hermes/google_token.json"},
+    ]
+    monkeypatch.setattr(
+        "tools.credential_files.get_credential_file_mounts",
+        lambda: fake_mounts,
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_skills_directory_mount",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_cache_directory_mounts",
+        lambda: [],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        _make_dummy_env()
+
+    # The corrupted mount should be skipped
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert "google_token.json" not in run_args_str
+
+    # Should log a warning about the directory source
+    assert any(
+        "source is a directory" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, caplog):
+    """Credential mount should be skipped when source file no longer exists."""
+    missing_path = tmp_path / "deleted_token.json"
+    # Don't create the file — it's "missing"
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    fake_mounts = [
+        {"host_path": str(missing_path), "container_path": "/root/.hermes/deleted_token.json"},
+    ]
+    monkeypatch.setattr(
+        "tools.credential_files.get_credential_file_mounts",
+        lambda: fake_mounts,
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_skills_directory_mount",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_cache_directory_mounts",
+        lambda: [],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        _make_dummy_env()
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert "deleted_token.json" not in run_args_str
+
+    assert any(
+        "source not found" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+def test_credential_mount_works_when_source_is_valid_file(monkeypatch, tmp_path):
+    """Credential mount should proceed normally when source is a valid file."""
+    valid_file = tmp_path / "token.json"
+    valid_file.write_text('{"token": "REDACTED"}')
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    fake_mounts = [
+        {"host_path": str(valid_file), "container_path": "/root/.hermes/token.json"},
+    ]
+    monkeypatch.setattr(
+        "tools.credential_files.get_credential_file_mounts",
+        lambda: fake_mounts,
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_skills_directory_mount",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_cache_directory_mounts",
+        lambda: [],
+    )
+
+    _make_dummy_env()
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert "token.json" in run_args_str

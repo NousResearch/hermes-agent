@@ -1365,6 +1365,111 @@ class TestMatrixUploadAndSend:
         assert sent["file"]["url"] == "mxc://example.org/enc"
 
 
+class TestMatrixSendImageSecurity:
+    @pytest.mark.asyncio
+    async def test_aiohttp_send_image_blocks_unsafe_redirect(self):
+        """Matrix should not follow public image URLs into private networks."""
+        from gateway.platforms.base import SendResult
+
+        adapter = _make_adapter()
+        adapter._upload_and_send = AsyncMock()
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        calls = []
+
+        class FakeTimeout:
+            def __init__(self, **_kwargs):
+                pass
+
+        class FakeResponse:
+            status = 302
+            headers = {"Location": "http://169.254.169.254/latest/meta-data/"}
+            content_type = "image/png"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def raise_for_status(self):
+                pass
+
+            async def read(self):
+                return b"should-not-upload"
+
+        class FakeSession:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def get(self, url, **kwargs):
+                calls.append((url, kwargs))
+                return FakeResponse()
+
+        fake_aiohttp = types.SimpleNamespace(
+            ClientSession=FakeSession,
+            ClientTimeout=FakeTimeout,
+        )
+
+        with patch.dict("sys.modules", {"aiohttp": fake_aiohttp}):
+            result = await adapter.send_image(
+                "!room:example.org",
+                "http://93.184.216.34/public.png",
+            )
+
+        assert result.success is True
+        assert len(calls) == 1
+        assert calls[0][1]["allow_redirects"] is False
+        adapter._upload_and_send.assert_not_awaited()
+        adapter.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_httpx_fallback_installs_redirect_guard(self):
+        """The httpx fallback should also re-check redirect targets."""
+        from gateway.platforms.base import SendResult, _ssrf_redirect_guard
+
+        adapter = _make_adapter()
+        adapter._upload_and_send = AsyncMock(return_value=SendResult(success=True))
+        clients = []
+
+        class FakeResponse:
+            content = b"image"
+            headers = {"content-type": "image/png"}
+
+            def raise_for_status(self):
+                pass
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                clients.append(self)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def get(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        with patch.dict("sys.modules", {"aiohttp": None}):
+            with patch("httpx.AsyncClient", FakeClient):
+                result = await adapter.send_image(
+                    "!room:example.org",
+                    "http://93.184.216.34/public.png",
+                )
+
+        assert result.success is True
+        assert clients[0].kwargs["event_hooks"]["response"] == [_ssrf_redirect_guard]
+        adapter._upload_and_send.assert_awaited_once()
+
+
 class TestMatrixEncryptedSendFallback:
     @pytest.mark.asyncio
     async def test_send_retries_after_e2ee_error(self):

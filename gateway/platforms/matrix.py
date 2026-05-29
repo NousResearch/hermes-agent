@@ -34,6 +34,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from urllib.parse import urljoin
 
 from html import escape as _html_escape
 from pathlib import Path
@@ -102,6 +103,7 @@ from gateway.platforms.base import (
     SendResult,
     resolve_proxy_url,
     proxy_kwargs_for_aiohttp,
+    _ssrf_redirect_guard,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
 
@@ -502,6 +504,16 @@ class MatrixAdapter(BasePlatformAdapter):
         self._processed_events.append(event_id)
         self._processed_events_set.add(event_id)
         return False
+
+    @staticmethod
+    def _safe_redirect_url(current_url: str, location: str) -> str:
+        """Resolve and validate a Matrix media redirect target."""
+        from tools.url_safety import is_safe_url
+
+        next_url = urljoin(current_url, location)
+        if not is_safe_url(next_url):
+            raise ValueError("Blocked unsafe Matrix image redirect")
+        return next_url
 
     @staticmethod
     def _parse_thread_require_mention(config) -> bool:
@@ -1171,22 +1183,36 @@ class MatrixAdapter(BasePlatformAdapter):
                 import aiohttp as _aiohttp
                 _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(self._proxy_url)
                 async with _aiohttp.ClientSession(**_sess_kw) as http:
-                    async with http.get(
-                        image_url,
-                        timeout=_aiohttp.ClientTimeout(total=30),
-                        **_req_kw,
-                    ) as resp:
-                        resp.raise_for_status()
-                        data = await resp.read()
-                        ct = resp.content_type or "image/png"
-                        fname = (
-                            image_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
-                        )
+                    fetch_url = image_url
+                    for _ in range(20):
+                        async with http.get(
+                            fetch_url,
+                            timeout=_aiohttp.ClientTimeout(total=30),
+                            allow_redirects=False,
+                            **_req_kw,
+                        ) as resp:
+                            if resp.status in {301, 302, 303, 307, 308}:
+                                location = resp.headers.get("Location")
+                                if not location:
+                                    raise ValueError("Matrix image redirect missing Location")
+                                fetch_url = self._safe_redirect_url(fetch_url, location)
+                                continue
+                            resp.raise_for_status()
+                            data = await resp.read()
+                            ct = resp.content_type or "image/png"
+                            fname = (
+                                fetch_url.rsplit("/", 1)[-1].split("?")[0]
+                                or "image.png"
+                            )
+                            break
+                    else:
+                        raise ValueError("Too many Matrix image redirects")
             except ImportError:
                 import httpx
                 _httpx_kw: dict = {}
                 if self._proxy_url:
                     _httpx_kw["proxy"] = self._proxy_url
+                _httpx_kw["event_hooks"] = {"response": [_ssrf_redirect_guard]}
                 async with httpx.AsyncClient(**_httpx_kw) as http:
                     resp = await http.get(image_url, follow_redirects=True, timeout=30)
                     resp.raise_for_status()

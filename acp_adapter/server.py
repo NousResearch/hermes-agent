@@ -1936,8 +1936,8 @@ class HermesACPAgent(acp.Agent):
                 return "No tools available."
             lines = [f"Available tools ({len(tools)}):"]
             for t in tools:
-                name = t.get("function", {}).get("name", "?")
-                desc = t.get("function", {}).get("description", "")
+                name = (t.get("function") or {}).get("name", "?")
+                desc = (t.get("function") or {}).get("description", "")
                 # Truncate long descriptions
                 if len(desc) > 80:
                     desc = desc[:77] + "..."

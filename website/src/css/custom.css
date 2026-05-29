@@ -271,6 +271,33 @@ pre.prism-code.language-ascii code {
     width: 85vw;
     max-width: 360px;
   }
+
+  /* Keep the locale switcher usable inside the mobile sidebar. */
+  .navbar-sidebar .dropdown > .navbar__link {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 44px;
+    padding: 0.75rem;
+  }
+
+  .navbar-sidebar .dropdown__menu {
+    position: static;
+    transform: none;
+    width: 100%;
+    margin: 0.25rem 0 0;
+    padding: 0.35rem;
+    border: 1px solid rgba(255, 215, 0, 0.08);
+    border-radius: 10px;
+    box-shadow: none;
+  }
+
+  .navbar-sidebar .dropdown__link {
+    min-height: 44px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+  }
 }
 
 /* Hero banner for docs landing if needed */

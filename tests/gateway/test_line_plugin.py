@@ -47,6 +47,22 @@ _env_enablement = _line._env_enablement
 _MessageDeduplicator = _line._MessageDeduplicator
 
 
+def _make_line_adapter(monkeypatch):
+    monkeypatch.delenv("LINE_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("LINE_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("LINE_ALLOWED_GROUPS", raising=False)
+    monkeypatch.delenv("LINE_ALLOWED_ROOMS", raising=False)
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={
+        "channel_access_token": "tok",
+        "channel_secret": "sec",
+    })
+    ad = LineAdapter(cfg)
+    ad._client = MagicMock()
+    ad._client.reply = AsyncMock()
+    return ad
+
+
 # ---------------------------------------------------------------------------
 # 1. Signature verification
 # ---------------------------------------------------------------------------
@@ -149,6 +165,52 @@ class TestAllowlist:
     def test_unknown_type_rejected(self):
         src = {"type": "weird"}
         assert not _allowed_for_source(src, allow_all=False, user_ids=set(), group_ids=set(), room_ids=set())
+
+
+class TestVerifyCommand:
+    @pytest.mark.asyncio
+    async def test_verify_code_message_bypasses_user_allowlist(self, monkeypatch):
+        adapter = _make_line_adapter(monkeypatch)
+        adapter._handle_message_event = AsyncMock()
+        redeem = AsyncMock(return_value={"ok": True})
+        monkeypatch.setattr(_line, "redeem_verify_code", redeem, raising=False)
+
+        event = {
+            "type": "message",
+            "replyToken": "reply-token",
+            "source": {"type": "user", "userId": "U123"},
+            "message": {"type": "text", "text": "verify 123456"},
+        }
+
+        await adapter._dispatch_event(event)
+
+        redeem.assert_awaited_once_with(platform="line", code="123456", user_id="U123")
+        adapter._client.reply.assert_awaited_once_with(
+            "reply-token",
+            [{"type": "text", "text": "✅ 已將你加為 owner，現在可以開始對話"}],
+        )
+        adapter._handle_message_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_verify_message_keeps_existing_line_flow(self, monkeypatch):
+        adapter = _make_line_adapter(monkeypatch)
+        adapter.allowed_users = {"U123"}
+        adapter._handle_message_event = AsyncMock()
+        redeem = AsyncMock(return_value={"ok": True})
+        monkeypatch.setattr(_line, "redeem_verify_code", redeem, raising=False)
+
+        event = {
+            "type": "message",
+            "replyToken": "reply-token",
+            "source": {"type": "user", "userId": "U123"},
+            "message": {"type": "text", "text": "hello"},
+        }
+
+        await adapter._dispatch_event(event)
+
+        redeem.assert_not_awaited()
+        adapter._client.reply.assert_not_awaited()
+        adapter._handle_message_event.assert_awaited_once_with(event)
 
 
 # ---------------------------------------------------------------------------

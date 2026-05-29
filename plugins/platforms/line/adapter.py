@@ -95,6 +95,8 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform
+from gateway.session import SessionSource
+from gateway.verify_command import parse_verify_command, redeem_verify_code, verify_ack_text
 
 
 # ---------------------------------------------------------------------------
@@ -908,6 +910,23 @@ class LineAdapter(BasePlatformAdapter):
         sender_user_id = source.get("userId", "")
         if self._bot_user_id and sender_user_id == self._bot_user_id:
             return
+
+        if event_type == "message" and sender_user_id:
+            msg = event.get("message") or {}
+            if msg.get("type") == "text":
+                verify_cmd = parse_verify_command(msg.get("text", ""))
+                if verify_cmd:
+                    result = await redeem_verify_code(
+                        platform="line",
+                        code=verify_cmd["code"],
+                        user_id=sender_user_id,
+                    )
+                    if self._client:
+                        await self._client.reply(
+                            event.get("replyToken", ""),
+                            [_text_message(verify_ack_text(result))],
+                        )
+                    return
 
         # Allowlist gate.
         if not _allowed_for_source(

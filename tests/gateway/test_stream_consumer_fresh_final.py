@@ -10,6 +10,7 @@ time instead of first-token time.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -171,6 +172,179 @@ class TestFreshFinalForLongLivedPreviews:
         assert consumer._message_created_ts is None
         # Even with finalize=True, no fresh send — the sentinel gates it.
         assert consumer._should_send_fresh_final() is False
+
+
+class TestSegmentBreakDoesNotMarkFinalSent:
+    """Regression for #29346 — silent response loss after tool calls.
+
+    When ``fresh_final_after_seconds > 0`` and a streamed *preamble* ("Let me
+    search…") has aged past the threshold, finalizing it at a tool boundary
+    used to route through ``_try_fresh_final``, which unconditionally set
+    ``_final_response_sent = True`` even though this is a NON-final segment.
+    The gateway (run.py:18128) then reads that flag as "final delivered" and
+    suppresses the genuine final answer (which arrives on a later API call and
+    does not re-stream), so the user gets nothing.
+
+    The fix scopes the final-delivery flags to the turn-final segment and
+    clears them at every tool/segment boundary, so a preamble can never mark
+    the turn as delivered.
+    """
+
+    @staticmethod
+    def _delivered_texts(adapter) -> list[str]:
+        """Every text the adapter actually put on screen (sends + edits)."""
+        texts = [c.kwargs.get("content", "") for c in adapter.send.call_args_list]
+        texts += [c.kwargs.get("content", "") for c in adapter.edit_message.call_args_list]
+        return texts
+
+    @pytest.mark.asyncio
+    async def test_preamble_fresh_final_at_tool_boundary_does_not_mark_final(self):
+        """Real-aging reproduction (exercises the actual _should_send_fresh_final
+        age gate, not a monkeypatch): a preamble ages past the threshold, then a
+        tool boundary finalizes it via fresh-final.  The genuine final answer is
+        produced on a later API call and is NOT streamed through this consumer
+        (the #29346 repro), so the consumer must NOT believe the final was sent."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, cursor=" ▉",
+                fresh_final_after_seconds=0.001,  # tiny → real aging fires
+            ),
+        )
+        consumer.on_delta("Let me search the web for that.")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)  # preamble sent + aged well past 0.001s
+        consumer.on_delta(None)  # tool boundary → segment-break fresh-final
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # Fresh-final actually engaged (preamble preview + a fresh resend), yet
+        # the turn is NOT marked delivered — no genuine final ever streamed.
+        assert adapter.send.call_count >= 2
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+
+    @pytest.mark.asyncio
+    async def test_final_answer_after_preamble_is_delivered_exactly_once(self):
+        """P0 user-visible contract: when the real final answer DOES stream in
+        after the preamble + tool boundary, the user gets it exactly once AND
+        the consumer marks it delivered (so the gateway correctly suppresses a
+        redundant send)."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, cursor=" ▉",
+                fresh_final_after_seconds=0.001,
+            ),
+        )
+        consumer.on_delta("Let me search the web for that.")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta(None)  # tool boundary
+        consumer.on_delta("The answer is 42.")  # genuine final answer streams
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # The real final answer was delivered → suppression must engage.
+        assert consumer.final_response_sent is True
+        # And it reached the user exactly once (no duplicate fresh send).
+        final_sends = [
+            c for c in adapter.send.call_args_list
+            if "answer is 42" in c.kwargs.get("content", "")
+        ]
+        assert len(final_sends) <= 1
+        assert any("answer is 42" in t for t in self._delivered_texts(adapter))
+
+    @pytest.mark.asyncio
+    async def test_genuine_final_answer_without_tools_marks_delivered(self):
+        """P1 happy path: a single answer streamed straight to completion (no
+        tool boundary) still sets final_response_sent so the gateway suppresses
+        the redundant final send."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, cursor=" ▉",
+                fresh_final_after_seconds=60.0,
+            ),
+        )
+        consumer.on_delta("Here is the full answer.")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+        assert consumer.final_response_sent is True
+        assert any("Here is the full answer." in t for t in self._delivered_texts(adapter))
+
+    @pytest.mark.asyncio
+    async def test_no_edit_adapter_delivers_final_after_preamble(self):
+        """No-edit adapters (Signal/SMS/webhook → __no_edit__) accumulate and
+        deliver rather than fresh-final. A preamble before a tool call must not
+        swallow the genuine final answer — it must reach the user."""
+        adapter = _make_adapter()
+        adapter.send.return_value = SimpleNamespace(success=True, message_id=None)
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, cursor=" ▉",
+                fresh_final_after_seconds=0.001,
+            ),
+        )
+        consumer.on_delta("Let me search the web for that.")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta(None)  # tool boundary
+        consumer.on_delta("The answer is 42.")  # genuine final answer
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+        # The final answer reached the user, not swallowed by the preamble.
+        assert any(
+            "answer is 42" in c.kwargs.get("content", "")
+            for c in adapter.send.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_multi_tool_call_turn_delivers_final_once(self):
+        """Two tool boundaries before the final answer: flags stay clear across
+        both boundaries and the genuine final is delivered exactly once and
+        marked sent."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, cursor=" ▉",
+                fresh_final_after_seconds=0.001,
+            ),
+        )
+        consumer.on_delta("Let me check a couple of things.")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta(None)  # tool boundary 1
+        consumer.on_delta("Now cross-referencing.")
+        await asyncio.sleep(0.05)
+        consumer.on_delta(None)  # tool boundary 2
+        consumer.on_delta("The answer is 42.")  # genuine final answer
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        assert consumer.final_response_sent is True
+        final_sends = [
+            c for c in adapter.send.call_args_list
+            if "answer is 42" in c.kwargs.get("content", "")
+        ]
+        assert len(final_sends) <= 1
+        assert any("answer is 42" in t for t in self._delivered_texts(adapter))
 
 
 class TestStreamConsumerConfigFreshFinalField:

@@ -2592,11 +2592,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            cmd_preview = command[:3600] + "..." if len(command) > 3600 else command
+            reason = (description or "").strip() or "Geen reden meegeleverd; controleer de command en target voordat je goedkeurt."
             text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
+                f"⚠️ <b>Command approval nodig</b>\n\n"
+                f"<b>Waarom:</b> {_html.escape(reason)}\n\n"
+                f"<b>Command:</b>\n<pre>{_html.escape(cmd_preview)}</pre>"
             )
 
             # Resolve thread context for thread replies

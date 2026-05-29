@@ -14,6 +14,7 @@ from tools.approval import (
     _smart_approve,
     approve_session,
     detect_dangerous_command,
+    format_approval_description,
     is_approved,
     load_permanent,
     prompt_dangerous_approval,
@@ -58,6 +59,22 @@ class TestDetectDangerousRm:
         assert is_dangerous is True
         assert key is not None
         assert "delete" in desc.lower()
+
+
+class TestApprovalDescription:
+    def test_recursive_delete_gets_human_message(self):
+        text = format_approval_description("rm -rf /tmp/hermes-test", "recursive delete")
+
+        assert "Recursieve delete" in text
+        assert "map inclusief inhoud" in text
+        assert "tijdelijke/build-output" in text
+        assert text != "recursive delete"
+
+    def test_missing_description_gets_fallback_message(self):
+        text = format_approval_description("rm -rf project", "")
+
+        assert "Geen specifieke reden" in text
+        assert "Controleer" in text
 
 
 class TestDetectDangerousSudo:

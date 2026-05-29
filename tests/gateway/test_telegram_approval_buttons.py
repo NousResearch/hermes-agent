@@ -107,6 +107,26 @@ class TestTelegramExecApproval:
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
 
     @pytest.mark.asyncio
+    async def test_empty_description_still_sends_visible_reason(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 42
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_exec_approval(
+            chat_id="12345",
+            command="rm -rf tmp-output",
+            session_key="agent:main:telegram:group:12345:99",
+            description="",
+        )
+
+        assert result.success is True
+        text = adapter._bot.send_message.call_args[1]["text"]
+        assert "<b>Waarom:</b>" in text
+        assert "Geen reden meegeleverd" in text
+        assert "rm -rf tmp-output" in text
+
+    @pytest.mark.asyncio
     async def test_stores_approval_state(self):
         adapter = _make_adapter()
         mock_msg = MagicMock()

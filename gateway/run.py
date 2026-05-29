@@ -16890,7 +16890,7 @@ class GatewayRunner:
                 _status_adapter.pause_typing_for_chat(_status_chat_id)
 
                 cmd = approval_data.get("command", "")
-                desc = approval_data.get("description", "dangerous command")
+                desc = (approval_data.get("description") or "").strip() or "Geen reden meegeleverd; controleer de command en target voordat je goedkeurt."
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids

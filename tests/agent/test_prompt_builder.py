@@ -440,6 +440,7 @@ class TestBuildNousSubscriptionPrompt:
                 features={
                     "web": NousFeatureState("web", "Web tools", True, True, True, True, False, True, "firecrawl"),
                     "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
+                    "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
                     "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
                     "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
@@ -464,6 +465,7 @@ class TestBuildNousSubscriptionPrompt:
                 features={
                     "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
                     "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                    "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
                     "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, ""),
                     "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, ""),

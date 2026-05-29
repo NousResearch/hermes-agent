@@ -49,7 +49,7 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, List, Any, Optional
 from urllib.parse import urljoin
 
 from hermes_constants import display_hermes_home
@@ -717,7 +717,6 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
 def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProcess:
     """Run a command-provider shell command with process-tree timeout cleanup."""
     popen_kwargs: Dict[str, Any] = {
-        "shell": True,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
@@ -727,7 +726,11 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
     else:
         popen_kwargs["start_new_session"] = True
 
-    proc = subprocess.Popen(command, **popen_kwargs)
+    # Split once — shell=False so metacharacters in template are inert.
+    # The template renderer already quoted all placeholder values, so the
+    # split is safe even if a placeholder contained spaces or special chars.
+    cmd_list: List[str] = shlex.split(command)
+    proc = subprocess.Popen(cmd_list, **popen_kwargs)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:

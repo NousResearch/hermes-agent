@@ -263,6 +263,38 @@ async def test_handle_event_filters_own_corr_id():
     assert own not in adapter._pending_corr_ids  # discarded
 
 
+@pytest.mark.asyncio
+async def test_group_sender_from_chatdir_groupmember():
+    """current simplex-chat reports the group sender under
+    chatItem.chatDir.groupMember, not the legacy chatItemMember key."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    captured = AsyncMock()
+    adapter.handle_message = captured  # type: ignore
+
+    wrapper = {
+        "chatInfo": {"type": "group", "groupInfo": {"groupId": 7, "displayName": "hermes-agent"}},
+        "chatItem": {
+            "content": {"msgContent": {"type": "text", "text": "hello"}},
+            "meta": {"itemStatus": {"type": "rcvNew"}},
+            "chatDir": {
+                "type": "groupRcv",
+                "groupMember": {
+                    "memberId": "memb-abc",
+                    "memberProfile": {"displayName": "Brandon"},
+                },
+            },
+        },
+    }
+    await adapter._handle_new_chat_item(wrapper)
+
+    captured.assert_awaited_once()
+    event_obj = captured.await_args[0][0]
+    assert event_obj.source.user_id == "memb-abc"
+    assert event_obj.source.user_name == "Brandon"
+
+
 # ---------------------------------------------------------------------------
 # 9. Standalone (out-of-process) send for cron
 # ---------------------------------------------------------------------------

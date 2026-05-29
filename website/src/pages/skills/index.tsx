@@ -163,13 +163,6 @@ const SOURCE_CONFIG: Record<
     border: "rgba(251, 191, 36, 0.2)",
     icon: "\u{1F917}",
   },
-  NVIDIA: {
-    label: "NVIDIA",
-    color: "#76b900",
-    bg: "rgba(118, 185, 0, 0.08)",
-    border: "rgba(118, 185, 0, 0.25)",
-    icon: "\u{25B6}",
-  },
   VoltAgent: {
     label: "VoltAgent",
     color: "#facc15",
@@ -214,7 +207,6 @@ const SOURCE_ORDER = [
   "Anthropic",
   "OpenAI",
   "HuggingFace",
-  "NVIDIA",
   "skills.sh",
   "ClawHub",
   "browse.sh",

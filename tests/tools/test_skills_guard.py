@@ -54,14 +54,6 @@ class TestResolveTrustLevel:
         assert _resolve_trust_level("anthropics/skills") == "trusted"
         assert _resolve_trust_level("openai/skills/some-skill") == "trusted"
 
-    def test_nvidia_skills_is_trusted(self):
-        # NVIDIA/skills ships NVIDIA-verified skills with detached OMS
-        # signatures and governance skill cards. It's wired through the
-        # same trust path as the OpenAI / Anthropic / HuggingFace taps.
-        assert _resolve_trust_level("NVIDIA/skills") == "trusted"
-        assert _resolve_trust_level("NVIDIA/skills/aiq-deploy") == "trusted"
-        assert _resolve_trust_level("skills-sh/NVIDIA/skills/cuopt") == "trusted"
-
     def test_trusted_repo_sibling_prefixes_are_not_trusted(self):
         assert _resolve_trust_level("openai/skills-evil") == "community"
         assert _resolve_trust_level("anthropics/skills-foo/frontend-design") == "community"

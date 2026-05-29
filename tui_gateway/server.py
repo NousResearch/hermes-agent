@@ -10044,7 +10044,7 @@ def _(rid, params: dict) -> dict:
                 "error",
                 sid,
                 {
-                    "message": err.get("error", {}).get(
+                    "message": (err.get("error") or {}).get(
                         "message", "agent initialization failed"
                     )
                 },

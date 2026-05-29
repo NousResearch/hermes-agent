@@ -84,7 +84,7 @@ def _discord_request(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # SSRF: add IP block check
             if resp.status == 204:
                 return None
             return json.loads(resp.read().decode("utf-8"))

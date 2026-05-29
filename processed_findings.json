@@ -346,5 +346,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34926",
     "pr_number": 34926,
     "run_id": "20260529_222349"
+  },
+  "SSRF-domain_intel.py-236": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34927",
+    "pr_number": 34927,
+    "run_id": "20260529_222349"
   }
 }

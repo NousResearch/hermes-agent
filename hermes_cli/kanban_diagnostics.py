@@ -791,6 +791,83 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_block_unblock_cycling(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Task has cycled through blocked → unblocked many times — the
+    ``unblock`` is not fixing the underlying problem and the worker
+    keeps re-blocking for substantially the same reason.
+
+    ``_rule_stuck_in_blocked`` resets its timer on any ``commented`` /
+    ``unblocked`` event, so a task that cycles every few minutes is
+    invisible to it regardless of how many times it cycles (#29747
+    gap 1). This rule complements that one by counting block→unblock
+    cycles in a sliding window.
+
+    Threshold: cfg["block_cycle_threshold"] (default 3) cycles within
+    cfg["block_cycle_window_seconds"] (default 24h).
+    """
+    threshold = _positive_int(cfg.get("block_cycle_threshold"), 3)
+    window_seconds = float(cfg.get("block_cycle_window_seconds", 24 * 3600))
+    cycle_cutoff = now - window_seconds
+
+    # Walk events chronologically (arrival order — callers pre-sort by
+    # id, which is the canonical chronological order; ``created_at``
+    # alone is insufficient because multiple events can share the same
+    # second).  Count "blocked after unblocked" transitions: every time
+    # a blocked event follows at least one unblocked event since the
+    # last cycle was counted, that's a new cycle.
+    cycles = 0
+    seen_unblock_since_last_cycle = False
+    initial_blocked_ts = 0
+    last_cycle_blocked_ts = 0
+    for ev in events:
+        ts = _event_ts(ev)
+        if ts < cycle_cutoff:
+            continue
+        kind = _event_kind(ev)
+        if kind == "blocked":
+            if initial_blocked_ts == 0:
+                initial_blocked_ts = ts
+            if seen_unblock_since_last_cycle:
+                cycles += 1
+                last_cycle_blocked_ts = ts
+                seen_unblock_since_last_cycle = False
+        elif kind == "unblocked":
+            seen_unblock_since_last_cycle = True
+
+    if cycles < threshold:
+        return []
+
+    task_id = _task_field(task, "id")
+    actions: list[DiagnosticAction] = []
+    if task_id:
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label=f"Check block reasons: hermes kanban events {task_id}",
+            payload={"command": f"hermes kanban events {task_id}"},
+            suggested=True,
+        ))
+    return [Diagnostic(
+        kind="block_unblock_cycling",
+        severity="warning",
+        title=f"Task block→unblock cycled {cycles}x in {int(window_seconds/3600)}h",
+        detail=(
+            f"This task has been blocked {cycles} times after being "
+            "unblocked, suggesting the unblock is not addressing the "
+            "root cause and the worker keeps hitting the same wall. "
+            "Review the block reasons in the event history; a different "
+            "intervention (reassign, change scope, archive) may be needed."
+        ),
+        actions=actions,
+        first_seen_at=int(initial_blocked_ts) if initial_blocked_ts else int(now),
+        last_seen_at=int(last_cycle_blocked_ts) if last_cycle_blocked_ts else int(now),
+        count=cycles,
+        data={
+            "cycles": cycles,
+            "window_seconds": int(window_seconds),
+        },
+    )]
+
+
 def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Task has been in ``ready`` status for too long without any worker
     claiming it.
@@ -923,6 +1000,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_stuck_in_blocked,
+    _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
 ]
 
@@ -936,6 +1014,7 @@ DIAGNOSTIC_KINDS = (
     "repeated_failures",
     "repeated_crashes",
     "stuck_in_blocked",
+    "block_unblock_cycling",
     "stranded_in_ready",
 )
 

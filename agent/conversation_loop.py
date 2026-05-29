@@ -4303,36 +4303,54 @@ def run_conversation(
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
 
-        # If running as a kanban worker, block the task so the dispatcher
-        # knows the worker could not complete (rather than treating it as a
+        # If running as a kanban worker, signal the dispatcher that the
+        # worker could not complete (rather than treating it as a
         # protocol violation).  The agent loop strips tools before calling
         # _handle_max_iterations, so the model cannot call kanban_block
         # itself — we must do it on its behalf.
+        #
+        # We route through ``_record_task_failure(outcome="timed_out")``
+        # rather than ``kanban_block`` so this counts toward the
+        # ``consecutive_failures`` counter and the dispatcher's
+        # ``failure_limit`` circuit breaker (#29747 gap 2).  Without this,
+        # a task whose worker keeps exhausting its budget would block
+        # silently each run, get auto-promoted by the operator (or never
+        # surface), and re-block in an endless loop with no signal.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
-                _ra().handle_function_call(
-                    "kanban_block",
-                    {
-                        "task_id": _kanban_task,
-                        "reason": (
+                from hermes_cli import kanban_db as _kb
+                _conn = _kb.connect()
+                try:
+                    _kb._record_task_failure(
+                        _conn,
+                        _kanban_task,
+                        error=(
                             f"Iteration budget exhausted "
                             f"({api_call_count}/{agent.max_iterations}) — "
                             "task could not complete within the allowed "
                             "iterations"
                         ),
-                    },
-                    task_id=effective_task_id,
-                )
-                logger.info(
-                    "kanban_block called for task %s after iteration "
-                    "exhaustion (%d/%d)",
-                    _kanban_task, api_call_count, agent.max_iterations,
-                )
+                        outcome="timed_out",
+                        release_claim=True,
+                        end_run=True,
+                        event_payload_extra={
+                            "budget_used": api_call_count,
+                            "budget_max": agent.max_iterations,
+                        },
+                    )
+                    logger.info(
+                        "recorded budget-exhausted failure for task %s (%d/%d)",
+                        _kanban_task, api_call_count, agent.max_iterations,
+                    )
+                finally:
+                    try:
+                        _conn.close()
+                    except Exception:
+                        pass
             except Exception:
                 logger.warning(
-                    "Failed to call kanban_block after iteration "
-                    "exhaustion for task %s",
+                    "Failed to record budget-exhausted failure for task %s",
                     _kanban_task,
                     exc_info=True,
                 )

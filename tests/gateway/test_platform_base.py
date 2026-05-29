@@ -8,6 +8,7 @@ import pytest
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    DOCUMENT_CACHE_DIR,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     safe_url_for_log,
@@ -270,6 +271,44 @@ class TestExtractMedia:
         assert len(media) == 1
         assert media[0][0] == "/path/to/audio.ogg"
         assert media[0][1] is False  # no voice tag
+
+    def test_media_tag_supports_markdown_file(self):
+        content = "MEDIA:/tmp/ai-news-evaluation-source.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/ai-news-evaluation-source.md", False)]
+        assert cleaned == ""
+
+    def test_media_tag_supports_markdown_file_from_document_cache(self, tmp_path, monkeypatch):
+        """Markdown deliverables in Hermes document cache should attach reliably.
+
+        This protects Mahdy's recurring "send me the .md" workflow: explicit
+        MEDIA: tags must extract .md paths and the safety filter must accept
+        the profile-safe document cache root rather than silently dropping the
+        attachment as unsafe.
+        """
+        doc_cache = tmp_path / "cache" / "documents"
+        md_file = doc_cache / "model-development-learning-starter.md"
+        md_file.parent.mkdir(parents=True)
+        md_file.write_text("# Learning file\n", encoding="utf-8")
+        monkeypatch.setattr("gateway.platforms.base.DOCUMENT_CACHE_DIR", doc_cache)
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (doc_cache,),
+        )
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        media, cleaned = BasePlatformAdapter.extract_media(f"MEDIA:{md_file}")
+        assert cleaned == ""
+        assert media == [(str(md_file), False)]
+        assert BasePlatformAdapter.filter_media_delivery_paths(media) == [
+            (str(md_file.resolve()), False)
+        ]
+
+    def test_default_safe_roots_include_document_cache(self):
+        """The modern document cache path is a permanent native-delivery root."""
+        from gateway.platforms import base as base_module
+
+        assert DOCUMENT_CACHE_DIR in base_module.MEDIA_DELIVERY_SAFE_ROOTS
 
     def test_media_with_voice_directive(self):
         content = "[[audio_as_voice]]\nMEDIA:/path/to/voice.ogg"

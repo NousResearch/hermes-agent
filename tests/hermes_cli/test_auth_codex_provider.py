@@ -536,7 +536,7 @@ def test_save_codex_tokens_preserves_manual_device_code_entries(tmp_path, monkey
 
 
 def test_save_codex_tokens_migrates_linked_legacy_manual_aliases(tmp_path, monkeypatch):
-    """Exact-match legacy aliases follow canonical rotation; independent rows do not."""
+    """Refresh-linked legacy aliases follow canonical rotation; independent rows do not."""
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps({
@@ -555,7 +555,7 @@ def test_save_codex_tokens_migrates_linked_legacy_manual_aliases(tmp_path, monke
             }, {
                 "id": "linked-alias",
                 "source": "manual:device_code",
-                "access_token": "old-at",
+                "access_token": "stale-linked-at",
                 "refresh_token": "old-rt",
             }, {
                 "id": "independent",
@@ -587,7 +587,7 @@ def test_save_codex_tokens_migrates_linked_legacy_manual_aliases(tmp_path, monke
 
 
 def test_save_codex_tokens_migrates_linked_aliases_in_named_profiles(tmp_path, monkeypatch):
-    """Canonical rotation rewrites exact-match aliases in every named profile."""
+    """Canonical rotation rewrites refresh-linked aliases in every named profile."""
     root_home = tmp_path / "hermes"
     profiles = [root_home / "profiles" / name for name in ("alpha", "beta")]
     for profile in profiles:
@@ -598,7 +598,7 @@ def test_save_codex_tokens_migrates_linked_aliases_in_named_profiles(tmp_path, m
                 "openai-codex": [{
                     "id": f"{profile.name}-linked",
                     "source": "manual:device_code",
-                    "access_token": "old-at",
+                    "access_token": f"{profile.name}-stale-at",
                     "refresh_token": "old-rt",
                 }, {
                     "id": f"{profile.name}-independent",

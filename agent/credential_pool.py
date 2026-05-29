@@ -980,7 +980,6 @@ class CredentialPool:
                 codex_linked_alias = (
                     entry.source == "manual:device_code"
                     and auth_mod._codex_refresh_tokens_match_canonical(
-                        entry.access_token,
                         entry.refresh_token,
                     )
                 )
@@ -1235,7 +1234,6 @@ class CredentialPool:
                             continue
                         if (
                             item.source == "manual:device_code"
-                            and item.access_token == entry.access_token
                             and item.refresh_token == entry.refresh_token
                         ):
                             item = replace(

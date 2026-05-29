@@ -3208,7 +3208,7 @@ def test_codex_linked_manual_alias_refresh_updates_canonical_family(tmp_path, mo
                 "id": "linked-alias",
                 "source": "manual:device_code",
                 "auth_type": "oauth",
-                "access_token": "shared-old-at",
+                "access_token": "stale-linked-at",
                 "refresh_token": "shared-old-rt",
             }],
         },
@@ -3625,6 +3625,64 @@ def test_codex_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     # A second try_refresh_current must not call refresh_codex_oauth_pure again.
     assert pool.try_refresh_current() is None
     assert refresh_calls["count"] == 1
+
+
+def test_codex_oauth_terminal_refresh_quarantines_stale_access_linked_alias(
+    tmp_path, monkeypatch
+):
+    """A linked alias stays dead after its canonical refresh token is revoked."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_OAUTH_ACCESS_TOKEN", raising=False)
+    auth_store = _codex_auth_store("shared-access", "shared-refresh")
+    auth_store["credential_pool"] = {
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "priority": 0,
+            "access_token": "shared-access",
+            "refresh_token": "shared-refresh",
+        }, {
+            "id": "linked-alias",
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "priority": 1,
+            "access_token": "stale-linked-access",
+            "refresh_token": "shared-refresh",
+        }],
+    }
+    _write_auth_store(tmp_path, auth_store)
+
+    from agent.credential_pool import STATUS_DEAD, load_pool
+    import hermes_cli.auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.id == "shared-codex"
+
+    def _terminal_refresh_failure(*_args, **_kwargs):
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="openai-codex",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _terminal_refresh_failure)
+
+    assert pool.try_refresh_current() is None
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = {
+        entry["id"]: entry
+        for entry in auth_payload["credential_pool"]["openai-codex"]
+    }
+    assert "shared-codex" not in entries
+    assert entries["linked-alias"]["last_status"] == STATUS_DEAD
+    assert entries["linked-alias"]["last_error_reason"] == "invalid_grant"
 
 
 def test_codex_manual_terminal_refresh_preserves_shared_family(tmp_path, monkeypatch):

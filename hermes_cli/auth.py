@@ -3917,7 +3917,6 @@ def _require_codex_refresh_token_not_superseded(refresh_token: str) -> None:
 
 
 def _codex_refresh_tokens_match_canonical(
-    access_token: Optional[str],
     refresh_token: Optional[str],
 ) -> bool:
     """Return whether a pool row still aliases the canonical token family."""
@@ -3926,9 +3925,7 @@ def _codex_refresh_tokens_match_canonical(
     tokens = state.get("tokens") if isinstance(state, dict) else None
     return (
         isinstance(tokens, dict)
-        and bool(access_token)
         and bool(refresh_token)
-        and tokens.get("access_token") == access_token
         and tokens.get("refresh_token") == refresh_token
     )
 
@@ -3936,14 +3933,10 @@ def _codex_refresh_tokens_match_canonical(
 def _codex_pool_entry_matches_tokens(entry: Dict[str, Any], tokens: Any) -> bool:
     if not isinstance(tokens, dict):
         return False
-    access_token = tokens.get("access_token")
     refresh_token = tokens.get("refresh_token")
     return (
-        isinstance(access_token, str)
-        and bool(access_token)
-        and isinstance(refresh_token, str)
+        isinstance(refresh_token, str)
         and bool(refresh_token)
-        and entry.get("access_token") == access_token
         and entry.get("refresh_token") == refresh_token
     )
 
@@ -3969,9 +3962,10 @@ def _sync_codex_pool_entries(
     * ``device_code`` — the singleton-seeded entry written by the device-code
       OAuth flow when the user logged in via ``hermes setup`` / the model
       picker.  Always synced with the fresh tokens.
-    * ``manual:device_code`` rows whose token pair exactly matches the prior
-      canonical pair. Older Hermes releases created these linked aliases; the
-      exact match distinguishes them from independent manual accounts.
+    * ``manual:device_code`` rows whose refresh token matches the prior
+      canonical family. Older Hermes releases created these linked aliases;
+      refresh-token equality distinguishes them from independent accounts
+      even when a cached access token is stale.
     What does NOT get refreshed:
 
     * ``manual:*`` entries — those are independent credentials (an explicit
@@ -4024,7 +4018,7 @@ def _sync_codex_profile_legacy_aliases(
     last_refresh: str,
     linked_legacy_tokens: Any,
 ) -> None:
-    """Best-effort migration for exact-match aliases in named profiles."""
+    """Best-effort migration for linked aliases in named profiles."""
     profiles_dir = _codex_auth_file_path().parent / "profiles"
     if not profiles_dir.is_dir():
         return

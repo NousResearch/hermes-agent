@@ -285,7 +285,7 @@ class TestDelegateTask(unittest.TestCase):
         )
 
         self.assertIn("results", result)
-        mock_creds.assert_called_once_with(mock_cfg.return_value, parent, tier="large")
+        mock_creds.assert_called_once_with(mock_cfg.return_value, parent)
 
     @patch("tools.delegate_tool._run_single_child")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -311,7 +311,7 @@ class TestDelegateTask(unittest.TestCase):
         result = json.loads(delegate_task(goal="Fix tests", tier="  ", parent_agent=parent))
 
         self.assertIn("results", result)
-        mock_creds.assert_called_once_with(mock_cfg.return_value, parent, tier="medium")
+        mock_creds.assert_called_once_with(mock_cfg.return_value, parent)
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode_accepts_json_string_tasks(self, mock_run):

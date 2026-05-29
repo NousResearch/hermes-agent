@@ -18,6 +18,11 @@ try:
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
 
+try:
+    from .store import _build_or_fallback, _is_explicit_fts5_query
+except ImportError:
+    from store import _build_or_fallback, _is_explicit_fts5_query  # type: ignore[no-redef]
+
 
 class FactRetriever:
     """Multi-strategy fact retrieval with trust-weighted scoring."""
@@ -522,6 +527,18 @@ class FactRetriever:
         except Exception:
             # FTS5 MATCH can fail on malformed queries — fall back to empty
             return []
+
+        # FTS5 simple tokenizer treats whitespace as AND and does no CJK
+        # segmentation, so multi-token Chinese queries from natural language
+        # almost always miss. Retry as OR when AND found nothing.
+        if not rows and not _is_explicit_fts5_query(query):
+            or_query = _build_or_fallback(query)
+            if or_query:
+                params[0] = or_query
+                try:
+                    rows = conn.execute(sql, params).fetchall()
+                except Exception:
+                    return []
 
         if not rows:
             return []

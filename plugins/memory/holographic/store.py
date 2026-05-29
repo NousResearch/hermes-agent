@@ -95,6 +95,23 @@ def _clamp_trust(value: float) -> float:
     return max(_TRUST_MIN, min(_TRUST_MAX, value))
 
 
+def _is_explicit_fts5_query(query: str) -> bool:
+    """Detect when the caller already wrote FTS5 syntax so we leave it alone."""
+    if any(c in query for c in '"*()'):
+        return True
+    upper_tokens = query.upper().split()
+    return any(kw in upper_tokens for kw in ("OR", "AND", "NOT", "NEAR"))
+
+
+def _build_or_fallback(query: str) -> str:
+    """Rewrite a whitespace-separated query as phrase-quoted OR'd tokens."""
+    tokens = [t.replace('"', '').strip() for t in query.split()]
+    tokens = [t for t in tokens if t]
+    if len(tokens) < 2:
+        return ""
+    return " OR ".join(f'"{t}"' for t in tokens)
+
+
 class MemoryStore:
     """SQLite-backed fact store with entity resolution and trust scoring."""
 
@@ -227,6 +244,16 @@ class MemoryStore:
 
             rows = self._conn.execute(sql, params).fetchall()
             results = [self._row_to_dict(r) for r in rows]
+
+            # FTS5 simple tokenizer treats whitespace as AND and does no CJK
+            # segmentation, so multi-token Chinese queries from natural
+            # language almost always miss. Retry as OR when AND found nothing.
+            if not results and not _is_explicit_fts5_query(query):
+                or_query = _build_or_fallback(query)
+                if or_query:
+                    params[0] = or_query
+                    rows = self._conn.execute(sql, params).fetchall()
+                    results = [self._row_to_dict(r) for r in rows]
 
             if results:
                 ids = [r["fact_id"] for r in results]

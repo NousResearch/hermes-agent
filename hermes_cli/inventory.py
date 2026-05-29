@@ -115,6 +115,7 @@ def build_models_payload(
     picker_hints: bool = False,
     canonical_order: bool = False,
     max_models: int = 50,
+    allow_live_discovery: bool = True,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.
@@ -128,6 +129,9 @@ def build_models_payload(
     - ``canonical_order``: reorder canonical-slug rows to
       ``CANONICAL_PROVIDERS`` declaration order; truly-custom rows go
       last (TUI display order).
+    - ``allow_live_discovery``: permit provider-specific /models probes
+      when the substrate builds each row's model list. Disable this for
+      latency-sensitive pickers that can use configured/static/cached data.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -138,6 +142,7 @@ def build_models_payload(
         user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers,
         max_models=max_models,
+        allow_live_discovery=allow_live_discovery,
     )
 
     if include_unconfigured:

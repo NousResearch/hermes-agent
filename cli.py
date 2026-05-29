@@ -7629,7 +7629,14 @@ class HermesCLI:
             try:
                 if ctx is None:
                     raise RuntimeError("inventory context unavailable")
-                providers = build_models_payload(ctx, max_models=50)["providers"]
+                # Opening the normal picker should be instant: use configured/static
+                # model lists and skip synchronous provider /models probes. The
+                # explicit `/model --refresh` path keeps live discovery enabled.
+                providers = build_models_payload(
+                    ctx,
+                    max_models=50,
+                    allow_live_discovery=force_refresh,
+                )["providers"]
             except Exception:
                 providers = []
 

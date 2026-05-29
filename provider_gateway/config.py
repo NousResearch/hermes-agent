@@ -22,6 +22,9 @@ class GatewayConfig:
     track_cost: bool = True
     routing_strategy: str = "round-robin"
     fallback_models: list[str] = field(default_factory=list)
+    daily_limit_usd: float | None = None
+    monthly_limit_usd: float | None = None
+    quota_action: str = "block"  # "block" or "fallback"
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> "GatewayConfig":
@@ -53,6 +56,29 @@ class GatewayConfig:
             if isinstance(item, str) and item.strip()
         ] if isinstance(raw_fallbacks, list) else []
 
+        # Parse quota configurations
+        quota = data.get("quota", {})
+        if not isinstance(quota, Mapping):
+            quota = {}
+
+        daily_limit = quota.get("daily_limit_usd")
+        monthly_limit = quota.get("monthly_limit_usd")
+
+        def _parse_float(val: Any) -> float | None:
+            if val is None:
+                return None
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return None
+
+        quota_action = _clean_choice(
+            quota.get("action"),
+            valid_values={"block", "fallback"},
+            default="block",
+            field_name="provider_gateway.quota.action",
+        )
+
         return cls(
             enabled=bool(data.get("enabled", False)),
             backend=backend,
@@ -60,6 +86,9 @@ class GatewayConfig:
             track_cost=bool(data.get("track_cost", True)),
             routing_strategy=routing_strategy,
             fallback_models=fallback_models,
+            daily_limit_usd=_parse_float(daily_limit),
+            monthly_limit_usd=_parse_float(monthly_limit),
+            quota_action=quota_action,
         )
 
 

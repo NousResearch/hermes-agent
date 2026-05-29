@@ -63,6 +63,13 @@ class FakeAgent:
             track_cost=False,
         )
         self._provider_usage_tracker = tracker
+        
+        # Gunakan database cache sementara agar terisolasi dari database global
+        import tempfile
+        from pathlib import Path
+        from provider_gateway.semantic_cache import SemanticCache
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self._provider_semantic_cache = SemanticCache(db_path=Path(self._temp_dir.name) / "fake_agent_cache.db")
 
     def _create_request_openai_client(self, *, reason, api_kwargs):
         def responder(**kwargs):

@@ -217,6 +217,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
     def _call():
         provider_gateway_started_at = time.monotonic()
         try:
+            # ── [SUNTIKAN PROVIDER GATEWAY QUOTA CHECK] ──
+            try:
+                from provider_gateway.runtime import get_quota_manager
+                quota = get_quota_manager(agent)
+                quota.check_quota(agent)
+            except Exception as quota_exc:
+                from provider_gateway.quota_manager import QuotaExceededError
+                if isinstance(quota_exc, QuotaExceededError):
+                    raise quota_exc
+                logger.debug("Provider gateway quota check failed: %s", quota_exc)
+
             if agent.api_mode == "codex_responses":
                 request_client = _set_request_client(
                     agent._create_request_openai_client(
@@ -255,26 +266,49 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     raise
                 result["response"] = normalize_converse_response(raw_response)
             else:
-                request_client = _set_request_client(
-                    agent._create_request_openai_client(
-                        reason="chat_completion_request",
-                        api_kwargs=api_kwargs,
-                    )
-                )
-                result["response"] = request_client.chat.completions.create(**api_kwargs)
+                # ── [SUNTIKAN PROVIDER GATEWAY SEMANTIC CACHE PREFLIGHT] ──
+                goto_api_call = True
                 try:
-                    from provider_gateway.runtime import record_provider_response_usage
+                    from provider_gateway.runtime import get_semantic_cache
+                    cache = get_semantic_cache(agent)
+                    cached_resp = cache.get_cached_response(agent, api_kwargs.get("messages", []))
+                    if cached_resp is not None:
+                        result["response"] = cached_resp
+                        goto_api_call = False
+                except Exception as cache_exc:
+                    logger.debug("Provider gateway cache lookup failed: %s", cache_exc)
 
-                    record_provider_response_usage(
-                        agent,
-                        result["response"],
-                        latency_seconds=time.monotonic() - provider_gateway_started_at,
+                if goto_api_call:
+                    request_client = _set_request_client(
+                        agent._create_request_openai_client(
+                            reason="chat_completion_request",
+                            api_kwargs=api_kwargs,
+                        )
                     )
-                except Exception as gateway_exc:
-                    logger.debug(
-                        "Provider gateway response tracking failed: %s",
-                        gateway_exc,
-                    )
+                    result["response"] = request_client.chat.completions.create(**api_kwargs)
+                    try:
+                        from provider_gateway.runtime import record_provider_response_usage
+
+                        record_provider_response_usage(
+                            agent,
+                            result["response"],
+                            latency_seconds=time.monotonic() - provider_gateway_started_at,
+                        )
+                    except Exception as gateway_exc:
+                        logger.debug(
+                            "Provider gateway response tracking failed: %s",
+                            gateway_exc,
+                        )
+
+                    # ── [SUNTIKAN PROVIDER GATEWAY SEMANTIC CACHE STORE] ──
+                    try:
+                        from provider_gateway.runtime import get_semantic_cache
+                        cache = get_semantic_cache(agent)
+                        content = getattr(result["response"].choices[0].message, "content", None)
+                        if content:
+                            cache.set_cached_response(agent, api_kwargs.get("messages", []), content)
+                    except Exception as cache_store_exc:
+                        logger.debug("Provider gateway cache store failed: %s", cache_store_exc)
         except Exception as e:
             if agent.api_mode == "chat_completions":
                 try:
@@ -1624,6 +1658,27 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
 
+    # ── [SUNTIKAN PROVIDER GATEWAY SEMANTIC CACHE PREFLIGHT] ──
+    try:
+        from provider_gateway.runtime import get_semantic_cache
+        cache = get_semantic_cache(agent)
+        cached_resp = cache.get_cached_response(agent, api_kwargs.get("messages", []))
+        if cached_resp is not None:
+            if on_first_delta:
+                try:
+                    on_first_delta()
+                except Exception:
+                    pass
+            content = getattr(cached_resp.choices[0].message, "content", None)
+            if content:
+                try:
+                    agent._fire_stream_delta(content)
+                except Exception:
+                    pass
+            return cached_resp
+    except Exception as cache_exc:
+        logger.debug("Provider gateway streaming cache lookup failed: %s", cache_exc)
+
     if agent.api_mode == "codex_responses":
         # Codex streams internally via _run_codex_stream. The main dispatch
         # in _interruptible_api_call already calls it; we just need to
@@ -1750,6 +1805,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # poll loop uses this to detect stale connections that keep receiving
     # SSE keep-alive pings but no actual data.
     last_chunk_time = {"t": time.time()}
+    api_start_time = time.time()
 
     def _fire_first_delta():
         if not first_delta_fired["done"] and on_first_delta:
@@ -2130,6 +2186,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     def _call():
         import httpx as _httpx
+
+        # ── [SUNTIKAN PROVIDER GATEWAY QUOTA CHECK] ──
+        try:
+            from provider_gateway.runtime import get_quota_manager
+            quota = get_quota_manager(agent)
+            quota.check_quota(agent)
+        except Exception as quota_exc:
+            from provider_gateway.quota_manager import QuotaExceededError
+            if isinstance(quota_exc, QuotaExceededError):
+                result["error"] = quota_exc
+                return
+            logger.debug("Provider gateway quota check failed: %s", quota_exc)
 
         _max_stream_retries = int(os.getenv("HERMES_STREAM_RETRIES", 2))
 
@@ -2527,7 +2595,61 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 usage=None,
                 _dropped_tool_names=_partial_names or None,
             )
+        # ── [SUNTIKAN PROVIDER GATEWAY STREAMING ERROR TRACKING] ──
+        if not deltas_were_sent["yes"]:
+            try:
+                from provider_gateway.runtime import record_provider_error_usage
+                record_provider_error_usage(
+                    agent,
+                    result["error"],
+                    latency_seconds=time.time() - api_start_time,
+                )
+            except Exception as gateway_exc:
+                logger.debug(
+                    "Provider gateway streaming error tracking failed: %s",
+                    gateway_exc,
+                )
         raise result["error"]
+
+    # ── [SUNTIKAN PROVIDER GATEWAY STREAMING RESPONSE TRACKING] ──
+    if result["response"] is not None:
+        try:
+            from provider_gateway.runtime import record_provider_response_usage
+            record_provider_response_usage(
+                agent,
+                result["response"],
+                latency_seconds=time.time() - api_start_time,
+            )
+        except Exception as gateway_exc:
+            logger.debug(
+                "Provider gateway streaming response tracking failed: %s",
+                gateway_exc,
+            )
+
+        # ── [SUNTIKAN PROVIDER GATEWAY SEMANTIC CACHE STORE] ──
+        try:
+            from provider_gateway.runtime import get_semantic_cache
+            cache = get_semantic_cache(agent)
+            content = None
+            if agent.api_mode == "anthropic_messages":
+                msg_obj = result["response"]
+                if hasattr(msg_obj, "content"):
+                    if isinstance(msg_obj.content, list):
+                        parts = []
+                        for block in msg_obj.content:
+                            if hasattr(block, "text"):
+                                parts.append(block.text)
+                        content = "".join(parts)
+                    elif isinstance(msg_obj.content, str):
+                        content = msg_obj.content
+            else:
+                content = getattr(result["response"].choices[0].message, "content", None)
+            
+            if content:
+                cache.set_cached_response(agent, api_kwargs.get("messages", []), content)
+        except Exception as cache_store_exc:
+            logger.debug("Provider gateway streaming cache store failed: %s", cache_store_exc)
+
     return result["response"]
 
 # ── Provider fallback ──────────────────────────────────────────────────

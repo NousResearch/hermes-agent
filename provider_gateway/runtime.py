@@ -16,24 +16,70 @@ from provider_gateway.usage_tracker import ProviderUsageRecord, ProviderUsageTra
 
 from provider_gateway.circuit_breaker import CircuitBreaker
 from provider_gateway.router import ProviderRouter
+from provider_gateway.semantic_cache import SemanticCache
+from provider_gateway.quota_manager import QuotaManager
 
 logger = logging.getLogger(__name__)
 
 # Global cache for the gateway components (safeguards session lifecycle)
 _circuit_breaker: CircuitBreaker | None = None
 _router: ProviderRouter | None = None
+_cache: SemanticCache | None = None
+_quota_manager: QuotaManager | None = None
+
+
+def get_quota_manager(agent: Any = None) -> QuotaManager:
+    """Get or create the global QuotaManager instance, optionally binding it to the agent."""
+    if agent is not None:
+        local_val = getattr(agent, "_provider_quota_manager", None)
+        if local_val is not None:
+            return local_val
+
+    global _quota_manager
+    if _quota_manager is None:
+        _quota_manager = QuotaManager()
+    
+    if agent is not None:
+        try:
+            setattr(agent, "_provider_quota_manager", _quota_manager)
+        except Exception:
+            pass
+    return _quota_manager
+
+
+def get_semantic_cache(agent: Any = None) -> SemanticCache:
+    """Get or create the global SemanticCache instance, optionally binding it to the agent."""
+    if agent is not None:
+        local_val = getattr(agent, "_provider_semantic_cache", None)
+        if local_val is not None:
+            return local_val
+
+    global _cache
+    if _cache is None:
+        _cache = SemanticCache()
+    
+    if agent is not None:
+        try:
+            setattr(agent, "_provider_semantic_cache", _cache)
+        except Exception:
+            pass
+    return _cache
 
 
 def get_circuit_breaker(agent: Any = None) -> CircuitBreaker:
     """Get or create the global CircuitBreaker instance, optionally binding it to the agent."""
+    if agent is not None:
+        local_val = getattr(agent, "_provider_circuit_breaker", None)
+        if local_val is not None:
+            return local_val
+
     global _circuit_breaker
     if _circuit_breaker is None:
         _circuit_breaker = CircuitBreaker()
     
     if agent is not None:
         try:
-            if not hasattr(agent, "_provider_circuit_breaker") or agent._provider_circuit_breaker is None:
-                setattr(agent, "_provider_circuit_breaker", _circuit_breaker)
+            setattr(agent, "_provider_circuit_breaker", _circuit_breaker)
         except Exception:
             pass
     return _circuit_breaker
@@ -41,6 +87,11 @@ def get_circuit_breaker(agent: Any = None) -> CircuitBreaker:
 
 def get_provider_router(agent: Any = None) -> ProviderRouter:
     """Get or create the global ProviderRouter instance, optionally binding it to the agent."""
+    if agent is not None:
+        local_val = getattr(agent, "_provider_router", None)
+        if local_val is not None:
+            return local_val
+
     global _router
     if _router is None:
         breaker = get_circuit_breaker(agent)
@@ -48,8 +99,7 @@ def get_provider_router(agent: Any = None) -> ProviderRouter:
     
     if agent is not None:
         try:
-            if not hasattr(agent, "_provider_router") or agent._provider_router is None:
-                setattr(agent, "_provider_router", _router)
+            setattr(agent, "_provider_router", _router)
         except Exception:
             pass
     return _router

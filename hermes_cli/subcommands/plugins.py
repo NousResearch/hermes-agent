@@ -81,6 +81,11 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         action="store_true",
         help="Print machine-readable JSON",
     )
+    plugins_list.add_argument(
+        "--no-pager",
+        action="store_true",
+        help="Print the Rich table directly even when it is taller than the terminal",
+    )
 
     plugins_enable = plugins_subparsers.add_parser(
         "enable", help="Enable a disabled plugin"

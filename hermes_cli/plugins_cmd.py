@@ -1095,6 +1095,37 @@ def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set
     return filtered
 
 
+def _should_page_plugin_list(args: Any | None, console: Any, entry_count: int) -> bool:
+    """Return whether a long Rich plugin table should open in a pager."""
+    if getattr(args, "json", False) or getattr(args, "plain", False):
+        return False
+    if getattr(args, "no_pager", False):
+        return False
+    if not getattr(console, "is_terminal", False):
+        return False
+
+    try:
+        height = int(getattr(console, "height", 0) or 0)
+    except (TypeError, ValueError):
+        height = 0
+    if height <= 0:
+        height = shutil.get_terminal_size((80, 24)).lines
+
+    # Account for the table title, borders, header, and the hints below it.
+    return entry_count + 8 > height
+
+
+def _print_plugin_table(console: Any, table: Any) -> None:
+    """Render the plugin table and its standard follow-up hints."""
+    console.print()
+    console.print(table)
+    console.print()
+    console.print("[dim]Compact view:[/dim] hermes plugins list --plain --no-bundled")
+    console.print("[dim]Interactive toggle:[/dim] hermes plugins")
+    console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
+    console.print("[dim]Plugins are opt-in by default — only 'enabled' plugins load.[/dim]")
+
+
 def cmd_list(args: Any | None = None) -> None:
     """List all plugins (bundled + user) with enabled/disabled state."""
     from rich.console import Console
@@ -1152,13 +1183,11 @@ def cmd_list(args: Any | None = None) -> None:
             status = "[yellow]not enabled[/yellow]"
         table.add_row(name, status, str(version), description, source)
 
-    console.print()
-    console.print(table)
-    console.print()
-    console.print("[dim]Compact view:[/dim] hermes plugins list --plain --no-bundled")
-    console.print("[dim]Interactive toggle:[/dim] hermes plugins")
-    console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
-    console.print("[dim]Plugins are opt-in by default — only 'enabled' plugins load.[/dim]")
+    if _should_page_plugin_list(args, console, len(entries)):
+        with console.pager(styles=True):
+            _print_plugin_table(console, table)
+    else:
+        _print_plugin_table(console, table)
 
 
 # ---------------------------------------------------------------------------
@@ -1328,6 +1357,64 @@ def _configure_context_engine() -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _build_composite_rows(plugin_labels: list[str], categories: list[tuple]) -> list[dict]:
+    """Build visual rows for the composite menu in display order."""
+    rows: list[dict] = []
+    if plugin_labels:
+        rows.append({"kind": "section", "label": "General Plugins"})
+        for index, label in enumerate(plugin_labels):
+            rows.append(
+                {
+                    "kind": "plugin",
+                    "label": label,
+                    "index": index,
+                    "nav": ("plugin", index),
+                }
+            )
+
+    if categories:
+        if rows:
+            rows.append({"kind": "spacer", "label": ""})
+        rows.append({"kind": "section", "label": "Provider Plugins"})
+        for index, (name, current, _configure) in enumerate(categories):
+            rows.append(
+                {
+                    "kind": "category",
+                    "label": f"{name:<24} ▸ {current}",
+                    "index": index,
+                    "nav": ("category", index),
+                }
+            )
+    return rows
+
+
+def _composite_navigation_rows(rows: list[dict]) -> list[int]:
+    """Return visual row indices that the composite cursor can select."""
+    return [index for index, row in enumerate(rows) if row.get("nav") is not None]
+
+
+def _page_composite_cursor(
+    navigation_rows: list[int], cursor_index: int, visible_rows: int, direction: int
+) -> int:
+    """Move approximately one visual page while landing on a selectable row."""
+    if not navigation_rows:
+        return 0
+
+    cursor_index = max(0, min(cursor_index, len(navigation_rows) - 1))
+    target_row = navigation_rows[cursor_index] + direction * max(1, visible_rows)
+    if direction < 0:
+        candidates = [
+            index for index, row_index in enumerate(navigation_rows)
+            if row_index <= target_row
+        ]
+        return candidates[-1] if candidates else 0
+
+    for index, row_index in enumerate(navigation_rows):
+        if row_index >= target_row:
+            return index
+    return len(navigation_rows) - 1
+
+
 def cmd_toggle() -> None:
     """Interactive composite UI — general plugins + provider plugin categories."""
     from rich.console import Console
@@ -1401,220 +1488,184 @@ def cmd_toggle() -> None:
 
 def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
                       disabled, categories, console):
-    """Custom curses screen with checkboxes + category action rows."""
-    from hermes_cli.curses_ui import flush_stdin
+    """Render plugin and provider items in one visual scroll coordinate space."""
+    from hermes_cli.curses_ui import (
+        _scroll_for_cursor,
+        _scroll_status_text,
+        flush_stdin,
+    )
 
     chosen = set(plugin_selected)
     n_plugins = len(plugin_keys)
-    # Total rows: plugins + separator + categories
-    # separator is not navigable
-    n_categories = len(categories)
-    total_items = n_plugins + n_categories  # navigable items
+    result_holder = {"providers_changed": False}
 
-    result_holder = {"plugins_changed": False, "providers_changed": False}
-
-    def _draw(stdscr):
-        curses.curs_set(0)
+    def _init_screen_colors() -> None:
         if curses.has_colors():
             curses.start_color()
             curses.use_default_colors()
             curses.init_pair(1, curses.COLOR_GREEN, -1)
             curses.init_pair(2, curses.COLOR_YELLOW, -1)
             curses.init_pair(3, curses.COLOR_CYAN, -1)
-            curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)  # dim gray
-        cursor = 0
+
+    def _restore_curses_screen():
+        restored = curses.initscr()
+        curses.noecho()
+        curses.cbreak()
+        restored.keypad(True)
+        _init_screen_colors()
+        curses.curs_set(0)
+        return restored
+
+    def _run_category(category_index: int):
+        curses.endwin()
+        category_name, _current, configure = categories[category_index]
+        changed = configure()
+        if changed:
+            result_holder["providers_changed"] = True
+            current = (
+                (_get_current_memory_provider() or "built-in")
+                if category_index == 0
+                else _get_current_context_engine()
+            )
+            categories[category_index] = (category_name, current, configure)
+        return _restore_curses_screen()
+
+    def _draw(stdscr):
+        curses.curs_set(0)
+        _init_screen_colors()
+        cursor_index = 0
         scroll_offset = 0
 
         while True:
             stdscr.clear()
             max_y, max_x = stdscr.getmaxyx()
+            rows = _build_composite_rows(plugin_labels, categories)
+            navigation_rows = _composite_navigation_rows(rows)
+            total_items = len(navigation_rows)
+            if total_items:
+                cursor_index = max(0, min(cursor_index, total_items - 1))
+                cursor_row = navigation_rows[cursor_index]
+                current_nav = rows[cursor_row]["nav"]
+            else:
+                cursor_row = 0
+                current_nav = None
 
-            # Header
             try:
-                hattr = curses.A_BOLD
+                header_attr = curses.A_BOLD
                 if curses.has_colors():
-                    hattr |= curses.color_pair(2)
-                stdscr.addnstr(0, 0, "Plugins", max_x - 1, hattr)
+                    header_attr |= curses.color_pair(2)
+                stdscr.addnstr(0, 0, "Plugins", max_x - 1, header_attr)
                 stdscr.addnstr(
-                    1, 0,
-                    "  ↑↓/j/k navigate  PgUp/PgDn page  SPACE toggle  ENTER configure/confirm  ESC done",
-                    max_x - 1, curses.A_DIM,
+                    1,
+                    0,
+                    "  ↑↓/j/k navigate  PgUp/PgDn page  Home/End jump  "
+                    "SPACE toggle/configure  ENTER configure/confirm  ESC done",
+                    max_x - 1,
+                    curses.A_DIM,
                 )
             except curses.error:
                 pass
 
-            # Build display rows
-            # Row layout:
-            #   [plugins section header] (not navigable, skipped in scroll math)
-            #   plugin checkboxes (navigable, indices 0..n_plugins-1)
-            #   [separator] (not navigable)
-            #   [categories section header] (not navigable)
-            #   category action rows (navigable, indices n_plugins..total_items-1)
-
-            visible_rows = max_y - 4
-            if cursor < scroll_offset:
-                scroll_offset = cursor
-            elif cursor >= scroll_offset + visible_rows:
-                scroll_offset = cursor - visible_rows + 1
-
-            y = 3  # start drawing after header
-
-            # Determine which items are visible based on scroll
-            # We need to map logical cursor positions to screen rows
-            # accounting for non-navigable separator/headers
-
-
-            # --- General Plugins section ---
-            if n_plugins > 0:
-                # Section header
-                if y < max_y - 1:
+            first_row = 3
+            footer_rows = 1
+            visible_rows = max_y - first_row - footer_rows
+            if visible_rows <= 0:
+                if max_y > 0 and max_x > 1:
                     try:
-                        sattr = curses.A_BOLD
-                        if curses.has_colors():
-                            sattr |= curses.color_pair(2)
-                        stdscr.addnstr(y, 0, "  General Plugins", max_x - 1, sattr)
+                        stdscr.addnstr(
+                            max_y - 1,
+                            0,
+                            "Terminal too small; enlarge window or press q",
+                            max_x - 1,
+                            curses.A_DIM,
+                        )
                     except curses.error:
                         pass
-                    y += 1
+                stdscr.refresh()
+                if stdscr.getch() in {27, ord("q")}:
+                    return
+                continue
 
-                plugin_start = scroll_offset
-                plugin_stop = min(n_plugins, scroll_offset + max(visible_rows, 0))
-                for i in range(plugin_start, plugin_stop):
-                    if y >= max_y - 1:
-                        break
-                    check = "\u2713" if i in chosen else " "
-                    arrow = "\u2192" if i == cursor else " "
-                    line = f" {arrow} [{check}] {plugin_labels[i]}"
-                    attr = curses.A_NORMAL
-                    if i == cursor:
+            scroll_offset = _scroll_for_cursor(
+                scroll_offset, cursor_row, visible_rows, len(rows)
+            )
+            for draw_index, row_index in enumerate(
+                range(scroll_offset, min(len(rows), scroll_offset + visible_rows))
+            ):
+                y = first_row + draw_index
+                row = rows[row_index]
+                kind = row["kind"]
+                line = ""
+                attr = curses.A_NORMAL
+
+                if kind == "section":
+                    line = f"  {row['label']}"
+                    attr = curses.A_BOLD
+                    if curses.has_colors():
+                        attr |= curses.color_pair(2)
+                elif kind == "plugin":
+                    selected = row.get("nav") == current_nav
+                    check = "✓" if row["index"] in chosen else " "
+                    arrow = "→" if selected else " "
+                    line = f" {arrow} [{check}] {row['label']}"
+                    if selected:
                         attr = curses.A_BOLD
                         if curses.has_colors():
                             attr |= curses.color_pair(1)
-                    try:
-                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
-                    except curses.error:
-                        pass
-                    y += 1
-
-            # --- Separator ---
-            if y < max_y - 1:
-                y += 1  # blank line
-
-            # --- Provider Plugins section ---
-            if n_categories > 0 and y < max_y - 1:
-                try:
-                    sattr = curses.A_BOLD
-                    if curses.has_colors():
-                        sattr |= curses.color_pair(2)
-                    stdscr.addnstr(y, 0, "  Provider Plugins", max_x - 1, sattr)
-                except curses.error:
-                    pass
-                y += 1
-
-                for ci, (cat_name, cat_current, _cat_fn) in enumerate(categories):
-                    if y >= max_y - 1:
-                        break
-                    cat_idx = n_plugins + ci
-                    arrow = "\u2192" if cat_idx == cursor else " "
-                    line = f" {arrow}   {cat_name:<24} \u25b8 {cat_current}"
-                    attr = curses.A_NORMAL
-                    if cat_idx == cursor:
+                elif kind == "category":
+                    selected = row.get("nav") == current_nav
+                    arrow = "→" if selected else " "
+                    line = f" {arrow}   {row['label']}"
+                    if selected:
                         attr = curses.A_BOLD
                         if curses.has_colors():
                             attr |= curses.color_pair(3)
-                    try:
-                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
-                    except curses.error:
-                        pass
-                    y += 1
+
+                try:
+                    stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                except curses.error:
+                    pass
+
+            footer = _scroll_status_text(
+                cursor_row, scroll_offset, visible_rows, len(rows)
+            )
+            if footer:
+                try:
+                    stdscr.addnstr(max_y - 1, 0, footer, max_x - 1, curses.A_DIM)
+                except curses.error:
+                    pass
 
             stdscr.refresh()
             key = stdscr.getch()
 
-            if key in {curses.KEY_UP, ord("k")}:
-                if total_items > 0:
-                    cursor = (cursor - 1) % total_items
-            elif key in {curses.KEY_DOWN, ord("j")}:
-                if total_items > 0:
-                    cursor = (cursor + 1) % total_items
-            elif key in {curses.KEY_NPAGE, ord("f")}:
-                if total_items > 0:
-                    cursor = min(total_items - 1, cursor + max(1, max_y - 5))
-            elif key in {curses.KEY_PPAGE, ord("b")}:
-                if total_items > 0:
-                    cursor = max(0, cursor - max(1, max_y - 5))
-            elif key == curses.KEY_HOME:
-                cursor = 0
-            elif key == curses.KEY_END:
-                cursor = max(0, total_items - 1)
-            elif key == ord(" "):
-                if cursor < n_plugins:
-                    # Toggle general plugin
-                    chosen.symmetric_difference_update({cursor})
+            if key in {curses.KEY_UP, ord("k")} and total_items:
+                cursor_index = (cursor_index - 1) % total_items
+            elif key in {curses.KEY_DOWN, ord("j")} and total_items:
+                cursor_index = (cursor_index + 1) % total_items
+            elif key in {curses.KEY_PPAGE, ord("b")} and total_items:
+                cursor_index = _page_composite_cursor(
+                    navigation_rows, cursor_index, visible_rows, -1
+                )
+            elif key in {curses.KEY_NPAGE, ord("f")} and total_items:
+                cursor_index = _page_composite_cursor(
+                    navigation_rows, cursor_index, visible_rows, 1
+                )
+            elif key == curses.KEY_HOME and total_items:
+                cursor_index = 0
+            elif key == curses.KEY_END and total_items:
+                cursor_index = total_items - 1
+            elif key == ord(" ") and total_items:
+                kind, index = current_nav
+                if kind == "plugin":
+                    chosen.symmetric_difference_update({index})
                 else:
-                    # Provider category — launch sub-screen
-                    ci = cursor - n_plugins
-                    if 0 <= ci < n_categories:
-                        curses.endwin()
-                        _cat_name, _cat_cur, cat_fn = categories[ci]
-                        changed = cat_fn()
-                        if changed:
-                            result_holder["providers_changed"] = True
-                            # Refresh current values
-                            categories[ci] = (
-                                _cat_name,
-                                _get_current_memory_provider() or "built-in" if ci == 0
-                                else _get_current_context_engine(),
-                                cat_fn,
-                            )
-                        # Re-enter curses
-                        stdscr = curses.initscr()
-                        curses.noecho()
-                        curses.cbreak()
-                        stdscr.keypad(True)
-                        if curses.has_colors():
-                            curses.start_color()
-                            curses.use_default_colors()
-                            curses.init_pair(1, curses.COLOR_GREEN, -1)
-                            curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                            curses.init_pair(3, curses.COLOR_CYAN, -1)
-                            curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)
-                        curses.curs_set(0)
-            elif key in {curses.KEY_ENTER, 10, 13}:
-                if cursor < n_plugins:
-                    # ENTER on a plugin checkbox — confirm and exit
-                    result_holder["plugins_changed"] = True
+                    stdscr = _run_category(index)
+            elif key in {curses.KEY_ENTER, 10, 13} and total_items:
+                kind, index = current_nav
+                if kind == "plugin":
                     return
-                else:
-                    # ENTER on a category — same as SPACE, launch sub-screen
-                    ci = cursor - n_plugins
-                    if 0 <= ci < n_categories:
-                        curses.endwin()
-                        _cat_name, _cat_cur, cat_fn = categories[ci]
-                        changed = cat_fn()
-                        if changed:
-                            result_holder["providers_changed"] = True
-                            categories[ci] = (
-                                _cat_name,
-                                _get_current_memory_provider() or "built-in" if ci == 0
-                                else _get_current_context_engine(),
-                                cat_fn,
-                            )
-                        stdscr = curses.initscr()
-                        curses.noecho()
-                        curses.cbreak()
-                        stdscr.keypad(True)
-                        if curses.has_colors():
-                            curses.start_color()
-                            curses.use_default_colors()
-                            curses.init_pair(1, curses.COLOR_GREEN, -1)
-                            curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                            curses.init_pair(3, curses.COLOR_CYAN, -1)
-                            curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)
-                        curses.curs_set(0)
+                stdscr = _run_category(index)
             elif key in {27, ord("q")}:
-                # Save plugin changes on exit
-                result_holder["plugins_changed"] = True
                 return
 
     curses.wrapper(_draw)
@@ -1647,7 +1698,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
         _save_enabled_set(new_enabled)
         _save_disabled_set(new_disabled)
         console.print(
-            f"\n[green]\u2713[/green] General plugins: {len(new_enabled)} enabled, "
+            f"\n[green]✓[/green] General plugins: {len(new_enabled)} enabled, "
             f"{len(plugin_keys) - len(new_enabled)} disabled."
         )
     elif n_plugins > 0:
@@ -1657,7 +1708,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
         new_memory = _get_current_memory_provider() or "built-in"
         new_context = _get_current_context_engine()
         console.print(
-            f"[green]\u2713[/green] Memory provider: [bold]{new_memory}[/bold]  "
+            f"[green]✓[/green] Memory provider: [bold]{new_memory}[/bold]  "
             f"Context engine: [bold]{new_context}[/bold]"
         )
 

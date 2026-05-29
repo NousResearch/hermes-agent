@@ -12,6 +12,7 @@ def _args(**kwargs):
         "no_bundled": False,
         "plain": False,
         "json": False,
+        "no_pager": False,
     }
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
@@ -158,3 +159,27 @@ def test_cmd_list_json_output_includes_entrypoint_source(monkeypatch, capsys):
             "source": "entrypoint",
         }
     ]
+
+
+def test_should_page_long_plugin_list_in_tty():
+    console = argparse.Namespace(is_terminal=True, height=10)
+
+    assert plugins_cmd._should_page_plugin_list(_args(), console, entry_count=20)
+
+
+def test_plugin_list_pager_can_be_disabled_or_bypassed_for_streams():
+    tty_console = argparse.Namespace(is_terminal=True, height=10)
+    pipe_console = argparse.Namespace(is_terminal=False, height=10)
+
+    assert not plugins_cmd._should_page_plugin_list(
+        _args(no_pager=True), tty_console, entry_count=20
+    )
+    assert not plugins_cmd._should_page_plugin_list(
+        _args(plain=True), tty_console, entry_count=20
+    )
+    assert not plugins_cmd._should_page_plugin_list(
+        _args(json=True), tty_console, entry_count=20
+    )
+    assert not plugins_cmd._should_page_plugin_list(
+        _args(), pipe_console, entry_count=20
+    )

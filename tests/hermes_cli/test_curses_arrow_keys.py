@@ -19,7 +19,11 @@ import curses
 from hermes_cli.curses_ui import (
     NAV_CANCEL,
     NAV_DOWN,
+    NAV_END,
+    NAV_HOME,
     NAV_NONE,
+    NAV_PAGE_DOWN,
+    NAV_PAGE_UP,
     NAV_SELECT,
     NAV_UP,
     read_menu_key,
@@ -63,6 +67,13 @@ def test_raw_ss3_arrow_keys_decode():
 def test_translated_key_constants_still_work():
     assert read_menu_key(FakeStdscr([curses.KEY_DOWN])) == NAV_DOWN
     assert read_menu_key(FakeStdscr([curses.KEY_UP])) == NAV_UP
+
+
+def test_extended_navigation_key_constants_work():
+    assert read_menu_key(FakeStdscr([curses.KEY_PPAGE])) == NAV_PAGE_UP
+    assert read_menu_key(FakeStdscr([curses.KEY_NPAGE])) == NAV_PAGE_DOWN
+    assert read_menu_key(FakeStdscr([curses.KEY_HOME])) == NAV_HOME
+    assert read_menu_key(FakeStdscr([curses.KEY_END])) == NAV_END
 
 
 def test_vim_keys():

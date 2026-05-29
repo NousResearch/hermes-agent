@@ -309,6 +309,29 @@ def get_startup_entry_path() -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Stable working directory
+# ---------------------------------------------------------------------------
+
+def _stable_gateway_working_dir(project_root: Path) -> str:
+    """Return a stable cwd for detached/startup gateway runs.
+
+    Mirror the POSIX service invariant: anchor at ``HERMES_HOME`` whenever it
+    exists so Scheduled Task / Startup launches do not fail at the ``cd`` step
+    after a transient checkout or worktree is moved away. Fall back to the
+    source checkout only if ``HERMES_HOME`` cannot be resolved yet.
+    """
+    from hermes_cli.config import get_hermes_home
+
+    try:
+        home = get_hermes_home()
+        if home and Path(home).is_dir():
+            return str(Path(home).resolve())
+    except Exception:
+        pass
+    return str(project_root)
+
+
+# ---------------------------------------------------------------------------
 # Script rendering
 # ---------------------------------------------------------------------------
 
@@ -321,7 +344,7 @@ def _build_gateway_cmd_script(
     """Build the ``gateway.cmd`` wrapper content (CRLF-terminated).
 
     The script:
-      - cd's into the project directory
+      - cd's into a stable working directory
       - exports HERMES_HOME, PYTHONIOENCODING, VIRTUAL_ENV
       - invokes ``pythonw -m hermes_cli.main [--profile X] gateway run``
         directly so the wrapper cmd.exe exits without a visible gateway console
@@ -380,7 +403,7 @@ def _write_task_script() -> Path:
     )
 
     python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
+    working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
     hermes_home = str(Path(get_hermes_home()).resolve())
     profile_arg = _profile_arg(hermes_home)
 
@@ -547,7 +570,8 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     )
 
     python_exe, venv_dir, extra_pythonpath = _resolve_detached_python(get_python_path())
-    working_dir = str(PROJECT_ROOT)
+    project_root = str(PROJECT_ROOT)
+    working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
     hermes_home = str(Path(get_hermes_home()).resolve())
     profile_arg = _profile_arg(hermes_home)
 
@@ -562,7 +586,7 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
         "HERMES_GATEWAY_DETACHED": "1",
         "VIRTUAL_ENV": str(venv_dir),
     }
-    _prepend_pythonpath(env_overlay, [working_dir, *extra_pythonpath] if extra_pythonpath else [])
+    _prepend_pythonpath(env_overlay, [project_root, *extra_pythonpath] if extra_pythonpath else [project_root])
     return argv, working_dir, env_overlay
 
 

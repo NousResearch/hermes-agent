@@ -621,6 +621,13 @@ def _get_or_create_env(task_id: str):
                 "vercel_runtime": config.get("vercel_runtime", ""),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                # ai-skills-library-cron-docker-env-patch: forward docker_env
+                # so execute_code-spawned containers (e.g. cron tasks) receive
+                # the same -e flags as messaging-chat containers do via
+                # tools/terminal_tool.py.
+                "docker_env": config.get("docker_env", {}),
+                "docker_forward_env": config.get("docker_forward_env", []),
+                "docker_extra_args": config.get("docker_extra_args", []),
             }
 
         ssh_config = None
@@ -1238,6 +1245,7 @@ def execute_code(
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
+            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---
@@ -1568,6 +1576,7 @@ def _is_usable_python(python_path: str) -> bool:
              "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)"],
             timeout=5,
             capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):

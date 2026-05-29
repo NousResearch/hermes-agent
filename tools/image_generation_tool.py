@@ -698,10 +698,7 @@ def image_generate_tool(
             raise ValueError("Prompt is required and must be a non-empty string")
 
         if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
-            message = "FAL_KEY environment variable not set"
-            if managed_nous_tools_enabled():
-                message += " and managed FAL gateway is unavailable"
-            raise ValueError(message)
+            raise ValueError(_build_no_backend_setup_message())
 
         aspect_lc = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
         if aspect_lc not in VALID_ASPECT_RATIOS:
@@ -809,6 +806,42 @@ def image_generate_tool(
 def check_fal_api_key() -> bool:
     """True if the FAL.ai API key (direct or managed gateway) is available."""
     return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
+
+
+def _build_no_backend_setup_message() -> str:
+    """Build an actionable error string when no FAL backend is reachable.
+
+    Used by the in-tree FAL path. Mentions:
+      - FAL_KEY signup link
+      - managed-gateway status (if Nous tools are enabled)
+      - plugin alternative pointer (so users on a stale ``image_gen.provider``
+        know the registry exists and how to inspect it)
+    """
+    lines = ["Image generation is unavailable in this environment.", ""]
+    lines.append("Missing requirements:")
+    if managed_nous_tools_enabled():
+        lines.append(
+            "  - FAL_KEY is not set and the managed FAL gateway is unreachable"
+        )
+    else:
+        lines.append("  - FAL_KEY environment variable is not set")
+    lines.append("")
+    lines.append("To enable image generation, do one of:")
+    lines.append(
+        "  1. Get a free API key at https://fal.ai and set "
+        "FAL_KEY=<your-key> (then restart the session)"
+    )
+    if managed_nous_tools_enabled():
+        lines.append(
+            "  2. Sign in to a Nous account that has the managed FAL "
+            "gateway enabled (`hermes setup`)"
+        )
+    lines.append(
+        "  3. Configure a different image_gen provider via `hermes tools` "
+        "→ Image Generation (run `hermes plugins list` to see installed "
+        "backends)"
+    )
+    return "\n".join(lines)
 
 
 def check_image_generation_requirements() -> bool:

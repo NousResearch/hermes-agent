@@ -1,0 +1,5 @@
+{
+  "patch_id": "ai-skills-library-session-show-slack-user-id-patch-v1",
+  "original_sha256": "eb455f4ad1df5f21447dfec114aabdc3b9079e0fdb399cb9060c1bfa5b8c9379",
+  "patched_sha256": "20adc362532c180de845834dca9b36027ea723ad27c3cf7a040a4eb7a3a6f434"
+}

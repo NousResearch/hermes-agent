@@ -1046,7 +1046,7 @@ class TestCompressWithClient:
         for i in range(1, len(result)):
             r1 = result[i - 1].get("role")
             r2 = result[i].get("role")
-            if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
+            if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
     def test_double_collision_merges_summary_into_tail(self):
@@ -1087,7 +1087,7 @@ class TestCompressWithClient:
         for i in range(1, len(result)):
             r1 = result[i - 1].get("role")
             r2 = result[i].get("role")
-            if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
+            if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
         # The summary text should be merged into the first tail message
@@ -1164,7 +1164,7 @@ class TestCompressWithClient:
         for i in range(1, len(result)):
             r1 = result[i - 1].get("role")
             r2 = result[i].get("role")
-            if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
+            if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
         # The summary should be merged into the first tail message (assistant at index 5)

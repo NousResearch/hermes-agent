@@ -47,6 +47,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+from utils import env_var_enabled
+
 logger = logging.getLogger(__name__)
 
 
@@ -360,7 +362,7 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     
     Returns enhanced output if sudo failed in messaging context, else original.
     """
-    is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
+    is_gateway = env_var_enabled("HERMES_GATEWAY_SESSION")
     
     if not is_gateway:
         return output
@@ -868,7 +870,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
         return command, None
 
-    if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
+    if not has_configured_password and not sudo_password and env_var_enabled("HERMES_INTERACTIVE"):
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
             _set_cached_sudo_password(sudo_password)

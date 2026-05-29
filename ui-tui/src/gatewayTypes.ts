@@ -1,4 +1,4 @@
-import type { SessionInfo, SlashCategory, Usage } from './types.js'
+import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.js'
 
 export interface GatewaySkin {
   banner_hero?: string
@@ -394,7 +394,7 @@ export interface SubagentEventPayload {
   output_tokens?: number
   parent_id?: null | string
   reasoning_tokens?: number
-  status?: 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
+  status?: SubagentStatus
   subagent_id?: string
   summary?: string
   task_count?: number

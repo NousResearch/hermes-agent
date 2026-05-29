@@ -523,6 +523,34 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert env["NODE_ENV"] == "production"
 
 
+def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path):
+    tui_dir = tmp_path / "ui-tui"
+    tsx = tui_dir / "node_modules" / ".bin" / "tsx"
+    ink_dir = tui_dir / "packages" / "hermes-ink"
+    tsx.parent.mkdir(parents=True)
+    ink_dir.mkdir(parents=True)
+    tsx.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _tui_dir: False)
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda bin_name: f"/usr/bin/{bin_name}")
+
+    calls = []
+
+    def fake_run(cmd, cwd=None, **_kwargs):
+        calls.append((cmd, cwd))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    argv, cwd = main_mod._make_tui_argv(tui_dir, tui_dev=True)
+
+    assert argv == [str(tsx), "src/entry.tsx"]
+    assert cwd == tui_dir
+    assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
+
+
 def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, capsys):
     import hermes_cli.main as main_mod
 

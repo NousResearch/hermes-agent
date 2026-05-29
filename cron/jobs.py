@@ -645,6 +645,44 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+class AmbiguousJobReference(LookupError):
+    """Raised when a job name matches more than one job."""
+
+    def __init__(self, ref: str, matches: List[Dict[str, Any]]):
+        self.ref = ref
+        self.matches = matches
+        ids = ", ".join(m["id"] for m in matches)
+        super().__init__(
+            f"Job name '{ref}' is ambiguous — matches {len(matches)} jobs: {ids}. "
+            f"Use the job ID instead."
+        )
+
+
+def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
+    """Resolve a job reference (ID or name) to a job record.
+
+    - Exact ID match wins (works even if a different job's name equals this ID).
+    - Otherwise, case-insensitive name match.
+    - If a name matches more than one job, raises AmbiguousJobReference so the
+      caller can surface the matching IDs rather than silently picking one.
+    """
+    if not ref:
+        return None
+    jobs = load_jobs()
+    for job in jobs:
+        if job["id"] == ref:
+            return _normalize_job_record(job)
+    ref_lower = ref.lower()
+    name_matches = [j for j in jobs if (j.get("name") or "").lower() == ref_lower]
+    if not name_matches:
+        return None
+    if len(name_matches) > 1:
+        raise AmbiguousJobReference(
+            ref, [_normalize_job_record(j) for j in name_matches]
+        )
+    return _normalize_job_record(name_matches[0])
+
+
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
     jobs = [_normalize_job_record(j) for j in load_jobs()]
@@ -702,9 +740,12 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Pause a job without deleting it."""
+    """Pause a job without deleting it. Accepts a job ID or name."""
+    job = resolve_job_ref(job_id)
+    if not job:
+        return None
     return update_job(
-        job_id,
+        job["id"],
         {
             "enabled": False,
             "state": "paused",
@@ -715,14 +756,14 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
 
 
 def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Resume a paused job and compute the next future run from now."""
-    job = get_job(job_id)
+    """Resume a paused job and compute the next future run from now. Accepts a job ID or name."""
+    job = resolve_job_ref(job_id)
     if not job:
         return None
 
     next_run_at = compute_next_run(job["schedule"])
     return update_job(
-        job_id,
+        job["id"],
         {
             "enabled": True,
             "state": "scheduled",
@@ -734,12 +775,12 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Schedule a job to run on the next scheduler tick."""
-    job = get_job(job_id)
+    """Schedule a job to run on the next scheduler tick. Accepts a job ID or name."""
+    job = resolve_job_ref(job_id)
     if not job:
         return None
     return update_job(
-        job_id,
+        job["id"],
         {
             "enabled": True,
             "state": "scheduled",
@@ -751,14 +792,18 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def remove_job(job_id: str) -> bool:
-    """Remove a job by ID."""
+    """Remove a job by ID or name."""
+    job = resolve_job_ref(job_id)
+    if not job:
+        return False
+    canonical_id = job["id"]
     jobs = load_jobs()
     original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != job_id]
+    jobs = [j for j in jobs if j["id"] != canonical_id]
     if len(jobs) < original_len:
         save_jobs(jobs)
         # Clean up output directory to prevent orphaned dirs accumulating
-        job_output_dir = OUTPUT_DIR / job_id
+        job_output_dir = OUTPUT_DIR / canonical_id
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
         return True

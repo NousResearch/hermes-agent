@@ -1,0 +1,5 @@
+{
+  "patch_id": "ai-skills-library-cron-docker-env-patch-v1",
+  "original_sha256": "5c7ced11a8a174a5b5dd0c43e83d23f696080da78ff593ad885aa92abfc947a3",
+  "patched_sha256": "dedc91f4745f7c576a2f2fd2ca6f40f309cc8c45e3c311d147460b5986c65dba"
+}

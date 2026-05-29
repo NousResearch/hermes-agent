@@ -490,9 +490,19 @@ class SignalAdapter(BasePlatformAdapter):
         if not data_message:
             return
 
-        # Check for group message
+        # Check for group message.
+        # Modern Signal groups surface on dataMessage.groupV2.id; legacy V1
+        # groups still arrive under dataMessage.groupInfo.groupId. signal-cli
+        # versions differ in which field they expose for V2 groups — some
+        # forward the underlying libsignal envelope verbatim (groupV2), others
+        # normalize everything into groupInfo. Read groupV2 first and fall
+        # back to groupInfo so V2-only groups aren't misrouted as DMs.
         group_info = data_message.get("groupInfo")
-        group_id = group_info.get("groupId") if group_info else None
+        group_v2 = data_message.get("groupV2")
+        group_id = (
+            (group_v2.get("id") if isinstance(group_v2, dict) else None)
+            or (group_info.get("groupId") if isinstance(group_info, dict) else None)
+        )
         is_group = bool(group_id)
 
         # Group message filtering — derived from SIGNAL_GROUP_ALLOWED_USERS:
@@ -562,7 +572,7 @@ class SignalAdapter(BasePlatformAdapter):
         # Build session source
         source = self.build_source(
             chat_id=chat_id,
-            chat_name=group_info.get("groupName") if group_info else sender_name,
+            chat_name=(group_info.get("groupName") if isinstance(group_info, dict) else None) or sender_name,
             chat_type=chat_type,
             user_id=sender,
             user_name=sender_name or sender,

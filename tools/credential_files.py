@@ -402,6 +402,32 @@ def to_agent_visible_cache_path(
     return host_path
 
 
+def from_agent_visible_cache_path(
+    container_path: str,
+    container_base: str = "/root/.hermes",
+) -> str:
+    """Translate a container cache path back to the corresponding host path.
+
+    Inverse of :func:`to_agent_visible_cache_path`. Used by host-side tools
+    (e.g. ``vision_analyze``) that receive paths an agent discovered while
+    running inside a Docker sandbox. Each agent process has its own
+    ``HERMES_HOME``, so the mount table is always profile-specific -- no
+    cross-agent leakage is possible beyond what Docker already prevents.
+
+    Returns the input unchanged if it does not match any known container
+    cache mount point.
+    """
+    path = Path(container_path)
+    for mount in get_cache_directory_mounts(container_base=container_base):
+        container_dir = Path(mount["container_path"])
+        try:
+            rel = path.relative_to(container_dir)
+            return str(Path(mount["host_path"]) / rel)
+        except ValueError:
+            continue
+    return container_path
+
+
 def iter_cache_files(
     container_base: str = "/root/.hermes",
 ) -> List[Dict[str, str]]:

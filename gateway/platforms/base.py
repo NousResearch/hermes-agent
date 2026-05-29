@@ -829,6 +829,9 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".ts": "text/plain",
+    ".py": "text/plain",
+    ".sh": "text/plain",
 }
 
 
@@ -2011,6 +2014,13 @@ class BasePlatformAdapter(ABC):
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
+    def prepare_tts_text(self, text: str) -> str:
+        """Prepare text for TTS. Override to filter tool output, code, etc.
+
+        Default strips markdown formatting and truncates to 4000 chars.
+        """
+        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+
     async def play_tts(
         self,
         chat_id: str,
@@ -2961,9 +2971,25 @@ class BasePlatformAdapter(ABC):
                 merge_pending_message_event(self._pending_messages, session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
-            # Default behavior for non-photo follow-ups: interrupt the running agent
+            # Default behavior for non-photo follow-ups: interrupt the running agent.
+            #
+            # Use merge_text=True so rapid TEXT follow-ups (#4469) accumulate
+            # into the single pending slot instead of clobbering each other.
+            # Without merging, three rapid messages "A", "B", "C" land like:
+            #   _pending_messages[k] = A  (interrupts)
+            #   _pending_messages[k] = B  (replaces A before consumer reads)
+            #   _pending_messages[k] = C  (replaces B)
+            # ...and only "C" reaches the next turn.  merge_pending_message_event
+            # already does the right thing for photo/media bursts; the
+            # ``merge_text=True`` flag extends that to plain TEXT events.
+            # Same shape as the Telegram bursty-grace path in gateway/run.py.
             logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
-            self._pending_messages[session_key] = event
+            merge_pending_message_event(
+                self._pending_messages,
+                session_key,
+                event,
+                merge_text=True,
+            )
             # Signal the interrupt (the processing task checks this)
             self._active_sessions[session_key].set()
             return  # Don't process now - will be handled after current task finishes
@@ -3125,7 +3151,7 @@ class BasePlatformAdapter(ABC):
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():
                             import json as _json
-                            speech_text = re.sub(r'[*_`#\[\]()]', '', text_content)[:4000].strip()
+                            speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
                             tts_result_str = await asyncio.to_thread(

@@ -271,7 +271,7 @@ def test_evaluate_all_force_runs_synchronously(plugin_api):
 
     # Synchronous — snapshot is fresh on return.
     assert result["scan_meta"].get("sessions_total") == 25
-    assert result["scan_meta"]["mode"] in ("full", "incremental")
+    assert result["scan_meta"]["mode"] in {"full", "incremental"}
 
 
 def test_start_background_scan_is_idempotent_while_running(plugin_api):

@@ -101,7 +101,6 @@ _CREDENTIAL_NAMES = frozenset({
     "RETAINDB_API_KEY",
     "HINDSIGHT_API_KEY",
     "HINDSIGHT_LLM_API_KEY",
-    "TINKER_API_KEY",
     "DAYTONA_API_KEY",
     "TWILIO_AUTH_TOKEN",
     "TELEGRAM_BOT_TOKEN",
@@ -188,6 +187,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
+    "HERMES_AGENT_USE_LEGACY_SESSION_KEYS",
     # Kanban path/board pins must never leak from a developer shell or
     # dispatched worker into tests; otherwise tests can write fake tasks to
     # the real ~/.hermes/kanban.db instead of the per-test HERMES_HOME.

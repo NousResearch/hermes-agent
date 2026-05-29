@@ -464,7 +464,14 @@ def _send_media_via_adapter(
             else:
                 coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
 
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            from agent.async_utils import safe_schedule_threadsafe
+            future = safe_schedule_threadsafe(coro, loop)
+            if future is None:
+                logger.warning(
+                    "Job '%s': cannot send media %s, gateway loop unavailable",
+                    job.get("id", "?"), media_path,
+                )
+                return
             try:
                 result = future.result(timeout=30)
             except TimeoutError:
@@ -535,6 +542,50 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         logger.error("Job '%s': %s", job["id"], msg)
         return msg
 
+    # --- ai-skills-library-cron-thread-split-patch ---
+    # Gated solely on the delimiter in the agent's RAW output: split the part
+    # above it to the channel root and the part below as a threaded reply
+    # under it. Only skills that emit this exact marker enter here, so all
+    # other cron jobs fall through to the unchanged delivery below.
+    _TS_DELIM = "===THREAD==="
+    if _TS_DELIM in content:
+        import asyncio as _aio
+        import concurrent.futures as _cf
+
+        def _run_send(_coro):
+            try:
+                return _aio.run(_coro)
+            except RuntimeError:
+                _coro.close()
+                with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                    return _pool.submit(_aio.run, _coro).result(timeout=60)
+
+        _summary, _details = (p.strip() for p in content.split(_TS_DELIM, 1))
+        _errs = []
+        for _t in targets:
+            try:
+                _plat = Platform(_t["platform"].lower())
+            except (ValueError, KeyError):
+                _errs.append(f"unknown platform '{_t['platform']}'")
+                continue
+            _pc = config.platforms.get(_plat)
+            if not _pc or not _pc.enabled:
+                _errs.append(f"platform '{_t['platform']}' not configured/enabled")
+                continue
+            _cid = _t["chat_id"]
+            _r = _run_send(_send_to_platform(_plat, _pc, _cid, _summary, thread_id=_t.get("thread_id")))
+            if _r and _r.get("error"):
+                _errs.append(f"summary->{_cid}: {_r['error']}")
+                continue
+            _parent_ts = (_r or {}).get("message_id")
+            if _details and _parent_ts:
+                _r2 = _run_send(_send_to_platform(_plat, _pc, _cid, _details, thread_id=_parent_ts))
+                if _r2 and _r2.get("error"):
+                    _errs.append(f"thread->{_cid}: {_r2['error']}")
+            logger.info("Job '%s': thread-split delivered to %s:%s (parent_ts=%s)", job["id"], _t["platform"], _cid, _parent_ts)
+        return "; ".join(_errs) if _errs else None
+    # --- end ai-skills-library-cron-thread-split-patch ---
+
     delivery_errors = []
 
     for target in targets:
@@ -585,22 +636,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
                 if text_to_send:
-                    future = asyncio.run_coroutine_threadsafe(
+                    from agent.async_utils import safe_schedule_threadsafe
+                    future = safe_schedule_threadsafe(
                         runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
                         loop,
                     )
-                    try:
-                        send_result = future.result(timeout=60)
-                    except TimeoutError:
-                        future.cancel()
-                        raise
-                    if send_result and not getattr(send_result, "success", True):
-                        err = getattr(send_result, "error", "unknown")
-                        logger.warning(
-                            "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
-                            job["id"], platform_name, chat_id, err,
-                        )
-                        adapter_ok = False  # fall through to standalone path
+                    if future is None:
+                        adapter_ok = False
+                    else:
+                        try:
+                            send_result = future.result(timeout=60)
+                        except TimeoutError:
+                            future.cancel()
+                            raise
+                        if send_result and not getattr(send_result, "success", True):
+                            err = getattr(send_result, "error", "unknown")
+                            logger.warning(
+                                "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
+                                job["id"], platform_name, chat_id, err,
+                            )
+                            adapter_ok = False  # fall through to standalone path
 
                 # Send extracted media files as native attachments via the live adapter
                 if adapter_ok and media_files:
@@ -1791,7 +1846,12 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 for job in parallel_jobs:
                     _ctx = contextvars.copy_context()
                     _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
-                _results.extend(f.result() for f in _futures)
+                for f in concurrent.futures.as_completed(_futures, timeout=600):
+                    try:
+                        _results.append(f.result())
+                    except Exception as exc:
+                        logger.error("Parallel cron job future failed: %s", exc)
+                        _results.append(False)
 
         # Best-effort sweep of MCP stdio subprocesses that survived their
         # session teardown during this tick.  Runs AFTER every job has

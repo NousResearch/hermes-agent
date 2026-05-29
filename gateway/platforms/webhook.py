@@ -54,6 +54,13 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+_BUILTIN_DELIVER_PLATFORMS = {
+    "telegram", "discord", "slack", "signal", "sms", "whatsapp",
+    "matrix", "mattermost", "homeassistant", "email", "dingtalk",
+    "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
+    "qqbot", "yuanbao",
+}
+
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
@@ -238,12 +245,6 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Cross-platform delivery — any platform with a gateway adapter.
         # Check both built-in names and plugin-registered platforms.
-        _BUILTIN_DELIVER_PLATFORMS = {
-            "telegram", "discord", "slack", "signal", "sms", "whatsapp",
-            "matrix", "mattermost", "homeassistant", "email", "dingtalk",
-            "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
-            "qqbot", "yuanbao",
-        }
         _is_known_platform = deliver_type in _BUILTIN_DELIVER_PLATFORMS
         if not _is_known_platform:
             try:

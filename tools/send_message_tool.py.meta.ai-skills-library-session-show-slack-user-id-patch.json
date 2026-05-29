@@ -1,0 +1,5 @@
+{
+  "patch_id": "ai-skills-library-send-message-slack-user-dm-patch-v1-func",
+  "original_sha256": "3cccbec665e0b4243449e2a96b8f4b4c4491223c2dbb6bb12c53b73cc6ff4d23",
+  "patched_sha256": "94af7d1b14de3c8c76ed487ec8bba7de186c3df591f34e6d80580cf75b2b2c84"
+}

@@ -178,8 +178,11 @@ class TestLaunchdPlistPath:
             raise AssertionError("PATH key not found in plist")
 
     def test_plist_path_includes_node_modules_bin(self):
+        node_bin_dir = gateway_cli.PROJECT_ROOT / "node_modules" / ".bin"
+        if not node_bin_dir.is_dir():
+            pytest.skip("node_modules/.bin not present in this checkout")
         plist = gateway_cli.generate_launchd_plist()
-        node_bin = str(gateway_cli.PROJECT_ROOT / "node_modules" / ".bin")
+        node_bin = str(node_bin_dir)
         lines = plist.splitlines()
         for i, line in enumerate(lines):
             if "<key>PATH</key>" in line.strip():

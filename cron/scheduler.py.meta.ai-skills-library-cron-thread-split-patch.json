@@ -1,0 +1,5 @@
+{
+  "patch_id": "ai-skills-library-cron-thread-split-patch-v1",
+  "original_sha256": "ba54628463b5e461839bd01472bd0e2021a9002e635e1c969f1bb55aeab77d4a",
+  "patched_sha256": "4f7160fffc897eba6eb1d7125205987e288f94bdd45d560e5450bdb97f281fa7"
+}

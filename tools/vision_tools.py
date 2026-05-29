@@ -784,6 +784,7 @@ async def vision_analyze_tool(
         # Local vision models (llama.cpp, ollama) can take well over 30s.
         vision_timeout = 120.0
         vision_temperature = 0.1
+        vision_max_tokens = 4000
         try:
             from hermes_cli.config import cfg_get, load_config
             _cfg = load_config()
@@ -794,13 +795,16 @@ async def vision_analyze_tool(
             _vtemp = _vision_cfg.get("temperature")
             if _vtemp is not None:
                 vision_temperature = float(_vtemp)
+            _vmt = _vision_cfg.get("max_tokens")
+            if _vmt is not None:
+                vision_max_tokens = int(_vmt)
         except Exception:
             pass
         call_kwargs = {
             "task": "vision",
             "messages": messages,
             "temperature": vision_temperature,
-            "max_tokens": 2000,
+            "max_tokens": vision_max_tokens,
             "timeout": vision_timeout,
         }
         if model:
@@ -1014,6 +1018,16 @@ VISION_ANALYZE_SCHEMA = {
 def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     image_url = args.get("image_url", "")
     question = args.get("question", "")
+
+    # Translate container-mounted cache paths (e.g. /root/.hermes/cache/images/*)
+    # to the host path so vision_analyze, which runs on the host, can read them.
+    # The mount table is keyed to the current process's HERMES_HOME, so each
+    # agent profile translates to its own cache directory only.
+    try:
+        from tools.credential_files import from_agent_visible_cache_path
+        image_url = from_agent_visible_cache_path(image_url)
+    except Exception:
+        pass
 
     # Fast path: when the active main model supports native vision AND the
     # provider supports image content inside tool results, short-circuit

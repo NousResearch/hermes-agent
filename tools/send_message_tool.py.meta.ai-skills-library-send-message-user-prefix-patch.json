@@ -1,0 +1,5 @@
+{
+  "patch_id": "ai-skills-library-send-message-user-prefix-patch-v1",
+  "original_sha256": "94af7d1b14de3c8c76ed487ec8bba7de186c3df591f34e6d80580cf75b2b2c84",
+  "patched_sha256": "121cd5f3d571de7d8b465921fbe507cdd7fe41853e553c229020da2c1692974a"
+}

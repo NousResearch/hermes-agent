@@ -662,6 +662,129 @@ class TestPluginContext:
         from tools.registry import registry
         assert "plugin_echo" in registry._tools
 
+    def test_register_tool_rejects_shadow_without_override(self, tmp_path, monkeypatch, caplog):
+        """Without override=True, registering a tool name claimed by a different toolset is rejected."""
+        from tools.registry import registry
+
+        # Seed an existing entry from a non-plugin toolset.
+        registry.register(
+            name="shadow_target",
+            toolset="terminal",
+            schema={"name": "shadow_target", "description": "Built-in", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: "built-in",
+        )
+        original_handler = registry._tools["shadow_target"].handler
+        try:
+            plugins_dir = tmp_path / "hermes_test" / "plugins"
+            plugin_dir = plugins_dir / "shadow_plugin"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "shadow_plugin"}))
+            (plugin_dir / "__init__.py").write_text(
+                'def register(ctx):\n'
+                '    ctx.register_tool(\n'
+                '        name="shadow_target",\n'
+                '        toolset="plugin_shadow_plugin",\n'
+                '        schema={"name": "shadow_target", "description": "Plugin", "parameters": {"type": "object", "properties": {}}},\n'
+                '        handler=lambda args, **kw: "plugin",\n'
+                '    )\n'
+            )
+            hermes_home = tmp_path / "hermes_test"
+            (hermes_home / "config.yaml").write_text(
+                yaml.safe_dump({"plugins": {"enabled": ["shadow_plugin"]}})
+            )
+            monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+            with caplog.at_level(logging.ERROR, logger="tools.registry"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+
+            # Original handler must still be in place — registration was rejected.
+            assert registry._tools["shadow_target"].handler is original_handler
+            assert registry._tools["shadow_target"].toolset == "terminal"
+            # And an ERROR was logged explaining why and how to opt in.
+            assert any("override=True" in r.message for r in caplog.records)
+        finally:
+            registry.deregister("shadow_target")
+
+    def test_register_tool_override_replaces_existing(self, tmp_path, monkeypatch, caplog):
+        """override=True lets a plugin replace an existing built-in tool."""
+        from tools.registry import registry
+
+        registry.register(
+            name="override_target",
+            toolset="terminal",
+            schema={"name": "override_target", "description": "Built-in", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: "built-in",
+        )
+        try:
+            plugins_dir = tmp_path / "hermes_test" / "plugins"
+            plugin_dir = plugins_dir / "override_plugin"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "override_plugin"}))
+            (plugin_dir / "__init__.py").write_text(
+                'def register(ctx):\n'
+                '    ctx.register_tool(\n'
+                '        name="override_target",\n'
+                '        toolset="plugin_override_plugin",\n'
+                '        schema={"name": "override_target", "description": "Plugin", "parameters": {"type": "object", "properties": {}}},\n'
+                '        handler=lambda args, **kw: "plugin",\n'
+                '        override=True,\n'
+                '    )\n'
+            )
+            hermes_home = tmp_path / "hermes_test"
+            (hermes_home / "config.yaml").write_text(
+                yaml.safe_dump({"plugins": {"enabled": ["override_plugin"]}})
+            )
+            monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+            with caplog.at_level(logging.INFO, logger="tools.registry"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+
+            # Plugin handler replaced the built-in one.
+            assert registry._tools["override_target"].toolset == "plugin_override_plugin"
+            assert registry._tools["override_target"].handler({}, ) == "plugin"
+            # Override is audit-logged at INFO.
+            assert any(
+                "overriding existing" in r.message and "override_target" in r.message
+                for r in caplog.records
+            )
+            # Plugin tracks it.
+            assert "override_target" in mgr._plugin_tool_names
+        finally:
+            registry.deregister("override_target")
+
+    def test_register_tool_override_on_new_name_is_noop_path(self, tmp_path, monkeypatch):
+        """override=True on a brand-new name still registers cleanly (no existing entry to replace)."""
+        from tools.registry import registry
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "new_override_plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "new_override_plugin"}))
+        (plugin_dir / "__init__.py").write_text(
+            'def register(ctx):\n'
+            '    ctx.register_tool(\n'
+            '        name="brand_new_override_tool",\n'
+            '        toolset="plugin_new_override_plugin",\n'
+            '        schema={"name": "brand_new_override_tool", "description": "New", "parameters": {"type": "object", "properties": {}}},\n'
+            '        handler=lambda args, **kw: "ok",\n'
+            '        override=True,\n'
+            '    )\n'
+        )
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["new_override_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        try:
+            mgr = PluginManager()
+            mgr.discover_and_load()
+            assert "brand_new_override_tool" in registry._tools
+        finally:
+            registry.deregister("brand_new_override_tool")
+
 
 # ── TestPluginToolVisibility ───────────────────────────────────────────────
 

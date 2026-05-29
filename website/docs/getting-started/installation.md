@@ -10,7 +10,9 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 
 ## Quick Install
 
-### Linux / macOS / WSL2
+### One-Line Installer (Linux / macOS / WSL2)
+
+For a git-based install that tracks `main` and gives you the latest changes immediately:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
@@ -80,7 +82,8 @@ Where the installer puts things depends on whether you're installing as a normal
 
 | Installer | Code lives at | `hermes` binary | Data directory |
 |---|---|---|---|
-| Per-user (normal) | `~/.hermes/hermes-agent/` | `~/.local/bin/hermes` (symlink) | `~/.hermes/` |
+| pip install | Python site-packages | `~/.local/bin/hermes` (console_scripts) | `~/.hermes/` |
+| Per-user (git installer) | `~/.hermes/hermes-agent/` | `~/.local/bin/hermes` (symlink) | `~/.hermes/` |
 | Root-mode (`sudo curl … \| sudo bash`) | `/usr/local/lib/hermes-agent/` | `/usr/local/bin/hermes` | `/root/.hermes/` (or `$HERMES_HOME`) |
 
 The root-mode **FHS layout** (`/usr/local/lib/…`, `/usr/local/bin/hermes`) matches where other system-wide developer tools land on Linux. It's useful for shared-machine deployments where one system install should serve every user. Per-user config (auth, skills, sessions) still lives under each user's `~/.hermes/` or explicit `HERMES_HOME`.
@@ -108,7 +111,9 @@ hermes setup          # Or run the full setup wizard to configure everything at 
 
 ## Prerequisites
 
-The only prerequisite is **Git**. The installer automatically handles everything else:
+**pip install:** No prerequisites beyond Python 3.11+. Everything else is handled automatically.
+
+**Git installer:** The only prerequisite is **Git**. The installer automatically handles everything else:
 
 - **uv** (fast Python package manager)
 - **Python 3.11** (via uv, no sudo needed)

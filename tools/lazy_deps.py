@@ -78,7 +78,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Inference providers ───────────────────────────────────────────────
     # Native Anthropic SDK — needed when provider=anthropic (not via
     # OpenRouter / aggregators which use the openai SDK).
-    "provider.anthropic": ("anthropic==0.86.0",),
+    "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
     # AWS Bedrock provider
     "provider.bedrock": ("boto3==1.42.89",),
 
@@ -116,11 +116,16 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
-    "platform.discord": ("discord.py[voice]==2.7.1",),
+    # brotlicffi gives aiohttp a working 2-arg Decompressor.process() for
+    # Discord CDN's Brotli-encoded attachments. Without it, aiohttp falls
+    # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
+    # uploaded to the Discord gateway fails to decode at att.read() with
+    # "Can not decode content-encoding: br" — see #12511 / #15744.
+    "platform.discord": ("discord.py[voice]==2.7.1", "brotlicffi==1.2.0.1"),
     "platform.slack": (
         "slack-bolt==1.27.0",
         "slack-sdk==3.40.1",
-        "aiohttp==3.13.3",
+        "aiohttp==3.13.4",  # CVE-2026-34513/34518/34519/34520/34525
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
@@ -445,7 +450,7 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             ).strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
-        if answer and answer not in ("y", "yes"):
+        if answer and answer not in {"y", "yes"}:
             raise FeatureUnavailable(
                 feature, missing, "user declined install at prompt"
             )

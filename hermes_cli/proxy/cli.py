@@ -114,7 +114,7 @@ def cmd_proxy(args: Any) -> int:
         return cmd_proxy_start(args)
     if sub == "status":
         return cmd_proxy_status(args)
-    if sub in ("providers", "list"):
+    if sub in {"providers", "list"}:
         return cmd_proxy_list_providers(args)
     # No subcommand → print short help.
     print(

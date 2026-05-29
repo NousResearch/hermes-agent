@@ -662,7 +662,7 @@ export const de: Translations = {
     columnHelp: {
       triage: "Rohe Ideen — ein Specifier wird die Spezifikation ausarbeiten",
       todo: "Wartet auf Abhängigkeiten oder ist nicht zugewiesen",
-      ready: "Zugewiesen und wartet auf einen Dispatcher-Tick",
+      ready: "Abhängigkeiten erfüllt; Profil zum Dispatch zuweisen",
       running: "Von einem Worker übernommen — in Bearbeitung",
       blocked: "Worker hat um menschliche Eingabe gebeten",
       done: "Abgeschlossen",

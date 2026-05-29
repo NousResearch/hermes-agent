@@ -222,9 +222,22 @@ hermes pairing revoke telegram 123456789  # Remove access
 
 Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
 
-### Slash Command Access Control
+### Admins vs Regular Users
 
-Once users are allowed in, you can split them into **admins** (full slash command access) and **regular users** (only the slash commands you explicitly enable). This applies per platform and per scope (DM vs group/channel) and works through the live command registry, so it covers built-in AND plugin-registered slash commands without per-feature wiring.
+Allowlists answer "can this person reach the bot at all?" The **admin / user split** answers "now that they're in, what are they allowed to do?"
+
+Every allowed user falls into one of two tiers per scope (DM vs group/channel):
+
+- **Admin** — full access. Can run every registered slash command (built-in + plugin) and use every gated capability.
+- **Regular user** — restricted access. Can chat with the agent normally, but can only run the slash commands you explicitly enable. The always-allowed floor is `/help` and `/whoami`.
+
+The tiers are configured per platform and per scope. DM admin status does not imply group/channel admin status — each scope has its own admin list.
+
+**What the tiers gate today:** slash commands. The split runs through the live command registry, so it covers built-ins and plugin-registered commands without per-feature wiring. Plain chat is not affected — non-admins can still talk to the agent.
+
+**What may be gated in the future:** more capability surfaces (tool access, model switching, expensive operations) will hang off the same admin / user distinction as we add them. Configuring the split now means those future restrictions land cleanly without you having to re-model who's an admin.
+
+#### Configuration
 
 ```yaml
 gateway:
@@ -239,13 +252,9 @@ gateway:
         group_user_allowed_commands: [status]
 ```
 
-Behavior:
+**Backward compat:** if `allow_admin_from` is not set for a scope, the tier split is disabled for that scope and every allowed user has full access. Existing installs keep working with no changes — opt in when you want the distinction.
 
-- A user in `allow_admin_from` for a scope can run **every** registered slash command.
-- A user in `allow_from` but not in `allow_admin_from` can only run commands in `user_allowed_commands`, plus the always-allowed floor: `/help` and `/whoami`.
-- Plain chat is unaffected. Non-admins can still talk to the agent normally; they just can't trigger arbitrary commands.
-- **Backward compat:** if `allow_admin_from` is not set for a scope, slash gating is disabled for that scope. Existing installs keep working with no changes.
-- DM admin status does not imply group/channel admin status. Each scope has its own admin list.
+#### Inspecting your access
 
 Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. See the [Telegram](/docs/user-guide/messaging/telegram#slash-command-access-control) and [Discord](/docs/user-guide/messaging/discord#slash-command-access-control) pages for platform-specific examples.
 

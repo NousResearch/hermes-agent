@@ -71,6 +71,8 @@ USE_VENV=true
 RUN_SETUP=true
 SKIP_BROWSER=false
 BRANCH="main"
+ENSURE_DEPS=""
+POSTINSTALL_MODE=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -109,6 +111,14 @@ while [[ $# -gt 0 ]]; do
             HERMES_HOME="$2"
             shift 2
             ;;
+        --ensure)
+            ENSURE_DEPS="$2"
+            shift 2
+            ;;
+        --postinstall)
+            POSTINSTALL_MODE=true
+            shift
+            ;;
         -h|--help)
             echo "Hermes Agent Installer"
             echo ""
@@ -133,6 +143,12 @@ while [[ $# -gt 0 ]]; do
             echo "  (default /root/.hermes).  This keeps Docker bind-mounted volumes"
             echo "  small and ensures the command is on PATH for all shells."
             echo "  Existing installs at \$HERMES_HOME/hermes-agent are preserved in-place."
+            echo "  --ensure DEPS  Install only specified deps (comma-separated)"
+            echo "                   Supported: node, browser, ripgrep, ffmpeg"
+            echo "                   Does NOT clone repo or create venv"
+            echo "  --postinstall  Run post-install setup only (for pip users)"
+            echo "                   Installs optional deps + runs hermes setup"
+            echo "                   Does NOT clone repo or create venv"
             exit 0
             ;;
         *)
@@ -1051,11 +1067,6 @@ install_deps() {
         log_info "Termux note: matrix e2ee and local faster-whisper extras are excluded from .[termux-all] due to upstream Android wheel/toolchain blockers."
         log_info "Termux note: browser/WhatsApp tooling is not installed by default; see the Termux guide for optional follow-up steps."
 
-        if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
-            log_info "tinker-atropos submodule found — skipping install (optional, for RL training)"
-            log_info "  To install later: $PIP_PYTHON -m pip install -e \"./tinker-atropos\""
-        fi
-
         log_success "All dependencies installed"
         return 0
     fi
@@ -1242,13 +1253,6 @@ PY
     fi
 
     log_success "Main package installed"
-
-    # tinker-atropos (RL training) is optional — skip by default.
-    # To enable RL tools: git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"
-    if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
-        log_info "tinker-atropos submodule found — skipping install (optional, for RL training)"
-        log_info "  To install: $UV_CMD pip install -e \"./tinker-atropos\""
-    fi
 
     log_success "All dependencies installed"
 }
@@ -1884,6 +1888,88 @@ print_success() {
     fi
 }
 
+ensure_mode() {
+    detect_os
+
+    IFS=',' read -ra DEPS <<< "$ENSURE_DEPS"
+    for dep in "${DEPS[@]}"; do
+        dep="$(echo "$dep" | tr -d '[:space:]')"
+        case "$dep" in
+            node)
+                check_node
+                ;;
+            browser)
+                check_node
+                if [ "$HAS_NODE" = true ]; then
+                    DETECTED_BROWSER_EXECUTABLE="$(find_system_browser 2>/dev/null || true)"
+                    if [ -z "$DETECTED_BROWSER_EXECUTABLE" ]; then
+                        log_info "Installing agent-browser + Chromium..."
+                        npm_bin="$(command -v npm 2>/dev/null || echo "")"
+                        if [ -n "$npm_bin" ]; then
+                            local agent_browser_dir="$HERMES_HOME/node_modules"
+                            mkdir -p "$agent_browser_dir"
+                            "$npm_bin" install --prefix "$HERMES_HOME" agent-browser 2>/dev/null || true
+                            npx playwright install chromium 2>/dev/null || true
+                        fi
+                    else
+                        log_success "System browser found: $DETECTED_BROWSER_EXECUTABLE"
+                    fi
+                fi
+                ;;
+            ripgrep)
+                if ! command -v rg &>/dev/null; then
+                    HAS_RIPGREP=false
+                    HAS_FFMPEG=true
+                    install_system_packages
+                fi
+                ;;
+            ffmpeg)
+                if ! command -v ffmpeg &>/dev/null; then
+                    HAS_FFMPEG=false
+                    HAS_RIPGREP=true
+                    install_system_packages
+                fi
+                ;;
+            *)
+                log_warn "Unknown dependency: $dep"
+                ;;
+        esac
+    done
+}
+
+postinstall_mode() {
+    print_banner
+    detect_os
+
+    log_info "Post-install mode: setting up Hermes for pip install"
+
+    check_node
+    check_network_prerequisites
+    install_system_packages
+
+    if [ "$HAS_NODE" = true ] && [ "$SKIP_BROWSER" = false ]; then
+        DETECTED_BROWSER_EXECUTABLE="$(find_system_browser 2>/dev/null || true)"
+        if [ -z "$DETECTED_BROWSER_EXECUTABLE" ]; then
+            log_info "Installing browser engine..."
+            npm_bin="$(command -v npm 2>/dev/null || echo "")"
+            if [ -n "$npm_bin" ]; then
+                npx playwright install chromium 2>/dev/null || true
+            fi
+        else
+            log_success "System browser found: $DETECTED_BROWSER_EXECUTABLE"
+        fi
+    fi
+
+    HERMES_CMD="$(command -v hermes 2>/dev/null || echo "")"
+    if [ -n "$HERMES_CMD" ]; then
+        log_info "Running hermes setup..."
+        "$HERMES_CMD" setup
+    else
+        log_warn "hermes command not found on PATH"
+        log_info "Try: python -m hermes_cli.main setup"
+    fi
+}
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -1912,4 +1998,10 @@ main() {
     print_success
 }
 
-main
+if [ -n "$ENSURE_DEPS" ]; then
+    ensure_mode
+elif [ "$POSTINSTALL_MODE" = true ]; then
+    postinstall_mode
+else
+    main
+fi

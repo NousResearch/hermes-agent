@@ -27,7 +27,11 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 # because the API requires a conversation ID. To DM a user you must first call
 # conversations.open to obtain a D... ID. Without this gate, Slack IDs fall
 # through to channel-name resolution, which only matches by name and fails.
-_SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
+# U... user IDs are also accepted: _send_slack will call conversations.open
+# automatically to resolve them to a D... channel before posting.
+_SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
+# Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
+_SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
@@ -174,6 +178,15 @@ def _handle_send(args):
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
     target_ref = parts[1].strip() if len(parts) > 1 else None
+    # ai-skills-library-send-message-user-prefix-patch: accept
+    # `user:<slack_id>` as a generic alias and route it to Slack. The
+    # bs-flow-progressing skill (and other催办-style flows) document this
+    # format for DMing arbitrary users by their NS-recorded slack_id.
+    # Without this rewrite, `user` is parsed as the platform name and the
+    # call fails channel-name resolution before reaching _send_slack,
+    # which already handles U-IDs via conversations.open.
+    if platform_name == "user" and target_ref and _SLACK_TARGET_RE.fullmatch(target_ref):
+        platform_name = "slack"
     chat_id = None
     thread_id = None
 
@@ -330,9 +343,17 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match:
             return match.group(1), match.group(2), True
     if platform_name == "slack":
+        match = _SLACK_THREAD_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
         match = _SLACK_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "matrix":
+        trimmed = target_ref.strip()
+        split_idx = trimmed.rfind(":$")
+        if split_idx > 0:
+            return trimmed[:split_idx], trimmed[split_idx + 1 :], True
     if platform_name == "weixin":
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -703,7 +724,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            # ai-skills-library-slack-thread-reply-patch: forward thread_id
+            result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -1124,8 +1146,13 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         return _error(f"Discord send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
-    """Send via Slack Web API."""
+async def _send_slack(token, chat_id, message, thread_id=None):
+    """Send via Slack Web API.
+
+    ai-skills-library-slack-thread-reply-patch: when thread_id (a Slack
+    thread_ts) is supplied, the message is posted as a threaded reply
+    under that parent message instead of at the channel root.
+    """
     try:
         import aiohttp
     except ImportError:
@@ -1134,10 +1161,26 @@ async def _send_slack(token, chat_id, message):
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url()
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-        url = "https://slack.com/api/chat.postMessage"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+            # U... is a user ID — open a DM conversation first to get a D... channel ID.
+            if chat_id.startswith("U"):
+                async with session.post(
+                    "https://slack.com/api/conversations.open",
+                    headers=headers,
+                    json={"users": chat_id},
+                    **_req_kw,
+                ) as resp:
+                    data = await resp.json()
+                if not data.get("ok"):
+                    return _error(f"Slack conversations.open failed: {data.get('error', 'unknown')}")
+                chat_id = data["channel"]["id"]
+            url = "https://slack.com/api/chat.postMessage"
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            # ai-skills-library-slack-thread-reply-patch: reply in-thread
+            # when a thread_ts is supplied (target form slack:CHANNEL:THREAD_TS).
+            if thread_id:
+                payload["thread_ts"] = thread_id
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):

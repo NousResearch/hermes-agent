@@ -134,6 +134,62 @@ _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
 )
 
+def _gateway_disabled_value(raw: str) -> bool:
+    return bool(re.fullmatch(r"(?:0|off|false|none|disable|disabled)", raw.strip(), re.IGNORECASE))
+
+
+def _central_approval_telegram_target() -> Optional[str]:
+    """Return the opt-in central Telegram target for exec approvals."""
+    raw = (
+        os.getenv("GATEWAY_APPROVAL_TELEGRAM_TARGET", "").strip()
+        or os.getenv("HERMES_APPROVALS_TELEGRAM_TARGET", "").strip()
+        or os.getenv("SWARM_APPROVAL_TELEGRAM_TARGET", "").strip()
+    )
+    if not raw or _gateway_disabled_value(raw):
+        return None
+    return raw
+
+
+def _parse_telegram_numeric_target(target: str) -> Optional[Dict[str, str]]:
+    """Parse telegram:<chat_id>[:thread_id] targets used for approval fanout."""
+    match = re.fullmatch(r"telegram:(-?\d+)(?::(\d+))?", target.strip())
+    if not match:
+        return None
+    parsed = {"chat_id": match.group(1)}
+    if match.group(2):
+        parsed["thread_id"] = match.group(2)
+    return parsed
+
+
+def _workspace_web_push_endpoint() -> Optional[str]:
+    """Return the opt-in Workspace web-push API endpoint for approval fanout."""
+    raw = (
+        os.getenv("GATEWAY_APPROVAL_WEB_PUSH_ENDPOINT", "").strip()
+        or os.getenv("HERMES_WORKSPACE_WEB_PUSH_ENDPOINT", "").strip()
+    )
+    if not raw or _gateway_disabled_value(raw):
+        return None
+
+    from urllib.parse import urlparse
+
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        logger.warning("Approval web-push endpoint must be an absolute http(s) URL: %s", raw)
+        return None
+    if parsed.username or parsed.password:
+        logger.warning("Approval web-push endpoint must not include credentials: %s", raw)
+        return None
+    return raw
+
+
+def _approval_push_body(command: str, description: str, session_key: str) -> str:
+    cmd_preview = command[:500] + "..." if len(command) > 500 else command
+    return _redact_gateway_user_facing_secrets(
+        f"Reason: {description}\n"
+        f"Session: {session_key}\n\n"
+        f"{cmd_preview}"
+    )
+
 
 def _gateway_platform_value(platform: Any) -> str:
     """Return a normalized gateway platform value for enums or raw strings."""
@@ -13898,10 +13954,111 @@ class GatewayRunner:
 
 
     # ------------------------------------------------------------------
-    # /approve & /deny — explicit dangerous-command approval
+    # Interactive dangerous-command approval (/approve, /deny)
     # ------------------------------------------------------------------
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
+
+    async def _send_central_exec_approval(
+        self,
+        *,
+        origin_source: SessionSource,
+        command: str,
+        session_key: str,
+        description: str,
+    ) -> bool:
+        """Fan out exec approval prompts to the Hermes Approvals Telegram channel."""
+        target = _central_approval_telegram_target()
+        if not target:
+            return False
+        target_info = _parse_telegram_numeric_target(target)
+        if not target_info:
+            logger.warning("Central approval Telegram target must be telegram:<chat_id>[:thread_id]: %s", target)
+            return False
+
+        # If the original approval is already being sent to the exact central
+        # Telegram destination, do not create a duplicate prompt.
+        if (
+            _gateway_platform_value(origin_source.platform) == "telegram"
+            and str(origin_source.chat_id) == target_info["chat_id"]
+            and str(origin_source.thread_id or "") == str(target_info.get("thread_id", ""))
+        ):
+            return False
+
+        adapter = self.adapters.get(Platform.TELEGRAM)
+        send_exec_approval = getattr(adapter, "send_exec_approval", None) if adapter else None
+        if not adapter or getattr(type(adapter), "send_exec_approval", None) is None or not send_exec_approval:
+            logger.warning("Central approval fanout skipped: Telegram adapter unavailable")
+            return False
+
+        metadata: Dict[str, Any] = {}
+        if target_info.get("thread_id"):
+            metadata["thread_id"] = target_info["thread_id"]
+
+        redacted_command = _redact_gateway_user_facing_secrets(command)
+        redacted_description = _redact_gateway_user_facing_secrets(description)
+        result = await send_exec_approval(
+            chat_id=target_info["chat_id"],
+            command=redacted_command,
+            session_key=session_key,
+            description=redacted_description,
+            metadata=metadata or None,
+        )
+        if not getattr(result, "success", False):
+            logger.warning(
+                "Central approval fanout to %s failed: %s",
+                target,
+                getattr(result, "error", "unknown error"),
+            )
+            return False
+        return True
+
+    async def _send_exec_approval_web_push(
+        self,
+        *,
+        command: str,
+        session_key: str,
+        description: str,
+    ) -> bool:
+        """Best-effort PWA push notification for exec approvals."""
+        endpoint = _workspace_web_push_endpoint()
+        if not endpoint:
+            return False
+
+        def _post() -> bool:
+            import urllib.error
+            import urllib.request
+
+            payload = {
+                "action": "approval",
+                "title": "[Hermes Approval] Command approval required",
+                "body": _approval_push_body(command, description, session_key),
+                "url": "/swarm2?approval=exec",
+                "tag": f"gateway-exec-approval:{session_key}",
+                "requireInteraction": True,
+            }
+            request = urllib.request.Request(
+                endpoint,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    return 200 <= int(getattr(response, "status", 200)) < 300
+            except urllib.error.HTTPError as exc:
+                body = ""
+                try:
+                    body = exc.read().decode("utf-8", errors="replace")[:500]
+                except Exception:
+                    body = ""
+                logger.warning("Exec approval web push failed: HTTP %s %s", exc.code, body)
+                return False
+            except Exception as exc:
+                logger.warning("Exec approval web push failed: %s", exc)
+                return False
+
+        return await asyncio.to_thread(_post)
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — unblock waiting agent thread(s).
@@ -17082,6 +17239,41 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+
+                # Fan out every exec approval to the central Hermes Approvals
+                # Telegram channel and Workspace PWA push.  These use the same
+                # session_key as the origin prompt, so Telegram channel buttons
+                # unblock the original waiting agent thread.
+                for _approval_coro, _approval_log in (
+                    (
+                        self._send_central_exec_approval(
+                            origin_source=source,
+                            command=cmd,
+                            session_key=_approval_session_key,
+                            description=desc,
+                        ),
+                        "central Telegram approval fanout",
+                    ),
+                    (
+                        self._send_exec_approval_web_push(
+                            command=cmd,
+                            session_key=_approval_session_key,
+                            description=desc,
+                        ),
+                        "approval PWA push fanout",
+                    ),
+                ):
+                    try:
+                        _fanout_fut = safe_schedule_threadsafe(
+                            _approval_coro,
+                            _loop_for_step,
+                            logger=logger,
+                            log_message=f"{_approval_log} scheduling error",
+                        )
+                        if _fanout_fut is not None:
+                            _fanout_fut.result(timeout=15)
+                    except Exception as _e:
+                        logger.warning("%s failed: %s", _approval_log, _e)
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids

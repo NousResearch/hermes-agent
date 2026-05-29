@@ -2531,34 +2531,78 @@ def run_conversation(
                 # ── Invalid reasoning/thinking config recovery ───────────
                 # Provider rejected the request because of an incompatible
                 # reasoning_effort, thinking toggle, or dual-parameter conflict.
-                # Strip the reasoning config and retry once on the same provider.
+                # Instead of disabling reasoning entirely, we surgically strip
+                # only the rejected parameters so the user still gets "smart"
+                # responses where possible.
                 if (
                     classified.reason == FailoverReason.invalid_reasoning_config
                     and not invalid_reasoning_config_retry_attempted
                 ):
                     invalid_reasoning_config_retry_attempted = True
                     _old_reasoning = agent.reasoning_config
-                    agent.reasoning_config = None
+                    _rejected = classified.rejected_reasoning_params
+
+                    if _rejected == "reasoning_effort":
+                        # Provider supports thinking toggle but not effort level.
+                        # Keep reasoning enabled, just drop the effort parameter.
+                        if isinstance(agent.reasoning_config, dict):
+                            agent.reasoning_config = {
+                                **agent.reasoning_config,
+                                "effort": "",
+                            }
+                        _action = "dropped reasoning_effort (thinking toggle preserved)"
+                    elif _rejected == "thinking":
+                        # Provider supports effort level but not thinking toggle.
+                        # Disable the toggle, keep the effort if set.
+                        if isinstance(agent.reasoning_config, dict):
+                            _effort = agent.reasoning_config.get("effort", "")
+                            agent.reasoning_config = {
+                                "enabled": False,
+                                "effort": _effort,
+                            }
+                        else:
+                            agent.reasoning_config = {"enabled": False}
+                        _action = "disabled thinking toggle (reasoning_effort preserved)"
+                    else:
+                        # Both rejected or ambiguous — full disable.
+                        agent.reasoning_config = None
+                        _action = "fully disabled reasoning"
+
                     # Save to session state so we can warn at the end
-                    if not hasattr(agent, '_reasoning_disabled_this_session'):
-                        agent._reasoning_disabled_this_session = True
+                    if not hasattr(agent, '_reasoning_degraded_this_session'):
+                        agent._reasoning_degraded_this_session = True
                         agent._reasoning_was_config = _old_reasoning
-                    agent._vprint(
-                        f"\n{agent.log_prefix}⚠️  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"{agent.log_prefix}⚠️  REASONING DISABLED FOR THIS SESSION\n"
-                        f"{agent.log_prefix}⚠️  Provider rejected reasoning config ({_old_reasoning}).\n"
-                        f"{agent.log_prefix}⚠️  Model will respond WITHOUT extended thinking.\n"
-                        f"{agent.log_prefix}⚠️  \n"
-                        f"{agent.log_prefix}⚠️  To re-enable reasoning:\n"
-                        f"{agent.log_prefix}⚠️    • Switch to a provider/model that supports it\n"
-                        f"{agent.log_prefix}⚠️    • Run: hermes config set provider.name <other-provider>\n"
-                        f"{agent.log_prefix}⚠️  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
-                        force=True,
-                    )
+                        agent._reasoning_rejected_params = _rejected
+
+                    if _rejected == "both" or _rejected == "":
+                        # Full disable — show the big warning
+                        agent._vprint(
+                            f"\n{agent.log_prefix}⚠️  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"{agent.log_prefix}⚠️  REASONING DISABLED FOR THIS SESSION\n"
+                            f"{agent.log_prefix}⚠️  Provider rejected reasoning config ({_old_reasoning}).\n"
+                            f"{agent.log_prefix}⚠️  Model will respond WITHOUT extended thinking.\n"
+                            f"{agent.log_prefix}⚠️  \n"
+                            f"{agent.log_prefix}⚠️  To re-enable reasoning:\n"
+                            f"{agent.log_prefix}⚠️    • Switch to a provider/model that supports it\n"
+                            f"{agent.log_prefix}⚠️    • Run: hermes config set provider.name <other-provider>\n"
+                            f"{agent.log_prefix}⚠️  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
+                            force=True,
+                        )
+                    else:
+                        # Partial disable — show lighter notice
+                        agent._vprint(
+                            f"\n{agent.log_prefix}⚠️  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"{agent.log_prefix}⚠️  REASONING PARTIALLY ADAPTED\n"
+                            f"{agent.log_prefix}⚠️  Provider rejected part of reasoning config ({_old_reasoning}).\n"
+                            f"{agent.log_prefix}⚠️  Action: {_action}\n"
+                            f"{agent.log_prefix}⚠️  Model will still provide enhanced reasoning where supported.\n"
+                            f"{agent.log_prefix}⚠️  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
+                            force=True,
+                        )
                     logger.warning(
-                        "%sInvalid reasoning config recovery: cleared "
-                        "reasoning_config (was %s), retrying on same provider without reasoning",
-                        agent.log_prefix, _old_reasoning,
+                        "%sInvalid reasoning config recovery: %s "
+                        "(was %s, rejected=%s), retrying on same provider",
+                        agent.log_prefix, _action, _old_reasoning, _rejected,
                     )
                     continue
 

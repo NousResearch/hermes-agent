@@ -1584,6 +1584,7 @@ class TestInvalidReasoningConfig:
         assert result.reason == FailoverReason.invalid_reasoning_config
         assert result.retryable is True
         assert result.should_fallback is False
+        assert result.rejected_reasoning_params == "both"
 
     def test_xai_grok_unsupported_reasoning_effort(self):
         e = MockAPIError(
@@ -1593,6 +1594,7 @@ class TestInvalidReasoningConfig:
         result = classify_api_error(e, provider="xai", model="grok-4-1-fast")
         assert result.reason == FailoverReason.invalid_reasoning_config
         assert result.retryable is True
+        assert result.rejected_reasoning_params == "reasoning_effort"
 
     def test_unknown_parameter_reasoning_effort(self):
         e = MockAPIError(
@@ -1602,6 +1604,7 @@ class TestInvalidReasoningConfig:
         result = classify_api_error(e, provider="custom", model="local-llm")
         assert result.reason == FailoverReason.invalid_reasoning_config
         assert result.retryable is True
+        assert result.rejected_reasoning_params == "reasoning_effort"
 
     def test_unsupported_parameter_thinking(self):
         e = MockAPIError(
@@ -1611,12 +1614,14 @@ class TestInvalidReasoningConfig:
         result = classify_api_error(e, provider="custom", model="qwen3")
         assert result.reason == FailoverReason.invalid_reasoning_config
         assert result.retryable is True
+        assert result.rejected_reasoning_params == "thinking"
 
     def test_no_status_code_path_also_classifies(self):
         """Message-only classifier must catch reasoning errors even without HTTP status."""
         e = Exception("does not support reasoning_effort")
         result = classify_api_error(e, provider="openrouter", model="cerebras/gpt-oss-120b")
         assert result.reason == FailoverReason.invalid_reasoning_config
+        assert result.rejected_reasoning_params == "reasoning_effort"
 
     def test_unrelated_400_is_not_misclassified(self):
         e = MockAPIError("bad request: missing field 'messages'", status_code=400)

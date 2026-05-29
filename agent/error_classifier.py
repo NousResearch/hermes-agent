@@ -85,6 +85,12 @@ class ClassifiedError:
     should_rotate_credential: bool = False
     should_fallback: bool = False
 
+    # For invalid_reasoning_config: which specific parameters the provider
+    # rejected. Values: "reasoning_effort", "thinking", "both", or "" (unknown).
+    # The retry loop uses this to surgically strip only the rejected params
+    # while preserving what works — so the user still gets "smart" responses.
+    rejected_reasoning_params: str = ""
+
     @property
     def is_auth(self) -> bool:
         return self.reason in {FailoverReason.auth, FailoverReason.auth_permanent}
@@ -381,6 +387,65 @@ _REASONING_CONFIG_PATTERNS = [
     "thinking is not supported",
 ]
 
+# Patterns that specifically reject ONLY reasoning_effort (effort level control).
+# These are separate from "thinking" (binary on/off toggle).
+_RE_ONLY_REASONING_EFFORT = [
+    "does not support parameter reasoningeffort",
+    "does not support reasoning_effort",
+    "reasoning_effort is not supported",
+    "unknown parameter: reasoning_effort",
+    "unsupported parameter: reasoning_effort",
+    "invalid reasoning_effort",
+]
+
+# Patterns that specifically reject ONLY thinking (binary toggle).
+_RE_ONLY_THINKING = [
+    "unknown parameter: thinking",
+    "unsupported parameter: thinking",
+    "invalid thinking",
+    "thinking is not supported",
+]
+
+# Patterns that reject BOTH (dual-parameter conflict or blanket rejection).
+_RE_BOTH = [
+    "cannot specify both 'thinking' and 'reasoning_effort'",
+    "cannot use both 'thinking' and 'reasoning_effort'",
+    "does not support parameter reasoning",
+    "reasoning is not supported",
+]
+
+
+def _detect_rejected_reasoning_params(error_msg: str) -> str:
+    """Determine which reasoning parameters the provider rejected.
+
+    Returns:
+        "reasoning_effort" — only the effort level is unsupported,
+                             but the thinking toggle may still work
+        "thinking"         — only the thinking toggle is unsupported,
+                             but reasoning_effort may still work
+        "both"             — both are rejected (or the error is ambiguous)
+        ""                 — no reasoning rejection detected
+    """
+    em = error_msg.lower()
+    has_effort = any(p in em for p in _RE_ONLY_REASONING_EFFORT)
+    has_thinking = any(p in em for p in _RE_ONLY_THINKING)
+    
+    # Check specific patterns FIRST before generic "both" patterns
+    # because "does not support parameter reasoning" (from _RE_BOTH) is a
+    # substring of "does not support parameter reasoningeffort" (from _RE_ONLY_REASONING_EFFORT)
+    if has_effort and not has_thinking:
+        return "reasoning_effort"
+    if has_thinking and not has_effort:
+        return "thinking"
+    
+    # Now check for both/generic patterns
+    has_both = any(p in em for p in _RE_BOTH)
+    if has_both:
+        return "both"
+    
+    # Generic pattern matched — can't tell which param, assume both
+    return "both"
+
 # Transport error type names
 _TRANSPORT_ERROR_TYPES = frozenset({
     "ReadTimeout", "ConnectTimeout", "PoolTimeout",
@@ -642,11 +707,13 @@ def classify_api_error(
     # effort, thinking toggle, or reasoning_effort, we strip the config and
     # retry once on the same provider instead of immediately falling back.
     if status_code == 400 and any(p in error_msg for p in _REASONING_CONFIG_PATTERNS):
+        rejected = _detect_rejected_reasoning_params(error_msg)
         return _result(
             FailoverReason.invalid_reasoning_config,
             retryable=True,
             should_compress=False,
             should_fallback=False,
+            rejected_reasoning_params=rejected,
         )
 
     # xAI Grok subscription entitlement errors.
@@ -1151,11 +1218,13 @@ def _classify_by_message(
 
     # Reasoning/thinking config patterns (from message text when no status_code)
     if any(p in error_msg for p in _REASONING_CONFIG_PATTERNS):
+        rejected = _detect_rejected_reasoning_params(error_msg)
         return result_fn(
             FailoverReason.invalid_reasoning_config,
             retryable=True,
             should_compress=False,
             should_fallback=False,
+            rejected_reasoning_params=rejected,
         )
 
     # Image-too-large patterns (from message text when no status_code)

@@ -23,6 +23,8 @@ from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_GATEWAY_APPROVAL_TIMEOUT_SECONDS = 3600
+
 # Freeze YOLO mode at module import time. Reading os.environ on every call
 # would allow any skill running inside the process to set this variable and
 # instantly bypass all approval checks — a prompt-injection escalation path.
@@ -1109,15 +1111,17 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         _drop_entry()
         return {"resolved": False, "choice": None, "notify_failed": True}
 
-    # Block until the user responds or timeout (default 5 min). Poll in short
+    # Block until the user responds or timeout (default 1 hour). Poll in short
     # slices so we can fire activity heartbeats every ~10s to the agent's
     # inactivity tracker — otherwise the gateway watchdog kills the agent
     # while the user is still responding. Mirrors _wait_for_process() cadence.
-    timeout = _get_approval_config().get("gateway_timeout", 300)
+    timeout = _get_approval_config().get(
+        "gateway_timeout", DEFAULT_GATEWAY_APPROVAL_TIMEOUT_SECONDS
+    )
     try:
         timeout = int(timeout)
     except (ValueError, TypeError):
-        timeout = 300
+        timeout = DEFAULT_GATEWAY_APPROVAL_TIMEOUT_SECONDS
 
     try:
         from tools.environments.base import touch_activity_if_due

@@ -192,55 +192,139 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             raise InterruptedError("Agent interrupted before Codex stream retry")
         collected_output_items: list = []
         try:
+            # PATCH (#33042 backport): wrap stream iteration so that a
+            # mid-iteration ``TypeError: 'NoneType' object is not iterable``
+            # — raised by the SDK's high-level helper when chatgpt.com
+            # Codex backend ships ``response.output=null`` on the terminal
+            # frame — is recovered from the events we already accumulated.
+            _null_output_recovered = False
             with active_client.responses.stream(**api_kwargs) as stream:
-                for event in stream:
-                    agent._touch_activity("receiving stream response")
-                    if agent._interrupt_requested:
-                        break
-                    event_type = getattr(event, "type", "")
-                    # Fire callbacks on text content deltas (suppress during tool calls)
-                    if "output_text.delta" in event_type or event_type == "response.output_text.delta":
-                        delta_text = getattr(event, "delta", "")
-                        if delta_text:
-                            agent._codex_streamed_text_parts.append(delta_text)
-                        if delta_text and not has_tool_calls:
-                            if not first_delta_fired:
-                                first_delta_fired = True
-                                if on_first_delta:
-                                    try:
-                                        on_first_delta()
-                                    except Exception:
-                                        pass
-                            agent._fire_stream_delta(delta_text)
-                    # Track tool calls to suppress text streaming
-                    elif "function_call" in event_type:
-                        has_tool_calls = True
-                    # Fire reasoning callbacks
-                    elif "reasoning" in event_type and "delta" in event_type:
-                        reasoning_text = getattr(event, "delta", "")
-                        if reasoning_text:
-                            agent._fire_reasoning_delta(reasoning_text)
-                    # Collect completed output items — some backends
-                    # (chatgpt.com/backend-api/codex) stream valid items
-                    # via response.output_item.done but the SDK's
-                    # get_final_response() returns an empty output list.
-                    elif event_type == "response.output_item.done":
-                        done_item = getattr(event, "item", None)
-                        if done_item is not None:
-                            collected_output_items.append(done_item)
-                    # Log non-completed terminal events for diagnostics
-                    elif event_type in {"response.incomplete", "response.failed"}:
-                        resp_obj = getattr(event, "response", None)
-                        status = getattr(resp_obj, "status", None) if resp_obj else None
-                        incomplete_details = getattr(resp_obj, "incomplete_details", None) if resp_obj else None
-                        logger.warning(
-                            "Codex Responses stream received terminal event %s "
-                            "(status=%s, incomplete_details=%s, streamed_chars=%d). %s",
-                            event_type, status, incomplete_details,
-                            sum(len(p) for p in agent._codex_streamed_text_parts),
-                            agent._client_log_context(),
+                try:
+                    for event in stream:
+                        agent._touch_activity("receiving stream response")
+                        if agent._interrupt_requested:
+                            break
+                        event_type = getattr(event, "type", "")
+                        # Fire callbacks on text content deltas (suppress during tool calls)
+                        if "output_text.delta" in event_type or event_type == "response.output_text.delta":
+                            delta_text = getattr(event, "delta", "")
+                            if delta_text:
+                                agent._codex_streamed_text_parts.append(delta_text)
+                            if delta_text and not has_tool_calls:
+                                if not first_delta_fired:
+                                    first_delta_fired = True
+                                    if on_first_delta:
+                                        try:
+                                            on_first_delta()
+                                        except Exception:
+                                            pass
+                                agent._fire_stream_delta(delta_text)
+                        # Track tool calls to suppress text streaming
+                        elif "function_call" in event_type:
+                            has_tool_calls = True
+                        # Fire reasoning callbacks
+                        elif "reasoning" in event_type and "delta" in event_type:
+                            reasoning_text = getattr(event, "delta", "")
+                            if reasoning_text:
+                                agent._fire_reasoning_delta(reasoning_text)
+                        # Collect completed output items — some backends
+                        # (chatgpt.com/backend-api/codex) stream valid items
+                        # via response.output_item.done but the SDK's
+                        # get_final_response() returns an empty output list.
+                        elif event_type == "response.output_item.done":
+                            done_item = getattr(event, "item", None)
+                            if done_item is not None:
+                                collected_output_items.append(done_item)
+                        # Log non-completed terminal events for diagnostics
+                        elif event_type in {"response.incomplete", "response.failed"}:
+                            resp_obj = getattr(event, "response", None)
+                            status = getattr(resp_obj, "status", None) if resp_obj else None
+                            incomplete_details = getattr(resp_obj, "incomplete_details", None) if resp_obj else None
+                            logger.warning(
+                                "Codex Responses stream received terminal event %s "
+                                "(status=%s, incomplete_details=%s, streamed_chars=%d). %s",
+                                event_type, status, incomplete_details,
+                                sum(len(p) for p in agent._codex_streamed_text_parts),
+                                agent._client_log_context(),
+                            )
+                except TypeError as _iter_exc:
+                    _msg = str(_iter_exc)
+                    if "NoneType" not in _msg or "not iterable" not in _msg:
+                        raise
+                    _null_output_recovered = True
+                    logger.debug(
+                        "Codex stream: SDK TypeError mid-iteration (response.output=null) "
+                        "— recovering from accumulator (items=%d, text_parts=%d). %s",
+                        len(collected_output_items),
+                        len(agent._codex_streamed_text_parts),
+                        agent._client_log_context(),
+                    )
+
+                if _null_output_recovered:
+                    # Build the final response ourselves; don't call
+                    # get_final_response() — it would re-trip the same bug.
+                    if collected_output_items:
+                        _out_items = list(collected_output_items)
+                    elif agent._codex_streamed_text_parts and not has_tool_calls:
+                        _assembled = "".join(agent._codex_streamed_text_parts)
+                        _out_items = [SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=_assembled)],
+                        )]
+                    else:
+                        raise RuntimeError(
+                            "Codex Responses stream crashed with response.output=null "
+                            "and produced no recoverable content"
                         )
-                final_response = stream.get_final_response()
+                    final_response = SimpleNamespace(
+                        output=_out_items,
+                        output_text="".join(agent._codex_streamed_text_parts),
+                        usage=None,
+                        status="completed",
+                        id=None,
+                        model=api_kwargs.get("model"),
+                        incomplete_details=None,
+                        error=None,
+                    )
+                else:
+                    # Defensive: get_final_response() can also raise the
+                    # same TypeError on terminal-frame parse.
+                    try:
+                        final_response = stream.get_final_response()
+                    except TypeError as _final_exc:
+                        _msg = str(_final_exc)
+                        if "NoneType" not in _msg or "not iterable" not in _msg:
+                            raise
+                        if collected_output_items:
+                            _out_items = list(collected_output_items)
+                        elif agent._codex_streamed_text_parts and not has_tool_calls:
+                            _assembled = "".join(agent._codex_streamed_text_parts)
+                            _out_items = [SimpleNamespace(
+                                type="message",
+                                role="assistant",
+                                status="completed",
+                                content=[SimpleNamespace(type="output_text", text=_assembled)],
+                            )]
+                        else:
+                            raise
+                        final_response = SimpleNamespace(
+                            output=_out_items,
+                            output_text="".join(agent._codex_streamed_text_parts),
+                            usage=None,
+                            status="completed",
+                            id=None,
+                            model=api_kwargs.get("model"),
+                            incomplete_details=None,
+                            error=None,
+                        )
+                        logger.debug(
+                            "Codex stream: recovered from terminal response.output=null "
+                            "in get_final_response (items=%d, text_parts=%d)",
+                            len(collected_output_items),
+                            len(agent._codex_streamed_text_parts),
+                        )
                 # PATCH: ChatGPT Codex backend streams valid output items
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
@@ -441,8 +525,206 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
 
 
 
+# ---------------------------------------------------------------------------
+# Surgical backport from upstream commit cb38ce28c (#33042):
+#   "refactor(codex): drop SDK responses.stream() helper; consume events directly"
+#
+# The chatgpt.com Codex backend (gpt-5.5, gpt-5.3-codex) has been observed to
+# ship ``response.output = null`` on the terminal SSE frame, which crashes the
+# OpenAI SDK's high-level ``client.responses.stream(...)`` helper with::
+#
+#     TypeError: 'NoneType' object is not iterable
+#
+# The helpers below let us consume the raw SSE event stream from
+# ``client.responses.create(stream=True)`` and assemble a final response object
+# ourselves — never reading ``response.output`` from the terminal frame for
+# content reconstruction.  This file keeps existing main-agent paths intact;
+# only the auxiliary adapter is migrated to the new consumer.
+# ---------------------------------------------------------------------------
+
+_TERMINAL_EVENT_TYPES = frozenset({
+    "response.completed",
+    "response.incomplete",
+    "response.failed",
+})
+
+
+def _event_field(event: Any, name: str, default: Any = None) -> Any:
+    """Field access that handles both attr-style (SDK objects) and dict (raw JSON) events."""
+    value = getattr(event, name, None)
+    if value is None and isinstance(event, dict):
+        value = event.get(name, default)
+    return value if value is not None else default
+
+
+def _raise_stream_error(event: Any) -> None:
+    """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
+
+    Imported lazily so this module stays importable from places that don't
+    pull in ``run_agent`` (e.g. plugin code, doc tools).
+    """
+    from run_agent import _StreamErrorEvent
+    message = (_event_field(event, "message", "") or "stream emitted error event").strip()
+    raise _StreamErrorEvent(
+        message,
+        code=_event_field(event, "code"),
+        param=_event_field(event, "param"),
+    )
+
+
+def _consume_codex_event_stream(
+    event_iter: Any,
+    *,
+    model: str,
+    on_text_delta=None,
+    on_reasoning_delta=None,
+    on_first_delta=None,
+    on_event=None,
+    interrupt_check=None,
+) -> SimpleNamespace:
+    """Consume a Codex Responses SSE event stream and return a final response.
+
+    Returns a ``SimpleNamespace`` shaped like the SDK's typed Response for the
+    fields downstream code actually reads (``output``, ``output_text``,
+    ``usage``, ``status``, ``id``, ``incomplete_details``, ``error``,
+    ``model``).  Critically, ``response.output`` is never read from the
+    terminal event for content reconstruction — only ``usage``/``status``/``id``.
+    """
+    collected_output_items: List[Any] = []
+    collected_text_deltas: List[str] = []
+    has_tool_calls = False
+    first_delta_fired = False
+    terminal_status: str = "completed"
+    terminal_usage: Any = None
+    terminal_response_id: Any = None
+    terminal_incomplete_details: Any = None
+    terminal_error: Any = None
+    saw_terminal = False
+
+    for event in event_iter:
+        if on_event is not None:
+            try:
+                on_event(event)
+            except (TimeoutError, InterruptedError):
+                raise
+            except Exception:
+                logger.debug("Codex stream on_event hook raised", exc_info=True)
+        if interrupt_check is not None and interrupt_check():
+            break
+
+        event_type = _event_field(event, "type", "")
+        if not isinstance(event_type, str):
+            event_type = ""
+
+        if event_type == "error":
+            _raise_stream_error(event)
+
+        if "output_text.delta" in event_type or event_type == "response.output_text.delta":
+            delta_text = _event_field(event, "delta", "")
+            if delta_text:
+                collected_text_deltas.append(delta_text)
+                if not has_tool_calls:
+                    if not first_delta_fired:
+                        first_delta_fired = True
+                        if on_first_delta is not None:
+                            try:
+                                on_first_delta()
+                            except Exception:
+                                logger.debug("Codex stream on_first_delta raised", exc_info=True)
+                    if on_text_delta is not None:
+                        try:
+                            on_text_delta(delta_text)
+                        except Exception:
+                            logger.debug("Codex stream on_text_delta raised", exc_info=True)
+            continue
+
+        if "function_call" in event_type:
+            has_tool_calls = True
+            # fall through — function_call items still get added on output_item.done
+
+        if "reasoning" in event_type and "delta" in event_type:
+            reasoning_text = _event_field(event, "delta", "")
+            if reasoning_text and on_reasoning_delta is not None:
+                try:
+                    on_reasoning_delta(reasoning_text)
+                except Exception:
+                    logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+            continue
+
+        if event_type == "response.output_item.done":
+            done_item = _event_field(event, "item")
+            if done_item is not None:
+                collected_output_items.append(done_item)
+            continue
+
+        if event_type in _TERMINAL_EVENT_TYPES:
+            saw_terminal = True
+            resp_obj = _event_field(event, "response")
+            if resp_obj is not None:
+                terminal_usage = getattr(resp_obj, "usage", None)
+                if terminal_usage is None and isinstance(resp_obj, dict):
+                    terminal_usage = resp_obj.get("usage")
+                rid = getattr(resp_obj, "id", None)
+                if rid is None and isinstance(resp_obj, dict):
+                    rid = resp_obj.get("id")
+                terminal_response_id = rid
+                rstatus = getattr(resp_obj, "status", None)
+                if rstatus is None and isinstance(resp_obj, dict):
+                    rstatus = resp_obj.get("status")
+                if isinstance(rstatus, str):
+                    terminal_status = rstatus
+                if event_type == "response.incomplete":
+                    terminal_incomplete_details = getattr(resp_obj, "incomplete_details", None)
+                    if terminal_incomplete_details is None and isinstance(resp_obj, dict):
+                        terminal_incomplete_details = resp_obj.get("incomplete_details")
+                if event_type == "response.failed":
+                    terminal_error = getattr(resp_obj, "error", None)
+                    if terminal_error is None and isinstance(resp_obj, dict):
+                        terminal_error = resp_obj.get("error")
+            if event_type == "response.completed":
+                terminal_status = terminal_status or "completed"
+            elif event_type == "response.incomplete":
+                terminal_status = terminal_status or "incomplete"
+            elif event_type == "response.failed":
+                terminal_status = terminal_status or "failed"
+            break
+
+    if collected_output_items:
+        output = list(collected_output_items)
+    elif collected_text_deltas and not has_tool_calls:
+        assembled = "".join(collected_text_deltas)
+        output = [SimpleNamespace(
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text=assembled)],
+        )]
+    else:
+        output = []
+
+    if not saw_terminal and not output:
+        raise RuntimeError(
+            "Codex Responses stream did not emit a terminal response"
+        )
+
+    assembled_text = "".join(collected_text_deltas)
+
+    final = SimpleNamespace(
+        output=output,
+        output_text=assembled_text,
+        usage=terminal_usage,
+        status=terminal_status,
+        id=terminal_response_id,
+        model=model,
+        incomplete_details=terminal_incomplete_details,
+        error=terminal_error,
+    )
+    return final
+
+
 __all__ = [
     "run_codex_app_server_turn",
     "run_codex_stream",
     "run_codex_create_stream_fallback",
+    "_consume_codex_event_stream",
 ]

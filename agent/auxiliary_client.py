@@ -785,60 +785,54 @@ class _CodexCompletionsAdapter:
                 pass
 
         try:
-            # Collect output items and text deltas during streaming —
-            # the Codex backend can return empty response.output from
-            # get_final_response() even when items were streamed.
-            collected_output_items: List[Any] = []
-            collected_text_deltas: List[str] = []
-            has_function_calls = False
             if total_timeout:
                 timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
-            with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
-                    _check_cancelled()
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
-                _check_cancelled()
-                final = stream.get_final_response()
 
-            # Backfill empty output from collected stream events
-            _output = getattr(final, "output", None)
-            if isinstance(_output, list) and not _output:
-                if collected_output_items:
-                    final.output = list(collected_output_items)
-                    logger.debug(
-                        "Codex auxiliary: backfilled %d output items from stream events",
-                        len(collected_output_items),
-                    )
-                elif collected_text_deltas and not has_function_calls:
-                    # Only synthesize text when no tool calls were streamed —
-                    # a function_call response with incidental text should not
-                    # be collapsed into a plain-text message.
-                    assembled = "".join(collected_text_deltas)
-                    final.output = [SimpleNamespace(
-                        type="message", role="assistant", status="completed",
-                        content=[SimpleNamespace(type="output_text", text=assembled)],
-                    )]
-                    logger.debug(
-                        "Codex auxiliary: synthesized from %d deltas (%d chars)",
-                        len(collected_text_deltas), len(assembled),
-                    )
+            # Event-driven Responses streaming via the low-level
+            # ``responses.create(stream=True)`` path.  The high-level
+            # ``responses.stream(...)`` helper does post-hoc typed
+            # reconstruction from ``response.completed.response.output``,
+            # which the chatgpt.com Codex backend has been observed to
+            # return as ``null`` (gpt-5.5 / gpt-5.3-codex, May 2026) — that
+            # crashes the SDK with ``TypeError: 'NoneType' object is not
+            # iterable``.  Consuming raw events and assembling the final
+            # response ourselves from ``response.output_item.done`` makes
+            # us structurally immune to that drift.
+            # Backport of upstream commit cb38ce28c (#33042).
+            from agent.codex_runtime import _consume_codex_event_stream
+
+            stream_kwargs = dict(resp_kwargs)
+            stream_kwargs["stream"] = True
+
+            def _on_each_event(_event: Any) -> None:
+                # Re-check timeout/cancellation per event, matching the
+                # cadence the old in-line ``_check_cancelled()`` used.
+                _check_cancelled()
+
+            event_stream = self._client.responses.create(**stream_kwargs)
+            try:
+                final = _consume_codex_event_stream(
+                    event_stream,
+                    model=resp_kwargs.get("model"),
+                    on_event=_on_each_event,
+                )
+            finally:
+                close_fn = getattr(event_stream, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception:
+                        pass
+
+            if final is None:
+                raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
 
             # Extract text and tool calls from the Responses output.
-            # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
-            # so use a helper that handles both shapes.
+            # Items may be SimpleNamespace (raw-event path) or dicts
+            # (some legacy fallback paths), so handle both shapes.
             def _item_get(obj: Any, key: str, default: Any = None) -> Any:
                 val = getattr(obj, key, None)
                 if val is None and isinstance(obj, dict):
@@ -864,10 +858,15 @@ class _CodexCompletionsAdapter:
 
             resp_usage = getattr(final, "usage", None)
             if resp_usage:
+                def _u(name: str) -> int:
+                    val = getattr(resp_usage, name, None)
+                    if val is None and isinstance(resp_usage, dict):
+                        val = resp_usage.get(name, 0)
+                    return val or 0
                 usage = SimpleNamespace(
-                    prompt_tokens=getattr(resp_usage, "input_tokens", 0),
-                    completion_tokens=getattr(resp_usage, "output_tokens", 0),
-                    total_tokens=getattr(resp_usage, "total_tokens", 0),
+                    prompt_tokens=_u("input_tokens"),
+                    completion_tokens=_u("output_tokens"),
+                    total_tokens=_u("total_tokens"),
                 )
         except Exception as exc:
             if timed_out.is_set():

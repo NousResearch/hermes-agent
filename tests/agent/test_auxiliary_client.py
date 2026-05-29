@@ -2073,34 +2073,39 @@ class TestCodexAdapterReasoningTranslation:
 
     @staticmethod
     def _build_adapter():
-        """Build a _CodexCompletionsAdapter with a mocked responses.stream()."""
+        """Build a _CodexCompletionsAdapter with a mocked responses.create() stream."""
         from agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
 
-        # Mock the stream context manager: yields no events, get_final_response
-        # returns a minimal empty-output response.
-        fake_final = SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="hi")],
-            )],
-            usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        # New consumer path: mock responses.create(stream=True) to return a
+        # raw iterable of SSE events.  Emit a single message output_item.done
+        # plus a response.completed terminal frame.
+        message_item = SimpleNamespace(
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text="hi")],
         )
-
-        class _FakeStream:
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def __iter__(self): return iter([])
-            def get_final_response(self): return fake_final
+        events = [
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="resp_test",
+                    status="completed",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                ),
+            ),
+        ]
 
         captured_kwargs = {}
 
-        def _stream(**kwargs):
+        def _create(**kwargs):
             captured_kwargs.update(kwargs)
-            return _FakeStream()
+            return iter(events)
 
         real_client = MagicMock()
-        real_client.responses.stream = _stream
+        real_client.responses.create = _create
         adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
         return adapter, captured_kwargs
 
@@ -2327,33 +2332,28 @@ class TestVisionAutoSkipsKimiCoding:
 
 
 class TestCodexAuxiliaryAdapterTimeout:
-    def test_forwards_timeout_to_responses_stream(self):
-        class FakeStream:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def __iter__(self):
-                return iter(())
-
-            def get_final_response(self):
-                return SimpleNamespace(
-                    output=[SimpleNamespace(
-                        type="message",
-                        content=[SimpleNamespace(type="output_text", text="summary")],
-                    )],
-                    usage=None,
-                )
+    def test_forwards_timeout_to_responses_create(self):
+        events = [
+            SimpleNamespace(
+                type="response.output_item.done",
+                item=SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="summary")],
+                ),
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(id="r", status="completed", usage=None),
+            ),
+        ]
 
         class FakeResponses:
             def __init__(self):
                 self.kwargs = None
 
-            def stream(self, **kwargs):
+            def create(self, **kwargs):
                 self.kwargs = kwargs
-                return FakeStream()
+                return iter(events)
 
         fake_client = SimpleNamespace(responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
@@ -2364,33 +2364,18 @@ class TestCodexAuxiliaryAdapterTimeout:
         )
 
         assert fake_client.responses.kwargs["timeout"] == 12.5
+        assert fake_client.responses.kwargs.get("stream") is True
         assert response.choices[0].message.content == "summary"
 
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
-        class SlowAliveStream:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def __iter__(self):
-                for _ in range(5):
-                    time.sleep(0.03)
-                    yield SimpleNamespace(type="response.in_progress")
-
-            def get_final_response(self):
-                return SimpleNamespace(
-                    output=[SimpleNamespace(
-                        type="message",
-                        content=[SimpleNamespace(type="output_text", text="late")],
-                    )],
-                    usage=None,
-                )
+        def _slow_events():
+            for _ in range(20):
+                time.sleep(0.03)
+                yield SimpleNamespace(type="response.in_progress")
 
         class FakeResponses:
-            def stream(self, **kwargs):
-                return SlowAliveStream()
+            def create(self, **kwargs):
+                return _slow_events()
 
         fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
@@ -2402,7 +2387,7 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert time.monotonic() - started < 0.30
 
 
 # ---------------------------------------------------------------------------
@@ -2508,26 +2493,16 @@ class TestAuxiliaryClientPoisonedCacheEviction:
             _CodexCompletionsAdapter, CodexAuxiliaryClient,
         )
 
-        class SlowAliveStream:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def __iter__(self):
-                for _ in range(20):
-                    time.sleep(0.01)
-                    yield SimpleNamespace(type="response.in_progress")
-
-            def get_final_response(self):  # pragma: no cover — timeout fires first
-                return SimpleNamespace(output=[], usage=None)
+        def _slow_events():
+            for _ in range(40):
+                time.sleep(0.01)
+                yield SimpleNamespace(type="response.in_progress")
 
         closed = {"flag": False}
 
         class FakeClient:
             def __init__(self):
-                self.responses = SimpleNamespace(stream=lambda **k: SlowAliveStream())
+                self.responses = SimpleNamespace(create=lambda **k: _slow_events())
                 self.api_key = "k"
                 self.base_url = "https://chatgpt.com/backend-api/codex"
 

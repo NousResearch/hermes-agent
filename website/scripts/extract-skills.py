@@ -95,7 +95,6 @@ GITHUB_TAP_LABELS = {
     "openai/skills": "OpenAI",
     "anthropics/skills": "Anthropic",
     "huggingface/skills": "HuggingFace",
-    "NVIDIA/skills": "NVIDIA",
     "VoltAgent/awesome-agent-skills": "VoltAgent",
     "garrytan/gstack": "gstack",
     "MiniMax-AI/cli": "MiniMax",

@@ -392,6 +392,9 @@ def run_conversation(
         set_runtime_main(
             getattr(agent, "provider", "") or "",
             getattr(agent, "model", "") or "",
+            base_url=getattr(agent, "base_url", "") or "",
+            api_key=getattr(agent, "api_key", "") or "",
+            api_mode=getattr(agent, "api_mode", "") or "",
         )
     except Exception:
         pass

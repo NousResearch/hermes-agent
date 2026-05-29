@@ -3976,7 +3976,7 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
-            provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
+            provider_label_oauth = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
             # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists
             # for entitlement-gated *hidden* slugs the curated listing hasn't
             # caught up with — but those are always the provider's own family
@@ -4000,7 +4000,7 @@ def validate_requested_model(
                     "persist": False,
                     "recognized": False,
                     "message": (
-                        f"`{requested}` doesn't look like a {provider_label} model "
+                        f"`{requested}` doesn't look like a {provider_label_oauth} model "
                         f"and isn't in its listing, so it was not accepted. If it "
                         f"belongs to another configured provider, switch with "
                         f"`--provider <slug>` (or select it from the `/model` "
@@ -4013,7 +4013,7 @@ def validate_requested_model(
                 "persist": True,
                 "recognized": False,
                 "message": (
-                    f"Note: `{requested}` was not found in the {provider_label} model listing. "
+                    f"Note: `{requested}` was not found in the {provider_label_oauth} model listing. "
                     "It may still work if your account has access to a newer or hidden model ID."
                     f"{suggestion_text}"
                 ),
@@ -4135,15 +4135,17 @@ def validate_requested_model(
                 }
         # Probe failed or model not found — accept anyway (proxy likely
         # doesn't implement the Anthropic Models API).
+        provider_label_str = provider_label(provider) or (provider or "the active provider")
+        endpoint_str = (base_url or "").strip() or "the configured endpoint"
         return {
             "accepted": True,
             "persist": True,
             "recognized": False,
             "message": (
-                f"Note: could not verify `{requested}` against this endpoint's "
-                f"model listing.  Many Anthropic-compatible proxies do not "
-                f"implement GET /v1/models.  The model name has been accepted "
-                f"without verification."
+                f"Note: could not verify `{requested}` against `{provider_label_str}` "
+                f"at {endpoint_str}.  That endpoint speaks the Anthropic Messages API, "
+                f"which often does not expose GET /v1/models.  The model name has been "
+                f"accepted without verification."
             ),
         }
 
@@ -4265,7 +4267,7 @@ def validate_requested_model(
     # Without this block, validate_requested_model would reject every model
     # on such providers, switch_model() would return success=False, and
     # the gateway would never write to _session_model_overrides.
-    provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+    provider_label_for_catalog = _PROVIDER_LABELS.get(normalized, normalized)
     try:
         catalog_models = provider_model_ids(normalized)
     except Exception:
@@ -4306,7 +4308,7 @@ def validate_requested_model(
             "persist": True,
             "recognized": False,
             "message": (
-                f"Note: `{requested}` was not found in the {provider_label} curated catalog "
+                f"Note: `{requested}` was not found in the {provider_label_for_catalog} curated catalog "
                 f"and the /models endpoint was unreachable.{suggestion_text}"
                 f"\n  The model may still work if it exists on the provider."
             ),
@@ -4319,7 +4321,7 @@ def validate_requested_model(
         "persist": True,
         "recognized": False,
         "message": (
-            f"Note: could not reach the {provider_label} API to validate `{requested}`. "
+            f"Note: could not reach the {provider_label_for_catalog} API to validate `{requested}`. "
             f"If the service isn't down, this model may not be valid."
         ),
     }

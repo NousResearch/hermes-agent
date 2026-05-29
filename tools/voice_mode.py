@@ -497,10 +497,24 @@ class AudioRecorder:
         self._silence_threshold: int = SILENCE_RMS_THRESHOLD
         self._silence_duration: float = SILENCE_DURATION_SECONDS
         self._max_wait: float = 15.0  # Max seconds to wait for speech before auto-stop
+        # Hard cap on total recording length, wired from voice.max_recording_seconds
+        # by the CLI before each recording. 0 (or unset) = no cap (previous behaviour).
+        self._max_recording_seconds: float = 0.0
         # Peak RMS seen during recording (for speech presence check in stop())
         self._peak_rms: int = 0
         # Live audio level (read by UI for visual feedback)
         self._current_rms: int = 0
+
+    def _max_duration_reached(self, elapsed: float) -> bool:
+        """Whether the configured hard recording-length cap has elapsed.
+
+        ``voice.max_recording_seconds`` is applied by the CLI before each
+        recording (see ``HermesCLI._voice_start_recording``). A value <= 0
+        (or unset) disables the cap, preserving the previous unbounded
+        behaviour.
+        """
+        cap = self._max_recording_seconds
+        return bool(cap and cap > 0 and elapsed >= cap)
 
     # -- public properties ---------------------------------------------------
 
@@ -616,6 +630,14 @@ class AudioRecorder:
                 elif not self._has_spoken and elapsed >= self._max_wait:
                     logger.info("No speech within %.0fs, auto-stopping",
                                 self._max_wait)
+                    should_fire = True
+
+                # 3. Hard cap on total recording length (voice.max_recording_seconds).
+                #    Independent of speech/silence so a continuous speaker past the
+                #    configured limit still auto-stops instead of recording forever.
+                if not should_fire and self._max_duration_reached(elapsed):
+                    logger.info("Max recording length reached (%.0fs), auto-stopping",
+                                self._max_recording_seconds)
                     should_fire = True
 
                 if should_fire:

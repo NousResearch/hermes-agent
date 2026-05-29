@@ -257,6 +257,95 @@ class TestJobCRUD:
         job = create_job(prompt="Recurring", schedule="every 1h")
         assert job["repeat"]["times"] is None
 
+    def test_temporary_kanban_monitor_rejects_infinite_recurring_repeat(self, tmp_cron_dir):
+        prompt = "You are monitoring a Hermes Kanban task for the user. Task ID: t_3af28728."
+
+        with pytest.raises(ValueError, match="Temporary Kanban monitor"):
+            create_job(
+                prompt=prompt,
+                schedule="every 3m",
+                name="kanban-t_3af28728-monitor",
+            )
+
+    def test_temporary_kanban_monitor_allows_finite_repeat(self, tmp_cron_dir):
+        prompt = "You are monitoring a Hermes Kanban task for the user. Task ID: t_3af28728."
+
+        job = create_job(
+            prompt=prompt,
+            schedule="every 3m",
+            name="kanban-t_3af28728-monitor",
+            repeat=3,
+        )
+
+        assert job["repeat"]["times"] == 3
+
+    def test_temporary_kanban_monitor_rejects_disguised_single_card_watch(self, tmp_cron_dir):
+        prompt = "Check whether task t_3af28728 is done or blocked and notify the chat."
+
+        with pytest.raises(ValueError, match="Temporary Kanban monitor"):
+            create_job(
+                prompt=prompt,
+                schedule="every 3m",
+                name="task-status-watcher",
+            )
+
+    def test_temporary_kanban_monitor_allows_benign_task_id_reference(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Generate a weekly audit summary mentioning task t_3af28728 as historical context.",
+            schedule="every 1h",
+            name="weekly-summary",
+        )
+
+        assert job["repeat"]["times"] is None
+
+    def test_temporary_kanban_monitor_rejects_non_int_repeat(self, tmp_cron_dir):
+        prompt = "You are monitoring a Hermes Kanban task for the user. Task ID: t_3af28728."
+
+        with pytest.raises(ValueError, match="positive repeat count"):
+            create_job(
+                prompt=prompt,
+                schedule="every 3m",
+                name="kanban-t_3af28728-monitor",
+                repeat="3",  # type: ignore[arg-type] - regression for bad API input
+            )
+
+    def test_update_rejects_temporary_kanban_monitor_infinite_repeat(self, tmp_cron_dir):
+        prompt = "You are monitoring a Hermes Kanban task for the user. Task ID: t_3af28728."
+        job = create_job(
+            prompt=prompt,
+            schedule="every 3m",
+            name="kanban-t_3af28728-monitor",
+            repeat=3,
+        )
+
+        with pytest.raises(ValueError, match="Temporary Kanban monitor"):
+            update_job(job["id"], {"repeat": {"times": None, "completed": 0}})
+
+    @pytest.mark.parametrize("bad_repeat", [0, -1])
+    def test_update_rejects_temporary_kanban_monitor_non_positive_repeat(self, tmp_cron_dir, bad_repeat):
+        prompt = "You are monitoring a Hermes Kanban task for the user. Task ID: t_3af28728."
+        job = create_job(
+            prompt=prompt,
+            schedule="every 3m",
+            name="kanban-t_3af28728-monitor",
+            repeat=3,
+        )
+
+        with pytest.raises(ValueError, match="positive repeat count"):
+            update_job(job["id"], {"repeat": {"times": bad_repeat, "completed": 0}})
+
+    def test_temporary_kanban_monitor_allows_one_shot_without_explicit_repeat(self, tmp_cron_dir):
+        prompt = "You are monitoring a Hermes Kanban task for the user. Task ID: t_3af28728."
+
+        job = create_job(
+            prompt=prompt,
+            schedule="3m",
+            name="kanban-t_3af28728-monitor",
+        )
+
+        assert job["schedule"]["kind"] == "once"
+        assert job["repeat"]["times"] == 1
+
     def test_default_delivery_origin(self, tmp_cron_dir):
         job = create_job(
             prompt="Test", schedule="30m",

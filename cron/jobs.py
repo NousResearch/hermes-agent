@@ -50,6 +50,68 @@ ONESHOT_GRACE_SECONDS = 120
 # updated lets an unsafe value (``../escape``, absolute path, nested) leak
 # into output writes/deletes.
 _IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+_KANBAN_TASK_ID_RE = re.compile(r"\bt_[0-9a-f]{6,}\b", re.IGNORECASE)
+_KANBAN_MONITOR_NAME_RE = re.compile(
+    r"\bkanban-t_[0-9a-f]{6,}-(?:monitor|watch(?:er)?|poll(?:er)?|notifier|status)\b",
+    re.IGNORECASE,
+)
+_KANBAN_MONITOR_ACTION_RE = re.compile(
+    r"\b(?:monitor|watch(?:er|ing)?|poll(?:er|ing)?|check(?:ing)?|notify|notification|wait(?:ing)?)\b",
+    re.IGNORECASE,
+)
+_KANBAN_MONITOR_STATE_RE = re.compile(
+    r"\b(?:status|done|complete|completed|completion|blocked|finished|terminal|closed|resolved|outcome)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_temporary_kanban_monitor_job(name: Optional[str], prompt: Optional[str]) -> bool:
+    """Return True for one-card Kanban completion/status monitor jobs.
+
+    These jobs are used as short-lived gateway feedback helpers. They should
+    never be open-ended recurring cron jobs: once the watched card completes or
+    blocks, a forever monitor keeps re-notifying the chat. Match the canonical
+    ``kanban-t_<id>-monitor`` shape and close common disguised forms like
+    "check task t_<id> until done" without blocking unrelated recurring jobs
+    that merely mention a task id as historical context.
+    """
+    text = f"{name or ''}\n{prompt or ''}".lower()
+    if _KANBAN_MONITOR_NAME_RE.search(text):
+        return True
+    if "monitoring a hermes kanban task" in text:
+        return True
+    if _KANBAN_TASK_ID_RE.search(text) is None:
+        return False
+    if "task id:" in text and ("kanban" in text or _KANBAN_MONITOR_ACTION_RE.search(text)):
+        return True
+    return bool(_KANBAN_MONITOR_ACTION_RE.search(text) and _KANBAN_MONITOR_STATE_RE.search(text))
+
+
+def _repeat_times(repeat: Optional[Any]) -> Optional[int]:
+    if isinstance(repeat, dict):
+        return repeat.get("times")
+    return repeat
+
+
+def _validate_temporary_kanban_monitor_repeat(
+    *,
+    name: Optional[str],
+    prompt: Optional[str],
+    schedule: Dict[str, Any],
+    repeat: Optional[Any],
+) -> None:
+    """Reject open-ended recurring temporary Kanban monitor jobs."""
+    if not _is_temporary_kanban_monitor_job(name, prompt):
+        return
+    if (schedule or {}).get("kind") == "once":
+        return
+    times = _repeat_times(repeat)
+    if times is None or not isinstance(times, int) or isinstance(times, bool) or times <= 0:
+        raise ValueError(
+            "Temporary Kanban monitor cron jobs must be finite or self-cleaning: "
+            "set a positive repeat count, use a one-shot schedule, or remove/pause "
+            "the monitor after the first completed/blocked delivery."
+        )
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -601,6 +663,16 @@ def create_job(
     """
     parsed_schedule = parse_schedule(schedule)
 
+    # Validate short-lived Kanban monitors before the legacy repeat coercion
+    # below so non-int values (for example "3") are rejected with the monitor
+    # guard instead of leaking out as a generic TypeError from repeat <= 0.
+    _validate_temporary_kanban_monitor_repeat(
+        name=name,
+        prompt=prompt,
+        schedule=parsed_schedule,
+        repeat=repeat,
+    )
+
     # Normalize repeat: treat 0 or negative values as None (infinite)
     if repeat is not None and repeat <= 0:
         repeat = None
@@ -608,6 +680,13 @@ def create_job(
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
+
+    _validate_temporary_kanban_monitor_repeat(
+        name=name,
+        prompt=prompt,
+        schedule=parsed_schedule,
+        repeat=repeat,
+    )
 
     # Default delivery to origin if available, otherwise local
     if deliver is None:
@@ -804,6 +883,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             )
             if updated.get("state") != "paused":
                 updated["next_run_at"] = compute_next_run(updated_schedule)
+
+        _validate_temporary_kanban_monitor_repeat(
+            name=updated.get("name"),
+            prompt=updated.get("prompt"),
+            schedule=updated.get("schedule") or {},
+            repeat=updated.get("repeat"),
+        )
 
         if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
             updated["next_run_at"] = compute_next_run(updated["schedule"])

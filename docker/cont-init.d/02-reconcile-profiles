@@ -24,6 +24,9 @@
 # and swallows the failure).
 set -e
 
+# shellcheck disable=SC1091
+. /opt/hermes/docker/run-as-hermes.sh
+
 # Make the dynamic scandir hermes-writable. The directory itself
 # starts root-owned by s6-overlay.
 chown hermes:hermes /run/service 2>/dev/null || true
@@ -42,5 +45,4 @@ if [ -d /run/service/.s6-svscan ]; then
     done
 fi
 
-exec s6-setuidgid hermes /opt/hermes/.venv/bin/python -m hermes_cli.container_boot
-
+exec_as_hermes /opt/hermes/.venv/bin/python -m hermes_cli.container_boot

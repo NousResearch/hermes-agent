@@ -19,6 +19,9 @@ case "${HERMES_DASHBOARD:-}" in
         ;;
 esac
 
+# shellcheck disable=SC1091
+. /opt/hermes/docker/run-as-hermes.sh
+
 # with-contenv repopulates HOME from /init as /root. Reset it before
 # dropping privileges so HOME-anchored state lands under /opt/data.
 export HOME=/opt/data
@@ -48,5 +51,5 @@ case "${HERMES_DASHBOARD_INSECURE:-}" in
 esac
 
 # shellcheck disable=SC2086  # word-splitting of $insecure is intentional
-exec s6-setuidgid hermes hermes dashboard \
+exec_as_hermes hermes dashboard \
     --host "$dash_host" --port "$dash_port" --no-open $insecure

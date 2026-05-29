@@ -20,10 +20,13 @@ set -eu
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
+# shellcheck disable=SC1091
+. "$INSTALL_DIR/docker/run-as-hermes.sh"
+
 # --- Bootstrap HERMES_HOME as root ---
 # Create the directory (and any missing parents) while we still have root
 # privileges so the chown checks below see real metadata and the later
-# `s6-setuidgid hermes mkdir -p` block doesn't EACCES on root-owned
+# hermes-user `mkdir -p` block doesn't EACCES on root-owned
 # ancestors. Without this, custom HERMES_HOME paths whose parents only
 # root can create (e.g. `HERMES_HOME=/home/hermes/.hermes` in a Compose
 # file, or any path under a fresh / not pre-populated by the image)
@@ -187,13 +190,13 @@ if [ -f "$HERMES_HOME/config.yaml" ]; then
 fi
 
 # --- Seed directory structure as hermes user ---
-# Run as hermes via s6-setuidgid so dirs end up owned correctly (matters
-# under rootless Podman where chown back to root would fail).
+# Run as hermes so dirs end up owned correctly (matters under rootless Podman
+# where chown back to root would fail).
 #
 # Use direct `mkdir -p` invocation (no `sh -c "..."` wrapper) so the
 # shell isn't a second interpreter — defends against $HERMES_HOME values
 # containing shell metacharacters. PR #30136 review item O2.
-s6-setuidgid hermes mkdir -p \
+run_as_hermes mkdir -p \
     "$HERMES_HOME/cron" \
     "$HERMES_HOME/sessions" \
     "$HERMES_HOME/logs" \
@@ -208,9 +211,9 @@ s6-setuidgid hermes mkdir -p \
 # --- Install-method stamp (read by detect_install_method() in hermes status) ---
 # Preserved from the tini-era entrypoint (PR #27843). Must be written as
 # the hermes user so ownership matches the file's documented owner.
-# tee is invoked directly via s6-setuidgid (no `sh -c` wrapper) for the
+# tee is invoked directly through run_as_hermes (no `sh -c` wrapper) for the
 # same shell-metacharacter safety described above.
-printf 'docker\n' | s6-setuidgid hermes tee "$HERMES_HOME/.install_method" >/dev/null \
+printf 'docker\n' | run_as_hermes tee "$HERMES_HOME/.install_method" >/dev/null \
     || true
 
 # --- Seed config files (only on first boot) ---
@@ -218,7 +221,7 @@ seed_one() {
     dest=$1
     src=$2
     if [ ! -f "$HERMES_HOME/$dest" ] && [ -f "$INSTALL_DIR/$src" ]; then
-        s6-setuidgid hermes cp "$INSTALL_DIR/$src" "$HERMES_HOME/$dest"
+        run_as_hermes cp "$INSTALL_DIR/$src" "$HERMES_HOME/$dest"
     fi
 }
 seed_one ".env" ".env.example"
@@ -249,7 +252,7 @@ fi
 # the python binary's own bin-stub already sets up (sys.path is rooted
 # at the venv's site-packages by virtue of running .venv/bin/python).
 if [ -d "$INSTALL_DIR/skills" ]; then
-    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" \
+    run_as_hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" \
         || echo "[stage2] Warning: skills_sync.py failed; continuing"
 fi
 

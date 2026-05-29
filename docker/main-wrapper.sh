@@ -16,9 +16,12 @@
 #   first arg is an executable    → exec it directly (sleep, bash, sh, …)
 #   first arg is anything else    → exec `hermes <args>` (subcommand passthrough)
 #
-# We drop to the hermes user via `s6-setuidgid` so the supervised
-# workload runs unprivileged (UID 10000 by default).
+# We drop to the hermes user when needed so the supervised workload runs
+# unprivileged (UID 10000 by default).
 set -e
+
+# shellcheck disable=SC1091
+. /opt/hermes/docker/run-as-hermes.sh
 
 # HOME comes through with-contenv as /root (the /init context). Override
 # to the hermes user's home before dropping privileges so libraries that
@@ -31,13 +34,13 @@ cd /opt/data
 . /opt/hermes/.venv/bin/activate
 
 if [ $# -eq 0 ]; then
-    exec s6-setuidgid hermes hermes
+    exec_as_hermes hermes
 fi
 
 if command -v "$1" >/dev/null 2>&1; then
     # Bare executable — pass through directly.
-    exec s6-setuidgid hermes "$@"
+    exec_as_hermes "$@"
 fi
 
 # Hermes subcommand pass-through.
-exec s6-setuidgid hermes hermes "$@"
+exec_as_hermes hermes "$@"

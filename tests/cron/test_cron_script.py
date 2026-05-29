@@ -542,3 +542,131 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+class TestProfileContextScriptFallback:
+    """Profile-context jobs fall back to the root home's scripts/ dir.
+
+    Regression coverage for the 2026-05-27 IC-cron migration gap: jobs with
+    ``profile: <name>`` set used to resolve scripts ONLY under the profile's
+    own ``scripts/`` dir, breaking 5 of 6 research-engineer pipelines that
+    referenced canonical scripts in the root home. See:
+    ``decisions/2026-05-29-cron-script-default-home-fallback.md``.
+    """
+
+    @pytest.fixture
+    def profile_context(self, tmp_path, monkeypatch):
+        """Set up a root home + profile home and activate the profile context.
+
+        Mirrors what ``_job_profile_context`` does at runtime: HERMES_HOME
+        points at the root, then the scheduler's module-level ``_hermes_home``
+        override is set to the profile's home for the duration of the test.
+        """
+        root = tmp_path / "hermes-root"
+        (root / "scripts").mkdir(parents=True)
+        (root / "cron").mkdir()
+        (root / "cron" / "output").mkdir()
+
+        profile_home = root / "profiles" / "research-engineer"
+        (profile_home / "scripts").mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        import cron.scheduler as sched_mod
+        monkeypatch.setattr(sched_mod, "_hermes_home", profile_home)
+
+        return root, profile_home
+
+    def test_script_in_root_resolves_via_fallback(self, profile_context):
+        """Profile-context job with a root-only script resolves via fallback."""
+        from cron.scheduler import _run_job_script
+
+        root, _profile = profile_context
+        script = root / "scripts" / "researchengineer-arxiv_pipeline.py"
+        script.write_text('print("ran from root scripts dir")\n')
+
+        success, output = _run_job_script(
+            "researchengineer-arxiv_pipeline.py"
+        )
+        assert success is True
+        assert output == "ran from root scripts dir"
+
+    def test_profile_local_takes_precedence(self, profile_context):
+        """When the same filename exists in both, profile-local wins."""
+        from cron.scheduler import _run_job_script
+
+        root, profile = profile_context
+        # Same filename in both. Profile-local should be chosen.
+        (root / "scripts" / "shared.py").write_text(
+            'print("from root")\n'
+        )
+        (profile / "scripts" / "shared.py").write_text(
+            'print("from profile")\n'
+        )
+
+        success, output = _run_job_script("shared.py")
+        assert success is True
+        assert output == "from profile"
+
+    def test_missing_in_both_returns_root_not_found(self, profile_context):
+        """When a script exists in neither dir, the error is helpful.
+
+        The most-recent error (from the root candidate) is surfaced so the
+        user sees the canonical path they likely intended.
+        """
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("does-not-exist.py")
+        assert success is False
+        assert "not found" in output.lower()
+
+    def test_absolute_path_into_root_scripts_resolves(self, profile_context):
+        """Absolute path pointing at root scripts/ resolves via fallback.
+
+        The profile-local guard rejects it (outside profile/scripts), but the
+        root candidate accepts it, so the resolution succeeds.
+        """
+        from cron.scheduler import _run_job_script
+
+        root, _profile = profile_context
+        script = root / "scripts" / "absolute_ok.py"
+        script.write_text('print("absolute via root")\n')
+
+        success, output = _run_job_script(str(script))
+        assert success is True
+        assert output == "absolute via root"
+
+    def test_traversal_still_blocked_under_fallback(self, profile_context, tmp_path):
+        """Path traversal escaping BOTH candidate dirs is still rejected."""
+        from cron.scheduler import _run_job_script
+
+        outside = tmp_path / "evil_outside.py"
+        outside.write_text('print("escaped")\n')
+
+        # Absolute path outside both candidates → both lookups reject,
+        # surface last error.
+        success, output = _run_job_script(str(outside))
+        assert success is False
+        assert "blocked" in output.lower() or "outside" in output.lower()
+
+    def test_no_fallback_when_active_equals_root(self, tmp_path, monkeypatch):
+        """Single-candidate behaviour preserved when no profile is active.
+
+        Belt-and-braces for the existing test suite: when ``_hermes_home``
+        is None (no profile context), the candidate list has length 1 and
+        behaviour matches pre-patch.
+        """
+        from cron.scheduler import _run_job_script
+
+        home = tmp_path / ".hermes"
+        (home / "scripts").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        import cron.scheduler as sched_mod
+        monkeypatch.setattr(sched_mod, "_hermes_home", None)
+
+        success, output = _run_job_script("missing.py")
+        assert success is False
+        assert "not found" in output.lower()
+        # Error path mentions the active home's scripts dir, not a parent.
+        assert str(home / "scripts") in output

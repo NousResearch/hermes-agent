@@ -3248,6 +3248,12 @@ class HermesCLI:
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
         self._model_picker_state = None
+        # Armed when a bare `/resume` prints the recent-sessions list so the
+        # very next bare numeric input (e.g. `3`) resolves to that session.
+        # Holds the exact list used for index resolution; one-shot (cleared on
+        # the next submitted input, whether it's the selection or anything
+        # else). See #34584.
+        self._pending_resume_sessions = None
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
@@ -6693,9 +6699,20 @@ class HermesCLI:
         if not target:
             _cprint("  Usage: /resume <number|session_id_or_title>")
             if self._show_recent_sessions(reason="resume"):
+                # Arm a one-shot pending-resume selection so the user can type
+                # just the number (`3`) on the next line instead of having to
+                # retype `/resume 3`. The list here must match the one shown by
+                # _show_recent_sessions and used for index resolution below —
+                # all three go through _list_recent_sessions(limit=10). See
+                # #34584.
+                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
                 return
             _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
             return
+
+        # Any explicit /resume <target> supersedes a previously-armed bare
+        # numbered prompt.
+        self._pending_resume_sessions = None
 
         if not self._session_db:
             from hermes_state import format_session_db_unavailable
@@ -6809,6 +6826,44 @@ class HermesCLI:
             self._display_resumed_history()
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
+
+    def _consume_pending_resume_selection(self, text: str) -> bool:
+        """Resolve a bare numeric reply that follows a bare ``/resume`` prompt.
+
+        After ``/resume`` (no args) prints the recent-sessions list it arms
+        ``self._pending_resume_sessions``. The next submitted input is given
+        one chance to be a bare session number (``3``); if so we resume that
+        session here. Anything else (another command, free text, blank) simply
+        disarms the prompt and is handled normally by the caller.
+
+        Returns True if the input was consumed as a resume selection (caller
+        must not treat it as chat); False otherwise. The pending state is
+        always one-shot: it is cleared on the first submitted input regardless
+        of outcome. See #34584.
+        """
+        pending = self._pending_resume_sessions
+        if not pending:
+            return False
+        # One-shot: disarm now so a non-matching input can't leave the prompt
+        # armed and hijack a later number the user meant as chat.
+        self._pending_resume_sessions = None
+
+        if not isinstance(text, str):
+            return False
+        stripped = text.strip()
+        # Only a pure number selects; let "/resume 3", titles, or any other
+        # text fall through to normal handling.
+        if not stripped.isdigit():
+            return False
+
+        index = int(stripped)
+        if index < 1 or index > len(pending):
+            _cprint(f"  Resume index {index} is out of range.")
+            _cprint("  Use /resume with no arguments to see available sessions.")
+            return True
+
+        self._handle_resume_command(f"/resume {index}")
+        return True
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
@@ -8333,7 +8388,14 @@ class HermesCLI:
         _base_word = cmd_lower.split()[0].lstrip("/")
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
-        
+
+        # A bare `/resume` prompt is one-shot: any command other than the
+        # resume/sessions handlers (which manage the pending state themselves)
+        # disarms it so a later number isn't swallowed as a stale selection.
+        # See #34584.
+        if canonical not in {"resume", "sessions"}:
+            self._pending_resume_sessions = None
+
         if canonical in {"quit", "exit"}:
             # Parse --delete flag: /exit --delete also removes the current
             # session's transcripts + SQLite history. Ported from
@@ -14542,6 +14604,17 @@ class HermesCLI:
                                 f"[User attached file: {_drop_path}]"
                                 + (f"\n{_remainder}" if _remainder else "")
                             )
+
+                    # A bare number right after a bare `/resume` prompt selects
+                    # that session (see #34584). Checked before chat routing so
+                    # the digit isn't sent to the agent as a message.
+                    if (
+                        not _file_drop
+                        and self._pending_resume_sessions
+                        and isinstance(user_input, str)
+                        and self._consume_pending_resume_selection(user_input)
+                    ):
+                        continue
 
                     if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
                         _cprint(f"\n⚙️  {user_input}")

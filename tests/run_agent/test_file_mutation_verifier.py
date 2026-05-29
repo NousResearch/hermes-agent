@@ -130,6 +130,7 @@ def _bare_agent() -> AIAgent:
     agent = object.__new__(AIAgent)
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
+    agent._turn_landed_file_mutations = set()
     return agent
 
 
@@ -192,6 +193,28 @@ class TestRecordFileMutationResult:
         )
 
         assert paths == ["/tmp/project/src/app.py"]
+
+    def test_later_failure_after_success_gets_non_misleading_footer(self):
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "write_file",
+            {"path": "/tmp/harness.html", "content": "first version"},
+            json.dumps({"bytes_written": 13, "dirs_created": True}),
+            is_error=False,
+        )
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": "/tmp/harness.html", "old_string": "x", "new_string": "y"},
+            json.dumps({"success": False, "error": "Found 3 matches for old_string"}),
+            is_error=True,
+        )
+
+        state = agent._turn_failed_file_mutations
+        assert state["/tmp/harness.html"]["landed_this_turn"] is True
+        out = agent._format_file_mutation_failure_footer(state)
+        assert "failed file-mutation attempt" in out
+        assert "were NOT modified this turn" not in out
+        assert "already modified earlier this turn" in out
 
     def test_write_file_with_lint_error_counts_as_landed(self):
         agent = _bare_agent()

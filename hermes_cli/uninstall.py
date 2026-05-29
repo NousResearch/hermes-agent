@@ -9,6 +9,8 @@ Provides options for:
 import os
 import shutil
 import subprocess
+import tempfile
+import uuid
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -359,6 +361,95 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _move_cwd_outside(target: Path) -> None:
+    """Move the current working directory out of ``target`` before deletion."""
+    try:
+        cwd = Path.cwd().resolve()
+        target_resolved = target.resolve()
+        if cwd == target_resolved or target_resolved in cwd.parents:
+            os.chdir(tempfile.gettempdir())
+    except Exception:
+        return
+
+
+def _schedule_windows_tree_removal(target: Path) -> bool:
+    """Delete ``target`` after this process exits.
+
+    Windows keeps the running venv's python.exe and some imported files locked,
+    so an in-process ``rmtree`` of the live install root can fail even during a
+    full uninstall.  A detached ``cmd.exe`` helper can remove the tree once the
+    current Hermes process has exited and released those handles.
+    """
+    if not _is_windows():
+        return False
+
+    try:
+        target = target.resolve()
+    except Exception:
+        target = Path(target)
+
+    helper = Path(tempfile.gettempdir()) / f"hermes-uninstall-{uuid.uuid4().hex}.cmd"
+    helper.write_text(
+        "@echo off\r\n"
+        "setlocal\r\n"
+        f'set "TARGET={target}"\r\n'
+        f'set "SELF={helper}"\r\n'
+        "for /L %%I in (1,1,15) do (\r\n"
+        '  if not exist "%TARGET%" goto done\r\n'
+        '  rmdir /s /q "%TARGET%" >nul 2>nul\r\n'
+        '  if not exist "%TARGET%" goto done\r\n'
+        "  timeout /t 1 /nobreak >nul\r\n"
+        ")\r\n"
+        ":done\r\n"
+        'del /f /q "%SELF%" >nul 2>nul\r\n',
+        encoding="utf-8",
+        newline="",
+    )
+
+    creationflags = 0
+    for name in ("DETACHED_PROCESS", "CREATE_NO_WINDOW"):
+        creationflags |= getattr(subprocess, name, 0)
+
+    try:
+        subprocess.Popen(
+            ["cmd.exe", "/d", "/c", str(helper)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=creationflags,
+        )
+    except Exception as e:
+        log_warn(f"Could not schedule deferred removal of {target}: {e}")
+        try:
+            helper.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _remove_tree(target: Path, *, allow_windows_defer: bool = False) -> bool:
+    """Remove a tree now, or schedule delayed Windows cleanup when allowed."""
+    if not target.exists():
+        return True
+
+    if _is_windows():
+        _move_cwd_outside(target)
+
+    try:
+        shutil.rmtree(target)
+        log_success(f"Removed {target}")
+        return True
+    except Exception as e:
+        if allow_windows_defer and _schedule_windows_tree_removal(target):
+            log_warn(f"Could not fully remove {target} while Hermes is still running: {e}")
+            log_success(f"Scheduled deferred removal of {target} after Hermes exits")
+            return True
+        log_warn(f"Could not fully remove {target}: {e}")
+        return False
+
+
 def _is_default_hermes_home(hermes_home: Path) -> bool:
     """Return True when ``hermes_home`` points at the default (non-profile) root."""
     try:
@@ -425,12 +516,8 @@ def _uninstall_profile(profile) -> None:
             log_warn(f"  Could not remove alias {alias_path}: {e}")
 
     # 3. Wipe the profile's HERMES_HOME directory.
-    try:
-        if profile_home.exists():
-            shutil.rmtree(profile_home)
-            log_success(f"  Removed {profile_home}")
-    except Exception as e:
-        log_warn(f"  Could not remove {profile_home}: {e}")
+    if profile_home.exists() and not _remove_tree(profile_home, allow_windows_defer=_is_windows()):
+        log_info(f"  You may need to manually remove {profile_home}")
 
 
 def run_uninstall(args):
@@ -597,22 +684,12 @@ def run_uninstall(args):
     
     # 4. Remove installation directory (code)
     log_info("Removing installation directory...")
-    
-    # Check if we're running from within the install dir
-    # We need to be careful here
-    try:
-        if project_root.exists():
-            # If the install is inside ~/.hermes/, just remove the hermes-agent subdir
-            if hermes_home in project_root.parents or project_root.parent == hermes_home:
-                shutil.rmtree(project_root)
-                log_success(f"Removed {project_root}")
-            else:
-                # Installation is somewhere else entirely
-                shutil.rmtree(project_root)
-                log_success(f"Removed {project_root}")
-    except Exception as e:
-        log_warn(f"Could not fully remove {project_root}: {e}")
-        log_info("You may need to manually remove it")
+    project_removed = True
+    if project_root.exists():
+        defer_project = _is_windows() and not full_uninstall
+        project_removed = _remove_tree(project_root, allow_windows_defer=defer_project)
+        if not project_removed:
+            log_info("You may need to manually remove it")
 
     # 4b. Remove Windows-only installer artifacts that are NOT user data:
     #     PortableGit, bundled Node, gateway-service dir.  Installer put them
@@ -641,12 +718,7 @@ def run_uninstall(args):
                 _uninstall_profile(prof)
 
         log_info("Removing configuration and data...")
-        try:
-            if hermes_home.exists():
-                shutil.rmtree(hermes_home)
-                log_success(f"Removed {hermes_home}")
-        except Exception as e:
-            log_warn(f"Could not fully remove {hermes_home}: {e}")
+        if not _remove_tree(hermes_home, allow_windows_defer=_is_windows()):
             log_info("You may need to manually remove it")
     else:
         log_info(f"Keeping configuration and data in {hermes_home}")

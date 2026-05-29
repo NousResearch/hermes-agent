@@ -46,6 +46,8 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
+from tools.thread_context import propagate_context_to_thread
+
 # Availability gate.  On Windows we fall back to loopback TCP for the
 # sandbox RPC transport (AF_UNIX is unreliable on Windows Python) — see
 # ``_use_tcp_rpc`` in ``_execute_local`` below.  That makes execute_code
@@ -74,13 +76,30 @@ MAX_STDERR_BYTES = 10_000    # 10 KB
 
 # Environment variable scrubbing rules (shared between the local + remote
 # backends).  Secret-substring block is applied first; anything left must
-# match either a safe prefix or, on Windows, an OS-essential name.
+# match a safe prefix, the operational HERMES_ allowlist, or (on Windows) an
+# OS-essential name.
+#
+# NB: the broad "HERMES_" prefix was deliberately removed (#27303) — it leaked
+# HERMES_*-named config that lacks a secret substring (e.g. HERMES_BASE_URL,
+# HERMES_KANBAN_DB, HERMES_*_WEBHOOK).  The child only needs the few
+# location/profile vars in _HERMES_CHILD_ALLOWED below; HERMES_RPC_SOCKET /
+# HERMES_RPC_DIR / TZ / HOME are injected explicitly after scrubbing.
 _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                       "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                      "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
-                      "HERMES_")
+                      "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
 _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                      "PASSWD", "AUTH")
+                      "PASSWD", "AUTH", "DSN", "WEBHOOK")
+
+# Operational HERMES_* vars the child legitimately needs by exact name — these
+# are non-secret runtime-location flags (the same set hermes_cli treats as the
+# runtime location) that repo-root modules a sandbox script imports may read at
+# import time.  None match _SECRET_SUBSTRINGS.
+_HERMES_CHILD_ALLOWED = frozenset({
+    "HERMES_HOME",
+    "HERMES_PROFILE",
+    "HERMES_CONFIG",
+    "HERMES_ENV",
+})
 
 # Windows-only: a handful of variables are required by the OS/CRT itself.
 # Without them, even stdlib calls like ``socket.socket()`` fail with
@@ -119,9 +138,10 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
 
     Rules (order matters):
       1. Passthrough vars (skill- or config-declared) always pass.
-      2. Secret-substring names (KEY/TOKEN/etc.) are blocked.
+      2. Secret-substring names (KEY/TOKEN/DSN/WEBHOOK/etc.) are blocked.
       3. Names matching a safe prefix pass.
-      4. On Windows, a small OS-essential allowlist passes by exact name
+      4. Operational HERMES_* vars (_HERMES_CHILD_ALLOWED) pass by exact name.
+      5. On Windows, a small OS-essential allowlist passes by exact name
          — without these the child can't even create a socket or spawn a
          subprocess.
 
@@ -138,6 +158,14 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
         is_windows = _IS_WINDOWS
 
     scrubbed = {}
+    # Non-secret HERMES_* vars dropped by the tightened allowlist (#27303). The
+    # broad "HERMES_" prefix used to pass these through; now only the
+    # operational set does. The drop is intentional (those vars can carry
+    # config like HERMES_KANBAN_DB / HERMES_BASE_URL), but a sandbox script
+    # that imports a repo module reading one at import time would otherwise see
+    # it silently unset. Surface the drop once so the behavior change is
+    # diagnosable and points at the env_passthrough opt-in escape hatch.
+    _dropped_hermes = []
     for k, v in source_env.items():
         if is_passthrough(k):
             scrubbed[k] = v
@@ -147,8 +175,25 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
         if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
             scrubbed[k] = v
             continue
+        if k in _HERMES_CHILD_ALLOWED:
+            scrubbed[k] = v
+            continue
         if is_windows and k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS:
             scrubbed[k] = v
+            continue
+        if k.startswith("HERMES_"):
+            # Non-secret (secrets were already dropped above) and not in any
+            # allowlist — a deliberately-dropped HERMES_* var.
+            _dropped_hermes.append(k)
+    if _dropped_hermes:
+        logger.debug(
+            "execute_code: dropped %d non-allowlisted HERMES_* var(s) from the "
+            "sandbox child env (%s). This is intentional hardening (#27303); if "
+            "a sandbox script legitimately needs one, declare it via "
+            "env_passthrough in the skill/config so it passes by explicit opt-in.",
+            len(_dropped_hermes),
+            ", ".join(sorted(_dropped_hermes)),
+        )
     return scrubbed
 
 
@@ -887,9 +932,11 @@ def _execute_remote(
         _ship_file_to_remote(env, f"{sandbox_dir}/hermes_tools.py", tools_src)
         _ship_file_to_remote(env, f"{sandbox_dir}/script.py", code)
 
-        # Start RPC polling thread
+        # Wrapped so the thread inherits the turn's approval context + callbacks
+        # (see tools.thread_context) — else sandbox RPC tool calls lose approval
+        # routing (#33057).
         rpc_thread = threading.Thread(
-            target=_rpc_poll_loop,
+            target=propagate_context_to_thread(_rpc_poll_loop),
             args=(
                 env, f"{sandbox_dir}/rpc", effective_task_id,
                 tool_call_log, tool_call_counter, max_tool_calls,
@@ -1049,6 +1096,21 @@ def execute_code(
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config
     env_type = _get_env_config()["env_type"]
+
+    # execute_code runs arbitrary Python (subprocess/os.system/...) that never
+    # passes through terminal()/DANGEROUS_PATTERNS, so guard the whole script
+    # here before either dispatch path spawns it. Runs synchronously in the
+    # caller (tool-executor) thread, which holds the session context (#30882).
+    from tools.approval import check_execute_code_guard
+    _guard = check_execute_code_guard(code, env_type)
+    if not _guard.get("approved", False):
+        return json.dumps({
+            "status": "error",
+            "error": _guard.get("message") or "execute_code blocked by approval guard.",
+            "tool_calls_made": 0,
+            "duration_seconds": 0,
+        }, ensure_ascii=False)
+
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools)
 
@@ -1135,8 +1197,11 @@ def execute_code(
             os.chmod(sock_path, 0o600)
         server_sock.listen(1)
 
+        # Wrapped so the thread inherits the turn's approval context + callbacks
+        # (see tools.thread_context) — else gateway sandbox tool calls silently
+        # auto-approve dangerous commands (#33057, #30882).
         rpc_thread = threading.Thread(
-            target=_rpc_server_loop,
+            target=propagate_context_to_thread(_rpc_server_loop),
             args=(
                 server_sock, task_id, tool_call_log,
                 tool_call_counter, max_tool_calls, sandbox_tools,

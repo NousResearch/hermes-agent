@@ -253,20 +253,24 @@ class TestWindowsSocketSmokeTest:
 # ---------------------------------------------------------------------------
 
 def _legacy_posix_scrubber(source_env, is_passthrough):
-    """Verbatim copy of the pre-Windows-fix inline scrubbing logic.
+    """Independent oracle for TestPosixEquivalence — a from-scratch reimpl of
+    _scrub_child_env's POSIX behavior, used to prove the production helper does
+    what we think it does.
 
-    This is the oracle used by TestPosixEquivalence to prove the refactor
-    did not change POSIX behavior.  DO NOT edit this to "match" a future
-    production change — if _scrub_child_env's POSIX behavior legitimately
-    needs to evolve, delete this function and adjust the equivalence test
-    on purpose, so the churn is visible in review.
+    Deliberately updated for #27303 (the broad ``HERMES_`` prefix was dropped
+    in favor of an explicit operational allowlist, and DSN/WEBHOOK were added
+    to the secret substrings).  The original docstring said: if POSIX behavior
+    legitimately needs to evolve, adjust this oracle on purpose so the churn is
+    visible in review — that is what this change is.
     """
     _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                           "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                          "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
-                          "HERMES_")
+                          "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
     _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                          "PASSWD", "AUTH")
+                          "PASSWD", "AUTH", "DSN", "WEBHOOK")
+    _HERMES_CHILD_ALLOWED = frozenset({
+        "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
+    })
     out = {}
     for k, v in source_env.items():
         if is_passthrough(k):
@@ -275,6 +279,9 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
         if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
             continue
         if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
+            out[k] = v
+            continue
+        if k in _HERMES_CHILD_ALLOWED:
             out[k] = v
     return out
 
@@ -308,13 +315,20 @@ class TestPosixEquivalence:
         "PYTHONPATH": "/opt/lib",
         "VIRTUAL_ENV": "/home/alice/.venv",
         "CONDA_PREFIX": "/opt/conda",
-        "HERMES_HOME": "/home/alice/.hermes",
-        "HERMES_INTERACTIVE": "1",
+        # HERMES_* handling (#27303): only the operational allowlist passes;
+        # every other HERMES_* is dropped (the broad prefix was removed).
+        "HERMES_HOME": "/home/alice/.hermes",        # allowlisted → kept
+        "HERMES_PROFILE": "default",                 # allowlisted → kept
+        "HERMES_INTERACTIVE": "1",                   # not allowlisted → dropped
+        "HERMES_BASE_URL": "https://api.internal",   # not allowlisted → dropped
+        "HERMES_KANBAN_DB": "postgres://u:p@h/db",   # not allowlisted → dropped
         # Secret-substring blocks
         "OPENAI_API_KEY": "sk-xxx",
         "GITHUB_TOKEN": "ghp_xxx",
         "AWS_SECRET_ACCESS_KEY": "yyy",
         "MY_PASSWORD": "hunter2",
+        "SENTRY_DSN": "https://abc@sentry.io/1",     # DSN substring → blocked
+        "SLACK_WEBHOOK": "https://hooks.slack/x",    # WEBHOOK substring → blocked
         # Uncategorized — must be dropped
         "RANDOM_UNKNOWN": "drop-me",
         "DISPLAY": ":0",

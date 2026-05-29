@@ -894,20 +894,6 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     return None
 
 
-def read_claude_managed_key() -> Optional[str]:
-    """Read Claude's native managed key from ~/.claude.json for diagnostics only."""
-    claude_json = Path.home() / ".claude.json"
-    if claude_json.exists():
-        try:
-            data = json.loads(claude_json.read_text(encoding="utf-8"))
-            primary_key = data.get("primaryApiKey", "")
-            if isinstance(primary_key, str) and primary_key.strip():
-                return primary_key.strip()
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read ~/.claude.json: %s", e)
-    return None
-
-
 def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
     """Check if Claude Code credentials have a non-expired access token."""
     import time
@@ -1256,10 +1242,16 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     print()
 
     try:
-        webbrowser.open(auth_url)
-        print("  (Browser opened automatically)")
+        from hermes_cli.auth import _can_open_graphical_browser as _can_open_gui
     except Exception:
-        pass
+        _can_open_gui = lambda: True  # noqa: E731 — degrade to prior behavior
+
+    if _can_open_gui():
+        try:
+            webbrowser.open(auth_url)
+            print("  (Browser opened automatically)")
+        except Exception:
+            pass
 
     print()
     print("After authorizing, you'll see a code. Paste it below.")

@@ -22,7 +22,6 @@ from agent.credential_persistence import (
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
     PROVIDER_REGISTRY,
     _auth_store_lock,
     _codex_access_token_is_expiring,
@@ -203,8 +202,22 @@ class PooledCredential:
     def runtime_api_key(self) -> str:
         if self.provider == "nous":
             # Nous stores the runtime inference credential in agent_key for
-            # compatibility. It may be a NAS invoke JWT or legacy opaque key.
-            return str(self.agent_key or self.access_token or "")
+            # compatibility. It must be a NAS invoke JWT.
+            for token, expires_at in (
+                (self.agent_key, self.agent_key_expires_at),
+                (self.access_token, self.expires_at),
+            ):
+                if (
+                    isinstance(token, str)
+                    and token.strip()
+                    and auth_mod._nous_invoke_jwt_is_usable(
+                        token,
+                        scope=getattr(self, "scope", None),
+                        expires_at=expires_at,
+                    )
+                ):
+                    return token.strip()
+            return ""
         return str(self.access_token or "")
 
     @property
@@ -918,12 +931,7 @@ class CredentialPool:
                 if synced is not entry:
                     entry = synced
                 auth_mod.resolve_nous_runtime_credentials(
-                    min_key_ttl_seconds=DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
-                    inference_auth_mode=(
-                        auth_mod.NOUS_INFERENCE_AUTH_MODE_LEGACY
-                        if force
-                        else auth_mod.NOUS_INFERENCE_AUTH_MODE_AUTO
-                    ),
+                    force_refresh=force,
                 )
                 updated = self._sync_nous_entry_from_auth_store(entry)
             else:
@@ -1205,7 +1213,7 @@ class CredentialPool:
                 auth_mod.XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
             )
         if self.provider == "nous":
-            # Nous refresh/mint can require network access and should happen when
+            # Nous refresh can require network access and should happen when
             # runtime credentials are actually resolved, not merely when the pool
             # is enumerated for listing, migration, or selection.
             return False
@@ -1748,9 +1756,9 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "inference_base_url": state.get("inference_base_url"),
                     "agent_key": state.get("agent_key"),
                     "agent_key_expires_at": state.get("agent_key_expires_at"),
-                    # Carry the mint/refresh timestamps into the pool so
+                    # Carry the refresh timestamps into the pool so
                     # freshness-sensitive consumers (self-heal hooks, pool
-                    # pruning by age) can distinguish just-minted credentials
+                    # pruning by age) can distinguish just-refreshed credentials
                     # from stale ones.  Without these, fresh device_code
                     # entries get obtained_at=None and look older than they
                     # are (#15099).

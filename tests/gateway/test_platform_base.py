@@ -467,6 +467,18 @@ class TestMediaDeliveryPathValidation:
         assert safe_media == []
         assert dropped_media == [(r"C:\Users\foo\report.pdf", False)]
 
+    def test_windows_guard_fires_before_is_absolute(self, monkeypatch):
+        # On a POSIX host, Windows paths are already rejected by is_absolute(),
+        # which would mask a deleted guard. Force is_absolute() True (the native
+        # Windows condition, where the POSIX denylist also matches nothing) and
+        # confirm the fail-closed guard ALONE still rejects drive-letter / UNC /
+        # homoglyph paths — pinning the guard, not the incidental POSIX reject.
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base.Path, "is_absolute", lambda self: True)
+        for win_path in [r"C:\Users\me\.ssh\id_rsa.pdf", r"\\srv\share\secret.pdf",
+                         "Ｃ:/Users/me/x.png"]:
+            assert base.validate_media_delivery_path(win_path) is None
+
     def test_allows_operator_configured_extra_root(self, tmp_path, monkeypatch):
         extra_root = tmp_path / "operator-media"
         media_file = extra_root / "report.pdf"

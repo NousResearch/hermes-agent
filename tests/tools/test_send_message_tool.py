@@ -414,38 +414,8 @@ class TestSendMessageTool:
             media_files=[],
             force_document=False,
         )
-        # The dropped path is surfaced so the send is not a silent text-only
-        # success (issue #32644).
-        assert result["media_dropped"] == [str(secret)]
-        assert any("dropped" in w for w in result.get("warnings", []))
-
-    def test_media_dropped_warning_not_added_when_send_errors(self, tmp_path, monkeypatch):
-        # When the underlying send fails, do not annotate the error result with
-        # media_dropped/warnings (mirror PR #34178: warning only on success).
-        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
-        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
-        config, _telegram_cfg = _make_config()
-        secret = tmp_path / "secret.pdf"
-        secret.write_bytes(b"%PDF secret")
-
-        with patch("gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"error": "boom"})), \
-             patch("gateway.mirror.mirror_to_session", return_value=True):
-            result = json.loads(
-                send_message_tool(
-                    {
-                        "action": "send",
-                        "target": "telegram:12345",
-                        "message": f"hello\nMEDIA:{secret}",
-                    }
-                )
-            )
-
-        assert "error" in result
-        assert "media_dropped" not in result
-        assert "warnings" not in result
+        # media_dropped feedback is asserted (CI-safe, no telegram dep) in
+        # tests/tools/test_send_message_media_dropped.py.
 
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()

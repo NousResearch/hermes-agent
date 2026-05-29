@@ -8,8 +8,14 @@ Ollama instances. Key quirks:
 
 from typing import Any
 
+from agent.models_dev import infer_semantic_provider_for_model
+from agent.reasoning_efforts import resolve_reasoning_effort
 from providers import register_provider
 from providers.base import ProviderProfile
+
+
+_OPENAI_FAMILY_CUSTOM_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+_OPENAI_FAMILY_CUSTOM_EFFORT_ALIASES = {"max": "xhigh"}
 
 
 class CustomProfile(ProviderProfile):
@@ -23,6 +29,7 @@ class CustomProfile(ProviderProfile):
         **ctx: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
+        top_level: dict[str, Any] = {}
 
         # Ollama context window
         if ollama_num_ctx:
@@ -30,14 +37,26 @@ class CustomProfile(ProviderProfile):
             options["num_ctx"] = ollama_num_ctx
             extra_body["options"] = options
 
-        # Disable thinking when reasoning is turned off
+        # Disable thinking when reasoning is turned off; otherwise, relay
+        # OpenAI-family custom endpoints inherit OpenAI's top-level
+        # reasoning_effort contract from the model slug (e.g. gpt-5.5).
         if reasoning_config and isinstance(reasoning_config, dict):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
                 extra_body["think"] = False
+            elif _effort:
+                model = str(ctx.get("model") or "")
+                if infer_semantic_provider_for_model("custom", model) == "openai":
+                    _wire_effort = resolve_reasoning_effort(
+                        _effort,
+                        allowed=_OPENAI_FAMILY_CUSTOM_REASONING_EFFORTS,
+                        aliases=_OPENAI_FAMILY_CUSTOM_EFFORT_ALIASES,
+                    )
+                    if _wire_effort:
+                        top_level["reasoning_effort"] = _wire_effort
 
-        return extra_body, {}
+        return extra_body, top_level
 
     def fetch_models(
         self,

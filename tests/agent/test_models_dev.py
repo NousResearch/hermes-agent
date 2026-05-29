@@ -3,6 +3,7 @@ import json
 from unittest.mock import patch, MagicMock
 
 import pytest
+import agent.models_dev as models_dev
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
@@ -414,3 +415,44 @@ class TestGetModelCapabilities:
         with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "nonexistent-model")
         assert caps is None
+
+
+class TestCustomSemanticProviderInference:
+    def test_bare_gpt_custom_infers_openai(self):
+        assert models_dev.infer_semantic_provider_for_model("custom", "gpt-5.5") == "openai"
+
+    def test_prefixed_model_custom_infers_prefix_provider(self):
+        assert (
+            models_dev.infer_semantic_provider_for_model("custom", "anthropic/claude-opus-4.7")
+            == "anthropic"
+        )
+
+    def test_unknown_custom_model_stays_custom(self):
+        assert models_dev.infer_semantic_provider_for_model("custom", "my-local-model") == "custom"
+
+    def test_openai_o_series_requires_model_boundary(self):
+        assert models_dev.infer_semantic_provider_for_model("custom", "o3-mini") == "openai"
+        assert models_dev.infer_semantic_provider_for_model("custom", "o365-local") == "custom"
+
+    def test_non_custom_provider_is_unchanged(self):
+        assert models_dev.infer_semantic_provider_for_model("openrouter", "gpt-5.5") == "openrouter"
+
+    def test_custom_gpt_uses_openai_models_dev_context(self):
+        registry = {
+            "openai": {
+                "models": {
+                    "gpt-5.5": {
+                        "limit": {"context": 400000, "output": 128000},
+                        "tool_call": True,
+                        "reasoning": True,
+                    }
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            assert models_dev.lookup_models_dev_context("custom", "gpt-5.5") == 400000
+            caps = models_dev.get_model_capabilities("custom", "gpt-5.5")
+            assert caps is not None
+            assert caps.supports_reasoning is True
+            assert caps.supports_tools is True
+            assert caps.context_window == 400000

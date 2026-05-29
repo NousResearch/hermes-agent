@@ -249,6 +249,32 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["think"] is False
 
+    def test_custom_openai_reasoning_override_not_pinned_by_static_extra_body(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=msgs,
+            provider_profile=profile,
+            reasoning_config={"enabled": True, "effort": "low"},
+            request_overrides={"extra_body": {"custom_flag": True}},
+        )
+        assert kw["reasoning_effort"] == "low"
+        assert kw["extra_body"] == {"custom_flag": True}
+
+    def test_custom_openai_reasoning_max_maps_to_xhigh(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=msgs,
+            provider_profile=profile,
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+        assert kw["reasoning_effort"] == "xhigh"
+
     def test_gemini_native_without_explicit_reasoning_config_keeps_existing_behavior(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

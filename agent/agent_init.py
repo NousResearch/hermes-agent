@@ -129,9 +129,29 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
 
     overrides = dict(getattr(agent, "request_overrides", {}) or {})
     merged_extra_body = dict(extra_body)
+
+    # ``custom_providers[].extra_body`` is a static endpoint default.  Runtime
+    # controls such as /reasoning are resolved later into provider-profile
+    # top-level kwargs (for OpenAI-family custom endpoints) or ``think: false``
+    # (for Ollama-style endpoints).  Leaving a static ``reasoning_effort`` here
+    # makes it win again during request-overrides merge, so /reasoning appears
+    # to change state while the wire payload remains pinned to the configured
+    # default (for example xhigh).
+    if "reasoning_effort" in merged_extra_body:
+        model = str(getattr(agent, "model", "") or "")
+        try:
+            from agent.models_dev import infer_semantic_provider_for_model
+            semantic_provider = infer_semantic_provider_for_model("custom", model)
+        except Exception:
+            semantic_provider = None
+        if semantic_provider == "openai":
+            merged_extra_body.pop("reasoning_effort", None)
+
     existing_extra_body = overrides.get("extra_body")
     if isinstance(existing_extra_body, dict):
         merged_extra_body.update(existing_extra_body)
+    if not merged_extra_body:
+        return
     overrides["extra_body"] = merged_extra_body
     agent.request_overrides = overrides
 

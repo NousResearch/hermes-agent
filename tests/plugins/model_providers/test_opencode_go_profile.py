@@ -19,9 +19,11 @@ def opencode_go_profile():
 class TestOpenCodeGoKimiReasoning:
     """Kimi K2 on OpenCode Go (Fireworks-backed) emits exactly one reasoning control.
 
-    The upstream rejects requests carrying both 'thinking' and 'reasoning_effort',
-    so the profile sends reasoning_effort alone when thinking is on and the binary
-    thinking:disabled toggle when it is off.
+    The upstream rejects requests carrying both 'thinking' and 'reasoning_effort'.
+    The profile therefore sends reasoning_effort alone when thinking is on with a
+    recognized effort, the binary thinking:disabled toggle when thinking is off,
+    and nothing (server default) when thinking is on but no recognized effort is
+    given.
     """
 
     def test_high_effort_emits_effort_only(self, opencode_go_profile):
@@ -31,6 +33,8 @@ class TestOpenCodeGoKimiReasoning:
         )
         assert extra_body == {}
         assert top_level == {"reasoning_effort": "high"}
+        # The whole point of this profile: never emit both controls at once.
+        assert not ("thinking" in extra_body and "reasoning_effort" in top_level)
 
     def test_disabled_emits_thinking_disabled_without_effort(self, opencode_go_profile):
         extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
@@ -167,9 +171,9 @@ class TestOpenCodeGoFullKwargsIntegration:
             base_url="https://opencode.ai/zen/go/v1",
         )
         # Fireworks-backed Kimi rejects 'thinking' + 'reasoning_effort' together,
-        # so only reasoning_effort is emitted and no extra_body.thinking is set.
+        # so only reasoning_effort is emitted and no extra_body is set at all.
         assert kwargs["reasoning_effort"] == "high"
-        assert "thinking" not in kwargs.get("extra_body", {})
+        assert kwargs.get("extra_body", {}) == {}
 
     def test_deepseek_thinking_reaches_extra_body_and_top_level(
         self, opencode_go_profile

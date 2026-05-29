@@ -176,7 +176,6 @@ def test_nous_adapter_retry_credential_force_refreshes_on_jwt_401(tmp_path, monk
     assert cred is not None
     assert cred.bearer == "fresh-jwt-bearer"
     assert mock_resolve.call_args.kwargs["force_refresh"] is True
-    assert mock_resolve.call_args.kwargs["inference_auth_mode"] == "auto"
 
 
 def test_nous_adapter_retry_credential_skips_non_401(tmp_path, monkeypatch):

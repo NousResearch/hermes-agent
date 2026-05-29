@@ -320,9 +320,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "stt.provider": {
         "type": "select",
         "description": "Speech-to-text provider",
-        # "mistral" temporarily removed — mistralai PyPI package quarantined
-        # (malicious 2.4.6 release on 2026-05-12). Restore once available.
-        "options": ["local", "openai"],
+        "options": ["local", "openai", "mistral"],
     },
     "display.skin": {
         "type": "select",

@@ -606,19 +606,39 @@ class SessionManager:
         }
 
         try:
-            runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
+            # Thread the session base_url INTO resolution (#13489) rather than
+            # patching it on afterward. The resolver owns the routing decision:
+            # a custom provider honors this explicit_base_url (same-provider →
+            # base_url persists), while a built-in provider re-derives its own
+            # fixed endpoint and never carries a stale session base_url forward
+            # (cross-provider ownership rule). target_model lets api_mode derive
+            # from the model being switched to.
+            runtime = resolve_runtime_provider(
+                requested=requested_provider or config_provider,
+                explicit_base_url=base_url or None,
+                target_model=(model or default_model) or None,
+            )
             kwargs.update(
                 {
                     "provider": runtime.get("provider"),
                     "api_mode": api_mode or runtime.get("api_mode"),
-                    "base_url": base_url or runtime.get("base_url"),
+                    "base_url": runtime.get("base_url"),
                     "api_key": runtime.get("api_key"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                 }
             )
         except Exception:
-            logger.debug("ACP session falling back to default provider resolution", exc_info=True)
+            # Resolution failed — the agent falls back to config defaults,
+            # silently dropping the requested provider AND the threaded
+            # base_url. Warn (not debug) so a misconfigured custom endpoint
+            # doesn't fail invisibly (cpf-zkw.6 review).
+            logger.warning(
+                "ACP session falling back to default provider resolution "
+                "(requested=%r, base_url=%r)",
+                requested_provider or config_provider, base_url,
+                exc_info=True,
+            )
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)

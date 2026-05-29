@@ -4644,9 +4644,16 @@ class HermesCLI:
         )
 
         _primary_exc = None
-        runtime = None
+        # Resolve the typed ResolvedProvider so its provenance travels with the
+        # agent (plan §4 Task 9); the dict shape below is read via .get() so the
+        # existing credential-handling code is unchanged. We call the canonical
+        # ``resolve_runtime_provider`` (it returns the same ResolvedProvider as
+        # ``resolve_runtime_provider_object``) because that is the name callers
+        # and tests monkeypatch — using the _object variant here bypassed those
+        # stubs and broke tests/cli/test_cli_provider_resolution.py.
+        runtime_obj = None
         try:
-            runtime = resolve_runtime_provider(
+            runtime_obj = resolve_runtime_provider(
                 requested=self.requested_provider,
                 explicit_api_key=self._explicit_api_key,
                 explicit_base_url=self._explicit_base_url,
@@ -4655,7 +4662,7 @@ class HermesCLI:
             _primary_exc = exc
 
         # Primary provider auth failed — try fallback providers before giving up.
-        if runtime is None and _primary_exc is not None:
+        if runtime_obj is None and _primary_exc is not None:
             from hermes_cli.auth import AuthError
             if isinstance(_primary_exc, AuthError):
                 _fb_chain = self._fallback_model if isinstance(self._fallback_model, list) else []
@@ -4665,7 +4672,7 @@ class HermesCLI:
                     if not _fb_provider or not _fb_model:
                         continue
                     try:
-                        runtime = resolve_runtime_provider(requested=_fb_provider)
+                        runtime_obj = resolve_runtime_provider(requested=_fb_provider)
                         logger.warning(
                             "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                             _primary_exc, _fb_provider, _fb_model,
@@ -4678,11 +4685,17 @@ class HermesCLI:
                     except Exception:
                         continue
 
-        if runtime is None:
+        if runtime_obj is None:
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
             ChatConsole().print(f"[bold red]{message}[/]")
             return False
 
+        # The resolver returns the typed ResolvedProvider; it still supports
+        # dict-style reads, so the credential-handling below is unchanged. Carry
+        # the object so its provenance (base_url_source/key_source) reaches the
+        # constructed agent.
+        runtime = runtime_obj
+        self._resolved_provider = runtime_obj
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
@@ -4990,6 +5003,10 @@ class HermesCLI:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
+                # Carry resolution provenance (Task 9). A session /model override
+                # supplies its own runtime dict that the stored object would not
+                # match, so only attach it on the freshly-resolved path.
+                resolved_provider=(getattr(self, "_resolved_provider", None) if runtime_override is None else None),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,

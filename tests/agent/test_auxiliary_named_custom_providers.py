@@ -161,6 +161,22 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         # no-key-required should be used
 
+    def test_named_custom_provider_whose_name_is_a_custom_alias_is_reachable(self, tmp_path):
+        """Regression: a custom_providers entry named after a local-server alias
+        (ollama/vllm/llamacpp) must still resolve in the aux client. The #12146
+        alias unification canonicalizes these names to 'custom'; without the
+        dispatch guard they fell into the generic main-endpoint fallback (which
+        ignores the entry name) and returned None for every aux task."""
+        _write_config(tmp_path, {
+            "model": {"default": "test"},
+            "custom_providers": [
+                {"name": "ollama", "base_url": "http://localhost:11434/v1"},
+            ],
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        client, model = resolve_provider_client("ollama", "test")
+        assert client is not None
+
     def test_nonexistent_named_custom_falls_through(self, tmp_path):
         _write_config(tmp_path, {
             "model": {"default": "test"},

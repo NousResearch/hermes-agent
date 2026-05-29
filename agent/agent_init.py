@@ -195,6 +195,7 @@ def init_agent(
     iteration_budget: "IterationBudget" = None,
     fallback_model: Dict[str, Any] = None,
     credential_pool=None,
+    resolved_provider=None,
     checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20,
     checkpoint_max_total_size_mb: int = 500,
@@ -280,6 +281,15 @@ def init_agent(
     agent.load_soul_identity = load_soul_identity
     agent.pass_session_id = pass_session_id
     agent._credential_pool = credential_pool
+    # Carry the authoritative ResolvedProvider (plan §2/§4 Task 9). The agent
+    # stores the whole value object so its resolution provenance
+    # (base_url_source / key_source) travels with the agent for logging and
+    # `hermes doctor`, instead of being recomputed or lost. Optional and
+    # backward-compatible: callers that still pass individual base_url/api_key/
+    # provider fields leave this None; the provenance attrs then read "".
+    agent._resolved_provider = resolved_provider
+    agent.base_url_source = getattr(resolved_provider, "base_url_source", "") or ""
+    agent.key_source = getattr(resolved_provider, "key_source", "") or ""
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)

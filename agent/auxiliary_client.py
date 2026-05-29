@@ -50,6 +50,8 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 
+from hermes_cli.provider_resolution import canonicalize_provider, select_api_mode
+
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # openai SDK pulls a large type tree (~240 ms cold, including responses/*,
 # graders/*). We expose `OpenAI` here as a thin proxy that imports the SDK on
@@ -128,40 +130,6 @@ def _extract_url_query_params(url: str):
 # Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
-_PROVIDER_ALIASES = {
-    "google": "gemini",
-    "google-gemini": "gemini",
-    "google-ai-studio": "gemini",
-    "x-ai": "xai",
-    "x.ai": "xai",
-    "grok": "xai",
-    "glm": "zai",
-    "z-ai": "zai",
-    "z.ai": "zai",
-    "zhipu": "zai",
-    "kimi": "kimi-coding",
-    "moonshot": "kimi-coding",
-    "kimi-cn": "kimi-coding-cn",
-    "moonshot-cn": "kimi-coding-cn",
-    "gmi-cloud": "gmi",
-    "gmicloud": "gmi",
-    "minimax-china": "minimax-cn",
-    "minimax_cn": "minimax-cn",
-    "claude": "anthropic",
-    "claude-code": "anthropic",
-    "github": "copilot",
-    "github-copilot": "copilot",
-    "github-model": "copilot",
-    "github-models": "copilot",
-    "github-copilot-acp": "copilot-acp",
-    "copilot-acp-agent": "copilot-acp",
-    "tencent": "tencent-tokenhub",
-    "tokenhub": "tencent-tokenhub",
-    "tencent-cloud": "tencent-tokenhub",
-    "tencentmaas": "tencent-tokenhub",
-}
-
-
 def _normalize_aux_provider(provider: Optional[str]) -> str:
     normalized = (provider or "auto").strip().lower()
     if normalized.startswith("custom:"):
@@ -179,7 +147,12 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
             normalized = main_prov
         else:
             return "custom"
-    return _PROVIDER_ALIASES.get(normalized, normalized)
+    # Single authoritative alias table (fixes #12146 — the aux table used to
+    # omit ollama/vllm/llamacpp → "custom", causing "unknown provider" →
+    # OpenRouter fallback). Use the same registry-extended table auth.py uses
+    # so the aux path canonicalizes identically to the main path; the extended
+    # table is built once and cached, so the plugin import is paid only once.
+    return canonicalize_provider(normalized)
 
 
 # Sentinel: when returned by _fixed_temperature_for_model(), callers must
@@ -1098,28 +1071,28 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     """True if the endpoint at ``base_url`` speaks the Anthropic Messages
     protocol instead of OpenAI chat.completions.
 
-    Mirrors ``hermes_cli.runtime_provider._detect_api_mode_for_url`` so the
-    auxiliary client and the main agent stay in sync on transport selection.
-    Covers:
+    Delegates URL-based detection to the single shared, path-scoped api_mode
+    detector (``hermes_cli.provider_resolution.select_api_mode``) so the
+    auxiliary client and the main agent can never drift on transport selection.
+    That detector covers:
 
-    - Any URL ending in ``/anthropic`` (MiniMax, Zhipu GLM, LiteLLM proxies,
-      Anthropic-compatible gateways).
+    - Any URL whose PATH ends in ``/anthropic`` (MiniMax, Zhipu GLM, LiteLLM
+      proxies, Anthropic-compatible gateways). Matching the path (not the full
+      URL) means a query/fragment like ``?x=/anthropic`` cannot spoof it.
     - ``api.kimi.com/coding`` (Kimi Coding Plan — the /coding route only
       speaks Claude-Code's native Anthropic shape; ``chat.completions``
       returns 404 on Anthropic-only model aliases like ``kimi-for-coding``).
-    - ``api.anthropic.com`` (native Anthropic).
+
+    The native ``api.anthropic.com`` case is handled here explicitly: it is
+    normally routed by provider rather than URL, so the shared URL detector
+    (intentionally) does not special-case it.
     """
-    normalized = (base_url or "").strip().lower().rstrip("/")
+    normalized = (base_url or "").strip()
     if not normalized:
         return False
-    if normalized.endswith("/anthropic"):
+    if base_url_hostname(normalized) == "api.anthropic.com":
         return True
-    hostname = base_url_hostname(normalized)
-    if hostname == "api.anthropic.com":
-        return True
-    if hostname == "api.kimi.com" and "/coding" in normalized:
-        return True
-    return False
+    return select_api_mode(base_url=normalized) == "anthropic_messages"
 
 
 def _maybe_wrap_anthropic(
@@ -1727,9 +1700,13 @@ def clear_runtime_main() -> None:
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
-    This covers both env-driven OPENAI_BASE_URL setups and config-saved custom
-    endpoints where the base URL lives in config.yaml instead of the live
-    environment.
+    Resolution is delegated entirely to the unified resolver
+    (``hermes_cli.runtime_provider.resolve_runtime_provider``) — the single
+    source of truth for provider/base_url/key/api_mode. The base URL comes
+    from ``config.yaml`` (or a configured custom_providers entry); the ambient
+    ``OPENAI_BASE_URL`` env var is *not* consulted for routing (#4165, #5161).
+    A lingering ``OPENAI_BASE_URL`` is surfaced once as a warning in
+    ``_resolve_auto`` rather than silently honored here.
     """
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -1739,19 +1716,13 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
         runtime = None
 
-    if not isinstance(runtime, dict):
-        openai_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
-        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-        if not openai_base:
-            return None, None, None
-        runtime = {
-            "base_url": openai_base,
-            "api_key": openai_key,
-        }
+    # resolve_runtime_provider returns a ResolvedProvider (None only on failure).
+    if runtime is None:
+        return None, None, None
 
-    custom_base = runtime.get("base_url")
-    custom_key = runtime.get("api_key")
-    custom_mode = runtime.get("api_mode")
+    custom_base = runtime.base_url
+    custom_key = runtime.api_key
+    custom_mode = runtime.api_mode
     if not isinstance(custom_base, str) or not custom_base.strip():
         return None, None, None
 
@@ -3415,8 +3386,24 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # A requested name that canonicalized to "custom" (e.g. a custom_providers
+    # entry literally named "ollama"/"vllm"/"llamacpp"/"local") must be resolved
+    # by the named-custom branch below, which honors the entry NAME — not by the
+    # generic main-endpoint fallback here, which ignores the name and resolves
+    # the default runtime. Without this guard the #12146 alias unification
+    # (ollama/vllm/llamacpp → custom) made such named entries unreachable from
+    # the auxiliary client (they 'd return None). Only diverts the no-explicit-
+    # base path; an explicit base_url is still handled by the block below.
+    _use_named_custom_entry = False
+    if provider == "custom" and not explicit_base_url and original_provider and original_provider != provider:
+        try:
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+            _use_named_custom_entry = _get_named_custom_provider(original_provider) is not None
+        except Exception:
+            _use_named_custom_entry = False
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
-    if provider == "custom":
+    if provider == "custom" and not _use_named_custom_entry:
         if explicit_base_url:
             custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (

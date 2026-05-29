@@ -257,7 +257,7 @@ class TestPayloadBuilder:
             seed=42,
         )
         assert p["prompt"] == "x"
-        assert p["duration"] == "8"  # FAL queue API uses strings
+        assert p["duration"] == "8s"  # veo3.1 uses "Ns" format per FAL API
         assert p["aspect_ratio"] == "16:9"
         assert p["resolution"] == "720p"
         assert p["generate_audio"] is True

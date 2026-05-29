@@ -102,6 +102,36 @@ class TestTrustLevelFor:
         # No path part — still resolves repo correctly
         assert result in {"trusted", "community"}
 
+    def test_nvidia_skills_tap_is_registered_and_trusted(self):
+        # Invariant: every trusted repo in TRUSTED_REPOS that we want
+        # browseable/searchable through `hermes skills browse` must also
+        # appear as a default tap on GitHubSource. Without the tap, the
+        # repo's skills don't show up in search results or the docs-site
+        # Skills Hub page even though the trust level is correct.
+        from tools.skills_guard import TRUSTED_REPOS
+
+        assert "NVIDIA/skills" in TRUSTED_REPOS
+        tap_repos = {tap["repo"] for tap in GitHubSource.DEFAULT_TAPS}
+        assert "NVIDIA/skills" in tap_repos
+
+        src = self._source()
+        assert src.trust_level_for("NVIDIA/skills/aiq-deploy") == "trusted"
+
+    def test_browseable_trusted_repos_have_taps(self):
+        # General invariant covering all current and future trusted repos
+        # that publish under a single `skills/`-style path. openai/skills
+        # is the deliberate exception — it has two taps (`.curated/` and
+        # `.system/`) — so we just assert membership not path equality.
+        from tools.skills_guard import TRUSTED_REPOS
+
+        tap_repos = {tap["repo"] for tap in GitHubSource.DEFAULT_TAPS}
+        for repo in TRUSTED_REPOS:
+            assert repo in tap_repos, (
+                f"Trusted repo {repo!r} is in TRUSTED_REPOS but missing "
+                "from GitHubSource.DEFAULT_TAPS — its skills will not be "
+                "browsable via `hermes skills browse`."
+            )
+
 
 # ---------------------------------------------------------------------------
 # SkillsShSource

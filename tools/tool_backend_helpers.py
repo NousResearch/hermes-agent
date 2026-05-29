@@ -84,9 +84,13 @@ def normalize_modal_mode(value: object | None) -> str:
 
 def has_direct_modal_credentials() -> bool:
     """Return True when direct Modal credentials/config are available."""
+    try:
+        modal_file_exists = (Path.home() / ".modal.toml").exists()
+    except (PermissionError, OSError):
+        modal_file_exists = False
     return bool(
         (os.getenv("MODAL_TOKEN_ID") and os.getenv("MODAL_TOKEN_SECRET"))
-        or (Path.home() / ".modal.toml").exists()
+        or modal_file_exists
     )
 
 

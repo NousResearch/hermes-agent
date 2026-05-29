@@ -339,24 +339,35 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
 
         This is the PYTHONPATH fix — without it, switching to session CWD
         breaks `from hermes_tools import terminal`.
+
+        Two terminal calls so the execute_code gate (which rejects 1-call-no-logic
+        scripts) does not fire — the point of the test is the import, not the
+        number of tool calls.
         """
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             code = (
                 "from hermes_tools import terminal\n"
-                "r = terminal('echo x')\n"
-                "print(r.get('output', 'MISSING'))\n"
+                "r1 = terminal('echo x')\n"
+                "r2 = terminal('echo y')\n"
+                "print(r1.get('output', 'MISSING') + r2.get('output', 'MISSING'))\n"
             )
             result = self._run(code, mode="project", extra_env={"TERMINAL_CWD": td})
             self.assertEqual(result["status"], "success")
             self.assertIn("mock", result["output"])
 
     def test_strict_mode_can_still_import_hermes_tools(self):
-        """Regression: strict mode's tmpdir CWD still works for imports."""
+        """Regression: strict mode's tmpdir CWD still works for imports.
+
+        Two terminal calls so the execute_code gate (which rejects 1-call-no-logic
+        scripts) does not fire — the point of the test is the import, not the
+        number of tool calls.
+        """
         code = (
             "from hermes_tools import terminal\n"
-            "r = terminal('echo x')\n"
-            "print(r.get('output', 'MISSING'))\n"
+            "r1 = terminal('echo x')\n"
+            "r2 = terminal('echo y')\n"
+            "print(r1.get('output', 'MISSING') + r2.get('output', 'MISSING'))\n"
         )
         result = self._run(code, mode="strict")
         self.assertEqual(result["status"], "success")

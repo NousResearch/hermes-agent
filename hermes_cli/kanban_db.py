@@ -928,6 +928,12 @@ class Task:
     # When True, the dispatcher skips stuck-detection for this task even
     # when the board-wide default is enabled.
     no_heartbeat_required: bool = False
+    # Per-task iteration budget passed to the spawned worker via
+    # ``HERMES_MAX_ITERATIONS``. Overrides the profile default (usually 90)
+    # and the ``kanban.default_max_iterations`` config.  NULL = use defaults.
+    # Use this on investigate+fix+test+PR cards where 150–250 iterations are
+    # needed; leave NULL for focused single-deliverable cards.
+    max_iterations: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1014,6 +1020,9 @@ class Task:
                 bool(row["no_heartbeat_required"])
                 if "no_heartbeat_required" in keys
                 else False
+            ),
+            max_iterations=(
+                row["max_iterations"] if "max_iterations" in keys else None
             ),
         )
 
@@ -1190,6 +1199,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- (the rule already requires last_heartbeat_at IS NOT NULL), but
     -- operators can use this as an explicit opt-out for clarity.
     no_heartbeat_required INTEGER NOT NULL DEFAULT 0,
+    -- Per-task max LLM-inference iterations for the spawned worker.
+    -- When non-NULL, the dispatcher injects ``HERMES_MAX_ITERATIONS=<N>``
+    -- into the worker's environment, overriding the profile default.
+    -- Use this on investigate+fix+test+PR cards (150–250 typical) to
+    -- avoid premature budget exhaustion.  NULL = use profile defaults.
+    max_iterations        INTEGER,
     -- Epoch timestamp set by complete_task when a task finishes without an
     -- associated PR (regime-B completion audit). The dispatcher picks up tasks
     -- with this column non-NULL and spawns an sdlc-completion-audit agent.
@@ -1796,6 +1811,7 @@ def connect(
                 # falls back to DELETE with one WARNING so kanban stays usable there.
                 # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
                 from hermes_state import apply_wal_with_fallback
+
                 apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
                 # FULL (was NORMAL): fsync before each checkpoint to narrow the
                 # crash window that can leave a b-tree page header torn.
@@ -2038,6 +2054,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "no_heartbeat_required",
             "no_heartbeat_required INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "max_iterations" not in cols:
+        # Per-task iteration budget for the spawned worker.
+        # Injected as HERMES_MAX_ITERATIONS when non-NULL.
+        # NULL = use the profile default (no override).
+        _add_column_if_missing(
+            conn, "tasks", "max_iterations", "max_iterations INTEGER"
         )
 
     if "completion_audit_at" not in cols:
@@ -2439,6 +2463,7 @@ def create_task(
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    max_iterations: Optional[int] = None,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -2613,8 +2638,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id, max_iterations
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2640,6 +2665,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        int(max_iterations) if max_iterations is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -6890,6 +6916,13 @@ class DispatchResult:
     ``(task_id, assignee, workspace_path)`` triples. The audit agent runs the
     class-aware rule sets on the deliverable and posts findings as a
     kanban_comment targeted at the orchestrator. The task stays ``done``."""
+    missing_heartbeat_warned: list[str] = field(default_factory=list)
+    """Task ids that received a ``missing_heartbeat_warning`` event this tick
+    (never heartbeated, elapsed >= 15 min).  The worker will see the warning
+    on its next ``kanban_show`` call."""
+    missing_heartbeat_blocked: list[str] = field(default_factory=list)
+    """Task ids auto-blocked by the missing-heartbeat enforcer this tick
+    (never heartbeated, elapsed >= 30 min — protocol violation)."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7355,6 +7388,153 @@ def enforce_max_runtime(
                 event_payload_extra={"pid": pid, "sigkill": killed},
             )
     return timed_out
+
+
+# Thresholds for missing-heartbeat enforcement (dispatcher-side).
+# Workers that never send any heartbeat are handled separately from
+# the stuck-detection path (which requires at least one heartbeat).
+MISSING_HB_WARN_SECONDS = 15 * 60  # 15 minutes → write warning event
+MISSING_HB_BLOCK_SECONDS = 30 * 60  # 30 minutes → auto-block the task
+
+
+def enforce_missing_heartbeat(
+    conn: sqlite3.Connection,
+    *,
+    warn_after_seconds: int = MISSING_HB_WARN_SECONDS,
+    block_after_seconds: int = MISSING_HB_BLOCK_SECONDS,
+) -> tuple[list[str], list[str]]:
+    """Enforce the heartbeat protocol on workers that have never sent one.
+
+    Different from ``detect_stuck_workers``, which only fires AFTER the
+    worker has sent at least one heartbeat (and then gone silent).  This
+    function targets workers that have been running since spawn and have
+    NEVER sent any heartbeat at all.
+
+    Two tiers:
+
+    * **Warning** (``warn_after_seconds``, default 15 min): writes a
+      ``missing_heartbeat_warning`` event on the task.  The worker will
+      see this in its next ``kanban_show`` call (or the next time it reads
+      the comment thread).  Only one warning per run (the event is
+      idempotent — we skip tasks that already have the event).
+
+    * **Hard-block** (``block_after_seconds``, default 30 min): blocks the
+      task via ``block_task`` with a clear protocol-violation reason and
+      SIGTERMs the worker PID if host-local.  This prevents silent budget
+      exhaustion from a worker that ignores the heartbeat contract.
+
+    Only acts on tasks that:
+    - ``status = 'running'``
+    - ``task_runs.last_heartbeat_at IS NULL`` (never heartbeated this run)
+    - elapsed since ``started_at`` exceeds the threshold
+
+    Does NOT act on tasks with ``no_heartbeat_required = 1``.
+
+    Returns ``(warned_ids, blocked_ids)`` — the task IDs that received
+    each action this tick.
+    """
+    import signal as _signal_mod
+
+    if warn_after_seconds <= 0 and block_after_seconds <= 0:
+        return [], []
+
+    now = int(time.time())
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+
+    rows = conn.execute(
+        "SELECT t.id, t.worker_pid, t.claim_lock, t.no_heartbeat_required, "
+        "       t.current_run_id, "
+        "       COALESCE(tr.started_at, t.started_at) AS active_started_at "
+        "FROM tasks t "
+        "LEFT JOIN task_runs tr ON tr.id = t.current_run_id "
+        "WHERE t.status = 'running' "
+        "  AND (tr.last_heartbeat_at IS NULL OR t.current_run_id IS NULL)"
+    ).fetchall()
+
+    warned: list[str] = []
+    blocked: list[str] = []
+
+    for row in rows:
+        if row["no_heartbeat_required"]:
+            continue
+
+        started = row["active_started_at"]
+        if started is None:
+            continue
+
+        elapsed = now - int(started)
+        tid = row["id"]
+        pid = row["worker_pid"]
+        lock = row["claim_lock"] or ""
+        run_id = row["current_run_id"]
+
+        # Hard-block tier (30 min).
+        if block_after_seconds > 0 and elapsed >= block_after_seconds:
+            # Terminate the worker if it's host-local and still alive.
+            if pid and lock.startswith(host_prefix) and _pid_alive(int(pid)):
+                kill = getattr(os, "kill", None)
+                if kill is not None:
+                    try:
+                        kill(int(pid), _signal_mod.SIGTERM)
+                    except (ProcessLookupError, OSError):
+                        pass
+
+            reason = (
+                f"worker ran {elapsed // 60}m ({elapsed}s) without sending any "
+                f"kanban_heartbeat — protocol violation. "
+                f"Heartbeat every few minutes during long operations (skill: kanban-worker §3)."
+            )
+            ok = block_task(conn, tid, reason=reason, expected_run_id=run_id)
+            if ok:
+                _append_event(
+                    conn,
+                    tid,
+                    "missing_heartbeat_warning",
+                    {
+                        "elapsed_seconds": elapsed,
+                        "threshold_seconds": block_after_seconds,
+                        "action": "blocked",
+                        "pid": int(pid) if pid else None,
+                    },
+                    run_id=run_id,
+                )
+                blocked.append(tid)
+            continue
+
+        # Warning tier (15 min).
+        if warn_after_seconds > 0 and elapsed >= warn_after_seconds:
+            # Idempotent: skip if a warning event already exists for this run.
+            existing = conn.execute(
+                "SELECT id FROM task_events "
+                "WHERE task_id = ? AND kind = 'missing_heartbeat_warning' "
+                "  AND (run_id = ? OR run_id IS NULL) "
+                "ORDER BY id DESC LIMIT 1",
+                (tid, run_id),
+            ).fetchone()
+            if existing:
+                continue
+
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    tid,
+                    "missing_heartbeat_warning",
+                    {
+                        "elapsed_seconds": elapsed,
+                        "threshold_seconds": warn_after_seconds,
+                        "action": "warned",
+                        "message": (
+                            f"You have been running {elapsed // 60} minutes "
+                            f"without a heartbeat. Call kanban_heartbeat(note=...) "
+                            f"now or block the task. At {block_after_seconds // 60} "
+                            f"minutes the dispatcher will auto-block this task."
+                        ),
+                    },
+                    run_id=run_id,
+                )
+            warned.append(tid)
+
+    return warned, blocked
 
 
 def detect_stuck_workers(
@@ -8821,6 +9001,16 @@ def _dispatch_once_locked(
         conn,
         stuck_after_seconds_default=stuck_after_seconds_default,
     )
+    # Enforce the heartbeat protocol on workers that have NEVER sent a
+    # heartbeat. Two tiers: 15-min warning event, 30-min auto-block.
+    # This is separate from detect_stuck_workers (which fires only after
+    # the first heartbeat arrives and then goes stale).
+    try:
+        _hb_warned, _hb_blocked = enforce_missing_heartbeat(conn)
+        result.missing_heartbeat_warned.extend(_hb_warned)
+        result.missing_heartbeat_blocked.extend(_hb_blocked)
+    except Exception:
+        pass  # never break dispatch on enforcer fault
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Crash-loop circuit breaker: trip on N crashed events / window per
@@ -9790,6 +9980,12 @@ def _default_spawn(
         env["HERMES_KANBAN_GOAL_MODE"] = "1"
         if task.goal_max_turns is not None:
             env["HERMES_KANBAN_GOAL_MAX_TURNS"] = str(int(task.goal_max_turns))
+    # Per-task iteration budget: inject as HERMES_MAX_ITERATIONS so the
+    # spawned worker's AIAgent picks it up (cli.py reads this env var).
+    # Only override when task.max_iterations is explicitly set — otherwise
+    # let the profile's config.yaml agent.max_turns (or the env default) win.
+    if task.max_iterations is not None:
+        env["HERMES_MAX_ITERATIONS"] = str(int(task.max_iterations))
     terminal_timeout = _worker_terminal_timeout_env(
         task.max_runtime_seconds,
         env.get("TERMINAL_TIMEOUT"),

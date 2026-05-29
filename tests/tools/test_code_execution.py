@@ -258,16 +258,22 @@ class TestExecuteCode(unittest.TestCase):
         self.assertIn("hermes_constants.py", result["output"])
 
     def test_single_tool_call(self):
-        """Script calls terminal and prints the result."""
+        """Script calls terminal and prints the result.
+
+        Two terminal calls so the execute_code gate (which rejects 1-call-no-logic
+        scripts) does not fire — the point of this test is the tool dispatch and
+        result capture, not the number of calls.
+        """
         code = """
 from hermes_tools import terminal
-result = terminal("echo hello")
-print(result.get("output", ""))
+r1 = terminal("echo hello")
+r2 = terminal("echo world")
+print(r1.get("output", "") + r2.get("output", ""))
 """
         result = self._run(code)
         self.assertEqual(result["status"], "success")
         self.assertIn("mock output for: echo hello", result["output"])
-        self.assertEqual(result["tool_calls_made"], 1)
+        self.assertEqual(result["tool_calls_made"], 2)
 
     def test_multi_tool_chain(self):
         """Script calls multiple tools sequentially."""
@@ -352,11 +358,17 @@ else:
                       msg=f"Concurrent tool calls mismatched: {result['output']!r}")
 
     def test_excluded_tool_returns_error(self):
-        """Script calling a tool not in the allow-list gets an error from RPC."""
+        """Script calling a tool not in the allow-list gets an error from RPC.
+
+        Two tool calls so the execute_code gate does not fire on script shape.
+        Only web_search is enabled; terminal is excluded so the import fails.
+        """
         code = """
 from hermes_tools import terminal
-result = terminal("echo hi")
-print(result)
+r1 = terminal("echo hi")
+r2 = terminal("echo bye")
+print(r1)
+print(r2)
 """
         # Only enable web_search -- terminal should be excluded
         result = self._run(code, enabled_tools=["web_search"])
@@ -410,15 +422,22 @@ raise RuntimeError("deliberate crash")
         self.assertIn("\u23f0", result.get("output", ""))
 
     def test_web_search_tool(self):
-        """Script calls web_search and processes results."""
+        """Script calls web_search and processes results.
+
+        Two web_search calls so the execute_code gate (which rejects 1-call-no-logic
+        scripts) does not fire — the point of this test is the web_search dispatch,
+        not the number of queries.
+        """
         code = """
 from hermes_tools import web_search
-results = web_search("test query")
-print(f"Found {len(results.get('results', []))} results")
+r1 = web_search("test query")
+r2 = web_search("second query")
+total = len(r1.get('results', [])) + len(r2.get('results', []))
+print(f"Found {total} results")
 """
         result = self._run(code)
         self.assertEqual(result["status"], "success")
-        self.assertIn("Found 1 results", result["output"])
+        self.assertIn("Found 2 results", result["output"])
 
     def test_json_parse_helper(self):
         """json_parse handles control characters that json.loads(strict=True) rejects."""

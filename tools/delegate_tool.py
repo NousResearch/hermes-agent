@@ -879,6 +879,9 @@ def _build_child_agent(
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
+    # True only when override_base_url is a LITERAL config endpoint
+    # (delegation.base_url) — not a provider-resolved one. Gates the pool skip.
+    override_base_url_explicit: bool = False,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
@@ -1148,10 +1151,14 @@ def _build_child_agent(
     child._subagent_goal = goal
 
     # Share a credential pool so subagents can rotate keys on rate limits.
-    # EXCEPTION: skip the pool for an explicit endpoint (override_base_url) — a
-    # lease/swap (_swap_credential) would overwrite the configured base_url and
-    # silently redirect the child off it. Fixes #7833 / #20558.
-    child_pool = None if override_base_url else _resolve_child_credential_pool(effective_provider, parent_agent)
+    # EXCEPTION: skip the pool ONLY for a LITERAL config endpoint
+    # (delegation.base_url) — there a lease/swap (_swap_credential) would
+    # overwrite the configured base_url and silently redirect the child off it.
+    # Fixes #7833 / #20558. A provider-RESOLVED base_url (delegation.provider)
+    # is NOT skipped: the pool's entries carry that same provider's endpoint, so
+    # a swap is legitimate same-provider key rotation, not an off-endpoint
+    # redirect — keeping the pool preserves rotation for delegated providers.
+    child_pool = None if override_base_url_explicit else _resolve_child_credential_pool(effective_provider, parent_agent)
     if child_pool is not None:
         child._credential_pool = child_pool
 
@@ -2083,6 +2090,7 @@ def delegate_task(
                 parent_agent=parent_agent,
                 override_provider=tc["provider"],
                 override_base_url=tc["base_url"],
+                override_base_url_explicit=tc.get("base_url_is_explicit", False),
                 override_api_key=tc["api_key"],
                 override_api_mode=tc["api_mode"],
                 override_acp_command=t.get("acp_command")
@@ -2427,6 +2435,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            # A literal config endpoint: a pool lease/swap would clobber it, so
+            # the child must NOT share a pool. See the guard in _build_child_agent.
+            "base_url_is_explicit": True,
         }
 
     if not configured_provider:
@@ -2437,6 +2448,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+            "base_url_is_explicit": False,
         }
 
     # Provider is configured — resolve full credentials
@@ -2467,6 +2479,10 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        # Provider-resolved endpoint: the pool's entries carry this same
+        # provider's base_url, so a swap is legitimate same-provider key
+        # rotation, not an off-endpoint redirect. Keep the pool.
+        "base_url_is_explicit": False,
     }
 
 

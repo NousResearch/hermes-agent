@@ -2687,8 +2687,8 @@ class TestLoadConfig(unittest.TestCase):
 
 class TestExplicitEndpointSkipsPool(unittest.TestCase):
     def test_explicit_base_url_disables_credential_pool(self):
-        """An explicit override_base_url must skip the pool so a later lease/swap
-        can't clobber the configured endpoint."""
+        """A LITERAL config endpoint (override_base_url_explicit) must skip the
+        pool so a later lease/swap can't clobber the configured endpoint."""
         parent = _make_mock_parent(depth=0)
         with patch("tools.delegate_tool._resolve_child_credential_pool",
                    return_value=object()) as mock_pool:
@@ -2696,10 +2696,29 @@ class TestExplicitEndpointSkipsPool(unittest.TestCase):
                 task_index=0, goal="x", context=None, toolsets=None,
                 model="qwen2.5-coder", max_iterations=5, task_count=1, parent_agent=parent,
                 override_provider="custom", override_base_url="http://localhost:1234/v1",
+                override_base_url_explicit=True,
                 override_api_key="local-key", override_api_mode="chat_completions",
             )
         self.assertIsNone(getattr(child, "_credential_pool", None))
         mock_pool.assert_not_called()  # skipped without even resolving a pool
+
+    def test_provider_resolved_base_url_still_attaches_pool(self):
+        """Regression guard for the over-broad skip: a provider-RESOLVED base_url
+        (delegation.provider, base_url_is_explicit=False) must KEEP its pool so
+        delegated providers retain same-provider key rotation. Even with a
+        populated override_base_url, the pool is attached when not explicit."""
+        parent = _make_mock_parent(depth=0)
+        sentinel = object()
+        with patch("tools.delegate_tool._resolve_child_credential_pool", return_value=sentinel):
+            child = _build_child_agent(
+                task_index=0, goal="x", context=None, toolsets=None,
+                model="some-model", max_iterations=5, task_count=1, parent_agent=parent,
+                override_provider="openrouter",
+                override_base_url="https://openrouter.ai/api/v1",
+                override_base_url_explicit=False,
+                override_api_key="or-key", override_api_mode="chat_completions",
+            )
+        self.assertIs(getattr(child, "_credential_pool", None), sentinel)
 
     def test_no_override_base_url_still_attaches_pool(self):
         """Regression: without an explicit endpoint, pool attachment is unchanged."""
@@ -2744,6 +2763,17 @@ class TestPerTaskCredentialResolution(unittest.TestCase):
         self.assertEqual(resolved_cfg["provider"], "openrouter")
         self.assertNotIn("base_url", resolved_cfg)
         self.assertNotIn("api_key", resolved_cfg)
+
+    def test_literal_base_url_is_flagged_explicit(self):
+        """A literal delegation.base_url is tagged base_url_is_explicit so the
+        pool guard skips it; the inherit branch is flagged non-explicit."""
+        parent = _make_mock_parent(depth=0)
+        explicit = _resolve_delegation_credentials(
+            {"base_url": "http://localhost:1234/v1"}, parent
+        )
+        self.assertTrue(explicit["base_url_is_explicit"])
+        inherit = _resolve_delegation_credentials({}, parent)
+        self.assertFalse(inherit["base_url_is_explicit"])
 
 
 class TestPerTaskOverrideReachesChild(unittest.TestCase):

@@ -52,7 +52,7 @@ def _resolve_safe_cwd(cwd: str) -> str:
 
     Used by ``_run_bash`` to recover when the configured cwd is gone — most
     commonly because a previous tool call deleted its own working directory
-    (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``
+    (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``  # PATH: add realpath validation
     raises ``FileNotFoundError`` before bash starts, wedging every subsequent
     terminal call until the gateway restarts.
     """

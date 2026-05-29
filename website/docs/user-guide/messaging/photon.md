@@ -86,7 +86,10 @@ Important: quick setup does not start the Hermes gateway. It prepares
 Photon, the tunnel, and the local credentials, but iMessage replies only
 work while `hermes gateway run -v` is running in a terminal or the
 gateway service is installed and started. If you used a custom
-`HERMES_HOME`, export the same value before starting the gateway.
+`HERMES_HOME`, export the same value before starting the gateway. When
+the Photon adapter starts, it verifies the managed tunnel registration
+for that same profile and cleans stale managed `trycloudflare.com`
+webhooks.
 
 `hermes setup gateway` runs the same guided Photon setup when you choose
 Photon. Running setup again is safe: Hermes will not silently duplicate
@@ -99,6 +102,9 @@ replacement project, run `hermes photon setup --new-project --phone
 
 To let another phone control Hermes later, run
 `hermes photon allow-phone '+<country-code><number>'`.
+If you register more phone numbers as Photon users, each user may be
+assigned a different shared iMessage number. Use the number shown for
+that user in the Photon dashboard when starting a new text thread.
 
 Photon secrets are written to `~/.hermes/.env`. The dashboard token is
 stored as `PHOTON_DASHBOARD_TOKEN`; the Spectrum project credentials
@@ -151,7 +157,9 @@ locally, the command is a no-op. If the local secret is missing, delete
 or recreate the webhook in the Photon dashboard and save the new signing
 secret locally. The managed tunnel flow deletes stale
 `trycloudflare.com` webhooks it created when the tunnel URL changes, but
-leaves user-owned/manual webhook URLs alone.
+leaves user-owned/manual webhook URLs alone. The gateway performs the
+same cleanup when Photon connects, so the active gateway profile owns
+the current managed webhook registration.
 
 If the managed `cloudflared` install fails, Hermes prints manual install
 instructions and the `hermes photon webhook register ...` fallback.
@@ -165,10 +173,19 @@ hermes gateway run -v
 You'll see something like:
 
 ```
+[photon] active Hermes home: /Users/you/.hermes
+[photon] started managed webhook tunnel at https://...trycloudflare.com/photon/webhook
 [photon] connected — webhook at 0.0.0.0:8788/photon/webhook, sidecar on 127.0.0.1:8789
 ```
 
-Send an iMessage to your assigned number and Hermes will reply.
+Send an iMessage to your assigned number and Hermes will reply. If you
+registered more than one phone, text the assigned number shown for that
+specific user in the Photon dashboard.
+
+The active Hermes home must be the same profile where you ran
+`hermes photon quick-setup`. If quick setup used a custom `HERMES_HOME`
+but `hermes gateway run -v` logs `/Users/you/.hermes`, the gateway is
+reading the wrong `.env`.
 
 For always-on local use, install the launchd service and start it:
 
@@ -246,6 +263,11 @@ Common issues:
 - **Webhook reachable from localhost but Photon can't deliver** —
   Photon needs a public hostname. Cloudflare Tunnel is the easiest
   free option.
+- **`photon-sidecar: observed SDK inbound ...` appears but no
+  `[photon] webhook delivery received` follows** — the sidecar saw the
+  SDK message stream, but Hermes did not receive the signed webhook it
+  uses for inbound dispatch. Check that `HERMES_HOME` matches setup,
+  then run `hermes photon status`.
 - **`unable to resolve space id any;-;+...`** — the sidecar is using
   the webhook `space.id` directly instead of resolving the iMessage
   DM by phone number. Update the Photon plugin; current versions cache
@@ -287,6 +309,8 @@ hermes photon webhook delete <webhook-id>   # remove one
 | `PHOTON_PROJECT_SECRET`   | (unset)            | Set by `hermes photon setup`               |
 | `PHOTON_WEBHOOK_SECRET`   | (unset)            | From webhook registration                  |
 | `PHOTON_WEBHOOK_PUBLIC_URL` | (unset)          | Registered public webhook URL              |
+| `PHOTON_WEBHOOK_TUNNEL_AUTOSTART` | `true`    | Gateway starts/registers managed tunnel for trycloudflare URLs |
+| `PHOTON_WEBHOOK_TUNNEL_STOP_ON_DISCONNECT` | `true` | Stop managed tunnel on gateway shutdown |
 | `PHOTON_WEBHOOK_PORT`     | `8788`             | Local port for the aiohttp listener        |
 | `PHOTON_WEBHOOK_PATH`     | `/photon/webhook`  | Path under which the listener mounts       |
 | `PHOTON_WEBHOOK_BIND`     | `0.0.0.0`          | Bind address for the listener              |

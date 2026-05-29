@@ -40,6 +40,14 @@ optional_env:
     description: "Public Photon webhook URL registered by quick setup or webhook register"
     prompt: "Photon webhook public URL"
     password: false
+  - name: PHOTON_WEBHOOK_TUNNEL_AUTOSTART
+    description: "Start/register the managed Cloudflare Quick Tunnel when the gateway connects (default true)"
+    prompt: "Auto-start managed webhook tunnel?"
+    password: false
+  - name: PHOTON_WEBHOOK_TUNNEL_STOP_ON_DISCONNECT
+    description: "Stop a gateway-started managed tunnel when the gateway stops (default true)"
+    prompt: "Stop managed tunnel with gateway?"
+    password: false
   - name: PHOTON_WEBHOOK_PORT
     description: "Local port the webhook receiver listens on (default 8788)"
     prompt: "Webhook receiver port"

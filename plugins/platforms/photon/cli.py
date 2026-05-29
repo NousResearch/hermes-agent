@@ -12,6 +12,7 @@ Subcommands:
     install-sidecar    npm install inside plugins/platforms/photon/sidecar/
     webhook register   register the local webhook URL with Photon
     webhook list       list registered webhooks
+    webhook cleanup    delete stale managed trycloudflare.com webhooks
     webhook delete     delete a webhook by id
     webhook tunnel     manage the local Cloudflare Quick Tunnel
 """
@@ -26,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -36,6 +38,18 @@ _SIDECAR_DIR = Path(__file__).parent / "sidecar"
 _MIN_SPECTRUM_TS_VERSION = (1, 7, 2)
 _PHONE_FORMAT = "+<country-code><number>"
 _PHONE_ARG_PLACEHOLDER = f"'{_PHONE_FORMAT}'"
+
+
+@dataclass
+class _SetupOutcome:
+    returncode: int = 0
+    project_name: str = "Hermes Agent"
+    operator_phone: Optional[str] = None
+    assigned_phone_number: Optional[str] = None
+
+    def fail(self, code: int = 1) -> "_SetupOutcome":
+        self.returncode = code
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +113,10 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_hook_reg = hook_subs.add_parser("register", help="Register a webhook URL")
     p_hook_reg.add_argument("url", help="Publicly reachable URL Photon should POST to")
     hook_subs.add_parser("list", help="List registered webhooks for the current project")
+    hook_subs.add_parser(
+        "cleanup",
+        help="Delete stale managed trycloudflare.com webhooks for the current project",
+    )
     p_hook_del = hook_subs.add_parser("delete", help="Delete a webhook by id")
     p_hook_del.add_argument("webhook_id")
     p_tunnel = hook_subs.add_parser("tunnel", help="Manage a local Cloudflare Quick Tunnel")
@@ -196,9 +214,9 @@ def _cmd_quick_setup(args: argparse.Namespace) -> int:
     setattr(args, "auto_create_project", True)
     print("Photon quick setup")
     print("──────────────────")
-    rc = _run_base_setup(args, total_steps=5)
-    if rc != 0:
-        return rc
+    outcome = _run_base_setup(args, total_steps=5)
+    if outcome.returncode != 0:
+        return outcome.returncode
 
     print("[5/5] Starting Cloudflare Quick Tunnel and registering webhook...")
     rc = _start_managed_tunnel_and_register()
@@ -206,15 +224,7 @@ def _cmd_quick_setup(args: argparse.Namespace) -> int:
         return rc
 
     print()
-    print("Photon quick setup complete.")
-    print("  Next: verify everything is ready:")
-    print("        hermes photon status")
-    print("  Then start the gateway in foreground QA mode:")
-    print("        hermes gateway run -v")
-    print("  If the gateway is already running, restart it so it loads the new webhook secret:")
-    print("        hermes gateway restart")
-    print("  More details:")
-    print(f"        {_docs_paths()}")
+    _print_quick_setup_complete(outcome)
     return 0
 
 
@@ -276,9 +286,9 @@ def print_incomplete_setup_guidance() -> None:
 
 
 def _cmd_setup(args: argparse.Namespace) -> int:
-    rc = _run_base_setup(args, total_steps=4)
-    if rc != 0:
-        return rc
+    outcome = _run_base_setup(args, total_steps=4)
+    if outcome.returncode != 0:
+        return outcome.returncode
     print()
     print("✓ Photon setup complete.")
     print("  Next: create a managed webhook tunnel and register it with Photon:")
@@ -290,10 +300,13 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     print("  For always-on local use:")
     print("        hermes gateway install --force")
     print("        hermes gateway start")
+    _print_text_photon_number_step(outcome)
     return 0
 
 
-def _run_base_setup(args: argparse.Namespace, *, total_steps: int) -> int:
+def _run_base_setup(args: argparse.Namespace, *, total_steps: int) -> _SetupOutcome:
+    outcome = _SetupOutcome(project_name=_setup_project_name(args))
+
     # 1. Login (skip if we already have a token).
     token = photon_auth.load_photon_token()
     existing_id, existing_secret = photon_auth.load_project_credentials()
@@ -301,11 +314,11 @@ def _run_base_setup(args: argparse.Namespace, *, total_steps: int) -> int:
         print(f"[1/{total_steps}] No Photon token found — running device login...")
         rc = _cmd_login(args)
         if rc != 0:
-            return rc
+            return outcome.fail(rc)
         token = photon_auth.load_photon_token()
         if not token:
             print("login completed but token was not stored", file=sys.stderr)
-            return 1
+            return outcome.fail()
         print("  Next: Hermes will reuse/adopt/create the Photon project.")
     elif existing_id and existing_secret:
         print(f"[1/{total_steps}] Reusing existing Photon project credentials")
@@ -322,21 +335,22 @@ def _run_base_setup(args: argparse.Namespace, *, total_steps: int) -> int:
             )
     except TimeoutError as e:
         print(f"setup is already running: {e}", file=sys.stderr)
-        return 1
+        return outcome.fail()
     if not (project_id and project_secret):
-        return 1
+        return outcome.fail()
     print("  Next: Hermes will bind your phone number to a shared Photon iMessage line.")
 
     # 3. Create a Spectrum user for the operator.
     phone = args.phone or _prompt(
         f"Your iMessage phone number (E.164, format {_PHONE_FORMAT}): "
     )
+    outcome.operator_phone = phone or None
     if not phone:
         print(f"[3/{total_steps}] Skipped user creation (no phone given). Re-run with --phone later.")
     else:
         print(f"[3/{total_steps}] Creating shared Spectrum user...")
         try:
-            photon_auth.create_user(
+            user = photon_auth.create_user(
                 project_id, project_secret,
                 phone_number=phone,
                 first_name=args.first_name,
@@ -345,10 +359,20 @@ def _run_base_setup(args: argparse.Namespace, *, total_steps: int) -> int:
             )
         except Exception as e:
             print(f"create-user failed: {e}", file=sys.stderr)
-            return 1
-        print("  ✓ user created — check `hermes photon status` or the dashboard for the assigned iMessage line")
+            return outcome.fail()
+        outcome.assigned_phone_number = _extract_assigned_phone_number(user)
+        if outcome.assigned_phone_number:
+            print(
+                "  ✓ user created — assigned Photon iMessage number: "
+                f"{outcome.assigned_phone_number}"
+            )
+        else:
+            print(
+                "  ✓ user created — Photon did not return the assigned "
+                "iMessage number"
+            )
         if not _ensure_operator_phone_allowed(phone):
-            return 1
+            return outcome.fail()
     print("  Next: Hermes will verify/install the Node sidecar dependencies.")
 
     # 4. Sidecar deps.
@@ -358,10 +382,74 @@ def _run_base_setup(args: argparse.Namespace, *, total_steps: int) -> int:
         print(f"[4/{total_steps}] Installing Node sidecar deps (spectrum-ts)...")
         rc = _install_sidecar()
         if rc != 0:
-            return rc
+            return outcome.fail(rc)
     if total_steps > 4:
         print("  Next: Hermes will start a Cloudflare Quick Tunnel and register the webhook.")
-    return 0
+    return outcome
+
+
+def _setup_project_name(args: argparse.Namespace) -> str:
+    return args.project_name or "Hermes Agent"
+
+
+def _dashboard_url() -> str:
+    return (
+        os.getenv("PHOTON_DASHBOARD_HOST")
+        or photon_auth.DEFAULT_DASHBOARD_HOST
+    ).rstrip("/") + "/"
+
+
+def _extract_assigned_phone_number(user: Any) -> Optional[str]:
+    candidates: list[Any] = []
+    for container in _candidate_user_payloads(user):
+        candidates.extend([
+            container.get("assignedPhoneNumber"),
+            container.get("assigned_phone_number"),
+            container.get("assignedNumber"),
+            container.get("assigned_number"),
+        ])
+    for value in candidates:
+        if isinstance(value, str) and photon_auth.E164_RE.match(value.strip()):
+            return value.strip()
+    return None
+
+
+def _candidate_user_payloads(user: Any) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    if isinstance(user, dict):
+        payloads.append(user)
+        for key in ("data", "user", "profile"):
+            nested = user.get(key)
+            if isinstance(nested, dict):
+                payloads.append(nested)
+    return payloads
+
+
+def _print_quick_setup_complete(outcome: _SetupOutcome) -> None:
+    print("Photon quick setup complete.")
+    print("  Start Hermes gateway in foreground QA mode:")
+    print("        hermes gateway run -v")
+    print("  If the gateway is already running:")
+    print("        hermes gateway restart")
+    _print_text_photon_number_step(outcome)
+    print("  Verify setup if needed:")
+    print("        hermes photon status")
+    print("  More details:")
+    print(f"        {_docs_paths()}")
+
+
+def _print_text_photon_number_step(outcome: _SetupOutcome) -> None:
+    if outcome.assigned_phone_number:
+        print("  Text Hermes:")
+        print(f"        Send \"hi Hermes\" to {outcome.assigned_phone_number}")
+        return
+
+    phone_label = outcome.operator_phone or "your phone number"
+    print("  Find the assigned Photon number:")
+    print(f"        Open {_dashboard_url()}")
+    print(f"        Open project \"{outcome.project_name}\"")
+    print(f"        Users -> {phone_label} -> assigned iMessage number")
+    print("        Send \"hi Hermes\" to that number")
 
 
 def _cmd_allow_phone(args: argparse.Namespace) -> int:
@@ -654,16 +742,43 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     public_url = _get_env_value("PHOTON_WEBHOOK_PUBLIC_URL") or "✗ missing"
     tunnel_state = photon_tunnel.status()
     tunnel_label = _format_tunnel_status(tunnel_state)
+    project_id, project_secret = photon_auth.load_project_credentials()
+    registered_hooks: Optional[list] = None
+    registered_error = ""
+    if project_id and project_secret:
+        try:
+            registered_hooks = photon_auth.list_webhooks(project_id, project_secret)
+        except Exception as e:
+            registered_error = str(e)
+    else:
+        registered_error = "missing Photon project credentials"
+    print(f"  Hermes home         : {photon_tunnel.hermes_home()}")
     print(f"  node binary         : {node_bin or '✗ missing (install Node 20.18.1+)'}")
     print(f"  sidecar deps        : {sidecar_status}")
     print(f"  authorized phones   : {_photon_sender_access_status()}")
     print(f"  webhook public URL  : {public_url}")
+    print(
+        "  registered webhooks : "
+        + _format_registered_webhook_status(
+            registered_hooks,
+            registered_error,
+            public_url,
+        )
+    )
     print(f"  managed tunnel      : {tunnel_label}")
     if isinstance(public_url, str) and public_url.startswith("http"):
         healthy, detail = photon_tunnel.check_public_health(public_url)
         health_label = f"✓ reachable ({detail})" if healthy else f"✗ unreachable ({detail})"
         print(f"  public health       : {health_label}")
-    print(f"  next step           : {_next_status_step(sidecar_status, tunnel_state)}")
+    print(
+        "  next step           : "
+        + _next_status_step(
+            sidecar_status,
+            tunnel_state,
+            registered_hooks=registered_hooks,
+            registered_error=registered_error,
+        )
+    )
     print(f"  docs                : {_docs_paths()}")
     return 0
 
@@ -987,6 +1102,36 @@ def _cmd_webhook(args: argparse.Namespace) -> int:
         print(json.dumps(data, indent=2))
         return 0
 
+    if sub == "cleanup":
+        try:
+            hooks = photon_auth.list_webhooks(project_id, project_secret)
+        except Exception as e:
+            print(f"cleanup failed: {e}", file=sys.stderr)
+            return 1
+        keep_url = (
+            _get_env_value("PHOTON_WEBHOOK_PUBLIC_URL")
+            or photon_tunnel.status().get("webhook_url")
+            or ""
+        )
+        if not keep_url:
+            print(
+                "cleanup needs a current webhook URL. Run "
+                "`hermes photon webhook tunnel start` first.",
+                file=sys.stderr,
+            )
+            return 1
+        cleaned = _delete_stale_managed_webhooks(
+            project_id,
+            project_secret,
+            hooks,
+            keep_url=str(keep_url),
+        )
+        if len(cleaned) == len(hooks):
+            print("no stale managed trycloudflare.com webhooks found")
+        else:
+            print("stale managed webhooks cleaned")
+        return 0
+
     if sub == "delete":
         try:
             photon_auth.delete_webhook(
@@ -1042,13 +1187,6 @@ def _cmd_webhook_tunnel(args: argparse.Namespace) -> int:
 
 
 def _start_managed_tunnel_and_register() -> int:
-    old_state = photon_tunnel.status()
-    old_managed_url = (
-        str(old_state.get("webhook_url") or "")
-        if old_state.get("managed")
-        else ""
-    )
-
     result = photon_tunnel.start(on_install=print)
     if not result.success:
         print(f"cloudflared tunnel failed: {result.error}", file=sys.stderr)
@@ -1080,25 +1218,12 @@ def _start_managed_tunnel_and_register() -> int:
         )
         return 1
 
-    if (
-        old_managed_url
-        and old_managed_url != result.webhook_url
-        and photon_tunnel.is_trycloudflare_url(old_managed_url)
-    ):
-        _delete_matching_webhook(
-            project_id,
-            project_secret,
-            existing_hooks,
-            old_managed_url,
-            reason="old managed trycloudflare.com webhook",
-        )
-        try:
-            existing_hooks = photon_auth.list_webhooks(project_id, project_secret)
-        except Exception:
-            existing_hooks = [
-                hook for hook in existing_hooks
-                if _webhook_url(hook) != old_managed_url
-            ]
+    existing_hooks = _delete_stale_managed_webhooks(
+        project_id,
+        project_secret,
+        existing_hooks,
+        keep_url=result.webhook_url,
+    )
 
     return _register_webhook_url(
         project_id,
@@ -1211,6 +1336,55 @@ def _delete_matching_webhook(
         print(f"  ✓ deleted {reason}: {webhook_id}")
 
 
+def _delete_stale_managed_webhooks(
+    project_id: str,
+    project_secret: str,
+    hooks: list,
+    *,
+    keep_url: str,
+) -> list:
+    """Delete old managed Quick Tunnel webhooks for this Photon project.
+
+    Cloudflare Quick Tunnel URLs are ephemeral. Keeping multiple
+    trycloudflare.com webhooks on one Photon project makes setup appear
+    healthy while Photon may deliver to an old profile/tunnel instead of
+    the gateway the user just started.
+    """
+    deleted_ids: set[str] = set()
+    deleted_urls: set[str] = set()
+    for hook in hooks:
+        url = _webhook_url(hook)
+        if not url or url == keep_url or not photon_tunnel.is_trycloudflare_url(url):
+            continue
+        webhook_id = _webhook_id(hook)
+        if not webhook_id:
+            continue
+        try:
+            photon_auth.delete_webhook(
+                project_id,
+                project_secret,
+                webhook_id=webhook_id,
+            )
+        except Exception as e:
+            print(
+                f"could not delete stale managed trycloudflare.com webhook "
+                f"{webhook_id}: {e}",
+                file=sys.stderr,
+            )
+            continue
+        deleted_ids.add(webhook_id)
+        deleted_urls.add(url)
+        print(f"  ✓ deleted stale managed trycloudflare.com webhook: {webhook_id}")
+
+    if not deleted_ids and not deleted_urls:
+        return hooks
+    return [
+        hook for hook in hooks
+        if _webhook_id(hook) not in deleted_ids
+        and _webhook_url(hook) not in deleted_urls
+    ]
+
+
 def _webhook_id(webhook: Any) -> str:
     if not isinstance(webhook, dict):
         return ""
@@ -1273,6 +1447,47 @@ def _webhook_secret_present() -> bool:
     return bool(_get_env_value("PHOTON_WEBHOOK_SECRET"))
 
 
+def _format_registered_webhook_status(
+    hooks: Optional[list],
+    error: str,
+    public_url: str,
+) -> str:
+    if hooks is None:
+        detail = _short_error(error) if error else "unknown"
+        return f"⚠ unavailable ({detail})"
+    if not hooks:
+        return "✗ none registered"
+
+    current_url = public_url if public_url.startswith("http") else ""
+    current_registered = bool(
+        current_url and any(_webhook_url(hook) == current_url for hook in hooks)
+    )
+    stale_managed = len(_stale_managed_webhooks(hooks, keep_url=current_url))
+    count = len(hooks)
+    if current_url and current_registered and stale_managed:
+        return f"⚠ {count} registered; current URL registered; {stale_managed} stale managed"
+    if current_url and current_registered:
+        return f"✓ {count} registered; current URL registered"
+    if current_url:
+        return f"✗ {count} registered; current URL is not registered"
+    if stale_managed:
+        return f"⚠ {count} registered; {stale_managed} stale managed"
+    return f"✓ {count} registered"
+
+
+def _stale_managed_webhooks(hooks: list, *, keep_url: str) -> list:
+    return [
+        hook for hook in hooks
+        if _webhook_url(hook)
+        and _webhook_url(hook) != keep_url
+        and photon_tunnel.is_trycloudflare_url(_webhook_url(hook))
+    ]
+
+
+def _short_error(error: str) -> str:
+    return (error or "").replace("\n", " ")[:120] or "unknown"
+
+
 def _format_tunnel_status(state: dict[str, Any]) -> str:
     if state.get("running"):
         return f"✓ running (pid {state.get('pid')})"
@@ -1281,7 +1496,13 @@ def _format_tunnel_status(state: dict[str, Any]) -> str:
     return "✗ not started"
 
 
-def _next_status_step(sidecar_status: str, tunnel_state: dict[str, Any]) -> str:
+def _next_status_step(
+    sidecar_status: str,
+    tunnel_state: dict[str, Any],
+    *,
+    registered_hooks: Optional[list] = None,
+    registered_error: str = "",
+) -> str:
     project_id, project_secret = photon_auth.load_project_credentials()
     if not photon_auth.load_photon_token() and not (project_id and project_secret):
         return "hermes photon login"
@@ -1294,6 +1515,16 @@ def _next_status_step(sidecar_status: str, tunnel_state: dict[str, Any]) -> str:
         return "hermes photon webhook tunnel start"
     if photon_tunnel.is_trycloudflare_url(public_url) and not tunnel_state.get("running"):
         return "hermes photon webhook tunnel start"
+    if registered_hooks is not None:
+        current_registered = any(
+            _webhook_url(hook) == public_url for hook in registered_hooks
+        )
+        if not current_registered:
+            return "hermes photon webhook tunnel start"
+        if _stale_managed_webhooks(registered_hooks, keep_url=public_url):
+            return "hermes photon webhook tunnel start  (cleans stale managed webhooks)"
+    elif registered_error:
+        pass
     if not _photon_sender_access_configured():
         return f"hermes photon allow-phone {_PHONE_ARG_PLACEHOLDER}"
     try:

@@ -63,8 +63,13 @@ from gateway.platforms.base import (
 from .auth import (
     DEFAULT_SPECTRUM_HOST,
     load_project_credentials,
+    list_webhooks,
+    register_webhook,
+    delete_webhook,
+    persist_webhook_signing_secret,
     _spectrum_host,
 )
+from . import tunnel as photon_tunnel
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +190,64 @@ def verify_signature(
     return hmac.compare_digest(expected, signature_header[3:])
 
 
+def _webhook_id(webhook: Any) -> str:
+    if not isinstance(webhook, dict):
+        return ""
+    for key in ("id", "webhookId", "webhook_id", "uuid"):
+        value = webhook.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _webhook_url(webhook: Any) -> str:
+    if not isinstance(webhook, dict):
+        return ""
+    return str(webhook.get("webhookUrl") or webhook.get("url") or "")
+
+
+def _save_env_value(key: str, value: str) -> None:
+    try:
+        from hermes_cli.config import save_env_value  # type: ignore
+
+        save_env_value(key, value)
+    except Exception as e:
+        logger.warning("[photon] failed to save %s: %s", key, e)
+
+
+def _port_owner_hint(port: int) -> str:
+    if os.name != "posix":
+        return ""
+    try:
+        proc = subprocess.run(  # noqa: S603
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    lines = [line for line in (proc.stdout or "").splitlines() if line.strip()]
+    if len(lines) < 2:
+        return ""
+    parts = lines[1].split()
+    if len(parts) < 2:
+        return ""
+    command = parts[0]
+    pid = parts[1]
+    return f"owned by PID {pid} ({command})"
+
+
+def _active_hermes_home_label() -> str:
+    try:
+        from hermes_constants import get_hermes_home
+
+        return str(get_hermes_home())
+    except Exception:
+        return os.getenv("HERMES_HOME") or str(Path.home() / ".hermes")
+
+
 # ---------------------------------------------------------------------------
 # Adapter
 
@@ -233,6 +296,17 @@ class PhotonAdapter(BasePlatformAdapter):
             or extra.get("webhook_secret")
             or ""
         )
+        self._webhook_public_url: str = (
+            os.getenv("PHOTON_WEBHOOK_PUBLIC_URL")
+            or extra.get("webhook_public_url")
+            or ""
+        )
+        self._autostart_tunnel = str(
+            os.getenv("PHOTON_WEBHOOK_TUNNEL_AUTOSTART", "true")
+        ).lower() not in ("0", "false", "no")
+        self._stop_tunnel_on_disconnect = str(
+            os.getenv("PHOTON_WEBHOOK_TUNNEL_STOP_ON_DISCONNECT", "true")
+        ).lower() not in ("0", "false", "no")
 
         # Sidecar
         self._sidecar_port = _coerce_port(
@@ -250,6 +324,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
         # Runtime state
         self._runner: Optional["web.AppRunner"] = None
+        self._managed_tunnel_started = False
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._sidecar_supervisor_task: Optional[asyncio.Task] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
@@ -281,17 +356,40 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             return False
 
+        hermes_home = _active_hermes_home_label()
+        logger.info("[photon] active Hermes home: %s", hermes_home)
+        logger.info(
+            "[photon] webhook public URL: %s",
+            self._webhook_public_url or "-",
+        )
+
         # Start the aiohttp receiver first; without it the sidecar would
         # be able to forward inbound traffic to a closed port.
         try:
             await self._start_webhook_server()
         except OSError as e:
+            owner = _port_owner_hint(self._webhook_port)
+            detail = f"webhook port {self._webhook_port} unavailable: {e}"
+            if owner:
+                detail += f" ({owner})"
             self._set_fatal_error(
                 "PORT_IN_USE",
-                f"webhook port {self._webhook_port} unavailable: {e}",
+                detail,
                 retryable=True,
             )
             return False
+
+        if self._should_autostart_tunnel():
+            try:
+                await asyncio.to_thread(self._ensure_managed_tunnel_webhook)
+            except Exception as e:
+                self._set_fatal_error(
+                    "WEBHOOK_TUNNEL_FAILED",
+                    f"failed to start/register Photon webhook tunnel: {e}",
+                    retryable=True,
+                )
+                await self._stop_webhook_server()
+                return False
 
         # Spin up the Node sidecar (required for outbound).
         if self._autostart_sidecar:
@@ -319,6 +417,17 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         await self._stop_sidecar()
+        if self._managed_tunnel_started and self._stop_tunnel_on_disconnect:
+            try:
+                result = photon_tunnel.stop()
+                logger.info(
+                    "[photon] managed webhook tunnel stopped: %s",
+                    result.get("message"),
+                )
+            except Exception as e:
+                logger.warning("[photon] failed to stop managed webhook tunnel: %s", e)
+            finally:
+                self._managed_tunnel_started = False
         await self._stop_webhook_server()
         if self._http_client is not None:
             try:
@@ -338,6 +447,114 @@ class PhotonAdapter(BasePlatformAdapter):
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._webhook_bind, self._webhook_port)
         await site.start()
+
+    def _should_autostart_tunnel(self) -> bool:
+        if not self._autostart_tunnel:
+            return False
+        if self._webhook_public_url and not photon_tunnel.is_trycloudflare_url(
+            self._webhook_public_url
+        ):
+            logger.info(
+                "[photon] using user-owned webhook URL; managed tunnel autostart skipped"
+            )
+            return False
+        return True
+
+    def _ensure_managed_tunnel_webhook(self) -> None:
+        result = photon_tunnel.start(
+            on_install=lambda msg: logger.info("[photon] %s", msg.strip())
+        )
+        if not result.success:
+            raise RuntimeError(result.error or "cloudflared did not start")
+
+        self._managed_tunnel_started = True
+        self._webhook_public_url = result.webhook_url
+        logger.info(
+            "[photon] %s managed webhook tunnel at %s",
+            "reused" if result.reused else "started",
+            result.webhook_url,
+        )
+
+        hooks = list_webhooks(self._project_id, self._project_secret)
+        hooks = self._delete_stale_managed_webhooks(hooks, keep_url=result.webhook_url)
+        if any(_webhook_url(hook) == result.webhook_url for hook in hooks):
+            _save_env_value("PHOTON_WEBHOOK_PUBLIC_URL", result.webhook_url)
+            if self._webhook_secret:
+                logger.info("[photon] managed webhook URL already registered")
+                return
+            self._delete_matching_webhooks(
+                hooks,
+                result.webhook_url,
+                reason="managed webhook with missing local signing secret",
+            )
+
+        data = register_webhook(
+            self._project_id,
+            self._project_secret,
+            webhook_url=result.webhook_url,
+        )
+        self._webhook_secret = str(
+            data.get("signingSecret") or data.get("secret") or self._webhook_secret
+        )
+        if not persist_webhook_signing_secret(
+            data,
+            on_summary=lambda msg: logger.info("[photon] %s", msg),
+        ):
+            raise RuntimeError("Photon returned no webhook signing secret")
+        _save_env_value("PHOTON_WEBHOOK_PUBLIC_URL", result.webhook_url)
+        logger.info("[photon] managed webhook registered for active gateway")
+
+    def _delete_stale_managed_webhooks(self, hooks: list, *, keep_url: str) -> list:
+        deleted_ids: set[str] = set()
+        deleted_urls: set[str] = set()
+        for hook in hooks:
+            url = _webhook_url(hook)
+            if (
+                not url
+                or url == keep_url
+                or not photon_tunnel.is_trycloudflare_url(url)
+            ):
+                continue
+            webhook_id = _webhook_id(hook)
+            if not webhook_id:
+                continue
+            try:
+                delete_webhook(
+                    self._project_id,
+                    self._project_secret,
+                    webhook_id=webhook_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[photon] could not delete stale managed webhook %s: %s",
+                    webhook_id,
+                    e,
+                )
+                continue
+            deleted_ids.add(webhook_id)
+            deleted_urls.add(url)
+            logger.info("[photon] deleted stale managed webhook: %s", webhook_id)
+        if not deleted_ids and not deleted_urls:
+            return hooks
+        return [
+            hook for hook in hooks
+            if _webhook_id(hook) not in deleted_ids
+            and _webhook_url(hook) not in deleted_urls
+        ]
+
+    def _delete_matching_webhooks(self, hooks: list, url: str, *, reason: str) -> None:
+        for hook in hooks:
+            if _webhook_url(hook) != url:
+                continue
+            webhook_id = _webhook_id(hook)
+            if not webhook_id:
+                continue
+            delete_webhook(
+                self._project_id,
+                self._project_secret,
+                webhook_id=webhook_id,
+            )
+            logger.info("[photon] deleted %s: %s", reason, webhook_id)
 
     async def _stop_webhook_server(self) -> None:
         if self._runner is not None:

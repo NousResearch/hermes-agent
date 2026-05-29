@@ -93,7 +93,8 @@ function dmAddressFromSpaceId(spaceId) {
     for await (const [space, message] of app.messages) {
       cacheSpace(space);
       console.error(
-        `photon-sidecar: drained inbound from ${message.platform} ` +
+        `photon-sidecar: observed SDK inbound from ${message.platform} ` +
+          `(Hermes dispatches inbound only from signed webhooks) ` +
           `space=${message.space?.id}`
       );
     }

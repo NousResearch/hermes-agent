@@ -22,21 +22,26 @@ hermes gateway run -v
 
 Use your E.164 phone number: `+` plus country code and number, with no
 spaces. Setup authorizes that phone automatically, so your first
-iMessage goes straight to Hermes. To add another phone later:
+iMessage goes straight to Hermes. Photon may assign a different shared
+iMessage sending number for each phone you register; use the assigned
+number shown for that user in the Photon dashboard. To add another
+phone later:
 
 ```bash
 hermes photon allow-phone '+<country-code><number>'
 ```
 
 `quick-setup` creates or adopts the Photon project, creates the shared
-iMessage user, installs the sidecar dependencies, starts and registers
-the managed webhook tunnel, and writes credentials to `~/.hermes/.env`.
-It is safe to run again.
+iMessage user, installs the sidecar dependencies, starts/registers the
+managed webhook tunnel, and writes credentials to `~/.hermes/.env`. It
+is safe to run again.
 
 `quick-setup` does not start the Hermes gateway. iMessage replies work
 only while `hermes gateway run -v` is running, or while the gateway
-service is installed and started. If you use a custom `HERMES_HOME`,
-export the same value before starting the gateway.
+service is installed and started. When the Photon adapter starts, it
+also verifies the managed tunnel registration for that same profile and
+cleans stale managed `trycloudflare.com` webhooks. If you use a custom
+`HERMES_HOME`, export the same value before starting the gateway.
 
 If the gateway was already running when the webhook was registered,
 restart it so the adapter loads `PHOTON_WEBHOOK_SECRET`:
@@ -70,9 +75,10 @@ hermes gateway start
 `gateway start` controls the installed system service. Do not run it
 and `gateway run -v` at the same time.
 
-Cloudflare Quick Tunnel URLs can change when the tunnel restarts.
-`quick-setup` starts the managed tunnel once; if the tunnel stops later,
-start it again:
+Cloudflare Quick Tunnel URLs can change when the tunnel restarts. For
+local Quick Tunnel setups, the Photon adapter starts or reuses the
+managed tunnel when the gateway connects. If you need to repair or
+inspect the tunnel manually, use:
 
 ```bash
 hermes photon webhook tunnel start
@@ -80,6 +86,20 @@ hermes photon webhook tunnel start
 
 `hermes photon status` shows the current readiness state and the next
 command to run.
+
+## Troubleshooting runtime logs
+
+On gateway startup, Photon logs the active Hermes home. It must match
+the profile where you ran `hermes photon quick-setup`. If quick setup
+wrote credentials under a custom `HERMES_HOME`, start the gateway with
+that same `HERMES_HOME` or the gateway will read a different `.env`.
+
+If you see `photon-sidecar: observed SDK inbound ...` but do not see
+`[photon] webhook delivery received`, the sidecar has observed the
+message through the SDK stream but Hermes has not received the signed
+webhook it uses for inbound dispatch. Run `hermes photon status` in the
+same profile, then check that the current public webhook URL is
+registered and reachable.
 
 ## How it works
 
@@ -139,6 +159,8 @@ hermes photon webhook tunnel stop
 
 The managed tunnel command can delete stale `trycloudflare.com` webhooks
 it previously created; it leaves user-owned/manual webhook URLs alone.
+The gateway performs the same cleanup when Photon connects, so the
+active gateway profile owns the current managed webhook registration.
 
 ## Manual webhook management
 
@@ -222,6 +244,8 @@ All env vars are documented in `plugin.yaml`. The most important are:
 | `PHOTON_PROJECT_SECRET`  | (unset)            | Spectrum project secret (HTTP Basic)    |
 | `PHOTON_WEBHOOK_SECRET`  | (unset)            | Signing secret returned at register     |
 | `PHOTON_WEBHOOK_PUBLIC_URL` | (unset)         | Public webhook URL registered with Photon |
+| `PHOTON_WEBHOOK_TUNNEL_AUTOSTART` | true      | Gateway starts/registers managed tunnel for trycloudflare URLs |
+| `PHOTON_WEBHOOK_TUNNEL_STOP_ON_DISCONNECT` | true | Stop managed tunnel on gateway shutdown |
 | `PHOTON_WEBHOOK_PORT`    | 8788               | Local port for the aiohttp listener     |
 | `PHOTON_WEBHOOK_PATH`    | /photon/webhook    | Path under which the listener mounts    |
 | `PHOTON_SIDECAR_PORT`    | 8789               | Loopback port for sidecar control      |

@@ -1309,7 +1309,7 @@ def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
         return _codex_oauth_context_cache
 
     try:
-        resp = requests.get(
+        resp = requests.get(  # SSRF: add IP block check
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=10,

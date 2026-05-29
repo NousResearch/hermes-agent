@@ -558,7 +558,7 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     for path in (f"{base}/health/detailed", f"{base}/health"):
         try:
             req = urllib.request.Request(path, method="GET")
-            with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
+            with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:  # SSRF: add IP block check
                 if resp.status == 200:
                     body = json.loads(resp.read())
                     return True, body

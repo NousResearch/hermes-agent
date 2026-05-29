@@ -329,16 +329,19 @@ def check_alias_collision(name: str) -> Optional[str]:
 
     # Check existing commands in PATH
     wrapper_dir = _get_wrapper_dir()
+    is_windows = sys.platform == "win32"
     try:
         result = subprocess.run(
-            ["which", canon], capture_output=True, text=True, timeout=5,
+            ["where" if is_windows else "which", canon],
+            capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            existing_path = result.stdout.strip()
+            existing_path = result.stdout.strip().splitlines()[0]
             # Allow overwriting our own wrappers
-            if existing_path == str(wrapper_dir / canon):
+            expected = wrapper_dir / (f"{canon}.bat" if is_windows else canon)
+            if existing_path == str(expected):
                 try:
-                    content = (wrapper_dir / canon).read_text()
+                    content = expected.read_text()
                     if "hermes -p" in content:
                         return None  # it's our wrapper, safe to overwrite
                 except Exception:
@@ -359,6 +362,7 @@ def _is_wrapper_dir_in_path() -> bool:
 def create_wrapper_script(name: str) -> Optional[Path]:
     """Create a shell wrapper script at ~/.local/bin/<name>.
 
+    On Windows, creates a ``.bat`` file instead of a POSIX shell script.
     Returns the path to the created wrapper, or None if creation failed.
     """
     canon = normalize_profile_name(name)
@@ -369,28 +373,47 @@ def create_wrapper_script(name: str) -> Optional[Path]:
         print(f"⚠ Could not create {wrapper_dir}: {e}")
         return None
 
-    wrapper_path = wrapper_dir / canon
-    try:
-        wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {canon} "$@"\n')
-        wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        return wrapper_path
-    except OSError as e:
-        print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
-        return None
+    is_windows = sys.platform == "win32"
+    if is_windows:
+        wrapper_path = wrapper_dir / f"{canon}.bat"
+        try:
+            wrapper_path.write_text(f"@echo off\r\nhermes -p {canon} %*\r\n")
+            return wrapper_path
+        except OSError as e:
+            print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
+            return None
+    else:
+        wrapper_path = wrapper_dir / canon
+        try:
+            wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {canon} "$@"\n')
+            wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            return wrapper_path
+        except OSError as e:
+            print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
+            return None
 
 
 def remove_wrapper_script(name: str) -> bool:
     """Remove the wrapper script for a profile. Returns True if removed."""
-    wrapper_path = _get_wrapper_dir() / normalize_profile_name(name)
-    if wrapper_path.exists():
-        try:
-            # Verify it's our wrapper before removing
-            content = wrapper_path.read_text()
-            if "hermes -p" in content:
-                wrapper_path.unlink()
-                return True
-        except Exception:
-            pass
+    wrapper_dir = _get_wrapper_dir()
+    canon = normalize_profile_name(name)
+    is_windows = sys.platform == "win32"
+
+    # Check both the extensionless path (POSIX) and .bat (Windows)
+    candidates = [wrapper_dir / canon]
+    if is_windows:
+        candidates.insert(0, wrapper_dir / f"{canon}.bat")
+
+    for wrapper_path in candidates:
+        if wrapper_path.exists():
+            try:
+                # Verify it's our wrapper before removing
+                content = wrapper_path.read_text()
+                if "hermes -p" in content:
+                    wrapper_path.unlink()
+                    return True
+            except Exception:
+                pass
     return False
 
 

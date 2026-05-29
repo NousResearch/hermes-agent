@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from hermes_cli import cli_output
 from plugins.platforms.photon import cli as photon_cli
 
 
@@ -98,3 +99,61 @@ def test_sidecar_dependency_status_accepts_current_spectrum_ts(
     status = photon_cli._sidecar_dependency_status()
 
     assert status == "✓ installed (spectrum-ts 1.7.2)"
+
+
+def test_interactive_setup_skips_quick_setup_when_already_configured(
+    monkeypatch: Any,
+    capsys: Any,
+) -> None:
+    calls: list[bool] = []
+
+    monkeypatch.setattr(
+        photon_cli.photon_auth,
+        "load_project_credentials",
+        lambda: ("pid", "secret"),
+    )
+    monkeypatch.setattr(photon_cli.photon_auth, "load_photon_token", lambda: None)
+    monkeypatch.setattr(
+        photon_cli,
+        "_interactive_setup_already_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(cli_output, "prompt_yes_no", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        photon_cli,
+        "_cmd_quick_setup",
+        lambda _args: calls.append(True) or 0,
+    )
+
+    photon_cli.interactive_setup()
+
+    assert calls == []
+    assert "Photon iMessage is already configured" in capsys.readouterr().out
+
+
+def test_interactive_setup_runs_quick_setup_when_reconfigure_confirmed(
+    monkeypatch: Any,
+) -> None:
+    calls: list[bool] = []
+
+    monkeypatch.setattr(
+        photon_cli.photon_auth,
+        "load_project_credentials",
+        lambda: ("pid", "secret"),
+    )
+    monkeypatch.setattr(photon_cli.photon_auth, "load_photon_token", lambda: None)
+    monkeypatch.setattr(
+        photon_cli,
+        "_interactive_setup_already_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(cli_output, "prompt_yes_no", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        photon_cli,
+        "_cmd_quick_setup",
+        lambda _args: calls.append(True) or 0,
+    )
+
+    photon_cli.interactive_setup()
+
+    assert calls == [True]

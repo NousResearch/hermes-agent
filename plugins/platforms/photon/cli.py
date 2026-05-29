@@ -230,6 +230,8 @@ def _cmd_quick_setup(args: argparse.Namespace) -> int:
 
 def interactive_setup() -> None:
     """Entry point used by `hermes setup gateway` when Photon is selected."""
+    from hermes_cli.cli_output import print_info, prompt_yes_no
+
     project_id, project_secret = photon_auth.load_project_credentials()
     if (
         not photon_auth.load_photon_token()
@@ -237,6 +239,11 @@ def interactive_setup() -> None:
     ):
         print_incomplete_setup_guidance()
         return
+
+    if _interactive_setup_already_configured():
+        print_info("Photon iMessage is already configured.")
+        if not prompt_yes_no("Reconfigure Photon iMessage?", False):
+            return
 
     args = argparse.Namespace(
         project_name=None,
@@ -251,6 +258,24 @@ def interactive_setup() -> None:
     rc = _cmd_quick_setup(args)
     if rc != 0:
         print_incomplete_setup_guidance()
+
+
+def _interactive_setup_already_configured() -> bool:
+    """Return True when this Hermes profile has enough Photon state to run."""
+    if photon_tunnel.active_home_mismatch():
+        return False
+    project_id, project_secret = photon_auth.load_project_credentials()
+    if not (project_id and project_secret):
+        return False
+    node_bin = os.getenv("PHOTON_NODE_BIN") or "node"
+    if not shutil.which(node_bin):
+        return False
+    if not (_SIDECAR_DIR / "node_modules").exists():
+        return False
+    public_url = _get_env_value("PHOTON_WEBHOOK_PUBLIC_URL") or ""
+    if not (public_url and _webhook_secret_present()):
+        return False
+    return _photon_sender_access_configured()
 
 
 def print_login_first_guidance() -> None:

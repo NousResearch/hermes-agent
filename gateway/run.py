@@ -65,6 +65,8 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_SHUTDOWN_NOTIFICATION_SEND_TIMEOUT_SECS_DEFAULT = 2.0
+_SHUTDOWN_NOTIFICATION_OVERALL_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -1681,6 +1683,12 @@ class GatewayRunner:
     _restart_detached: bool = False
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
+    _shutdown_notification_send_timeout: float = (
+        _SHUTDOWN_NOTIFICATION_SEND_TIMEOUT_SECS_DEFAULT
+    )
+    _shutdown_notification_overall_timeout: float = (
+        _SHUTDOWN_NOTIFICATION_OVERALL_TIMEOUT_SECS_DEFAULT
+    )
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
 
@@ -3436,12 +3444,92 @@ class GatewayRunner:
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
+    def _mark_running_sessions_resume_pending(self, reason: str) -> list[str]:
+        """Persist resume markers for every currently running real agent."""
+        marked: list[str] = []
+        for session_key, agent in list(self._running_agents.items()):
+            if agent is _AGENT_PENDING_SENTINEL:
+                continue
+            try:
+                self.session_store.mark_resume_pending(session_key, reason)
+                marked.append(session_key)
+            except Exception as exc:
+                logger.debug(
+                    "mark_resume_pending failed for %s during shutdown: %s",
+                    session_key,
+                    exc,
+                )
+        return marked
+
+    async def _send_shutdown_notification(
+        self,
+        *,
+        adapter: BasePlatformAdapter,
+        platform_str: str,
+        chat_id: str,
+        msg: str,
+        target_label: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> bool:
+        timeout = getattr(
+            self,
+            "_shutdown_notification_send_timeout",
+            _SHUTDOWN_NOTIFICATION_SEND_TIMEOUT_SECS_DEFAULT,
+        )
+        try:
+            timeout = float(timeout)
+        except (TypeError, ValueError):
+            timeout = _SHUTDOWN_NOTIFICATION_SEND_TIMEOUT_SECS_DEFAULT
+        timeout = max(timeout, 0.1)
+
+        try:
+            if metadata is not None:
+                send_coro = adapter.send(chat_id, msg, metadata=metadata)
+            else:
+                send_coro = adapter.send(chat_id, msg)
+            result = await asyncio.wait_for(send_coro, timeout=timeout)
+            if result is not None and getattr(result, "success", True) is False:
+                logger.debug(
+                    "Failed to send shutdown notification to %s %s:%s: %s",
+                    target_label,
+                    platform_str,
+                    chat_id,
+                    getattr(result, "error", "send returned success=False"),
+                )
+                return False
+
+            logger.info(
+                "Sent shutdown notification to %s %s:%s",
+                target_label,
+                platform_str,
+                chat_id,
+            )
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Shutdown notification to %s %s:%s timed out after %.1fs; continuing shutdown",
+                target_label,
+                platform_str,
+                chat_id,
+                timeout,
+            )
+            return False
+        except Exception as exc:
+            logger.debug(
+                "Failed to send shutdown notification to %s %s:%s: %s",
+                target_label,
+                platform_str,
+                chat_id,
+                exc,
+            )
+            return False
+
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
 
         Called at the very start of stop() — adapters are still connected so
-        messages can be delivered. Best-effort: individual send failures are
-        logged and swallowed so they never block the shutdown sequence.
+        messages can be delivered. Best-effort: individual send failures and
+        slow network calls are bounded so they never block the shutdown drain.
         """
         active = self._snapshot_running_agents()
 
@@ -3455,6 +3543,38 @@ class GatewayRunner:
         msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
+        send_jobs: list[asyncio.Future[bool]] = []
+
+        def _schedule_send(
+            *,
+            adapter: BasePlatformAdapter,
+            platform_str: str,
+            chat_id: str,
+            thread_id: Optional[str],
+            target_label: str,
+        ) -> None:
+            dedup_key = (
+                platform_str,
+                str(chat_id),
+                str(thread_id) if thread_id else None,
+            )
+            if dedup_key in notified:
+                return
+            notified.add(dedup_key)
+            metadata = {"thread_id": thread_id} if thread_id else None
+            send_jobs.append(
+                asyncio.create_task(
+                    self._send_shutdown_notification(
+                        adapter=adapter,
+                        platform_str=platform_str,
+                        chat_id=str(chat_id),
+                        msg=msg,
+                        target_label=target_label,
+                        metadata=metadata,
+                    )
+                )
+            )
+
         for session_key in active:
             source = None
             try:
@@ -3486,13 +3606,6 @@ class GatewayRunner:
                 chat_id = _parsed["chat_id"]
                 thread_id = _parsed.get("thread_id")
 
-            # Deduplicate only identical delivery targets. Thread/topic-aware
-            # platforms can share a parent chat while still routing to distinct
-            # destinations via metadata.
-            dedup_key = (platform_str, chat_id, str(thread_id) if thread_id else None)
-            if dedup_key in notified:
-                continue
-
             try:
                 platform = Platform(platform_str)
                 adapter = self.adapters.get(platform)
@@ -3507,28 +3620,16 @@ class GatewayRunner:
                     )
                     continue
 
-                # Include thread_id if present so the message lands in the
-                # correct forum topic / thread.
-                metadata = {"thread_id": thread_id} if thread_id else None
-
-                result = await adapter.send(chat_id, msg, metadata=metadata)
-                if result is not None and getattr(result, "success", True) is False:
-                    logger.debug(
-                        "Failed to send shutdown notification to %s:%s: %s",
-                        platform_str,
-                        chat_id,
-                        getattr(result, "error", "send returned success=False"),
-                    )
-                    continue
-
-                notified.add(dedup_key)
-                logger.info(
-                    "Sent shutdown notification to active chat %s:%s",
-                    platform_str, chat_id,
+                _schedule_send(
+                    adapter=adapter,
+                    platform_str=platform_str,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    target_label="active chat",
                 )
             except Exception as e:
                 logger.debug(
-                    "Failed to send shutdown notification to %s:%s: %s",
+                    "Failed to schedule shutdown notification to %s:%s: %s",
                     platform_str, chat_id, e,
                 )
 
@@ -3550,38 +3651,40 @@ class GatewayRunner:
                 )
                 continue
 
-            dedup_key = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
-            if dedup_key in notified:
-                continue
+            _schedule_send(
+                adapter=adapter,
+                platform_str=platform.value,
+                chat_id=str(home.chat_id),
+                thread_id=home.thread_id,
+                target_label="home channel",
+            )
 
-            try:
-                metadata = {"thread_id": home.thread_id} if home.thread_id else None
-                if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
-                else:
-                    result = await adapter.send(str(home.chat_id), msg)
-                if result is not None and getattr(result, "success", True) is False:
-                    logger.debug(
-                        "Failed to send shutdown notification to home channel %s:%s: %s",
-                        platform.value,
-                        home.chat_id,
-                        getattr(result, "error", "send returned success=False"),
-                    )
-                    continue
+        if not send_jobs:
+            return
 
-                notified.add(dedup_key)
-                logger.info(
-                    "Sent shutdown notification to home channel %s:%s",
-                    platform.value,
-                    home.chat_id,
-                )
-            except Exception as e:
-                logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s",
-                    platform.value,
-                    home.chat_id,
-                    e,
-                )
+        overall_timeout = getattr(
+            self,
+            "_shutdown_notification_overall_timeout",
+            _SHUTDOWN_NOTIFICATION_OVERALL_TIMEOUT_SECS_DEFAULT,
+        )
+        try:
+            overall_timeout = float(overall_timeout)
+        except (TypeError, ValueError):
+            overall_timeout = _SHUTDOWN_NOTIFICATION_OVERALL_TIMEOUT_SECS_DEFAULT
+        overall_timeout = max(overall_timeout, 0.1)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*send_jobs, return_exceptions=True),
+                timeout=overall_timeout,
+            )
+        except asyncio.TimeoutError:
+            for job in send_jobs:
+                if not job.done():
+                    job.cancel()
+            logger.warning(
+                "Shutdown notification fan-out timed out after %.1fs; continuing shutdown",
+                overall_timeout,
+            )
 
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
@@ -6062,6 +6165,22 @@ class GatewayRunner:
             self._running = False
             self._draining = True
 
+            timeout = self._restart_drain_timeout
+            _resume_reason = (
+                "restart_timeout" if self._restart_requested else "shutdown_timeout"
+            )
+
+            # Pre-mark sessions as resume_pending BEFORE the drain wait.
+            # If the process is killed by the service manager during
+            # notifications or drain, the durable marker is already written
+            # so the next gateway boot can recover in-flight sessions
+            # (#27856).  This must happen before any network send; shutdown
+            # notifications are best-effort and can be slow during the exact
+            # outage/restart conditions that cause SIGTERM.
+            _pre_drain_keys = self._mark_running_sessions_resume_pending(
+                _resume_reason
+            )
+
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
             await self._notify_active_sessions_of_shutdown()
@@ -6069,25 +6188,6 @@ class GatewayRunner:
                 "Shutdown phase: notify_active_sessions done at +%.2fs",
                 _phase_elapsed(),
             )
-
-            timeout = self._restart_drain_timeout
-
-            # Pre-mark sessions as resume_pending BEFORE the drain wait.
-            # If the process is killed by the service manager during the
-            # drain, the durable marker is already written so the next
-            # gateway boot can recover in-flight sessions (#27856).
-            _pre_drain_keys: list[str] = []
-            for _sk, _agent in list(self._running_agents.items()):
-                if _agent is _AGENT_PENDING_SENTINEL:
-                    continue
-                try:
-                    self.session_store.mark_resume_pending(
-                        _sk,
-                        "restart_timeout" if self._restart_requested else "shutdown_timeout",
-                    )
-                    _pre_drain_keys.append(_sk)
-                except Exception as _e:
-                    logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
 
             _drain_started_at = time.monotonic()
             active_agents, timed_out = await self._drain_active_agents(timeout)
@@ -6142,19 +6242,7 @@ class GatewayRunner:
                 # _interrupt_running_agents() does: their agent hasn't
                 # started yet, there's nothing to interrupt, and the
                 # session shouldn't carry a misleading resume flag.
-                _resume_reason = (
-                    "restart_timeout" if self._restart_requested else "shutdown_timeout"
-                )
-                for _sk, _agent in list(self._running_agents.items()):
-                    if _agent is _AGENT_PENDING_SENTINEL:
-                        continue
-                    try:
-                        self.session_store.mark_resume_pending(_sk, _resume_reason)
-                    except Exception as _e:
-                        logger.debug(
-                            "mark_resume_pending failed for %s: %s",
-                            _sk, _e,
-                        )
+                self._mark_running_sessions_resume_pending(_resume_reason)
                 self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
                 )

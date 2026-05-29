@@ -1655,6 +1655,29 @@ class BasePlatformAdapter(ABC):
         """
         return len
 
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Whether this adapter gates inbound access before dispatch.
+
+        Some adapters (WeCom, Weixin, Yuanbao, QQBot) implement a documented
+        config-driven access surface — ``dm_policy`` / ``group_policy`` /
+        ``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra`` — and
+        enforce it at intake: a message is dropped inside the adapter and never
+        reaches the gateway unless it already passed that policy.
+
+        The gateway's env-based allowlist check runs *after* the adapter, so for
+        these platforms a message arriving at ``_is_user_authorized`` has, by
+        definition, already been authorized by the adapter. Without this flag the
+        gateway would then deny it again (no env allowlist → default deny),
+        silently breaking ``dm_policy: open`` and config-only allowlists.
+
+        Adapters that own their access policy override this to return ``True``.
+        The gateway treats that as "already authorized at intake" and skips the
+        env-allowlist default-deny. Adapters that delegate access control to the
+        gateway leave it ``False`` (the default).
+        """
+        return False
+
     def supports_draft_streaming(
         self,
         chat_type: Optional[str] = None,

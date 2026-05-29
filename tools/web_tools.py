@@ -732,6 +732,35 @@ def clean_base64_images(text: str) -> str:
 # dispatchers in this file resolve them via get_active_*_provider().
 
 
+def _ensure_web_plugins_loaded() -> None:
+    """Idempotently trigger plugin discovery so the web registry is populated.
+
+    Every bundled web provider (brave-free, ddgs, searxng, exa, parallel,
+    tavily, firecrawl) registers itself via ``plugins/web/<vendor>/__init__.py``
+    during plugin discovery. Tool dispatch can be reached from contexts that
+    haven't already triggered discovery — subprocess agent runs, delegate
+    children, standalone scripts, certain test paths — and without it the
+    registry is empty and ``get_provider('firecrawl')`` returns ``None`` even
+    when the user has ``web.extract_backend: firecrawl`` configured and
+    ``FIRECRAWL_API_KEY`` set. The symptom is a misleading "No web extract
+    provider configured" error (issue #27580).
+
+    Mirrors :func:`tools.browser_tool._ensure_browser_plugins_loaded` exactly:
+    the underlying discovery call is idempotent and cheap on subsequent
+    invocations.
+    """
+    try:
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+    except Exception as exc:  # noqa: BLE001
+        # Warning, not debug: if a plugin import is genuinely broken the
+        # user otherwise hits the misleading "No web extract provider
+        # configured" error this helper is meant to eliminate, with no
+        # clue in normal logs about the real cause.
+        logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
@@ -792,6 +821,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
         # now live as plugins; the dispatcher is just a registry lookup +
         # delegation. Sync only — every provider's search() is sync.
+        _ensure_web_plugins_loaded()
         from agent.web_search_registry import (
             get_active_search_provider,
             get_provider as _wsp_get_provider,
@@ -924,6 +954,7 @@ async def web_extract_tool(
             # detect coroutine functions and await; sync functions run
             # inline (the policy gate, SSRF re-check, etc. live inside the
             # provider itself for the firecrawl per-URL loop).
+            _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,

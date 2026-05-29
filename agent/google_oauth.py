@@ -629,7 +629,7 @@ def _fetch_user_email(access_token: str, timeout: float = TOKEN_REQUEST_TIMEOUT_
             USERINFO_ENDPOINT + "?alt=json",
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # SSRF: add IP block check
             raw = response.read().decode("utf-8", errors="replace")
         data = json.loads(raw)
         return str(data.get("email", "") or "")

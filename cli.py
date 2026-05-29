@@ -11198,6 +11198,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._voice_recorder._silence_duration = (
             _duration if isinstance(_duration, (int, float)) and not isinstance(_duration, bool) else 3.0
         )
+        # voice.max_recording_seconds — hard cap on a single recording's length.
+        # Same numeric guard as the silence params (bool excluded: a hand-edited
+        # ``max_recording_seconds: true`` must not become ``1``). <= 0 disables
+        # the cap. Previously this documented key was never read, so the setting
+        # had no effect (dead config); wiring it here makes it take effect.
+        _max_rec = voice_cfg.get("max_recording_seconds")
+        self._voice_recorder._max_recording_seconds = (
+            _max_rec
+            if isinstance(_max_rec, (int, float)) and not isinstance(_max_rec, bool) and _max_rec > 0
+            else 0.0
+        )
 
         def _on_silence():
             """Called by AudioRecorder when silence is detected after speech."""

@@ -39,6 +39,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/sessions',
         'user-guide/profiles',
         'user-guide/profile-distributions',
+        'user-guide/multi-profile-gateways',
         'user-guide/git-worktrees',
         'user-guide/docker',
         'user-guide/security',

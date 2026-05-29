@@ -1064,6 +1064,8 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(signal_cfg, dict):
                 if "require_mention" in signal_cfg and not os.getenv("SIGNAL_REQUIRE_MENTION"):
                     os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+                if "wake_on_reactions" in signal_cfg and not os.getenv("SIGNAL_WAKE_ON_REACTIONS"):
+                    os.environ["SIGNAL_WAKE_ON_REACTIONS"] = str(signal_cfg["wake_on_reactions"]).lower()
 
             # DingTalk settings → env vars (env vars take precedence)
             dingtalk_cfg = yaml_cfg.get("dingtalk", {})

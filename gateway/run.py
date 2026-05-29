@@ -303,6 +303,31 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+_SIGNAL_REACTION_SILENT_RESPONSE_RE = re.compile(
+    r"^\s*(?:\[SILENT\]|no\s+(?:response|reply)\s+needed\.?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _should_suppress_signal_reaction_response(event: Any, response: str) -> bool:
+    """Return True when a Signal reaction wake produced an explicit no-op reply.
+
+    Reaction wake events are lightweight input; when the agent decides there is
+    nothing useful to say, the gateway should stay silent instead of sending a
+    visible acknowledgement like "No response needed." back to the chat.
+    """
+    text = str(response or "").strip()
+    if not text or not _SIGNAL_REACTION_SILENT_RESPONSE_RE.fullmatch(text):
+        return False
+
+    source = getattr(event, "source", None)
+    if _gateway_platform_value(getattr(source, "platform", None)) != "signal":
+        return False
+
+    raw = getattr(event, "raw_message", None)
+    return isinstance(raw, dict) and raw.get("signal_event_type") == "reaction"
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery."""
     text = str(message or "").strip()
@@ -8874,6 +8899,13 @@ class GatewayRunner:
                 agent_result, response, history_len=len(history),
             )
             response = _sanitize_gateway_final_response(source.platform, response)
+            if _should_suppress_signal_reaction_response(event, response):
+                logger.info(
+                    "Suppressing no-op Signal reaction response for session %s.",
+                    session_key or "?",
+                )
+                response = ""
+                agent_result["already_sent"] = True
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.

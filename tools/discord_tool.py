@@ -51,8 +51,17 @@ _FLAG_GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19
 # ---------------------------------------------------------------------------
 
 def _get_bot_token() -> Optional[str]:
-    """Resolve the Discord bot token from environment."""
-    return os.getenv("DISCORD_BOT_TOKEN", "").strip() or None
+    """Resolve the Discord bot token from process env or Hermes .env."""
+    token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+    if token:
+        return token
+    try:
+        from hermes_cli.config import get_env_value
+
+        token = (get_env_value("DISCORD_BOT_TOKEN") or "").strip()
+        return token or None
+    except Exception:
+        return None
 
 
 def _discord_request(

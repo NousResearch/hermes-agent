@@ -212,20 +212,32 @@ that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
 and the LLM needs the real ID to tag users."""
 
 
+def _discord_token_available() -> bool:
+    """Return True when the Discord bot token is available to tool checks."""
+    if (os.environ.get("DISCORD_BOT_TOKEN") or "").strip():
+        return True
+    try:
+        from hermes_cli.config import get_env_value
+
+        return bool((get_env_value("DISCORD_BOT_TOKEN") or "").strip())
+    except Exception:
+        return False
+
+
 def _discord_tools_loaded() -> bool:
     """True iff the agent will actually have Discord tools this session.
 
     Two conditions must hold:
       1. The `discord` or `discord_admin` toolset is enabled for the
          Discord platform via `hermes tools` (opt-in, default OFF).
-      2. `DISCORD_BOT_TOKEN` is set — the tool's `check_fn` gates on it
-         at registry time, so the toolset being enabled in config is not
-         enough if the token isn't configured.
+      2. `DISCORD_BOT_TOKEN` is configured in process env or Hermes .env —
+         the tool's `check_fn` gates on it, so the toolset being enabled
+         in config is not enough if the token isn't configured.
 
     Returns False (safe default — keeps the stale-API disclaimer) on any
     error so a bad config can't silently promise tools the agent lacks.
     """
-    if not (os.environ.get("DISCORD_BOT_TOKEN") or "").strip():
+    if not _discord_token_available():
         return False
     try:
         from hermes_cli.config import load_config

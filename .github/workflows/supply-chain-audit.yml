@@ -182,7 +182,10 @@ jobs:
   scan-gate:
     name: Scan PR for critical supply chain risks
     needs: changes
-    if: needs.changes.outputs.scan == 'false'
+    # always() so the gate still reports SUCCESS even if `changes` fails/is
+    # skipped — without it, a failed dependency would leave the required
+    # check unreported (i.e. "pending"), the exact failure mode this fixes.
+    if: always() && needs.changes.outputs.scan != 'true'
     runs-on: ubuntu-latest
     steps:
       - run: echo "No supply-chain-relevant files changed, skipping scan."
@@ -258,7 +261,10 @@ jobs:
   dep-bounds-gate:
     name: Check PyPI dependency upper bounds
     needs: changes
-    if: needs.changes.outputs.deps == 'false'
+    # always() so the gate still reports SUCCESS even if `changes` fails/is
+    # skipped — without it, a failed dependency would leave the required
+    # check unreported (i.e. "pending"), the exact failure mode this fixes.
+    if: always() && needs.changes.outputs.deps != 'true'
     runs-on: ubuntu-latest
     steps:
       - run: echo "No pyproject.toml changes, skipping dependency bounds check."

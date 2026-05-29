@@ -359,15 +359,44 @@ class TestCaptureLogSnapshotRedaction:
         log_path.write_text(
             "2026-04-12 17:00:00 INFO gateway.run: "
             "inbound message: platform=bluebubbles "
-            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n"
+            "user=person@example.com chat=iMessage;-;person@example.com "
+            "owner=person@example.com msg='hello'\n"
         )
 
         snap = _capture_log_snapshot("agent", tail_lines=10)
 
         assert "person@example.com" not in snap.tail_text
         assert "[REDACTED_EMAIL]" in snap.tail_text
+        assert "user=[REDACTED_ID]" in snap.tail_text
+        assert "chat=[REDACTED_ID]" in snap.tail_text
         assert snap.full_text is not None
         assert "person@example.com" not in snap.full_text
+
+    def test_default_redacts_identity_message_and_home_path(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        log_path.write_text(
+            "2026-04-12 17:00:00 INFO gateway.run: "
+            "inbound message: platform=telegram "
+            "user=Alice Smith chat=9876543210 "
+            "msg='private medical question' "
+            f"cwd={hermes_home_with_secret / 'sessions'}\n"
+        )
+
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+
+        for text in (snap.tail_text, snap.full_text or ""):
+            assert "Alice Smith" not in text
+            assert "9876543210" not in text
+            assert "private medical question" not in text
+            assert str(hermes_home_with_secret) not in text
+            assert "user=[REDACTED_ID]" in text
+            assert "chat=[REDACTED_ID]" in text
+            assert "msg='[REDACTED_MESSAGE]'" in text
+            assert "~/.hermes" in text
 
     def test_no_redact_preserves_email_addresses(self, hermes_home_with_secret):
         from hermes_cli.debug import _capture_log_snapshot
@@ -383,6 +412,27 @@ class TestCaptureLogSnapshotRedaction:
 
         assert "person@example.com" in snap.tail_text
         assert "person@example.com" in (snap.full_text or "")
+
+    def test_no_redact_preserves_identity_message_and_home_path(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        log_path.write_text(
+            "2026-04-12 17:00:00 INFO gateway.run: "
+            "inbound message: platform=telegram "
+            "user=Alice Smith chat=9876543210 "
+            "msg='private medical question' "
+            f"cwd={hermes_home_with_secret / 'sessions'}\n"
+        )
+
+        snap = _capture_log_snapshot("agent", tail_lines=10, redact=False)
+
+        assert "Alice Smith" in snap.tail_text
+        assert "9876543210" in snap.tail_text
+        assert "private medical question" in snap.tail_text
+        assert str(hermes_home_with_secret) in snap.tail_text
 
     def test_capture_default_log_snapshots_threads_redact(
         self, hermes_home_with_secret

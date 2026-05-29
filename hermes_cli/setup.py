@@ -454,22 +454,25 @@ def _print_setup_summary(config: dict, hermes_home):
     # Video generation — opt-in via `hermes tools` → Video Generation.
     # Only show the row when a plugin reports available so we don't badger
     # users who don't care about video gen with a "missing" status line.
-    try:
-        from agent.video_gen_registry import list_providers as _list_video_providers
-        from hermes_cli.plugins import _ensure_plugins_discovered as _ensure_plugins
-        _ensure_plugins()
-        _video_backend = None
-        for _vp in _list_video_providers():
-            try:
-                if _vp.is_available():
-                    _video_backend = _vp.display_name
-                    break
-            except Exception:
-                continue
-    except Exception:
-        _video_backend = None
-    if _video_backend:
-        tool_status.append((f"Video Generation ({_video_backend})", True, None))
+    if subscription_features.video_gen.managed_by_nous:
+        tool_status.append(("Video Generation (FAL via Nous subscription)", True, None))
+    else:
+        try:
+            from agent.video_gen_registry import list_providers as _list_video_providers
+            from hermes_cli.plugins import _ensure_plugins_discovered as _ensure_plugins
+            _ensure_plugins()
+            _video_backend = None
+            for _vp in _list_video_providers():
+                try:
+                    if _vp.is_available():
+                        _video_backend = _vp.display_name
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            _video_backend = None
+        if _video_backend:
+            tool_status.append((f"Video Generation ({_video_backend})", True, None))
 
     # TTS — show configured provider
     tts_provider = cfg_get(config, "tts", "provider", default="edge")

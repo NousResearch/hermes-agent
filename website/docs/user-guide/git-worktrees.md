@@ -21,7 +21,7 @@ This page shows how to combine worktrees with Hermes so each session has a clean
 Hermes treats the **current working directory** as the project root:
 
 - CLI: the directory where you run `hermes` or `hermes chat`
-- Messaging gateways: the directory set by `MESSAGING_CWD`
+- Messaging gateways: the directory set by `terminal.cwd` in `~/.hermes/config.yaml`
 
 If you run multiple agents in the **same checkout**, their changes can interfere with each other:
 
@@ -171,4 +171,3 @@ This combination gives you:
 - Strong guarantees that different agents and experiments do not step on each other.
 - Fast iteration cycles with easy recovery from bad edits.
 - Clean, reviewable pull requests.
-

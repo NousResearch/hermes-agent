@@ -1,0 +1,41 @@
+# Tinker-Atropos Configuration
+
+# Environment configuration
+env:
+  group_size: 16
+  batch_size: 128
+  max_batches_offpolicy: 3
+  tokenizer_name: "meta-llama/Llama-3.1-8B-Instruct"
+  use_wandb: true
+  rollout_server_url: "http://localhost:8000"
+  wandb_name: "atropos-tinker-env"
+  ensure_scores_are_not_same: false
+  max_token_length: 256
+  max_num_workers: 24
+  total_steps: 50
+  steps_per_eval: 100
+
+# OpenAI-compatible server configuration
+openai:
+  - model_name: "meta-llama/Llama-3.1-8B-Instruct"
+    base_url: "http://localhost:8001/v1"
+    api_key: "x"
+    weight: 1.0
+    num_requests_for_eval: 256
+
+# Tinker-specific configuration
+tinker:
+  lora_rank: 32
+  learning_rate: 0.00004
+  max_token_trainer_length: 2048
+  checkpoint_dir: "./temp/"
+  save_checkpoint_interval: 0
+
+  # Wandb configuration for trainer
+  wandb_project: "atropos-tinker"
+  wandb_group: null  # Will be auto-generated if not specified
+  wandb_run_name: "atropos-tinker-run"
+
+# Standard Atropos flags
+slurm: false
+testing: false

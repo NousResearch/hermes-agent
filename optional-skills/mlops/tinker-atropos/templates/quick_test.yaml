@@ -1,0 +1,39 @@
+# Quick test configuration with minimal resources
+# Useful for testing the setup and debugging
+
+# Environment configuration
+env:
+  group_size: 16
+  batch_size: 128
+  max_batches_offpolicy: 3
+  tokenizer_name: "meta-llama/Llama-3.2-1B"
+  use_wandb: false
+  rollout_server_url: "http://localhost:8000"
+  wandb_name: "atropos-tinker-test-env"
+  ensure_scores_not_the_same: false
+  max_token_length: 256
+  max_num_workers: 24
+  total_steps: 10
+  steps_per_eval: 100
+
+# OpenAI-compatible server configuration
+openai:
+  - model_name: "meta-llama/Llama-3.2-1B"
+    base_url: "http://localhost:8001/v1"
+    api_key: "x"
+    weight: 1.0
+    num_requests_for_eval: 256
+
+# Tinker-specific configuration
+tinker:
+  lora_rank: 32
+  learning_rate: 0.00004
+  max_token_trainer_length: 2048
+  checkpoint_dir: "./temp/"
+  save_checkpoint_interval: 0
+  wandb_project: "atropos-tinker"
+  wandb_group: null
+  wandb_run_name: "atropos-tinker-test-run"
+
+slurm: false
+testing: false

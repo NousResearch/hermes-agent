@@ -158,6 +158,14 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
         is_windows = _IS_WINDOWS
 
     scrubbed = {}
+    # Non-secret HERMES_* vars dropped by the tightened allowlist (#27303). The
+    # broad "HERMES_" prefix used to pass these through; now only the
+    # operational set does. The drop is intentional (those vars can carry
+    # config like HERMES_KANBAN_DB / HERMES_BASE_URL), but a sandbox script
+    # that imports a repo module reading one at import time would otherwise see
+    # it silently unset. Surface the drop once so the behavior change is
+    # diagnosable and points at the env_passthrough opt-in escape hatch.
+    _dropped_hermes = []
     for k, v in source_env.items():
         if is_passthrough(k):
             scrubbed[k] = v
@@ -172,6 +180,20 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             continue
         if is_windows and k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS:
             scrubbed[k] = v
+            continue
+        if k.startswith("HERMES_"):
+            # Non-secret (secrets were already dropped above) and not in any
+            # allowlist — a deliberately-dropped HERMES_* var.
+            _dropped_hermes.append(k)
+    if _dropped_hermes:
+        logger.debug(
+            "execute_code: dropped %d non-allowlisted HERMES_* var(s) from the "
+            "sandbox child env (%s). This is intentional hardening (#27303); if "
+            "a sandbox script legitimately needs one, declare it via "
+            "env_passthrough in the skill/config so it passes by explicit opt-in.",
+            len(_dropped_hermes),
+            ", ".join(sorted(_dropped_hermes)),
+        )
     return scrubbed
 
 

@@ -186,6 +186,126 @@ def _comment_dict(c: kanban_db.Comment) -> dict[str, Any]:
     }
 
 
+def _usage_from_run_snapshots(board_slug: Optional[str], task_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Build per-task card usage from task_run metadata snapshots.
+
+    Worker terminal events stamp a usage_snapshot when they complete/block.
+    Reading those rows is board-local and cheap, so card badges can update for
+    newly completed tasks without running a full cross-board project ledger
+    backfill on every board poll.
+    """
+    if not task_ids:
+        return {}
+    wanted = set(task_ids)
+    placeholders = ", ".join(["?"] * len(task_ids))
+    latest_by_task: dict[str, dict[str, Any]] = {}
+    try:
+        conn = kanban_db.connect(board=board_slug)
+    except Exception as exc:
+        log.debug("kanban usage snapshot lookup unavailable: %s", exc)
+        return {}
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT task_id, metadata
+            FROM task_runs
+            WHERE task_id IN ({placeholders})
+            ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+            """,
+            list(task_ids),
+        ).fetchall()
+    except Exception as exc:
+        log.debug("kanban usage snapshot lookup failed: %s", exc)
+        return {}
+    finally:
+        conn.close()
+    for row in rows:
+        tid = str(row["task_id"])
+        if tid not in wanted:
+            continue
+        bucket = latest_by_task.setdefault(tid, {
+            "runs": 0,
+            "by_session": {},
+            "sessionless": None,
+        })
+        bucket["runs"] += 1
+        try:
+            meta = json.loads(row["metadata"] or "{}")
+        except Exception:
+            continue
+        snapshot = meta.get("usage_snapshot") if isinstance(meta, dict) else None
+        if not isinstance(snapshot, dict):
+            continue
+        sid = snapshot.get("session_id") or meta.get("worker_session_id")
+        if sid:
+            # Rows are newest-first, so the first snapshot per session is the
+            # safest board-local estimate for that cumulative session total.
+            bucket["by_session"].setdefault(str(sid), snapshot)
+        elif bucket["sessionless"] is None:
+            bucket["sessionless"] = snapshot
+
+    out: dict[str, dict[str, Any]] = {}
+    for tid, bucket in latest_by_task.items():
+        by_session = bucket["by_session"]
+        if len(by_session) > 1:
+            # usage_snapshot values are cumulative per session, not per-run
+            # deltas. Summing multiple sessions can charge unrelated work from
+            # reused agent sessions to this card, so let _usage_by_task fall
+            # back to the project ledger, which correlates each session once.
+            continue
+        if by_session:
+            snapshot = next(iter(by_session.values()))
+            sessions = 1
+        else:
+            snapshot = bucket["sessionless"]
+            sessions = 1 if snapshot is not None else 0
+        if not isinstance(snapshot, dict):
+            continue
+        out[tid] = {
+            "runs": int(bucket["runs"]),
+            "sessions": sessions,
+            "input_tokens": int(snapshot.get("input_tokens") or 0),
+            "output_tokens": int(snapshot.get("output_tokens") or 0),
+            "reasoning_tokens": int(snapshot.get("reasoning_tokens") or 0),
+            "estimated_cost_usd": float(snapshot.get("estimated_cost_usd") or 0.0),
+            "actual_cost_usd": float(snapshot.get("actual_cost_usd") or 0.0),
+        }
+    return out
+
+
+def _usage_by_task(board_slug: Optional[str], task_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not task_ids:
+        return {}
+    out = _usage_from_run_snapshots(board_slug, task_ids)
+    missing = [tid for tid in task_ids if tid not in out]
+    if not missing:
+        return out
+    try:
+        from hermes_cli import project_usage_ledger as usage
+        rows = usage.get_task_rollups(board=board_slug, task_ids=missing, refresh=False)
+        if not rows:
+            summary = usage.get_summary(board=board_slug, refresh=False)
+            if summary.get("last_backfill_at") is None:
+                rows = usage.get_task_rollups(board=board_slug, task_ids=missing, refresh=True)
+    except Exception as exc:
+        log.debug("kanban usage rollup unavailable: %s", exc)
+        return out
+    wanted = set(missing)
+    for row in rows:
+        tid = row.get("task_id")
+        if tid in wanted:
+            out[str(tid)] = {
+                "runs": row.get("runs", 0),
+                "sessions": row.get("sessions", 0),
+                "input_tokens": row.get("input_tokens", 0),
+                "output_tokens": row.get("output_tokens", 0),
+                "reasoning_tokens": row.get("reasoning_tokens", 0),
+                "estimated_cost_usd": row.get("estimated_cost_usd", 0.0),
+                "actual_cost_usd": row.get("actual_cost_usd", 0.0),
+            }
+    return out
+
+
 def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
     """Serialise a Run for the drawer's Run history section."""
     return {
@@ -431,7 +551,9 @@ def get_board(
         # window-function query (avoids N+1 ``latest_summary`` calls
         # for boards with hundreds of tasks). Truncated to a card-size
         # preview here — the full text is available via /tasks/:id.
-        summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        task_ids = [t.id for t in tasks]
+        summary_map = kanban_db.latest_summaries(conn, task_ids)
+        usage_map = _usage_by_task(board or kanban_db.get_current_board(), task_ids)
 
         for t in tasks:
             full = summary_map.get(t.id)
@@ -442,6 +564,10 @@ def get_board(
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
+            d["usage"] = usage_map.get(t.id, {
+                "runs": 0, "sessions": 0, "input_tokens": 0, "output_tokens": 0,
+                "reasoning_tokens": 0, "estimated_cost_usd": 0.0, "actual_cost_usd": 0.0,
+            })
             diags = diagnostics_per_task.get(t.id)
             if diags:
                 # Full list goes into the payload so the drawer can render
@@ -1159,21 +1285,29 @@ except ImportError:
     _psutil = None  # type: ignore[assignment]
 
 
-@router.get("/workers/active")
-def list_active_workers(
-    board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
-):
-    """Return every currently-running worker on the board.
+def _pid_liveness(pid: Optional[int]) -> dict[str, Any]:
+    """Best-effort OS liveness for an already-recorded worker PID."""
+    if pid is None:
+        return {"alive": False, "reason": "no worker_pid recorded"}
+    if _psutil is None:
+        return {"alive": None, "reason": "psutil not available"}
+    try:
+        proc = _psutil.Process(int(pid))
+        status = proc.status()
+        return {
+            "alive": proc.is_running() and status != getattr(_psutil, "STATUS_ZOMBIE", "zombie"),
+            "pid_status": status,
+            "create_time": proc.create_time(),
+        }
+    except _psutil.NoSuchProcess:
+        return {"alive": False, "reason": "process not found"}
+    except _psutil.AccessDenied:
+        return {"alive": True, "error": "access denied"}
 
-    A worker is a ``task_runs`` row whose ``ended_at`` is NULL and whose
-    ``worker_pid`` is non-NULL, belonging to a task with ``status='running'``.
 
-    Returns ``{workers: [...], count: N, checked_at: <epoch>}``.  Each
-    worker entry carries enough context for the dashboard to link back to
-    its task without a second round-trip.
-    """
-    board = _resolve_board(board)
-    conn = _conn(board=board)
+def _active_worker_snapshot_for_board(board_slug: str) -> dict[str, Any]:
+    """Return active workers plus not-counted diagnostics for one board."""
+    conn = _conn(board=board_slug)
     try:
         rows = conn.execute(
             """
@@ -1184,40 +1318,214 @@ def list_active_workers(
                 t.status      AS task_status,
                 t.assignee    AS task_assignee,
                 r.profile,
-                r.worker_pid,
+                COALESCE(r.worker_pid, t.worker_pid) AS worker_pid,
+                CASE
+                    WHEN r.worker_pid IS NOT NULL THEN 'run'
+                    WHEN t.worker_pid IS NOT NULL THEN 'task'
+                    ELSE NULL
+                END AS pid_source,
+                r.worker_pid AS run_worker_pid,
+                t.worker_pid AS task_worker_pid,
                 r.started_at,
                 r.claim_lock,
                 r.claim_expires,
                 r.last_heartbeat_at,
                 r.max_runtime_seconds
-            FROM task_runs r
-            JOIN tasks t ON t.id = r.task_id
-            WHERE r.ended_at IS NULL
-              AND r.worker_pid IS NOT NULL
-              AND t.status = 'running'
+            FROM tasks t
+            JOIN task_runs r ON r.id = t.current_run_id
+            WHERE t.status = 'running'
+              AND r.ended_at IS NULL
+              AND COALESCE(r.worker_pid, t.worker_pid) IS NOT NULL
             ORDER BY r.started_at ASC
             """,
         ).fetchall()
-        workers = [
-            {
+        workers: list[dict[str, Any]] = []
+        counted_keys: set[tuple[Optional[int], str, int]] = set()
+        for row in rows:
+            pid = row["worker_pid"]
+            entry = {
+                "board": board_slug,
                 "run_id": row["run_id"],
                 "task_id": row["task_id"],
                 "task_title": row["task_title"],
                 "task_status": row["task_status"],
                 "task_assignee": row["task_assignee"],
                 "profile": row["profile"],
-                "worker_pid": row["worker_pid"],
+                "worker_pid": pid,
+                "pid_source": row["pid_source"],
                 "started_at": row["started_at"],
                 "claim_lock": row["claim_lock"],
                 "claim_expires": row["claim_expires"],
                 "last_heartbeat_at": row["last_heartbeat_at"],
                 "max_runtime_seconds": row["max_runtime_seconds"],
             }
-            for row in rows
-        ]
-        return {"workers": workers, "count": len(workers), "checked_at": int(time.time())}
+            if row["pid_source"] == "task":
+                entry["diagnostic"] = "run worker_pid missing; using task.worker_pid fallback"
+            entry.update(_pid_liveness(pid))
+            workers.append(entry)
+            counted_keys.add((row["run_id"], row["task_id"], int(pid)))
+
+        diagnostics: list[dict[str, Any]] = []
+
+        # Running tasks with claim/run state that do not satisfy the canonical
+        # active-worker predicate. These are the rows that make "PID exists but
+        # count=0" confusing unless the dashboard explains why they were not
+        # included.
+        for row in conn.execute(
+            """
+            SELECT
+                t.id AS task_id,
+                t.title AS task_title,
+                t.status AS task_status,
+                t.assignee AS task_assignee,
+                t.current_run_id,
+                t.worker_pid AS task_worker_pid,
+                r.id AS run_id,
+                r.worker_pid AS run_worker_pid,
+                r.ended_at AS run_ended_at,
+                r.status AS run_status,
+                r.outcome AS run_outcome
+            FROM tasks t
+            LEFT JOIN task_runs r ON r.id = t.current_run_id
+            WHERE t.status = 'running'
+              AND (t.current_run_id IS NOT NULL OR t.worker_pid IS NOT NULL)
+            ORDER BY COALESCE(r.started_at, t.started_at, t.created_at) ASC
+            """,
+        ).fetchall():
+            pid = row["run_worker_pid"] or row["task_worker_pid"]
+            if pid is not None and (row["run_id"], row["task_id"], int(pid)) in counted_keys:
+                continue
+            reason = "unknown"
+            if row["current_run_id"] is None:
+                reason = "running task has no current_run_id"
+            elif row["run_id"] is None:
+                reason = "current_run_id does not resolve to a task_runs row"
+            elif row["run_ended_at"] is not None:
+                reason = "current run is already ended"
+            elif pid is None:
+                reason = "no worker_pid recorded on task or current run"
+            diag = {
+                "board": board_slug,
+                "task_id": row["task_id"],
+                "task_title": row["task_title"],
+                "task_status": row["task_status"],
+                "task_assignee": row["task_assignee"],
+                "run_id": row["run_id"] or row["current_run_id"],
+                "worker_pid": pid,
+                "reason": reason,
+                "run_status": row["run_status"],
+                "run_outcome": row["run_outcome"],
+            }
+            diag.update(_pid_liveness(pid))
+            diagnostics.append(diag)
+
+        # Active run rows with PIDs that are not the task's current running
+        # claim. These can be genuine stale/orphan rows; surface them with the
+        # board/task/run identifiers instead of silently dropping live PIDs.
+        for row in conn.execute(
+            """
+            SELECT
+                r.id AS run_id,
+                r.task_id,
+                t.title AS task_title,
+                t.status AS task_status,
+                t.assignee AS task_assignee,
+                t.current_run_id,
+                r.worker_pid,
+                r.status AS run_status,
+                r.outcome AS run_outcome
+            FROM task_runs r
+            LEFT JOIN tasks t ON t.id = r.task_id
+            WHERE r.ended_at IS NULL
+              AND r.worker_pid IS NOT NULL
+              AND (t.id IS NULL OR t.status != 'running' OR t.current_run_id != r.id)
+            ORDER BY r.started_at ASC
+            """,
+        ).fetchall():
+            pid = row["worker_pid"]
+            key = (row["run_id"], row["task_id"], int(pid))
+            if key in counted_keys:
+                continue
+            reason = "task row missing"
+            if row["task_status"] and row["task_status"] != "running":
+                reason = f"task status is {row['task_status']!r}, not 'running'"
+            elif row["task_status"] == "running" and row["current_run_id"] != row["run_id"]:
+                reason = "run is not the task current_run_id"
+            diag = {
+                "board": board_slug,
+                "task_id": row["task_id"],
+                "task_title": row["task_title"],
+                "task_status": row["task_status"],
+                "task_assignee": row["task_assignee"],
+                "run_id": row["run_id"],
+                "worker_pid": pid,
+                "reason": reason,
+                "run_status": row["run_status"],
+                "run_outcome": row["run_outcome"],
+            }
+            diag.update(_pid_liveness(pid))
+            diagnostics.append(diag)
+
+        return {"board": board_slug, "workers": workers, "diagnostics": diagnostics}
     finally:
         conn.close()
+
+
+@router.get("/workers/active")
+def list_active_workers(
+    board: Optional[str] = Query(
+        None,
+        description="Kanban board slug; omit to scan all boards for live workers",
+    ),
+):
+    """Return currently-running workers and active-worker diagnostics.
+
+    When ``board`` is omitted, this scans every board on disk. That matches
+    gateway-embedded dispatch, which ticks all boards, and prevents the global
+    dashboard status from reporting ``count=0`` just because the selected/current
+    board differs from the board where workers were spawned.
+
+    A counted worker is the task's current active run with either
+    ``task_runs.worker_pid`` or (for legacy/racy rows) ``tasks.worker_pid`` set.
+    Rows with live-looking PIDs that are not counted are returned under
+    ``diagnostics`` with the board slug and task/run identifiers so operators
+    can see exactly why a process was excluded.
+    """
+    if board is None:
+        scope = "all"
+        board_slugs = [
+            str(meta.get("slug") or kanban_db.DEFAULT_BOARD)
+            for meta in kanban_db.list_boards(include_archived=False)
+        ]
+    else:
+        scope = "board"
+        resolved = _resolve_board(board)
+        board_slugs = [resolved or kanban_db.get_current_board()]
+
+    workers: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    board_summaries: list[dict[str, Any]] = []
+    for board_slug in board_slugs:
+        snapshot = _active_worker_snapshot_for_board(board_slug)
+        board_workers = snapshot["workers"]
+        board_diagnostics = snapshot["diagnostics"]
+        workers.extend(board_workers)
+        diagnostics.extend(board_diagnostics)
+        board_summaries.append({
+            "board": board_slug,
+            "count": len(board_workers),
+            "diagnostics_count": len(board_diagnostics),
+        })
+
+    return {
+        "workers": workers,
+        "count": len(workers),
+        "checked_at": int(time.time()),
+        "scope": scope,
+        "board": board_slugs[0] if scope == "board" else None,
+        "boards": board_summaries,
+        "diagnostics": diagnostics,
+    }
 
 
 @router.get("/runs/{run_id}")

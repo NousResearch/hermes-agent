@@ -1,0 +1,116 @@
+.project-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.project-usage-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.project-usage-header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.project-usage-header p,
+.project-usage-muted,
+.project-usage-footer {
+  color: hsl(var(--muted-foreground, 240 3.8% 46.1%));
+  font-size: 0.85rem;
+}
+
+.project-usage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.75rem;
+}
+
+.project-usage-metric {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.project-usage-filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.project-usage-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.project-usage-selected,
+.project-usage-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.project-usage-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 1rem;
+}
+
+.project-usage-table-wrap {
+  overflow-x: auto;
+}
+
+.project-usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.project-usage-table th,
+.project-usage-table td {
+  padding: 0.55rem 0.6rem;
+  border-bottom: 1px solid hsl(var(--border, 240 5.9% 90%));
+  text-align: left;
+  vertical-align: top;
+}
+
+.project-usage-table th {
+  color: hsl(var(--muted-foreground, 240 3.8% 46.1%));
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.project-usage-table tbody tr {
+  cursor: pointer;
+}
+
+.project-usage-table tbody tr:hover {
+  background: hsl(var(--muted, 240 4.8% 95.9%) / 0.45);
+}
+
+.project-usage-error {
+  border: 1px solid hsl(var(--destructive, 0 84.2% 60.2%));
+  color: hsl(var(--destructive, 0 84.2% 60.2%));
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+}
+
+.project-usage-footer {
+  word-break: break-all;
+}
+
+@media (max-width: 760px) {
+  .project-usage-header,
+  .project-usage-filters {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+}

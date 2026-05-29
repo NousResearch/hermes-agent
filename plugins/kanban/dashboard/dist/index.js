@@ -151,6 +151,19 @@
     return tx(t, key, FALLBACK_DIAGNOSTIC_EVENT_LABELS[kind]);
   }
 
+  function formatCompactNumber(n) {
+    n = Number(n || 0);
+    if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+    if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+    return String(Math.round(n));
+  }
+
+  function taskUsageTokens(t) {
+    const u = t && t.usage ? t.usage : null;
+    if (!u) return 0;
+    return Number(u.input_tokens || 0) + Number(u.output_tokens || 0) + Number(u.reasoning_tokens || 0);
+  }
+
   const COLUMN_DOT = {
     triage: "hermes-kanban-dot-triage",
     todo: "hermes-kanban-dot-todo",
@@ -2573,6 +2586,11 @@
               ? h("span", { className: "hermes-kanban-count",
                             title: `${t.link_counts.parents} parent${t.link_counts.parents === 1 ? "" : "s"}, ${t.link_counts.children} child${t.link_counts.children === 1 ? "" : "ren"}. Children stay blocked until their parent is done.` },
                   "↔ ", t.link_counts.parents + t.link_counts.children)
+              : null,
+            taskUsageTokens(t) > 0
+              ? h("span", { className: "hermes-kanban-count hermes-kanban-usage",
+                            title: `Usage: ${taskUsageTokens(t)} tokens, estimated cost $${Number((t.usage && t.usage.estimated_cost_usd) || 0).toFixed(4)}` },
+                  "◈ ", formatCompactNumber(taskUsageTokens(t)))
               : null,
             h("span", { className: "hermes-kanban-ago",
                         title: t.created_at ? `Created ${t.created_at}` : "" },

@@ -354,10 +354,9 @@ def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata == {
-            "files": 2,
-            "worker_session_id": "session-trusted",
-        }
+        assert run.metadata["files"] == 2
+        assert run.metadata["worker_session_id"] == "session-trusted"
+        assert run.metadata["usage_snapshot"]["session_id"] == "session-trusted"
     finally:
         conn.close()
 
@@ -387,6 +386,26 @@ def test_complete_does_not_stamp_worker_session_id_without_scoped_task(
         }
     finally:
         conn.close()
+
+
+def test_stamp_worker_session_metadata_delegates_scope_check(monkeypatch):
+    """The usage ledger helper owns worker-task scope validation."""
+    from hermes_cli import project_usage_ledger
+    from tools import kanban_tools as kt
+
+    calls = []
+
+    def fake_stamp(task_id, metadata):
+        calls.append((task_id, metadata))
+        return metadata
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-trusted")
+    monkeypatch.setattr(project_usage_ledger, "stamp_worker_usage_metadata", fake_stamp)
+
+    metadata = {"files": 2}
+    assert kt._stamp_worker_session_metadata("t-other", metadata) is metadata
+    assert calls == [("t-other", metadata)]
 
 
 def test_complete_with_result_only(worker_env):

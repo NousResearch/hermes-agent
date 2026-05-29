@@ -8,6 +8,7 @@ REST surface without spinning up the whole dashboard.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import time
@@ -189,6 +190,61 @@ def test_board_query_param_default_overrides_current_board_pointer(client):
         for task in column["tasks"]
     }
     assert pinned_ids == {default_task["id"]}
+
+
+def test_active_workers_scans_all_boards_when_board_omitted(client):
+    """Gateway-embedded dispatch ticks all boards, so the active-worker API must too.
+
+    Regression: a SuperOptions worker could be alive while ``/workers/active``
+    returned count=0 because the endpoint only read the current/default board.
+    """
+    kb.create_board("superoptions")
+    conn = kb.connect(board="superoptions")
+    try:
+        task_id = kb.create_task(conn, title="superoptions worker", assignee="default")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        kb._set_worker_pid(conn, task_id, os.getpid())
+    finally:
+        conn.close()
+
+    data = client.get("/api/plugins/kanban/workers/active").json()
+    assert data["scope"] == "all"
+    assert data["count"] == 1
+    assert data["workers"][0]["board"] == "superoptions"
+    assert data["workers"][0]["task_id"] == task_id
+    assert data["workers"][0]["worker_pid"] == os.getpid()
+    assert {b["board"]: b["count"] for b in data["boards"]}["superoptions"] == 1
+
+    default_only = client.get("/api/plugins/kanban/workers/active?board=default").json()
+    assert default_only["scope"] == "board"
+    assert default_only["board"] == "default"
+    assert default_only["count"] == 0
+
+
+def test_active_workers_falls_back_to_task_worker_pid(client):
+    """Expose legacy/racy rows where the task PID was set but run PID is blank."""
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="pid fallback", assignee="default")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (os.getpid(), task_id))
+            conn.execute(
+                "UPDATE task_runs SET worker_pid = NULL WHERE task_id = ?",
+                (task_id,),
+            )
+    finally:
+        conn.close()
+
+    data = client.get("/api/plugins/kanban/workers/active?board=default").json()
+    assert data["count"] == 1
+    worker = data["workers"][0]
+    assert worker["task_id"] == task_id
+    assert worker["worker_pid"] == os.getpid()
+    assert worker["pid_source"] == "task"
+    assert "task.worker_pid fallback" in worker["diagnostic"]
 
 
 def test_dashboard_select_filters_use_sdk_value_change_handler():
@@ -2195,3 +2251,281 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_board_cards_include_usage_rollup(client, kanban_home):
+    """Board cards expose per-task token/cost rollups from the usage ledger."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(kanban_home / "state.db")
+    try:
+        db.create_session("sess-card-usage", "kanban", model="gpt-test")
+        db.update_token_counts(
+            "sess-card-usage",
+            input_tokens=21,
+            output_tokens=34,
+            reasoning_tokens=5,
+            estimated_cost_usd=0.007,
+            absolute=True,
+        )
+    finally:
+        db.close()
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="usage badge", assignee="worker")
+        assert kb.claim_task(conn, tid)
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="done",
+            metadata={"worker_session_id": "sess-card-usage"},
+        )
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200, r.text
+    tasks = [task for col in r.json()["columns"] for task in col["tasks"]]
+    card = next(t for t in tasks if t["id"] == tid)
+
+    assert card["usage"]["input_tokens"] == 21
+    assert card["usage"]["output_tokens"] == 34
+    assert card["usage"]["reasoning_tokens"] == 5
+    assert card["usage"]["estimated_cost_usd"] == pytest.approx(0.007)
+
+
+def test_board_usage_rollup_does_not_refresh_when_ledger_exists(monkeypatch):
+    """Board loads should not trigger full cross-board usage backfills repeatedly."""
+    import hermes_cli
+
+    repo_root = Path(__file__).resolve().parents[2]
+    plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    spec = importlib.util.spec_from_file_location(
+        "hermes_dashboard_plugin_kanban_usage_refresh_test", plugin_file,
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+
+    refresh_calls: list[bool] = []
+
+    class FakeUsage:
+        def get_task_rollups(self, *, board=None, task_ids=None, refresh=True):
+            refresh_calls.append(refresh)
+            return []
+
+        def get_summary(self, *, board=None, refresh=True):
+            refresh_calls.append(refresh)
+            return {"last_backfill_at": 123.0}
+
+    monkeypatch.setattr(hermes_cli, "project_usage_ledger", FakeUsage(), raising=False)
+    monkeypatch.setattr(mod, "_usage_from_run_snapshots", lambda board, ids: {})
+
+    assert mod._usage_by_task("default", ["t1"]) == {}
+    assert refresh_calls == [False, False]
+
+
+def test_board_usage_rollup_reads_fresh_task_run_snapshots(client, kanban_home):
+    """Newly completed cards can show stamped usage without a ledger backfill."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="usage snapshot badge", assignee="worker")
+        assert kb.claim_task(conn, tid)
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="done",
+            metadata={
+                "worker_session_id": "sess-snapshot-card",
+                "usage_snapshot": {
+                    "session_id": "sess-snapshot-card",
+                    "input_tokens": 55,
+                    "output_tokens": 89,
+                    "reasoning_tokens": 13,
+                    "estimated_cost_usd": 0.015,
+                },
+            },
+        )
+        conn.execute(
+            """
+            INSERT INTO task_runs(
+                task_id, profile, status, started_at, ended_at, outcome,
+                summary, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tid,
+                "worker",
+                "completed",
+                10,
+                int(time.time()) + 1000,
+                "retry",
+                "newer cumulative snapshot",
+                json.dumps({
+                    "worker_session_id": "sess-snapshot-card",
+                    "usage_snapshot": {
+                        "session_id": "sess-snapshot-card",
+                        "input_tokens": 60,
+                        "output_tokens": 90,
+                        "reasoning_tokens": 14,
+                        "estimated_cost_usd": 0.016,
+                    },
+                }),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO task_runs(
+                task_id, profile, status, started_at, ended_at, outcome,
+                summary, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tid,
+                "worker",
+                "done",
+                20,
+                int(time.time()) + 2000,
+                "completed",
+                "run without usage metadata",
+                None,
+            ),
+        )
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200, r.text
+    tasks = [task for col in r.json()["columns"] for task in col["tasks"]]
+    card = next(t for t in tasks if t["id"] == tid)
+    assert card["usage"]["runs"] == 3
+    assert card["usage"]["input_tokens"] == 60
+    assert card["usage"]["output_tokens"] == 90
+    assert card["usage"]["reasoning_tokens"] == 14
+    assert card["usage"]["estimated_cost_usd"] == pytest.approx(0.016)
+
+
+def test_board_usage_rollup_falls_back_for_multiple_snapshot_sessions(monkeypatch, kanban_home):
+    """Do not add cumulative usage_snapshot totals from distinct sessions."""
+    import hermes_cli
+
+    repo_root = Path(__file__).resolve().parents[2]
+    plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    spec = importlib.util.spec_from_file_location(
+        "hermes_dashboard_plugin_kanban_usage_multisession_test", plugin_file,
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="multi-session snapshots", assignee="worker")
+        now = int(time.time())
+        for session_id, ended_at, tokens in (
+            ("sess-a", now, 100),
+            ("sess-b", now + 60, 200),
+        ):
+            conn.execute(
+                """
+                INSERT INTO task_runs(
+                    task_id, profile, status, started_at, ended_at, outcome,
+                    summary, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tid,
+                    "worker",
+                    "done",
+                    ended_at - 10,
+                    ended_at,
+                    "completed",
+                    "cumulative snapshot",
+                    json.dumps({
+                        "worker_session_id": session_id,
+                        "usage_snapshot": {
+                            "session_id": session_id,
+                            "input_tokens": tokens,
+                            "output_tokens": 1,
+                            "estimated_cost_usd": 0.001 * tokens,
+                        },
+                    }),
+                ),
+            )
+
+    class FakeUsage:
+        def get_task_rollups(self, *, board=None, task_ids=None, refresh=True):
+            return [{
+                "task_id": tid,
+                "runs": 2,
+                "sessions": 2,
+                "input_tokens": 17,
+                "output_tokens": 3,
+                "reasoning_tokens": 0,
+                "estimated_cost_usd": 0.017,
+                "actual_cost_usd": 0.0,
+            }]
+
+    monkeypatch.setattr(hermes_cli, "project_usage_ledger", FakeUsage(), raising=False)
+
+    assert mod._usage_from_run_snapshots("default", [tid]) == {}
+    rollup = mod._usage_by_task("default", [tid])[tid]
+    assert rollup["input_tokens"] == 17
+    assert rollup["estimated_cost_usd"] == pytest.approx(0.017)
+
+
+def test_kanban_usage_route_removed_in_favor_of_project_usage_plugin(client, kanban_home):
+    """Project usage is exposed by the dedicated project_usage dashboard plugin."""
+    _ = kanban_home
+    r = client.get("/api/plugins/kanban/usage?board=default")
+    assert r.status_code == 404
+
+
+def test_dashboard_bundle_renders_usage_badge():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function taskUsageTokens(t)" in js
+    assert "hermes-kanban-usage" in js
+    assert "estimated cost" in js
+
+
+def test_board_usage_rollup_dedupes_sessionless_snapshots_by_latest(client, kanban_home):
+    """Session-less cumulative snapshots should not double count older rows."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="sessionless usage snapshot", assignee="worker")
+        assert kb.claim_task(conn, tid)
+        now = int(time.time())
+        for ended_at, tokens in ((now, 7), (now + 1000, 11)):
+            conn.execute(
+                """
+                INSERT INTO task_runs(
+                    task_id, profile, status, started_at, ended_at, outcome,
+                    summary, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tid,
+                    "worker",
+                    "completed",
+                    ended_at - 10,
+                    ended_at,
+                    "done",
+                    "sessionless snapshot",
+                    json.dumps({
+                        "usage_snapshot": {
+                            "input_tokens": tokens,
+                            "output_tokens": 1,
+                            "reasoning_tokens": 0,
+                            "estimated_cost_usd": 0.001 * tokens,
+                        },
+                    }),
+                ),
+            )
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (tid,))
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200, r.text
+    tasks = [task for col in r.json()["columns"] for task in col["tasks"]]
+    card = next(t for t in tasks if t["id"] == tid)
+    assert card["usage"]["input_tokens"] == 11
+    assert card["usage"]["output_tokens"] == 1
+    assert card["usage"]["sessions"] == 1
+    assert card["usage"]["estimated_cost_usd"] == pytest.approx(0.011)

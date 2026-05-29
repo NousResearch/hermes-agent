@@ -1,0 +1,14 @@
+{
+  "name": "project_usage",
+  "label": "Project Usage",
+  "description": "Per-board and per-task token/cost usage ledger for Kanban projects",
+  "icon": "BarChart3",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/project-usage",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

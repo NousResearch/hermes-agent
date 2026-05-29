@@ -519,3 +519,30 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+def test_usage_refresh_flag_defaults_false_and_respects_explicit_refresh(monkeypatch, capsys):
+    from hermes_cli import project_usage_ledger as usage
+
+    calls = []
+
+    def fake_get_summary(**kwargs):
+        calls.append(kwargs)
+        return {
+            "ledger_path": "/tmp/project_usage.db",
+            "totals": {},
+            "boards": [],
+            "tasks": [],
+            "last_backfill_at": None,
+        }
+
+    monkeypatch.setattr(usage, "get_summary", fake_get_summary)
+
+    assert kc._cmd_usage(argparse.Namespace(refresh=None, board=None, task_id=None, json=True)) == 0
+    assert kc._cmd_usage(argparse.Namespace(refresh=True, board="default", task_id="t1", json=True)) == 0
+    assert kc._cmd_usage(argparse.Namespace(refresh=False, board=None, task_id=None, json=True)) == 0
+
+    assert [c["refresh"] for c in calls] == [False, True, False]
+    assert calls[1]["board"] == "default"
+    assert calls[1]["task_id"] == "t1"
+    capsys.readouterr()

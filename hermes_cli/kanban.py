@@ -656,6 +656,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_stats.add_argument("--json", action="store_true")
 
+    # --- usage ---
+    p_usage = sub.add_parser(
+        "usage", help="Show token/cost usage by board/task from the project usage ledger",
+    )
+    p_usage.add_argument("--task", dest="task_id", default=None, help="Drill down to a single task id")
+    p_usage_refresh = p_usage.add_mutually_exclusive_group()
+    p_usage_refresh.add_argument("--refresh", dest="refresh", action="store_true", default=None, help="Refresh the derived ledger before reading")
+    p_usage_refresh.add_argument("--no-refresh", dest="refresh", action="store_false", help="Read existing ledger rows without backfill")
+    p_usage.add_argument("--json", action="store_true")
+
     # --- notify subscribe / list / remove ---
     p_nsub = sub.add_parser(
         "notify-subscribe",
@@ -939,6 +949,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "daemon":   _cmd_daemon,
         "watch":    _cmd_watch,
         "stats":    _cmd_stats,
+        "usage":   _cmd_usage,
         "log":      _cmd_log,
         "runs":     _cmd_runs,
         "heartbeat": _cmd_heartbeat,
@@ -1856,6 +1867,35 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _stamp_worker_usage_metadata(task_id: str, metadata: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Best-effort usage metadata stamping for worker terminal events.
+
+    Completing/blocking a Kanban task must remain reliable even if the optional
+    usage ledger path is unavailable or state.db is temporarily locked/corrupt.
+    The native kanban tools already treat usage stamping as best-effort; keep
+    the CLI path equally defensive.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return metadata
+    try:
+        from hermes_cli import project_usage_ledger
+        return project_usage_ledger.stamp_worker_usage_metadata(
+            task_id,
+            metadata,
+            on_error=lambda exc: print(
+                f"kanban: usage metadata unavailable: {exc}", file=sys.stderr
+            ),
+        )
+    except Exception as exc:
+        print(f"kanban: usage metadata unavailable: {exc}", file=sys.stderr)
+        session_id = os.environ.get("HERMES_SESSION_ID")
+        if not session_id:
+            return metadata
+        fallback = dict(metadata or {})
+        fallback["worker_session_id"] = str(session_id)
+        return fallback
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids = list(args.task_ids or [])
@@ -1891,7 +1931,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 conn, tid,
                 result=args.result,
                 summary=summary,
-                metadata=metadata,
+                metadata=_stamp_worker_usage_metadata(tid, metadata),
                 expected_run_id=_worker_run_id_for(tid),
             ):
                 failed.append(tid)
@@ -1943,6 +1983,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 tid,
                 reason=reason,
                 expected_run_id=_worker_run_id_for(tid),
+                metadata=_stamp_worker_usage_metadata(tid, None),
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
@@ -2364,6 +2405,68 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\n(stopped)")
         return 0
+
+
+def _cmd_usage(args: argparse.Namespace) -> int:
+    from hermes_cli import project_usage_ledger as usage
+
+    refresh = bool(getattr(args, "refresh", False))
+    board = getattr(args, "board", None)
+    if board:
+        board = kb._normalize_board_slug(board)
+    data = usage.get_summary(
+        board=board,
+        task_id=getattr(args, "task_id", None),
+        refresh=refresh,
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return 0
+
+    totals = data.get("totals") or {}
+    print("Project usage" + (f" for board {board}" if board else ""))
+    print(f"  ledger: {data.get('ledger_path')}")
+    if data.get("last_backfill_at"):
+        print(f"  refreshed: {_fmt_ts(int(data['last_backfill_at']))}")
+    if data.get("last_backfill_error"):
+        print(f"  warning: {data['last_backfill_error']}")
+    print(
+        "  total: "
+        f"{int(totals.get('input_tokens') or 0)} in / "
+        f"{int(totals.get('output_tokens') or 0)} out / "
+        f"{int(totals.get('reasoning_tokens') or 0)} reasoning / "
+        f"${float(totals.get('estimated_cost_usd') or 0):.4f} est"
+    )
+    print("\nBy board:")
+    for r in data.get("boards") or []:
+        print(
+            f"  {str(r.get('board_slug')):18s} "
+            f"tasks={int(r.get('tasks') or 0):4d} sessions={int(r.get('sessions') or 0):4d} "
+            f"tok={int(r.get('input_tokens') or 0) + int(r.get('output_tokens') or 0):8d} "
+            f"est=${float(r.get('estimated_cost_usd') or 0):.4f}"
+        )
+    tasks = data.get("tasks") or []
+    if tasks:
+        print("\nTop tasks:")
+        for r in tasks[:25]:
+            title = (r.get("task_title") or "")[:60]
+            print(
+                f"  {str(r.get('task_id')):14s} "
+                f"runs={int(r.get('runs') or 0):3d} "
+                f"tok={int(r.get('input_tokens') or 0) + int(r.get('output_tokens') or 0):8d} "
+                f"est=${float(r.get('estimated_cost_usd') or 0):.4f}  {title}"
+            )
+    runs = data.get("runs") or []
+    if runs:
+        print("\nRuns:")
+        for r in runs:
+            print(
+                f"  #{int(r.get('run_id') or 0):4d} {str(r.get('run_outcome') or r.get('run_status') or '-'):12s} "
+                f"session={str(r.get('session_id') or '-')[:20]:20s} "
+                f"tok={int(r.get('input_tokens') or 0) + int(r.get('output_tokens') or 0):8d} "
+                f"est=${float(r.get('estimated_cost_usd') or 0):.4f}"
+            )
+    return 0
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:

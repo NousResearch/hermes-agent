@@ -118,15 +118,19 @@ def _worker_run_id(task_id: str) -> Optional[int]:
 def _stamp_worker_session_metadata(
     task_id: str, metadata: Optional[dict]
 ) -> Optional[dict]:
-    """Add trusted worker session id metadata for this worker's own task."""
-    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
-        return metadata
-    session_id = os.environ.get("HERMES_SESSION_ID")
-    if not session_id:
-        return metadata
-    stamped = dict(metadata or {})
-    stamped["worker_session_id"] = session_id
-    return stamped
+    """Add trusted worker session id + token usage metadata for this worker."""
+    try:
+        from hermes_cli.project_usage_ledger import stamp_worker_usage_metadata
+        return stamp_worker_usage_metadata(task_id, metadata)
+    except Exception:
+        if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+            return metadata
+        session_id = os.environ.get("HERMES_SESSION_ID")
+        if not session_id:
+            return metadata
+        stamped = dict(metadata or {})
+        stamped["worker_session_id"] = session_id
+        return stamped
 
 
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
@@ -501,7 +505,13 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            task = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=task.status if task else None,
+                assignee=task.assignee if task else None,
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -528,10 +538,12 @@ def _handle_block(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            metadata = _stamp_worker_session_metadata(tid, None)
             ok = kb.block_task(
                 conn, tid,
                 reason=reason,
                 expected_run_id=_worker_run_id(tid),
+                metadata=metadata,
             )
             if not ok:
                 return tool_error(
@@ -539,7 +551,13 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            task = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=task.status if task else None,
+                assignee=task.assignee if task else None,
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -869,7 +887,11 @@ KANBAN_COMPLETE_SCHEMA = {
     "name": "kanban_complete",
     "description": (
         "Mark your current task done with a structured handoff for "
-        "downstream workers and humans. Prefer ``summary`` for a "
+        "downstream workers and humans. On boards with the required Review "
+        "gate enabled, implementation-worker calls do not go straight to Done: "
+        "the kernel moves the card to Review and assigns the configured merge "
+        "captain, who is the only actor allowed to complete the card after "
+        "Bugbot/review and merge-train checks. Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "

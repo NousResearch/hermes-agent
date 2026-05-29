@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import sys
@@ -383,7 +384,11 @@ def test_schedule_task_parks_time_delay_without_dispatching(kanban_home):
         t = kb.create_task(conn, title="delayed recheck", assignee="ops")
         assert kb.schedule_task(conn, t, reason="run next week") is True
         task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
         assert task.status == "scheduled"
+        assert run is not None
+        assert run.status == "scheduled"
+        assert run.outcome == "scheduled"
         assert kb.claim_task(conn, t) is None
 
         events = kb.list_events(conn, t)
@@ -676,6 +681,35 @@ def test_resolve_crash_grace_seconds_handles_bad_env(monkeypatch):
         assert result == _kb.DEFAULT_CRASH_GRACE_SECONDS, (
             f"expected default for {bad_val!r}, got {result}"
         )
+
+def test_detect_crashed_review_worker_returns_to_review(
+    kanban_home, monkeypatch,
+):
+    """A crashed merge-captain attempt must stay in Review, not ready."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="review crash", assignee="mergecaptain")
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (tid,))
+        host = _kb._claimer_id().split(":", 1)[0]
+        claimed = kb.claim_review_task(conn, tid, claimer=f"{host}:reviewer")
+        assert claimed is not None
+        conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (81000, tid))
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
+            (81000, claimed.current_run_id),
+        )
+        conn.commit()
+
+        crashed = kb.detect_crashed_workers(conn)
+        assert crashed == [tid]
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "review"
+        assert task.assignee == "mergecaptain"
+        assert task.claim_lock is None
 
 
 def test_max_runtime_uses_current_run_start_after_retry(kanban_home, monkeypatch):
@@ -1392,6 +1426,78 @@ def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     assert reason is None
 
 
+def test_respawn_guard_recent_success_older_than_unblock_not_guarded(kanban_home):
+    """Review/manual handoff after a successful run must allow re-spawn."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs-followup", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, now - 300, now - 120),
+        )
+        assert kb.block_task(conn, t, reason="review found follow-up")
+        assert kb.unblock_task(conn, t)
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_pr_comment_older_than_unblock_not_guarded(kanban_home):
+    """A PR URL from the previous handoff must not pin a requeued task."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fix-pr-followup", assignee="alice")
+        old_ts = int(time.time()) - 120
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/11', ?)",
+            (t, old_ts),
+        )
+        assert kb.block_task(conn, t, reason="review found follow-up")
+        assert kb.unblock_task(conn, t)
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_failure_event_does_not_supersede_recent_success(kanban_home):
+    """Failure events should not erase recent-success duplicate-work guardrails."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="failed-after-success", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, now - 300, now - 120),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'spawn_failed', '{}', ?)",
+            (t, now - 30),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "recent_success"
+
+
+def test_respawn_guard_failure_event_does_not_supersede_active_pr(kanban_home):
+    """Failure events should not make an existing PR comment look stale."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="failed-after-pr", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/12', ?)",
+            (t, now - 120),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'timed_out', '{}', ?)",
+            (t, now - 30),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "active_pr"
+
+
 def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
     kanban_home, all_assignees_spawnable
 ):
@@ -2088,6 +2194,12 @@ class TestSharedBoardPaths:
         # `-p <profile>` flag rewrites HERMES_HOME.
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
+        (default_home / "config.yaml").write_text(
+            "kanban:\n"
+            "  require_review_before_done: true\n"
+            "  merge_captain_profile: merge-captain\n",
+            encoding="utf-8",
+        )
         self._set_home(monkeypatch, tmp_path, default_home)
 
         captured = {}
@@ -2127,6 +2239,8 @@ class TestSharedBoardPaths:
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+        assert env["HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE"] == "1"
+        assert env["HERMES_KANBAN_MERGE_CAPTAIN_PROFILE"] == "merge-captain"
 
 
 # ---------------------------------------------------------------------------
@@ -2892,10 +3006,27 @@ def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
         assert kb.get_task(conn, t).status == "review"
 
 
+def test_skill_available_accepts_qualified_and_unqualified_names(kanban_home):
+    """Worker skill preflight accepts category-qualified skill names safely."""
+    (kanban_home / "skills" / "github" / "cursor-bugbot-sweep").mkdir(parents=True)
+    (kanban_home / "skills" / "github" / "cursor-bugbot-sweep" / "SKILL.md").write_text(
+        "---\nname: cursor-bugbot-sweep\n---\n# Skill\n"
+    )
+    (kanban_home / "skills" / "devops" / "kanban-worker").mkdir(parents=True)
+    (kanban_home / "skills" / "devops" / "kanban-worker" / "SKILL.md").write_text(
+        "---\nname: kanban-worker\n---\n# Skill\n"
+    )
+
+    assert kb._skill_available(str(kanban_home), "github/cursor-bugbot-sweep")
+    assert kb._skill_available(str(kanban_home), "kanban-worker")
+    assert not kb._skill_available(str(kanban_home), "../cursor-bugbot-sweep")
+    assert not kb._skill_available(str(kanban_home), "/tmp/cursor-bugbot-sweep")
+
+
 def test_dispatch_review_spawns_with_correct_skills(
     kanban_home, all_assignees_spawnable,
 ):
-    """Review tasks get sdlc-review skill set before spawning."""
+    """Review tasks get merge-train skills set before spawning."""
     spawned_tasks = []
 
     def capture_spawn(task, workspace, board=None):
@@ -2908,7 +3039,186 @@ def test_dispatch_review_spawns_with_correct_skills(
         res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
     assert len(res.spawned) == 1
     assert len(spawned_tasks) == 1
-    assert spawned_tasks[0].skills == ["sdlc-review"]
+    assert spawned_tasks[0].skills == ["github/cursor-bugbot-sweep", "github/github-pr-workflow"]
+
+
+def test_dispatch_review_spawn_failure_returns_to_review_below_threshold(
+    kanban_home, all_assignees_spawnable,
+):
+    """Review-origin spawn failures below breaker threshold stay in Review."""
+
+    def bad_spawn(task, workspace, board=None):
+        raise RuntimeError("synthetic spawn failure")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review spawn fail", assignee="alice")
+        _set_task_status(conn, t, "review")
+        res = kb.dispatch_once(conn, spawn_fn=bad_spawn, failure_limit=3)
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+
+    assert not res.spawned
+    assert not res.auto_blocked
+    assert task is not None
+    assert task.status == "review"
+    assert task.assignee == "alice"
+    assert task.claim_lock is None
+    assert run is not None
+    assert run.status == "review"
+    assert run.outcome == "spawn_failed"
+    assert (run.metadata or {}).get("restore_status") == "review"
+
+
+def test_dispatch_review_spawn_failure_blocks_intentionally_at_threshold(
+    kanban_home, all_assignees_spawnable,
+):
+    """Breaker-tripped review spawn failures block intentionally, never ready."""
+
+    def bad_spawn(task, workspace, board=None):
+        raise RuntimeError("synthetic spawn failure")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review spawn fail", assignee="alice")
+        _set_task_status(conn, t, "review")
+        res = kb.dispatch_once(conn, spawn_fn=bad_spawn, failure_limit=1)
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert t in res.auto_blocked
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.assignee == "alice"
+    assert task.claim_lock is None
+    assert run is not None
+    assert run.status == "blocked"
+    assert run.outcome == "gave_up"
+    assert (run.metadata or {}).get("restore_status") == "review"
+    gave_up = [event for event in events if event.kind == "gave_up"][-1]
+    assert (gave_up.payload or {}).get("restore_status") == "review"
+
+
+def test_review_origin_crash_breaker_keeps_restore_status_metadata(
+    kanban_home, all_assignees_spawnable,
+):
+    """Breaker metadata keeps review origin even after _end_run clears current_run_id."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review crash", assignee="alice", max_retries=1)
+        _set_task_status(conn, t, "review")
+        assert kb.claim_review_task(conn, t) is not None
+        conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (99999999, t))
+
+        crashed = kb.detect_crashed_workers(conn)
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert crashed == [t]
+    assert task is not None
+    assert task.status == "blocked"
+    assert run is not None
+    assert run.status == "review"
+    assert run.outcome == "crashed"
+    gave_up = [event for event in events if event.kind == "gave_up"][-1]
+    assert (gave_up.payload or {}).get("restore_status") == "review"
+
+
+def test_review_origin_stale_claim_restores_to_review(kanban_home):
+    """Expired review claims should return to Review, not Ready."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review stale", assignee="alice")
+        _set_task_status(conn, t, "review")
+        claimed = kb.claim_review_task(conn, t, ttl_seconds=1)
+        assert claimed is not None
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, worker_pid = ? WHERE id = ?",
+            (int(time.time()) - 10, 99999999, t),
+        )
+
+        assert kb.release_stale_claims(conn) == 1
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert task is not None
+    assert task.status == "review"
+    assert run is not None
+    assert run.status == "review"
+    assert run.outcome == "reclaimed"
+    reclaimed = [event for event in events if event.kind == "reclaimed"][-1]
+    assert (reclaimed.payload or {}).get("restore_status") == "review"
+
+
+def test_review_origin_manual_reclaim_restores_to_review(kanban_home):
+    """Manual reclaim should preserve the lane that produced the active run."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="manual review reclaim", assignee="alice")
+        _set_task_status(conn, t, "review")
+        claimed = kb.claim_review_task(conn, t, ttl_seconds=60)
+        assert claimed is not None
+
+        assert kb.reclaim_task(conn, t, reason="operator retry")
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert task is not None
+    assert task.status == "review"
+    assert run is not None
+    assert run.status == "review"
+    assert run.outcome == "reclaimed"
+    reclaimed = [event for event in events if event.kind == "reclaimed"][-1]
+    assert (reclaimed.payload or {}).get("restore_status") == "review"
+
+
+def test_spawn_breaker_blocks_even_after_review_status_restore(kanban_home):
+    """Breaker UPDATE accepts review if spawn bookkeeping sees a restored task."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review breaker", assignee="alice")
+        _set_task_status(conn, t, "review")
+
+        tripped = kb._record_task_failure(
+            conn,
+            t,
+            "synthetic spawn failure",
+            outcome="spawn_failed",
+            failure_limit=1,
+            release_claim=True,
+            end_run=False,
+            restore_status="review",
+        )
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert tripped is True
+    assert task is not None
+    assert task.status == "blocked"
+    assert any(e.kind == "gave_up" for e in events)
+
+
+def test_spawn_failure_below_threshold_updates_review_restored_task(kanban_home):
+    """Below-threshold spawn bookkeeping also accepts review-restored tasks."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review below threshold", assignee="alice")
+        _set_task_status(conn, t, "review")
+
+        tripped = kb._record_task_failure(
+            conn,
+            t,
+            "synthetic spawn failure",
+            outcome="spawn_failed",
+            failure_limit=2,
+            release_claim=True,
+            end_run=False,
+            restore_status="review",
+        )
+        task = kb.get_task(conn, t)
+
+    assert tripped is False
+    assert task is not None
+    assert task.status == "review"
+    assert task.consecutive_failures == 1
+    assert task.last_failure_error == "synthetic spawn failure"
 
 
 def test_dispatch_review_skips_unassigned(kanban_home):
@@ -3003,6 +3313,224 @@ def test_dispatch_review_skips_nonspawnable(kanban_home, monkeypatch):
 def test_review_status_in_valid_statuses():
     """'review' is a valid task status."""
     assert "review" in kb.VALID_STATUSES
+
+
+def test_required_review_gate_routes_implementation_completion_to_merge_captain(
+    kanban_home, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_MERGE_CAPTAIN_PROFILE", "merge-captain")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="implement feature", assignee="worker-a")
+        claimed = kb.claim_task(conn, t)
+        assert claimed is not None
+        assert kb.complete_task(
+            conn,
+            t,
+            summary="PR ready for review",
+            metadata={"pr": 123},
+            expected_run_id=claimed.current_run_id,
+        )
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+        run = kb.latest_run(conn, t)
+
+    assert task is not None
+    assert run is not None
+    assert task.status == "review"
+    assert task.assignee == "merge-captain"
+    assert task.completed_at is None
+    assert run.status == "review"
+    assert run.outcome == "completed"
+    assert any(e.kind == "submitted_for_review" for e in events)
+
+
+def test_ready_completion_synthesizes_review_status_run(kanban_home, monkeypatch):
+    """Synthetic completion runs should preserve the destination lane."""
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_MERGE_CAPTAIN_PROFILE", "merge-captain")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="manual impl completion", assignee="worker-a")
+        assert kb.complete_task(conn, t, summary="PR ready without active claim")
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+
+    assert task is not None
+    assert run is not None
+    assert task.status == "review"
+    assert task.assignee == "merge-captain"
+    assert run.status == "review"
+    assert run.outcome == "completed"
+
+
+def test_complete_task_preserves_zero_expected_run_id_for_review_gate(kanban_home, monkeypatch):
+    """Only None means no run id; numeric zero should still be passed through."""
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
+    seen = []
+
+    def fake_run_started_from_review(conn, task_id, run_id):
+        _ = conn, task_id
+        seen.append(run_id)
+        return False
+
+    monkeypatch.setattr(kb, "_run_started_from_review", fake_run_started_from_review)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="zero run id", assignee="worker-a")
+        assert not kb.complete_task(conn, t, summary="mismatched run", expected_run_id=0)
+
+    assert seen == [0]
+
+
+def test_required_review_gate_allows_review_run_to_complete_done(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_MERGE_CAPTAIN_PROFILE", "merge-captain")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="merge approved", assignee="worker-a")
+        impl = kb.claim_task(conn, t)
+        assert impl is not None
+        assert kb.complete_task(conn, t, summary="PR ready", expected_run_id=impl.current_run_id)
+        review = kb.claim_review_task(conn, t)
+        assert review is not None
+        assert review.assignee == "merge-captain"
+        assert kb.complete_task(conn, t, summary="merged", expected_run_id=review.current_run_id)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert task is not None
+    assert task.status == "done"
+    assert task.completed_at is not None
+    assert any(e.kind == "completed" for e in events)
+
+
+def test_required_review_gate_block_returns_to_original_worker(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_MERGE_CAPTAIN_PROFILE", "merge-captain")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="bugbot found issue", assignee="worker-a")
+        impl = kb.claim_task(conn, t)
+        assert impl is not None
+        assert kb.complete_task(conn, t, summary="PR ready", expected_run_id=impl.current_run_id)
+        review = kb.claim_review_task(conn, t)
+        assert review is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason="Bugbot found issue; fix failing test and update the PR body.",
+            expected_run_id=review.current_run_id,
+        )
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+        run = kb.latest_run(conn, t)
+
+    assert task is not None
+    assert run is not None
+    assert task.status == "ready"
+    assert task.assignee == "worker-a"
+    assert run.outcome == "blocked"
+    assert run.status == "ready"
+    assert any(e.kind == "review_rejected" for e in events)
+
+
+def test_required_review_gate_rebase_block_stays_blocked_for_recovery(
+    kanban_home, monkeypatch
+):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_MERGE_CAPTAIN_PROFILE", "merge-captain")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stale PR", assignee="worker-a")
+        impl = kb.claim_task(conn, t)
+        assert impl is not None
+        assert kb.complete_task(conn, t, summary="PR ready", expected_run_id=impl.current_run_id)
+        review = kb.claim_review_task(conn, t)
+        assert review is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason=(
+                "rebase-required: PR is exact-head clean, but origin/main "
+                "advanced and GitHub reports mergeable_state=dirty."
+            ),
+            expected_run_id=review.current_run_id,
+        )
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+        run = kb.latest_run(conn, t)
+
+    assert task is not None
+    assert run is not None
+    assert task.status == "blocked"
+    assert task.assignee == "merge-captain"
+    assert run.outcome == "blocked"
+    assert run.status == "blocked"
+    assert (run.metadata or {}).get("review_rebase_blocker") is True
+    assert events[-1].kind == "blocked"
+    assert (events[-1].payload or {}).get("review_rebase_blocker") is True
+
+
+def test_review_origin_block_routes_even_when_profile_config_lacks_gate(
+    kanban_home, monkeypatch
+):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_MERGE_CAPTAIN_PROFILE", "merge-captain")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="profile gap", assignee="worker-a")
+        impl = kb.claim_task(conn, t)
+        assert impl is not None
+        assert kb.complete_task(conn, t, summary="PR ready", expected_run_id=impl.current_run_id)
+        review = kb.claim_review_task(conn, t)
+        assert review is not None
+        monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "0")
+        assert kb.block_task(
+            conn,
+            t,
+            reason="Bugbot found an issue; fix it and resubmit.",
+            expected_run_id=review.current_run_id,
+        )
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert task is not None
+    assert task.status == "ready"
+    assert task.assignee == "worker-a"
+    assert events[-1].kind == "review_rejected"
+
+
+def test_required_review_gate_block_without_implementation_assignee_is_explicit(
+    kanban_home, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_MERGE_CAPTAIN_PROFILE", "merge-captain")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="unassigned impl", assignee=None)
+        impl = kb.claim_task(conn, t)
+        assert impl is not None
+        assert kb.complete_task(conn, t, summary="PR ready", expected_run_id=impl.current_run_id)
+        review = kb.claim_review_task(conn, t)
+        assert review is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason="review rejected",
+            expected_run_id=review.current_run_id,
+        )
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+        event = kb.list_events(conn, t)[-1]
+
+    assert task is not None
+    assert run is not None
+    assert task.status == "blocked"
+    assert task.assignee == "merge-captain"
+    assert run.outcome == "blocked"
+    assert run.status == "blocked"
+    assert (run.metadata or {}).get("review_rejection") is True
+    assert (run.metadata or {}).get("missing_implementation_assignee") is True
+    assert "implementation assignee" in (run.metadata or {}).get(
+        "review_rejection_reason", ""
+    )
+    assert event.kind == "blocked"
+    assert (event.payload or {}).get("review_rejection") is True
+    assert (event.payload or {}).get("missing_implementation_assignee") is True
 
 
 def test_dispatch_review_does_not_claim_ready_tasks(
@@ -3261,6 +3789,20 @@ def test_detect_stale_does_not_tick_failure_counter(kanban_home, monkeypatch):
             f"Expected 'stale' event in task_events; got {kinds!r}"
         )
 
+
+def test_block_ready_task_with_metadata_synthesizes_run(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="metadata-only block")
+        assert kb.block_task(conn, tid, metadata={"worker_session_id": "sess-block"})
+        rows = conn.execute(
+            "SELECT status, outcome, metadata FROM task_runs WHERE task_id = ?",
+            (tid,),
+        ).fetchall()
+
+    assert len(rows) == 1
+    assert rows[0]["status"] == "blocked"
+    assert rows[0]["outcome"] == "blocked"
+    assert json.loads(rows[0]["metadata"])["worker_session_id"] == "sess-block"
 
 # ---------------------------------------------------------------------------
 # Corruption guard (issue #30687)

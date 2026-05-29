@@ -157,7 +157,10 @@ async def test_reconnect_triggers_fatal_after_max_retries():
     rather than retrying forever.
     """
     adapter = _make_adapter()
-    adapter._polling_network_error_count = 10  # MAX_NETWORK_RETRIES
+    # Prime the counter to the adapter's configured ceiling so the next
+    # failure escalates to fatal. Derive from the tunable instead of a
+    # hardcoded literal so the test tracks config changes.
+    adapter._polling_network_error_count = adapter._network_retry_max
 
     fatal_handler = AsyncMock()
     adapter.set_fatal_error_handler(fatal_handler)
@@ -473,3 +476,46 @@ async def test_reconnect_schedules_heartbeat_probe_on_success():
             await t
         except (asyncio.CancelledError, Exception):
             pass
+
+
+def test_network_retry_tunables_default():
+    """Defaults apply when no extra keys are set (raised from old 10/60)."""
+    adapter = _make_adapter()
+    assert adapter._network_retry_max == 20
+    assert adapter._network_retry_base_delay == 5
+    assert adapter._network_retry_max_delay == 120
+
+
+def test_network_retry_tunables_from_config_extra():
+    """Adapter reads retry-ladder tuning from config.extra (YAML bridge)."""
+    adapter = TelegramAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={
+                "network_retry_max": 30,
+                "network_retry_base_delay": 3,
+                "network_retry_max_delay": 90,
+            },
+        )
+    )
+    assert adapter._network_retry_max == 30
+    assert adapter._network_retry_base_delay == 3
+    assert adapter._network_retry_max_delay == 90
+
+
+def test_network_retry_tunables_ignore_garbage():
+    """Non-int config values fall back to safe defaults."""
+    adapter = TelegramAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={
+                "network_retry_max": "lots",
+                "network_retry_max_delay": None,
+            },
+        )
+    )
+    assert adapter._network_retry_max == 20
+    assert adapter._network_retry_max_delay == 120
+    assert adapter._network_retry_base_delay == 5

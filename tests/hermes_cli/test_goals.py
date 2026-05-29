@@ -1566,3 +1566,209 @@ class TestContractAndBackgroundCompose:
             )
         assert verdict == "done"
         assert wait_directive is None
+
+
+
+class TestClassifyGoalShape:
+    """Verify _classify_goal_shape routes exploratory + illustrative goals correctly."""
+
+    def test_explicit_review_is_exploratory(self):
+        from hermes_cli.goals import _classify_goal_shape
+        assert _classify_goal_shape("review the recent tasks and reflect") == "exploratory"
+
+    def test_suggest_is_exploratory(self):
+        from hermes_cli.goals import _classify_goal_shape
+        assert _classify_goal_shape("suggest ways we can improve onboarding") == "exploratory"
+
+    def test_brainstorm_is_exploratory(self):
+        from hermes_cli.goals import _classify_goal_shape
+        assert _classify_goal_shape("brainstorm a few names for the project") == "exploratory"
+
+    def test_analyze_is_exploratory(self):
+        from hermes_cli.goals import _classify_goal_shape
+        assert _classify_goal_shape("analyze last week's churn data") == "exploratory"
+
+    def test_long_exploratory_repro_from_34196(self):
+        from hermes_cli.goals import _classify_goal_shape
+        # Sanitized goal text from #34196's repro:
+        goal = (
+            "observe tasks from two work domains, include overdue/today/tomorrow tasks, "
+            "review notes and chat context, reflect on ways you can help, for example "
+            "writing tickets or preparing a message"
+        )
+        assert _classify_goal_shape(goal) == "exploratory"
+
+    def test_illustrative_only_no_explore_verb(self):
+        from hermes_cli.goals import _classify_goal_shape
+        goal = "add a column to the table, maybe with notes or you could include status"
+        # No explore-verb keyword present, so this falls to 'illustrative'
+        # by virtue of 'maybe' / 'you could' markers.
+        assert _classify_goal_shape(goal) == "illustrative"
+
+    def test_concrete_default(self):
+        from hermes_cli.goals import _classify_goal_shape
+        assert _classify_goal_shape("write the file at path/foo.txt") == "concrete"
+
+    def test_empty_is_concrete(self):
+        from hermes_cli.goals import _classify_goal_shape
+        assert _classify_goal_shape("") == "concrete"
+
+    def test_exploratory_wins_over_illustrative(self):
+        from hermes_cli.goals import _classify_goal_shape
+        # A goal that has BOTH an explore verb AND illustrative markers
+        # should classify as exploratory — that's the stronger signal.
+        goal = "review the code, maybe identify two improvements"
+        assert _classify_goal_shape(goal) == "exploratory"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# System prompt content — #34196 / #34197 guardrails
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestJudgeSystemPromptGuardrails:
+    """The judge's system prompt must explicitly cover both bugs' fixes."""
+
+    def test_system_prompt_mentions_exploratory(self):
+        from hermes_cli.goals import JUDGE_SYSTEM_PROMPT
+        assert "EXPLORATORY" in JUDGE_SYSTEM_PROMPT or "exploratory" in JUDGE_SYSTEM_PROMPT.lower()
+
+    def test_system_prompt_warns_about_untracked_files(self):
+        # #34197 — judge must NOT infer incompletion from untracked files
+        # unless the goal explicitly required staging/commit/push.
+        from hermes_cli.goals import JUDGE_SYSTEM_PROMPT
+        assert "untracked" in JUDGE_SYSTEM_PROMPT.lower()
+        assert "stag" in JUDGE_SYSTEM_PROMPT.lower() or "commit" in JUDGE_SYSTEM_PROMPT.lower()
+
+    def test_system_prompt_warns_no_magic_phrase(self):
+        # #34196 — judge must NOT require explicit "goal complete" wording.
+        from hermes_cli.goals import JUDGE_SYSTEM_PROMPT
+        # Either explicit mention of "magic phrase" or "explicit wording" or
+        # "explicit completion".
+        text = JUDGE_SYSTEM_PROMPT.lower()
+        assert ("magic phrase" in text) or ("not require" in text and "phrase" in text)
+
+    def test_system_prompt_warns_about_illustrative_examples(self):
+        # #34197 — "for example" / "maybe" / "you could" listed items
+        # are illustrative, not required.
+        from hermes_cli.goals import JUDGE_SYSTEM_PROMPT
+        text = JUDGE_SYSTEM_PROMPT.lower()
+        assert "illustrative" in text or "examples" in text
+
+
+# ──────────────────────────────────────────────────────────────────────
+# judge_goal — user prompt enrichment for goal shape
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestJudgePromptIncludesGoalShapeHint:
+    """For exploratory + illustrative goals, the user prompt must include the
+    appropriate hint. For concrete goals it must NOT."""
+
+    def _make_fake_client_capturing(self, captured: dict):
+        class _FakeMsg:
+            content = '{"done": true, "reason": "ok"}'
+
+        class _FakeChoice:
+            message = _FakeMsg()
+
+        class _FakeResp:
+            choices = [_FakeChoice()]
+
+        class _FakeClient:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**kwargs):
+                        captured.update(kwargs)
+                        return _FakeResp()
+
+        return _FakeClient
+
+    def test_exploratory_goal_includes_exploratory_hint(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured: dict = {}
+        client = self._make_fake_client_capturing(captured)
+        with patch("agent.auxiliary_client.get_text_auxiliary_client",
+                   return_value=(client, "fake-model")), \
+             patch("agent.auxiliary_client.get_auxiliary_extra_body",
+                   return_value=None):
+            goals.judge_goal(
+                "review the recent tasks and suggest ways to help",
+                "Here is my synthesis: ...",
+            )
+
+        sent_messages = captured.get("messages") or []
+        user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
+        assert "EXPLORATORY" in user_msg
+        assert "synthesis" in user_msg.lower()
+
+    def test_illustrative_goal_includes_illustrative_hint(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured: dict = {}
+        client = self._make_fake_client_capturing(captured)
+        with patch("agent.auxiliary_client.get_text_auxiliary_client",
+                   return_value=(client, "fake-model")), \
+             patch("agent.auxiliary_client.get_auxiliary_extra_body",
+                   return_value=None):
+            goals.judge_goal(
+                "add a column, maybe with notes, you could also annotate",
+                "Done.",
+            )
+
+        sent_messages = captured.get("messages") or []
+        user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
+        assert "illustrative" in user_msg.lower()
+        assert "example" in user_msg.lower()
+
+    def test_concrete_goal_has_no_shape_hint(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured: dict = {}
+        client = self._make_fake_client_capturing(captured)
+        with patch("agent.auxiliary_client.get_text_auxiliary_client",
+                   return_value=(client, "fake-model")), \
+             patch("agent.auxiliary_client.get_auxiliary_extra_body",
+                   return_value=None):
+            goals.judge_goal(
+                "write the helper function",
+                "Done — file written.",
+            )
+
+        sent_messages = captured.get("messages") or []
+        user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
+        # Neither hint should appear in a concrete-goal prompt.
+        assert "EXPLORATORY" not in user_msg
+        # 'illustrative' as a word (not the substring 'list')
+        assert "illustrative" not in user_msg.lower()
+
+    def test_with_subgoals_template_skips_shape_hint(self, hermes_home):
+        """The with-subgoals template already enforces strict evidence per
+        criterion — we deliberately don't dilute it with exploratory hints."""
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured: dict = {}
+        client = self._make_fake_client_capturing(captured)
+        with patch("agent.auxiliary_client.get_text_auxiliary_client",
+                   return_value=(client, "fake-model")), \
+             patch("agent.auxiliary_client.get_auxiliary_extra_body",
+                   return_value=None):
+            goals.judge_goal(
+                "review the codebase and reflect on improvements",
+                "Here are my observations.",
+                subgoals=["call out test gaps", "list 3 refactors"],
+            )
+
+        sent_messages = captured.get("messages") or []
+        user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
+        # No exploratory hint when subgoals are present.
+        assert "EXPLORATORY" not in user_msg
+        # But the with-subgoals template content IS there.
+        assert "Additional criteria" in user_msg
+        assert "1. call out test gaps" in user_msg

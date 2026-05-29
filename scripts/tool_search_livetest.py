@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -429,9 +430,9 @@ def run_one_scenario(scenario: Dict[str, Any], enabled: bool, out_dir: Path) -> 
         "elapsed_seconds": round(elapsed, 2),
         "bridge_calls": bridge_call_log,
         "underlying_tool_calls": tool_call_log,
-        "final_response": final_response,
+        "final_response": _redact_secrets(final_response),
         "n_iterations": _count_assistant_turns(messages_out),
-        "error": error,
+        "error": _redact_secrets(error) if error else error,
     }
 
     suffix = "enabled" if enabled else "disabled"
@@ -441,6 +442,27 @@ def run_one_scenario(scenario: Dict[str, Any], enabled: bool, out_dir: Path) -> 
     # Cleanup
     shutil.rmtree(home.parent, ignore_errors=True)
     return record
+
+
+def _redact_secrets(text: str) -> str:
+    """Strip anything secret-shaped from text before it is stored or printed.
+
+    The harness runs against a real OpenRouter key, and ``error`` can carry a
+    full traceback that — for an auth failure — may echo a request header or
+    URL containing the key. We never want a credential landing in a checked-in
+    transcript or the console, so we mask:
+      * the live OPENROUTER_API_KEY value, if present in the environment, and
+      * any ``sk-``/``sk-or-`` style bearer token by pattern.
+    """
+    if not text:
+        return text
+    out = text
+    live_key = os.environ.get("OPENROUTER_API_KEY")
+    if live_key and len(live_key) >= 8:
+        out = out.replace(live_key, "[REDACTED]")
+    out = re.sub(r"sk-[A-Za-z0-9_\-]{12,}", "[REDACTED]", out)
+    out = re.sub(r"(?i)(authorization|bearer)\s*[:=]\s*\S+", r"\1: [REDACTED]", out)
+    return out
 
 
 def _trim_args(args: Any, max_chars: int = 300) -> Any:

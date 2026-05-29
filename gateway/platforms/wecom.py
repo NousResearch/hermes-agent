@@ -1538,7 +1538,7 @@ def qr_scan_for_bot_info(
     print("  Connecting to WeCom...", end="", flush=True)
     try:
         req = urllib.request.Request(generate_url, headers={"User-Agent": "HermesAgent/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # SSRF: add IP block check
             raw = json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
         logger.error("WeCom QR: failed to fetch QR code: %s", exc)

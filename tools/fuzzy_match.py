@@ -192,7 +192,7 @@ def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
         if pos == -1:
             break
         matches.append((pos, pos + len(pattern)))
-        start = pos + 1
+        start = pos + max(1, len(pattern))
     return matches
 
 

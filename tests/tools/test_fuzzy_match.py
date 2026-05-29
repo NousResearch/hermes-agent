@@ -66,6 +66,16 @@ class TestReplaceAll:
         assert count == 2
         assert new == "ccc bbb ccc"
 
+    def test_replace_all_exact_uses_non_overlapping_matches(self):
+        content = "x" * 200
+        old = "x" * 100
+        new, count, strategy, err = fuzzy_find_and_replace(content, old, "y", replace_all=True)
+
+        assert err is None
+        assert strategy == "exact"
+        assert count == 2
+        assert new == "yy"
+
 
 class TestUnicodeNormalized:
     """Tests for the unicode_normalized strategy (Bug 5)."""

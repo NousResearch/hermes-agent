@@ -474,6 +474,13 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+    # Drop outbound "silence narration" messages (e.g. *(silent)*, 🔇, a bare
+    # ".") pre-send. These are model hallucinations emitted when a persona has
+    # nothing actionable to say; in bot-to-bot channels they mirror back and
+    # forth, burning tokens and crashing models. Substrate-level guard that
+    # survives SOUL.md/prompt drift across providers. Opt out with False for
+    # raw passthrough.
+    filter_silence_narration: bool = True
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
@@ -582,6 +589,7 @@ class GatewayConfig:
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
+            "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
@@ -650,6 +658,9 @@ class GatewayConfig:
             quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
+            filter_silence_narration=_coerce_bool(
+                data.get("filter_silence_narration"), True
+            ),
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
@@ -756,6 +767,11 @@ def load_gateway_config() -> GatewayConfig:
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
+
+            if "filter_silence_narration" in yaml_cfg:
+                gw_data["filter_silence_narration"] = yaml_cfg[
+                    "filter_silence_narration"
+                ]
 
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(

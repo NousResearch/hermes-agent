@@ -5027,37 +5027,19 @@ class TelegramAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """Session-scoped key for text message batching.
+
+        Applies the installed topic-recovery hook first so DM-topic batches
+        coalesce on (and dispatch to) the recovered lane rather than the
+        raw inbound ``message_thread_id`` Telegram may have attached.
+        """
         from gateway.session import build_session_key
-        source = self._normalize_text_batch_source(event)
+        self._apply_topic_recovery(event)
         return build_session_key(
-            source,
+            event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
-
-    def _normalize_text_batch_source(self, event: MessageEvent):
-        """Apply runner-side Telegram DM topic recovery before batching."""
-        source = getattr(event, "source", None)
-        if source is None:
-            return source
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        recover_fn = getattr(runner, "_recover_telegram_topic_thread_id", None)
-        if not callable(recover_fn):
-            return source
-        try:
-            recovered = recover_fn(source)
-        except Exception:
-            logger.debug("telegram text batch recovery failed", exc_info=True)
-            return source
-        if recovered is None or str(recovered) == str(source.thread_id or ""):
-            return source
-        normalized = dataclasses.replace(source, thread_id=str(recovered))
-        try:
-            event.source = normalized
-        except Exception:
-            pass
-        return normalized
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.

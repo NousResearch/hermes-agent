@@ -126,16 +126,9 @@ class TestTextBatching:
     async def test_dm_topic_batching_recovers_thread_before_keying(self):
         """DM-topic text batches should use the recovered topic lane."""
         adapter = _make_adapter()
-
-        class _Runner:
-            def _recover_telegram_topic_thread_id(self, source):
-                return "222" if str(source.thread_id or "") == "1" else None
-
-            async def _handle_message(self, _event):
-                return None
-
-        runner = _Runner()
-        adapter._message_handler = runner._handle_message
+        adapter.set_topic_recovery_fn(
+            lambda source: "222" if str(source.thread_id or "") == "1" else None
+        )
         event = MessageEvent(
             text="hello from DM topic",
             message_type=MessageType.TEXT,
@@ -150,29 +143,20 @@ class TestTextBatching:
 
         adapter._enqueue_text_event(event)
 
-        recovered_key = build_session_key(
-            SimpleNamespace(
-                platform=Platform.TELEGRAM,
-                chat_id="12345",
-                chat_type="dm",
-                thread_id="222",
-            ),
-            group_sessions_per_user=True,
-            thread_sessions_per_user=False,
-        )
-        stale_key = build_session_key(
-            SimpleNamespace(
-                platform=Platform.TELEGRAM,
-                chat_id="12345",
-                chat_type="dm",
-                thread_id="1",
-            ),
-            group_sessions_per_user=True,
-            thread_sessions_per_user=False,
-        )
+        def _key(thread_id: str) -> str:
+            return build_session_key(
+                SimpleNamespace(
+                    platform=Platform.TELEGRAM,
+                    chat_id="12345",
+                    chat_type="dm",
+                    thread_id=thread_id,
+                ),
+                group_sessions_per_user=True,
+                thread_sessions_per_user=False,
+            )
 
-        assert recovered_key in adapter._pending_text_batches
-        assert stale_key not in adapter._pending_text_batches
+        assert _key("222") in adapter._pending_text_batches
+        assert _key("1") not in adapter._pending_text_batches
         assert event.source.thread_id == "222"
 
         await asyncio.sleep(0.2)

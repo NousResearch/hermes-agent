@@ -774,36 +774,25 @@ class DiscordAdapter(BasePlatformAdapter):
                 if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return
 
-                # Bot message filtering (DISCORD_ALLOW_BOTS):
-                #   "none"     — ignore all other bots (default)
-                #   "mentions" — accept bot messages only when they @mention us
-                #   "all"      — accept all bot messages
-                # Must run BEFORE the user allowlist check so that bots
-                # permitted by DISCORD_ALLOW_BOTS are not rejected for
-                # not being in DISCORD_ALLOWED_USERS (fixes #4466).
+                # Direct trigger isolation: never let another bot/webhook start
+                # an agent turn. Use getattr(..., False) so partial user objects
+                # fail closed instead of bypassing the gate.
                 if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
-                        return
-                    elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
-                            return
-                    # "all" falls through; bot is permitted — skip the
-                    # human-user allowlist below (bots aren't in it).
-                else:
-                    # Non-bot: enforce the configured user/role allowlists.
-                    # Pass guild + is_dm so role checks are scoped to the
-                    # originating guild (prevents cross-guild DM bypass, see
-                    # _is_allowed_user docstring).
-                    _msg_guild = getattr(message, "guild", None)
-                    _is_dm = isinstance(message.channel, discord.DMChannel) or _msg_guild is None
-                    if not self._is_allowed_user(
-                        str(message.author.id),
-                        message.author,
-                        guild=_msg_guild,
-                        is_dm=_is_dm,
-                    ):
-                        return
+                    return
+
+                # Non-bot: enforce the configured user/role allowlists.
+                # Pass guild + is_dm so role checks are scoped to the
+                # originating guild (prevents cross-guild DM bypass, see
+                # _is_allowed_user docstring).
+                _msg_guild = getattr(message, "guild", None)
+                _is_dm = isinstance(message.channel, discord.DMChannel) or _msg_guild is None
+                if not self._is_allowed_user(
+                    str(message.author.id),
+                    message.author,
+                    guild=_msg_guild,
+                    is_dm=_is_dm,
+                ):
+                    return
                 
                 # Multi-agent filtering: if the message mentions specific bots
                 # but NOT this bot, the sender is talking to another agent —
@@ -3760,7 +3749,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
             [Recent channel messages]
             [Alice] some message
-            [Bob [bot]] another message
 
         Returns an empty string if no context is available.
         """
@@ -3768,9 +3756,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if limit <= 0:
             return ""
 
-        # Determine which bot messages to include in context
-        allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-        include_other_bots = allow_bots_raw != "none"
+        # Layer 2: history-context isolation. Never include bot/webhook
+        # messages in the prompt backfill, even when DISCORD_ALLOW_BOTS was
+        # previously configured. This prevents bot-loop/status text from
+        # leaking into the model's message array.
 
         # Use the in-memory cache to narrow the fetch window on hot paths.
         # If we know our last message ID in this channel, pass it as `after`
@@ -3813,10 +3802,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     continue
 
-                # Respect DISCORD_ALLOW_BOTS for other bots.
-                # For history context, "mentions" is treated as "all" — we are
-                # deciding what context to show, not whether to respond.
-                if getattr(msg.author, "bot", False) and not include_other_bots:
+                # Layer 2: filter bots out of historical context before it
+                # is passed to the model, independent of trigger policy.
+                if getattr(msg.author, "bot", False):
                     continue
 
                 content = getattr(msg, "clean_content", msg.content) or ""
@@ -4846,9 +4834,19 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to_id = None
         reply_to_text = None
         if message.reference:
-            reply_to_id = str(message.reference.message_id)
-            if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
+            # Layer 3: reply-context isolation. Discord replies can carry a
+            # cached/resolved target message; if that target was authored by a
+            # bot, strip the reference entirely so bot text cannot be injected
+            # later as `[Replying to: ...]` context.
+            ref_msg = (
+                getattr(message.reference, "cached_message", None)
+                or getattr(message.reference, "resolved", None)
+            )
+            ref_author = getattr(ref_msg, "author", None)
+            if not getattr(ref_author, "bot", False):
+                reply_to_id = str(message.reference.message_id)
+                if ref_msg is not None:
+                    reply_to_text = getattr(ref_msg, "content", None) or None
 
         event = MessageEvent(
             text=event_text,

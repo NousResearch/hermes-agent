@@ -1,16 +1,9 @@
-"""Regression guard for #4466: DISCORD_ALLOW_BOTS works without DISCORD_ALLOWED_USERS.
+"""Regression guards for Discord bot isolation and auth behavior.
 
-The bug had two sequential gates both rejecting bot messages:
-
-  Gate 1 — `on_message` in gateway/platforms/discord.py ran the user-allowlist
-  check BEFORE the bot filter, so bot senders were dropped with a warning
-  before the DISCORD_ALLOW_BOTS policy was ever evaluated.
-
-  Gate 2 — `_is_user_authorized` in gateway/run.py rejected bots at the
-  gateway level even if they somehow reached that layer.
-
-These tests assert both gates now pass a bot message through when
-DISCORD_ALLOW_BOTS permits it AND no user allowlist entry exists.
+Discord bot/webhook messages must not be allowed to start agent turns, even
+when legacy DISCORD_ALLOW_BOTS values are present. The adapter drops bot
+messages at the direct trigger gate, and the shared gateway auth layer also
+rejects Discord bot sources as defense-in-depth.
 """
 
 import os
@@ -40,7 +33,7 @@ def _isolate_discord_env(monkeypatch):
 
 
 # -----------------------------------------------------------------------------
-# Gate 2: _is_user_authorized bypasses allowlist for permitted bots
+# Gate 2: _is_user_authorized rejects Discord bots even if legacy allow_bots set
 # -----------------------------------------------------------------------------
 
 
@@ -81,14 +74,11 @@ def _make_discord_human_source(user_id: str = "100200300"):
     )
 
 
-def test_discord_bot_authorized_when_allow_bots_mentions(monkeypatch):
-    """DISCORD_ALLOW_BOTS=mentions must authorize a bot sender even when
-    DISCORD_ALLOWED_USERS is set and the bot's ID is NOT in it.
+def test_discord_bot_not_authorized_when_allow_bots_mentions(monkeypatch):
+    """DISCORD_ALLOW_BOTS=mentions must not authorize a Discord bot sender.
 
-    This is the exact scenario from #4466 — a Cloudflare Worker webhook
-    posts Notion events to Discord, the Hermes bot gets @mentioned, and
-    the webhook's bot ID is not (and shouldn't be) on the human
-    allowlist.
+    This prevents a webhook/peer bot that mentions Hermes from starting an
+    agent turn and re-opening bot acknowledgement loops.
     """
     runner = _make_bare_runner()
 
@@ -96,18 +86,18 @@ def test_discord_bot_authorized_when_allow_bots_mentions(monkeypatch):
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")  # human-only allowlist
 
     source = _make_discord_bot_source(bot_id="999888777")
-    assert runner._is_user_authorized(source) is True
+    assert runner._is_user_authorized(source) is False
 
 
-def test_discord_bot_authorized_when_allow_bots_all(monkeypatch):
-    """DISCORD_ALLOW_BOTS=all is a superset of =mentions — should also bypass."""
+def test_discord_bot_not_authorized_when_allow_bots_all(monkeypatch):
+    """DISCORD_ALLOW_BOTS=all must not authorize a Discord bot sender."""
     runner = _make_bare_runner()
 
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
 
     source = _make_discord_bot_source()
-    assert runner._is_user_authorized(source) is True
+    assert runner._is_user_authorized(source) is False
 
 
 def test_discord_bot_NOT_authorized_when_allow_bots_none(monkeypatch):

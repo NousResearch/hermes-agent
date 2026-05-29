@@ -397,6 +397,20 @@ class TestReplyToText:
         assert event.reply_to_message_id == "555"
         assert event.reply_to_text is None
 
+    @pytest.mark.asyncio
+    async def test_reference_to_bot_message_strips_reply_context(self, reply_text_adapter):
+        """Replies to bot messages must not leak bot text into reply_to_text."""
+        bot_author = SimpleNamespace(id=123, display_name="OtherBot", name="OtherBot", bot=True)
+        resolved_msg = SimpleNamespace(content="bot status text", author=bot_author)
+        ref = SimpleNamespace(message_id=555, resolved=resolved_msg, cached_message=resolved_msg)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id is None
+        assert event.reply_to_text is None
+
 
 class TestYamlConfigLoading:
     """Tests for reply_to_mode loaded from config.yaml discord section."""

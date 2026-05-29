@@ -78,3 +78,11 @@ def test_source_and_config_extensions_not_extracted(ext):
 def test_media_literal_is_case_sensitive():
     # Lowercase `media:` must NOT trigger extraction (avoids prose false-positives).
     assert _paths("see the media:/tmp/a.png reference") == []
+
+
+def test_extract_local_files_uses_shared_extension_set(tmp_path):
+    # Bare-path delivery must honor the SAME extensions as MEDIA: tags.
+    f = tmp_path / "report.md"
+    f.write_text("hi")
+    paths, _cleaned = BasePlatformAdapter.extract_local_files(f"see {f}")
+    assert paths == [str(f)]

@@ -1404,6 +1404,31 @@ def check_feishu_requirements() -> bool:
     return ensure_and_bind("platform.feishu", _import, globals(), prompt=False)
 
 
+# Competition consulting skill routing
+_FEISHU_COMPETITION_GROUP_ID = "oc_23fcf4738957cae42defd61410f26c15"
+_FEISHU_COMPETITION_KEYWORDS = frozenset({
+    "aild",
+    "智能设计大赛",
+    "应急与安全科普创新大赛",
+    "白名单赛事",
+    "比赛时间",
+    "什么时候比赛",
+    "报名",
+    "赛项",
+    "证书",
+    "家长咨询",
+})
+
+def _competition_keyword_matches(text: str) -> str | None:
+    """Return the first matched keyword or None."""
+    if not text:
+        return None
+    lower = text.lower()
+    for kw in _FEISHU_COMPETITION_KEYWORDS:
+        if kw.lower() in lower:
+            return kw
+    return None
+
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
@@ -2848,8 +2873,34 @@ class FeishuAdapter(BasePlatformAdapter):
 
         Per-chat lock ensures messages in the same chat are processed one at a
         time (matches openclaw's createChatQueue serial queue behaviour).
+
+        Also performs content-based skill routing for competition consulting:
+        - If chat_id matches _FEISHU_COMPETITION_GROUP_ID
+        - AND message text contains a competition keyword
+        - Then set event.auto_skill to route to hermes-competition-consulting-qa
         """
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
+        text = getattr(event, "text", "") or ""
+
+        # Competition consulting skill routing
+        if chat_id == _FEISHU_COMPETITION_GROUP_ID:
+            matched_kw = _competition_keyword_matches(text)
+            if matched_kw:
+                event.auto_skill = "hermes-competition-consulting-qa"
+                logger.info(
+                    "[Feishu] Competition skill routing triggered: chat_id=%s matched_keyword=%s "
+                    "-> skill=hermes-competition-consulting-qa text_preview=%r",
+                    chat_id,
+                    matched_kw,
+                    text[:80],
+                )
+            else:
+                logger.debug(
+                    "[Feishu] Competition group message but no keyword match: chat_id=%s text_preview=%r",
+                    chat_id,
+                    text[:80],
+                )
+
         chat_lock = self._get_chat_lock(chat_id)
         async with chat_lock:
             await self.handle_message(event)

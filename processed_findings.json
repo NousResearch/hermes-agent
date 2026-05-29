@@ -94,5 +94,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34884",
     "pr_number": 34884,
     "run_id": "20260529_222349"
+  },
+  "SSRF-security_audit.py-296": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34885",
+    "pr_number": 34885,
+    "run_id": "20260529_222349"
   }
 }

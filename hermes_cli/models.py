@@ -764,7 +764,7 @@ def fetch_nous_recommended_models(
             url,
             headers={"Accept": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # SSRF: add IP block check
             data = json.loads(resp.read().decode())
         if not isinstance(data, dict):
             data = {}

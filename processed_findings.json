@@ -136,5 +136,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34891",
     "pr_number": 34891,
     "run_id": "20260529_222349"
+  },
+  "SSRF-models_dev.py-293": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34892",
+    "pr_number": 34892,
+    "run_id": "20260529_222349"
   }
 }

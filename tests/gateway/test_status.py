@@ -707,6 +707,33 @@ class TestTakeoverMarker:
 
         assert result is False
 
+    def test_consume_returns_true_on_windows_when_start_time_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        """Takeover consume must also recognise a self-marker on platforms
+        without ``/proc`` (macOS / native Windows).
+
+        ``consume_takeover_marker_for_self`` shares ``_consume_pid_marker_for_self``
+        with the planned-stop path, so the same start_time fallback applies:
+        a ``--replace`` SIGTERM on Windows (where start_time is None on both
+        sides) must be recognised as a planned takeover and exit 0, not be
+        misclassified as an unexpected UNKNOWN exit. With start_time
+        unavailable we fall back to PID equality alone, bounded by the TTL.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Simulate Windows: no start_time available for any PID.
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+
+        ok = status.write_takeover_marker(target_pid=os.getpid())
+        assert ok is True
+        payload = json.loads((tmp_path / ".gateway-takeover.json").read_text())
+        assert payload["target_start_time"] is None
+
+        result = status.consume_takeover_marker_for_self()
+
+        assert result is True
+        assert not (tmp_path / ".gateway-takeover.json").exists()
+
     def test_consume_returns_false_when_marker_missing(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -898,6 +925,74 @@ class TestPlannedStopMarker:
         ok = status.write_planned_stop_marker(target_pid=12345)
 
         assert ok is False
+
+    def test_consume_returns_true_on_windows_when_start_time_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression for #34597: a legitimate stop must be recognised on
+        platforms without ``/proc``.
+
+        ``_get_process_start_time`` returns None on macOS / native Windows
+        (no ``/proc/<pid>/stat``). The planned-stop watcher only runs there,
+        so if the authoritative consume required a non-None start_time match
+        it would always return False — and ``hermes gateway stop`` would be
+        misclassified as an unexpected ``UNKNOWN`` exit, exit 1, and revived
+        by the service manager (the very crash loop #34597 set out to fix).
+        With start_time unavailable on BOTH sides we fall back to PID
+        equality alone, bounded by the marker TTL.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Simulate Windows: no start_time available for any PID.
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+
+        ok = status.write_planned_stop_marker(target_pid=os.getpid())
+        assert ok is True
+        # Marker carries a null start_time, exactly as written on Windows.
+        payload = json.loads((tmp_path / ".gateway-planned-stop.json").read_text())
+        assert payload["target_start_time"] is None
+
+        result = status.consume_planned_stop_marker_for_self()
+
+        assert result is True
+        assert not (tmp_path / ".gateway-planned-stop.json").exists()
+
+    def test_consume_still_rejects_foreign_pid_when_start_time_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        """The PID-only fallback must NOT match a marker naming another PID.
+
+        Falling back to PID equality when start_time is unknown must remain
+        a PID check — a marker for a different process is never ours.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+
+        ok = status.write_planned_stop_marker(target_pid=os.getpid() + 9999)
+        assert ok is True
+
+        result = status.consume_planned_stop_marker_for_self()
+
+        assert result is False
+
+    def test_consume_still_rejects_start_time_mismatch_when_both_known(
+        self, tmp_path, monkeypatch
+    ):
+        """PID-reuse defence is preserved when BOTH start_times are present.
+
+        The Windows fallback only relaxes matching when a start_time is
+        unavailable. When both sides report one (Linux), a mismatch must
+        still reject — otherwise PID reuse could resurrect a stale marker.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        status.write_planned_stop_marker(target_pid=os.getpid())
+
+        # Simulate PID reuse: same PID, different start_time.
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 9999)
+
+        result = status.consume_planned_stop_marker_for_self()
+
+        assert result is False
 
 
 class TestReadProcessCmdlinePsFallback:

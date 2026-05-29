@@ -849,14 +849,10 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     _HERMES_HOME / "browser_screenshots",
 )
 
-# Single curated source of truth for "what counts as a deliverable file" across
-# every MEDIA: extraction site (extract_media, extract_local_files,
-# stream_consumer display-stripping, run.py tool-JSON dedup). Manually curated
-# as the union of the historical extract_media allowlist and the bare-path
-# local-files extension tuple, intentionally EXCLUDING source/config
-# extensions (.py .sh .ts .toml .ini .cfg
-# .log) — those live in SUPPORTED_DOCUMENT_TYPES for *inbound* MIME routing
-# only; auto-delivering them outbound is a regression (see GRILME Q1).
+# Single source of truth for "what counts as a deliverable file" across every
+# MEDIA: extraction site. Intentionally EXCLUDES source/config extensions
+# (.py .sh .ts .toml .ini .cfg .log): those are inbound-MIME-only in
+# SUPPORTED_DOCUMENT_TYPES, and auto-delivering them outbound is a regression.
 _DELIVERY_MEDIA_EXTS = frozenset({
     # Images (embed inline where supported)
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",
@@ -883,15 +879,11 @@ _DELIVERY_MEDIA_EXTS = frozenset({
 })
 
 
-def _media_ext_alternation() -> str:
-    """Regex alternation of delivery extensions, longest-first (so 'html'
-    matches before 'htm', 'jpeg' before 'jpg'), each regex-escaped."""
-    return "|".join(
-        re.escape(ext.lstrip(".")) for ext in sorted(_DELIVERY_MEDIA_EXTS, key=len, reverse=True)
-    )
-
-
-_MEDIA_EXT_ALT = _media_ext_alternation()
+# Longest-first so 'html' beats 'htm' and 'jpeg' beats 'jpg' regardless of the
+# trailing boundary anchor; each extension regex-escaped.
+_MEDIA_EXT_ALT = "|".join(
+    re.escape(ext.lstrip(".")) for ext in sorted(_DELIVERY_MEDIA_EXTS, key=len, reverse=True)
+)
 
 # Explicit MEDIA: tags in model/tool RESPONSE TEXT. Shared by extract_media()
 # and stream_consumer._clean_for_display(). `MEDIA:` is case-SENSITIVE (the
@@ -1112,18 +1104,16 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not candidate:
         return None
 
-    # Fail-closed for Windows-style paths (drive-letter `C:\`/`C:/`, UNC
-    # `\\server\share`). Extraction recognizes these so the MEDIA: tag is
-    # stripped from user-visible text (#28989, #24032), but native Windows
-    # *delivery* requires a Windows-aware credential denylist / allowlist
-    # model that the POSIX denylist below cannot provide — that is the L0
-    # path-validation security PR (refs #32644). Until then they are dropped
-    # (and surfaced via media_dropped), never delivered, on every host. This
-    # also closes a latent fail-open for quoted Windows paths on Windows hosts.
-    # `\w` (not [A-Za-z]) so Unicode-homoglyph drive letters (e.g. fullwidth
-    # `Ｃ:`) can't slip past the ASCII class; no legitimate POSIX path
-    # starts with a word-char + `:` + slash, so this never over-rejects.
-    if re.match(r'(?:\w:[\\/]|\\\\)', candidate):
+    # Fail-closed for Windows/UNC paths (`C:\`, `C:/`, `\\server\share`):
+    # extraction recognizes them so the MEDIA: tag is stripped from user text
+    # (#28989, #24032), but native-Windows *delivery* needs a Windows-aware
+    # allowlist the POSIX denylist below can't provide — deferred to the L0
+    # path-validation PR (refs #32644). Until then they're dropped (surfaced
+    # via media_dropped), never delivered — which also closes a latent
+    # fail-open on Windows hosts. `\w` (not [A-Za-z]) catches Unicode-homoglyph
+    # drives; no POSIX path starts with word-char + `:` + slash, so it never
+    # over-rejects.
+    if re.match(r'\w:[\\/]|\\\\', candidate):
         return None
 
     expanded = Path(os.path.expanduser(candidate))

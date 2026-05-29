@@ -496,6 +496,34 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     )
                     continue
                 raise
+            except TypeError as exc:
+                # #33976: The ChatGPT Pro Codex backend has been observed
+                # returning HTTP 200 with ``response.output = None`` on the
+                # terminal ``response.completed`` event. The OpenAI SDK's
+                # internal ``parse_response`` then raises
+                # ``TypeError: 'NoneType' object is not iterable`` from
+                # ``for output in response.output:`` BEFORE our event
+                # consumer can intervene.
+                #
+                # We sidestep that by consuming raw events ourselves, but
+                # the SDK still does its own internal parse on stream close.
+                # Translate the TypeError into a classified Codex error so
+                # Slack / cron gateways see a clean provider failure instead
+                # of a raw stack trace.
+                if "NoneType" in str(exc) and "iterable" in str(exc):
+                    logger.warning(
+                        "Codex backend returned malformed response (output=None on "
+                        "HTTP 200); translating to provider error. %s error=%s",
+                        agent._client_log_context(), exc,
+                    )
+                    raise RuntimeError(
+                        "Codex backend returned a malformed response (output=None on "
+                        "HTTP 200). This is a known intermittent issue with the "
+                        "chatgpt.com/backend-api/codex endpoint \u2014 retry or fall back "
+                        "to a non-Codex provider."
+                    ) from exc
+                # Any other TypeError is a real bug \u2014 surface it.
+                raise
 
             if final.status in {"incomplete", "failed"}:
                 logger.warning(

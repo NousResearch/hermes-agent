@@ -803,11 +803,29 @@ class _CodexCompletionsAdapter:
 
             event_stream = self._client.responses.create(**stream_kwargs)
             try:
-                final = _consume_codex_event_stream(
-                    event_stream,
-                    model=resp_kwargs.get("model"),
-                    on_event=_on_each_event,
-                )
+                try:
+                    final = _consume_codex_event_stream(
+                        event_stream,
+                        model=resp_kwargs.get("model"),
+                        on_event=_on_each_event,
+                    )
+                except TypeError as exc:
+                    # #33976: Codex backend has been observed returning HTTP
+                    # 200 with ``response.output = None`` on the terminal
+                    # ``response.completed`` event. The OpenAI SDK's internal
+                    # parse_response then raises
+                    # ``TypeError: 'NoneType' object is not iterable`` before
+                    # our consumer can intervene. Translate it to a clean
+                    # provider error so Slack/cron gateways see a useful
+                    # message instead of a raw SDK stack trace.
+                    if "NoneType" in str(exc) and "iterable" in str(exc):
+                        raise RuntimeError(
+                            "Codex backend returned a malformed response "
+                            "(output=None on HTTP 200). Known intermittent issue "
+                            "with the chatgpt.com/backend-api/codex endpoint \u2014 "
+                            "retry or fall back to a non-Codex provider."
+                        ) from exc
+                    raise
             finally:
                 close_fn = getattr(event_stream, "close", None)
                 if callable(close_fn):

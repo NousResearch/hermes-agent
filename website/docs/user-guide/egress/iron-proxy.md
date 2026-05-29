@@ -237,6 +237,11 @@ hermes egress status                   # binary + config + pid + listening state
 hermes egress status --show-tokens     # print proxy tokens in full
                                        #   (default: redacted prefix + suffix only)
 
+hermes egress health                   # one-shot liveness check
+                                       #   (exit 0 = up, 1 = port closed, 2 = stopped)
+hermes egress health --watch           # poll until healthy (scripts / cron pre-checks)
+hermes egress health --timeout 30      # fail if not healthy within N seconds
+
 hermes egress disable                  # flip proxy.enabled = false
                                        #   (does not stop a running proxy)
 
@@ -423,6 +428,13 @@ If the nonce check fails, the code falls back to matching `argv[0]` basename aga
 - iron-proxy in-memory secret zeroisation. The Go binary holds swapped-in real credentials in process memory; a core-dump or `/proc/<pid>/mem` read from a same-uid attacker would expose them. Out of scope for this layer.
 
 ## Failure modes
+
+Use `hermes egress health` to quickly diagnose proxy state before debugging further:
+
+```bash
+hermes egress health                      # exit 0 = healthy, 1 = port closed, 2 = stopped
+hermes egress health --watch --timeout 30 # wait up to 30s for the proxy to come up
+```
 
 - **Binary not installed, `auto_install: true`** — first `hermes egress setup` or `hermes egress start` downloads it. SHA-256 verified against the upstream `checksums.txt`.
 - **Binary not installed, `auto_install: false`** — `start` fails with a clear message pointing to manual install.

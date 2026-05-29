@@ -847,6 +847,11 @@ class WeComAdapter(BasePlatformAdapter):
     # Policy helpers
     # ------------------------------------------------------------------
 
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """WeCom gates DM/group access at intake via dm_policy/group_policy."""
+        return True
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
         if self._dm_policy == "disabled":
             return False

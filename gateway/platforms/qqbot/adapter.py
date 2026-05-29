@@ -269,6 +269,11 @@ class QQAdapter(BasePlatformAdapter):
     def name(self) -> str:
         return "QQBot"
 
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """QQBot gates DM/group access at intake via dm_policy/group_policy."""
+        return True
+
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------

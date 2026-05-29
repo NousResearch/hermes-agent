@@ -4691,6 +4691,11 @@ class YuanbaoAdapter(BasePlatformAdapter):
     # Abstract method implementations
     # ------------------------------------------------------------------
 
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
+        return True
+
     async def connect(self) -> bool:
         """Connect to Yuanbao WS gateway and authenticate.
 

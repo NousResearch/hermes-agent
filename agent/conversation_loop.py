@@ -2777,7 +2777,10 @@ def run_conversation(
                 if is_client_error:
                     # Try fallback before aborting — a different provider
                     # may not have the same issue (rate limit, auth, etc.)
-                    agent._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                    if classified.reason == FailoverReason.content_policy_blocked:
+                        agent._emit_status("⚠️ Provider safety filter blocked this request — trying fallback...")
+                    else:
+                        agent._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                     if agent._try_activate_fallback(reason=classified.reason):
                         retry_count = 0
                         compression_attempts = 0
@@ -2787,10 +2790,16 @@ def run_conversation(
                         agent._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
-                    agent._emit_status(
-                        f"❌ Non-retryable error (HTTP {status_code}): "
-                        f"{agent._summarize_api_error(api_error)}"
-                    )
+                    if classified.reason == FailoverReason.content_policy_blocked:
+                        agent._emit_status(
+                            f"❌ Provider safety filter blocked this request: "
+                            f"{agent._summarize_api_error(api_error)}"
+                        )
+                    else:
+                        agent._emit_status(
+                            f"❌ Non-retryable error (HTTP {status_code}): "
+                            f"{agent._summarize_api_error(api_error)}"
+                        )
                     agent._vprint(f"{agent.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
                     agent._vprint(f"{agent.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                     agent._vprint(f"{agent.log_prefix}   🌐 Endpoint: {_base}", force=True)
@@ -2811,9 +2820,26 @@ def run_conversation(
                             agent._vprint(f"{agent.log_prefix}      • Does your account have access to {_model}?", force=True)
                             if base_url_host_matches(str(_base), "openrouter.ai"):
                                 agent._vprint(f"{agent.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
+                    elif classified.reason == FailoverReason.content_policy_blocked:
+                        agent._vprint(
+                            f"{agent.log_prefix}   💡 The provider's safety filter rejected this specific prompt.",
+                            force=True,
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}      • Try rephrasing the request, narrowing the context, or splitting into smaller steps.",
+                            force=True,
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}      • Configure a fallback provider so future blocks route automatically:",
+                            force=True,
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}        hermes fallback add   (interactive picker — same as `hermes model`)",
+                            force=True,
+                        )
                     else:
                         agent._vprint(f"{agent.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
-                    logging.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
+                    logger.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
                     # Skip session persistence when the error is likely
                     # context-overflow related (status 400 + large session).
                     # Persisting the failed user message would make the
@@ -2827,6 +2853,23 @@ def run_conversation(
                         )
                     else:
                         agent._persist_session(messages, conversation_history)
+                    if classified.reason == FailoverReason.content_policy_blocked:
+                        _summary = agent._summarize_api_error(api_error)
+                        _policy_response = (
+                            f"⚠️  The model provider's safety filter blocked this request "
+                            f"(not a Hermes/gateway failure).\n\n"
+                            f"Provider message: {_summary}\n\n"
+                            f"Try rephrasing the request, narrowing the context, or "
+                            f"adding a fallback provider with `hermes fallback add`."
+                        )
+                        return {
+                            "final_response": _policy_response,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "error": f"content_policy_blocked: {_summary}",
+                        }
                     return {
                         "final_response": None,
                         "messages": messages,

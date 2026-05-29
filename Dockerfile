@@ -25,7 +25,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # hermes process, the dashboard, and per-profile gateways.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ca-certificates curl python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli xz-utils && \
+    ca-certificates curl python3 python-is-python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
 # ---------- s6-overlay install ----------
@@ -187,6 +187,29 @@ RUN chmod -R a+rX /opt/hermes && \
 # this a fast (~1s) egg-link creation with no resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
 
+# ---------- Bake build-time git revision ----------
+# .dockerignore excludes .git, so `git rev-parse HEAD` from inside the
+# container always returns nothing — meaning `hermes dump` reports
+# "(unknown)" and the startup banner drops its `· upstream <sha>` suffix.
+# That makes support triage from container bug reports impossible:
+# we can't tell which commit the user is actually running.
+#
+# Fix: write the commit SHA passed via the HERMES_GIT_SHA build-arg to
+# /opt/hermes/.hermes_build_sha at build time, and have
+# hermes_cli/build_info.py read it at runtime.  Both `hermes dump` and
+# banner.get_git_banner_state() try the baked SHA first, then fall back
+# to live `git rev-parse` for source installs (unchanged behaviour).
+#
+# The arg is optional — local `docker build` without --build-arg simply
+# omits the file, and the runtime falls back to live-git lookup.  CI
+# (.github/workflows/docker-publish.yml) passes ${{ github.sha }} so
+# every published image has it.
+ARG HERMES_GIT_SHA=
+RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
+        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha && \
+        chown hermes:hermes /opt/hermes/.hermes_build_sha; \
+    fi
+
 # ---------- s6-overlay service wiring ----------
 # Static services declared at build time: main-hermes + dashboard.
 # Per-profile gateway services are registered dynamically at runtime by
@@ -213,13 +236,32 @@ COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-r
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
+
+# `docker exec` privilege-drop shim. When operators run
+# `docker exec <c> hermes ...` they default to root, and any file the
+# command writes under $HERMES_HOME (auth.json, .env, config.yaml) ends
+# up root-owned and unreadable to the supervised gateway (UID 10000).
+# The shim lives at /opt/hermes/bin/hermes, sits earliest on PATH, and
+# transparently re-exec's the real venv binary via `s6-setuidgid hermes`
+# when invoked as root. Non-root callers (supervised processes,
+# `--user hermes`, etc.) hit the short-circuit path with no overhead.
+# Recursion is impossible because the shim exec's the venv binary by
+# absolute path (/opt/hermes/.venv/bin/hermes). See the shim source for
+# the opt-out env var (HERMES_DOCKER_EXEC_AS_ROOT=1).
+COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hermes
+
 # Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported
 # the venv bin onto PATH; Architecture B's main-wrapper.sh does the
 # same for the container's main process, but `docker exec` and our
 # cont-init.d scripts don't pass through the wrapper. Expose the venv
 # bin globally so `docker exec <container> hermes ...` and any
 # subprocess that doesn't activate the venv first still find hermes.
-ENV PATH="/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
+#
+# /opt/hermes/bin is prepended ahead of the venv so the privilege-drop
+# shim wins PATH resolution. The shim's last act is to exec the venv
+# binary by absolute path, so this PATH ordering is transparent to
+# every other consumer.
+ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 

@@ -161,8 +161,9 @@ Then in any messaging-platform session (Telegram, Discord, Signal, etc.), send a
 The Portal subscription works for [cron jobs](/user-guide/features/cron) and [batch processing](/user-guide/features/batch-processing) the same way it works for interactive chat — the OAuth refresh token is reused automatically. No additional setup; just schedule cron jobs and they'll bill against your subscription.
 
 ```bash
-hermes cron add "Daily AI news summary" "every day at 9am" \
-  "Search the web for top AI news and summarize the 5 most important stories"
+hermes cron create "every day at 9am" \
+  "Search the web for top AI news and summarize the 5 most important stories" \
+  --name "Daily AI news"
 ```
 
 The cron job runs unattended, calls the model + web search + summarization all through your Portal subscription.

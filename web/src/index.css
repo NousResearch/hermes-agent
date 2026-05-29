@@ -124,6 +124,18 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   overflow: hidden;
 }
 
+@media (max-width: 768px) {
+  html,
+  body,
+  #root {
+    min-height: 100dvh;
+    height: auto;
+    max-height: none;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+}
+
 /* Nousnet's hermes-agent layout bumps `small` and `code` to readable
    dashboard sizes. Keep in sync. */
 small { font-size: 1.0625rem; }
@@ -169,6 +181,12 @@ code { font-size: 0.875rem; }
   --radius-xl: calc(var(--theme-radius) + 4px);
 }
 
+
+/* Collapsed sidebar tooltip entrance — skipped when moving between items. */
+@keyframes sidebar-tooltip-in {
+  from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
+  to   { opacity: 1; transform: translateY(-50%) translateX(0); }
+}
 
 /* Toast animations used by `components/Toast.tsx`. */
 @keyframes toast-in {

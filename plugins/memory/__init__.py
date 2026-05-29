@@ -238,7 +238,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
         # Register submodules so relative imports work
         # e.g., "from .store import MemoryStore" in holographic plugin
         for sub_file in provider_dir.glob("*.py"):
-            if sub_file.name == "__init__.py":
+            if sub_file.name in {"__init__.py", "setup.py"}:
                 continue
             sub_name = sub_file.stem
             full_sub_name = f"{module_name}.{sub_name}"

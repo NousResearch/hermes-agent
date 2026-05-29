@@ -14,7 +14,7 @@ func (m *Model) render() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.renderTaskList())
 	b.WriteString("\n\n")
-	b.WriteString(m.styles.Muted.Render("↑/↓ navigate · C-r refresh · q quit"))
+	b.WriteString(m.styles.Muted.Render("↑/↓ navigate · l logs · C-r refresh · q quit"))
 	if m.status != "" {
 		b.WriteString("\n")
 		b.WriteString(m.styles.Muted.Render(m.status))

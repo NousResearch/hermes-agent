@@ -1,6 +1,9 @@
 package kanbanui
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // TaskStatus represents the lifecycle state of a kanban task.
 // Constants are defined exactly as: triage, todo, ready, running, blocked, done.
@@ -47,6 +50,21 @@ type Comment struct {
 	Author    string
 	Body      string
 	CreatedAt time.Time
+}
+
+// TaskEvent represents a single event in a task's lifecycle.
+type TaskEvent struct {
+	TaskID    string
+	Kind      string // e.g. "created", "claimed", "completed", "crashed", "heartbeat"
+	Payload   string // JSON payload or human-readable summary
+	CreatedAt time.Time
+	RunID     int
+}
+
+// Message returns a human-readable log line for this event.
+func (e TaskEvent) Message() string {
+	ts := e.CreatedAt.Format("15:04:05")
+	return fmt.Sprintf("[%s] %s (run #%d)", ts, e.Kind, e.RunID)
 }
 
 // TaskDetail is the full task representation including comments and parent/child relationships.

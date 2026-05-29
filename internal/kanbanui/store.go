@@ -375,3 +375,60 @@ func sortTasksByAssigneeTitle(tasks []Task) {
 		return tasks[i].Title < tasks[j].Title
 	})
 }
+
+// LoadTaskEvents returns all lifecycle events for a task after the given since time.
+// If since is the zero time, returns all events.
+// Returns a slice sorted by created_at ascending.
+func (s Store) LoadTaskEvents(taskID string, since time.Time) []TaskEvent {
+	if s.db == nil {
+		return nil
+	}
+
+	var query string
+	var args []interface{}
+
+	if since.IsZero() {
+		query = `
+			SELECT task_id, kind, payload, created_at, run_id
+			FROM task_events WHERE task_id = ?
+			ORDER BY created_at ASC
+		`
+		args = []interface{}{taskID}
+	} else {
+		query = `
+			SELECT task_id, kind, payload, created_at, run_id
+			FROM task_events WHERE task_id = ? AND created_at > ?
+			ORDER BY created_at ASC
+		`
+		args = []interface{}{taskID, since.Unix()}
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var events []TaskEvent
+	for rows.Next() {
+		var ev TaskEvent
+		var payload sql.NullString
+		var ts int64
+		var runID sql.NullInt64
+
+		err := rows.Scan(&ev.TaskID, &ev.Kind, &payload, &ts, &runID)
+		if err != nil {
+			continue
+		}
+		ev.CreatedAt = time.Unix(ts, 0)
+		if payload.Valid {
+			ev.Payload = payload.String
+		}
+		if runID.Valid {
+			ev.RunID = int(runID.Int64)
+		}
+		events = append(events, ev)
+	}
+
+	return events
+}

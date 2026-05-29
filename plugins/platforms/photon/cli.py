@@ -659,6 +659,10 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     print(f"  authorized phones   : {_photon_sender_access_status()}")
     print(f"  webhook public URL  : {public_url}")
     print(f"  managed tunnel      : {tunnel_label}")
+    if isinstance(public_url, str) and public_url.startswith("http"):
+        healthy, detail = photon_tunnel.check_public_health(public_url)
+        health_label = f"✓ reachable ({detail})" if healthy else f"✗ unreachable ({detail})"
+        print(f"  public health       : {health_label}")
     print(f"  next step           : {_next_status_step(sidecar_status, tunnel_state)}")
     print(f"  docs                : {_docs_paths()}")
     return 0
@@ -1292,6 +1296,21 @@ def _next_status_step(sidecar_status: str, tunnel_state: dict[str, Any]) -> str:
         return "hermes photon webhook tunnel start"
     if not _photon_sender_access_configured():
         return f"hermes photon allow-phone {_PHONE_ARG_PLACEHOLDER}"
+    try:
+        from gateway.status import is_gateway_running, read_runtime_status  # type: ignore
+
+        if is_gateway_running():
+            runtime = read_runtime_status() or {}
+            photon_state = (
+                (runtime.get("platforms") or {})
+                .get("photon", {})
+                .get("state")
+            )
+            if photon_state == "connected":
+                return "gateway is running; send an iMessage to the Photon number"
+            return "gateway is running but Photon is not connected; run `hermes gateway restart`"
+    except Exception:
+        pass
     return "hermes gateway run -v  (or `hermes gateway restart` if already running)"
 
 

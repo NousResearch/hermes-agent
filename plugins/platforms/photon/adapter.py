@@ -349,6 +349,11 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         body = await request.read()
+        logger.info(
+            "[photon] webhook delivery received: bytes=%d remote=%s",
+            len(body),
+            request.remote or "-",
+        )
         if self._webhook_secret:
             ts = request.headers.get("X-Spectrum-Timestamp", "")
             sig = request.headers.get("X-Spectrum-Signature", "")
@@ -370,17 +375,28 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             payload = json.loads(body or b"{}")
         except json.JSONDecodeError:
+            logger.warning("[photon] rejected webhook with invalid json")
             return web.Response(status=400, text="invalid json")
+        event_type = payload.get("event")
+        msg = payload.get("message") or {}
+        msg_id = msg.get("id")
+        space = msg.get("space") or payload.get("space") or {}
+        logger.info(
+            "[photon] webhook event=%s message_id=%s space=%s",
+            event_type or "-",
+            msg_id or "-",
+            space.get("id") or "-",
+        )
         if payload.get("event") != "messages":
             # Photon currently emits only `messages`; any future event
             # types are ack'd 200 so they don't retry.
             return web.Response(text="ok")
 
-        msg = payload.get("message") or {}
-        msg_id = msg.get("id")
         if not msg_id:
+            logger.warning("[photon] rejected webhook missing message.id")
             return web.Response(status=400, text="missing message.id")
         if self._is_duplicate(msg_id):
+            logger.info("[photon] duplicate webhook ignored: message_id=%s", msg_id)
             return web.Response(text="ok (dup)")
 
         try:

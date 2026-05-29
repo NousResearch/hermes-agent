@@ -119,6 +119,31 @@ def webhook_url_for_base(public_url: str) -> str:
     return public_url.rstrip("/") + webhook_path()
 
 
+def health_url_for_webhook_url(webhook_url: str) -> str:
+    parsed = urlparse(webhook_url)
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}/healthz"
+
+
+def check_public_health(webhook_url: str, timeout_seconds: float = 5.0) -> tuple[bool, str]:
+    health_url = health_url_for_webhook_url(webhook_url)
+    if not health_url:
+        return False, "missing public webhook URL"
+    try:
+        with urllib.request.urlopen(  # noqa: S310
+            health_url,
+            timeout=timeout_seconds,
+            context=_ssl_context(),
+        ) as response:
+            body = response.read(64).decode("utf-8", errors="replace").strip()
+            if 200 <= int(getattr(response, "status", 0) or 0) < 300 and body == "ok":
+                return True, health_url
+            return False, f"{health_url} returned {getattr(response, 'status', '?')}"
+    except Exception as e:
+        return False, f"{health_url} failed: {e}"
+
+
 def parse_quick_tunnel_url(text: str) -> str:
     match = _TRYCLOUDFLARE_RE.search(text or "")
     return match.group(0) if match else ""

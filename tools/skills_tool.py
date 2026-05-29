@@ -70,6 +70,7 @@ import json
 import logging
 
 from hermes_constants import get_hermes_home, display_hermes_home
+from tools.curator_sandbox import get_skills_root
 import os
 import re
 from enum import Enum
@@ -88,7 +89,7 @@ logger = logging.getLogger(__name__)
 # This is the single source of truth -- agent edits, hub installs, and bundled
 # skills all coexist here without polluting the git repo.
 HERMES_HOME = get_hermes_home()
-SKILLS_DIR = HERMES_HOME / "skills"
+SKILLS_DIR = get_skills_root()
 
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
@@ -627,6 +628,49 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
+
+
+def _load_category_description(category_dir: Path) -> Optional[str]:
+    """
+    Load category description from DESCRIPTION.md if it exists.
+
+    Args:
+        category_dir: Path to the category directory
+
+    Returns:
+        Description string or None if not found
+    """
+    desc_file = category_dir / "DESCRIPTION.md"
+    if not desc_file.exists():
+        return None
+
+    try:
+        content = desc_file.read_text(encoding="utf-8")
+        # Parse frontmatter if present
+        frontmatter, body = _parse_frontmatter(content)
+
+        # Prefer frontmatter description, fall back to first non-header line
+        description = frontmatter.get("description", "")
+        if not description:
+            for line in body.strip().split("\n"):
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    description = line
+                    break
+
+        # Truncate to reasonable length
+        if len(description) > MAX_DESCRIPTION_LENGTH:
+            description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
+
+        return description if description else None
+    except (UnicodeDecodeError, PermissionError) as e:
+        logger.debug("Failed to read category description %s: %s", desc_file, e)
+        return None
+    except Exception as e:
+        logger.warning(
+            "Error parsing category description %s: %s", desc_file, e, exc_info=True
+        )
+        return None
 
 
 def skills_list(category: str = None, task_id: str = None) -> str:

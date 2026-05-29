@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from tools.curator_sandbox import get_cron_root, assert_sandbox_write_path
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ except ImportError:
 # =============================================================================
 
 HERMES_DIR = get_hermes_home().resolve()
-CRON_DIR = HERMES_DIR / "cron"
+CRON_DIR = get_cron_root()
 JOBS_FILE = CRON_DIR / "jobs.json"
 
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
@@ -175,6 +176,8 @@ def _secure_file(path: Path):
 
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
+    assert_sandbox_write_path(CRON_DIR, "cron")
+    assert_sandbox_write_path(OUTPUT_DIR, "cron")
     CRON_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     _secure_dir(CRON_DIR)

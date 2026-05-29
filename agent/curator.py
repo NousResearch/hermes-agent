@@ -14,7 +14,8 @@ Responsibilities:
 
 Strict invariants:
   - Only touches agent-created skills (see tools/skill_usage.is_agent_created)
-  - Never auto-deletes — only archives. Archive is recoverable.
+  - Stale skills are auto-archived (restorable from ~/.hermes/skills/.archive/)
+  - Consolidation deletes (absorbed_into) remove directories without archive copies
   - Pinned skills bypass all auto-transitions
   - Uses the auxiliary client; never touches the main session's prompt cache
 """
@@ -329,138 +330,106 @@ CURATOR_DRY_RUN_BANNER = (
 
 CURATOR_REVIEW_PROMPT = (
     "You are running as Hermes' background skill CURATOR. This is an "
-    "UMBRELLA-BUILDING consolidation pass, not a passive audit and not a "
-    "duplicate-finder.\n\n"
-    "The goal of the skill collection is a LIBRARY OF CLASS-LEVEL "
-    "INSTRUCTIONS AND EXPERIENTIAL KNOWLEDGE. A collection of hundreds of "
-    "narrow skills where each one captures one session's specific bug is "
-    "a FAILURE of the library — not a feature. An agent searching skills "
-    "matches on descriptions, not on exact names; one broad umbrella "
-    "skill with labeled subsections beats five narrow siblings for "
-    "discoverability, not the other way around.\n\n"
-    "The right target shape is CLASS-LEVEL skills with rich SKILL.md "
-    "bodies + `references/`, `templates/`, and `scripts/` subfiles for "
-    "session-specific detail — not one-session-one-skill micro-entries.\n\n"
+    "ENTRYPOINT-PRESERVING curation pass.\n\n"
+    "A curator may consolidate implementation, references, templates, "
+    "scripts, and shared knowledge. It may not consolidate away a "
+    "user-facing retrieval entrypoint unless an equivalent or better "
+    "entrypoint is created, retained, and verified.\n\n"
+    "Primary success metric: future successful invocation by users/agents, "
+    "not taxonomy neatness.\n\n"
     "Hard rules — do not violate:\n"
-    "1. DO NOT touch bundled or hub-installed skills. The candidate list "
-    "below is already filtered to agent-created skills only.\n"
-    "2. DO NOT delete any skill. Archiving (moving the skill's directory "
-    "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
-    "Archives are recoverable; deletion is not.\n"
-    "3. DO NOT touch skills shown as pinned=yes. Skip them entirely.\n"
-    "4. DO NOT use usage counters as a reason to skip consolidation. The "
-    "counters are new and often mostly zero. Judge overlap on CONTENT, "
-    "not on use_count. 'use=0' is not evidence a skill is valuable; it's "
-    "absence of evidence either way.\n"
-    "5. DO NOT reject consolidation on the grounds that 'each skill has "
-    "a distinct trigger'. Pairwise distinctness is the wrong bar. The "
-    "right bar is: 'would a human maintainer write this as N separate "
-    "skills, or as one skill with N labeled subsections?' When the "
-    "answer is the latter, merge.\n\n"
-    "How to work — not optional:\n"
-    "1. Scan the full candidate list. Identify PREFIX CLUSTERS (skills "
-    "sharing a first word or domain keyword). Examples you are likely "
-    "to find: hermes-config-*, hermes-dashboard-*, gateway-*, codex-*, "
-    "ollama-*, anthropic-*, gemini-*, mcp-*, salvage-*, pr-*, "
-    "competitor-*, python-*, security-*, etc. Expect 10-25 clusters.\n"
-    "2. For each cluster with 2+ members, do NOT ask 'are these pairs "
-    "overlapping?' — ask 'what is the UMBRELLA CLASS these skills all "
-    "serve? Would a maintainer name that class and write one skill for "
-    "it?' If yes, pick (or create) the umbrella and absorb the siblings "
-    "into it.\n"
-    "3. Three ways to consolidate — use the right one per cluster:\n"
-    "   a. MERGE INTO EXISTING UMBRELLA — one skill in the cluster is "
-    "already broad enough to be the umbrella (example: `pr-triage-"
-    "salvage` for the PR review cluster). Patch it to add a labeled "
-    "section for each sibling's unique insight, then archive the "
-    "siblings.\n"
-    "   b. CREATE A NEW UMBRELLA SKILL.md — no existing member is broad "
-    "enough. Use skill_manage action=create to write a new class-level "
-    "skill whose SKILL.md covers the shared workflow and has short "
-    "labeled subsections. Archive the now-absorbed narrow siblings.\n"
-    "   c. DEMOTE TO REFERENCES/TEMPLATES/SCRIPTS — a sibling has "
-    "narrow-but-valuable session-specific content. Move it into the "
-    "umbrella's appropriate support directory:\n"
-    "      • `references/<topic>.md` for session-specific detail OR "
-    "condensed knowledge banks (quoted research, API docs excerpts, "
-    "domain notes, provider quirks, reproduction recipes)\n"
-    "      • `templates/<name>.<ext>` for starter files meant to be "
-    "copied and modified\n"
-    "      • `scripts/<name>.<ext>` for statically re-runnable actions "
-    "(verification scripts, fixture generators, probes)\n"
-    "      Then archive the old sibling. Use `terminal` with `mkdir -p "
-    "~/.hermes/skills/<umbrella>/references/ && mv ... <umbrella>/"
-    "references/<topic>.md` (or templates/ / scripts/).\n\n"
-    "Package integrity — not optional:\n"
-    "Before demoting or archiving a skill, inspect it as a COMPLETE "
-    "directory package, not just SKILL.md. A skill root may include "
-    "`references/`, `templates/`, `scripts/`, and `assets/`; `skill_view` "
-    "discovers those relative to the skill root. A reference markdown file "
-    "inside another skill is NOT a new skill root and does not get its own "
-    "linked-file discovery.\n"
-    "If the source skill has support files OR SKILL.md contains relative "
-    "links such as `references/...`, `templates/...`, `scripts/...`, or "
-    "`assets/...`, DO NOT flatten only SKILL.md into "
-    "`<umbrella>/references/<old>.md`. Choose one safe path instead:\n"
-    "   • keep it as a standalone skill, OR\n"
-    "   • fully merge it by re-homing every needed support file into the "
-    "umbrella's canonical `references/`, `templates/`, `scripts/`, or "
-    "`assets/` directories AND rewrite the destination instructions to "
-    "the new paths, OR\n"
-    "   • archive the entire original skill package unchanged.\n"
-    "Never leave archived/demoted instructions pointing at files that were "
-    "left behind under the old skill directory.\n"
-    "4. Also flag skills whose NAME is too narrow (contains a PR number, "
-    "a feature codename, a specific error string, an 'audit' / "
-    "'diagnosis' / 'salvage' session artifact). These almost always "
-    "belong as a subsection or support file under a class-level umbrella.\n"
-    "5. Iterate. After one consolidation round, scan the remaining set "
-    "and look for the NEXT umbrella opportunity. Don't stop after 3 "
-    "merges.\n\n"
-    "Your toolset:\n"
-    "  - skills_list, skill_view        — read the current landscape\n"
-    "  - skill_manage action=patch      — add sections to the umbrella\n"
-    "  - skill_manage action=create     — create a new umbrella SKILL.md\n"
-    "  - skill_manage action=write_file — add a references/, templates/, "
-    "or scripts/ file under an existing skill (the skill must already "
-    "exist)\n"
-    "  - skill_manage action=delete     — archive a skill. MUST pass "
-    "`absorbed_into=<umbrella>` when you've merged its content into another "
-    "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
-    "forwarding target. This drives cron-job skill-reference migration — "
-    "guessing from your YAML summary after the fact is fragile.\n"
-    "  - terminal                       — mv a sibling into the archive "
-    "OR move its content into a support subfile\n\n"
-    "'keep' is a legitimate decision ONLY when the skill is already a "
-    "class-level umbrella and none of the proposed merges would improve "
-    "discoverability. 'This is narrow but distinct from its siblings' "
-    "is NOT a reason to keep — it's a reason to move it under an "
-    "umbrella as a subsection or support file.\n\n"
-    "Expected output: real umbrella-ification. Process every obvious "
-    "cluster. If you end the pass with fewer than 10 archives, you "
-    "stopped too early — go back and look at the clusters you left "
-    "alone.\n\n"
-    "When done, write a human summary AND a structured machine-readable "
-    "block so downstream tooling can distinguish consolidation from "
-    "pruning. Format EXACTLY:\n\n"
+    "1. Preserve narrow, task-shaped skills by default.\n"
+    "2. Do not touch bundled/hub-installed skills; candidate list is "
+    "agent-created only.\n"
+    "3. Do not touch pinned skills.\n"
+    "4. Prefer soft consolidation over hard deletion.\n"
+    "5. Never delete a skill merely because it shares a prefix, domain, "
+    "or category with others.\n"
+    "6. Never replace a concrete skill only with a vague umbrella.\n"
+    "7. absorbed_into alone is not sufficient proof of safe consolidation.\n"
+    "8. If uncertain, default to retain and annotate.\n\n"
+    "Retrieval surface rules:\n"
+    "Treat all of the following as retrieval surface that must be preserved "
+    "or safely forwarded: old skill names, aliases, trigger phrases, "
+    "example requests, filenames, scripts/templates/reference names, and "
+    "cron refs.\n"
+    "Keep narrow skills as first-class retrieval entrypoints whenever they "
+    "contain useful user-facing search terms.\n"
+    "Create stubs when old names/aliases/triggers/examples are useful for "
+    "future discovery.\n\n"
+    "Umbrella rules:\n"
+    "Broad umbrella names are suspicious unless they are clearly routers, "
+    "indexes, parent categories, or shared implementation packages. "
+    "Umbrellas can organize, but must not erase concrete entrypoints.\n\n"
+    "Classification rules (use these exact concepts):\n"
+    "- exact duplicate\n"
+    "- true prune\n"
+    "- soft consolidation\n"
+    "- hard deletion\n"
+    "- stub retained\n"
+    "- umbrella/index/router created\n\n"
+    "Deletion rules:\n"
+    "Hard deletion is allowed only for: exact duplicates, true prunes, or "
+    "skills replaced by retained stubs that preserve retrieval surface.\n"
+    "Require retrieval-preservation evidence before any deletion.\n"
+    "Block deletion if ANY of these is true:\n"
+    "- unique behavior would be lost\n"
+    "- old retrieval queries would no longer resolve\n"
+    "- replacement is only a broad umbrella\n"
+    "- cron refs would be rewritten to a less concrete skill\n"
+    "- no stub/alias preserves old search terms\n"
+    "Prove exact duplication before deletion.\n\n"
+    "Package integrity rule:\n"
+    "Preserve references/templates/scripts/assets integrity, but do not use "
+    "package cleanup as an excuse to erase retrieval entrypoints.\n\n"
+    "Tool usage notes:\n"
+    "- You may use skills_list/skill_view for analysis.\n"
+    "- You may use skill_manage actions supported by current schema.\n"
+    "- If deletion evidence is insufficient, retain and annotate instead of "
+    "forcing deletion.\n\n"
+    "When done, output a human summary and this REQUIRED structured YAML:\n"
     "## Structured summary (required)\n"
     "```yaml\n"
-    "consolidations:\n"
-    "  - from: <old-skill-name>\n"
-    "    into: <umbrella-skill-name>\n"
-    "    reason: <one short sentence — why merged, not just 'similar'>\n"
-    "prunings:\n"
-    "  - name: <skill-name>\n"
-    "    reason: <one short sentence — why archived with no merge target>\n"
+    "curator_summary:\n"
+    "  retained_entrypoints:\n"
+    "    - name:\n"
+    "      reason:\n"
+    "      preserved_queries:\n"
+    "  stubs_created:\n"
+    "    - name:\n"
+    "      delegates_to:\n"
+    "      preserved_surface:\n"
+    "  umbrellas_created:\n"
+    "    - name:\n"
+    "      purpose:\n"
+    "      child_entrypoints:\n"
+    "  soft_consolidations:\n"
+    "    - shared_parent:\n"
+    "      children:\n"
+    "      reason:\n"
+    "  hard_deletions:\n"
+    "    - name:\n"
+    "      category:\n"
+    "      reason:\n"
+    "      retrieval_preservation_evidence:\n"
+    "        old_queries:\n"
+    "        preserved_by:\n"
+    "        unique_behavior_lost:\n"
+    "        retrieval_preservation_passed:\n"
+    "  prunings:\n"
+    "    - name:\n"
+    "      reason:\n"
+    "      proof_no_unique_retrieval_surface:\n"
+    "  blocked_deletions:\n"
+    "    - name:\n"
+    "      reason:\n"
+    "  retrieval_tests:\n"
+    "    - old_query:\n"
+    "      expected_post_curator_target:\n"
+    "      status:\n"
     "```\n\n"
-    "Every skill you moved to .archive/ MUST appear in exactly one of the "
-    "two lists. If you consolidated X into umbrella Y (patched Y, wrote "
-    "a references file to Y, or created Y with X's content absorbed), X "
-    "goes under `consolidations` with `into: Y`. If you archived X with "
-    "no absorption — truly stale, irrelevant, or obsolete — X goes under "
-    "`prunings`. Leave a list empty (`consolidations: []`) if none. Do "
-    "not omit the block. The block comes AFTER your human-readable "
-    "summary of clusters processed, patches made, and decisions left alone."
+    "Successful curation preserves retrieval quality under realistic future "
+    "queries."
 )
 
 
@@ -1221,19 +1190,24 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
                  f"**{counts.get('state_transitions', 0)}**")
     lines.append("")
 
-    # Consolidated list — content absorbed into an umbrella. The directory
-    # on disk still lives under ~/.hermes/skills/.archive/ (every removal is
-    # recoverable by design), but the "live" content for these skills
-    # continues to exist inside the destination umbrella.
+    # Consolidated list — content absorbed into an umbrella.
+    # IMPORTANT: consolidation deletes use skill_manage(delete, absorbed_into)
+    # which calls shutil.rmtree; they do NOT create .archive artifacts.
+    # Only stale auto-archive (pre-review step) and manual
+    # `hermes curator archive` create restorable .archive copies.
+    # The "live" content for consolidated skills continues inside the umbrella.
     consolidated = p.get("consolidated") or []
     if consolidated:
         lines.append(f"### Consolidated into umbrella skills ({len(consolidated)})\n")
         lines.append(
             "_These skills were **absorbed into another skill** during this run — "
-            "their content still lives, just under a different name. "
-            "The original directory was moved to `~/.hermes/skills/.archive/` for "
-            "safety and can be restored via `hermes curator restore <name>` if the "
-            "consolidation was wrong._\n"
+            "their content still lives inside the destination umbrella. "
+            "The original directory was **deleted** (via skill_manage delete with absorbed_into). "
+            "No .archive artifact is created for consolidation deletes. "
+            "Only skills that pass through the explicit archive_skill path "
+            "(stale auto-archive in the pre-review step or manual `hermes curator archive`) "
+            "have restorable artifacts under `~/.hermes/skills/.archive/`. "
+            "Restore applies only to those explicitly archived skills._\n"
         )
         SHOW = 50
         for entry in consolidated[:SHOW]:
@@ -1353,8 +1327,9 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 
     # Recovery footer
     lines.append("## Recovery\n")
-    lines.append("- Restore an archived skill: `hermes curator restore <name>`")
-    lines.append("- All archives live under `~/.hermes/skills/.archive/` and are recoverable by `mv`")
+    lines.append("- Restore an explicitly archived skill: `hermes curator restore <name>`")
+    lines.append("- Explicitly archived skills live under `~/.hermes/skills/.archive/` and are recoverable by `mv`")
+    lines.append("- Consolidation deletes (absorbed_into) do NOT create .archive artifacts; recovery is only possible if the umbrella still contains the content.")
     lines.append("- See `run.json` in this directory for the full machine-readable record.")
     lines.append("")
 
@@ -1638,6 +1613,24 @@ def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
     return b.provider, b.model
 
 
+_CURATOR_TERMINAL_RISK_TOOLSETS = ["terminal"]
+
+
+def _curator_sandbox_mode_enabled() -> bool:
+    return os.environ.get("HERMES_CURATOR_SANDBOX_MODE") == "1"
+
+
+def _curator_disabled_toolsets() -> List[str]:
+    """Return curator-only toolset restrictions for the current environment.
+
+    In sandbox mode we must prevent curator mutation flows from escaping
+    through shell execution paths.
+    """
+    if _curator_sandbox_mode_enabled():
+        return list(_CURATOR_TERMINAL_RISK_TOOLSETS)
+    return []
+
+
 def _run_llm_review(prompt: str) -> Dict[str, Any]:
     """Spawn an AIAgent fork to run the curator review prompt.
 
@@ -1706,6 +1699,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     result_meta["provider"] = _resolved_provider or ""
 
     review_agent = None
+    _disabled_toolsets = _curator_disabled_toolsets()
     try:
         review_agent = AIAgent(
             model=_model_name,
@@ -1713,7 +1707,8 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             api_key=_api_key,
             base_url=_base_url,
             api_mode=_api_mode,
-            # Umbrella-building over a large skill collection is worth a
+            disabled_toolsets=_disabled_toolsets or None,
+
             # high iteration ceiling — the pass typically takes 50-100
             # API calls against hundreds of candidate skills. The
             # single-session review path caps itself at a much smaller

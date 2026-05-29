@@ -31,9 +31,10 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
+from tools.curator_sandbox import get_skills_root, get_usage_path, assert_sandbox_write_path
 from agent.skill_utils import is_excluded_skill_path
 
 logger = logging.getLogger(__name__)
@@ -57,11 +58,11 @@ _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
 
 
 def _skills_dir() -> Path:
-    return get_hermes_home() / "skills"
+    return get_skills_root()
 
 
 def _usage_file() -> Path:
-    return _skills_dir() / ".usage.json"
+    return get_usage_path()
 
 
 @contextmanager
@@ -344,6 +345,7 @@ def save_usage(data: Dict[str, Dict[str, Any]]) -> None:
     """Write the usage map atomically. Best-effort — errors are logged, not raised."""
     path = _usage_file()
     try:
+        assert_sandbox_write_path(path, "usage")
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(
             dir=str(path.parent), prefix=".usage_", suffix=".tmp"

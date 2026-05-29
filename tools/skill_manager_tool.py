@@ -40,6 +40,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
+from tools.curator_sandbox import get_skills_root, assert_sandbox_write_path
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_replace, is_truthy_value
@@ -106,7 +107,7 @@ import yaml
 
 # All skills live in ~/.hermes/skills/ (single source of truth)
 HERMES_HOME = get_hermes_home()
-SKILLS_DIR = HERMES_HOME / "skills"
+SKILLS_DIR = get_skills_root()
 
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
@@ -277,14 +278,24 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     """
-    Find a skill by name across all skill directories.
+    Find a skill by name across skill roots.
 
-    Searches the local skills dir (~/.hermes/skills/) first, then any
-    external dirs configured via skills.external_dirs.  Returns
-    {"path": Path} or None.
+    Search order:
+      1) Active SKILLS_DIR (sandbox-aware via get_skills_root())
+      2) Additional configured skill dirs (agent.skill_utils.get_all_skills_dirs)
+
+    Returns {"path": Path} or None.
     """
     from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
-    for skills_dir in get_all_skills_dirs():
+
+    search_roots: List[Path] = []
+    if SKILLS_DIR not in search_roots:
+        search_roots.append(SKILLS_DIR)
+    for d in get_all_skills_dirs():
+        if d not in search_roots:
+            search_roots.append(d)
+
+    for skills_dir in search_roots:
         if not skills_dir.exists():
             continue
         for skill_md in skills_dir.rglob("SKILL.md"):
@@ -450,6 +461,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         content: Content to write
         encoding: Text encoding (default: utf-8)
     """
+    assert_sandbox_write_path(file_path, "skills")
     file_path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(
         dir=str(file_path.parent),
@@ -657,18 +669,140 @@ def _patch_skill(
     }
 
 
-def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
-    """Delete a skill.
+def _strict_delete_contract_mode() -> bool:
+    """True when retrieval-preservation contract enforcement is required.
+
+    Strict mode currently applies to:
+    - curator sandbox runs (HERMES_CURATOR_SANDBOX_MODE=1), and
+    - background self-improvement review fork calls.
+    """
+    if os.environ.get("HERMES_CURATOR_SANDBOX_MODE") == "1":
+        return True
+    try:
+        from tools.skill_provenance import is_background_review
+        if is_background_review():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _validate_retrieval_preservation_contract(
+    *,
+    name: str,
+    absorbed_into: Optional[str],
+    retrieval_preservation: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Validate strict delete contract for curator/sandbox flows.
+
+    Returns error string on validation failure, else None.
+    """
+    category_allowed = {"exact_duplicate", "true_prune", "replaced_by_stub"}
+
+    if not isinstance(retrieval_preservation, dict):
+        return (
+            "Strict delete mode requires retrieval_preservation object; "
+            "absorbed_into alone is not sufficient."
+        )
+
+    category = retrieval_preservation.get("deletion_category")
+    if category not in category_allowed:
+        return (
+            "retrieval_preservation.deletion_category must be one of: "
+            "exact_duplicate, true_prune, replaced_by_stub."
+        )
+
+    reason = retrieval_preservation.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return "retrieval_preservation.reason is required and must be non-empty."
+
+    unique_behavior_lost = retrieval_preservation.get("unique_behavior_lost")
+    if unique_behavior_lost is True:
+        return "Delete rejected: retrieval_preservation.unique_behavior_lost=true."
+
+    retrieval_passed = retrieval_preservation.get("retrieval_preservation_passed")
+    if retrieval_passed is not True:
+        return "Delete rejected: retrieval_preservation.retrieval_preservation_passed must be true."
+
+    retained_entrypoint = retrieval_preservation.get("retained_entrypoint")
+
+    def _as_nonempty_list(v: Any) -> List[str]:
+        if not isinstance(v, list):
+            return []
+        return [str(x).strip() for x in v if isinstance(x, str) and str(x).strip()]
+
+    aliases_preserved = _as_nonempty_list(retrieval_preservation.get("aliases_preserved"))
+    trigger_phrases_preserved = _as_nonempty_list(retrieval_preservation.get("trigger_phrases_preserved"))
+    example_queries_preserved = _as_nonempty_list(retrieval_preservation.get("example_queries_preserved"))
+
+    absorbed_target = (absorbed_into or "").strip()
+
+    if absorbed_target:
+        # Consolidation path in strict mode.
+        if category == "true_prune":
+            return (
+                "Delete rejected: absorbed_into is non-empty but deletion_category=true_prune. "
+                "Use exact_duplicate/replaced_by_stub for consolidation deletes."
+            )
+
+    else:
+        # Prune path in strict mode.
+        if category != "true_prune":
+            return (
+                "Delete rejected: absorbed_into is empty in strict mode; "
+                "deletion_category must be true_prune for prune deletes."
+            )
+
+    if category == "replaced_by_stub":
+        if not isinstance(retained_entrypoint, str) or not retained_entrypoint.strip():
+            return (
+                "Delete rejected: replaced_by_stub requires "
+                "retrieval_preservation.retained_entrypoint."
+            )
+        target_name = retained_entrypoint.strip()
+        if target_name == name:
+            return "Delete rejected: retained_entrypoint cannot equal deleted skill name."
+        if not _find_skill(target_name):
+            return (
+                "Delete rejected: retrieval_preservation.retained_entrypoint "
+                f"'{target_name}' does not exist."
+            )
+        if not (aliases_preserved or trigger_phrases_preserved or example_queries_preserved):
+            return (
+                "Delete rejected: replaced_by_stub requires at least one preserved retrieval-surface list "
+                "(aliases_preserved, trigger_phrases_preserved, example_queries_preserved)."
+            )
+
+    if category == "exact_duplicate":
+        if not example_queries_preserved:
+            return "Delete rejected: exact_duplicate requires non-empty example_queries_preserved."
+
+    if category == "true_prune":
+        # Enforced already via non-empty reason + true preservation_passed.
+        # Keep strict non-empty reason semantics explicit in message contract.
+        if not reason.strip():
+            return "Delete rejected: true_prune requires non-empty reason."
+
+    return None
+
+
+def _delete_skill(
+    name: str,
+    absorbed_into: Optional[str] = None,
+    retrieval_preservation: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Delete a skill with optional strict retrieval-preservation contract.
 
     ``absorbed_into`` declares intent:
-      - ``None`` / missing  → caller didn't declare (legacy / non-curator path);
-        accepted for backward compat but logs a warning because the curator
-        classification pipeline can't tell consolidation from pruning without it.
-      - ``""`` (empty)      → explicit "truly pruned, no forwarding target".
-      - ``"<skill-name>"``  → content was absorbed into that umbrella; the
-        target must exist on disk. Validated here so the model can't claim an
-        umbrella that doesn't exist.
+      - ``None`` / missing  → caller didn't declare (legacy path outside strict mode).
+      - ``""`` (empty)      → explicit prune with no forwarding target.
+      - ``"<skill-name>"``  → content absorbed into target; target must exist.
+
+    In strict mode (curator sandbox or background-review origin),
+    ``retrieval_preservation`` is required and ``absorbed_into`` alone is not
+    sufficient proof of safe deletion.
     """
+
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
@@ -695,13 +829,25 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
                 ),
             }
 
+    strict_mode = _strict_delete_contract_mode()
+    if strict_mode:
+        contract_error = _validate_retrieval_preservation_contract(
+            name=name,
+            absorbed_into=absorbed_into,
+            retrieval_preservation=retrieval_preservation,
+        )
+        if contract_error:
+            return {"success": False, "error": contract_error}
+
     skill_dir = existing["path"]
     skills_root = _containing_skills_root(skill_dir)
+    assert_sandbox_write_path(skill_dir, "skills")
     shutil.rmtree(skill_dir)
 
     # Clean up empty category directories (don't remove the skills root itself)
     parent = skill_dir.parent
     if parent != skills_root and parent.exists() and not any(parent.iterdir()):
+        assert_sandbox_write_path(parent, "skills")
         parent.rmdir()
 
     message = f"Skill '{name}' deleted."
@@ -824,12 +970,14 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    retrieval_preservation: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
 
     Returns JSON string with results.
     """
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
@@ -848,7 +996,11 @@ def skill_manage(
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
-        result = _delete_skill(name, absorbed_into=absorbed_into)
+        result = _delete_skill(
+            name,
+            absorbed_into=absorbed_into,
+            retrieval_preservation=retrieval_preservation,
+        )
 
     elif action == "write_file":
         if not file_path:
@@ -914,12 +1066,20 @@ SKILL_MANAGE_SCHEMA = {
         "(cron jobs that reference the old skill name, etc.) get updated "
         "correctly. The target you name in `absorbed_into` must already "
         "exist — create/patch the umbrella first, then delete.\n\n"
+        "In strict curator/sandbox delete mode, absorbed_into alone is NOT "
+        "sufficient for consolidation deletes. You must also provide "
+        "retrieval_preservation evidence with deletion_category "
+        "(exact_duplicate|true_prune|replaced_by_stub), "
+        "retrieval_preservation_passed=true, unique_behavior_lost=false, and "
+        "a non-empty reason. Unsafe consolidation deletes are rejected.\n\n"
+
         "Create when: complex task succeeded (5+ calls), errors overcome, "
         "user-corrected approach worked, non-trivial workflow discovered, "
         "or user asks you to remember a procedure.\n"
         "Update when: instructions stale/wrong, OS-specific failures, "
         "missing steps or pitfalls found during use. "
         "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"
+
         "After difficult/iterative tasks, offer to save as a skill. "
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
@@ -1003,9 +1163,59 @@ SKILL_MANAGE_SCHEMA = {
                     "being pruned with no forwarding target. Omitting the arg "
                     "on delete is supported for backward compatibility but "
                     "downstream tooling (e.g. cron-job skill reference "
-                    "rewriting) will have to guess at intent."
+                    "rewriting) will have to guess at intent. In strict "
+                    "curator/sandbox mode, absorbed_into alone is not "
+                    "sufficient for consolidation deletes."
                 )
             },
+            "retrieval_preservation": {
+                "type": "object",
+                "description": (
+                    "Optional generally, but REQUIRED in strict curator/sandbox delete mode. "
+                    "Use to prove retrieval-preserving deletion safety. "
+                    "For consolidation deletes in strict mode, absorbed_into alone is insufficient. "
+                    "Allowed deletion_category: exact_duplicate | true_prune | replaced_by_stub. "
+                    "Unsafe consolidation deletes are rejected."
+                ),
+                "properties": {
+                    "deletion_category": {
+                        "type": "string",
+                        "enum": ["exact_duplicate", "true_prune", "replaced_by_stub"],
+                        "description": "Why deletion is safe under strict mode."
+                    },
+                    "retained_entrypoint": {
+                        "type": ["string", "null"],
+                        "description": "Required when deletion_category=replaced_by_stub; must exist."
+                    },
+                    "aliases_preserved": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Aliases preserved by retained entrypoint/stub."
+                    },
+                    "trigger_phrases_preserved": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Trigger phrases preserved by retained entrypoint/stub."
+                    },
+                    "example_queries_preserved": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Example user queries still expected to resolve post-delete."
+                    },
+                    "unique_behavior_lost": {
+                        "type": "boolean",
+                        "description": "Must be false in strict mode."
+                    },
+                    "retrieval_preservation_passed": {
+                        "type": "boolean",
+                        "description": "Must be true in strict mode."
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Non-empty explanation of deletion safety/proof."
+                    }
+                }
+            }
         },
         "required": ["action", "name"],
     },
@@ -1029,6 +1239,7 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        retrieval_preservation=args.get("retrieval_preservation")),
     emoji="📝",
 )

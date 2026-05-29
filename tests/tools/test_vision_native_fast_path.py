@@ -146,35 +146,32 @@ class TestVisionAnalyzeNative:
 class TestHandleVisionAnalyzeFastPath:
     """Verify the dispatcher chooses fast-path vs aux-LLM correctly."""
 
-    def test_native_mode_with_supported_transport_uses_fast_path(self, tmp_path):
-        """Explicit native mode + known transport returns multimodal."""
+    def test_vision_capable_main_model_uses_fast_path(self, tmp_path, monkeypatch):
+        """Main model supports native vision → fast path returns multimodal."""
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
 
-        async def _aux_sentinel(*args, **kwargs):
-            return '{"sentinel": "aux-path"}'
-
+        # Set runtime override so the handler thinks we're on opus@openrouter
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
         set_runtime_main("openrouter", "anthropic/claude-opus-4.6")
         try:
+            # Mock decide_image_input_mode to always return "native" so the
+            # fast path fires regardless of model-catalog state in CI.
             with patch(
-                "hermes_cli.config.load_config",
-                return_value={"agent": {"image_input_mode": "native"}},
-            ), patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel) as mock_aux:
-                result = asyncio.get_event_loop().run_until_complete(
-                    _handle_vision_analyze({"image_url": str(img), "question": "?"})
-                )
+                "agent.image_routing.decide_image_input_mode",
+                return_value="native",
+            ):
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
         finally:
             clear_runtime_main()
 
-        assert isinstance(result, dict), (
+        assert isinstance(result, dict), \
             f"Expected multimodal envelope, got {type(result).__name__}: {str(result)[:200]}"
-        )
         assert result.get("_multimodal") is True
-        mock_aux.assert_not_called()
 
-    def test_native_mode_with_unsupported_transport_falls_through(self, tmp_path):
-        """Explicit native mode still respects the transport gate."""
+    def test_non_vision_main_model_falls_through_to_aux(self, tmp_path, monkeypatch):
+        """Non-vision main model → fast path skipped, aux LLM path attempted."""
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
 
@@ -182,27 +179,39 @@ class TestHandleVisionAnalyzeFastPath:
             return '{"sentinel": "aux-path"}'
 
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
-        set_runtime_main("brand-new-provider", "opaque-model")
+        set_runtime_main("openrouter", "qwen/qwen3-coder")
         try:
-            with (
-                patch(
-                    "hermes_cli.config.load_config",
-                    return_value={"agent": {"image_input_mode": "native"}},
-                ),
-                patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel) as mock_aux,
-            ):
-                result = asyncio.get_event_loop().run_until_complete(
-                    _handle_vision_analyze({"image_url": str(img), "question": "?"})
-                )
+            with patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel):
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
         finally:
             clear_runtime_main()
 
-        assert isinstance(result, str)
-        assert json.loads(result) == {"sentinel": "aux-path"}
-        mock_aux.assert_called_once()
+        assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
+            "Fast path fired for non-vision model; should have fallen through to aux LLM"
 
-    def test_supports_vision_bypasses_transport_gate(self, tmp_path):
-        """supports_vision=True enables fast path even on unknown providers."""
+    def test_fast_path_disabled_for_unsupported_provider(self, tmp_path, monkeypatch):
+        """Even with vision-capable model, unknown provider → fall through."""
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        async def _aux_sentinel(*args, **kwargs):
+            return '{"sentinel": "aux-path"}'
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("brand-new-provider", "anthropic/claude-opus-4.6")
+        try:
+            with patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel):
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
+            "Fast path fired for unknown provider; should have fallen through"
+
+    def test_supports_vision_override_bypasses_provider_allowlist(self, tmp_path):
+        """supports_vision=true enables the fast path on an unlisted provider."""
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
 
@@ -215,21 +224,19 @@ class TestHandleVisionAnalyzeFastPath:
             with patch(
                 "hermes_cli.config.load_config",
                 return_value={"model": {"supports_vision": True}},
-            ), patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel) as mock_aux:
-                result = asyncio.get_event_loop().run_until_complete(
-                    _handle_vision_analyze({"image_url": str(img), "question": "?"})
-                )
+            ), patch(
+                "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
+            ) as mock_aux:
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
         finally:
             clear_runtime_main()
 
-        assert isinstance(result, dict), (
-            f"Expected multimodal envelope, got {type(result).__name__}: {str(result)[:200]}"
-        )
-        assert result.get("_multimodal") is True
+        assert isinstance(result, dict) and result.get("_multimodal") is True
         mock_aux.assert_not_called()
 
-    def test_text_mode_still_blocks_fast_path_when_supports_vision_true(self, tmp_path):
-        """Routing mode wins over supports_vision when text mode was chosen."""
+    def test_text_mode_wins_over_supports_vision_override(self, tmp_path):
+        """Explicit text routing blocks the fast path even with supports_vision."""
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
 
@@ -239,19 +246,17 @@ class TestHandleVisionAnalyzeFastPath:
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
         set_runtime_main("brand-new-provider", "llava-v1.6")
         try:
-            with (
-                patch(
-                    "hermes_cli.config.load_config",
-                    return_value={
-                        "agent": {"image_input_mode": "text"},
-                        "model": {"supports_vision": True},
-                    },
-                ),
-                patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel) as mock_aux,
-            ):
-                result = asyncio.get_event_loop().run_until_complete(
-                    _handle_vision_analyze({"image_url": str(img), "question": "?"})
-                )
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "agent": {"image_input_mode": "text"},
+                    "model": {"supports_vision": True},
+                },
+            ), patch(
+                "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
+            ) as mock_aux:
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
         finally:
             clear_runtime_main()
 

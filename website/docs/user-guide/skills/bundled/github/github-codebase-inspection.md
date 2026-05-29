@@ -21,7 +21,7 @@ Inspect codebases w/ pygount: LOC, languages, ratios.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `LOC`, `Code Analysis`, `pygount`, `Codebase`, `Metrics`, `Repository` |
-| Related skills | [`github-repo-management`](/user-guide/skills/bundled/github/github-github-repo-management) |
+| Related skills | [`github-repo-management`](/docs/user-guide/skills/bundled/github/github-github-repo-management) |
 
 ## Reference: full SKILL.md
 

@@ -904,10 +904,6 @@ def get_cute_tool_message(
             extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
             return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
         return _wrap(f"┊ 📄 fetch     pages  {dur}")
-    if tool_name == "web_crawl":
-        url = args.get("url", "")
-        domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-        return _wrap(f"┊ 🕸️  crawl     {_trunc(domain, 35)}  {dur}")
     if tool_name == "terminal":
         return _wrap(f"┊ 💻 $         {_trunc(args.get('command', ''), 42)}  {dur}")
     if tool_name == "process":

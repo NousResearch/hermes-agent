@@ -34,6 +34,39 @@ def test_resolve_stdio_command_falls_back_to_hermes_node_bin(tmp_path):
     assert env["PATH"].split(os.pathsep)[0] == str(node_bin)
 
 
+def test_resolve_stdio_command_falls_back_to_usr_local_bin():
+    """When ``npx`` isn't on the filtered PATH and isn't under ``$HERMES_HOME/node/bin``
+    or ``~/.local/bin``, the resolver should still locate it at ``/usr/local/bin/npx``.
+
+    This is the canonical install location for Node on Linux from-source builds,
+    the upstream ``node:bookworm-slim`` image (which the Hermes Docker image
+    copies ``node + npm + corepack`` from since #4977), and macOS Homebrew on
+    Intel. Without this candidate, MCP servers run with an ``env.PATH`` that
+    omits ``/usr/local/bin`` (common when users hand-author PATH for sandboxing)
+    fail with ENOENT at ``execvp``.
+    """
+    target = os.path.join(os.sep, "usr", "local", "bin", "npx")
+
+    # Pretend ONLY the /usr/local/bin/npx candidate exists and is executable —
+    # the other candidates ($HERMES_HOME/node/bin/npx and ~/.local/bin/npx)
+    # should fail isfile() and the resolver must fall through to /usr/local/bin.
+    def _fake_isfile(path):
+        return path == target
+
+    def _fake_access(path, _mode):
+        return path == target
+
+    with patch("tools.mcp_tool.shutil.which", return_value=None), \
+         patch("tools.mcp_tool.os.path.isfile", side_effect=_fake_isfile), \
+         patch("tools.mcp_tool.os.access", side_effect=_fake_access):
+        command, env = _resolve_stdio_command("npx", {"PATH": "/opt/data/bin:/usr/bin:/bin"})
+
+    assert command == target
+    # /usr/local/bin must be prepended so npx's shebang (`/usr/bin/env node`)
+    # can find node in the same directory.
+    assert env["PATH"].split(os.pathsep)[0] == os.path.dirname(target)
+
+
 def test_resolve_stdio_command_respects_explicit_empty_path():
     seen_paths = []
 

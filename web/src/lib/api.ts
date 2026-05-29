@@ -36,14 +36,51 @@ function setSessionHeader(headers: Headers, token: string): void {
   }
 }
 
-export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+interface FetchJSONOptions {
+  allowUnauthorized?: boolean;
+}
+
+export async function fetchJSON<T>(
+  url: string,
+  init?: RequestInit,
+  options?: FetchJSONOptions,
+): Promise<T> {
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, { ...init, headers });
+  const res = await fetch(`${BASE}${url}`, {
+    ...init,
+    headers,
+    credentials: init?.credentials ?? "include",
+  });
+  if (res.status === 401 && !options?.allowUnauthorized) {
+    let alreadyReloaded = false;
+    try {
+      alreadyReloaded =
+        sessionStorage.getItem("hermes.tokenReloadAttempted") === "1";
+    } catch {
+      /* privacy mode or unavailable sessionStorage: fall through to throw */
+    }
+    if (!alreadyReloaded) {
+      try {
+        sessionStorage.setItem("hermes.tokenReloadAttempted", "1");
+      } catch {
+        /* best effort */
+      }
+      window.location.reload();
+      return new Promise<T>(() => {});
+    }
+  }
+  if (res.ok) {
+    try {
+      sessionStorage.removeItem("hermes.tokenReloadAttempted");
+    } catch {
+      /* best effort */
+    }
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`${res.status}: ${text}`);

@@ -12,7 +12,7 @@ Config in $HERMES_HOME/config.yaml (profile-scoped):
       auto_extract: false
       default_trust: 0.5
       min_trust_threshold: 0.3
-      temporal_decay_half_life: 0
+      temporal_decay_half_life: 90
 """
 
 from __future__ import annotations
@@ -169,7 +169,7 @@ class HolographicMemoryProvider(MemoryProvider):
         default_trust = float(self._config.get("default_trust", 0.5))
         hrr_dim = int(self._config.get("hrr_dim", 1024))
         hrr_weight = float(self._config.get("hrr_weight", 0.3))
-        temporal_decay = int(self._config.get("temporal_decay_half_life", 0))
+        temporal_decay = int(self._config.get("temporal_decay_half_life", 90))
 
         self._store = MemoryStore(db_path=db_path, default_trust=default_trust, hrr_dim=hrr_dim)
         self._retriever = FactRetriever(

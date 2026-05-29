@@ -9113,6 +9113,25 @@ class GatewayRunner:
                                     self.session_store.rewrite_transcript(
                                         session_entry.session_id, _compressed
                                     )
+                                    # [PENDING_TASK_INJECT_MARKER] - Do not remove this comment
+                                    # Auto-injected by install-compression-hooks.sh
+                                    # Scans ~/agent-shared/tasks/_pending/ and injects waiting
+                                    # tasks as user messages into the compressed session history.
+                                    _pending_dir = Path.home() / "agent-shared" / "tasks" / "_pending"
+                                    if _pending_dir.is_dir():
+                                        for _f in sorted(_pending_dir.glob("TASK-*.json")):
+                                            try:
+                                                import json as _json
+                                                _task = _json.loads(_f.read_text(encoding="utf-8"))
+                                                _top = _task.get("status")
+                                                _status = "waiting_confirmation" if (_top == "waiting_confirmation") else ((_task.get("steps") or {}).get("status") or _top)
+                                                if _status == "waiting_confirmation":
+                                                    _compressed.append({
+                                                        "role": "user",
+                                                        "content": f"[Pending Task] {_task.get('summary', _task.get('task_id', 'task'))}"
+                                                    })
+                                            except Exception:
+                                                pass
                                     # Reset stored token count — transcript was rewritten
                                     session_entry.last_prompt_tokens = 0
                                     history = _compressed

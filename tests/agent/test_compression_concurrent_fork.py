@@ -171,3 +171,70 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     assert agent.session_id == parent_sid
     # Compressor was never called (the skip happens before .compress())
     agent.context_compressor.compress.assert_not_called()
+
+
+class _NoLockSubsystemDB:
+    """Wraps a real SessionDB but simulates a pre-#34351 version skew.
+
+    A long-lived process can hold ``hermes_state.SessionDB`` bound to the
+    OLD class in memory (no compression-lock methods) while a lazily
+    re-imported ``conversation_compression.py`` calls the NEW lock code.
+    ``try_acquire_compression_lock`` then raises ``AttributeError`` — which
+    is NOT a ``sqlite3.Error``, so the method's own fail-open guard never
+    runs.  Before the fix the exception propagated to the outer agent loop,
+    which printed the error and retried; compression never succeeded, the
+    token count never dropped, and the loop re-triggered compaction forever.
+    """
+
+    def __init__(self, real_db: SessionDB) -> None:
+        self._real = real_db
+
+    def try_acquire_compression_lock(self, *_a, **_k):  # noqa: D401
+        raise AttributeError(
+            "'SessionDB' object has no attribute 'try_acquire_compression_lock'"
+        )
+
+    def get_compression_lock_holder(self, *_a, **_k):
+        raise AttributeError("'SessionDB' object has no attribute 'get_compression_lock_holder'")
+
+    def release_compression_lock(self, *_a, **_k):
+        raise AttributeError("'SessionDB' object has no attribute 'release_compression_lock'")
+
+    def __getattr__(self, name):
+        # Everything else (create_session, append, rotation helpers) goes to
+        # the real db so the post-lock compression + rotation path runs.
+        return getattr(self._real, name)
+
+
+def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path) -> None:
+    """Version skew (no lock methods) must fail OPEN, not raise into the loop.
+
+    Reproduces the "API call #47/#48/#49 ... has no attribute
+    try_acquire_compression_lock" infinite-compaction spin: when the lock
+    subsystem is absent, ``_compress_context`` must skip locking and proceed
+    with compression (so the loop makes progress and terminates) instead of
+    letting the ``AttributeError`` escape to the retry loop.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "SKEW_TEST_SESSION"
+    db.create_session(parent_sid, source="discord")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    # Swap in the lock-less wrapper AFTER construction (the agent already
+    # holds a normal db reference; we only break the lock methods).
+    agent._session_db = _NoLockSubsystemDB(db)
+
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    # MUST NOT raise AttributeError. Before the fix this raised and the
+    # outer loop would retry forever.
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    # Compression actually ran (proceeded past the broken lock) and made
+    # progress, so the auto-compress loop would terminate.
+    agent.context_compressor.compress.assert_called_once()
+    assert len(compressed) < len(messages), (
+        "Compression made no progress despite failing open — loop would still spin."
+    )
+    # Session rotated (compression succeeded end-to-end).
+    assert agent.session_id != parent_sid

@@ -1,0 +1,5 @@
+name: modelark-coding-plan-provider
+kind: model-provider
+version: 1.0.0
+description: BytePlus/VolcEngine ModelArk Coding Plan
+author: Nous Research

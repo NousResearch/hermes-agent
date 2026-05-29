@@ -62,6 +62,8 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "ollama",
     "stepfun", "opencode", "zen", "go", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
+    "modelark", "byteplus-coding", "byteplus_coding", "volcengine-coding",
+    "bytedance", "bytepluses", "bytedance-coding", "bytedance_coding",
     "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
     "arcee-ai", "arceeai",
     "gmi-cloud", "gmicloud",
@@ -312,6 +314,20 @@ DEFAULT_CONTEXT_LENGTHS = {
     "mimo-v2-omni": 262144,
     "mimo-v2-flash": 262144,
     "zai-org/GLM-5": 202752,
+    # BytePlus / ByteDance Coding Plan
+    "dola-seed-2.0-pro": 262144,
+    "dola-seed-2.0-lite": 262144,
+    "dola-seed-2.0-code": 262144,
+    "bytedance-seed-code": 262144,
+    "ark-code-latest": 262144,
+    "kimi-k2.5": 262144,
+    "glm-5.1": 204800,
+    "glm-4.7": 202752,
+    "deepseek-v3.2": 65536,
+    "deepseek-v4-flash": 1048576,
+    "deepseek-v4-pro": 1048576,
+    "kimi-k2-thinking": 262144,
+    "gpt-oss-120b": 131072,
 }
 
 # xAI Grok models that ACCEPT the `reasoning.effort` parameter on

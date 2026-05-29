@@ -180,6 +180,55 @@ model:
         assert client is not None
         assert provider == "anthropic"
 
+    def test_exclude_providers_skips_main_in_favor_of_aggregator(self, monkeypatch):
+        """A provider in ``exclude_providers`` is skipped so auto-detect lands
+        on a vision-capable aggregator instead of the excluded main provider.
+
+        Mirrors the Z.AI Coding-plan case: zai's vision model (glm-5v-turbo)
+        is not licensed, so the retry re-resolves with zai excluded and must
+        pick an aggregator (OpenRouter) rather than returning zai again.
+
+        The provider-resolution primitives are stubbed so this exercises only
+        the ``exclude_providers`` branching — not real credential/pool
+        resolution, which carries cross-test cached state and is flaky here.
+        """
+        _fresh_modules()
+        import agent.auxiliary_client as ac
+
+        class _FakeClient:
+            def __init__(self, label):
+                self.base_url = f"https://{label}.example/v1"
+
+        zai_client = _FakeClient("zai")
+        or_client = _FakeClient("openrouter")
+
+        # Force the auto path: main provider = zai, no config/credential reads.
+        monkeypatch.setattr(
+            ac, "_resolve_task_provider_model",
+            lambda *a, **k: ("auto", "", "", "", "chat_completions"))
+        monkeypatch.setattr(ac, "_read_main_provider", lambda: "zai")
+        monkeypatch.setattr(ac, "_read_main_model", lambda: "glm-5.1")
+        # Main-provider vision attempt resolves to a zai client.
+        monkeypatch.setattr(
+            ac, "resolve_provider_client",
+            lambda provider, model=None, **k: (zai_client, model) if provider == "zai" else (None, None))
+        # Aggregator chain offers an OpenRouter vision backend.
+        monkeypatch.setattr(
+            ac, "_resolve_strict_vision_backend",
+            lambda candidate, *a, **k: (or_client, "openrouter-vision") if candidate == "openrouter" else (None, None))
+
+        # Without exclusion, auto-detect picks the main provider (zai).
+        provider_default, client_default, _ = ac.resolve_vision_provider_client(provider="auto")
+        assert client_default is zai_client
+        assert provider_default == "zai"
+
+        # Excluding zai must skip it and fall through to the aggregator chain.
+        provider_excl, client_excl, _ = ac.resolve_vision_provider_client(
+            provider="auto", exclude_providers=frozenset({"zai"})
+        )
+        assert client_excl is or_client
+        assert provider_excl == "openrouter"
+
     def test_unknown_capability_does_not_block(self, isolated_home, monkeypatch):
         """When models.dev has no entry, fall back to permissive (attempt the call).
 

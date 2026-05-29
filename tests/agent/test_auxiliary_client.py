@@ -21,6 +21,7 @@ from agent.auxiliary_client import (
     _read_codex_access_token,
     _get_provider_chain,
     _is_payment_error,
+    _is_zai_model_not_entitled,
     _is_rate_limit_error,
     _is_model_not_found_error,
     _is_model_incompatible_error,
@@ -1899,6 +1900,167 @@ class TestRefreshNousRecommendedModel:
         out = _refresh_nous_recommended_model(
             vision=False, stale_model="google/gemini-3-flash-preview")
         assert out is None
+
+
+class TestIsZaiModelNotEntitled:
+    """_is_zai_model_not_entitled matches Z.AI's *structured* error code 1311
+    (not message substrings) and only for provider ``zai``. Distinct from
+    payment (credit exhaustion) and auth (key rejected): the credentials are
+    valid but the plan excludes this one model.
+    """
+
+    @staticmethod
+    def _exc(code=None, *, body=None, status=429, msg="error"):
+        """Build an OpenAI-SDK-shaped error.
+
+        ``body`` mirrors the SDK's parsed JSON body; ``code`` is a shortcut for
+        the common ``{'error': {'code': code}}`` shape.
+        """
+        exc = Exception(msg)
+        exc.status_code = status
+        if body is not None:
+            exc.body = body
+        elif code is not None:
+            exc.body = {"error": {"code": code}}
+        return exc
+
+    def test_zai_1311_structured_body(self):
+        """Z.AI Coding/Lite plan lacking glm-5v-turbo → 429 with code 1311."""
+        exc = self._exc(body={"error": {"code": "1311",
+                                        "message": "当前订阅套餐暂未开放GLM-5V-Turbo权限"}})
+        assert _is_zai_model_not_entitled(exc, "zai") is True
+
+    def test_matches_via_exc_code_attribute(self):
+        """Uses the SDK's own ``.code`` attribute when present."""
+        exc = Exception("error")
+        exc.status_code = 429
+        exc.code = "1311"
+        assert _is_zai_model_not_entitled(exc, "zai") is True
+
+    def test_only_for_zai_provider(self):
+        """Scoped to zai — a 1311 from another provider must not match (codes
+        are vendor-defined and another vendor could reuse 1311)."""
+        exc = self._exc(code="1311")
+        assert _is_zai_model_not_entitled(exc, "openai") is False
+
+    def test_other_zai_code_not_matched(self):
+        """A different Z.AI code (e.g. 1305 overload) is not plan-entitlement."""
+        exc = self._exc(code="1305")
+        assert _is_zai_model_not_entitled(exc, "zai") is False
+
+    def test_no_structured_code_not_matched(self):
+        """No structured code → no match (we do not substring-scan messages,
+        which would risk misclassifying auth/quota errors)."""
+        exc = Exception("This model is not available on your plan")
+        exc.status_code = 403
+        assert _is_zai_model_not_entitled(exc, "zai") is False
+
+    def test_auth_error_not_matched(self):
+        exc = self._exc(code="401", status=401)
+        assert _is_zai_model_not_entitled(exc, "zai") is False
+
+    def test_1311_is_not_a_payment_error(self):
+        """The 1311 error must NOT be treated as payment — otherwise the
+        provider would be wrongly marked unhealthy for all its other models."""
+        exc = self._exc(body={"error": {"code": "1311",
+                                        "message": "当前订阅套餐暂未开放GLM-5V-Turbo权限"}})
+        assert _is_payment_error(exc) is False
+
+
+class TestZaiVisionEntitlementFallback:
+    @staticmethod
+    def _entitlement_error():
+        exc = Exception("model unavailable on subscription")
+        exc.status_code = 429
+        exc.body = {"error": {"code": "1311"}}
+        return exc
+
+    def test_sync_reroutes_before_pool_recovery(self):
+        zai_client = MagicMock()
+        zai_client.base_url = "https://api.z.ai/api/paas/v4"
+        zai_client.chat.completions.create.side_effect = self._entitlement_error()
+
+        aggregator_client = MagicMock()
+        aggregator_client.base_url = OPENROUTER_BASE_URL
+        aggregator_client.chat.completions.create.return_value = _DummyResponse(
+            "aggregator-sync"
+        )
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", None, None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=[
+                    ("zai", zai_client, "glm-5v-turbo"),
+                    ("openrouter", aggregator_client, "google/gemini-3-flash-preview"),
+                ],
+            ) as resolve_vision,
+            patch("agent.auxiliary_client._recover_provider_pool") as recover_pool,
+        ):
+            response = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe image"}],
+            )
+
+        assert response.choices[0].message.content == "aggregator-sync"
+        assert zai_client.chat.completions.create.call_count == 1
+        recover_pool.assert_not_called()
+        assert resolve_vision.call_args_list[1].kwargs == {
+            "provider": "auto",
+            "async_mode": False,
+            "exclude_providers": frozenset({"zai"}),
+        }
+        assert aggregator_client.chat.completions.create.call_args.kwargs["model"] == (
+            "google/gemini-3-flash-preview"
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_reroutes_before_pool_recovery(self):
+        zai_client = MagicMock()
+        zai_client.base_url = "https://api.z.ai/api/paas/v4"
+        zai_client.chat.completions.create = AsyncMock(
+            side_effect=self._entitlement_error()
+        )
+
+        aggregator_client = MagicMock()
+        aggregator_client.base_url = OPENROUTER_BASE_URL
+        aggregator_client.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("aggregator-async")
+        )
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", None, None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=[
+                    ("zai", zai_client, "glm-5v-turbo"),
+                    ("openrouter", aggregator_client, "google/gemini-3-flash-preview"),
+                ],
+            ) as resolve_vision,
+            patch("agent.auxiliary_client._recover_provider_pool") as recover_pool,
+        ):
+            response = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe image"}],
+            )
+
+        assert response.choices[0].message.content == "aggregator-async"
+        assert zai_client.chat.completions.create.await_count == 1
+        recover_pool.assert_not_called()
+        assert resolve_vision.call_args_list[1].kwargs == {
+            "provider": "auto",
+            "async_mode": True,
+            "exclude_providers": frozenset({"zai"}),
+        }
+        assert aggregator_client.chat.completions.create.call_args.kwargs["model"] == (
+            "google/gemini-3-flash-preview"
+        )
 
 
 class TestIsRateLimitError:

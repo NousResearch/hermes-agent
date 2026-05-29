@@ -2919,6 +2919,32 @@ def _nous_portal_account_has_fresh_paid_access() -> bool:
         return False
 
 
+def _is_zai_model_not_entitled(exc: Exception, provider: Optional[str]) -> bool:
+    """True for Z.AI's "model not in your plan" error (HTTP 429, code 1311).
+
+    GLM Coding/Lite plans reject models outside the plan (e.g. the
+    glm-5v-turbo vision model) with code 1311 ("当前订阅套餐暂未开放 <model> 权限").
+    This is NOT auth (key rejected) or payment (credit exhaustion): the
+    provider is healthy for its other models — glm-5.1 chat works — so callers
+    MUST NOT mark it unhealthy; they re-resolve onto a vision-capable
+    aggregator for this one request.
+
+    Scoped to provider ``zai`` and matched on the structured error code
+    (``exc.code`` / parsed ``exc.body``, as :func:`_summarize_api_error` reads
+    the message) rather than the localized message text — so it can't misfire
+    on an auth/quota error or on another vendor that happens to reuse 1311.
+    """
+    if (provider or "").strip().lower() != "zai":
+        return False
+    code = getattr(exc, "code", None)
+    if code is None:
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            err = body.get("error")
+            code = err.get("code") if isinstance(err, dict) else body.get("code")
+    return str(code) == "1311"
+
+
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Detect rate-limit errors that warrant provider fallback.
 
@@ -5322,6 +5348,7 @@ def resolve_vision_provider_client(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     async_mode: bool = False,
+    exclude_providers: Optional[frozenset] = None,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
 
@@ -5329,7 +5356,13 @@ def resolve_vision_provider_client(
     provider overrides still use the generic provider router for non-standard
     backends, so users can intentionally force experimental providers. Auto mode
     stays conservative and only tries vision backends known to work today.
+
+    ``exclude_providers`` lets a caller re-resolve vision while skipping a
+    provider whose vision model just failed (e.g. a Z.AI Coding plan that is
+    not licensed for ``glm-5v-turbo``), so auto-detect lands on the next
+    vision-capable aggregator instead of the broken main provider.
     """
+    exclude_providers = exclude_providers or frozenset()
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
     )
@@ -5380,7 +5413,11 @@ def resolve_vision_provider_client(
         #   5. Stop
         main_provider = _read_main_provider()
         main_model = _read_main_model()
-        if main_provider and main_provider not in {"auto", ""}:
+        if (
+            main_provider
+            and main_provider not in {"auto", ""}
+            and main_provider not in exclude_providers
+        ):
             # A provider-specific vision default wins over the user's chat model:
             # static overrides (xiaomi/zai) and catalog-backed discovery (the
             # DeepInfra profile hook) both yield a *known* vision-capable model,
@@ -5473,6 +5510,8 @@ def resolve_vision_provider_client(
         for candidate in _VISION_AUTO_PROVIDER_ORDER:
             if candidate == main_provider:
                 continue  # already tried above
+            if candidate in exclude_providers:
+                continue  # caller asked to skip this provider (vision model failed)
             sync_client, default_model = _resolve_strict_vision_backend(candidate)
             if sync_client is not None:
                 return _finalize(candidate, sync_client, default_model)
@@ -6357,6 +6396,42 @@ def _build_call_kwargs(
     return kwargs
 
 
+def _resolve_zai_vision_entitlement_fallback(
+    *,
+    messages: list,
+    temperature: Optional[float],
+    max_tokens: Optional[int],
+    tools: Optional[list],
+    timeout: float,
+    extra_body: Optional[dict],
+    async_mode: bool,
+) -> Tuple[Optional[Any], Optional[dict]]:
+    """Build an aggregator request without retrying the unentitled Z.AI model."""
+    _, client, model = resolve_vision_provider_client(
+        provider="auto",
+        async_mode=async_mode,
+        exclude_providers=frozenset({"zai"}),
+    )
+    if client is None:
+        return None, None
+
+    base_url = str(getattr(client, "base_url", "") or "")
+    kwargs = _build_call_kwargs(
+        "auto",
+        model,
+        messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        tools=tools,
+        timeout=timeout,
+        extra_body=extra_body,
+        base_url=base_url,
+    )
+    if _is_anthropic_compat_endpoint("auto", base_url):
+        kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+    return client, kwargs
+
+
 def _validate_llm_response(response: Any, task: str = None) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
@@ -6672,6 +6747,29 @@ def call_llm(
             # Retries exhausted — fall through to first_err fallback handling.
             raise _last_transient
     except Exception as first_err:
+        # Z.AI uses 429/code 1311 when the account can use the provider but is
+        # not entitled to its dedicated vision model. Retrying or rotating a
+        # credential cannot change that model-level entitlement, so reroute
+        # before the generic 429 recovery path can penalize the healthy pool.
+        if task == "vision" and _is_zai_model_not_entitled(first_err, resolved_provider):
+            fallback_client, fallback_kwargs = _resolve_zai_vision_entitlement_fallback(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                timeout=effective_timeout,
+                extra_body=effective_extra_body,
+                async_mode=False,
+            )
+            if fallback_client is None or fallback_kwargs is None:
+                raise
+            logger.info(
+                "Auxiliary vision: Z.AI model unavailable on plan; trying vision aggregator"
+            )
+            return _validate_llm_response(
+                fallback_client.chat.completions.create(**fallback_kwargs), task
+            )
+
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
             retry_kwargs.pop("temperature", None)
@@ -7227,6 +7325,29 @@ async def async_call_llm(
             return _validate_llm_response(
                 await client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
+        # Keep model-level entitlement failures out of generic 429 pool
+        # recovery. A different credential on the same Z.AI plan cannot make
+        # glm-5v-turbo available, but a configured vision aggregator can.
+        if task == "vision" and _is_zai_model_not_entitled(first_err, resolved_provider):
+            fallback_client, fallback_kwargs = _resolve_zai_vision_entitlement_fallback(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                timeout=effective_timeout,
+                extra_body=effective_extra_body,
+                async_mode=True,
+            )
+            if fallback_client is None or fallback_kwargs is None:
+                raise
+            logger.info(
+                "Auxiliary vision (async): Z.AI model unavailable on plan; "
+                "trying vision aggregator"
+            )
+            return _validate_llm_response(
+                await fallback_client.chat.completions.create(**fallback_kwargs), task
+            )
+
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
             retry_kwargs.pop("temperature", None)

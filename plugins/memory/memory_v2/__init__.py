@@ -188,11 +188,22 @@ class MemoryV2Provider(MemoryProvider):
         self._initialized = True
 
     def system_prompt_block(self) -> str:
-        """Return a small stable provider note suitable for prompt caching."""
-        return (
-            "Memory v2 provider is available: use routed, source-grounded recall "
-            "when relevant; avoid treating summaries as evidence without sources."
-        )
+        """Return small stable core memory suitable for prompt caching."""
+        records = self.store.list_core_memory_records() if self._store is not None else []
+        if not records:
+            return (
+                "Memory v2 provider is available: use routed, source-grounded recall "
+                "when relevant; avoid treating summaries as evidence without sources."
+            )
+        lines = [
+            "Memory v2 core memory (curated, source-grounded, high-confidence; treat as durable but updateable):"
+        ]
+        for record in records[:12]:
+            sources = ",".join(record.source_refs[:3]) if record.source_refs else "none"
+            lines.append(
+                f"- [{record.category.value} p={record.priority:.2f} c={record.confidence:.2f} source_refs={sources}] {record.statement}"
+            )
+        return "\n".join(lines)[:1200]
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Return a bounded routed memory packet when indexed recall is relevant."""
@@ -596,6 +607,7 @@ class MemoryV2Provider(MemoryProvider):
                 "raw_events": self.store.count_raw_events(),
                 "pending_candidates": self.store.count_pending_candidates(),
                 "rejected_candidates": self.store.count_rejected_candidates(),
+                "core_records": len(self.store.list_core_memory_records()),
                 "memory_items": len(self.store.list_memory_items()),
                 "indexed_memories": self.index.count_memories(),
             },

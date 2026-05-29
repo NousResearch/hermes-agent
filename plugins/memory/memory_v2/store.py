@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from .schemas import CandidateMemory, GateDecision, MemoryItem, ProjectCard, SourceRef, ValidationError, WorkingMemory, normalize_project_id, utc_now_iso
+from .schemas import CandidateMemory, CoreMemoryRecord, GateDecision, MemoryItem, ProjectCard, SourceRef, ValidationError, WorkingMemory, normalize_project_id, utc_now_iso
 
 
 MEMORY_V2_DIRS = [
@@ -50,6 +50,10 @@ class MemoryV2Store:
     @property
     def inbox_dir(self) -> Path:
         return self.base_dir / "inbox"
+
+    @property
+    def core_dir(self) -> Path:
+        return self.base_dir / "core"
 
     @property
     def projects_dir(self) -> Path:
@@ -173,6 +177,37 @@ class MemoryV2Store:
 
     def count_rejected_candidates(self) -> int:
         return len(self.list_rejected_candidates())
+
+    def write_core_memory_record(self, record: CoreMemoryRecord) -> Path:
+        """Write a formal core-memory record into ``core/<category>.yaml``."""
+        records = [existing for existing in self.list_core_memory_records(category=record.category.value) if existing.id != record.id]
+        records.append(record)
+        records.sort(key=lambda item: (-item.priority, item.id))
+        path = self._core_category_path(record.category.value)
+        payload = {"version": 1, "category": record.category.value, "records": [item.to_dict() for item in records]}
+        self._atomic_write_yaml(path, payload)
+        return path
+
+    def read_core_memory_record(self, record_id: str) -> Optional[CoreMemoryRecord]:
+        for record in self.list_core_memory_records():
+            if record.id == record_id:
+                return record
+        return None
+
+    def list_core_memory_records(self, *, category: str | None = None) -> List[CoreMemoryRecord]:
+        records: List[CoreMemoryRecord] = []
+        if not self.core_dir.exists():
+            return records
+        paths = [self._core_category_path(category)] if category else sorted(self.core_dir.glob("*.yaml"))
+        for path in paths:
+            if not path.exists():
+                continue
+            with path.open("r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+            for item in data.get("records") or []:
+                records.append(CoreMemoryRecord.from_dict(item))
+        records.sort(key=lambda item: (-item.priority, item.id))
+        return records
 
     def write_project_card(self, card: ProjectCard) -> Path:
         """Write a project card to ``semantic/projects/<slug>.yaml`` atomically."""
@@ -323,6 +358,10 @@ class MemoryV2Store:
                 data = yaml.safe_load(fh) or {}
             sources.append(SourceRef.from_dict(data))
         return sources
+
+    def _core_category_path(self, category: str) -> Path:
+        safe = self._safe_yaml_stem(str(category), "core category")
+        return self.core_dir / f"{safe}.yaml"
 
     def _project_card_path(self, project_id_or_name: str) -> Path:
         normalized = normalize_project_id(project_id_or_name)

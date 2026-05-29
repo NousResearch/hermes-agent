@@ -6,6 +6,7 @@ import pytest
 
 from plugins.memory.memory_v2.schemas import (
     CandidateMemory,
+    CoreMemoryRecord,
     GateDecision,
     MemoryItem,
     MemoryPacket,
@@ -133,6 +134,36 @@ def test_normalize_project_id_and_project_card_round_trip():
 
     assert card.id == "project:hermes-memory-v2"
     assert ProjectCard.from_dict(card.to_dict()) == card
+
+
+def test_core_memory_record_round_trips_with_priority_and_sources():
+    record = CoreMemoryRecord(
+        id="core_user_response_style",
+        category="user",
+        statement="Dylan prefers direct, grounded help over performative friendliness.",
+        priority=0.95,
+        confidence=0.98,
+        source_refs=["source_user_profile"],
+        tags=["style", "stable_preference"],
+    )
+
+    payload = record.to_dict()
+    restored = CoreMemoryRecord.from_dict(payload)
+
+    assert payload["layer"] == "core"
+    assert payload["category"] == "user"
+    assert payload["statement"].startswith("Dylan prefers direct")
+    assert payload["priority"] == 0.95
+    assert payload["source_refs"] == ["source_user_profile"]
+    assert restored == record
+
+
+def test_core_memory_record_rejects_invalid_category_and_priority():
+    with pytest.raises(ValidationError, match="category"):
+        CoreMemoryRecord(id="core_bad", category="temporary", statement="bad")
+
+    with pytest.raises(ValidationError, match="priority"):
+        CoreMemoryRecord(id="core_bad", category="user", statement="bad", priority=1.5)
 
 
 def test_candidate_defaults_to_pending_gate_decision_and_round_trips():

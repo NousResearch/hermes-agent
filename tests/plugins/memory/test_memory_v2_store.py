@@ -8,6 +8,7 @@ import pytest
 
 from plugins.memory.memory_v2.schemas import (
     CandidateMemory,
+    CoreMemoryRecord,
     GateDecision,
     MemoryItem,
     MemoryType,
@@ -132,6 +133,34 @@ def test_append_rejected_candidate_records_decision(tmp_path):
 
     assert store.list_rejected_candidates() == [candidate]
     assert store.count_pending_candidates() == 0
+
+
+def test_write_read_and_list_core_memory_records_by_category(tmp_path):
+    store = MemoryV2Store(tmp_path / "memory_v2")
+    store.initialize()
+    user_record = CoreMemoryRecord(
+        id="core_user_style",
+        category="user",
+        statement="Dylan prefers direct, grounded answers.",
+        priority=0.95,
+        source_refs=["source_user_profile"],
+    )
+    identity_record = CoreMemoryRecord(
+        id="core_assistant_identity",
+        category="assistant_identity",
+        statement="Hermes should be intellectually honest and tool-grounded.",
+        priority=0.9,
+        source_refs=["source_soul"],
+    )
+
+    user_path = store.write_core_memory_record(user_record)
+    identity_path = store.write_core_memory_record(identity_record)
+
+    assert user_path == tmp_path / "memory_v2" / "core" / "user.yaml"
+    assert identity_path == tmp_path / "memory_v2" / "core" / "assistant_identity.yaml"
+    assert store.read_core_memory_record("core_user_style") == user_record
+    assert store.list_core_memory_records(category="user") == [user_record]
+    assert store.list_core_memory_records() == [user_record, identity_record]
 
 
 def test_write_read_and_list_project_cards(tmp_path):

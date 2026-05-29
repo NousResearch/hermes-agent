@@ -67,6 +67,12 @@ class ProjectStatus(_StrEnum):
     PAUSED = "paused"
     ARCHIVED = "archived"
 
+class CoreMemoryCategory(_StrEnum):
+    USER = "user"
+    ASSISTANT_IDENTITY = "assistant_identity"
+    ENVIRONMENT = "environment"
+    OPERATING_RULE = "operating_rule"
+
 
 class GateDecision(_StrEnum):
     PENDING = "pending"
@@ -268,6 +274,48 @@ class ProjectCard:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ProjectCard":
+        return cls(**data)
+
+
+@dataclass
+class CoreMemoryRecord:
+    id: str
+    category: CoreMemoryCategory | str
+    statement: str
+    layer: str = "core"
+    priority: float = 0.8
+    confidence: float = 0.9
+    updated_at: str = field(default_factory=utc_now_iso)
+    source_refs: List[str] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.id = _require_nonblank(self.id, "id")
+        self.category = CoreMemoryCategory.coerce(self.category, "category")
+        self.statement = _require_nonblank(self.statement, "statement")
+        self.layer = str(self.layer or "core")
+        if self.layer != "core":
+            raise ValidationError("layer must be core")
+        self.priority = _validate_unit_interval(self.priority, "priority")
+        self.confidence = _validate_unit_interval(self.confidence, "confidence")
+        self.source_refs = _list_of_strings(self.source_refs)
+        self.tags = _list_of_strings(self.tags)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "layer": "core",
+            "category": cast(CoreMemoryCategory, self.category).value,
+            "statement": self.statement,
+            "priority": self.priority,
+            "confidence": self.confidence,
+            "updated_at": self.updated_at,
+            "source_refs": list(self.source_refs),
+            "tags": list(self.tags),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CoreMemoryRecord":
         return cls(**data)
 
 

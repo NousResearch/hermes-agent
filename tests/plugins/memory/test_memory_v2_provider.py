@@ -74,6 +74,41 @@ def test_system_prompt_block_is_small_stable_and_not_path_specific(tmp_path):
     assert len(first) <= 500
 
 
+def test_system_prompt_block_renders_formal_core_memory_records(tmp_path):
+    from plugins.memory.memory_v2.schemas import CoreMemoryRecord
+
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
+    provider.store.write_core_memory_record(
+        CoreMemoryRecord(
+            id="core_user_style",
+            category="user",
+            statement="Dylan prefers direct, grounded answers over performative friendliness.",
+            priority=0.95,
+            source_refs=["source_user_profile"],
+        )
+    )
+    provider.store.write_core_memory_record(
+        CoreMemoryRecord(
+            id="core_identity",
+            category="assistant_identity",
+            statement="Hermes should be intellectually honest and careful with external actions.",
+            priority=0.9,
+            source_refs=["source_soul"],
+        )
+    )
+
+    block = provider.system_prompt_block()
+
+    assert "Memory v2 core memory" in block
+    assert "Dylan prefers direct" in block
+    assert "Hermes should be intellectually honest" in block
+    assert "source_refs" in block
+    assert "session-1" not in block
+    assert str(tmp_path) not in block
+    assert len(block) <= 1200
+
+
 def test_prefetch_returns_empty_context_when_no_memories_exist(tmp_path):
     provider = _new_provider()
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")

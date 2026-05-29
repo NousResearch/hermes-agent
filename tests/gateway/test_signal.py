@@ -814,19 +814,19 @@ class TestSignalSendDocumentViaHelper:
 # ---------------------------------------------------------------------------
 
 class TestSignalStreamingCapabilities:
-    """Signal must opt out of edit-based streaming behavior."""
+    """Signal uses timestamp-based edit messages for streaming/tool progress."""
 
-    def test_signal_declares_no_message_editing(self, monkeypatch):
+    def test_signal_declares_message_editing(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
 
-        assert adapter.SUPPORTS_MESSAGE_EDITING is False
+        assert adapter.SUPPORTS_MESSAGE_EDITING is True
 
 
 class TestSignalSendReturnsMessageId:
-    """Signal send() should not pretend sent messages are editable."""
+    """Signal send() returns the signal-cli timestamp as message_id when present."""
 
     @pytest.mark.asyncio
-    async def test_send_returns_none_message_id_even_with_timestamp(self, monkeypatch):
+    async def test_send_returns_timestamp_message_id(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         mock_rpc, _ = _stub_rpc({"timestamp": 1712345678000})
         adapter._rpc = mock_rpc
@@ -835,7 +835,7 @@ class TestSignalSendReturnsMessageId:
         result = await adapter.send(chat_id="+155****4567", content="hello")
 
         assert result.success is True
-        assert result.message_id is None
+        assert result.message_id == "1712345678000"
 
     @pytest.mark.asyncio
     async def test_send_returns_none_message_id_when_no_timestamp(self, monkeypatch):

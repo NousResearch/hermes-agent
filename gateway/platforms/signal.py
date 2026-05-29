@@ -175,10 +175,9 @@ class SignalAdapter(BasePlatformAdapter):
     """Signal messenger adapter using signal-cli HTTP daemon."""
 
     platform = Platform.SIGNAL
-    # Signal has no real edit API for already-sent messages. Mark it explicitly
-    # so streaming suppresses the visible cursor instead of leaving a stale tofu
-    # square behind in chat clients when edit attempts fail.
-    SUPPORTS_MESSAGE_EDITING = False
+    # signal-cli exposes Signal edit messages by reusing the ``send`` command
+    # with ``editTimestamp`` set to the original message timestamp.
+    SUPPORTS_MESSAGE_EDITING = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)
@@ -962,6 +961,47 @@ class SignalAdapter(BasePlatformAdapter):
         # Our send() override bypasses this entirely.
         return content
 
+    async def _build_send_params(
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        edit_timestamp: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Build signal-cli JSON-RPC ``send`` params for text sends/edits."""
+        plain_text, text_styles = self._markdown_to_signal(content)
+
+        params: Dict[str, Any] = {
+            "account": self.account,
+            "message": plain_text,
+        }
+        if edit_timestamp is not None:
+            params["editTimestamp"] = edit_timestamp
+
+        if text_styles:
+            if len(text_styles) == 1:
+                params["textStyle"] = text_styles[0]
+            else:
+                params["textStyles"] = text_styles
+
+        if chat_id.startswith("group:"):
+            params["groupId"] = chat_id[6:]
+        else:
+            params["recipient"] = [await self._resolve_recipient(chat_id)]
+
+        return params
+
+    @staticmethod
+    def _extract_send_timestamp(rpc_result: Any) -> Optional[str]:
+        """Return signal-cli's send timestamp as an editable message id."""
+        if isinstance(rpc_result, dict):
+            timestamp = rpc_result.get("timestamp")
+        else:
+            timestamp = None
+        if timestamp is None or timestamp == "":
+            return None
+        return str(timestamp)
+
     # ------------------------------------------------------------------
     # Sending
     # ------------------------------------------------------------------
@@ -976,33 +1016,59 @@ class SignalAdapter(BasePlatformAdapter):
         """Send a text message with native Signal formatting."""
         await self._stop_typing_indicator(chat_id)
 
-        plain_text, text_styles = self._markdown_to_signal(content)
-
-        params: Dict[str, Any] = {
-            "account": self.account,
-            "message": plain_text,
-        }
-
-        if text_styles:
-            if len(text_styles) == 1:
-                params["textStyle"] = text_styles[0]
-            else:
-                params["textStyles"] = text_styles
-
-        if chat_id.startswith("group:"):
-            params["groupId"] = chat_id[6:]
-        else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
-
+        params = await self._build_send_params(chat_id, content)
         result = await self._rpc("send", params)
 
         if result is not None:
             self._track_sent_timestamp(result)
-            # Signal has no editable message identifier. Returning None keeps the
-            # stream consumer on the non-edit fallback path instead of pretending
-            # future edits can remove an in-progress cursor from the chat thread.
-            return SendResult(success=True, message_id=None)
+            return SendResult(
+                success=True,
+                message_id=self._extract_send_timestamp(result),
+            )
         return SendResult(success=False, error="RPC send failed")
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Edit a previously sent Signal message via signal-cli editTimestamp.
+
+        signal-cli's JSON-RPC API mirrors the CLI's ``send --edit-timestamp``
+        option: edits are sent through the ``send`` method with
+        ``editTimestamp`` set to the original message timestamp. Hermes stores
+        that timestamp as ``message_id`` when ``send()`` succeeds.
+        """
+        del finalize  # Signal edits have no explicit streaming finalization.
+
+        if not message_id:
+            return SendResult(success=False, error="Signal edit requires message_id timestamp")
+
+        try:
+            edit_timestamp = int(str(message_id))
+        except (TypeError, ValueError):
+            return SendResult(
+                success=False,
+                error="Signal edit requires numeric message_id timestamp",
+            )
+
+        await self._stop_typing_indicator(chat_id)
+        params = await self._build_send_params(
+            chat_id,
+            content,
+            edit_timestamp=edit_timestamp,
+        )
+        result = await self._rpc("send", params)
+
+        if result is not None:
+            self._track_sent_timestamp(result)
+            # Keep returning the original timestamp so subsequent edits target
+            # the same Signal message rather than the edit event's timestamp.
+            return SendResult(success=True, message_id=str(message_id))
+        return SendResult(success=False, error="RPC edit failed")
 
     def _track_sent_timestamp(self, rpc_result) -> None:
         """Record outbound message timestamp for echo-back filtering."""

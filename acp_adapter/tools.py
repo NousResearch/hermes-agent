@@ -905,6 +905,8 @@ def _build_polished_completion_content(
     if not text:
         return None
     return [_text(text)]
+
+
 def _strip_diff_prefix(path: str) -> str:
     raw = str(path or "").strip()
     if raw.startswith(("a/", "b/")):

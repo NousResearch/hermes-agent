@@ -362,6 +362,110 @@ class TestExtractMedia:
         assert "[[as_document]]" not in cleaned
 
 
+class TestExtractMediaExtensionParity:
+    """Regression tests for #34321.
+
+    extract_media() and extract_local_files() must accept the same set of
+    file extensions. Before #34321 the bare-path extractor would happily
+    deliver a .md file but a MEDIA:/path/foo.md tag would fall through to
+    plain text on every platform.
+    """
+
+    # Extensions that #34321 reported missing from extract_media.
+    _PREVIOUSLY_MISSING = (
+        "md", "doc", "odt", "rtf", "ods", "tsv", "json", "xml",
+        "yaml", "yml", "ppt", "odp", "key", "tar", "gz", "tgz",
+        "bz2", "xz", "html", "htm", "tiff", "svg", "bmp",
+    )
+
+    def test_shared_constant_exists(self):
+        assert hasattr(BasePlatformAdapter, "_MEDIA_DELIVERY_EXTS")
+        exts = BasePlatformAdapter._MEDIA_DELIVERY_EXTS
+        assert isinstance(exts, tuple)
+        assert len(exts) > 30  # not an empty / stub value
+
+    def test_md_extension_in_shared_constant(self):
+        # #34321 was opened against missing .md specifically.
+        assert ".md" in BasePlatformAdapter._MEDIA_DELIVERY_EXTS
+
+    @pytest.mark.parametrize("ext", _PREVIOUSLY_MISSING)
+    def test_previously_missing_extension_now_in_shared_constant(self, ext):
+        assert f".{ext}" in BasePlatformAdapter._MEDIA_DELIVERY_EXTS, (
+            f".{ext} should be in _MEDIA_DELIVERY_EXTS per #34321"
+        )
+
+    @pytest.mark.parametrize("ext", _PREVIOUSLY_MISSING)
+    def test_extract_media_accepts_previously_missing_extension(self, ext):
+        """The actual bug fix: MEDIA:<path> with these extensions extracts."""
+        content = f"MEDIA:/tmp/test.{ext}"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1, (
+            f"extract_media should match .{ext} after #34321 fix "
+            f"(got {media!r}, cleaned={cleaned!r})"
+        )
+        assert media[0][0] == f"/tmp/test.{ext}"
+        # Tag was stripped from cleaned text.
+        assert "MEDIA:" not in cleaned
+
+    def test_extract_media_accepts_real_world_md_doc_path(self):
+        # Match the reproduction from #34321: a documents-cache path.
+        content = "Here you go:\nMEDIA:~/.hermes/cache/documents/report.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0].endswith("/report.md")
+        assert "Here you go:" in cleaned
+        assert "MEDIA:" not in cleaned
+
+    def test_extract_media_and_extract_local_files_extension_sets_match(self):
+        """The whole point of the fix: both methods accept identical exts."""
+        import tempfile
+        import os
+
+        media_exts = set(BasePlatformAdapter._MEDIA_DELIVERY_EXTS)
+
+        # Probe extract_local_files indirectly: pick a few representative
+        # extensions and confirm a real file at /tmp gets picked up. We
+        # don't probe all 50+ exts because that's slow, but we cover the
+        # categories: doc/data/archive/web.
+        for ext in (".md", ".json", ".tar", ".html", ".tiff"):
+            assert ext in media_exts
+            with tempfile.NamedTemporaryFile(
+                suffix=ext, delete=False, dir="/tmp"
+            ) as tf:
+                tf.write(b"x")
+                path = tf.name
+            try:
+                # extract_media should match a MEDIA:<this path> tag
+                media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{path}")
+                assert len(media) == 1, f".{ext}: extract_media missed it"
+                # extract_local_files should also pick up the bare path
+                paths, _ = BasePlatformAdapter.extract_local_files(
+                    f"Here is the file: {path}"
+                )
+                assert path in paths, f".{ext}: extract_local_files missed it"
+            finally:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+    def test_extract_media_still_strips_voice_tag(self):
+        # Behavior preserved: [[audio_as_voice]] still applies to .md too.
+        content = "[[audio_as_voice]]\nMEDIA:/tmp/test.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][1] is True
+        assert "[[audio_as_voice]]" not in cleaned
+
+    def test_extract_media_still_rejects_unknown_extension(self):
+        # Guardrail: not every extension is acceptable. .exe / .scr / random
+        # tokens should NOT match — the bug was missing extensions, not
+        # opening the gate to anything.
+        content = "MEDIA:/tmp/malware.exe"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == []
+
+
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
         monkeypatch.setattr(

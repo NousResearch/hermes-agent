@@ -2504,6 +2504,37 @@ class BasePlatformAdapter(ABC):
                 logger.warning("Skipping unsafe local file path: %s", _log_safe_path(raw))
         return safe_paths
 
+    # Shared extension list for MEDIA:<path> tag extraction (extract_media)
+    # and bare-path extraction (extract_local_files). Both methods must
+    # accept the same set of extensions or a MEDIA-tagged path can fall
+    # back to plain text when the bare-path path would have delivered it.
+    # See #34321 — commit ea49b3862 narrowed extract_media's regex to fix
+    # Mattermost false positives but left out .md, .doc, .odt, .rtf, .ods,
+    # .tsv, .json, .xml, .yaml/.yml, .ppt, .odp, .key, .tar, .gz/.tgz/.bz2/
+    # .xz, .html/.htm, .tiff, .svg, .bmp. Centralizing the list here keeps
+    # the two methods in lockstep.
+    _MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
+        # Images (embed inline)
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",
+        # Video (embed inline where supported)
+        ".mp4", ".mov", ".avi", ".mkv", ".webm",
+        # Audio (delivered as voice/audio where supported)
+        ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac",
+        # Documents (uploaded as file attachments)
+        ".pdf", ".epub", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md",
+        # Spreadsheets / data
+        ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml",
+        ".yaml", ".yml",
+        # Presentations
+        ".pptx", ".ppt", ".odp", ".key",
+        # Archives
+        ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar",
+        # Web / rendered output
+        ".html", ".htm",
+        # Mobile app packages
+        ".apk", ".ipa",
+    )
+
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
@@ -2543,8 +2574,17 @@ class BasePlatformAdapter(ABC):
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
+        # Extension list is the shared _MEDIA_DELIVERY_EXTS so MEDIA-tagged
+        # paths cover the same set as bare paths (see #34321).
+        _ext_alt = "|".join(
+            sorted(set(e.lstrip(".") for e in BasePlatformAdapter._MEDIA_DELIVERY_EXTS),
+                   key=lambda s: -len(s))
+        )
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:'''
+            + _ext_alt
+            + r''')(?=[\s`"',;:)\]}]|$))[`"']?''',
+            re.IGNORECASE,
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -2591,24 +2631,9 @@ class BasePlatformAdapter(ABC):
             Tuple of (list of expanded file paths, cleaned text with the
             raw path strings removed).
         """
-        _LOCAL_MEDIA_EXTS = (
-            # Images (embed inline)
-            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.svg',
-            # Video (embed inline where supported)
-            '.mp4', '.mov', '.avi', '.mkv', '.webm',
-            # Audio (delivered as voice/audio where supported)
-            '.mp3', '.wav', '.ogg', '.m4a', '.flac',
-            # Documents (uploaded as file attachments)
-            '.pdf', '.docx', '.doc', '.odt', '.rtf', '.txt', '.md',
-            # Spreadsheets / data
-            '.xlsx', '.xls', '.ods', '.csv', '.tsv', '.json', '.xml', '.yaml', '.yml',
-            # Presentations
-            '.pptx', '.ppt', '.odp', '.key',
-            # Archives
-            '.zip', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar',
-            # Web / rendered output
-            '.html', '.htm',
-        )
+        # Use the shared _MEDIA_DELIVERY_EXTS constant so MEDIA-tagged paths
+        # and bare-path detection stay in lockstep. See #34321.
+        _LOCAL_MEDIA_EXTS = BasePlatformAdapter._MEDIA_DELIVERY_EXTS
         ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
 
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)

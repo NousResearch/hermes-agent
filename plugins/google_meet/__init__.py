@@ -1,13 +1,14 @@
 """google_meet plugin — let the agent join a Meet call, transcribe it, follow up.
 
-v1: transcribe-only. Spawns a headless Chromium via Playwright, joins the Meet
-URL, enables live captions, scrapes them into a transcript file. The agent then
-has the transcript in its workspace and can do whatever followup work it needs
-using its regular tools.
+Transcribe path: spawns a headless Chromium via Playwright, joins the Meet
+URL, enables live captions, scrapes them into a transcript file. The agent
+then has the transcript in its workspace and can do whatever followup work
+it needs using its regular tools.
 
-v2 (not in this PR): realtime duplex audio so the agent can speak in the
-meeting, via OpenAI Realtime / Gemini Live + BlackHole / PulseAudio null-sink.
-``meet_say`` exists as a stub today so the tool surface is stable.
+Realtime duplex audio is shipped: ``meet_say`` enqueues text-to-speech
+through the bot's realtime device (configurable in
+``plugins/google_meet/meet_bot.py``), and the same surface routes to a
+remote node when one is registered via ``hermes meet node …``.
 
 Explicit-by-design: only joins ``https://meet.google.com/`` URLs explicitly
 passed in. No calendar scanning, no auto-dial, no consent announcement.

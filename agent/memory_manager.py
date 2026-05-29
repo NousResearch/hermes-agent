@@ -443,8 +443,11 @@ class MemoryManager:
     ) -> str:
         """Route a tool call to the correct provider.
 
-        Returns JSON string result. Raises ValueError if no provider
-        handles the tool.
+        Returns a JSON string result. If no provider handles the
+        requested tool — or the matched provider raises while
+        handling it — the JSON envelope produced by ``tool_error``
+        is returned so the agent sees an actionable error message
+        instead of crashing the turn.
         """
         provider = self._tool_to_provider.get(tool_name)
         if provider is None:

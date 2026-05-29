@@ -6049,6 +6049,18 @@ def _default_spawn(
     from hermes_cli.profiles import resolve_profile_env
     try:
         env["HERMES_HOME"] = resolve_profile_env(profile_arg)
+        # Pin TERMINAL_CWD to the same profile dir as HERMES_HOME.
+        # build_context_files_prompt() locates AGENTS.md (and other
+        # context files) relative to TERMINAL_CWD, not HERMES_HOME.
+        # Without this, the child inherits TERMINAL_CWD from the
+        # dispatching gateway's own env (`env = dict(os.environ)`), so
+        # in a multi-gateway / multi-profile install whichever gateway
+        # wins the claim race determines which AGENTS.md the worker
+        # loads — non-deterministic, and frequently the wrong profile's
+        # rules. Pinning it symmetrically with HERMES_HOME makes
+        # context-file loading deterministic for the task's profile
+        # regardless of which gateway dispatched it.
+        env["TERMINAL_CWD"] = env["HERMES_HOME"]
     except FileNotFoundError:
         # Profile dir doesn't exist — defer resolution to the CLI's
         # _apply_profile_override() via HERMES_PROFILE (set below).

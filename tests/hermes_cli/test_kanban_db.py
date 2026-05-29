@@ -2128,6 +2128,107 @@ class TestSharedBoardPaths:
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
 
+    def test_dispatcher_spawn_pins_terminal_cwd_to_profile_dir(
+        self, tmp_path, monkeypatch
+    ):
+        # The dispatcher's `_default_spawn` must pin TERMINAL_CWD to the
+        # task's profile dir, symmetrically with HERMES_HOME. Otherwise
+        # the worker inherits the dispatching gateway's TERMINAL_CWD and
+        # build_context_files_prompt() loads the wrong profile's
+        # AGENTS.md under multi-gateway / multi-profile dispatch.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        # A real on-disk named profile so resolve_profile_env() returns
+        # its dir rather than raising FileNotFoundError.
+        profile_dir = default_home / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        self._set_home(monkeypatch, tmp_path, default_home)
+        # The dispatching gateway's own TERMINAL_CWD — the value the
+        # child would wrongly inherit if the fix were absent.
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "dispatcher-cwd"))
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4343
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_terminal_cwd",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="worktree",
+            workspace_path=str(tmp_path / "ws"),
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            branch_name="wt/t_terminal_cwd",
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        env = captured["env"]
+        # TERMINAL_CWD tracks the profile dir, not the dispatcher's cwd.
+        assert env["TERMINAL_CWD"] == str(profile_dir)
+        assert env["TERMINAL_CWD"] == env["HERMES_HOME"]
+        assert env["TERMINAL_CWD"] != str(tmp_path / "dispatcher-cwd")
+
+    def test_dispatcher_spawn_leaves_terminal_cwd_when_profile_missing(
+        self, tmp_path, monkeypatch
+    ):
+        # When the profile dir doesn't exist, resolve_profile_env raises
+        # FileNotFoundError and neither HERMES_HOME nor TERMINAL_CWD is
+        # pinned here (deferred to the CLI's _apply_profile_override).
+        # The child then keeps the inherited TERMINAL_CWD untouched.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+        inherited = str(tmp_path / "dispatcher-cwd")
+        monkeypatch.setenv("TERMINAL_CWD", inherited)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4444
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_terminal_cwd_missing",
+            title="x",
+            body=None,
+            assignee="ghost",  # no on-disk profile dir
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="worktree",
+            workspace_path=str(tmp_path / "ws"),
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            branch_name="wt/t_terminal_cwd_missing",
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        env = captured["env"]
+        # Unchanged inherited value (no spurious override on the
+        # FileNotFoundError path).
+        assert env["TERMINAL_CWD"] == inherited
+
 
 # ---------------------------------------------------------------------------
 # latest_summary / latest_summaries — surface task_runs.summary handoffs

@@ -2218,6 +2218,15 @@ def run_conversation(
                     classified.retryable, classified.should_compress,
                     classified.should_rotate_credential, classified.should_fallback,
                 )
+                try:
+                    from provider_gateway.runtime import observe_gateway_route_selection
+
+                    observe_gateway_route_selection(agent, classified.reason)
+                except Exception as _provider_gateway_exc:
+                    logger.debug(
+                        "Provider gateway route observation failed: %s",
+                        _provider_gateway_exc,
+                    )
 
                 if (
                     classified.reason == FailoverReason.billing

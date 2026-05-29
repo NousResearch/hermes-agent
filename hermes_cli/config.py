@@ -633,6 +633,16 @@ def _ensure_hermes_home_managed(home: Path):
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
+    "provider_gateway": {
+        "enabled": False,
+        "backend": "native",
+        "track_usage": True,
+        "track_cost": True,
+        "routing": {
+            "strategy": "round-robin",
+            "fallback_models": [],
+        },
+    },
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
@@ -3559,7 +3569,7 @@ def check_config_version() -> Tuple[int, int]:
 
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
-    "_config_version", "model", "providers", "fallback_model",
+    "_config_version", "model", "providers", "provider_gateway", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",

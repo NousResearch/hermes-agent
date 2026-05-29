@@ -215,6 +215,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             agent._close_request_openai_client(request_client, reason=reason)
 
     def _call():
+        provider_gateway_started_at = time.monotonic()
         try:
             if agent.api_mode == "codex_responses":
                 request_client = _set_request_client(
@@ -261,7 +262,34 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     )
                 )
                 result["response"] = request_client.chat.completions.create(**api_kwargs)
+                try:
+                    from provider_gateway.runtime import record_provider_response_usage
+
+                    record_provider_response_usage(
+                        agent,
+                        result["response"],
+                        latency_seconds=time.monotonic() - provider_gateway_started_at,
+                    )
+                except Exception as gateway_exc:
+                    logger.debug(
+                        "Provider gateway response tracking failed: %s",
+                        gateway_exc,
+                    )
         except Exception as e:
+            if agent.api_mode == "chat_completions":
+                try:
+                    from provider_gateway.runtime import record_provider_error_usage
+
+                    record_provider_error_usage(
+                        agent,
+                        e,
+                        latency_seconds=time.monotonic() - provider_gateway_started_at,
+                    )
+                except Exception as gateway_exc:
+                    logger.debug(
+                        "Provider gateway error tracking failed: %s",
+                        gateway_exc,
+                    )
             result["error"] = e
         finally:
             _close_request_client_once("request_complete")

@@ -1545,6 +1545,17 @@ def init_agent(
     agent.session_estimated_cost_usd = 0.0
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
+    try:
+        from provider_gateway.config import load_gateway_config
+
+        agent._provider_gateway_config = load_gateway_config()
+    except Exception as _provider_gateway_exc:
+        logger.debug(
+            "Provider gateway config initialization failed: %s",
+            _provider_gateway_exc,
+        )
+        agent._provider_gateway_config = None
+    agent._provider_usage_tracker = None
     
     # ── Ollama num_ctx injection ──
     # Ollama defaults to 2048 context regardless of the model's capabilities.

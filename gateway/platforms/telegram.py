@@ -478,6 +478,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Interactive command browser state: message_id -> page/entries metadata.
+        self._command_browser_state: Dict[int, dict] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -2780,6 +2782,136 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    def _render_command_browser_page(
+        self,
+        entries: list[dict],
+        *,
+        page: int,
+        page_size: int,
+        title: str,
+    ) -> tuple[str, Any]:
+        total = len(entries)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * page_size
+        end = min(start + page_size, total)
+        page_entries = entries[start:end]
+
+        lines = [
+            f"📚 <b>{_html.escape(title)}</b>",
+            "",
+            f"Page {page}/{total_pages} • tap a button to run the command",
+            "",
+        ]
+        for idx, entry in enumerate(page_entries, start=start):
+            command_text = str(entry.get("command_text", "")).strip() or "/?"
+            description = str(entry.get("description", "")).strip()
+            lines.append(
+                f"{idx + 1}. <code>{_html.escape(command_text)}</code>"
+                + (f" — {_html.escape(description)}" if description else "")
+            )
+
+        rows = []
+        for idx, entry in enumerate(page_entries, start=start):
+            label = str(entry.get("button_text") or entry.get("command_text") or f"cmd {idx + 1}").strip()
+            if len(label) > 28:
+                label = label[:25] + "..."
+            rows.append([
+                InlineKeyboardButton(label, callback_data=f"gc:r:{idx}")
+            ])
+
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"gc:p:{page - 1}"))
+        nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="gc:nop"))
+        if page < total_pages:
+            nav.append(InlineKeyboardButton("Next ▶", callback_data=f"gc:p:{page + 1}"))
+        rows.append(nav)
+        return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+    def _build_callback_command_event(
+        self,
+        query,
+        command_text: str,
+        *,
+        update_id: Optional[int] = None,
+    ) -> MessageEvent:
+        chat = getattr(query.message, "chat", None)
+        user = getattr(query, "from_user", None)
+        chat_type_raw = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        chat_type = "dm"
+        if chat_type_raw in {"group", "supergroup"}:
+            chat_type = "group"
+        elif chat_type_raw == "channel":
+            chat_type = "channel"
+        thread_id = getattr(query.message, "message_thread_id", None)
+        source = self.build_source(
+            chat_id=str(getattr(chat, "id", getattr(query.message, "chat_id", ""))),
+            chat_name=getattr(chat, "title", None) or getattr(chat, "full_name", None),
+            chat_type=chat_type,
+            user_id=str(getattr(user, "id", "") or getattr(chat, "id", "")),
+            user_name=getattr(user, "full_name", None) or getattr(user, "first_name", None),
+            thread_id=str(thread_id) if thread_id is not None else None,
+            message_id=str(getattr(query.message, "message_id", "")),
+        )
+        return MessageEvent(
+            text=command_text,
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=getattr(query, "message", None),
+            message_id=str(getattr(query.message, "message_id", "")),
+            platform_update_id=update_id,
+            timestamp=getattr(query.message, "date", None),
+        )
+
+    async def send_command_browser(
+        self,
+        chat_id: str,
+        entries: list[dict],
+        *,
+        page: int = 1,
+        page_size: int = 8,
+        title: str = "Command Browser",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            text, keyboard = self._render_command_browser_page(
+                entries,
+                page=page,
+                page_size=page_size,
+                title=title,
+            )
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                ),
+                **self._link_preview_kwargs(),
+            )
+            self._command_browser_state[int(msg.message_id)] = {
+                "entries": list(entries),
+                "page": page,
+                "page_size": page_size,
+                "title": title,
+            }
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_command_browser failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -3106,6 +3238,97 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Command browser callbacks (gc:verb:arg) ---
+        if data.startswith("gc:"):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to use command buttons.")
+                return
+
+            state = self._command_browser_state.get(int(getattr(query_message, "message_id", 0) or 0))
+            if not state:
+                await query.answer(text="This command panel has expired. Use /commands again.")
+                return
+
+            parts = data.split(":", 2)
+            action = parts[1] if len(parts) > 1 else ""
+            if action == "nop":
+                await query.answer()
+                return
+            if action == "p":
+                try:
+                    page = int(parts[2])
+                except (IndexError, ValueError):
+                    await query.answer(text="Invalid page.")
+                    return
+                text, keyboard = self._render_command_browser_page(
+                    state.get("entries", []),
+                    page=page,
+                    page_size=int(state.get("page_size", 8) or 8),
+                    title=str(state.get("title", "Command Browser")),
+                )
+                state["page"] = page
+                await query.edit_message_text(
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard,
+                )
+                await query.answer()
+                return
+            if action == "r":
+                try:
+                    index = int(parts[2])
+                except (IndexError, ValueError):
+                    await query.answer(text="Invalid command.")
+                    return
+                entries = state.get("entries", [])
+                if index < 0 or index >= len(entries):
+                    await query.answer(text="Command not found.")
+                    return
+                command_text = str(entries[index].get("command_text", "")).strip()
+                if not command_text:
+                    await query.answer(text="Command not available.")
+                    return
+                await query.answer(text=f"Running {command_text}")
+                try:
+                    await query.edit_message_text(
+                        text=f"▶️ <b>Running</b> <code>{_html.escape(command_text)}</code>",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                response = None
+                if self._message_handler:
+                    event = self._build_callback_command_event(
+                        query,
+                        command_text,
+                        update_id=getattr(update, "update_id", None),
+                    )
+                    response = await self._message_handler(event)
+                    text_response, _eph_ttl = self._unwrap_ephemeral(response)
+                    if text_response and query_message is not None:
+                        metadata = (
+                            {"thread_id": str(query_thread_id)}
+                            if query_thread_id is not None
+                            else None
+                        )
+                        await self.send(
+                            chat_id=str(query_chat_id),
+                            content=text_response,
+                            reply_to=str(getattr(query_message, "message_id", "")),
+                            metadata=metadata,
+                        )
+                return
+            await query.answer(text="Unknown command action.")
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):

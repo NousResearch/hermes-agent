@@ -7334,6 +7334,10 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name in _DEDICATED_HANDLERS:
                 if _cmd_def_inner.name == "help":
                     return await self._handle_help_command(event)
+                if _cmd_def_inner.name == "menu":
+                    return await self._handle_menu_command(event)
+                if _cmd_def_inner.name == "inbox":
+                    return await self._handle_inbox_command(event)
                 if _cmd_def_inner.name == "commands":
                     return await self._handle_commands_command(event)
                 if _cmd_def_inner.name == "profile":
@@ -7588,6 +7592,12 @@ class GatewayRunner:
         if canonical == "start":
             logger.info("Ignoring /start platform ping for session %s", _quick_key)
             return ""
+
+        if canonical == "menu":
+            return await self._handle_menu_command(event)
+
+        if canonical == "inbox":
+            return await self._handle_inbox_command(event)
 
         if canonical == "commands":
             return await self._handle_commands_command(event)
@@ -10218,8 +10228,8 @@ class GatewayRunner:
             getattr(getattr(event, "source", None), "platform", None),
         )
 
-    async def _handle_commands_command(self, event: MessageEvent) -> str:
-        from hermes_cli.commands import gateway_help_lines
+    async def _handle_commands_command(self, event: MessageEvent) -> Optional[str]:
+        from hermes_cli.commands import gateway_help_lines, _sanitize_telegram_name
 
         raw_args = event.get_command_args().strip()
         if raw_args:
@@ -10232,6 +10242,26 @@ class GatewayRunner:
 
         # Build combined entry list: built-in commands + skill commands
         entries = list(gateway_help_lines())
+        browser_entries: list[dict[str, str]] = []
+        for line in entries:
+            if not line.startswith("`/"):
+                continue
+            try:
+                command_block, description = line.split("` -- ", 1)
+            except ValueError:
+                continue
+            command_block = command_block.strip("`")
+            command_name = command_block.split()[0]
+            browser_entries.append(
+                {
+                    "command_text": _telegramize_command_mentions(
+                        command_name,
+                        getattr(getattr(event, "source", None), "platform", None),
+                    ),
+                    "button_text": _sanitize_telegram_name(command_name.lstrip("/")) or command_name.lstrip("/"),
+                    "description": description,
+                }
+            )
         try:
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
@@ -10241,6 +10271,16 @@ class GatewayRunner:
                 for cmd in sorted(skill_cmds):
                     desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
                     entries.append(f"`{cmd}` — {desc}")
+                    browser_entries.append(
+                        {
+                            "command_text": _telegramize_command_mentions(
+                                cmd,
+                                getattr(getattr(event, "source", None), "platform", None),
+                            ),
+                            "button_text": _sanitize_telegram_name(cmd.lstrip("/")) or cmd.lstrip("/"),
+                            "description": desc,
+                        }
+                    )
         except Exception:
             pass
 
@@ -10248,6 +10288,25 @@ class GatewayRunner:
             return t("gateway.commands.none")
 
         from gateway.config import Platform
+        if event.source.platform == Platform.TELEGRAM:
+            adapter_map = getattr(self, "adapters", {}) or {}
+            adapter = adapter_map.get(Platform.TELEGRAM)
+            if adapter is not None and hasattr(adapter, "send_command_browser"):
+                metadata = self._thread_metadata_for_source(
+                    event.source,
+                    self._reply_anchor_for_event(event),
+                )
+                browser_result = await adapter.send_command_browser(
+                    chat_id=event.source.chat_id,
+                    entries=browser_entries,
+                    page=requested_page,
+                    page_size=8,
+                    title="Command Browser",
+                    metadata=metadata,
+                )
+                if getattr(browser_result, "success", False):
+                    return None
+
         page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
         total_pages = max(1, (len(entries) + page_size - 1) // page_size)
         page = max(1, min(requested_page, total_pages))
@@ -10272,6 +10331,246 @@ class GatewayRunner:
             "\n".join(lines),
             getattr(getattr(event, "source", None), "platform", None),
         )
+
+    def _ronii_root(self) -> Path:
+        return Path.home() / ".hermes" / "profiles" / "ronii"
+
+    def _ronii_runner_path(self) -> Path:
+        return self._ronii_root() / "scripts" / "ronii_runner.py"
+
+    def _load_ronii_recent_inbox_items(self, limit: int = 6) -> list[dict[str, Any]]:
+        db_path = self._ronii_root() / "db" / "ronii.db"
+        if not db_path.exists():
+            return []
+        with sqlite3.connect(db_path) as con:
+            rows = con.execute(
+                "SELECT id, entity_uid, title, state, canonical_url, attributes_json "
+                "FROM entities WHERE type='inbox_item' ORDER BY updated_at DESC, id DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            attrs = {}
+            try:
+                attrs = json.loads(row[5] or "{}")
+            except Exception:
+                attrs = {}
+            items.append(
+                {
+                    "id": row[0],
+                    "entity_uid": row[1],
+                    "title": row[2] or row[1] or f"Inbox {row[0]}",
+                    "state": row[3] or "-",
+                    "url": row[4] or "",
+                    "classification": attrs.get("classification", "unknown"),
+                    "status": attrs.get("status", row[3] or "unknown"),
+                }
+            )
+        return items
+
+    def _run_ronii_runner_command(self, command: str, *args: str) -> str:
+        import subprocess
+
+        runner_path = self._ronii_runner_path()
+        if not runner_path.exists():
+            return "Ronii inbox runner is not configured on this host."
+
+        proc = subprocess.run(
+            [sys.executable, str(runner_path), command, *[str(a) for a in args if str(a).strip()]],
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        output = (proc.stdout or "").strip()
+        error = (proc.stderr or "").strip()
+        if proc.returncode != 0:
+            return error or output or f"Ronii runner failed: exit {proc.returncode}"
+        return output or "(no output)"
+
+    def _build_menu_payload(self, section: str) -> tuple[str, list[dict[str, str]]]:
+        if section == "main":
+            return (
+                "Quick Menu",
+                [
+                    {"command_text": "/status", "button_text": "상태", "description": "현재 세션 상태 확인"},
+                    {"command_text": "/model", "button_text": "모델", "description": "모델/프로바이더 선택"},
+                    {"command_text": "/menu inbox", "button_text": "인박스", "description": "Ronii 인박스 메뉴"},
+                    {"command_text": "/menu session", "button_text": "세션", "description": "세션 관련 빠른 명령"},
+                    {"command_text": "/menu ops", "button_text": "운영", "description": "재시작/업데이트 등 운영 명령"},
+                    {"command_text": "/menu help", "button_text": "도움", "description": "도움말과 전체 명령 브라우저"},
+                ],
+            )
+        if section == "session":
+            return (
+                "Quick Menu • Session",
+                [
+                    {"command_text": "/profile", "button_text": "프로필", "description": "현재 프로필 정보"},
+                    {"command_text": "/usage", "button_text": "사용량", "description": "현재 세션 사용량 확인"},
+                    {"command_text": "/help", "button_text": "도움말", "description": "핵심 명령 요약"},
+                    {"command_text": "/menu main", "button_text": "메인으로", "description": "메인 메뉴로 돌아가기"},
+                ],
+            )
+        if section == "ops":
+            return (
+                "Quick Menu • Ops",
+                [
+                    {"command_text": "/status", "button_text": "상태", "description": "현재 세션 상태 확인"},
+                    {"command_text": "/restart", "button_text": "재시작", "description": "게이트웨이 재시작"},
+                    {"command_text": "/update", "button_text": "업데이트", "description": "Hermes 업데이트"},
+                    {"command_text": "/menu main", "button_text": "메인으로", "description": "메인 메뉴로 돌아가기"},
+                ],
+            )
+        if section == "help":
+            return (
+                "Quick Menu • Help",
+                [
+                    {"command_text": "/help", "button_text": "도움말", "description": "주요 명령 요약"},
+                    {"command_text": "/commands", "button_text": "전체명령", "description": "전체 명령 브라우저 열기"},
+                    {"command_text": "/status", "button_text": "상태", "description": "현재 세션 상태 확인"},
+                    {"command_text": "/menu main", "button_text": "메인으로", "description": "메인 메뉴로 돌아가기"},
+                ],
+            )
+        if section == "inbox":
+            return (
+                "Quick Menu • Inbox",
+                [
+                    {"command_text": "/inbox recent", "button_text": "최근 항목", "description": "최근 inbox 항목 목록"},
+                    {"command_text": "/inbox domain list", "button_text": "도메인 규칙", "description": "현재 domain rule 목록"},
+                    {"command_text": "/inbox help", "button_text": "사용법", "description": "view/dig/reanalyze 사용법"},
+                    {"command_text": "/menu main", "button_text": "메인으로", "description": "메인 메뉴로 돌아가기"},
+                ],
+            )
+        raise ValueError(f"unknown menu section: {section}")
+
+    async def _send_quick_menu(self, event: MessageEvent, title: str, entries: list[dict[str, str]]) -> Optional[str]:
+        from hermes_cli.commands import _sanitize_telegram_name
+        from gateway.config import Platform
+
+        if event.source.platform == Platform.TELEGRAM:
+            adapter_map = getattr(self, "adapters", {}) or {}
+            adapter = adapter_map.get(Platform.TELEGRAM)
+            if adapter is not None and hasattr(adapter, "send_command_browser"):
+                metadata = self._thread_metadata_for_source(
+                    event.source,
+                    self._reply_anchor_for_event(event),
+                )
+                browser_entries = []
+                for entry in entries:
+                    command_text = _telegramize_command_mentions(
+                        entry["command_text"],
+                        getattr(getattr(event, "source", None), "platform", None),
+                    )
+                    browser_entries.append(
+                        {
+                            "command_text": command_text,
+                            "button_text": entry.get("button_text") or _sanitize_telegram_name(command_text.lstrip("/")) or command_text.lstrip("/"),
+                            "description": entry.get("description", ""),
+                        }
+                    )
+                browser_result = await adapter.send_command_browser(
+                    chat_id=event.source.chat_id,
+                    entries=browser_entries,
+                    page=1,
+                    page_size=max(4, len(browser_entries)),
+                    title=title,
+                    metadata=metadata,
+                )
+                if getattr(browser_result, "success", False):
+                    return None
+
+        lines = [f"**{title}**", ""]
+        for entry in entries:
+            lines.append(f"`{entry['command_text']}` — {entry['description']}")
+        return _telegramize_command_mentions(
+            "\n".join(lines),
+            getattr(getattr(event, "source", None), "platform", None),
+        )
+
+    async def _handle_menu_command(self, event: MessageEvent) -> Optional[str]:
+        raw_args = (event.get_command_args() or "").strip().lower()
+        section = raw_args or "main"
+        if section not in {"main", "session", "ops", "help", "inbox"}:
+            return "Usage: /menu [main|session|ops|help|inbox]"
+        title, entries = self._build_menu_payload(section)
+        return await self._send_quick_menu(event, title, entries)
+
+    async def _handle_inbox_command(self, event: MessageEvent) -> Optional[str]:
+        raw_args = (event.get_command_args() or "").strip()
+        if not raw_args:
+            return await self._send_quick_menu(event, *self._build_menu_payload("inbox"))
+
+        parts = raw_args.split()
+        action = parts[0].lower()
+        rest = parts[1:]
+
+        if action == "help":
+            lines = [
+                "**Ronii Inbox**",
+                "",
+                "`/inbox recent` — 최근 항목 버튼 메뉴",
+                "`/inbox actions <id>` — 항목별 액션 메뉴",
+                "`/inbox view <id>` — 5프레임 요약 보기",
+                "`/inbox dig <id>` — Notion handoff 생성",
+                "`/inbox reanalyze <id>` — 강제 재분석",
+                "`/inbox domain list` — 도메인 규칙 보기",
+            ]
+            return _telegramize_command_mentions(
+                "\n".join(lines),
+                getattr(getattr(event, "source", None), "platform", None),
+            )
+
+        if action == "recent":
+            items = self._load_ronii_recent_inbox_items(limit=6)
+            if not items:
+                return "Ronii inbox recent items not found."
+            entries = []
+            for item in items:
+                title = str(item.get("title") or item.get("entity_uid") or f"Inbox {item.get('id')}")
+                short = title[:18] + "…" if len(title) > 18 else title
+                entries.append(
+                    {
+                        "command_text": f"/inbox actions {item['id']}",
+                        "button_text": f"#{item['id']} {short}"[:28],
+                        "description": f"{item.get('classification', '-')}/{item.get('status', '-')}",
+                    }
+                )
+            entries.append({"command_text": "/menu inbox", "button_text": "뒤로", "description": "인박스 메뉴로 돌아가기"})
+            return await self._send_quick_menu(event, "Quick Menu • Inbox Recent", entries)
+
+        if action == "actions":
+            if not rest:
+                return "Usage: /inbox actions <id>"
+            identifier = rest[0]
+            entries = [
+                {"command_text": f"/inbox view {identifier}", "button_text": "view", "description": "5프레임 요약 보기"},
+                {"command_text": f"/inbox dig {identifier}", "button_text": "dig", "description": "Notion handoff 생성"},
+                {"command_text": f"/inbox reanalyze {identifier}", "button_text": "reanalyze", "description": "강제 재분석"},
+                {"command_text": "/inbox recent", "button_text": "목록", "description": "최근 항목으로 돌아가기"},
+            ]
+            return await self._send_quick_menu(event, f"Inbox Actions • {identifier}", entries)
+
+        if action in {"view", "dig", "reanalyze"}:
+            if not rest:
+                return f"Usage: /inbox {action} <id>"
+            runner_command = {
+                "view": "inbox_view",
+                "dig": "inbox_dig",
+                "reanalyze": "inbox_reanalyze",
+            }[action]
+            return _telegramize_command_mentions(
+                self._run_ronii_runner_command(runner_command, rest[0]),
+                getattr(getattr(event, "source", None), "platform", None),
+            )
+
+        if action == "domain":
+            subaction = rest[0].lower() if rest else "list"
+            domain_args = [subaction, *rest[1:]]
+            return _telegramize_command_mentions(
+                self._run_ronii_runner_command("inbox_domain", *domain_args),
+                getattr(getattr(event, "source", None), "platform", None),
+            )
+
+        return "Usage: /inbox <help|recent|actions|view|dig|reanalyze|domain> [args]"
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.

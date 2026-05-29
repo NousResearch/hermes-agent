@@ -196,6 +196,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", cli_only=True),
 
     # Info
+    CommandDef("menu", "Open a compact quick-action menu for common gateway commands", "Info",
+               gateway_only=True, args_hint="[main|session|ops|help|inbox]"),
+    CommandDef("inbox", "Operate Ronii inbox items and review queues", "Info",
+               gateway_only=True, args_hint="<help|recent|actions|view|dig|reanalyze|domain> [args]",
+               subcommands=("help", "recent", "actions", "view", "dig", "reanalyze", "domain")),
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
     CommandDef("help", "Show available commands", "Info"),
@@ -340,6 +345,8 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "commands",
         "deny",
         "help",
+        "inbox",
+        "menu",
         "new",
         "profile",
         "queue",

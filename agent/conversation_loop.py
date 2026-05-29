@@ -2543,6 +2543,7 @@ def run_conversation(
                     error_type,
                     agent._client_log_context(),
                     _error_summary,
+                    exc_info=True,
                 )
 
                 _provider = getattr(agent, "provider", "unknown")
@@ -3168,7 +3169,7 @@ def run_conversation(
                             f"{agent.log_prefix}        hermes fallback add   (interactive picker — same as `hermes model`)",
                             force=True,
                         )
-                    logger.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
+                    logger.error(f"{agent.log_prefix}Non-retryable client error: {api_error}", exc_info=True)
                     # Skip session persistence when the error is likely
                     # context-overflow related (status 400 + large session).
                     # Persisting the failed user message would make the

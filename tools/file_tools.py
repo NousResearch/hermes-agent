@@ -285,7 +285,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
-    normalized = os.path.expanduser(path)
+    normalized = os.path.normpath(os.path.expanduser(path))
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
@@ -306,17 +306,35 @@ def _is_blocked_device(filepath: str) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
 
     Check the literal path first so aliases like /dev/stdin are caught before
-    they resolve to terminal-specific paths. Then check the resolved path so a
-    workspace symlink to /dev/zero cannot bypass the guard.
+    they resolve to terminal-specific paths. Then check each symlink hop before
+    the final resolved path so aliases to devices cannot bypass the guard.
     """
-    normalized = os.path.expanduser(filepath)
+    normalized = os.path.normpath(os.path.expanduser(filepath))
     if _is_blocked_device_path(normalized):
         return True
+
+    seen: set[str] = set()
+    current = normalized
+    for _ in range(20):
+        try:
+            target = os.readlink(current)
+        except OSError:
+            break
+        if not os.path.isabs(target):
+            target = os.path.join(os.path.dirname(current), target)
+        target = os.path.normpath(target)
+        if _is_blocked_device_path(target):
+            return True
+        if target in seen:
+            break
+        seen.add(target)
+        current = target
+
     try:
-        resolved = os.path.realpath(normalized)
+        resolved = os.path.normpath(os.path.realpath(normalized))
     except (OSError, ValueError):
         return False
-    if resolved != normalized and _is_blocked_device_path(resolved):
+    if _is_blocked_device_path(resolved):
         return True
     return False
 

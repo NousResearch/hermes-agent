@@ -109,6 +109,10 @@ class TestDevicePathBlocking(unittest.TestCase):
         for path in ("/proc/cpuinfo", "/proc/meminfo", "/proc/uptime", "/proc/version"):
             self.assertFalse(_is_blocked_device(path), f"{path} should not be blocked")
 
+    def test_normpath_alias_to_blocked_device_is_blocked(self):
+        self.assertTrue(_is_blocked_device("/dev/../dev/zero"))
+        self.assertTrue(_is_blocked_device("/dev/./urandom"))
+
     def test_normal_files_not_blocked(self):
         self.assertFalse(_is_blocked_device("/tmp/test.py"))
         self.assertFalse(_is_blocked_device("/home/user/.bashrc"))
@@ -133,6 +137,17 @@ class TestDevicePathBlocking(unittest.TestCase):
             except OSError as exc:
                 self.skipTest(f"symlink unavailable: {exc}")
             self.assertFalse(_is_blocked_device(link_path))
+
+    def test_symlink_to_blocked_alias_is_blocked_before_realpath(self):
+        if not os.path.exists("/dev/stdin"):
+            self.skipTest("/dev/stdin is not available on this platform")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = os.path.join(tmpdir, "stdin-link")
+            try:
+                os.symlink("/dev/../dev/stdin", link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            self.assertTrue(_is_blocked_device(link_path))
 
     def test_read_file_tool_rejects_device(self):
         """read_file_tool returns an error without any file I/O."""

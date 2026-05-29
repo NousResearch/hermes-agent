@@ -51,28 +51,33 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
-def _install_dependencies(provider_name: str) -> None:
-    """Install pip dependencies declared in plugin.yaml."""
+def _install_dependencies(provider_name: str) -> bool:
+    """Install pip dependencies declared in plugin.yaml.
+
+    Returns True if all dependencies are importable (either already installed
+    or successfully installed).  Returns False if any dependency is still
+    missing after the install attempt.
+    """""
     import subprocess
     from plugins.memory import find_provider_dir
 
     plugin_dir = find_provider_dir(provider_name)
     if not plugin_dir:
-        return
+        return True
     yaml_path = plugin_dir / "plugin.yaml"
     if not yaml_path.exists():
-        return
+        return True
 
     try:
         import yaml
         with open(yaml_path, encoding="utf-8") as f:
             meta = yaml.safe_load(f) or {}
     except Exception:
-        return
+        return True
 
     pip_deps = meta.get("pip_dependencies", [])
     if not pip_deps:
-        return
+        return True
 
     # pip name → import name mapping for packages where they differ
     _IMPORT_NAMES = {
@@ -92,7 +97,7 @@ def _install_dependencies(provider_name: str) -> None:
             missing.append(dep)
 
     if not missing:
-        return
+        return True
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
@@ -102,7 +107,7 @@ def _install_dependencies(provider_name: str) -> None:
         print(f"  ⚠ uv not found — cannot install dependencies")
         print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
         print(f"  Then re-run: hermes memory setup")
-        return
+        return False
 
     try:
         subprocess.run(
@@ -121,6 +126,18 @@ def _install_dependencies(provider_name: str) -> None:
         print(f"  ⚠ Install failed: {e}")
         print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
 
+    # Verify all dependencies are now importable
+    still_missing = []
+    for dep in pip_deps:
+        import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
+        try:
+            __import__(import_name)
+        except ImportError:
+            still_missing.append(dep)
+    if still_missing:
+        print(f"  ⚠ Dependencies still missing after install: {', '.join(still_missing)}")
+        return False
+
     # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])
     for dep in ext_deps:
@@ -136,6 +153,8 @@ def _install_dependencies(provider_name: str) -> None:
                 if install_cmd:
                     print(f"\n  ⚠ '{dep_name}' not found. Install with:")
                     print(f"    {install_cmd}")
+
+    return True
 
 
 def _get_available_providers() -> list:
@@ -196,7 +215,10 @@ def cmd_setup_provider(provider_name: str) -> None:
 
     name, _, provider = match
 
-    _install_dependencies(name)
+    if not _install_dependencies(name):
+        print(f"  ⚠ Cannot configure '{name}' — required dependencies are missing.")
+        print(f"  Install manually and re-run: hermes memory setup\n")
+        return
 
     config = load_config()
     if not isinstance(config.get("memory"), dict):
@@ -249,7 +271,10 @@ def cmd_setup(args) -> None:
     name, _, provider = providers[selected]
 
     # Install pip dependencies if declared in plugin.yaml
-    _install_dependencies(name)
+    if not _install_dependencies(name):
+        print(f"  ⚠ Cannot configure '{name}' — required dependencies are missing.")
+        print(f"  Install manually and re-run: hermes memory setup\n")
+        return
 
     # If the provider has a post_setup hook, delegate entirely to it.
     # The hook handles its own config, connection test, and activation.

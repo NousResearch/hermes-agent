@@ -415,3 +415,124 @@ class TestRegression_OpenClawCron84141:
         assert err is not None
         assert "not a deferrable" in err
 
+
+class TestRegression_ToolsetScoping:
+    """A restricted-toolset session must not see or invoke out-of-scope tools.
+
+    The bug: the bridge dispatch and the tool_executor unwrap read the
+    catalog from the *global* registry (get_tool_definitions with no
+    toolset scope = "start with everything"), so a session scoped to one
+    MCP server could tool_search the entire process registry and tool_call
+    any plugin tool it was never granted. registry.dispatch() has no
+    enabled_tools gate for non-execute_code tools, so the out-of-scope tool
+    actually ran.
+
+    The fix threads the session's enabled/disabled toolsets into the bridge
+    dispatch (model_tools.handle_function_call) and the executor unwrap
+    (agent.tool_executor), scoping both the searchable catalog and the
+    invocable set to the session's own toolsets.
+    """
+
+    @staticmethod
+    def _register(name, toolset):
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True, "tool": name})
+
+        registry.register(
+            name=name,
+            handler=_handler,
+            schema=_td(name, f"desc for {name}", {"repo": {"type": "string"}}),
+            toolset=toolset,
+        )
+
+    def test_search_catalog_is_scoped_to_session_toolsets(self):
+        import model_tools
+
+        for i in range(12):
+            self._register(f"mcp_scoped_gh_{i}", "mcp-scoped-gh")
+        self._register("scoped_oos_plugin", "scopedoosplugin")
+
+        # tool_search scoped to the github toolset must not count the
+        # out-of-scope plugin tool (or any of the host registry).
+        result = model_tools.handle_function_call(
+            function_name="tool_search",
+            function_args={"query": "mcp_scoped_gh", "limit": 5},
+            enabled_toolsets=["mcp-scoped-gh"],
+        )
+        parsed = json.loads(result)
+        assert parsed["total_available"] == 12, (
+            f"expected scoped catalog of 12, got {parsed['total_available']} "
+            "— catalog leaked tools outside the session's toolsets"
+        )
+        hit_names = {m["name"] for m in parsed["matches"]}
+        assert "scoped_oos_plugin" not in hit_names
+
+    def test_tool_call_rejects_out_of_scope_tool(self):
+        import model_tools
+
+        self._register("mcp_inscope_gh_op", "mcp-inscope-gh")
+        self._register("inscope_oos_plugin", "inscopeoosplugin")
+
+        # Out-of-scope plugin tool: rejected even though it is registered
+        # and deferrable in the global registry.
+        rejected = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": "inscope_oos_plugin", "arguments": {}},
+            enabled_toolsets=["mcp-inscope-gh"],
+        ))
+        assert "error" in rejected
+        assert "not available in this session" in rejected["error"]
+
+        # In-scope tool: dispatches normally.
+        ok = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": "mcp_inscope_gh_op", "arguments": {"repo": "a/b"}},
+            enabled_toolsets=["mcp-inscope-gh"],
+        ))
+        assert ok.get("ok") is True
+        assert ok.get("tool") == "mcp_inscope_gh_op"
+
+    def test_bridge_dispatch_does_not_pollute_global_resolved_names(self):
+        import model_tools
+
+        self._register("mcp_pollute_op_0", "mcp-pollute")
+        self._register("mcp_pollute_op_1", "mcp-pollute")
+
+        # Establish the scoped session global.
+        model_tools.get_tool_definitions(
+            enabled_toolsets=["mcp-pollute"], quiet_mode=True,
+        )
+        before = set(model_tools._last_resolved_tool_names)
+        assert "terminal" not in before
+
+        # A scoped tool_search call must not widen the process-global
+        # _last_resolved_tool_names to the whole registry (which would leak
+        # core/sandbox tools into execute_code's fallback).
+        model_tools.handle_function_call(
+            function_name="tool_search",
+            function_args={"query": "pollute"},
+            enabled_toolsets=["mcp-pollute"],
+        )
+        after = set(model_tools._last_resolved_tool_names)
+        assert "terminal" not in after, (
+            "bridge dispatch polluted _last_resolved_tool_names with "
+            "out-of-scope tools"
+        )
+
+    def test_scoped_deferrable_names_helper(self):
+        from tools.tool_search import scoped_deferrable_names
+
+        self._register("mcp_helper_op", "mcp-helper")
+        import model_tools
+        defs = model_tools.get_tool_definitions(
+            enabled_toolsets=["mcp-helper"],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        names = scoped_deferrable_names(defs)
+        assert "mcp_helper_op" in names
+        # core tools are never deferrable
+        assert "terminal" not in names
+

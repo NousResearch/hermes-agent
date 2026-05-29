@@ -660,16 +660,15 @@ def _load_cfg() -> dict:
         import yaml
 
         p = _hermes_home / "config.yaml"
-        mtime = p.stat().st_mtime if p.exists() else None
         with _cfg_lock:
+            mtime = p.stat().st_mtime if p.exists() else None
             if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
-        if p.exists():
-            with open(p, encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-        else:
-            data = {}
-        with _cfg_lock:
+            if p.exists():
+                with open(p, encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+            else:
+                data = {}
             _cfg_cache = copy.deepcopy(data)
             _cfg_mtime = mtime
             _cfg_path = p

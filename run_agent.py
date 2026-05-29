@@ -2789,6 +2789,13 @@ class AIAgent:
         state = getattr(self, "_turn_failed_file_mutations", None)
         if state is None:
             return
+        landed_state = getattr(self, "_turn_landed_file_mutations", None)
+        if landed_state is None:
+            landed_state = set()
+            try:
+                self._turn_landed_file_mutations = landed_state
+            except Exception:
+                pass
         targets = _extract_file_mutation_targets(tool_name, args)
         if not targets:
             return
@@ -2807,9 +2814,11 @@ class AIAgent:
                     state[path] = {
                         "tool": tool_name,
                         "error_preview": preview,
+                        "landed_this_turn": path in landed_state,
                     }
         else:
             for path in targets:
+                landed_state.add(path)
                 state.pop(path, None)
 
     def _file_mutation_verifier_enabled(self) -> bool:
@@ -2884,19 +2893,50 @@ class AIAgent:
         """
         if not failed:
             return ""
-        lines = [
-            "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
-            "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
-        ]
+        landed_failures = sum(1 for info in failed.values() if info.get("landed_this_turn"))
+        not_landed_failures = len(failed) - landed_failures
+        if landed_failures and not_landed_failures:
+            lines = [
+                "⚠️ File-mutation verifier: "
+                f"{len(failed)} file(s) had failed file-mutation attempt(s) this turn. "
+                f"{not_landed_failures} file(s) were NOT modified; "
+                f"{landed_failures} file(s) were already modified earlier this turn, "
+                "but a later requested change may not have landed. Run `git status` or "
+                "`read_file` to confirm."
+            ]
+        elif landed_failures:
+            lines = [
+                "⚠️ File-mutation verifier: "
+                f"{len(failed)} file(s) had failed file-mutation attempt(s) after "
+                "earlier successful edits this turn. The file(s) were already "
+                "modified earlier this turn, but a later requested change may not "
+                "have landed. Run `git status` or `read_file` to confirm."
+            ]
+        else:
+            lines = [
+                "⚠️ File-mutation verifier: "
+                f"{len(failed)} file(s) were NOT modified this turn despite any "
+                "wording above that may suggest otherwise. Run `git status` or "
+                "`read_file` to confirm."
+            ]
         shown = 0
         for path, info in failed.items():
             if shown >= 10:
                 break
             preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
-            if preview:
+            if info.get("landed_this_turn"):
+                if preview:
+                    lines.append(
+                        f"  • `{path}` — already modified earlier this turn; "
+                        f"later [{tool}] failed: {preview}"
+                    )
+                else:
+                    lines.append(
+                        f"  • `{path}` — already modified earlier this turn; "
+                        f"later [{tool}] failed"
+                    )
+            elif preview:
                 lines.append(f"  • `{path}` — [{tool}] {preview}")
             else:
                 lines.append(f"  • `{path}` — [{tool}] failed")

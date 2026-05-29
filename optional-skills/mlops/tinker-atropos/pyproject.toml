@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinker-atropos"
+version = "0.1.0"
+description = "Integration between Tinker training API and Atropos RL framework (Hermes Agent optional skill)"
+readme = "SKILL.md"
+requires-python = ">=3.9"
+dependencies = [
+    "atroposlib @ git+https://github.com/NousResearch/atropos.git",
+    "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.0.0",
+    "requests>=2.31.0",
+    "aiohttp>=3.9.0",
+    "wandb>=0.15.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+rl-server = "tinker_atropos.rl_api_server:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.6.0",
+    "pre-commit>=3.5.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["tinker_atropos*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py39']
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false

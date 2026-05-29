@@ -584,6 +584,7 @@ def test_codex_profile_pool_flush_preserves_newer_shared_root_entry(profile_env)
     shared = global_data["credential_pool"]["openai-codex"][0]
     assert shared["access_token"] == "new-at"
     assert shared["refresh_token"] == "new-rt"
+    assert shared.get("last_status") is None
     profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
     assert [e["id"] for e in profile_data["credential_pool"]["openai-codex"]] == [
         "profile-api-key",
@@ -620,6 +621,103 @@ def test_codex_profile_pool_flush_does_not_restore_removed_shared_root_entry(pro
     assert [e["id"] for e in profile_data["credential_pool"]["openai-codex"]] == [
         "profile-api-key",
     ]
+
+
+def test_codex_profile_pool_flush_does_not_apply_status_to_newer_access_token(profile_env):
+    from dataclasses import replace
+
+    from agent.credential_pool import PooledCredential, STATUS_EXHAUSTED, load_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "old-at",
+            "refresh_token": "shared-rt",
+        }],
+    }))
+    pool = load_pool("openai-codex")
+    shared = pool.entries()[0]
+    pool._replace_entry(shared, replace(
+        shared,
+        last_status=STATUS_EXHAUSTED,
+        last_error_code=429,
+    ))
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "new-at",
+            "refresh_token": "shared-rt",
+        }],
+    }))
+    pool.add_entry(PooledCredential.from_dict("openai-codex", {
+        "id": "profile-api-key",
+        "source": "manual:api_key",
+        "auth_type": "api_key",
+        "access_token": "sk-profile",
+    }))
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    shared = global_data["credential_pool"]["openai-codex"][0]
+    assert shared["access_token"] == "new-at"
+    assert shared["refresh_token"] == "shared-rt"
+    assert shared.get("last_status") is None
+    assert shared.get("last_error_code") is None
+
+
+def test_codex_profile_pool_flush_persists_matching_shared_cooldown(profile_env):
+    from agent.credential_pool import STATUS_EXHAUSTED, load_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "shared-at",
+            "refresh_token": "shared-rt",
+        }],
+    }))
+    pool = load_pool("openai-codex")
+    assert pool.select() is not None
+
+    assert pool.mark_exhausted_and_rotate(status_code=429) is None
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    shared = global_data["credential_pool"]["openai-codex"][0]
+    assert shared["refresh_token"] == "shared-rt"
+    assert shared["last_status"] == STATUS_EXHAUSTED
+    assert shared["last_error_code"] == 429
+
+
+def test_codex_profile_pool_reset_persists_matching_shared_status_clear(profile_env):
+    from agent.credential_pool import load_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "shared-at",
+            "refresh_token": "shared-rt",
+            "last_status": "exhausted",
+            "last_status_at": 1234,
+            "last_error_code": 429,
+        }],
+    }))
+    pool = load_pool("openai-codex")
+
+    assert pool.reset_statuses() == 1
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    shared = global_data["credential_pool"]["openai-codex"][0]
+    assert shared["refresh_token"] == "shared-rt"
+    assert shared["last_status"] is None
+    assert shared["last_status_at"] is None
+    assert shared["last_error_code"] is None
 
 
 def test_clear_codex_auth_clears_profile_entries_and_shared_root_state(profile_env):

@@ -395,6 +395,8 @@ def test_profile_mode_refuses_to_refresh_unclaimed_legacy_tokens(tmp_path, monke
 
     assert exc.value.code == "codex_auth_refresh_owner_unclaimed"
     assert exc.value.relogin_required is True
+    assert "`hermes model`" in str(exc.value)
+    assert "reauthenticate" in str(exc.value)
 
 
 def test_save_codex_tokens_syncs_credential_pool(tmp_path, monkeypatch):

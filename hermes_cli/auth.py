@@ -104,6 +104,14 @@ SHARED_CREDENTIAL_POOL_SOURCES = {
     "openai-codex": frozenset({"device_code"}),
 }
 SHARED_CREDENTIAL_POOL_PROVIDERS = frozenset(SHARED_CREDENTIAL_POOL_SOURCES)
+SHARED_CREDENTIAL_POOL_STATUS_FIELDS = frozenset({
+    "last_status",
+    "last_status_at",
+    "last_error_code",
+    "last_error_reason",
+    "last_error_message",
+    "last_error_reset_at",
+})
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
 XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
@@ -1273,6 +1281,39 @@ def _merge_shared_credential_pool_entries(
     return shared_entries + profile_entries
 
 
+def _merge_shared_credential_pool_status(
+    provider_id: str,
+    current_entries: List[Dict[str, Any]],
+    snapshot_entries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Apply status-only snapshot updates without replaying stale OAuth tokens."""
+    snapshots_by_id = {
+        entry.get("id"): entry
+        for entry in snapshot_entries
+        if _is_shared_credential_pool_entry(provider_id, entry)
+        and isinstance(entry.get("id"), str)
+    }
+    merged = []
+    for current in current_entries:
+        updated = dict(current)
+        snapshot = snapshots_by_id.get(current.get("id"))
+        current_refresh = current.get("refresh_token")
+        if (
+            isinstance(snapshot, dict)
+            and isinstance(current_refresh, str)
+            and current_refresh
+            and snapshot.get("access_token") == current.get("access_token")
+            and snapshot.get("refresh_token") == current_refresh
+        ):
+            for field in SHARED_CREDENTIAL_POOL_STATUS_FIELDS:
+                if field in snapshot:
+                    updated[field] = snapshot[field]
+                else:
+                    updated.pop(field, None)
+        merged.append(updated)
+    return merged
+
+
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
@@ -1391,9 +1432,13 @@ def write_credential_pool(
                 if isinstance(existing_shared_entries, list)
                 else []
             )
-            shared_pool[provider_id] = root_profile_entries + (
-                current_shared_entries if preserve_shared_entries else shared_entries
-            )
+            if preserve_shared_entries:
+                shared_entries = _merge_shared_credential_pool_status(
+                    provider_id,
+                    current_shared_entries,
+                    shared_entries,
+                )
+            shared_pool[provider_id] = root_profile_entries + shared_entries
             _save_auth_store(shared_auth_store, auth_file=shared_auth_file)
 
             if profile_entries or profile_auth_file.exists():
@@ -3539,7 +3584,8 @@ def _require_codex_refresh_owner(state: Optional[Dict[str, Any]] = None) -> None
         return
     raise AuthError(
         "Codex credentials predate profile-safe refresh ownership. "
-        "Run `hermes auth` to create a fresh Hermes-owned Codex session.",
+        "Run `hermes model`, choose OpenAI Codex, and reauthenticate to create "
+        "a fresh Hermes-owned Codex session.",
         provider="openai-codex",
         code="codex_auth_refresh_owner_unclaimed",
         relogin_required=True,

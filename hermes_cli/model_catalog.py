@@ -132,7 +132,7 @@ def _fetch_manifest(url: str, timeout: float) -> dict[str, Any] | None:
                 "User-Agent": _HERMES_USER_AGENT,
             },
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # SSRF: add IP block check
             data = json.loads(resp.read().decode())
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
         logger.info("model catalog fetch failed (%s): %s", url, exc)

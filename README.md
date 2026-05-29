@@ -81,28 +81,37 @@ hermes doctor       # Diagnose any issues
 
 ---
 
-## Agent Project Workspace
+## go-workflow Agent Orchestration
 
-For agent-led repository work, this checkout includes a repo-local workspace contract:
+For agent-led repository work, this checkout now uses repo-contained
+**go-workflow**:
 
-- `.hermes/project.md` — project contract and startup order
-- `.hermes/task-schema.yaml` — task schema, status taxonomy, and concurrency rule
-- `.hermes/tasks.yaml` — executable machine-readable task queue
-- `tasks.md` — human task cockpit
-- `scripts/next_task.py` — list/inspect/claim runnable tasks and generate handoffs
-- `scripts/finish_task.py` — validate completed task evidence and optionally commit
+- `.go-workflow/config.yaml` — project/workflow config
+- `.go-workflow/goals.yaml` — durable project goals
+- `.go-workflow/tasks.yaml` — executable machine-readable task queue
+- `.go-workflow/gates.yaml` — phase gates and evidence requirements
+- `.go-workflow/skills/` — phase/support skill bundle
+- `.go-workflow/runtime/` — embedded self-contained runtime used by wrappers
+- `.hermes/skills/go-workflow*/` — Hermes-compatible skill discovery only
+- `tasks.md` — human task cockpit rendered from the canonical queue
+- `scripts/next_task.py` — validate/list/inspect/claim runnable tasks and generate handoffs
+- `scripts/gate.py` — record/check phase evidence
+- `scripts/finish_task.py` — finish a completed task with explicit evidence
 
 Typical flow:
 
 ```bash
+python3 scripts/next_task.py --validate
 python3 scripts/next_task.py --list
 python3 scripts/next_task.py --claim --agent <agent-or-profile>
-python3 scripts/finish_task.py --validate-only HERMES-T###
+python3 scripts/gate.py --task-id T### --phase verify --evidence "task_verification_run=<command/result>"
+python3 scripts/finish_task.py T### --evidence "<command/result>" --agent <agent-or-profile>
 ```
 
-Claimed tasks write handoffs to `.hermes/runs/`. The queue prevents parallel
+Claimed tasks write handoffs to `.go-workflow/runs/`. The queue prevents parallel
 workers from claiming overlapping guarded modify scopes unless one task depends on
-the other.
+the other. The older `.hermes/tasks.yaml` queue is retained as legacy context; new
+agentic work should use `.go-workflow/`.
 
 ---
 

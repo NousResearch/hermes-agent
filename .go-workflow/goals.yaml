@@ -1,0 +1,8 @@
+version: 1
+project: hermes-agent
+goals:
+- id: G01
+  title: Make this repo agent-operable
+  outcome: Any agent can pick up bounded work from .go-workflow/tasks.yaml with validation,
+    evidence, and handoff.
+  status: active

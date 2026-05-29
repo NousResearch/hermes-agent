@@ -1,0 +1,21 @@
+version: 1
+project: hermes-agent
+tasks:
+- id: T001
+  title: Document repo-specific go-workflow operating rules
+  status: ready
+  acceptance:
+  - AGENTS.md explains how agents should claim
+  - execute
+  - verify
+  - and finish tasks in this repo.
+  - .go-workflow/tasks.yaml validates successfully.
+  verification:
+  - python3 scripts/next_task.py --validate
+  - git diff --check
+  goal: G01
+  scope:
+    modify:
+    - AGENTS.md
+    - .go-workflow/tasks.yaml
+    - tasks.md

@@ -88,3 +88,9 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
+.go-workflow/runs/*
+!.go-workflow/runs/.gitkeep
+.go-workflow/state/*
+!.go-workflow/state/.gitkeep
+*.py[cod]
+*.egg-info/

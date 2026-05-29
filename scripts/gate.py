@@ -10,4 +10,4 @@ sys.path.insert(0, str(ROOT))
 
 from go_workflow.__main__ import main
 
-raise SystemExit(main(['next', *sys.argv[1:]]))
+raise SystemExit(main(['gate', *sys.argv[1:]]))

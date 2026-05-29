@@ -1,0 +1,72 @@
+version: 1
+gates:
+  plan:
+  - goal_exists
+  - task_has_acceptance
+  - task_has_verification
+  - dependencies_known
+  route_claim:
+  - status_ready
+  - dependencies_done
+  - exclusive_claim_written
+  build:
+  - modify_scope_respected
+  - no_unrelated_dirty_files
+  verify:
+  - task_verification_run
+  - repo_validation_passes
+  docs_ledger:
+  - evidence_recorded
+  - ledger_written
+  - human_cockpit_updated_if_present
+  devil:
+  - required_for_risky_or_multifile_changes
+  audit:
+  - audit_profile_selected
+  - audit_evidence_recorded
+  git:
+  - git_status_clean_or_explained
+  - selective_staging_used
+  - ci_or_pr_status_checked
+  release:
+  - release_scope_confirmed
+  - version_or_no_release_recorded
+  - final_ship_evidence_recorded
+  antislop:
+  - diff_check_clean
+  ship:
+  - git_status_reported
+  - commit_or_pr_linked
+phase_evidence_required:
+  plan:
+  - task_has_acceptance
+  - task_has_verification
+  - dependencies_known
+  route_claim:
+  - exclusive_claim_written
+  build:
+  - modify_scope_respected
+  verify:
+  - task_verification_run
+  - repo_validation_passes
+  docs_ledger:
+  - evidence_recorded
+  - ledger_written
+  devil:
+  - devil_review_or_not_required
+  audit:
+  - audit_profile_selected
+  - audit_evidence_recorded
+  git:
+  - git_status_clean_or_explained
+  - selective_staging_used
+  - ci_or_pr_status_checked
+  release:
+  - release_scope_confirmed
+  - version_or_no_release_recorded
+  - final_ship_evidence_recorded
+  antislop:
+  - diff_check_clean
+  ship:
+  - git_status_reported
+  - commit_or_pr_linked

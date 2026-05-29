@@ -1,0 +1,35 @@
+version: 1
+name: go-workflow
+project:
+  id: hermes-agent
+  name: hermes-agent
+paths:
+  root: .go-workflow
+  goals: .go-workflow/goals.yaml
+  tasks: .go-workflow/tasks.yaml
+  gates: .go-workflow/gates.yaml
+  runs: .go-workflow/runs
+  prompts: .go-workflow/prompts
+  skills: .go-workflow/skills
+  runtime: .go-workflow/runtime
+workflow:
+- setup
+- plan
+- route_claim
+- build
+- verify
+- docs_ledger
+- devil
+- antislop
+- ship
+agents:
+- hermes
+- codex
+- claude
+- gemini
+policy:
+  repo_is_source_of_truth: true
+  claim_before_edit: true
+  finish_requires_evidence: true
+  commit_per_task: true
+  parallel_requires_non_overlapping_modify_scope: true

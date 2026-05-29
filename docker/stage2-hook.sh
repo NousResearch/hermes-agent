@@ -53,6 +53,62 @@ if [ -n "${HERMES_GID:-}" ] && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
     groupmod -o -g "$HERMES_GID" hermes 2>/dev/null || true
 fi
 
+# --- Docker socket group membership (docker-in-docker / DooD) ---
+# When the user bind-mounts the host Docker daemon socket
+# (`-v /var/run/docker.sock:/var/run/docker.sock`) to use the `docker`
+# terminal backend from inside the container, the socket is owned by the
+# host's `docker` group (or root). The supervised hermes user (UID 10000)
+# is not a member of any group that matches the socket's GID, so every
+# `docker` invocation EACCES'es and `check_terminal_requirements()` fails.
+# See #16703.
+#
+# Granting the supp group via `docker run --group-add <gid>` alone is
+# NOT sufficient with our s6-setuidgid privilege drop: s6-setuidgid (and
+# gosu, the older shim) calls initgroups() for the target user, which
+# rebuilds the supplementary group list from /etc/group. Without an
+# /etc/group entry whose GID matches the socket, the kernel-granted
+# supp group is silently wiped between PID 1 and the dropped process.
+# Confirmed empirically: `--group-add 998` alone leaves the dropped
+# hermes process with `Groups: 10000` (998 gone); after this hook adds
+# the entry, the dropped process has `Groups: 998 10000` as expected.
+#
+# Fix: detect the socket's GID at boot and ensure /etc/group has a
+# matching entry that includes hermes. Idempotent across container
+# restarts. Skipped silently when no socket is bind-mounted.
+#
+# Handles the awkward corner cases:
+#   - socket owned by GID 0 (root) — some Podman setups; usermod -aG root
+#   - socket GID already used by a known container group (e.g. tty=5):
+#     reuse that group's name rather than creating a duplicate
+#   - hermes is already a member of the right group (idempotent restart)
+#   - chown/groupadd failures under rootless containers — non-fatal
+for sock in /var/run/docker.sock /run/docker.sock; do
+    [ -S "$sock" ] || continue
+    sock_gid=$(stat -c '%g' "$sock" 2>/dev/null) || continue
+    [ -n "$sock_gid" ] || continue
+    # Already a member? Nothing to do.
+    if id -G hermes 2>/dev/null | tr ' ' '\n' | grep -qx "$sock_gid"; then
+        echo "[stage2] hermes already in group $sock_gid for $sock"
+        break
+    fi
+    # Resolve or create a group name for this GID.
+    sock_group=$(getent group "$sock_gid" 2>/dev/null | cut -d: -f1)
+    if [ -z "$sock_group" ]; then
+        sock_group="hostdocker"
+        if ! groupadd -g "$sock_gid" "$sock_group" 2>/dev/null; then
+            echo "[stage2] Warning: groupadd -g $sock_gid $sock_group failed; skipping docker socket group setup"
+            break
+        fi
+        echo "[stage2] Created group $sock_group (GID $sock_gid) for Docker socket"
+    fi
+    if usermod -aG "$sock_group" hermes 2>/dev/null; then
+        echo "[stage2] Added hermes to group $sock_group (GID $sock_gid) for $sock"
+    else
+        echo "[stage2] Warning: usermod -aG $sock_group hermes failed; docker backend may fail with EACCES"
+    fi
+    break
+done
+
 # --- Fix ownership of data volume ---
 # When HERMES_UID is remapped or the top-level $HERMES_HOME isn't owned by
 # the runtime hermes UID, restore ownership to hermes — but ONLY for the

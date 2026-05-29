@@ -86,3 +86,13 @@ def test_extract_local_files_uses_shared_extension_set(tmp_path):
     f.write_text("hi")
     paths, _cleaned = BasePlatformAdapter.extract_local_files(f"see {f}")
     assert paths == [str(f)]
+
+
+def test_tool_media_re_matches_broadened_extensions():
+    from gateway.platforms.base import _TOOL_MEDIA_RE
+    content = '{"success": true, "media_tag": "MEDIA:/tmp/notes.md"}'
+    paths = [m.group(1).rstrip('",}') for m in _TOOL_MEDIA_RE.finditer(content)]
+    assert paths == ["/tmp/notes.md"]
+
+    upper = '{"media_tag": "MEDIA:/tmp/IMG.PNG"}'
+    assert [m.group(1).rstrip('",}') for m in _TOOL_MEDIA_RE.finditer(upper)] == ["/tmp/IMG.PNG"]

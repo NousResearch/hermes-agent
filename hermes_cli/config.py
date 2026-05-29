@@ -963,6 +963,12 @@ DEFAULT_CONFIG = {
                                       # Default False matches historical behavior; set to
                                       # True if you'd rather pause than silently lose
                                       # context turns when your aux model is flaky.
+        "warn_threshold": 0.60,       # Context ratio at which to warn user to start
+                                      # a fresh session BEFORE auto-compression triggers.
+                                      # Set to 0 to disable (default 0.60 = 60%).
+                                      # Must be strictly less than 'threshold'.
+        "warn_cooldown_turns": 5,     # Minimum turns between consecutive context-full
+                                      # warnings to avoid user spam.
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).

@@ -518,6 +518,11 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self._last_warn_turn = 0
+        self._current_turn = 0
+        self._has_ever_warned = False
+        self._warned_context_full = False
+        self._context_usage_pct = 0.0
 
     def update_model(
         self,
@@ -535,9 +540,10 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
+        _floor = MINIMUM_CONTEXT_LENGTH if context_length >= MINIMUM_CONTEXT_LENGTH else min(context_length, MINIMUM_CONTEXT_LENGTH)
         self.threshold_tokens = max(
             int(context_length * self.threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
+            _floor,
         )
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
@@ -562,6 +568,8 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
+        warn_threshold: float = 0.0,
+        warn_cooldown_turns: int = 5,
     ):
         self.model = model
         self.base_url = base_url
@@ -588,9 +596,12 @@ class ContextCompressor(ContextEngine):
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
         # for models right at the minimum.
+        # When the user explicitly overrides context_length below the minimum,
+        # use the actual context_length as the floor instead of 64K.
+        _floor = MINIMUM_CONTEXT_LENGTH if self.context_length >= MINIMUM_CONTEXT_LENGTH else min(self.context_length, MINIMUM_CONTEXT_LENGTH)
         self.threshold_tokens = max(
             int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
+            _floor,
         )
         self.compression_count = 0
 
@@ -643,6 +654,15 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
 
+        # ── Topic-split warning (pre-compression hint) ──
+        self.warn_threshold: float = warn_threshold
+        self.warn_cooldown_turns: int = warn_cooldown_turns
+        self._last_warn_turn: int = 0       # turn number of last warning
+        self._current_turn: int = 0          # monotonic turn counter
+        self._has_ever_warned: bool = False  # separate from turn=0 sentinel
+        self._warned_context_full: bool = False  # flag for prompt builder
+        self._context_usage_pct: float = 0.0     # last known context usage %
+
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
@@ -670,6 +690,51 @@ class ContextCompressor(ContextEngine):
                 )
             return False
         return True
+
+    def should_warn(self, prompt_tokens: int = None) -> bool:
+        """Check if context is full enough to warn user but not yet compress.
+
+        Returns True when:
+        - warn_threshold > 0 (feature is enabled)
+        - token usage is between warn_threshold and compression threshold
+        - cooldown has passed since last warning
+        """
+        if self.warn_threshold <= 0:
+            return False
+        tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
+        if tokens <= 0:
+            return False
+        warn_tokens = int(self.context_length * self.warn_threshold)
+        if tokens < warn_tokens:
+            return False
+        if tokens >= self.threshold_tokens:
+            return False  # Let should_compress() handle it
+        # Cooldown check — skip if never warned, else enforce spacing
+        if self._has_ever_warned and self._current_turn - self._last_warn_turn < self.warn_cooldown_turns:
+            return False
+        self._context_usage_pct = tokens / self.context_length * 100
+        return True
+
+    def mark_warned(self) -> None:
+        """Record that a warning was issued this turn, resetting the cooldown."""
+        self._has_ever_warned = True
+        self._last_warn_turn = self._current_turn
+        self._warned_context_full = True
+
+    def increment_turn(self) -> None:
+        """Increment the per-session turn counter. Called after each agent turn."""
+        self._current_turn += 1
+
+    @property
+    def warned_context_full(self) -> bool:
+        """True if a context-full warning is active and should be surfaced."""
+        return self._warned_context_full
+
+    def consume_warn_flag(self) -> bool:
+        """Read and clear the warned_context_full flag (oneshot)."""
+        was = self._warned_context_full
+        self._warned_context_full = False
+        return was
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)

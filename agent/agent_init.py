@@ -1246,6 +1246,10 @@ def init_agent(
     compression_protect_first = max(
         0, int(_compression_cfg.get("protect_first_n", 3))
     )
+    _warn_threshold = float(_compression_cfg.get("warn_threshold", 0.0))
+    _warn_cooldown = int(_compression_cfg.get("warn_cooldown_turns", 5))
+    # abort_on_summary_failure is read after the ContextCompressor init block
+    # for plugin-engine compatibility — see below.
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
@@ -1466,6 +1470,8 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            warn_threshold=_warn_threshold,
+            warn_cooldown_turns=_warn_cooldown,
         )
     agent.compression_enabled = compression_enabled
 

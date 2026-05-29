@@ -3884,6 +3884,24 @@ def run_conversation(
                     # _flush_messages_to_session_db writes compressed messages
                     # to the new session (see preflight compression comment).
                     conversation_history = None
+
+                # ── Topic-split warning (pre-compression hint) ──
+                # If context usage is between warn_threshold and compression
+                # threshold, mark a warning for the next turn's system prompt.
+                elif agent.compression_enabled and _compressor.should_warn(_real_tokens):
+                    _compressor.mark_warned()
+                    if not agent.quiet_mode:
+                        logger.info(
+                            "Context warning: ~%d tokens = %.0f%% of %d limit "
+                            "(compress at %.0f%%).  Prompting user to start fresh session.",
+                            _real_tokens,
+                            _compressor._context_usage_pct,
+                            _compressor.context_length,
+                            _compressor.threshold_percent * 100,
+                        )
+
+                # Increment turn counter for cooldown tracking
+                _compressor.increment_turn()
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages

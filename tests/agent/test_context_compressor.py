@@ -2118,3 +2118,114 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestWarnThreshold:
+    """Tests for topic-split warning (pre-compression hint)."""
+
+    @staticmethod
+    def _make_compressor(
+        *,
+        context_length: int = 128000,
+        threshold_percent: float = 0.50,
+        warn_threshold: float = 0.30,
+        warn_cooldown_turns: int = 5,
+    ) -> ContextCompressor:
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=context_length,
+        ):
+            return ContextCompressor(
+                model="test/model",
+                threshold_percent=threshold_percent,
+                protect_first_n=3,
+                protect_last_n=5,
+                summary_target_ratio=0.20,
+                quiet_mode=True,
+                warn_threshold=warn_threshold,
+                warn_cooldown_turns=warn_cooldown_turns,
+            )
+
+    def test_disabled_by_default(self):
+        cc = self._make_compressor(warn_threshold=0.0)
+        assert cc.should_warn(50000) is False
+
+    def test_warns_when_between_thresholds(self):
+        cc = self._make_compressor(
+            context_length=128000, threshold_percent=0.50, warn_threshold=0.30,
+        )
+        assert cc.should_warn(50000) is True
+
+    def test_does_not_warn_below_warn_threshold(self):
+        cc = self._make_compressor(
+            context_length=128000, threshold_percent=0.50, warn_threshold=0.30,
+        )
+        assert cc.should_warn(10000) is False
+
+    def test_does_not_warn_above_compress_threshold(self):
+        cc = self._make_compressor(
+            context_length=128000, threshold_percent=0.50, warn_threshold=0.30,
+        )
+        assert cc.should_warn(70000) is False
+
+    def test_cooldown_prevents_spam(self):
+        cc = self._make_compressor(warn_cooldown_turns=3)
+        assert cc.should_warn(50000) is True
+        cc.mark_warned()
+        for _ in range(2):
+            cc.increment_turn()
+            assert cc.should_warn(50000) is False
+        cc.increment_turn()
+        assert cc.should_warn(50000) is True
+        cc.mark_warned()
+        cc.increment_turn()
+        assert cc.should_warn(50000) is False
+
+    def test_consume_warn_flag_is_oneshot(self):
+        cc = self._make_compressor()
+        cc.mark_warned()
+        assert cc.warned_context_full is True
+        assert cc.consume_warn_flag() is True
+        assert cc.warned_context_full is False
+        assert cc.consume_warn_flag() is False
+
+    def test_consume_warn_flag_false_when_not_warned(self):
+        cc = self._make_compressor()
+        assert cc.consume_warn_flag() is False
+
+    def test_session_reset_clears_warn_state(self):
+        cc = self._make_compressor()
+        cc.mark_warned()
+        for _ in range(10):
+            cc.increment_turn()
+        cc._context_usage_pct = 42.0
+        cc.on_session_reset()
+        assert cc._last_warn_turn == 0
+        assert cc._current_turn == 0
+        assert cc._has_ever_warned is False
+        assert cc._warned_context_full is False
+        assert cc._context_usage_pct == 0.0
+
+    def test_context_usage_pct_is_set_on_warn(self):
+        cc = self._make_compressor(
+            context_length=100000, threshold_percent=0.50, warn_threshold=0.30,
+        )
+        cc.should_warn(45000)
+        assert cc._context_usage_pct == pytest.approx(45.0, abs=0.1)
+
+    def test_has_ever_warned_set_after_mark(self):
+        cc = self._make_compressor(warn_cooldown_turns=3)
+        assert cc._has_ever_warned is False
+        cc.should_warn(50000)  # warns but doesn't set _has_ever_warned
+        assert cc._has_ever_warned is False
+        cc.mark_warned()
+        assert cc._has_ever_warned is True
+
+    def test_increment_turn_monotonic(self):
+        cc = self._make_compressor()
+        assert cc._current_turn == 0
+        cc.increment_turn()
+        assert cc._current_turn == 1
+        cc.increment_turn()
+        cc.increment_turn()
+        assert cc._current_turn == 3

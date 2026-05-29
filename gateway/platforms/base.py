@@ -848,6 +848,13 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     _HERMES_HOME / "video_cache",
     _HERMES_HOME / "document_cache",
     _HERMES_HOME / "browser_screenshots",
+    # Canonical cache layout — listed alongside the legacy *_cache dirs so
+    # generated artifacts deliver on installs that have both (#31733).
+    _HERMES_HOME / "cache" / "images",
+    _HERMES_HOME / "cache" / "audio",
+    _HERMES_HOME / "cache" / "videos",
+    _HERMES_HOME / "cache" / "documents",
+    _HERMES_HOME / "cache" / "screenshots",
 )
 
 # Default recency window for trusting freshly-produced files (seconds).
@@ -1022,7 +1029,11 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not candidate:
         return None
 
-    expanded = Path(os.path.expanduser(candidate))
+    try:
+        expanded = Path(os.path.expanduser(candidate))
+    except (OSError, RuntimeError, ValueError):
+        # expanduser raises ValueError("embedded null byte") for a ~\x00 path.
+        return None
     if not expanded.is_absolute():
         return None
 
@@ -1064,6 +1075,17 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
             return str(resolved)
 
     return None
+
+
+# Neutralise control chars and the Unicode line separators (NEL, LS, PS) that
+# str.splitlines() / log aggregators treat as breaks, so a model-emitted path
+# can't forge a second log line. Truncated to keep records bounded.
+_LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
+
+
+def _log_safe_path(path: str) -> str:
+    """Return a single-line, length-bounded path for log output."""
+    return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]
 
 
 SUPPORTED_DOCUMENT_TYPES = {
@@ -2438,11 +2460,12 @@ class BasePlatformAdapter(ABC):
         """Drop unsafe MEDIA paths and normalize accepted paths."""
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
-            safe_path = validate_media_delivery_path(str(media_path))
+            raw = str(media_path)
+            safe_path = validate_media_delivery_path(raw)
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
-                logger.warning("Skipping unsafe MEDIA directive path outside allowed roots")
+                logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
         return safe_media
 
     @staticmethod
@@ -2450,11 +2473,12 @@ class BasePlatformAdapter(ABC):
         """Drop unsafe bare local file paths and normalize accepted paths."""
         safe_paths: List[str] = []
         for file_path in file_paths or []:
-            safe_path = validate_media_delivery_path(str(file_path))
+            raw = str(file_path)
+            safe_path = validate_media_delivery_path(raw)
             if safe_path:
                 safe_paths.append(safe_path)
             else:
-                logger.warning("Skipping unsafe local file path outside allowed roots")
+                logger.warning("Skipping unsafe local file path: %s", _log_safe_path(raw))
         return safe_paths
 
     @staticmethod
@@ -2505,7 +2529,12 @@ class BasePlatformAdapter(ABC):
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+                try:
+                    media.append((os.path.expanduser(path), has_voice_tag))
+                except (OSError, RuntimeError, ValueError):
+                    # Skip a crafted ~\x00 path rather than aborting extraction
+                    # and dropping every other attachment in the response.
+                    continue
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:

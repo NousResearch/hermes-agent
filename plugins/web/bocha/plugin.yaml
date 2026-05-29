@@ -1,0 +1,7 @@
+name: web-bocha
+version: 1.0.0
+description: "Bocha web search provider. Requires BOCHA_API_KEY — sign up at https://open.bochaai.com/."
+author: Bocha
+kind: backend
+provides_web_providers:
+  - bocha

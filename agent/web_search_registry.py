@@ -123,6 +123,7 @@ _LEGACY_PREFERENCE = (
     "firecrawl",
     "parallel",
     "tavily",
+    "bocha",
     "exa",
     "searxng",
     "brave-free",

@@ -361,6 +361,69 @@ class TestLoadGatewayConfig:
         assert config.platforms[Platform.API_SERVER].enabled is False
         assert Platform.API_SERVER not in config.get_connected_platforms()
 
+    def test_bridges_nested_gateway_platforms_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      token: nested-token\n"
+            "      home_channel:\n"
+            "        platform: telegram\n"
+            "        chat_id: \"123\"\n"
+            "        name: Nested Home\n"
+            "      extra:\n"
+            "        reply_prefix: nested\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.enabled is True
+        assert telegram.token == "nested-token"
+        assert telegram.home_channel == HomeChannel(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            name="Nested Home",
+        )
+        assert telegram.extra["reply_prefix"] == "nested"
+
+    def test_top_level_platforms_override_nested_gateway_platforms(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: false\n"
+            "      token: nested-token\n"
+            "      extra:\n"
+            "        reply_prefix: nested\n"
+            "platforms:\n"
+            "  telegram:\n"
+            "    enabled: true\n"
+            "    token: top-token\n"
+            "    extra:\n"
+            "      reply_prefix: top\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.enabled is True
+        assert telegram.token == "top-token"
+        assert telegram.extra["reply_prefix"] == "top"
+
     def test_bridges_quoted_false_session_notify_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

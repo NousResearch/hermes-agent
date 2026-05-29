@@ -779,15 +779,21 @@ def load_gateway_config() -> GatewayConfig:
                     "pair",
                 )
 
-            # Merge platforms section from config.yaml into gw_data so that
-            # nested keys like platforms.webhook.extra.routes are loaded.
-            yaml_platforms = yaml_cfg.get("platforms")
+            # Merge platform config into gw_data so runtime-only settings under
+            # ``gateway.platforms`` are loaded the same way as top-level
+            # ``platforms``. Merge nested first so top-level config keeps
+            # precedence, matching the existing gateway.streaming fallback.
+            gateway_cfg = yaml_cfg.get("gateway")
+            gateway_platforms = gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
             platforms_data = gw_data.setdefault("platforms", {})
             if not isinstance(platforms_data, dict):
                 platforms_data = {}
                 gw_data["platforms"] = platforms_data
-            if isinstance(yaml_platforms, dict):
-                for plat_name, plat_block in yaml_platforms.items():
+
+            def _merge_platform_map(source_platforms: Any) -> None:
+                if not isinstance(source_platforms, dict):
+                    return
+                for plat_name, plat_block in source_platforms.items():
                     if not isinstance(plat_block, dict):
                         continue
                     existing = platforms_data.get(plat_name, {})
@@ -801,6 +807,10 @@ def load_gateway_config() -> GatewayConfig:
                     if merged_extra:
                         merged["extra"] = merged_extra
                     platforms_data[plat_name] = merged
+
+            _merge_platform_map(gateway_platforms)
+            _merge_platform_map(yaml_cfg.get("platforms"))
+            if platforms_data:
                 gw_data["platforms"] = platforms_data
             # Iterate built-in platforms plus any registered plugin platforms
             # so plugin authors get the same shared-key bridging (#24836).

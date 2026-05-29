@@ -1798,6 +1798,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[Dict[str, str]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1871,6 +1872,21 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    # Per-call model override: when the caller specifies a model dict
+    # {provider, model}, resolve its credentials and merge on top of
+    # the config-based creds.  Per-call takes precedence over delegation
+    # config, allowing the LLM to route subagents to any configured
+    # provider on the fly.
+    if model and isinstance(model, dict):
+        try:
+            call_creds = _resolve_per_call_model(model)
+        except ValueError as exc:
+            return tool_error(str(exc))
+        # Merge: per-call overrides config-based values
+        for key in ("model", "provider", "base_url", "api_key", "api_mode", "command", "args"):
+            if key in call_creds and call_creds[key] is not None:
+                creds[key] = call_creds[key]
+
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     if tasks and isinstance(tasks, list):
@@ -1922,26 +1938,38 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model override: resolve and merge on top of creds.
+            # Supports same {provider, model} dict as the top-level param.
+            task_creds = dict(creds)  # shallow copy
+            task_model = t.get("model")
+            if task_model and isinstance(task_model, dict):
+                try:
+                    tm_creds = _resolve_per_call_model(task_model)
+                except ValueError as exc:
+                    return tool_error(f"Task {i} model override failed: {exc}")
+                for key in ("model", "provider", "base_url", "api_key", "api_mode", "command", "args"):
+                    if key in tm_creds and tm_creds[key] is not None:
+                        task_creds[key] = tm_creds[key]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
                 role=effective_role,
             )
@@ -2172,6 +2200,58 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
+def _resolve_per_call_model(model_override: Dict[str, str]) -> dict:
+    """Resolve credentials from a per-call model dict {provider, model}.
+
+    The ``provider`` key names a user-configured custom provider (from
+    config.yaml ``providers`` section).  The ``model`` key is the model
+    string to send to that provider's API.
+
+    Returns a credential dict with the same shape as
+    ``_resolve_delegation_credentials`` so the two can be merged.
+
+    Raises ValueError on resolution failure.
+    """
+    provider_name = str(model_override.get("provider") or "").strip()
+    model_name = str(model_override.get("model") or "").strip()
+
+    if not provider_name:
+        raise ValueError(
+            "Per-call model override requires a 'provider' key "
+            "(e.g. {\"provider\": \"anthropic-proxy\", \"model\": \"claude-opus-4-8\"})."
+        )
+
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(requested=provider_name)
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot resolve per-call provider '{provider_name}': {exc}. "
+            f"Check that the provider is configured in config.yaml under 'providers'."
+        ) from exc
+
+    api_key = runtime.get("api_key", "")
+    if not api_key:
+        raise ValueError(
+            f"Per-call provider '{provider_name}' resolved but has no API key."
+        )
+
+    result = {
+        "model": model_name or runtime.get("model"),
+        "provider": runtime.get("provider"),
+        "base_url": runtime.get("base_url"),
+        "api_key": api_key,
+        "api_mode": runtime.get("api_mode"),
+    }
+    # Propagate ACP command/args if the provider specifies them
+    if runtime.get("command"):
+        result["command"] = runtime["command"]
+    if runtime.get("args"):
+        result["args"] = list(runtime["args"])
+    return result
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -2399,6 +2479,20 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "object",
+                            "properties": {
+                                "provider": {
+                                    "type": "string",
+                                    "description": "Provider name from config.yaml 'providers' section (e.g. 'anthropic-proxy').",
+                                },
+                                "model": {
+                                    "type": "string",
+                                    "description": "Model name the provider should use (e.g. 'claude-opus-4-8').",
+                                },
+                            },
+                            "description": "Per-task model override. Overrides the top-level model param and delegation config for this task only.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2441,6 +2535,27 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "model": {
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": "Provider name from config.yaml 'providers' section (e.g. 'anthropic-proxy').",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Model name the provider should use (e.g. 'claude-opus-4-8').",
+                    },
+                },
+                "description": (
+                    "Override the provider:model pair for child agents. "
+                    "When set, resolves the full credential bundle (base_url, api_key, api_mode) "
+                    "from the named provider in config.yaml and routes all children through it. "
+                    "Overrides delegation.provider and delegation.model from config. "
+                    "Per-task model dicts in the 'tasks' array override this in turn. "
+                    "Example: {\"provider\": \"anthropic-proxy\", \"model\": \"claude-opus-4-8\"}"
+                ),
+            },
         },
         "required": [],
     },
@@ -2463,6 +2578,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

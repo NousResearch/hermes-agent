@@ -332,6 +332,11 @@ export class GatewayClient extends EventEmitter {
     const env = { ...process.env }
     const pyPath = env.PYTHONPATH?.trim()
 
+    // Suppress macOS MallocStackLogging warnings in the gateway and all
+    // child Python processes.  Without this, macOS emits noisy stderr lines
+    // that corrupt TUI rendering when Python forks subprocesses.
+    // See: https://github.com/derailed/k9s/issues/2760
+    env.MallocStackLogging = '0'
     env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root
     this.startReadyTimer(python, cwd)
     this.proc = spawn(python, ['-m', 'tui_gateway.entry'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -354,6 +359,15 @@ export class GatewayClient extends EventEmitter {
       const line = truncateLine(raw.trim())
 
       if (!line) {
+        return
+      }
+
+      // Drop macOS MallocStackLogging noise — system-level warning that
+      // leaks into stderr when Python forks subprocesses.  Not actionable
+      // and corrupts the TUI layout when it fires in bursts.
+      // See: https://github.com/derailed/k9s/issues/2760
+      if (line.includes('MallocStackLogging')) {
+        this.pushLog(`[filtered] ${line}`)
         return
       }
 

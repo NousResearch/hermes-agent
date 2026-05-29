@@ -16,6 +16,7 @@ from agent.image_routing import (
     _supports_vision_override,
     build_native_content_parts,
     decide_image_input_mode,
+    extract_image_refs,
 )
 
 
@@ -449,3 +450,190 @@ class TestLargeImageHandling:
         assert len(parts) == 2
         assert parts[0]["type"] == "text"
         assert parts[1]["type"] == "image_url"
+
+
+# ─── extract_image_refs ──────────────────────────────────────────────────────
+
+
+class TestExtractImageRefs:
+    """Scan task body / inbound text for image paths and URLs (kanban worker
+    enrichment, issue raised May 2026)."""
+
+    def test_empty_or_none_returns_empty(self):
+        assert extract_image_refs("") == ([], [])
+        assert extract_image_refs(None) == ([], [])  # type: ignore[arg-type]
+
+    def test_finds_absolute_path(self, tmp_path: Path):
+        img = tmp_path / "screenshot.png"
+        img.write_bytes(_png_bytes())
+        body = f"Look at {img} and tell me what's wrong."
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+        assert urls == []
+
+    def test_finds_home_relative_path(self, tmp_path: Path, monkeypatch):
+        # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file
+        monkeypatch.setenv("HOME", str(tmp_path))
+        img = tmp_path / "foo.png"
+        img.write_bytes(_png_bytes())
+        paths, urls = extract_image_refs("see ~/foo.png please")
+        assert paths == [str(img)]
+        assert urls == []
+
+    def test_skips_nonexistent_paths(self, tmp_path: Path):
+        # Path-shaped but no file on disk → skipped.
+        body = f"What's at {tmp_path}/never_created.png ?"
+        paths, urls = extract_image_refs(body)
+        assert paths == []
+        assert urls == []
+
+    def test_finds_http_image_url(self):
+        body = "Check out https://example.com/photos/cat.png — cute right?"
+        paths, urls = extract_image_refs(body)
+        assert paths == []
+        assert urls == ["https://example.com/photos/cat.png"]
+
+    def test_finds_https_url_with_query_string(self):
+        body = "Diagram: https://cdn.example.com/img.jpeg?size=large&v=2 here"
+        paths, urls = extract_image_refs(body)
+        assert urls == ["https://cdn.example.com/img.jpeg?size=large&v=2"]
+
+    def test_url_trailing_punctuation_stripped(self):
+        # Prose punctuation right after the URL must not be part of the URL.
+        body = "See https://example.com/a.png."
+        paths, urls = extract_image_refs(body)
+        assert urls == ["https://example.com/a.png"]
+
+    def test_ignores_non_image_urls(self):
+        body = "See https://example.com/page.html and https://x.com/y.pdf"
+        paths, urls = extract_image_refs(body)
+        assert urls == []
+
+    def test_dedupes_paths_and_urls(self, tmp_path: Path):
+        img = tmp_path / "dup.png"
+        img.write_bytes(_png_bytes())
+        body = (
+            f"First {img} then again {img}. "
+            "Also https://example.com/x.png and https://example.com/x.png again."
+        )
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+        assert urls == ["https://example.com/x.png"]
+
+    def test_ignores_paths_in_fenced_code_block(self, tmp_path: Path):
+        img = tmp_path / "real.png"
+        img.write_bytes(_png_bytes())
+        body = (
+            "Outside the block, attach this:\n"
+            f"{img}\n"
+            "But not these examples:\n"
+            "```\n"
+            f"some_other_image: /tmp/example.png\n"
+            f"url: https://example.com/example.png\n"
+            "```\n"
+        )
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+        assert urls == []
+
+    def test_ignores_paths_in_inline_code(self, tmp_path: Path):
+        img = tmp_path / "real.jpg"
+        img.write_bytes(_png_bytes())
+        body = (
+            f"Attach {img}, but ignore the example "
+            "`https://example.com/skip.png` in backticks."
+        )
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+        assert urls == []
+
+    def test_does_not_match_paths_inside_urls(self, tmp_path: Path):
+        # The lookbehind in the regex prevents matching the path-portion of
+        # a URL as a local path. Only the URL should be detected.
+        body = "Just the URL: https://example.com/some/dir/image.png"
+        paths, urls = extract_image_refs(body)
+        assert paths == []
+        assert urls == ["https://example.com/some/dir/image.png"]
+
+    def test_mixed_paths_and_urls(self, tmp_path: Path):
+        img = tmp_path / "local.png"
+        img.write_bytes(_png_bytes())
+        body = (
+            f"Compare local {img} against the design at "
+            "https://example.com/design/v2.png — does it match?"
+        )
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+        assert urls == ["https://example.com/design/v2.png"]
+
+    def test_case_insensitive_extension(self, tmp_path: Path):
+        img = tmp_path / "shouty.PNG"
+        img.write_bytes(_png_bytes())
+        body = f"see {img}"
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+
+
+# ─── build_native_content_parts with URLs ────────────────────────────────────
+
+
+class TestBuildNativeContentPartsURLs:
+    """URL pass-through support added so kanban task bodies (and other
+    inbound surfaces) can route remote image URLs straight to the model."""
+
+    def test_url_only_no_local_paths(self):
+        parts, skipped = build_native_content_parts(
+            "what is this?",
+            [],
+            image_urls=["https://example.com/diagram.png"],
+        )
+        assert skipped == []
+        assert len(parts) == 2
+        assert parts[0]["type"] == "text"
+        assert "[Image attached: https://example.com/diagram.png]" in parts[0]["text"]
+        assert parts[0]["text"].startswith("what is this?")
+        assert parts[1] == {
+            "type": "image_url",
+            "image_url": {"url": "https://example.com/diagram.png"},
+        }
+
+    def test_mixed_path_and_url(self, tmp_path: Path):
+        img = tmp_path / "local.png"
+        img.write_bytes(_png_bytes())
+        parts, skipped = build_native_content_parts(
+            "compare these",
+            [str(img)],
+            image_urls=["https://example.com/remote.jpg"],
+        )
+        assert skipped == []
+        # 1 text + 2 image parts (local data URL first, then remote URL).
+        image_parts = [p for p in parts if p.get("type") == "image_url"]
+        assert len(image_parts) == 2
+        assert image_parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert image_parts[1]["image_url"]["url"] == "https://example.com/remote.jpg"
+        text = parts[0]["text"]
+        assert "[Image attached at:" in text
+        assert "[Image attached: https://example.com/remote.jpg]" in text
+
+    def test_empty_url_list_is_no_op(self, tmp_path: Path):
+        img = tmp_path / "x.png"
+        img.write_bytes(_png_bytes())
+        # image_urls=[] should behave the same as not passing it at all.
+        parts_no_urls, _ = build_native_content_parts("hi", [str(img)])
+        parts_empty_urls, _ = build_native_content_parts("hi", [str(img)], image_urls=[])
+        assert parts_no_urls == parts_empty_urls
+
+    def test_blank_url_strings_are_dropped(self):
+        parts, _ = build_native_content_parts(
+            "x", [], image_urls=["", "  ", "https://example.com/a.png"]
+        )
+        image_parts = [p for p in parts if p.get("type") == "image_url"]
+        assert len(image_parts) == 1
+        assert image_parts[0]["image_url"]["url"] == "https://example.com/a.png"
+
+    def test_url_only_inserts_default_prompt_when_text_empty(self):
+        parts, _ = build_native_content_parts(
+            "", [], image_urls=["https://example.com/a.png"]
+        )
+        assert parts[0]["type"] == "text"
+        assert parts[0]["text"].startswith("What do you see in this image?")

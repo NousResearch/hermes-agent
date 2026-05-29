@@ -1,9 +1,9 @@
 """Regression guards for Discord bot isolation and auth behavior.
 
-Discord bot/webhook messages must not be allowed to start agent turns, even
-when legacy DISCORD_ALLOW_BOTS values are present. The adapter drops bot
-messages at the direct trigger gate, and the shared gateway auth layer also
-rejects Discord bot sources as defense-in-depth.
+Discord bot/webhook messages must not start agent turns by default. Operators
+can explicitly enable controlled bot-to-bot workflows with DISCORD_ALLOW_BOTS
+(`mentions` or `all`); the adapter gate still decides whether a particular
+Discord message is eligible before this shared auth layer sees it.
 """
 
 import os
@@ -33,7 +33,8 @@ def _isolate_discord_env(monkeypatch):
 
 
 # -----------------------------------------------------------------------------
-# Gate 2: _is_user_authorized rejects Discord bots even if legacy allow_bots set
+# Gate 2: _is_user_authorized rejects Discord bots by default but preserves
+# explicit DISCORD_ALLOW_BOTS controlled bot-to-bot mode.
 # -----------------------------------------------------------------------------
 
 
@@ -74,11 +75,11 @@ def _make_discord_human_source(user_id: str = "100200300"):
     )
 
 
-def test_discord_bot_not_authorized_when_allow_bots_mentions(monkeypatch):
-    """DISCORD_ALLOW_BOTS=mentions must not authorize a Discord bot sender.
+def test_discord_bot_authorized_when_allow_bots_mentions(monkeypatch):
+    """DISCORD_ALLOW_BOTS=mentions preserves explicit bot-to-bot mode.
 
-    This prevents a webhook/peer bot that mentions Hermes from starting an
-    agent turn and re-opening bot acknowledgement loops.
+    The adapter message gate decides whether the bot message mentioned Hermes;
+    once such a message reaches shared auth, the bot source is authorized.
     """
     runner = _make_bare_runner()
 
@@ -86,18 +87,18 @@ def test_discord_bot_not_authorized_when_allow_bots_mentions(monkeypatch):
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")  # human-only allowlist
 
     source = _make_discord_bot_source(bot_id="999888777")
-    assert runner._is_user_authorized(source) is False
+    assert runner._is_user_authorized(source) is True
 
 
-def test_discord_bot_not_authorized_when_allow_bots_all(monkeypatch):
-    """DISCORD_ALLOW_BOTS=all must not authorize a Discord bot sender."""
+def test_discord_bot_authorized_when_allow_bots_all(monkeypatch):
+    """DISCORD_ALLOW_BOTS=all preserves explicit controlled bot-to-bot mode."""
     runner = _make_bare_runner()
 
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
 
     source = _make_discord_bot_source()
-    assert runner._is_user_authorized(source) is False
+    assert runner._is_user_authorized(source) is True
 
 
 def test_discord_bot_NOT_authorized_when_allow_bots_none(monkeypatch):

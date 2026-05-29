@@ -6609,15 +6609,15 @@ class GatewayRunner:
             return True
 
         if getattr(source, "is_bot", False):
-            # Discord direct trigger isolation is defense-in-depth: the
-            # Discord adapter should already drop bot/webhook messages, but
-            # reject any bot-auth source that reaches the shared gateway layer
-            # so DISCORD_ALLOW_BOTS cannot reopen the loop gate.
-            if source.platform == Platform.DISCORD:
-                return False
             allow_bots_var = platform_allow_bots_map.get(source.platform)
             if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
                 return True
+            # Discord bot/webhook sources are rejected by default as
+            # defense-in-depth: the Discord adapter should already drop them,
+            # and DISCORD_ALLOW_BOTS must be explicit before bot-to-bot
+            # workflows bypass the human allowlist.
+            if source.platform == Platform.DISCORD:
+                return False
 
         # Check pairing store (always checked, regardless of allowlists)
         platform_name = source.platform.value if source.platform else ""

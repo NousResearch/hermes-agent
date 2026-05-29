@@ -3,7 +3,9 @@
 import asyncio
 import os
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
+
+from plugins.platforms.discord.adapter import _discord_bot_message_allowed
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
@@ -43,16 +45,17 @@ class TestDiscordBotFilter(unittest.TestCase):
 
     def _run_filter(self, message, allow_bots="none", client_user=None):
         """Simulate the on_message trigger gate."""
-        # Replicate the exact trigger isolation from DiscordAdapter.on_message:
-        # own messages are ignored, and all other bot/webhook messages are
-        # ignored regardless of DISCORD_ALLOW_BOTS.
-        if message.author == client_user:
-            return False
+        # Replicate the trigger isolation from DiscordAdapter.on_message:
+        # own messages are ignored, and other bot/webhook messages are
+        # accepted only when DISCORD_ALLOW_BOTS explicitly opts in.
+        with patch.dict(os.environ, {"DISCORD_ALLOW_BOTS": allow_bots}, clear=False):
+            if message.author == client_user:
+                return False
 
-        if getattr(message.author, "bot", False):
-            return False
+            if getattr(message.author, "bot", False):
+                return _discord_bot_message_allowed(message, client_user)
 
-        return True  # human message accepted by this direct gate
+            return True  # human message accepted by this direct gate
 
     def test_own_messages_always_ignored(self):
         """Bot's own messages are always ignored regardless of allow_bots."""
@@ -74,11 +77,11 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot)
         self.assertFalse(self._run_filter(msg, "none"))
 
-    def test_allow_bots_all_still_rejects_direct_bot_triggers(self):
-        """Direct bot triggers are rejected even if legacy allow_bots=all is set."""
+    def test_allow_bots_all_accepts_controlled_bot_triggers(self):
+        """DISCORD_ALLOW_BOTS=all explicitly enables controlled bot-to-bot turns."""
         bot = _make_author(bot=True)
         msg = _make_message(author=bot)
-        self.assertFalse(self._run_filter(msg, "all"))
+        self.assertTrue(self._run_filter(msg, "all"))
 
     def test_allow_bots_mentions_rejects_without_mention(self):
         """With allow_bots=mentions, bot messages without @mention are rejected."""
@@ -87,24 +90,25 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot, mentions=[])
         self.assertFalse(self._run_filter(msg, "mentions", our_user))
 
-    def test_allow_bots_mentions_rejects_with_mention(self):
-        """Direct bot triggers are rejected even if they @mention this bot."""
+    def test_allow_bots_mentions_accepts_with_mention(self):
+        """DISCORD_ALLOW_BOTS=mentions allows bot messages that @mention this bot."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, mentions=[our_user])
-        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+        self.assertTrue(self._run_filter(msg, "mentions", our_user))
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""
         default = os.getenv("DISCORD_ALLOW_BOTS", "none")
         self.assertEqual(default, "none")
 
-    def test_allow_bots_case_does_not_change_direct_bot_isolation(self):
-        """Direct bot isolation ignores legacy allow_bots casing/values."""
+    def test_allow_bots_case_preserves_explicit_controlled_mode(self):
+        """Legacy DISCORD_ALLOW_BOTS values are case-insensitive."""
+        our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertFalse(self._run_filter(msg, "ALL"))
-        self.assertFalse(self._run_filter(msg, "All"))
+        msg = _make_message(author=bot, mentions=[our_user])
+        self.assertTrue(self._run_filter(msg, "ALL"))
+        self.assertTrue(self._run_filter(msg, "All"))
         self.assertFalse(self._run_filter(msg, "NONE"))
         self.assertFalse(self._run_filter(msg, "None"))
 

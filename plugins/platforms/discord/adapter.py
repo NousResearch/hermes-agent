@@ -135,6 +135,29 @@ def check_discord_requirements() -> bool:
     return True
 
 
+def _discord_allow_bots_mode() -> str:
+    """Return the explicit Discord bot-to-bot trigger policy.
+
+    Safe default is ``none``: bot/webhook-authored Discord messages cannot
+    start agent turns. Operators who intentionally run controlled bot-to-bot
+    workflows may opt in with ``DISCORD_ALLOW_BOTS=mentions`` (only when this
+    bot is @mentioned) or ``DISCORD_ALLOW_BOTS=all``.
+    """
+    mode = os.getenv("DISCORD_ALLOW_BOTS", "none").strip().lower()
+    return mode if mode in {"none", "mentions", "all"} else "none"
+
+
+def _discord_bot_message_allowed(message: Any, self_user: Any) -> bool:
+    """Whether a non-self Discord bot/webhook message may pass the trigger gate."""
+    mode = _discord_allow_bots_mode()
+    if mode == "none":
+        return False
+    if mode == "all":
+        return True
+    mentions = getattr(message, "mentions", None) or []
+    return self_user is not None and self_user in mentions
+
+
 def _build_allowed_mentions():
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
@@ -774,19 +797,24 @@ class DiscordAdapter(BasePlatformAdapter):
                 if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return
 
-                # Direct trigger isolation: never let another bot/webhook start
-                # an agent turn. Use getattr(..., False) so partial user objects
-                # fail closed instead of bypassing the gate.
-                if getattr(message.author, "bot", False):
-                    return
+                # Direct trigger isolation: safe default drops bot/webhook
+                # messages so peer bots cannot start acknowledgement loops.
+                # Preserve explicit, operator-controlled bot-to-bot workflows
+                # via DISCORD_ALLOW_BOTS=mentions/all.
+                _author_is_bot = getattr(message.author, "bot", False)
+                if _author_is_bot:
+                    if not _discord_bot_message_allowed(message, getattr(self._client, "user", None)):
+                        return
 
-                # Non-bot: enforce the configured user/role allowlists.
+                # Enforce the configured user/role allowlists for human
+                # senders. Bot/webhook senders that reached this point were
+                # already explicitly admitted by DISCORD_ALLOW_BOTS above.
                 # Pass guild + is_dm so role checks are scoped to the
                 # originating guild (prevents cross-guild DM bypass, see
                 # _is_allowed_user docstring).
                 _msg_guild = getattr(message, "guild", None)
                 _is_dm = isinstance(message.channel, discord.DMChannel) or _msg_guild is None
-                if not self._is_allowed_user(
+                if not _author_is_bot and not self._is_allowed_user(
                     str(message.author.id),
                     message.author,
                     guild=_msg_guild,

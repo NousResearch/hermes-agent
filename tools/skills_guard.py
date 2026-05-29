@@ -36,16 +36,7 @@ from typing import List, Tuple
 # Hardcoded trust configuration
 # ---------------------------------------------------------------------------
 
-TRUSTED_REPOS = {
-    "openai/skills",
-    "anthropics/skills",
-    "huggingface/skills",
-    # NVIDIA-verified skills: each entry ships a signed `skill.oms.sig`
-    # and a governance `skill-card.md` (sync pipeline drops anything
-    # missing the signature or card). Catalog details:
-    # https://github.com/NVIDIA/skills
-    "NVIDIA/skills",
-}
+TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills"}
 
 INSTALL_POLICY = {
     #                  safe      caution    dangerous

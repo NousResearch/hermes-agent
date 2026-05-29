@@ -260,7 +260,7 @@ def check_available(domain):
     try:
         ns_url = f"https://dns.google/resolve?name={urllib.parse.quote(domain)}&type=NS"
         req = urllib.request.Request(ns_url, headers={"User-Agent": "domain-intel-skill/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:  # SSRF: add IP block check
             ns = [x.get("data", "") for x in json.loads(r.read()).get("Answer", [])]
     except Exception:
         ns = []

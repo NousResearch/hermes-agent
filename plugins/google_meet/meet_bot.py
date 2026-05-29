@@ -568,7 +568,13 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             # Guest-mode: Meet shows a name field before "Ask to join". When
             # we're authed, we instead see "Join now".
             _try_guest_name(page, guest_name)
-            _click_join(page, state)
+            if not _click_join(page, state):
+                state.set(
+                    error="join controls not found before timeout",
+                    leave_reason="join_controls_missing",
+                    exited=True,
+                )
+                return 5
 
             # Install caption observer and attempt to enable captions.
             try:
@@ -819,22 +825,40 @@ def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:
     return True
 
 
-def _click_join(page, state: _BotState) -> None:
-    """Click 'Join now' or 'Ask to join' if either button is visible.
+def _click_join(
+    page,
+    state: _BotState,
+    *,
+    timeout_s: float = 30.0,
+    poll_interval: float = 0.5,
+) -> bool:
+    """Click a visible Meet join/admission button, waiting for prejoin UI.
 
-    Flags ``lobby_waiting`` when we hit the "waiting for host to admit you"
-    state so the agent can surface that in status.
+    Meet often renders the prejoin controls several seconds after
+    ``domcontentloaded``. A single immediate probe leaves the bot parked on the
+    prejoin screen until the outer lobby timeout fires. Signed-in accounts can
+    also see ``Switch here`` when the account is already attached elsewhere; that
+    is still the admission control we need to press.
     """
-    for label in ("Join now", "Ask to join"):
-        try:
-            btn = page.get_by_role("button", name=label, exact=False).first
-            if btn.count() and btn.is_visible():
-                btn.click(timeout=3_000)
-                if label == "Ask to join":
-                    state.set(lobby_waiting=True)
-                break
-        except Exception:
-            continue
+    deadline = time.time() + timeout_s
+    labels = (
+        ("Join now", False),
+        ("Switch here", False),
+        ("Ask to join", True),
+    )
+    while True:
+        for label, enters_lobby in labels:
+            try:
+                btn = page.get_by_role("button", name=label, exact=False).first
+                if btn.count() and btn.is_visible():
+                    btn.click(timeout=3_000)
+                    state.set(lobby_waiting=enters_lobby)
+                    return True
+            except Exception:
+                continue
+        if time.time() >= deadline:
+            return False
+        time.sleep(poll_interval)
 
 
 def _parse_duration(raw: str) -> Optional[float]:

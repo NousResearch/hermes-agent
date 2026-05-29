@@ -18,6 +18,7 @@ import json
 import os
 import signal
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -123,6 +124,88 @@ def test_parse_duration():
     assert _parse_duration("90") == 90
     assert _parse_duration("") is None
     assert _parse_duration("bogus") is None
+
+
+class _FakeMeetButton:
+    def __init__(self, page, label):
+        self.page = page
+        self.label = label
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return self.page.count_for(self.label)
+
+    def is_visible(self):
+        return bool(self.count())
+
+    def click(self, timeout=0):
+        self.page.clicked.append((self.label, timeout))
+
+
+class _FakeMeetPage:
+    def __init__(self, visible_labels=None, delayed_label=None, visible_after=1):
+        self.visible_labels = set(visible_labels or [])
+        self.delayed_label = delayed_label
+        self.visible_after = visible_after
+        self.probes = 0
+        self.clicked = []
+
+    def get_by_role(self, role, *, name, exact=False):
+        assert role == "button"
+        assert exact is False
+        return _FakeMeetButton(self, name)
+
+    def count_for(self, label):
+        if label in self.visible_labels:
+            return 1
+        if label == self.delayed_label:
+            self.probes += 1
+            return 1 if self.probes >= self.visible_after else 0
+        return 0
+
+
+class _FakeMeetState:
+    def __init__(self):
+        self.updates = []
+
+    def set(self, **kwargs):
+        self.updates.append(kwargs)
+
+
+def test_click_join_waits_for_prejoin_button():
+    from plugins.google_meet.meet_bot import _click_join
+
+    page = _FakeMeetPage(delayed_label="Join now", visible_after=3)
+    state = _FakeMeetState()
+
+    assert _click_join(page, cast(Any, state), timeout_s=1.0, poll_interval=0.0) is True
+    assert page.clicked == [("Join now", 3_000)]
+    assert state.updates[-1] == {"lobby_waiting": False}
+
+
+def test_click_join_accepts_switch_here_for_signed_in_account():
+    from plugins.google_meet.meet_bot import _click_join
+
+    page = _FakeMeetPage(visible_labels={"Switch here"})
+    state = _FakeMeetState()
+
+    assert _click_join(page, cast(Any, state), timeout_s=0.1, poll_interval=0.0) is True
+    assert page.clicked == [("Switch here", 3_000)]
+    assert state.updates[-1] == {"lobby_waiting": False}
+
+
+def test_click_join_marks_lobby_for_ask_to_join():
+    from plugins.google_meet.meet_bot import _click_join
+
+    page = _FakeMeetPage(visible_labels={"Ask to join"})
+    state = _FakeMeetState()
+
+    assert _click_join(page, cast(Any, state), timeout_s=0.1, poll_interval=0.0) is True
+    assert page.clicked == [("Ask to join", 3_000)]
+    assert state.updates[-1] == {"lobby_waiting": True}
 
 
 # ---------------------------------------------------------------------------

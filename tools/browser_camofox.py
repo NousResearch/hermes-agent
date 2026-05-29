@@ -774,6 +774,56 @@ def camofox_vision(question: str, annotate: bool = False,
         return tool_error(str(e), success=False)
 
 
+def camofox_screenshot(task_id: Optional[str] = None) -> str:
+    """Take a raw PNG screenshot of the current page and queue it for delivery.
+
+    No LLM call, no analysis. The image is captured via Camofox's screenshot
+    endpoint, saved to a host path under the gateway's filesystem, and
+    enqueued in the per-session media queue (``gateway.media_queue``). The
+    gateway flushes the queue after sending the agent's text response, so
+    the user receives the image as a native attachment without the agent
+    having to format ``MEDIA:`` tags or manage paths.
+
+    Returns a tiny success result with no path — the agent has nothing to
+    mishandle.
+    """
+    try:
+        session = _get_session(task_id)
+        if not session["tab_id"]:
+            return tool_error("No browser session. Call browser_navigate first.", success=False)
+
+        resp = _get_raw(
+            f"/tabs/{session['tab_id']}/screenshot",
+            params={"userId": session["user_id"]},
+        )
+
+        from hermes_constants import get_hermes_home
+        screenshots_dir = get_hermes_home() / "browser_screenshots"
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        screenshot_path = str(screenshots_dir / f"browser_screenshot_{uuid.uuid4().hex[:8]}.png")
+        with open(screenshot_path, "wb") as f:
+            f.write(resp.content)
+
+        # Direct-enqueue: hand the path to the gateway's pending-media queue.
+        # The gateway will flush it as a native chat attachment after the
+        # agent's text response, so the agent never needs to know the path.
+        try:
+            from gateway.media_queue import enqueue_media
+            enqueue_media(screenshot_path)
+            queued = True
+        except Exception as enqueue_err:
+            logger.warning("camofox_screenshot: failed to enqueue media: %s", enqueue_err)
+            queued = False
+
+        return json.dumps({
+            "success": True,
+            "delivered": queued,
+            "size_bytes": len(resp.content),
+        })
+    except Exception as e:
+        return tool_error(str(e), success=False)
+
+
 def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
     """Get console output — limited support in Camofox.
 

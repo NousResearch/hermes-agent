@@ -1577,6 +1577,15 @@ BROWSER_TOOL_SCHEMAS = [
         }
     },
     {
+        "name": "browser_screenshot",
+        "description": "Take a raw PNG screenshot of the current page and deliver it directly to the user as a chat attachment. No vision AI is involved — just the image bytes. The image is queued by the gateway and sent automatically after your text response, so you do NOT need to format MEDIA: tags, do NOT need to handle file paths, and do NOT need to verify anything. Just call this tool, then write your normal text reply (e.g. \"here's the screenshot, top headlines are X and Y\"). The image will be attached automatically. Use this when the user asks for a literal screenshot. For *understanding* what's on the page (CAPTCHAs, image content, visual layouts), use browser_vision instead. Requires browser_navigate to be called first.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
         "name": "browser_vision",
         "description": "Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snapshot doesn't capture important visual information. Returns both the AI analysis and a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
         "parameters": {
@@ -3044,6 +3053,73 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
+def browser_screenshot(task_id: Optional[str] = None) -> str:
+    """
+    Take a raw PNG screenshot of the current page and direct-enqueue it for
+    delivery as a native chat attachment.
+
+    No vision LLM is involved. The tool saves the image to a host path and
+    pushes that path into the gateway's per-session media queue (see
+    ``gateway.media_queue``). The gateway flushes the queue right after the
+    agent's text response, so the user receives the image automatically.
+    The agent does not see the path and does not need to format MEDIA: tags.
+
+    Args:
+        task_id: Task identifier for browser session isolation.
+
+    Returns:
+        JSON string with ``success`` and ``delivered`` flags.
+    """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_screenshot
+        return camofox_screenshot(task_id)
+
+    # Fallback for non-camofox backends: piggyback on the universal screenshot
+    # primitive used by browser_vision, then enqueue the resulting path.
+    effective_task_id = task_id or "default"
+    import uuid as uuid_mod
+    from pathlib import Path
+    from hermes_constants import get_hermes_dir
+
+    screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
+    screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
+    try:
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        _cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
+        result = _run_browser_command(
+            effective_task_id,
+            "screenshot",
+            ["--full", str(screenshot_path)],
+        )
+        if not result.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": f"Failed to take screenshot: {result.get('error', 'Unknown error')}",
+            }, ensure_ascii=False)
+        actual = result.get("data", {}).get("path")
+        if actual:
+            screenshot_path = Path(actual)
+        if not screenshot_path.exists():
+            return json.dumps({
+                "success": False,
+                "error": f"Screenshot file was not created at {screenshot_path}",
+            }, ensure_ascii=False)
+        try:
+            from gateway.media_queue import enqueue_media
+            enqueue_media(str(screenshot_path))
+            queued = True
+        except Exception as enqueue_err:
+            logger.warning("browser_screenshot: failed to enqueue media: %s", enqueue_err)
+            queued = False
+        return json.dumps({
+            "success": True,
+            "delivered": queued,
+            "size_bytes": screenshot_path.stat().st_size,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+
 def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
     """
     Take a screenshot of the current page and analyze it with vision AI.
@@ -3797,6 +3873,14 @@ registry.register(
     handler=lambda args, **kw: browser_get_images(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖼️",
+)
+registry.register(
+    name="browser_screenshot",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_screenshot"],
+    handler=lambda args, **kw: browser_screenshot(task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="📸",
 )
 registry.register(
     name="browser_vision",

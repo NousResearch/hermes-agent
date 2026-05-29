@@ -48,6 +48,7 @@ user is seen through different apps in the future.
 from __future__ import annotations
 
 import asyncio
+import collections
 import hashlib
 import hmac
 import itertools
@@ -1408,6 +1409,8 @@ class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
     MAX_MESSAGE_LENGTH = 8000
+    # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
+    CHAT_LOCK_MAX_SIZE: int = 1000
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.
@@ -1445,7 +1448,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_inbound_lock = threading.Lock()
         self._pending_drain_scheduled = False
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
-        self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
+        self._chat_locks: "collections.OrderedDict[str, asyncio.Lock]" = collections.OrderedDict()  # chat_id → lock (per-chat serial processing, LRU-bounded)
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
@@ -2835,11 +2838,28 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _get_chat_lock(self, chat_id: str) -> asyncio.Lock:
-        """Return (creating if needed) the per-chat asyncio.Lock for serial message processing."""
+        """Return (creating if needed) the per-chat asyncio.Lock for serial message processing.
+
+        Bounded with LRU eviction so a long-running gateway that sees many
+        distinct chats does not grow ``_chat_locks`` without limit. Locks that
+        are currently held are never evicted; if every entry is locked we fall
+        back to dropping the least-recently-used one.
+        """
         lock = self._chat_locks.get(chat_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._chat_locks[chat_id] = lock
+        if lock is not None:
+            self._chat_locks.move_to_end(chat_id)
+            return lock
+        if len(self._chat_locks) >= self.CHAT_LOCK_MAX_SIZE:
+            evicted = False
+            for key in list(self._chat_locks):
+                if not self._chat_locks[key].locked():
+                    self._chat_locks.pop(key)
+                    evicted = True
+                    break
+            if not evicted:
+                self._chat_locks.pop(next(iter(self._chat_locks)))
+        lock = asyncio.Lock()
+        self._chat_locks[chat_id] = lock
         return lock
 
     async def _handle_message_with_guards(self, event: MessageEvent) -> None:

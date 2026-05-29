@@ -523,12 +523,20 @@ class AIAgent:
                 cwd=_launch_cwd_for_session(source),
             )
             self._session_db_created = True
+            if self._session_db_failed:
+                failed_count = self._session_db_create_fail_count
+                self._session_db_failed = False
+                self._session_db_create_fail_count = 0
+                logger.info("Session DB creation recovered after %d failures",
+                            failed_count)
         except Exception as e:
             # Transient failure (e.g. SQLite lock). Keep _session_db alive —
             # _session_db_created stays False so next run_conversation() retries.
+            self._session_db_create_fail_count += 1
             self._session_db_failed = True
             logger.error(
-                "Session DB creation failed (will retry next turn): %s", e
+                "Session DB creation failed (#%d consecutive): %s",
+                self._session_db_create_fail_count, e
             )
 
     def _transition_context_engine_session(

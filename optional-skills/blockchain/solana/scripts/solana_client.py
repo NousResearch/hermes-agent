@@ -141,7 +141,7 @@ def rpc_batch(calls: list) -> list:
             headers={"Content-Type": "application/json"}, method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with urllib.request.urlopen(req, timeout=20) as resp:  # SSRF: add IP block check
                 return json.load(resp)
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and attempt < 2:

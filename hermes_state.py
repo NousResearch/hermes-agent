@@ -799,6 +799,29 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def update_session_model(
+        self,
+        session_id: str,
+        model: str,
+        model_config: "Optional[Dict[str, Any]]" = None,
+    ) -> None:
+        """Update the model and model_config fields of an existing session.
+
+        Called after ``switch_model()`` commits successfully so the new model
+        persists across re-initializations (e.g. after compression failure
+        that triggers agent re-init from the session DB).
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET model = ?, model_config = ? WHERE id = ?",
+                (
+                    model,
+                    json.dumps(model_config) if model_config else None,
+                    session_id,
+                ),
+            )
+        self._execute_write(_do)
+
     # ──────────────────────────────────────────────────────────────────────
     # Compression locks
     # ──────────────────────────────────────────────────────────────────────

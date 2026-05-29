@@ -1601,6 +1601,22 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         old_model, old_provider, new_model, new_provider,
     )
 
+    # Persist the model switch to session DB so it survives re-initialization
+    # (e.g. compression failure that triggers agent re-init from the session DB).
+    if (
+        hasattr(agent, "_session_db")
+        and agent._session_db
+        and hasattr(agent, "session_id")
+        and agent.session_id
+    ):
+        try:
+            agent._session_db.update_session_model(
+                agent.session_id,
+                agent.model,
+                getattr(agent, "_session_init_model_config", None),
+            )
+        except Exception as e:
+            logger.warning("Failed to persist model switch to session DB: %s", e)
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,

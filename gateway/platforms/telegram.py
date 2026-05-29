@@ -3557,15 +3557,20 @@ class TelegramAdapter(BasePlatformAdapter):
     def _missing_media_path_error(self, label: str, path: str) -> str:
         """Build an actionable file-not-found error for gateway MEDIA delivery.
 
-        Paths like /workspace/... or /output/... often only exist inside the
-        Docker sandbox, while the gateway process runs on the host.
+        Paths under Docker bind mounts may use arbitrary user-chosen container
+        roots (for example /workspace/..., /output/..., or /agent-artifacts/...),
+        while the gateway process runs on the host.
         """
         error = f"{label} file not found: {path}"
-        if path.startswith(("/workspace/", "/output/", "/outputs/")):
+        looks_like_container_path = path.startswith(
+            ("/workspace/", "/output/", "/outputs/")
+        )
+        docker_backend = os.getenv("TERMINAL_ENV", "").strip().lower() == "docker"
+        if looks_like_container_path or (path.startswith("/") and docker_backend):
             error += (
                 " (path may only exist inside the Docker sandbox. "
-                "Bind-mount a host directory and emit the host-visible "
-                "path in MEDIA: for gateway file delivery.)"
+                "Bind-mount a host directory for that container path or "
+                "emit a host-visible path in MEDIA: for gateway file delivery.)"
             )
         return error
 

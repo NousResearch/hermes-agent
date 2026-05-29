@@ -7,6 +7,7 @@ Covers: local image file sending, file-not-found handling, fallback on error,
 """
 
 import asyncio
+import json
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -56,6 +57,243 @@ class TestExtractMediaImages:
         paths = [m[0] for m in media]
         assert "/audio.ogg" in paths
         assert "/screenshot.png" in paths
+
+    def test_docker_container_media_path_translates_to_host_volume(self, monkeypatch, tmp_path):
+        """Docker MEDIA paths should follow the user-specified container mount."""
+        host_output = tmp_path / "gateway-output"
+        container_output = "/agent-artifacts"
+        expected = host_output / "reports" / "daily.pdf"
+        expected.parent.mkdir(parents=True)
+        expected.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_output}:{container_output}:rw"]),
+        )
+
+        media, cleaned = BasePlatformAdapter.extract_media(
+            f"Done\nMEDIA:{container_output}/reports/daily.pdf"
+        )
+
+        assert media == [(str(expected), False)]
+        assert "MEDIA:" not in cleaned
+        assert "Done" in cleaned
+
+    def test_docker_media_path_prefers_bind_mount_over_host_path(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        """In Docker, a matched container path should prefer the configured bind mount."""
+        host_output = tmp_path / "gateway-output"
+        container_output = "/custom-output"
+        expected = host_output / "report.pdf"
+        expected.parent.mkdir(parents=True)
+        expected.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_output}:{container_output}:rw"]),
+        )
+
+        with patch("gateway.media_paths.os.path.exists", return_value=True):
+            media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{container_output}/report.pdf")
+
+        assert media == [(str(expected), False)]
+
+    @pytest.mark.parametrize("options", ["cached", "delegated", "rw,z", "ro,Z"])
+    def test_docker_container_media_path_translates_common_volume_options(
+        self, monkeypatch, tmp_path, options
+    ):
+        """Common Docker option suffixes should not prevent MEDIA path mapping."""
+        host_output = tmp_path / "gateway-output"
+        container_output = "/agent-media"
+        expected = host_output / "report.pdf"
+        expected.parent.mkdir(parents=True)
+        expected.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_output}:{container_output}:{options}"]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{container_output}/report.pdf")
+
+        assert media == [(str(expected), False)]
+
+    def test_docker_media_path_translation_requires_path_boundary(self, monkeypatch, tmp_path):
+        """A configured mount must not rewrite unrelated similarly-prefixed paths."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{tmp_path}:/custom-output"]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/custom-output-other/report.pdf")
+
+        assert media == [("/custom-output-other/report.pdf", False)]
+
+    def test_docker_media_path_translates_nested_user_mount(self, monkeypatch, tmp_path):
+        """Explicit nested bind mounts under any user path should be eligible."""
+        host_output = tmp_path / "reports"
+        container_reports = "/agent-media/reports"
+        expected = host_output / "daily.pdf"
+        expected.parent.mkdir(parents=True)
+        expected.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_output}:{container_reports}:rw"]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{container_reports}/daily.pdf")
+
+        assert media == [(str(expected), False)]
+
+    def test_docker_media_path_maps_user_specified_workspace_mount(self, monkeypatch, tmp_path):
+        """User-specified non-/output mounts should be mapped from docker_volumes."""
+        workspace_report = tmp_path / "workspace" / "report.pdf"
+        workspace_report.parent.mkdir(parents=True)
+        workspace_report.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{workspace_report.parent}:/workspace"]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/workspace/report.pdf")
+
+        assert media == [(str(workspace_report), False)]
+
+    def test_docker_media_path_ignores_root_mount(self, monkeypatch, tmp_path):
+        """A root bind mount should not make every container path media-sendable."""
+        root_report = tmp_path / "output" / "report.pdf"
+        root_report.parent.mkdir(parents=True)
+        root_report.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{tmp_path}:/"]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/output/report.pdf")
+
+        assert media == [("/output/report.pdf", False)]
+
+    def test_docker_media_path_keeps_existing_host_file(self, monkeypatch, tmp_path):
+        """Already host-visible paths should not be rewritten by Docker volume rules."""
+        host_file = tmp_path / "already-visible.pdf"
+        host_file.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{tmp_path / 'exports'}:/custom-output"]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{host_file}")
+
+        assert media == [(str(host_file), False)]
+
+    def test_docker_media_path_invalid_volume_env_falls_back(self, monkeypatch):
+        """Malformed volume env should not prevent MEDIA extraction or sending fallback."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", "not-json")
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/custom-output/report.pdf")
+
+        assert media == [("/custom-output/report.pdf", False)]
+
+    def test_docker_media_path_ignores_named_volume(self, monkeypatch):
+        """Named volumes have no derivable host path for the gateway process."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps(["exports:/agent-media:rw"]))
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/agent-media/report.pdf")
+
+        assert media == [("/agent-media/report.pdf", False)]
+
+    def test_docker_media_path_prefers_longest_matching_mount(self, monkeypatch, tmp_path):
+        """Nested mounts should use the most specific container prefix."""
+        broad_host = tmp_path / "broad"
+        reports_host = tmp_path / "reports"
+        expected = reports_host / "daily.pdf"
+        expected.parent.mkdir(parents=True)
+        expected.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([
+                f"{broad_host}:/agent-media:rw",
+                f"{reports_host}:/agent-media/reports:rw",
+            ]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/agent-media/reports/daily.pdf")
+
+        assert media == [(str(expected), False)]
+
+    @pytest.mark.parametrize(
+        "wrapped_path",
+        [
+            "MEDIA:/agent-media/../secret.pdf",
+            "`MEDIA:/agent-media/../secret.pdf`",
+            '"MEDIA:/agent-media/../secret.pdf"',
+        ],
+    )
+    def test_docker_media_path_does_not_map_traversal_outside_mount(
+        self,
+        monkeypatch,
+        tmp_path,
+        wrapped_path,
+    ):
+        """Normalized paths that escape a mount must not translate to the host."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps([f"{tmp_path}:/agent-media"]))
+
+        media, _ = BasePlatformAdapter.extract_media(wrapped_path)
+
+        assert media == [("/agent-media/../secret.pdf", False)]
+
+    def test_docker_media_path_does_not_map_symlink_escape(self, monkeypatch, tmp_path):
+        """Host symlinks inside an export mount must not expose files outside it."""
+        export_root = tmp_path / "exports"
+        export_root.mkdir()
+        outside_file = tmp_path / "secret.pdf"
+        outside_file.write_bytes(b"secret")
+        link = export_root / "leak.pdf"
+        try:
+            link.symlink_to(outside_file)
+        except (NotImplementedError, OSError):
+            pytest.skip("symlinks are not available on this platform")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps([f"{export_root}:/agent-media"]))
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/agent-media/leak.pdf")
+
+        assert media == [("/agent-media/leak.pdf", False)]
+
+    def test_docker_media_path_rejects_windows_separator_escape(self, monkeypatch):
+        """Backslashes in a Linux container filename must not become host separators."""
+        import ntpath
+        import gateway.media_paths as media_paths
+
+        monkeypatch.setattr(media_paths.os, "path", ntpath)
+
+        translated = media_paths._translate_docker_path_to_host(
+            r"/agent-media/..\secret.pdf",
+            ((r"C:\exports", "/agent-media"),),
+        )
+
+        assert translated is None
 
 
 # ---------------------------------------------------------------------------

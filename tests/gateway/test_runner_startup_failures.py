@@ -390,10 +390,10 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     ), "Expected degraded-mode warning when all adapters are missing"
 
 
-def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatch, tmp_path, caplog):
+def test_runner_warns_when_docker_gateway_lacks_host_visible_bind_mount(monkeypatch, tmp_path, caplog):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("TERMINAL_ENV", "docker")
-    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", '["/etc/localtime:/etc/localtime:ro"]')
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", '["exports:/agent-media:rw"]')
     config = GatewayConfig(
         platforms={
             Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")
@@ -405,6 +405,35 @@ def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatc
         GatewayRunner(config)
 
     assert any(
-        "host-visible output mount" in record.message
+        "host-visible Docker bind mount" in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize("container_path", ["/output", "/outputs", "/output/reports", "/agent-artifacts"])
+def test_runner_accepts_user_specified_docker_media_bind_mount(
+    monkeypatch,
+    tmp_path,
+    caplog,
+    container_path,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv(
+        "TERMINAL_DOCKER_VOLUMES",
+        f'["{tmp_path}/exports:{container_path}:rw"]',
+    )
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+
+    with caplog.at_level("WARNING"):
+        GatewayRunner(config)
+
+    assert not any(
+        "host-visible Docker bind mount" in record.message
         for record in caplog.records
     )

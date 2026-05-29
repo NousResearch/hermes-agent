@@ -20,6 +20,7 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from gateway.media_paths import resolve_outbound_media_path
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -2466,7 +2467,7 @@ class BasePlatformAdapter(ABC):
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+                media.append((resolve_outbound_media_path(path), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:

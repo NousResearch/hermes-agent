@@ -53,6 +53,7 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from gateway.media_paths import docker_media_bind_mounts_from_env
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -786,9 +787,6 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
         os.environ["HERMES_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
 
-
-_DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
-_DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
@@ -1910,13 +1908,14 @@ class GatewayRunner:
 
 
     def _warn_if_docker_media_delivery_is_risky(self) -> None:
-        """Warn when Docker-backed gateways lack an explicit export mount.
+        """Warn when Docker-backed gateways lack host-readable bind mounts.
 
-        MEDIA delivery happens in the gateway process, so paths emitted by the model
-        must be readable from the host. A plain container-local path like
-        `/workspace/report.txt` or `/output/report.txt` often exists only inside
-        Docker, so users commonly need a dedicated export mount such as
-        `host-dir:/output`.
+        MEDIA delivery happens in the gateway process, so paths emitted by the
+        model must be readable from the host. A plain container-local path like
+        `/workspace/report.txt` or `/artifacts/report.txt` often exists only
+        inside Docker, so users commonly need a dedicated bind mount such as
+        `host-dir:/artifacts`. The container path is user-chosen through
+        ``terminal.docker_volumes`` / ``TERMINAL_DOCKER_VOLUMES``.
         """
         if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
             return
@@ -1926,34 +1925,16 @@ class GatewayRunner:
         if not messaging_platforms:
             return
 
-        raw_volumes = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
-        volumes: List[str] = []
-        if raw_volumes:
-            try:
-                parsed = json.loads(raw_volumes)
-                if isinstance(parsed, list):
-                    volumes = [str(v) for v in parsed if isinstance(v, str)]
-            except Exception:
-                logger.debug("Could not parse TERMINAL_DOCKER_VOLUMES for gateway media warning", exc_info=True)
-
-        has_explicit_output_mount = False
-        for spec in volumes:
-            match = _DOCKER_VOLUME_SPEC_RE.match(spec)
-            if not match:
-                continue
-            container_path = match.group("container")
-            if container_path in _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS:
-                has_explicit_output_mount = True
-                break
-
-        if has_explicit_output_mount:
+        if docker_media_bind_mounts_from_env():
             return
 
         logger.warning(
             "Docker backend is enabled for the messaging gateway but no explicit host-visible "
-            "output mount (for example '/home/user/.hermes/cache/documents:/output') is configured. "
-            "This is fine if the model already emits host-visible paths, but MEDIA file delivery can fail "
-            "for container-local paths like '/workspace/...' or '/output/...'."
+            "Docker bind mount is configured. This is fine if the model already emits "
+            "host-visible paths, but MEDIA file delivery can fail for container-local paths "
+            "like '/workspace/...' or '/artifacts/...'. Configure terminal.docker_volumes "
+            "with a host_path:container_path bind mount and emit MEDIA: paths under that "
+            "container_path."
         )
 
 

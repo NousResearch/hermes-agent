@@ -389,6 +389,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-autonomous-ai-agents',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-antigravity-cli',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho',
@@ -545,7 +546,6 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-productivity',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/optional/productivity/productivity-antigravity-cli',
                     'user-guide/skills/optional/productivity/productivity-canvas',
                     'user-guide/skills/optional/productivity/productivity-here-now',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',

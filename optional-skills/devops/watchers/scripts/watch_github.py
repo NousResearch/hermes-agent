@@ -123,7 +123,7 @@ def main() -> int:
         req.add_header(k, v)
 
     try:
-        with urllib.request.urlopen(req, timeout=args.timeout) as resp:
+        with urllib.request.urlopen(req, timeout=args.timeout) as resp:  # SSRF: add IP block check
             raw = resp.read()
     except urllib.error.HTTPError as e:
         print(f"watch_github: HTTP {e.code} from {url}", file=sys.stderr)

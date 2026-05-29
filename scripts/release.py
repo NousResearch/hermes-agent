@@ -120,6 +120,7 @@ AUTHOR_MAP = {
     "david@memorilabs.ai": "devwdave",
     "dave@devwdave.com": "devwdave",
     "1920071390@campus.ouj.ac.jp": "zapabob",
+    "zapabob@users.noreply.github.com": "zapabob",
     "gaia@gaia.local": "jfuenmayor",
     "jiahuigu@users.noreply.github.com": "Jiahui-Gu",
     "openhands@all-hands.dev": "YLChen-007",

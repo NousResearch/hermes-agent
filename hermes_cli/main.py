@@ -13576,14 +13576,9 @@ Examples:
             )
             print("Optimizing session store (FTS merge + VACUUM)…")
             try:
-                # vacuum() merges FTS5 segments (optimize_fts) then VACUUMs.
-                # Probe the index count first for the summary line.
-                n = sum(
-                    1
-                    for t in db._FTS_TABLES
-                    if db._fts_table_exists(t)
-                )
-                db.vacuum()
+                # vacuum() merges FTS5 segments (optimize_fts) then VACUUMs,
+                # and returns the number of indexes it merged.
+                n = db.vacuum()
             except Exception as e:
                 print(f"Error: optimization failed: {e}")
                 db.close()

@@ -3303,7 +3303,7 @@ class SessionDB:
                     )
         return optimized
 
-    def vacuum(self) -> None:
+    def vacuum(self) -> int:
         """Run VACUUM to reclaim disk space after large deletes.
 
         SQLite does not shrink the database file when rows are deleted —
@@ -3320,11 +3320,15 @@ class SessionDB:
         FTS5 segments are merged first via :meth:`optimize_fts` so the
         subsequent VACUUM reclaims the pages freed by the merge. This is a
         layout-only optimization — search results are unchanged.
+
+        Returns the number of FTS indexes that were optimized (0 if the
+        merge step failed or no FTS tables exist).
         """
         # Merge FTS5 segments before VACUUM so the freed pages are returned
         # to the OS in the same pass. optimize_fts() manages its own lock.
+        optimized = 0
         try:
-            self.optimize_fts()
+            optimized = self.optimize_fts()
         except Exception as exc:
             logger.warning("FTS optimize before VACUUM failed: %s", exc)
         # VACUUM cannot be executed inside a transaction.
@@ -3335,6 +3339,7 @@ class SessionDB:
             except Exception:
                 pass
             self._conn.execute("VACUUM")
+        return optimized
 
     def maybe_auto_prune_and_vacuum(
         self,

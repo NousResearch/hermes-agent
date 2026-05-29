@@ -109,6 +109,7 @@ pty = [
 ]
 honcho = ["honcho-ai==2.0.1"]
 mcp = ["mcp==1.26.0"]
+nemo-relay = ["nemo-relay==0.3"]
 homeassistant = ["aiohttp==3.13.3"]
 sms = ["aiohttp==3.13.3"]
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
@@ -223,6 +224,12 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
 plugins = [
+  "*/plugin.yaml",
+  "*/plugin.yml",
+  "*/README.md",
+  "*/*/plugin.yaml",
+  "*/*/plugin.yml",
+  "*/*/README.md",
   "*/dashboard/manifest.json",
   "*/dashboard/dist/*",
   "*/dashboard/dist/**/*",

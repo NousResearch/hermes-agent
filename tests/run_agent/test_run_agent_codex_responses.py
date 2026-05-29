@@ -383,6 +383,149 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
     assert "prompt_cache_key" not in kwargs
 
 
+# ---------------------------------------------------------------------------
+# #27907: xAI tool-schema sanitization must NOT mutate ``agent.tools`` in place
+#
+# ``strip_slash_enum`` and ``strip_pattern_and_format`` are documented to
+# mutate their input in place ("Callers that need to preserve the original
+# should deep-copy first" — see ``tools/schema_sanitizer.py``).  Until this
+# fix, ``chat_completion_helpers.build_api_kwargs`` and ``auxiliary_client``
+# passed ``agent.tools`` straight through to the sanitizers.  The first xAI
+# request would permanently strip slash-containing enum constraints and the
+# ``pattern``/``format`` keywords from the per-agent tool registry — any
+# subsequent non-xAI call from the same agent (auxiliary task routed to
+# Anthropic, OpenRouter fallback, mid-session model switch) saw the
+# already-stripped schema.
+#
+# Fix: deepcopy ``tools_for_api`` before handing it to the sanitizers.
+# ---------------------------------------------------------------------------
+
+
+def _build_xai_agent_with_slash_enum_tool(monkeypatch):
+    """Build an xAI agent whose tool registry has a slash-containing enum.
+
+    Mirrors the Brave Search MCP shape that originally triggered #27907.
+    """
+
+    def _fake_get_tool_definitions(**_kwargs):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "brave_like",
+                    "description": "Tool with slash-containing enum + pattern/format",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "accept": {
+                                "type": "string",
+                                "enum": ["application/json", "*/*"],
+                            },
+                            "match": {
+                                "type": "string",
+                                "pattern": "^[a-z]+$",
+                                "format": "regex",
+                            },
+                        },
+                    },
+                },
+            }
+        ]
+
+    monkeypatch.setattr(run_agent, "get_tool_definitions", _fake_get_tool_definitions)
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+
+    agent = run_agent.AIAgent(
+        model="grok-4.3",
+        provider="xai-oauth",
+        api_mode="codex_responses",
+        base_url="https://api.x.ai/v1",
+        api_key="xai-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    return agent
+
+
+def test_build_api_kwargs_xai_strips_slash_enum_from_outgoing_request(monkeypatch):
+    """The xAI request sent to the API must NOT contain slash-enum values."""
+    agent = _build_xai_agent_with_slash_enum_tool(monkeypatch)
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    # ``tools`` comes back in Responses format from the codex transport;
+    # find the parameters dict for our function regardless of shape.
+    out_tool = kwargs["tools"][0]
+    params = out_tool["parameters"]
+    assert "enum" not in params["properties"]["accept"], (
+        "outgoing xAI request must not carry slash-containing enums — "
+        "xAI would 400 with 'Invalid arguments passed to the model'"
+    )
+    # pattern/format must also be stripped (existing #27197 contract).
+    assert "pattern" not in params["properties"]["match"]
+    assert "format" not in params["properties"]["match"]
+
+
+def test_build_api_kwargs_xai_does_not_mutate_agent_tools(monkeypatch):
+    """Headline #27907 regression: ``agent.tools`` must survive intact.
+
+    Pre-fix the sanitizers mutated ``agent.tools`` in place, so a subsequent
+    non-xAI call from the same agent saw an already-stripped schema —
+    silent constraint loss with no way for the user to notice from their
+    config.
+    """
+    agent = _build_xai_agent_with_slash_enum_tool(monkeypatch)
+
+    # Snapshot the schema before the request.
+    accept_before = agent.tools[0]["function"]["parameters"]["properties"]["accept"]
+    match_before = agent.tools[0]["function"]["parameters"]["properties"]["match"]
+    assert accept_before["enum"] == ["application/json", "*/*"]
+    assert match_before.get("pattern") == "^[a-z]+$"
+    assert match_before.get("format") == "regex"
+
+    # Build the API kwargs (which runs the sanitizers).
+    agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    # The agent's tool registry must be UNCHANGED.
+    accept_after = agent.tools[0]["function"]["parameters"]["properties"]["accept"]
+    match_after = agent.tools[0]["function"]["parameters"]["properties"]["match"]
+    assert accept_after.get("enum") == ["application/json", "*/*"], (
+        "agent.tools mutated — slash-containing enum was stripped from the "
+        "shared per-agent registry, will leak to non-xAI calls"
+    )
+    assert match_after.get("pattern") == "^[a-z]+$", (
+        "agent.tools mutated — pattern stripped from shared registry"
+    )
+    assert match_after.get("format") == "regex", (
+        "agent.tools mutated — format stripped from shared registry"
+    )
+
+
+def test_build_api_kwargs_xai_is_idempotent_across_repeated_calls(monkeypatch):
+    """Multiple xAI requests must each produce the same sanitized output
+    AND must not progressively erode the source schema."""
+    agent = _build_xai_agent_with_slash_enum_tool(monkeypatch)
+
+    kwargs1 = agent._build_api_kwargs([{"role": "user", "content": "first"}])
+    kwargs2 = agent._build_api_kwargs([{"role": "user", "content": "second"}])
+    kwargs3 = agent._build_api_kwargs([{"role": "user", "content": "third"}])
+
+    for k in (kwargs1, kwargs2, kwargs3):
+        params = k["tools"][0]["parameters"]
+        assert "enum" not in params["properties"]["accept"]
+        assert "pattern" not in params["properties"]["match"]
+        assert "format" not in params["properties"]["match"]
+
+    # Source schema still untouched after three rounds.
+    assert agent.tools[0]["function"]["parameters"]["properties"]["accept"].get(
+        "enum"
+    ) == ["application/json", "*/*"]
+
+
 def test_run_codex_stream_returns_collected_items_when_stream_ends_without_terminal(monkeypatch):
     """The event-driven path tolerates streams that end without a terminal frame.
 

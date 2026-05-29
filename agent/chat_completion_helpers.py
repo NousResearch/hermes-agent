@@ -588,12 +588,23 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         # It also rejects ``enum`` values containing ``/`` (HuggingFace IDs
         # like ``Qwen/Qwen3.5-0.8B`` shipped by MCP servers) — same 400 with
         # the same opaque message; strip those enums too.
+        #
+        # Deep-copy ``tools_for_api`` before sanitizing: the sanitizers
+        # mutate in place (documented contract on ``strip_slash_enum`` /
+        # ``strip_pattern_and_format``), and ``tools_for_api`` is a direct
+        # reference to ``agent.tools``.  Without the copy, the first xAI
+        # request permanently strips constraints from the shared per-agent
+        # tool registry — every subsequent non-xAI call from the same
+        # agent (auxiliary task routed to Anthropic, OpenRouter fallback,
+        # main-model swap) sees the already-stripped schema.  See #27907.
         if is_xai_responses:
             try:
+                import copy as _copy
                 from tools.schema_sanitizer import (
                     strip_pattern_and_format,
                     strip_slash_enum,
                 )
+                tools_for_api = _copy.deepcopy(tools_for_api)
                 tools_for_api, _ = strip_pattern_and_format(tools_for_api)
                 tools_for_api, _ = strip_slash_enum(tools_for_api)
             except Exception as exc:

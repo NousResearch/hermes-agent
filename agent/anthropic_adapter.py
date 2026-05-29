@@ -1256,10 +1256,16 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     print()
 
     try:
-        webbrowser.open(auth_url)
-        print("  (Browser opened automatically)")
+        from hermes_cli.auth import _can_open_graphical_browser as _can_open_gui
     except Exception:
-        pass
+        _can_open_gui = lambda: True  # noqa: E731 — degrade to prior behavior
+
+    if _can_open_gui():
+        try:
+            webbrowser.open(auth_url)
+            print("  (Browser opened automatically)")
+        except Exception:
+            pass
 
     print()
     print("After authorizing, you'll see a code. Paste it below.")

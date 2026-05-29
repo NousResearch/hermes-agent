@@ -3033,7 +3033,7 @@ def login_spotify_command(args) -> None:
 
     _print_loopback_ssh_hint(redirect_uri, docs_url=SPOTIFY_DOCS_URL)
 
-    if open_browser and not _is_remote_session():
+    if open_browser and not _is_remote_session() and _can_open_graphical_browser():
         try:
             opened = webbrowser.open(authorize_url)
         except Exception:
@@ -3112,6 +3112,83 @@ def _is_remote_session() -> bool:
         if os.getenv(var):
             return True
     return False
+
+
+# Console/text-mode browsers that ``webbrowser`` will happily launch INSIDE
+# the terminal.  Opening one of these is worse than not opening anything —
+# it hijacks the user's TTY with an unusable text browser (the xAI OAuth
+# "Account Management" page rendered in w3m, reported May 2026) instead of
+# letting them copy the URL to a real browser.  When the resolved browser is
+# one of these we refuse to auto-open and fall back to the print-the-URL /
+# manual-paste path, same as a remote session.
+_CONSOLE_BROWSER_NAMES: FrozenSet[str] = frozenset(
+    {
+        "w3m",
+        "lynx",
+        "links",
+        "links2",
+        "elinks",
+        "www-browser",
+        "browsh",  # TUI browser — still hijacks the terminal
+    }
+)
+
+
+def _can_open_graphical_browser() -> bool:
+    """Return True only when a *graphical* browser is likely to open.
+
+    ``webbrowser.open()`` resolves to whatever the platform offers, and on a
+    headless / CLI-only Linux box with no GUI browser installed that is often
+    a text-mode browser (w3m/lynx/links) which launches inside the terminal
+    and takes over the user's session.  This guard distinguishes "a real
+    windowed browser will pop up" from "a console browser will hijack the
+    TTY", so callers can fall back to printing the URL instead.
+
+    Heuristics:
+      * Respect ``$BROWSER`` — if it names a known console browser, refuse.
+      * On Linux, require a display server (``$DISPLAY`` / ``$WAYLAND_DISPLAY``)
+        unless ``$BROWSER`` points at something graphical; no display server
+        almost always means no GUI browser.
+      * Ask ``webbrowser.get()`` what it resolved to and refuse when the
+        underlying command is a known console browser.
+      * macOS and Windows always have a usable default GUI browser.
+    """
+    import webbrowser as _webbrowser
+
+    def _names_console_browser(value: str) -> bool:
+        token = value.strip().split()[0] if value.strip() else ""
+        base = os.path.basename(token).lower()
+        return base in _CONSOLE_BROWSER_NAMES
+
+    browser_env = os.environ.get("BROWSER", "")
+    if browser_env and _names_console_browser(browser_env):
+        return False
+
+    if sys.platform.startswith("linux"):
+        has_display = bool(
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        )
+        # An explicit graphical $BROWSER can work without $DISPLAY in odd
+        # setups, but a console $BROWSER already returned False above, so the
+        # only way to reach here with a $BROWSER set is a graphical one.
+        if not has_display and not browser_env:
+            return False
+
+    try:
+        controller = _webbrowser.get()
+    except Exception:
+        # No browser resolvable at all → definitely don't auto-open.
+        return False
+
+    candidate = (
+        getattr(controller, "name", "")
+        or getattr(controller, "basename", "")
+        or ""
+    )
+    if candidate and _names_console_browser(candidate):
+        return False
+
+    return True
 
 
 def _parse_pasted_callback(raw: str) -> dict:
@@ -6916,7 +6993,7 @@ def _xai_oauth_loopback_login(
 
             _print_loopback_ssh_hint(redirect_uri, docs_url=XAI_OAUTH_DOCS_URL)
 
-            if open_browser and not _is_remote_session():
+            if open_browser and not _is_remote_session() and _can_open_graphical_browser():
                 try:
                     opened = webbrowser.open(authorize_url)
                 except Exception:
@@ -7358,7 +7435,7 @@ def _minimax_oauth_login(
         print("To continue:")
         print(f"  1. Open: {verification_url}")
         print(f"  2. If prompted, enter code: {user_code}")
-        if open_browser:
+        if open_browser and _can_open_graphical_browser():
             if webbrowser.open(verification_url):
                 print("  (Opened browser for verification)")
             else:

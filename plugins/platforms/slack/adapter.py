@@ -6570,7 +6570,7 @@ class SlackAdapter(BasePlatformAdapter):
         original_text = ""
         for block in message.get("blocks", []):
             if block.get("type") == "section":
-                original_text = block.get("text", {}).get("text", "")
+                original_text = (block.get("text") or {}).get("text", "")
                 break
 
         # Slack re-escapes HTML entities in the interaction payload
@@ -6742,7 +6742,7 @@ class SlackAdapter(BasePlatformAdapter):
         original_text = ""
         for block in message.get("blocks", []):
             if block.get("type") == "section":
-                original_text = block.get("text", {}).get("text", "")
+                original_text = (block.get("text") or {}).get("text", "")
                 break
 
         # Slack re-escapes HTML entities in the interaction payload
@@ -6844,7 +6844,7 @@ class SlackAdapter(BasePlatformAdapter):
         original_text = ""
         for block in message.get("blocks", []):
             if block.get("type") == "section":
-                original_text = block.get("text", {}).get("text", "")
+                original_text = (block.get("text") or {}).get("text", "")
                 break
 
         from tools import clarify_gateway as _clarify_mod

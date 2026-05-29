@@ -279,6 +279,29 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     logger.debug("Provider gateway cache lookup failed: %s", cache_exc)
 
                 if goto_api_call:
+                    # ── [SUNTIKAN PROVIDER GATEWAY PII GUARDRAILS PREFLIGHT] ──
+                    sanitizer = None
+                    original_messages = None
+                    try:
+                        from provider_gateway.runtime import _get_gateway_config, get_guardrails
+                        gw_config = _get_gateway_config(agent)
+                        if gw_config.enabled and gw_config.guardrails_enabled:
+                            sanitizer = get_guardrails(agent)
+                    except Exception as pii_init_exc:
+                        logger.debug("Failed to initialize guardrails: %s", pii_init_exc)
+
+                    if sanitizer is not None and "messages" in api_kwargs:
+                        try:
+                            import copy
+                            original_messages = api_kwargs["messages"]
+                            sanitized_messages = copy.deepcopy(original_messages)
+                            for msg in sanitized_messages:
+                                if "content" in msg and isinstance(msg["content"], str):
+                                    msg["content"] = sanitizer.sanitize_prompt(msg["content"])
+                            api_kwargs["messages"] = sanitized_messages
+                        except Exception as pii_san_exc:
+                            logger.debug("Failed to sanitize prompt: %s", pii_san_exc)
+
                     request_client = _set_request_client(
                         agent._create_request_openai_client(
                             reason="chat_completion_request",
@@ -286,6 +309,21 @@ def interruptible_api_call(agent, api_kwargs: dict):
                         )
                     )
                     result["response"] = request_client.chat.completions.create(**api_kwargs)
+
+                    # Restore original messages inside api_kwargs to avoid leaking redacted text back to the agent state
+                    if original_messages is not None:
+                        api_kwargs["messages"] = original_messages
+
+                    # ── [SUNTIKAN PROVIDER GATEWAY PII GUARDRAILS POSTFLIGHT] ──
+                    if sanitizer is not None and result["response"] is not None:
+                        try:
+                            for choice in getattr(result["response"], "choices", []) or []:
+                                msg = getattr(choice, "message", None)
+                                if msg is not None and getattr(msg, "content", None) is not None:
+                                    msg.content = sanitizer.restore_response(msg.content)
+                        except Exception as pii_rest_exc:
+                            logger.debug("Failed to restore response content: %s", pii_rest_exc)
+
                     try:
                         from provider_gateway.runtime import record_provider_response_usage
 
@@ -1856,6 +1894,33 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pool=_conn_cap,
             ),
         }
+
+        # ── [SUNTIKAN PROVIDER GATEWAY PII GUARDRAILS PREFLIGHT] ──
+        sanitizer = None
+        deanonimizer = None
+        original_messages = None
+        try:
+            from provider_gateway.runtime import _get_gateway_config, get_guardrails
+            gw_config = _get_gateway_config(agent)
+            if gw_config.enabled and gw_config.guardrails_enabled:
+                sanitizer = get_guardrails(agent)
+                if sanitizer is not None:
+                    deanonimizer = sanitizer.get_deanonimizer()
+        except Exception as pii_init_exc:
+            logger.debug("Failed to initialize guardrails: %s", pii_init_exc)
+
+        if sanitizer is not None and "messages" in stream_kwargs:
+            try:
+                import copy
+                original_messages = stream_kwargs["messages"]
+                sanitized_messages = copy.deepcopy(original_messages)
+                for msg in sanitized_messages:
+                    if "content" in msg and isinstance(msg["content"], str):
+                        msg["content"] = sanitizer.sanitize_prompt(msg["content"])
+                stream_kwargs["messages"] = sanitized_messages
+            except Exception as pii_san_exc:
+                logger.debug("Failed to sanitize streaming prompt: %s", pii_san_exc)
+
         request_client = _set_request_client(
             agent._create_request_openai_client(
                 reason="chat_completion_stream_request",
@@ -1872,6 +1937,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         stream = request_client.chat.completions.create(**stream_kwargs)
+
+        # Restore original messages to prevent redacted strings from leaking back to agent state
+        if original_messages is not None:
+            stream_kwargs["messages"] = original_messages
 
         # Capture rate limit headers from the initial HTTP response.
         # The OpenAI SDK Stream object exposes the underlying httpx
@@ -1945,10 +2014,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
-                content_parts.append(delta.content)
+                raw_content = delta.content
+                if deanonimizer is not None:
+                    try:
+                        processed_content = deanonimizer.process_chunk(raw_content)
+                    except Exception as pii_rest_exc:
+                        logger.debug("Failed to de-anonymize chunk: %s", pii_rest_exc)
+                        processed_content = raw_content
+                else:
+                    processed_content = raw_content
+
+                content_parts.append(processed_content)
                 if not tool_calls_acc:
                     _fire_first_delta()
-                    agent._fire_stream_delta(delta.content)
+                    agent._fire_stream_delta(processed_content)
                     deltas_were_sent["yes"] = True
                 # Tool calls suppress regular content streaming (avoids
                 # displaying chatty "I'll use the tool..." text alongside
@@ -1963,8 +2042,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # box is already closed (tool boundary flush).
                 elif agent.stream_delta_callback:
                     try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
+                        agent.stream_delta_callback(processed_content)
+                        agent._record_streamed_assistant_text(processed_content)
                     except Exception:
                         pass
 
@@ -2040,6 +2119,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Usage in the final chunk
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
+
+        # ── [SUNTIKAN PROVIDER GATEWAY PII GUARDRAILS FLUSH] ──
+        if deanonimizer is not None:
+            try:
+                flush_content = deanonimizer.flush()
+                if flush_content:
+                    content_parts.append(flush_content)
+                    if not tool_calls_acc:
+                        _fire_first_delta()
+                        agent._fire_stream_delta(flush_content)
+                    elif agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(flush_content)
+                            agent._record_streamed_assistant_text(flush_content)
+                        except Exception:
+                            pass
+            except Exception as pii_flush_exc:
+                logger.debug("Failed to flush de-anonymizer: %s", pii_flush_exc)
 
         # Build mock response matching non-streaming shape
         full_content = "".join(content_parts) or None

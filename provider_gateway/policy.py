@@ -107,6 +107,23 @@ def build_gateway_policy(
                 ),
             )
 
+        # Integrate auto-discovered local Ollama models
+        try:
+            from provider_gateway.runtime import get_discovered_ollama_models
+            for lm in get_discovered_ollama_models():
+                _append_candidate(
+                    candidates,
+                    seen,
+                    ProviderRouteCandidate(
+                        provider=lm["provider"],
+                        model=lm["model"],
+                        source="ollama_discovery",
+                        base_url=lm["base_url"],
+                    ),
+                )
+        except Exception as exc:
+            logger.debug("Failed to append discovered Ollama models: %s", exc)
+
         for entry in getattr(agent, "_fallback_chain", []) or []:
             if not isinstance(entry, dict):
                 continue

@@ -18,6 +18,7 @@ from provider_gateway.circuit_breaker import CircuitBreaker
 from provider_gateway.router import ProviderRouter
 from provider_gateway.semantic_cache import SemanticCache
 from provider_gateway.quota_manager import QuotaManager
+from provider_gateway.secure_store import DynamicCredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,63 @@ _circuit_breaker: CircuitBreaker | None = None
 _router: ProviderRouter | None = None
 _cache: SemanticCache | None = None
 _quota_manager: QuotaManager | None = None
+_secure_store: DynamicCredentialStore | None = None
+_guardrails: Any = None
+_discovered_ollama_models: list[dict[str, Any]] | None = None
+
+
+def get_discovered_ollama_models(force_refresh: bool = False) -> list[dict[str, Any]]:
+    """Discover local Ollama models with lazy caching to avoid heavy API overhead on every request."""
+    global _discovered_ollama_models
+    if _discovered_ollama_models is None or force_refresh:
+        try:
+            from provider_gateway.discovery import OllamaDiscovery
+            discovery = OllamaDiscovery()
+            _discovered_ollama_models = discovery.discover_local_models()
+        except Exception as exc:
+            logger.debug("Ollama auto-discovery failed: %s", exc)
+            _discovered_ollama_models = []
+    return _discovered_ollama_models
+
+
+
+def get_secure_store(agent: Any = None) -> DynamicCredentialStore:
+    """Get or create the global DynamicCredentialStore instance, optionally binding it to the agent."""
+    if agent is not None:
+        local_val = getattr(agent, "_provider_secure_store", None)
+        if local_val is not None:
+            return local_val
+
+    global _secure_store
+    if _secure_store is None:
+        _secure_store = DynamicCredentialStore()
+    
+    if agent is not None:
+        try:
+            setattr(agent, "_provider_secure_store", _secure_store)
+        except Exception:
+            pass
+    return _secure_store
+
+
+def get_guardrails(agent: Any = None) -> Any:
+    """Get or create the global PIISanitizer instance, optionally binding it to the agent."""
+    if agent is not None:
+        local_val = getattr(agent, "_provider_guardrails", None)
+        if local_val is not None:
+            return local_val
+
+    global _guardrails
+    if _guardrails is None:
+        from provider_gateway.guardrails import PIISanitizer
+        _guardrails = PIISanitizer()
+    
+    if agent is not None:
+        try:
+            setattr(agent, "_provider_guardrails", _guardrails)
+        except Exception:
+            pass
+    return _guardrails
 
 
 def get_quota_manager(agent: Any = None) -> QuotaManager:

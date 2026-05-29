@@ -25,6 +25,8 @@ class GatewayConfig:
     daily_limit_usd: float | None = None
     monthly_limit_usd: float | None = None
     quota_action: str = "block"  # "block" or "fallback"
+    guardrails_enabled: bool = False
+    server_port: int = 8000
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> "GatewayConfig":
@@ -79,6 +81,19 @@ class GatewayConfig:
             field_name="provider_gateway.quota.action",
         )
 
+        guardrails_cfg = data.get("guardrails", {})
+        if not isinstance(guardrails_cfg, Mapping):
+            guardrails_cfg = {}
+        guardrails_enabled = bool(guardrails_cfg.get("enabled", False))
+
+        server_cfg = data.get("server", {})
+        if not isinstance(server_cfg, Mapping):
+            server_cfg = {}
+        try:
+            server_port = int(server_cfg.get("port", 8000))
+        except (TypeError, ValueError):
+            server_port = 8000
+
         return cls(
             enabled=bool(data.get("enabled", False)),
             backend=backend,
@@ -89,6 +104,8 @@ class GatewayConfig:
             daily_limit_usd=_parse_float(daily_limit),
             monthly_limit_usd=_parse_float(monthly_limit),
             quota_action=quota_action,
+            guardrails_enabled=guardrails_enabled,
+            server_port=server_port,
         )
 
 

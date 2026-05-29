@@ -1324,6 +1324,27 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""))
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
+
+    # OpenCode Free: the free tier rejects any Authorization header entirely.
+    # The OpenAI SDK always injects "Authorization: Bearer <api_key>" even when
+    # api_key is empty.  Wrap the existing httpx client (or create a fresh one)
+    # with an event hook that strips the Authorization header before it hits the
+    # wire.
+    if agent.provider == "opencode-free":
+        import httpx
+
+        _inner = client_kwargs.get("http_client") or httpx.Client()
+
+        def _strip_auth(request: httpx.Request) -> httpx.Request:
+            request.headers.pop("Authorization", None)
+            return request
+
+        _wrapped = httpx.Client(
+            transport=_inner._transport,
+            headers={k: v for k, v in _inner.headers.items() if k.lower() != "authorization"},
+        )
+        _wrapped.event_hooks["request"].append(_strip_auth)
+        client_kwargs["http_client"] = _wrapped
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)

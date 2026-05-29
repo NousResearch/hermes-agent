@@ -153,6 +153,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
+    "opencode-free": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        base_url_override="https://opencode.ai/zen/v1",
+    ),
     "kilo": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -294,6 +299,10 @@ ALIASES: Dict[str, str] = {
     "go": "opencode-go",
     "opencode-go-sub": "opencode-go",
 
+    # opencode-free
+    "free": "opencode-free",
+    "opencode_free": "opencode-free",
+
     # kilo (models.dev ID for KiloCode)
     "kilocode": "kilo",
     "kilo-code": "kilo",
@@ -378,6 +387,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
+    "opencode-free": "OpenCode Free",
 }
 
 

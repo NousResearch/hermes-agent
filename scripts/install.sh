@@ -1935,7 +1935,6 @@ ensure_browser() {
     log_file="$(mktemp)"
     if ! "$npm_bin" install -g --prefix "$HERMES_HOME/node" --silent --ignore-scripts \
         "agent-browser@^0.26.0" \
-        "@askjo/camofox-browser@^1.5.2" \
         >"$log_file" 2>&1; then
         log_error "npm install failed:"
         cat "$log_file" >&2

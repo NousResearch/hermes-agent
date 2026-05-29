@@ -161,6 +161,48 @@ def _live_checkout_path() -> Path:
     return Path.home() / ".hermes" / "hermes-agent"
 
 
+def _check_hermes_config_on_main() -> Optional[str]:
+    """Check that the hermes-config live checkout (~/.hermes) is on main.
+
+    Returns a warning string when the checkout is on a non-main branch,
+    or None when it is on main or the check cannot be performed.
+
+    Called before each worker spawn.  This is a diagnostic warning, NOT
+    a hard blocker — workers can still run if the checkout is on a feature
+    branch (some workflows legitimately require that).  The warning surfaces
+    in dispatcher logs so an operator can reset the checkout without having
+    to notice the drift manually.
+
+    The check is best-effort: if git is unavailable or the path is not a
+    git repo, the function returns None (no-op).
+    """
+    import subprocess
+
+    hermes_config = Path.home() / ".hermes"
+    if not (hermes_config / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(hermes_config), "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        branch = result.stdout.strip()
+        if branch and branch != "main":
+            return (
+                f"~/.hermes live checkout is on branch '{branch}' instead of "
+                f"'main'. Workers that edit skills/profiles will run against the "
+                f"live config tree on this branch. Reset with: "
+                f"cd ~/.hermes && git checkout main && git pull --ff-only origin main"
+            )
+    except Exception:
+        pass
+    return None
+
 def _default_worktree_path(task_id: str) -> Path:
     """Deterministic worktree path keyed on task id.
 
@@ -9923,6 +9965,16 @@ def _default_spawn(
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
+    # Warn if the hermes-config live checkout has drifted off main.  Workers
+    # that edit skills/profiles will write into whatever branch ~/.hermes is
+    # on, which causes the "live tree drifts from main" symptom.  This is NOT
+    # a hard block — some operators intentionally run with the checkout on a
+    # feature branch.  The warning surfaces in the dispatcher log so it can
+    # be caught without waiting for the symptom to appear.
+    _config_branch_warning = _check_hermes_config_on_main()
+    if _config_branch_warning:
+        _log.warning("kanban dispatcher: %s", _config_branch_warning)
+
     from hermes_cli.profiles import normalize_profile_name
 
     profile_arg = normalize_profile_name(task.assignee)
@@ -10031,6 +10083,27 @@ def _default_spawn(
     env["GIT_AUTHOR_EMAIL"] = env.get("GIT_AUTHOR_EMAIL", _git_email)
     env["GIT_COMMITTER_NAME"] = env.get("GIT_COMMITTER_NAME", env["GIT_AUTHOR_NAME"])
     env["GIT_COMMITTER_EMAIL"] = env.get("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])
+
+    # Pin TERMINAL_CWD to the workspace so the terminal tool's default
+    # working directory is the task's worktree, not the gateway's CWD.
+    #
+    # Without this pin, workers inherit the gateway's TERMINAL_CWD
+    # (typically $HOME or a configured path like /Users/sahilmarwaha).
+    # The terminal tool reads TERMINAL_CWD — it ignores the process CWD set
+    # via subprocess.Popen(cwd=...) — so bare `git` commands run from the
+    # gateway's CWD rather than the workspace.  On this Mac that CWD is
+    # /Users/sahilmarwaha which does NOT contain a git repo, so workers
+    # would walk up and sometimes find ~/.hermes (hermes-config) as the
+    # git root and accidentally branch / commit there instead of their
+    # assigned worktree.  Setting TERMINAL_CWD to workspace prevents this:
+    # workers start in the right directory without any explicit `cd`.
+    #
+    # Only override when the workspace is a real directory; for tasks where
+    # the workspace hasn't been created yet (edge case during spawn), leave
+    # TERMINAL_CWD unset so the terminal tool falls back normally rather
+    # than pointing at a non-existent path.
+    if os.path.isdir(workspace):
+        env["TERMINAL_CWD"] = workspace
 
     cmd = [
         *_resolve_hermes_argv(),

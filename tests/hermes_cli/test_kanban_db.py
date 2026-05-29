@@ -3383,6 +3383,110 @@ class TestSharedBoardPaths:
         assert env["GIT_COMMITTER_NAME"] == "Committer User"
         assert env["GIT_COMMITTER_EMAIL"] == "committer@example.com"
 
+    def test_dispatcher_spawn_injects_terminal_cwd(self, tmp_path, monkeypatch):
+        # _default_spawn must set TERMINAL_CWD to the task workspace so the
+        # terminal tool's default working directory is the task's worktree,
+        # not the gateway's CWD.  Without this, workers inherit the gateway's
+        # TERMINAL_CWD (e.g. $HOME) and bare git commands run from there
+        # instead of the workspace, which caused workers to accidentally
+        # create branches on ~/.hermes (hermes-config) instead of their
+        # assigned hermes-agent worktree.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+
+        # Provide a real directory for the workspace so the is_dir() guard
+        # triggers and TERMINAL_CWD is set.
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        # Remove any inherited TERMINAL_CWD so the test exercises the
+        # default (unset) path, not whatever the parent process has.
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+        captured: dict = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 9999
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_terminal_cwd",
+            title="check terminal cwd injection",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="worktree",
+            workspace_path=str(ws),
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+        kb._default_spawn(task, str(ws))
+
+        env = captured["env"]
+        assert env.get("TERMINAL_CWD") == str(ws), (
+            f"TERMINAL_CWD should be set to workspace {ws!s}, "
+            f"got {env.get('TERMINAL_CWD')!r}"
+        )
+
+    def test_dispatcher_spawn_skips_terminal_cwd_when_workspace_missing(
+        self, tmp_path, monkeypatch
+    ):
+        # When the workspace directory does not exist, TERMINAL_CWD must NOT
+        # be set (don't point the terminal tool at a non-existent path).
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+
+        # Strip any inherited TERMINAL_CWD; confirm it stays absent after spawn.
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+        captured: dict = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 9999
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        # Non-existent workspace path.
+        missing_ws = str(tmp_path / "does_not_exist")
+
+        task = kb.Task(
+            id="t_no_ws",
+            title="missing workspace",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=missing_ws,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+        kb._default_spawn(task, missing_ws)
+
+        env = captured["env"]
+        assert "TERMINAL_CWD" not in env, (
+            f"TERMINAL_CWD should not be set when workspace does not exist, "
+            f"got {env.get('TERMINAL_CWD')!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # latest_summary / latest_summaries — surface task_runs.summary handoffs

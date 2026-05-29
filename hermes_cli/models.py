@@ -11,6 +11,7 @@ import json
 import os
 import urllib.request
 import urllib.error
+import urllib.parse
 import time
 from difflib import get_close_matches
 from pathlib import Path
@@ -2368,6 +2369,11 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
     )
 
 
+def _is_google_genai_base_url(base_url: Optional[str]) -> bool:
+    normalized = (base_url or "").strip().rstrip("/").lower()
+    return "generativelanguage.googleapis.com" in normalized
+
+
 def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
     """Strip ``/v1`` suffix from an LM Studio base URL to get the native API root.
 
@@ -2923,11 +2929,79 @@ def probe_api_models(
         }
 
     if _is_github_models_base_url(normalized):
-        models = _fetch_github_models(api_key=api_key, timeout=timeout)
+        gh_models = _fetch_github_models(api_key=api_key, timeout=timeout)
         return {
-            "models": models,
+            "models": gh_models,
             "probed_url": COPILOT_MODELS_URL,
             "resolved_base_url": COPILOT_BASE_URL,
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+
+    # Google AI Studio (Gemini): first try OpenAI-compatible /openai/models
+    # with Bearer auth, then fallback to native /models?key=... .
+    #
+    # Rationale: /v1beta/models can reject Bearer API keys with HTTP 401
+    # (expects OAuth), while /v1beta/openai/models accepts Bearer API keys.
+    # Native /models works reliably with ?key=.
+    if _is_google_genai_base_url(normalized):
+        tried: list[str] = []
+
+        openai_base = normalized if normalized.endswith("/openai") else (normalized + "/openai")
+        openai_url = openai_base.rstrip("/") + "/models"
+        tried.append(openai_url)
+
+        openai_headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
+        if api_key:
+            openai_headers["Authorization"] = f"Bearer {api_key}"
+
+        req = urllib.request.Request(openai_url, headers=openai_headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                rows = data.get("data", []) if isinstance(data, dict) else []
+                models = [m.get("id", "") for m in rows if isinstance(m, dict)]
+                return {
+                    "models": models,
+                    "probed_url": openai_url,
+                    "resolved_base_url": normalized,
+                    "suggested_base_url": None,
+                    "used_fallback": False,
+                }
+        except Exception:
+            pass
+
+        if api_key:
+            key_q = urllib.parse.quote(api_key, safe="")
+            native_url = normalized.rstrip("/") + f"/models?key={key_q}"
+            tried.append(native_url)
+            native_headers = {"User-Agent": _HERMES_USER_AGENT}
+            req = urllib.request.Request(native_url, headers=native_headers)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode())
+                    rows = data.get("models", []) if isinstance(data, dict) else []
+                    models: list[str] = []
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        mid = row.get("name") or row.get("id") or ""
+                        if isinstance(mid, str) and mid:
+                            models.append(mid)
+                    return {
+                        "models": models,
+                        "probed_url": native_url,
+                        "resolved_base_url": normalized,
+                        "suggested_base_url": None,
+                        "used_fallback": True,
+                    }
+            except Exception:
+                pass
+
+        return {
+            "models": None,
+            "probed_url": tried[0] if tried else (normalized.rstrip("/") + "/openai/models"),
+            "resolved_base_url": normalized,
             "suggested_base_url": None,
             "used_fallback": False,
         }

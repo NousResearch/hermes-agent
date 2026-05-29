@@ -107,6 +107,40 @@ async def test_verify_code_message_bypasses_whatsapp_process_gate(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_verify_code_group_message_redeems_sender_and_acks_chat(monkeypatch):
+    import gateway.platforms.whatsapp as whatsapp_platform
+
+    adapter = _make_adapter(group_policy="allowlist", group_allow_from=["other@g.us"])
+    adapter._bridge_port = 3000
+    adapter._http_session = _mock_post_session()
+    adapter._should_process_message = MagicMock(return_value=False)
+    redeem = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(whatsapp_platform, "redeem_verify_code", redeem, raising=False)
+
+    result = await adapter._build_message_event(
+        _group_message(
+            "verify 123456",
+            senderId="6281234567890@s.whatsapp.net",
+            **{"from": "120363001234567890@g.us"},
+        )
+    )
+
+    assert result is None
+    redeem.assert_awaited_once_with(
+        platform="whatsapp",
+        code="123456",
+        user_id="6281234567890@s.whatsapp.net",
+    )
+    adapter._http_session.post.assert_called_once()
+    assert adapter._http_session.post.call_args.args[0] == "http://127.0.0.1:3000/send"
+    assert adapter._http_session.post.call_args.kwargs["json"] == {
+        "chatId": "120363001234567890@g.us",
+        "message": "✅ 已將你加為 owner，現在可以開始對話",
+    }
+    adapter._should_process_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_non_verify_whatsapp_message_keeps_existing_process_gate(monkeypatch):
     import gateway.platforms.whatsapp as whatsapp_platform
 

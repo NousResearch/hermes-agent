@@ -1263,18 +1263,19 @@ class WhatsAppAdapter(BasePlatformAdapter):
         try:
             verify_cmd = parse_verify_command(data.get("body", ""))
             if verify_cmd:
-                user_id = data.get("from", "") or data.get("senderId", "")
+                user_id = str(data.get("senderId") or data.get("from", "") or "")
+                chat_id = str(data.get("chatId") or data.get("from", "") or "")
                 result = await redeem_verify_code(
                     platform="whatsapp",
                     code=verify_cmd["code"],
                     user_id=user_id,
                 )
-                if self._http_session and user_id:
+                if self._http_session and chat_id:
                     import aiohttp
                     async with self._http_session.post(
                         f"http://127.0.0.1:{self._bridge_port}/send",
                         json={
-                            "chatId": user_id,
+                            "chatId": chat_id,
                             "message": verify_ack_text(result),
                         },
                         timeout=aiohttp.ClientTimeout(total=30),

@@ -2513,7 +2513,8 @@ class BasePlatformAdapter(ABC):
         Returns:
             Tuple of (list of (path, is_voice) pairs, cleaned content with tags removed).
         """
-        media = []
+        media: List[Tuple[str, bool]] = []
+        seen_paths: set[str] = set()
         cleaned = content
 
         # Check for [[audio_as_voice]] directive
@@ -2523,25 +2524,31 @@ class BasePlatformAdapter(ABC):
         # ``content`` for it (so they can still react to it); here we just
         # keep it out of the user-visible cleaned text.
         cleaned = cleaned.replace("[[as_document]]", "")
-        
-        # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
-        # and quoted/backticked paths for LLM-formatted outputs.
-        media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
-        )
-        for match in media_pattern.finditer(content):
+
+        # Extract MEDIA:<path> tags using the shared, module-level
+        # _MEDIA_TAG_RE built from _DELIVERY_MEDIA_EXTS (single source of
+        # truth — uppercase exts, .md/.html, **bold** wrappers, quoted and
+        # spaced paths all handled identically here and in stream_consumer).
+        for match in _MEDIA_TAG_RE.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
-            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-            if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]*")
+            if not path:
+                continue
+            expanded = os.path.expanduser(path)
+            if expanded in seen_paths:
+                continue
+            seen_paths.add(expanded)
+            media.append((expanded, has_voice_tag))
 
-        # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
-        if media:
-            cleaned = media_pattern.sub('', cleaned)
+        # Remove MEDIA tags from content (including surrounding quote/backtick
+        # and **bold** wrappers). The .search() guard strips bold/quoted tags
+        # even in the defensive case where dedup left ``media`` empty.
+        if media or _MEDIA_TAG_RE.search(cleaned):
+            cleaned = _MEDIA_TAG_RE.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
-        
+
         return media, cleaned
 
     @staticmethod

@@ -96,3 +96,12 @@ def test_tool_media_re_matches_broadened_extensions():
 
     upper = '{"media_tag": "MEDIA:/tmp/IMG.PNG"}'
     assert [m.group(1).rstrip('",}') for m in _TOOL_MEDIA_RE.finditer(upper)] == ["/tmp/IMG.PNG"]
+
+
+@pytest.mark.parametrize("ext", [".kml", ".kmz", ".geojson", ".gpx"])
+def test_gis_extensions_extracted(ext):
+    # GIS/geospatial deliverables requested in issue #24032 (route to
+    # send_document). Includes the spaced-path repro from that issue.
+    assert _paths(f"MEDIA:/tmp/track{ext}") == [f"/tmp/track{ext}"]
+    media, _ = BasePlatformAdapter.extract_media(f"MEDIA:/home/user/My Folder/coords{ext}")
+    assert [p for p, _v in media] == [f"/home/user/My Folder/coords{ext}"]

@@ -874,6 +874,8 @@ _DELIVERY_MEDIA_EXTS = frozenset({
     ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar",
     # Web / rendered output
     ".html", ".htm",
+    # GIS / geospatial (deliverable artifacts; route to send_document) — #24032
+    ".kml", ".kmz", ".geojson", ".gpx",
     # Mobile packages
     ".apk", ".ipa",
     # Ebook

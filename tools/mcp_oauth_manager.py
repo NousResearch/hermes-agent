@@ -45,6 +45,13 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
+# In-process re-entry guard — flock is per file description (open file
+# table), so the SAME process opening the same lock file twice creates two
+# independent lock contexts that deadlock against each other. Track per-thread
+# which servers we already hold so re-entrant calls become no-ops.
+_oauth_lock_holders = threading.local()
+
+
 @contextlib.contextmanager
 def _cross_process_oauth_lock(server_name: str):
     """Serialize OAuth refresh/auth flows across Hermes processes.
@@ -55,9 +62,24 @@ def _cross_process_oauth_lock(server_name: str):
     loser falls through to full browser OAuth, which can reopen Chrome even
     after a successful login. A per-server advisory lock makes each process
     reload disk after the previous process has written fresh tokens.
+
+    Local patch (2026-05-29) — Nathan / M4: two defenses against forever-hang:
+    (1) in-process re-entry guard via thread-local set, to avoid self-deadlock
+    when the same process opens the lock twice (flock is per-FD); (2) non-
+    blocking acquire with bounded retry, so when another process is wedged
+    we log + proceed unlocked rather than blocking the entire CLI / gateway
+    init forever.
     """
+    holders = getattr(_oauth_lock_holders, "set", None)
+    if holders is None:
+        holders = set()
+        _oauth_lock_holders.set = holders
+    if server_name in holders:
+        yield
+        return
     try:
         import fcntl  # POSIX/macOS/Linux only
+        import time
         from tools.mcp_oauth import _get_token_dir, _safe_filename
 
         token_dir = _get_token_dir()
@@ -68,11 +90,32 @@ def _cross_process_oauth_lock(server_name: str):
                 os.chmod(lock_path, 0o600)
             except OSError:
                 pass
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            LOCK_TIMEOUT_SECS = 30.0
+            start = time.monotonic()
+            acquired = False
+            while True:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except BlockingIOError:
+                    if time.monotonic() - start > LOCK_TIMEOUT_SECS:
+                        logger.warning(
+                            "MCP OAuth '%s': cross-process lock contended for %.0fs; proceeding without exclusivity",
+                            server_name, LOCK_TIMEOUT_SECS,
+                        )
+                        break
+                    time.sleep(0.5)
+            holders.add(server_name)
             try:
                 yield
             finally:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                holders.discard(server_name)
+                if acquired:
+                    try:
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        pass
     except Exception as exc:  # pragma: no cover - defensive/platform fallback
         logger.debug(
             "MCP OAuth '%s': cross-process lock unavailable; continuing unlocked: %s",

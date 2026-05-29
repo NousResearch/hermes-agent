@@ -1505,3 +1505,53 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     if not sections:
         return ""
     return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+
+
+def build_delegation_capabilities_prompt() -> str:
+    """Build system-prompt block listing available models by complexity (config-driven).
+    
+    Loaded from config.yaml delegation.model_complexity_map, grouped by complexity tier.
+    Injected once per session into stable_parts for zero per-turn cost.
+    
+    Returns formatted markdown block or empty string if no models configured.
+    """
+    parts = []
+    
+    try:
+        from hermes_cli.config import get_model_complexity_map
+        complexity_map = get_model_complexity_map()
+        
+        if not complexity_map:
+            return ""
+        
+        # Group by complexity
+        lines = ["### Available Models (by complexity tier)"]
+        lines.append("")
+        lines.append("**Complexity Scoring** (from config.yaml delegation.model_complexity_map):")
+        lines.append("- easy: Simple tasks (grep, lookups) → reasoning=low")
+        lines.append("- medium: Code gen, bug fixes → reasoning=high")
+        lines.append("- hard: Architecture, research → reasoning=xhigh")
+        lines.append("")
+        
+        for complexity_level in ["easy", "medium", "hard"]:
+            models_in_level = [
+                (mid, cfg) for mid, cfg in complexity_map.items()
+                if cfg.get("complexity") == complexity_level
+            ]
+            if models_in_level:
+                lines.append(f"**{complexity_level.upper()}** ({len(models_in_level)} models):")
+                for idx, (model_id, cfg) in enumerate(models_in_level[:5], 1):
+                    reasoning = cfg.get("reasoning_effort", "?")
+                    desc = cfg.get("description", "")
+                    lines.append(f"  {idx}. {model_id:30s} | reasoning: {reasoning:7s} | {desc}")
+                if len(models_in_level) > 5:
+                    lines.append(f"  ... +{len(models_in_level) - 5} more")
+                lines.append("")
+        
+        parts.append("\n".join(lines))
+        
+    except Exception as e:
+        logger.debug("Failed to build delegation capabilities prompt: %s", e)
+        return ""
+    
+    return "\n".join(parts) if parts else ""

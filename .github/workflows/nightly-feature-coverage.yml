@@ -1,0 +1,35 @@
+name: Nightly Feature Coverage
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 02:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  live-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-timeout
+      
+      - name: Run QW1 metrics wiring integration tests
+        run: |
+          PYTHONPATH=. python -m pytest tests/test_integration_qw1_metrics_wiring.py \
+            -o "addopts=" -v --tb=short --timeout=120
+      
+      - name: Run QW3 stealth wiring integration tests
+        run: |
+          PYTHONPATH=. python -m pytest tests/test_integration_qw3_stealth_wiring.py \
+            -o "addopts=" -v --tb=short --timeout=120

@@ -51,7 +51,9 @@ import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_t
 if TYPE_CHECKING:
     from firecrawl import Firecrawl  # noqa: F401 — type hints only
 from plugins.web.firecrawl.provider import (
+    Firecrawl,  # noqa: F401  # re-exported for tests that mock.patch("tools.web_tools.Firecrawl")
     _firecrawl_backend_help_suffix,
+    _get_firecrawl_client,  # noqa: F401  # re-exported for tests that `from tools.web_tools import _get_firecrawl_client`
     _get_firecrawl_gateway_url,
     _is_tool_gateway_ready,
     check_firecrawl_api_key,

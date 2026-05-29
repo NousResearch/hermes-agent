@@ -2428,6 +2428,8 @@ class TestConcurrentToolExecution:
                 session_id=agent.session_id,
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
+                enabled_toolsets=agent.enabled_toolsets,
+                disabled_toolsets=agent.disabled_toolsets,
             )
             assert result == "result"
 
@@ -3779,9 +3781,18 @@ class TestRunConversation:
         mock_handle_function_call.assert_not_called()
 
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
-        """Regression: kanban worker must call kanban_block when iteration
-        budget is exhausted, otherwise the dispatcher sees a protocol
-        violation and gives up after 1 failure (issue #23216)."""
+        """Regression: kanban worker must signal the dispatcher when its
+        iteration budget is exhausted, otherwise the task silently re-runs
+        forever without ever tripping the failure_limit circuit breaker
+        (issue #23216 / #29747 gap 2).
+
+        As of #29747, the exhaustion path routes through
+        ``kanban_db._record_task_failure(outcome="timed_out")`` so the
+        ``consecutive_failures`` counter increments and the dispatcher's
+        ``failure_limit`` breaker eventually trips. The legacy
+        ``kanban_block`` call was replaced because blocked-outcome runs
+        bypass the failure counter.
+        """
         self._setup_agent(agent)
         agent.max_iterations = 2
 
@@ -3800,8 +3811,14 @@ class TestRunConversation:
             tool_resp, tool_resp, summary_resp,
         ]
 
+        mock_record_failure = MagicMock(return_value=False)
+        mock_connect = MagicMock(return_value=MagicMock())
+
         with (
-            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("hermes_cli.kanban_db._record_task_failure",
+                  mock_record_failure),
+            patch("hermes_cli.kanban_db.connect", mock_connect),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -3811,23 +3828,24 @@ class TestRunConversation:
         # The agent should have reported the task as not completed.
         assert result["completed"] is False
 
-        # Among all handle_function_call invocations, one must be
-        # kanban_block with the correct task_id and a reason mentioning
-        # iteration exhaustion.
-        kanban_block_calls = [
-            c for c in mock_hfc.call_args_list
-            if c[0][0] == "kanban_block"
-        ]
-        assert len(kanban_block_calls) == 1, (
-            f"Expected exactly 1 kanban_block call, got {len(kanban_block_calls)}. "
-            f"All calls: {mock_hfc.call_args_list}"
+        # _record_task_failure should have been called exactly once for
+        # the exhaustion event, with outcome="timed_out".
+        assert mock_record_failure.call_count == 1, (
+            f"Expected exactly 1 _record_task_failure call, "
+            f"got {mock_record_failure.call_count}. "
+            f"Calls: {mock_record_failure.call_args_list}"
         )
-        call = kanban_block_calls[0]
-        assert call[0][1]["task_id"] == "t_test_task_123"
-        assert "Iteration budget exhausted" in call[0][1]["reason"]
+        call = mock_record_failure.call_args_list[0]
+        # Positional: (conn, task_id, ...)
+        assert call.args[1] == "t_test_task_123"
+        assert call.kwargs.get("outcome") == "timed_out"
+        assert call.kwargs.get("release_claim") is True
+        assert call.kwargs.get("end_run") is True
+        assert "Iteration budget exhausted" in call.kwargs.get("error", "")
 
     def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):
-        """kanban_block must NOT be called when HERMES_KANBAN_TASK is unset."""
+        """The exhaustion bridge must NOT fire when HERMES_KANBAN_TASK
+        is unset (non-kanban runs are unaffected by #29747 gap 2)."""
         self._setup_agent(agent)
         agent.max_iterations = 2
 
@@ -3844,20 +3862,20 @@ class TestRunConversation:
             tool_resp, tool_resp, summary_resp,
         ]
 
+        mock_record_failure = MagicMock(return_value=False)
+
         with (
-            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("hermes_cli.kanban_db._record_task_failure",
+                  mock_record_failure),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
             agent.run_conversation("do stuff")
 
-        kanban_block_calls = [
-            c for c in mock_hfc.call_args_list
-            if c[0][0] == "kanban_block"
-        ]
-        assert len(kanban_block_calls) == 0, (
-            "kanban_block should not be called outside kanban mode"
+        assert mock_record_failure.call_count == 0, (
+            "_record_task_failure should not be called outside kanban mode"
         )
 
 
@@ -4045,40 +4063,13 @@ class TestNousCredentialRefresh:
 
         assert ok is True
         assert closed["value"] is True
-        assert captured["inference_auth_mode"] == "legacy"
+        assert captured["force_refresh"] is True
         assert rebuilt["kwargs"]["api_key"] == "new-nous-key"
         assert (
             rebuilt["kwargs"]["base_url"] == "https://inference-api.nousresearch.com/v1"
         )
         assert "default_headers" not in rebuilt["kwargs"]
         assert isinstance(agent.client, _RebuiltClient)
-
-    def test_try_refresh_nous_client_credentials_accepts_explicit_auth_mode(
-        self, agent, monkeypatch
-    ):
-        agent.provider = "nous"
-        agent.api_mode = "chat_completions"
-        captured = {}
-
-        def _fake_resolve(**kwargs):
-            captured.update(kwargs)
-            return {
-                "api_key": "new-nous-key",
-                "base_url": "https://inference-api.nousresearch.com/v1",
-            }
-
-        monkeypatch.setattr(
-            "hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
-        )
-
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
-            ok = agent._try_refresh_nous_client_credentials(
-                force=False,
-                inference_auth_mode="legacy",
-            )
-
-        assert ok is True
-        assert captured["inference_auth_mode"] == "legacy"
 
 
 class TestCredentialPoolRecovery:

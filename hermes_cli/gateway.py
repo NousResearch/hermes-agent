@@ -3960,18 +3960,6 @@ def _setup_whatsapp():
     cmd_whatsapp(argparse.Namespace())
 
 
-def _setup_email():
-    """Configure Email via the standard platform setup."""
-    email_platform = next(p for p in _PLATFORMS if p["key"] == "email")
-    _setup_standard_platform(email_platform)
-
-
-def _setup_sms():
-    """Configure SMS (Twilio) via the standard platform setup."""
-    sms_platform = next(p for p in _PLATFORMS if p["key"] == "sms")
-    _setup_standard_platform(sms_platform)
-
-
 def _setup_dingtalk():
     """Configure DingTalk — QR scan (recommended) or manual credential entry."""
     from hermes_cli.setup import (
@@ -4142,12 +4130,6 @@ def _setup_wecom():
 
     print()
     print_success("💬 WeCom configured!")
-
-
-def _setup_yuanbao():
-    """Configure Yuanbao via the standard platform setup."""
-    yuanbao_platform = next(p for p in _PLATFORMS if p["key"] == "yuanbao")
-    _setup_standard_platform(yuanbao_platform)
 
 
 def _is_service_installed() -> bool:

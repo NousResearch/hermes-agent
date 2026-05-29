@@ -209,3 +209,57 @@ class TestHandleVisionAnalyzeFastPath:
 
         assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
             "Fast path fired for unknown provider; should have fallen through"
+
+    def test_supports_vision_override_bypasses_provider_allowlist(self, tmp_path):
+        """supports_vision=true enables the fast path on an unlisted provider."""
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        async def _aux_sentinel(*args, **kwargs):
+            return '{"sentinel": "aux-path"}'
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("brand-new-provider", "llava-v1.6")
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"supports_vision": True}},
+            ), patch(
+                "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
+            ) as mock_aux:
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        assert isinstance(result, dict) and result.get("_multimodal") is True
+        mock_aux.assert_not_called()
+
+    def test_text_mode_wins_over_supports_vision_override(self, tmp_path):
+        """Explicit text routing blocks the fast path even with supports_vision."""
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        async def _aux_sentinel(*args, **kwargs):
+            return '{"sentinel": "aux-path"}'
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("brand-new-provider", "llava-v1.6")
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "agent": {"image_input_mode": "text"},
+                    "model": {"supports_vision": True},
+                },
+            ), patch(
+                "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
+            ) as mock_aux:
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        assert isinstance(result, str)
+        assert json.loads(result) == {"sentinel": "aux-path"}
+        mock_aux.assert_called_once()

@@ -149,13 +149,6 @@ def interruptible_api_call(agent, api_kwargs: dict):
             request_client_holder["owner_tid"] = threading.get_ident()
         return client
 
-    def _take_request_client():
-        with request_client_lock:
-            client = request_client_holder.get("client")
-            request_client_holder["client"] = None
-            request_client_holder["owner_tid"] = None
-            return client
-
     def _close_request_client_once(reason: str) -> None:
         # #29507: dispatch on the calling thread.
         #
@@ -284,8 +277,15 @@ def interruptible_api_call(agent, api_kwargs: dict):
     else:
         _codex_idle_timeout_default = 12.0
 
+    # No-byte TTFB cutoff. The OpenAI SDK's own streaming read timeout is far
+    # longer (openai 2.x DEFAULT_TIMEOUT.read = 600s), so a tight 12s default
+    # killed subscription-backed Codex requests mid-prefill before the backend
+    # had a chance to emit its first SSE event. Default to 120s — long enough to
+    # clear normal backend admission / prompt prefill, short enough to still
+    # reconnect promptly when the socket is genuinely wedged. Set
+    # HERMES_CODEX_TTFB_TIMEOUT_SECONDS=0 to disable this watchdog entirely.
     _ttfb_enabled = _codex_watchdog_enabled
-    _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 12.0)
+    _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
     elif _openai_codex_backend:
@@ -307,7 +307,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 _ttfb_disable_above,
             )
         else:
-            _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 20.0)
+            _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
             if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
                 logger.info(
                     "Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "
@@ -1620,13 +1620,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # See #29507 explanation in the non-streaming variant above.
             request_client_holder["owner_tid"] = threading.get_ident()
         return client
-
-    def _take_request_client():
-        with request_client_lock:
-            client = request_client_holder.get("client")
-            request_client_holder["client"] = None
-            request_client_holder["owner_tid"] = None
-            return client
 
     def _close_request_client_once(reason: str) -> None:
         # See #29507 explanation in the non-streaming variant above. A

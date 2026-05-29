@@ -110,6 +110,16 @@ _IS_WINDOWS = sys.platform == "win32"
 # long single-call MCP workflows.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 
+# If a worker's PID is still alive but its ``last_heartbeat_at`` is
+# older than this when ``release_stale_claims`` runs, treat the worker
+# as wedged and reclaim regardless of PID liveness (#29747 gap 3).
+# This catches the logic-loop case where the process is technically
+# running but not making observable progress.  ``_touch_activity``
+# bridges chunk-level liveness into ``last_heartbeat_at`` via #31752,
+# so any genuinely active worker keeps its heartbeat fresh as a side
+# effect of normal API traffic.
+DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
@@ -2740,9 +2750,19 @@ def release_stale_claims(
     then-immediately-reclaim loop seen on slow models that spend longer
     than ``DEFAULT_CLAIM_TTL_SECONDS`` inside a single tool-free LLM
     call (#23025): no tool calls means no ``kanban_heartbeat``, even
-    though the subprocess is healthy. ``enforce_max_runtime`` and
-    ``detect_crashed_workers`` remain the upper bounds for genuinely
-    wedged or dead workers.
+    though the subprocess is healthy.
+
+    Backstop (#29747 gap 3): if the worker's PID is still alive but its
+    ``last_heartbeat_at`` is stale by more than
+    ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS`` (1h), the worker has
+    been making no observable progress and we reclaim anyway — even if
+    ``_pid_alive`` is still true. This catches the wedged-in-a-logic-loop
+    case where the process is technically running but accomplishing
+    nothing. ``_touch_activity`` (run_agent.py) bridges chunk-level
+    liveness into ``last_heartbeat_at`` via #31752, so any genuinely
+    active worker keeps its heartbeat fresh as a side effect of normal
+    API traffic. ``enforce_max_runtime`` and ``detect_crashed_workers``
+    remain the upper bounds for genuinely wedged or dead workers.
 
     Returns the number of stale claims actually reclaimed (live-pid
     extensions don't count). Safe to call often.
@@ -2760,7 +2780,21 @@ def release_stale_claims(
     for row in stale:
         lock = row["claim_lock"] or ""
         host_local = lock.startswith(host_prefix)
-        if host_local and row["worker_pid"] and _pid_alive(row["worker_pid"]):
+        hb = row["last_heartbeat_at"]
+        # Heartbeat staleness backstop: if we have a heartbeat at all
+        # and it's older than the max-stale threshold, the worker is
+        # not making observable progress.  Reclaim instead of extending,
+        # even if the PID is still alive (it's likely in a logic loop).
+        heartbeat_stale = (
+            hb is not None
+            and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
+        )
+        if (
+            host_local
+            and row["worker_pid"]
+            and _pid_alive(row["worker_pid"])
+            and not heartbeat_stale
+        ):
             new_expires = now + _resolve_claim_ttl_seconds()
             with write_txn(conn):
                 cur = conn.execute(
@@ -2829,6 +2863,7 @@ def release_stale_claims(
                 ),
                 "now": now,
                 "host_local": host_local,
+                "heartbeat_stale": bool(heartbeat_stale),
             }
             payload.update(termination)
             _append_event(
@@ -4828,21 +4863,6 @@ def detect_stale_running(
         # spawn_failed / timed_out / crashed counters.
 
     return reclaimed
-
-
-def set_max_runtime(
-    conn: sqlite3.Connection,
-    task_id: str,
-    seconds: Optional[int],
-) -> bool:
-    """Set or clear the per-task max_runtime_seconds. Returns True on
-    success."""
-    with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET max_runtime_seconds = ? WHERE id = ?",
-            (int(seconds) if seconds is not None else None, task_id),
-        )
-    return cur.rowcount == 1
 
 
 def _error_fingerprint(error_text: str) -> str:
@@ -6928,16 +6948,6 @@ def list_runs(
 def get_run(conn: sqlite3.Connection, run_id: int) -> Optional[Run]:
     row = conn.execute(
         "SELECT * FROM task_runs WHERE id = ?", (int(run_id),),
-    ).fetchone()
-    return Run.from_row(row) if row else None
-
-
-def active_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
-    """Return the currently-open run for ``task_id`` (``ended_at IS NULL``)."""
-    row = conn.execute(
-        "SELECT * FROM task_runs WHERE task_id = ? AND ended_at IS NULL "
-        "ORDER BY started_at DESC LIMIT 1",
-        (task_id,),
     ).fetchone()
     return Run.from_row(row) if row else None
 

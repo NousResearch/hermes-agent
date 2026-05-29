@@ -429,7 +429,7 @@ def compress_context(
             agent._last_compression_summary_warning = summary_error
             agent._emit_warning(
                 f"⚠ Compression summary failed: {summary_error}. "
-                "Inserted a fallback context marker."
+                "Inserted a local structured fallback summary."
             )
     else:
         # No hard failure — but did the configured aux model error out

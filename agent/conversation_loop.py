@@ -2533,6 +2533,15 @@ def run_conversation(
                     agent._client_log_context(),
                     _error_summary,
                 )
+                if (
+                    error_type == "TypeError"
+                    and "'NoneType' object is not iterable" in str(api_error)
+                    and getattr(agent, "provider", "") == "openai-codex"
+                ):
+                    logger.exception(
+                        "OpenAI Codex NoneType iterable traceback for diagnostics. %s",
+                        agent._client_log_context(),
+                    )
 
                 _provider = getattr(agent, "provider", "unknown")
                 _base = getattr(agent, "base_url", "unknown")

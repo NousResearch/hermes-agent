@@ -58,6 +58,11 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from gateway.platforms.alphahunt_stage import (
+    is_qwen_analysis_payload,
+    post_callback as _post_alphahunt_stage_callback,
+    run_qwen_stage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -627,6 +632,99 @@ class _IdempotencyCache:
 
 
 _idem_cache = _IdempotencyCache()
+
+
+def _hermes_cache_key(payload: dict) -> str | None:
+    """
+    Read the pre-computed stable key from Central's routing_policy.
+    Returns None if key is missing (caller should skip caching).
+    """
+    ctx = payload.get("context") or {}
+    if not isinstance(ctx, dict):
+        return None
+    rp = ctx.get("routing_policy") or {}
+    if not isinstance(rp, dict):
+        return None
+    cache_cfg = rp.get("cache") or {}
+    if not isinstance(cache_cfg, dict):
+        return None
+    stable_key = str(cache_cfg.get("key") or "").strip()
+    if not stable_key:
+        return None
+    mode = str(payload.get("analysis_mode") or "unknown")
+    return f"{stable_key}:{mode}"
+
+
+def _hermes_cache_ttl(payload: dict) -> int:
+    """TTL from routing_policy.cache.ttl_sec, default 900."""
+    ctx = payload.get("context") or {}
+    if not isinstance(ctx, dict):
+        return 900
+    rp = ctx.get("routing_policy") or {}
+    if not isinstance(rp, dict):
+        return 900
+    cache_cfg = rp.get("cache") or {}
+    if not isinstance(cache_cfg, dict):
+        return 900
+    try:
+        return int(cache_cfg.get("ttl_sec") or 900)
+    except (TypeError, ValueError):
+        return 900
+
+
+class _HermesAnalysisResponseCache:
+    """In-memory cache for Central analysis responses keyed by routing_policy."""
+
+    def __init__(self, max_items: int = 1000):
+        from collections import OrderedDict
+        self._store = OrderedDict()
+        self._max = max_items
+
+    def _purge(self) -> None:
+        now = time.time()
+        expired = [key for key, item in self._store.items() if item["expires_at"] <= now]
+        for key in expired:
+            self._store.pop(key, None)
+        while len(self._store) > self._max:
+            self._store.popitem(last=False)
+
+    def get(self, key: str):
+        self._purge()
+        item = self._store.get(key)
+        if item is None:
+            return None
+        self._store.move_to_end(key)
+        return item["resp"]
+
+    def set(self, key: str, response, ttl: int) -> None:
+        try:
+            ttl = int(ttl)
+        except (TypeError, ValueError):
+            ttl = 900
+        if ttl <= 0:
+            return
+        self._store[key] = {"resp": response, "expires_at": time.time() + ttl}
+        self._purge()
+
+
+_analysis_response_cache = _HermesAnalysisResponseCache()
+
+
+async def _maybe_cached_analysis_response(payload: Dict[str, Any], compute_coro):
+    cache_key = _hermes_cache_key(payload)
+    if cache_key is None:
+        return await compute_coro()
+
+    cached = _analysis_response_cache.get(cache_key)
+    if cached is not None:
+        logger.info("Hermes analysis response cache hit: %s", cache_key)
+        return cached
+
+    response = await compute_coro()
+    result = response[0] if isinstance(response, tuple) and response else None
+    if not (isinstance(result, dict) and result.get("failed")):
+        _analysis_response_cache.set(cache_key, response, _hermes_cache_ttl(payload))
+    return response
 
 
 def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
@@ -1678,6 +1776,9 @@ class APIServerAdapter(BasePlatformAdapter):
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
 
+        if isinstance(body, dict) and is_qwen_analysis_payload(body):
+            return await self._handle_alphahunt_qwen_analysis(request, body)
+
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return web.json_response(
@@ -1887,11 +1988,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
             )
 
+        async def _compute_completion_cached():
+            return await _maybe_cached_analysis_response(body, _compute_completion)
+
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
             fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
+                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion_cached)
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
@@ -1900,7 +2004,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
         else:
             try:
-                result, usage = await _compute_completion()
+                result, usage = await _compute_completion_cached()
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
@@ -2735,6 +2839,60 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return response
 
+    async def _handle_alphahunt_analysis(self, request: "web.Request") -> "web.Response":
+        """POST /v1/analysis — AlphaHunt AnalysisRequest dispatch format."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+        if not isinstance(body, dict) or not is_qwen_analysis_payload(body):
+            return web.json_response(_openai_error("Unsupported analysis payload"), status=400)
+        return await self._handle_alphahunt_qwen_analysis(request, body)
+
+    async def _handle_alphahunt_qwen_analysis(self, request: "web.Request", body: Dict[str, Any]) -> "web.Response":
+        """Run AlphaHunt stage/fast_triage requests through local Qwen and callback Central."""
+        loop = asyncio.get_running_loop()
+        callback_url = (
+            str(body.get("callback_url") or "").strip()
+            or request.headers.get("X-AlphaHunt-Callback-URL", "").strip()
+        )
+        callback_auth = (
+            str(body.get("callback_auth") or "").strip()
+            or request.headers.get("X-AlphaHunt-Callback-Auth", "").strip()
+        )
+        try:
+            callback = await loop.run_in_executor(None, run_qwen_stage, body)
+            await loop.run_in_executor(
+                None,
+                lambda: _post_alphahunt_stage_callback(
+                    body,
+                    callback,
+                    callback_url=callback_url,
+                    callback_auth=callback_auth,
+                ),
+            )
+        except Exception as exc:
+            logger.error("AlphaHunt Qwen analysis failed: %s", exc, exc_info=True)
+            return web.json_response(
+                {
+                    "accepted": False,
+                    "failed": True,
+                    "error": str(exc),
+                    "analysis_id": body.get("analysis_id") or body.get("request_id"),
+                },
+                status=500,
+            )
+        return web.json_response(
+            {
+                "accepted": True,
+                "analysis_id": callback.get("analysis_id"),
+                "output": callback.get("output"),
+            }
+        )
+
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
         """POST /v1/responses — OpenAI Responses API format."""
         auth_err = self._check_auth(request)
@@ -2933,6 +3091,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
             )
 
+        async def _compute_response_cached():
+            return await _maybe_cached_analysis_response(body, _compute_response)
+
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
             fp = _make_request_fingerprint(
@@ -2940,7 +3101,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
             )
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
+                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response_cached)
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
@@ -2949,7 +3110,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
         else:
             try:
-                result, usage = await _compute_response()
+                result, usage = await _compute_response_cached()
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
@@ -4067,6 +4228,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
+            self._app.router.add_post("/v1/analysis", self._handle_alphahunt_analysis)
+            self._app.router.add_post("/analysis", self._handle_alphahunt_analysis)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)

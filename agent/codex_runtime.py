@@ -66,7 +66,18 @@ def run_codex_app_server_turn(
     # return reaches us. Do NOT append again — that would duplicate.
 
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        try:
+            turn_timeout = float(os.environ.get("HERMES_AGENT_TIMEOUT", "1800"))
+        except (TypeError, ValueError):
+            turn_timeout = 1800.0
+        if turn_timeout <= 0:
+            # Codex app-server needs a finite deadline for interrupt/retire
+            # hygiene even when the outer gateway timeout is unlimited.
+            turn_timeout = 86400.0
+        turn = agent._codex_session.run_turn(
+            user_input=user_message,
+            turn_timeout=turn_timeout,
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn
@@ -161,8 +172,18 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    if turn.interrupted or turn.error is not None:
+        final_response = turn.error or "Codex app-server turn interrupted."
+        if turn.final_text:
+            final_response = (
+                f"{final_response}\n\nPartial response before failure:\n"
+                f"{turn.final_text}"
+            )
+    else:
+        final_response = turn.final_text
+
     return {
-        "final_response": turn.final_text,
+        "final_response": final_response,
         "messages": messages,
         "api_calls": 1,  # one app-server "turn" maps to one logical API call
         "completed": not turn.interrupted and turn.error is None,

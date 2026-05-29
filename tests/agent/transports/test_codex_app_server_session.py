@@ -149,17 +149,54 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
-    def test_thread_start_passes_cwd_only(self):
-        """thread/start carries cwd. We intentionally do NOT pass `permissions`
-        on this codex version (experimentalApi-gated + requires matching
-        config.toml [permissions] table). Letting codex use its default
-        (read-only unless user configures otherwise) is the documented path."""
+    def test_thread_start_passes_permissions_profile(self):
+        """thread/start carries Hermes' mapped permission profile so codex
+        does not silently fall back to read-only after Hermes approved writes."""
         client = FakeClient()
         s = make_session(client, permission_profile="workspace-write")
         s.ensure_started()
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"
-        assert "permissions" not in params  # see session.ensure_started() comment
+        assert params["permissionProfile"] == {"type": "profile", "id": "workspace-write"}
+
+    def test_initialize_enables_experimental_api_for_permissions(self):
+        class CapturingClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.initialize_kwargs = None
+
+            def initialize(self, **kwargs):
+                self.initialize_kwargs = kwargs
+                return super().initialize(**kwargs)
+
+        client = CapturingClient()
+        s = make_session(client, permission_profile="workspace-write")
+        s.ensure_started()
+        assert client.initialize_kwargs["capabilities"] == {"experimentalApi": True}
+
+    def test_thread_start_retries_without_permissions_if_codex_rejects_field(self):
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        client = FakeClient()
+        seen = {"count": 0}
+
+        def reject_permissions_once(method, params):
+            if method == "thread/start":
+                seen["count"] += 1
+                if "permissionProfile" in params:
+                    raise CodexAppServerError(
+                        code=-32602,
+                        message="invalid params: unknown field permissionProfile",
+                    )
+                return {"thread": {"id": "thread-fallback"}}
+            return {}
+
+        client._request_handler = reject_permissions_once
+        s = make_session(client, permission_profile="workspace-write")
+        assert s.ensure_started() == "thread-fallback"
+        assert seen["count"] == 2
+        assert client.requests[0][1]["permissionProfile"] == {"type": "profile", "id": "workspace-write"}
+        assert client.requests[1] == ("thread/start", {"cwd": "/tmp"})
 
     def test_close_idempotent(self):
         client = FakeClient()

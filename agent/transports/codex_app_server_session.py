@@ -55,9 +55,9 @@ _STDERR_TAIL_LINES = 12
 _HERMES_TO_CODEX_PERMISSION_PROFILE = {
     "auto": "workspace-write",
     "approval-required": "read-only-with-approval",
-    "unrestricted": "full-access",
+    "unrestricted": "danger-full-access",
     # Backstop alias used by some skills/tests.
-    "yolo": "full-access",
+    "yolo": "danger-full-access",
 }
 
 
@@ -247,24 +247,36 @@ class CodexAppServerSession:
             client_name="hermes",
             client_title="Hermes Agent",
             client_version=_get_hermes_version(),
+            capabilities={"experimentalApi": True},
+            timeout=30.0,
         )
-        # Permission selection is intentionally NOT sent on thread/start.
-        # Two reasons (live-tested against codex 0.130.0):
-        #   1. `thread/start.permissions` is gated behind the experimentalApi
-        #      capability on this codex version — we'd have to opt in during
-        #      initialize and accept the unstable surface.
-        #   2. Even with experimentalApi declared and the correct shape
-        #      (`{"type": "profile", "id": "..."}`, not `{"profileId": ...}`),
-        #      codex requires a matching `[permissions]` table in
-        #      ~/.codex/config.toml or it fails the request with
-        #      'default_permissions requires a [permissions] table'.
-        # Letting codex pick its default (`:read-only` unless the user has
-        # configured otherwise in their codex config.toml) is the standard
-        # codex CLI workflow and avoids fighting codex's own validation.
-        # Users who want a write-capable profile configure it in their
-        # ~/.codex/config.toml the same way they would for any codex usage.
-        params: dict[str, Any] = {"cwd": self._cwd}
-        result = self._client.request("thread/start", params, timeout=15)
+        params: dict[str, Any] = {
+            "cwd": self._cwd,
+            "permissionProfile": {"type": "profile", "id": self._permission_profile},
+        }
+        try:
+            result = self._client.request("thread/start", params, timeout=15)
+        except CodexAppServerError as exc:
+            # Older/stricter Codex app-server builds rejected the
+            # thread/start permissions field even though they advertised the
+            # related request/approval protocol. Keep those installs usable by
+            # retrying with Codex's config-file default, but only for schema /
+            # permissions validation failures. Other startup failures still
+            # surface normally so auth/provider errors are not masked.
+            err_text = f"{exc.message} {exc.data or ''}".lower()
+            if (
+                "permissions" not in err_text
+                and "permission" not in err_text
+                and "unknown field" not in err_text
+                and "invalid params" not in err_text
+            ):
+                raise
+            logger.warning(
+                "codex rejected thread/start permission profile %r; "
+                "retrying with codex config default",
+                self._permission_profile,
+            )
+            result = self._client.request("thread/start", {"cwd": self._cwd}, timeout=15)
         # Cross-fill thread.id/sessionId — different codex versions have
         # serialized this under either key. Mirrors openclaw beta.8's
         # tolerance fix so future codex drops/renames don't KeyError us
@@ -365,7 +377,7 @@ class CodexAppServerSession:
         *,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
-        post_tool_quiet_timeout: float = 90.0,
+        post_tool_quiet_timeout: float = 900.0,
     ) -> TurnResult:
         """Send a user message and block until turn/completed, while
         forwarding server-initiated approval requests and projecting items
@@ -375,7 +387,9 @@ class CodexAppServerSession:
         goes quiet for this many seconds without emitting another item or
         `turn/completed`, fast-fail and mark the session for retirement.
         Mirrors openclaw beta.8's post-tool completion watchdog (#81697)
-        so a wedged codex doesn't burn the full turn deadline.
+        so a wedged codex doesn't burn the full turn deadline. Keep this long
+        enough for real local code/test tasks, where Codex may spend several
+        minutes reasoning after a tool result before emitting the final answer.
         """
         # Pre-create the result so startup failures (codex subprocess can't
         # spawn, initialize handshake rejects, thread/start blows up) surface

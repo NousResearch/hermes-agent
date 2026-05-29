@@ -1319,7 +1319,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
             self._last_summary_error = "no auxiliary LLM provider configured"
             logger.warning("Context compression: no provider available for "
-                            "summary. Middle turns will be dropped without summary "
+                            "summary. Middle turns will use deterministic fallback "
                             "for %d seconds.",
                             _SUMMARY_FAILURE_COOLDOWN_SECONDS)
             return None

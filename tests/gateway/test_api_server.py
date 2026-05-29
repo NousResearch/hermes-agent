@@ -24,12 +24,17 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from gateway.platforms import api_server as api_server_mod
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
+    _HermesAnalysisResponseCache,
     _IdempotencyCache,
     _derive_chat_session_id,
+    _hermes_cache_key,
+    _hermes_cache_ttl,
+    _maybe_cached_analysis_response,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -248,6 +253,100 @@ class TestIdempotencyCache:
 
         gate.set()
         assert await second == "response"
+
+
+class TestHermesAnalysisResponseCache:
+    def test_cache_key_uses_routing_policy_key_and_analysis_mode(self):
+        payload = {
+            "request_id": "req-1",
+            "created_at": "2026-05-27T00:00:00Z",
+            "analysis_mode": "rejudge",
+            "context": {
+                "routing_policy": {
+                    "cache": {"key": "data_gap_request_result:event:evt-123"}
+                },
+                "outcome_review": {"recent_failures": ["volatile"]},
+                "recent_peer_signals": [{"id": "peer-1"}],
+                "active_sector_alerts": [{"id": "alert-1"}],
+            },
+        }
+
+        changed = json.loads(json.dumps(payload))
+        changed["request_id"] = "req-2"
+        changed["created_at"] = "2026-05-27T00:01:00Z"
+        changed["deadline_sec"] = 20
+        changed["context"]["outcome_review"]["recent_failures"] = ["changed"]
+        changed["context"]["recent_peer_signals"] = [{"id": "peer-2"}]
+        changed["context"]["active_sector_alerts"] = [{"id": "alert-2"}]
+
+        assert _hermes_cache_key(payload) == "data_gap_request_result:event:evt-123:rejudge"
+        assert _hermes_cache_key(changed) == _hermes_cache_key(payload)
+
+    def test_missing_routing_policy_key_skips_cache(self):
+        assert _hermes_cache_key({"analysis_mode": "rejudge", "context": {}}) is None
+
+    def test_cache_ttl_uses_routing_policy_default_and_invalid_fallback(self):
+        assert _hermes_cache_ttl({"context": {"routing_policy": {"cache": {"ttl_sec": 120}}}}) == 120
+        assert _hermes_cache_ttl({"context": {"routing_policy": {"cache": {}}}}) == 900
+        assert _hermes_cache_ttl({"context": {"routing_policy": {"cache": {"ttl_sec": "bad"}}}}) == 900
+
+    def test_cache_entry_expires_after_ttl(self, monkeypatch):
+        now = 1000.0
+        monkeypatch.setattr(api_server_mod.time, "time", lambda: now)
+        cache = _HermesAnalysisResponseCache()
+
+        cache.set("stable:event:evt-123:rejudge", "cached", ttl=10)
+        assert cache.get("stable:event:evt-123:rejudge") == "cached"
+
+        now = 1011.0
+        assert cache.get("stable:event:evt-123:rejudge") is None
+
+    @pytest.mark.asyncio
+    async def test_repeated_analysis_payload_hits_cache_despite_volatile_fields(self, monkeypatch):
+        monkeypatch.setattr(api_server_mod, "_analysis_response_cache", _HermesAnalysisResponseCache())
+        calls = 0
+
+        async def compute():
+            nonlocal calls
+            calls += 1
+            return ({"final_response": f"answer-{calls}"}, {"total_tokens": 1})
+
+        base = {
+            "analysis_mode": "data_gap_request_result",
+            "context": {
+                "routing_policy": {
+                    "cache": {"key": "data_gap_request_result:event:evt-123", "ttl_sec": 900}
+                }
+            },
+        }
+        first = dict(base, request_id="req-1", created_at="now")
+        second = dict(base, request_id="req-2", created_at="later", deadline_sec=45)
+
+        assert await _maybe_cached_analysis_response(first, compute) == (
+            {"final_response": "answer-1"},
+            {"total_tokens": 1},
+        )
+        assert await _maybe_cached_analysis_response(second, compute) == (
+            {"final_response": "answer-1"},
+            {"total_tokens": 1},
+        )
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_missing_key_runs_compute_each_time(self, monkeypatch):
+        monkeypatch.setattr(api_server_mod, "_analysis_response_cache", _HermesAnalysisResponseCache())
+        calls = 0
+
+        async def compute():
+            nonlocal calls
+            calls += 1
+            return ({"final_response": f"answer-{calls}"}, {})
+
+        payload = {"analysis_mode": "data_gap_request_result", "context": {}}
+
+        assert (await _maybe_cached_analysis_response(payload, compute))[0]["final_response"] == "answer-1"
+        assert (await _maybe_cached_analysis_response(payload, compute))[0]["final_response"] == "answer-2"
+        assert calls == 2
 
 
 # ---------------------------------------------------------------------------

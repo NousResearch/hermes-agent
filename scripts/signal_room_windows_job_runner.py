@@ -12,6 +12,7 @@ from typing import Any, Callable, Sequence
 
 DEFAULT_TIMEOUT_SECONDS = 60 * 30
 QUEUE_STATES = ("queued", "running", "done", "failed")
+POSE_FRAME_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 class RunResult:
@@ -152,6 +153,31 @@ def _missing_required_outputs(job: dict[str, Any]) -> list[str]:
     return [path for path in job.get("outputs", []) if not Path(path).exists()]
 
 
+def _count_pose_frames(output_dir: Path) -> int:
+    if not output_dir.exists() or not output_dir.is_dir():
+        return 0
+    return sum(1 for path in output_dir.iterdir() if path.is_file() and path.suffix.lower() in POSE_FRAME_EXTENSIONS)
+
+
+def _pose_frame_count_error(job: dict[str, Any]) -> str | None:
+    if job.get("job_type") != "moho":
+        return None
+    try:
+        expected = int(job.get("expected_frame_count") or 0)
+    except (TypeError, ValueError):
+        return None
+    if expected <= 0:
+        return None
+
+    output_dir_value = job.get("output_dir")
+    if not output_dir_value:
+        return None
+    found = _count_pose_frames(Path(str(output_dir_value)))
+    if found >= expected:
+        return None
+    return f"expected at least {expected} pose frames in {output_dir_value}; found {found}"
+
+
 def finish_job(queue_root: Path, running_path: Path, job: dict[str, Any], result: RunResult) -> dict[str, Any]:
     missing_outputs = _missing_required_outputs(job) if result.returncode == 0 else []
     if missing_outputs:
@@ -160,6 +186,14 @@ def finish_job(queue_root: Path, running_path: Path, job: dict[str, Any], result
             stdout=result.stdout,
             stderr=(result.stderr or "") + "\nmissing expected output: " + ", ".join(missing_outputs),
         )
+    elif result.returncode == 0:
+        frame_count_error = _pose_frame_count_error(job)
+        if frame_count_error:
+            result = RunResult(
+                returncode=3,
+                stdout=result.stdout,
+                stderr=(result.stderr or "") + "\n" + frame_count_error,
+            )
 
     finished_status = "done" if result.returncode == 0 else "failed"
     job.update(

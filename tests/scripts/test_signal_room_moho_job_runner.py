@@ -66,7 +66,10 @@ def test_moho_run_once_uses_shared_durable_queue(tmp_path: Path) -> None:
 
     def fake_runner(command, *, cwd, timeout_seconds):
         calls.append({"command": command, "cwd": cwd, "timeout_seconds": timeout_seconds})
-        (tmp_path / "frames").mkdir()
+        frames = tmp_path / "frames"
+        frames.mkdir()
+        for index in range(8):
+            (frames / f"pose_{index:02d}.png").write_text("frame")
         return module.RunResult(returncode=0, stdout="pose export complete", stderr="")
 
     result = module.run_once(queue_root=queue_root, runner=fake_runner)
@@ -107,6 +110,38 @@ def test_moho_success_requires_expected_output_directory(tmp_path: Path) -> None
     assert failed["returncode"] == 2
     assert "missing expected output" in failed["stderr_tail"]
     assert str(output_dir) in failed["stderr_tail"]
+
+
+def test_moho_success_requires_expected_frame_count(tmp_path: Path) -> None:
+    module = load_module()
+    queue_root = tmp_path / "windows" / "moho" / "jobs"
+    output_dir = tmp_path / "short-frames"
+    module.submit_pose_export_job(
+        queue_root=queue_root,
+        job_id="moho-short-frame-count",
+        command=["Moho.exe", "--export", "scene.moho"],
+        cwd=tmp_path,
+        project=tmp_path / "scene.moho",
+        output_dir=output_dir,
+        candidate_name="Suit_Male",
+        expected_frame_count=8,
+        license_status="licensed internal review",
+    )
+
+    def fake_runner(command, *, cwd, timeout_seconds):
+        output_dir.mkdir()
+        for index in range(2):
+            (output_dir / f"pose_{index:02d}.png").write_text("frame")
+        return module.RunResult(returncode=0, stdout="reported success", stderr="")
+
+    result = module.run_once(queue_root=queue_root, runner=fake_runner)
+
+    assert result["processed"] is True
+    assert result["status"] == "failed"
+    failed = json.loads((queue_root / "failed" / "moho-short-frame-count.json").read_text())
+    assert failed["returncode"] == 3
+    assert "expected at least 8 pose frames" in failed["stderr_tail"]
+    assert "found 2" in failed["stderr_tail"]
 
 
 def test_write_moho_worker_bundle_points_to_moho_runner(tmp_path: Path) -> None:

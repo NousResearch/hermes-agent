@@ -6556,7 +6556,13 @@ class GatewayRunner:
         """
         if not platform:
             return False
-        adapter = self.adapters.get(platform)
+        # Some test helpers build a bare GatewayRunner via object.__new__ and
+        # never set ``adapters``; treat a missing/empty map as "no adapter"
+        # rather than raising (see pitfalls.md #17).
+        adapters = getattr(self, "adapters", None)
+        if not adapters:
+            return False
+        adapter = adapters.get(platform)
         if adapter is None:
             return False
         return bool(getattr(adapter, "enforces_own_access_policy", False))

@@ -296,6 +296,13 @@ Full trace with backtrace:
 RUST_LOG=trace RUST_BACKTRACE=1 himalaya envelope list
 ```
 
+## Pitfalls
+
+- **Encryption format is `backend.encryption.type = "tls"`, NOT `backend.encryption = "tls"`**. The value `tls` for 993/port, `start-tls` for 587/port. Using `ssl` or bare `encryption` key causes `internally tagged enum Encryption` parse errors.
+- **NetEase 163/126 IMAP "Unsafe Login"**: Himalaya does not support NetEase 163/126 accounts. `LOGIN` succeeds, but `SELECT` and `SEARCH` fail with `BYE Unsafe Login`. NetEase requires clients to send the IMAP ID command (RFC 2971) after `LOGIN`, but Himalaya neither sends the command nor exposes a way to configure it. Use Hermes' built-in Email platform instead; after configuring the `EMAIL_*` environment variables and restarting the gateway, it sends IMAP ID automatically.
+- **163 folder names**: Uses "Sent Messages" and "Deleted Messages", not "Sent" / "Trash". Always set `folder.aliases`.
+
+
 ## Tips
 
 - Use `himalaya --help` or `himalaya <command> --help` for detailed usage.

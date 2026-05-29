@@ -1296,7 +1296,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # SSRF: add IP block check
             result = json.loads(resp.read().decode())
     except Exception as e:
         print(f"Token exchange failed: {e}")

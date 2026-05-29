@@ -2522,10 +2522,31 @@ def _bind_prompt_submit_keys(kb, handler) -> None:
         kb.add("c-j")(handler)
 
 
-def _disable_prompt_toolkit_cpr_warning(app) -> None:
-    """Let prompt_toolkit fall back from CPR without printing into the prompt."""
+def _disable_prompt_toolkit_cpr(app) -> None:
+    """Completely disable CPR (Cursor Position Report) queries.
+
+    prompt_toolkit sends ``ESC[6n`` to ask the terminal where the cursor
+    is.  On most platforms this works fine.  On WSL+Windows Terminal the
+    terminal's response frequently leaks to *stdout* as visible
+    ``^[[<row>;<col>R`` text — corrupting the spinner line, status bar,
+    and user input display.
+
+    Rather than patching output after the fact, we prevent the query
+    from being sent at all.  prompt_toolkit falls back to assuming the
+    cursor is at its last-known position, which is correct in
+    non-full-screen mode 99.9 % of the time.
+
+    See also:
+      - PR #32454 (user's fix, closed as duplicate of #16367)
+      - #16367 / #20219 (input-side sanitizer, doesn't cover stdout leak)
+    """
     try:
-        app.renderer.cpr_not_supported_callback = None
+        from prompt_toolkit.renderer import CPR_Support
+        app.renderer.cpr_support = CPR_Support.NOT_SUPPORTED
+        # Clear any pending CPR futures so nothing fires after we bail.
+        futures = getattr(app.renderer, '_waiting_for_cpr_futures', None)
+        if futures is not None:
+            futures.clear()
     except Exception:
         pass
 
@@ -14337,7 +14358,7 @@ class HermesCLI:
             mouse_support=False,
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
-        _disable_prompt_toolkit_cpr_warning(app)
+        _disable_prompt_toolkit_cpr(app)
         self._app = app  # Store reference for clarify_callback
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────

@@ -1,9 +1,10 @@
 ---
 name: himalaya
-description: CLI to manage emails via IMAP/SMTP. Use himalaya to list, read, write, reply, forward, search, and organize emails from the terminal. Supports multiple accounts and message composition with MML (MIME Meta Language).
-version: 1.0.0
+description: "Himalaya CLI: IMAP/SMTP email from terminal."
+version: 1.1.0
 author: community
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Email, IMAP, SMTP, CLI, Communication]
@@ -20,6 +21,12 @@ Himalaya is a CLI email client that lets you manage emails from the terminal usi
 
 - `references/configuration.md` (config file setup + IMAP/SMTP authentication)
 - `references/message-composition.md` (MML syntax for composing emails)
+- `references/netease-163-imap-id.md` (163/126 IMAP ID 问题详解)
+
+## Templates
+
+- `templates/send_email_163.py` — 163 邮箱发送邮件脚本
+- `templates/read_email_163.py` — 163 邮箱读取邮件脚本
 
 ## Prerequisites
 
@@ -71,7 +78,27 @@ message.send.backend.encryption.type = "start-tls"
 message.send.backend.login = "you@example.com"
 message.send.backend.auth.type = "password"
 message.send.backend.auth.cmd = "pass show email/smtp"
+
+# Folder aliases (himalaya v1.2.0+ syntax). Required whenever the
+# server's folder names don't match himalaya's canonical names
+# (inbox/sent/drafts/trash). Gmail is the common case — see
+# `references/configuration.md` for the `[Gmail]/Sent Mail` mapping.
+folder.aliases.inbox = "INBOX"
+folder.aliases.sent = "Sent"
+folder.aliases.drafts = "Drafts"
+folder.aliases.trash = "Trash"
 ```
+
+> **Heads up on the alias syntax.** Pre-v1.2.0 docs used a
+> `[accounts.NAME.folder.alias]` sub-section (singular `alias`).
+> v1.2.0 silently ignores that form — TOML parses fine, but the
+> alias resolver never reads it, so every lookup falls through to
+> the canonical name. On Gmail this means save-to-Sent fails *after*
+> SMTP delivery succeeds, and `himalaya message send` exits non-zero.
+> Any caller (agent, script, user) that retries on that exit code
+> will re-run the entire send — including SMTP — producing duplicate
+> emails to recipients. Always use `folder.aliases.X` (plural, dotted
+> keys, directly under `[accounts.NAME]`).
 
 ## Hermes Integration Notes
 
@@ -268,6 +295,74 @@ Full trace with backtrace:
 
 ```bash
 RUST_LOG=trace RUST_BACKTRACE=1 himalaya envelope list
+```
+
+## Pitfalls
+
+- **Encryption format is `backend.encryption.type = "tls"`, NOT `backend.encryption = "tls"`**. The value `tls` for 993/port, `start-tls` for 587/port. Using `ssl` or bare `encryption` key causes `internally tagged enum Encryption` parse errors.
+- **163/126 (网易) IMAP "Unsafe Login"**: himalaya **不支持** 163/126 邮箱！LOGIN 成功但 SELECT/SEARCH 会报 `BYE Unsafe Login`。**原因**: 163 要求 LOGIN 后发送 IMAP ID 命令 (RFC 2971)，himalaya 不发这个命令且无法配置。**解决方案**: 使用 Hermes 内置 email 平台（`gateway/platforms/email.py`），它会自动发送 `_send_imap_id()`。配置方法见下方"163/126 邮箱配置"章节。
+- **163 folder names**: Uses "Sent Messages" and "Deleted Messages", not "Sent" / "Trash". Always set `folder.aliases`.
+
+## 163/126 邮箱配置（推荐方案）
+
+> ⚠️ **重要**: himalaya CLI 无法连接 163/126 邮箱（缺少 IMAP ID 命令）。必须使用 Hermes 内置 email 平台。
+
+### 配置步骤
+
+1. **在 `.env` 中配置邮箱信息**:
+```bash
+EMAIL_ADDRESS=ladydd@163.com
+EMAIL_PASSWORD=你的客户端授权密码  # 不是登录密码，去163设置里生成
+EMAIL_IMAP_HOST=imap.163.com
+EMAIL_IMAP_PORT=993
+EMAIL_SMTP_HOST=smtp.163.com
+EMAIL_SMTP_PORT=465
+EMAIL_POLL_INTERVAL=15
+EMAIL_ALLOWED_USERS=ladydd@163.com
+EMAIL_HOME_ADDRESS=ladydd@163.com
+```
+
+2. **重启 Hermes Gateway**:
+```bash
+systemctl --user restart hermes-gateway
+```
+
+3. **验证连接**:
+```bash
+journalctl --user -u hermes-gateway --since "1 min ago" | grep -i email
+# 应该看到: [Email] IMAP connection test passed.
+```
+
+### 发送邮件示例
+
+```python
+import smtplib
+from email.mime.text import MIMEText
+
+msg = MIMEText('邮件内容', 'plain', 'utf-8')
+msg['From'] = 'ladydd@163.com'
+msg['To'] = 'recipient@example.com'
+msg['Subject'] = '主题'
+
+server = smtplib.SMTP_SSL('smtp.163.com', 465)
+server.login('ladydd@163.com', '授权密码')
+server.send_message(msg)
+server.quit()
+```
+
+### 读取邮件示例
+
+```python
+import imaplib
+from email.header import decode_header
+
+imap = imaplib.IMAP4_SSL('imap.163.com', 993)
+imap.login('ladydd@163.com', '授权密码')
+imap.xatom('ID', '("name" "hermes-agent" "version" "1.0" "vendor" "NousResearch")')  # 关键！
+imap.select('INBOX')
+status, data = imap.uid('search', None, 'ALL')
+# ... 处理邮件
+imap.logout()
 ```
 
 ## Tips

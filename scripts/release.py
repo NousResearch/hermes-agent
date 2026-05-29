@@ -65,6 +65,7 @@ AUTHOR_MAP = {
     "45189813+baofuen@users.noreply.github.com": "baofuen",
     "interstellar.consulting@gmail.com": "Interstellar-code",
     "33978413+Interstellar-code@users.noreply.github.com": "Interstellar-code",
+    "tillfalko@gmail.com": "tillfalko",
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "kenyon1977@gmail.com": "kenyonxu",

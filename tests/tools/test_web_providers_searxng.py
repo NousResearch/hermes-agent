@@ -313,7 +313,9 @@ class TestCheckWebApiKey:
         )
         assert web_tools.check_web_api_key() is True
 
-    def test_no_credentials_fails(self, monkeypatch):
+    def test_no_credentials_usable_via_free_parallel(self, monkeypatch):
+        """No credentials → check_web_api_key True: the keyless Parallel free MCP
+        services calls, so web is usable out of the box."""
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
@@ -324,7 +326,8 @@ class TestCheckWebApiKey:
         monkeypatch.delenv("SEARXNG_URL", raising=False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
-        assert web_tools.check_web_api_key() is False
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        assert web_tools.check_web_api_key() is True
 
 
 # ---------------------------------------------------------------------------

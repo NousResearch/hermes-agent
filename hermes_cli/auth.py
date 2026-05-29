@@ -7819,12 +7819,14 @@ def _nous_device_code_login(
         print(f"  1. Open: {verification_url}")
         print(f"  2. If prompted, enter code: {user_code}")
 
-        if open_browser:
+        if open_browser and _can_open_graphical_browser():
             opened = webbrowser.open(verification_url)
             if opened:
                 print("  (Opened browser for verification)")
             else:
                 print("  Could not open browser automatically — use the URL above.")
+        elif open_browser:
+            print("  Browser auto-open skipped; use the URL above.")
 
         effective_interval = max(1, min(interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
         print(f"Waiting for approval (polling every {effective_interval}s)...")

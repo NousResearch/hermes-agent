@@ -513,6 +513,56 @@ def test_nous_device_code_login_retries_legacy_scope_when_invoke_refused(monkeyp
     assert result["agent_key"] == "opaque-agent-key"
 
 
+def test_nous_device_code_login_skips_non_graphical_browser(monkeypatch):
+    import hermes_cli.auth as auth_mod
+
+    browser_calls = []
+
+    def _fake_request_device_code(*, client, portal_base_url, client_id, scope):
+        del client, portal_base_url, client_id, scope
+        return {
+            "device_code": "device",
+            "user_code": "user",
+            "verification_uri": "https://portal.example.com/device",
+            "verification_uri_complete": "https://portal.example.com/device?code=user",
+            "expires_in": 600,
+            "interval": 1,
+        }
+
+    def _fake_poll_for_token(**kwargs):
+        del kwargs
+        return {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "expires_in": 900,
+            "scope": auth_mod.DEFAULT_NOUS_SCOPE,
+        }
+
+    def _fake_refresh(state, **kwargs):
+        del kwargs
+        refreshed = dict(state)
+        refreshed["agent_key"] = "opaque-agent-key"
+        refreshed["agent_key_expires_at"] = _future_iso(1800)
+        return refreshed
+
+    monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: False)
+    monkeypatch.setattr(auth_mod, "_can_open_graphical_browser", lambda: False)
+    monkeypatch.setattr(auth_mod, "_request_device_code", _fake_request_device_code)
+    monkeypatch.setattr(auth_mod, "_poll_for_token", _fake_poll_for_token)
+    monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _fake_refresh)
+    monkeypatch.setattr(auth_mod.webbrowser, "open", lambda url: browser_calls.append(url))
+
+    result = auth_mod._nous_device_code_login(
+        portal_base_url="https://portal.example.com",
+        inference_base_url="https://inference.example.com/v1",
+        open_browser=True,
+        timeout_seconds=1,
+    )
+
+    assert browser_calls == []
+    assert result["agent_key"] == "opaque-agent-key"
+
+
 def test_forced_legacy_env_skips_invoke_scope_and_jwt_storage(tmp_path, monkeypatch):
     import hermes_cli.auth as auth_mod
 

@@ -494,9 +494,21 @@ class FactRetriever:
 
         # Build query - FTS5 rank is negative (lower = better match)
         # We need to join facts_fts with facts to get all columns
+        #
+        # FTS5 MATCH defaults to AND between bare terms, so a natural-language
+        # query ("communication preferences telegram format") would require
+        # every token to appear in a single fact and almost always return
+        # nothing. Auto-recall feeds exactly these multi-word queries, so we
+        # OR-combine the tokens to cast a wide net; the downstream Jaccard +
+        # HRR + trust scoring in search() then ranks the candidates. Each
+        # token is double-quoted so FTS5 treats it as a literal (no operator
+        # injection from punctuation in the query).
+        fts_query = self._build_or_match(query)
+        if not fts_query:
+            return []
         params: list = []
         where_clauses = ["facts_fts MATCH ?"]
-        params.append(query)
+        params.append(fts_query)
 
         if category:
             where_clauses.append("f.category = ?")
@@ -540,6 +552,27 @@ class FactRetriever:
             results.append(fact)
 
         return results
+
+    @staticmethod
+    def _build_or_match(query: str) -> str:
+        """Turn a free-text query into an OR-combined FTS5 MATCH expression.
+
+        FTS5 ANDs bare terms by default. For recall we want a wide net, so we
+        lowercase, strip punctuation, drop FTS5 operator keywords, double-quote
+        each surviving token (literal — prevents operator/syntax injection),
+        and join with OR. Returns "" when no usable tokens remain.
+        """
+        if not query:
+            return ""
+        reserved = {"and", "or", "not", "near"}
+        tokens = []
+        for word in query.lower().split():
+            cleaned = word.strip(".,;:!?\"'()[]{}#@<>*^-+")
+            if cleaned and cleaned not in reserved:
+                tokens.append(cleaned.replace('"', ""))
+        if not tokens:
+            return ""
+        return " OR ".join(f'"{t}"' for t in tokens)
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:

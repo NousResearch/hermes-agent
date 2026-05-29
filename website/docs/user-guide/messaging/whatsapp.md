@@ -76,7 +76,7 @@ For bot mode, you need a phone number that isn't already registered with WhatsAp
 
 | Option | Cost | Notes |
 |--------|------|-------|
-| **Google Voice** | Free | US only. Get a number at [voice.google.com](https://voice.google.com). Verify WhatsApp via SMS through the Google Voice app. |
+| **Google Voice** | Free | US only. WhatsApp often rejects newly created Google Voice numbers. A Voice number is more likely to work if it was ported from a mobile carrier or has an older acceptance history. |
 | **Prepaid SIM** | $5–15 one-time | Any carrier. Activate, verify WhatsApp, then the SIM can sit in a drawer. Number must stay active (make a call every 90 days). |
 | **VoIP services** | Free–$5/month | TextNow, TextFree, or similar. Some VoIP numbers are blocked by WhatsApp — try a few if the first doesn't work. |
 
@@ -98,10 +98,15 @@ WHATSAPP_ENABLED=true
 WHATSAPP_MODE=bot                          # "bot" or "self-chat"
 
 # Access control — pick ONE of these options:
-WHATSAPP_ALLOWED_USERS=15551234567         # Comma-separated phone numbers (with country code, no +)
+WHATSAPP_ALLOWED_USERS=15551234567         # Comma-separated phone numbers (country code + area code, no +)
 # WHATSAPP_ALLOWED_USERS=*                 # OR use * to allow everyone
 # WHATSAPP_ALLOW_ALL_USERS=true            # OR set this flag instead (same effect as *)
 ```
+
+`WHATSAPP_ALLOWED_USERS` must match WhatsApp's numeric sender ID format:
+include the full country code and area code, and omit `+`, spaces, dashes,
+and parentheses. For example, enter a US number like `+1 (555) 123-4567`
+as `15551234567`, not `5551234567`.
 
 :::tip Allow-all shorthand
 Setting `WHATSAPP_ALLOWED_USERS=*` allows **all** senders (equivalent to `WHATSAPP_ALLOW_ALL_USERS=true`).
@@ -214,7 +219,8 @@ When the agent calls tools (web search, file operations, etc.), WhatsApp display
 | **Bridge crashes or reconnect loops** | Restart the gateway, update Hermes, and re-pair if the session was invalidated by a WhatsApp protocol change. |
 | **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
 | **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `hermes gateway install` to re-snapshot your current PATH into the plist, then `hermes gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |
-| **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's number (with country code, no `+` or spaces), or set it to `*` to allow everyone. Set `WHATSAPP_DEBUG=true` in `.env` and restart the gateway to see raw message events in `bridge.log`. |
+| **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's full number (country code + area code, no `+`, spaces, dashes, or parentheses), or set it to `*` to allow everyone. Set `WHATSAPP_DEBUG=true` in `.env` and restart the gateway to see raw message events in `bridge.log`. |
+| **WhatsApp rejects my Google Voice number** | This is common for newly created Google Voice numbers. Try a prepaid SIM or a number that was ported from a mobile carrier instead. |
 | **Bot replies to strangers with a pairing code** | Set `whatsapp.unauthorized_dm_behavior: ignore` in `~/.hermes/config.yaml` if you want unauthorized DMs to be silently ignored instead. |
 
 ---

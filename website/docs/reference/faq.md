@@ -679,7 +679,7 @@ See [Subagent Delegation](../user-guide/features/delegation.md) for more on how 
 
 2. **Use cron jobs for specialized tasks.** For a shopping list tracker, set up a cron job that monitors a specific chat and manages the list — no separate agent needed.
 
-3. **Use separate numbers.** If you need truly independent agents, pair each profile with its own WhatsApp number. Virtual numbers from services like Google Voice work for this.
+3. **Use separate numbers.** If you need truly independent agents, pair each profile with its own WhatsApp number. Prefer a prepaid SIM or another mobile-carrier number; WhatsApp often rejects newly created Google Voice numbers unless they were ported from a carrier or already have an older acceptance history.
 
 4. **Use Telegram or Discord instead.** These platforms support per-chat binding more naturally — each Telegram group or Discord channel gets its own session, and you can run multiple bot tokens (one per profile) on the same account.
 

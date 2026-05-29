@@ -164,6 +164,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 from typing import Optional
 
@@ -1906,7 +1907,8 @@ def cmd_whatsapp(args):
             print("  │  Easiest: Install WhatsApp Business (free app)  │")
             print("  │  on your phone with a second number:            │")
             print("  │    • Dual-SIM: use your 2nd SIM slot            │")
-            print("  │    • Google Voice: free US number (voice.google) │")
+            print("  │    • Google Voice: only if WhatsApp accepts it; │")
+            print("  │      many newly created Voice numbers fail      │")
             print("  │    • Prepaid SIM: $3-10, verify once            │")
             print("  │                                                 │")
             print("  │  WhatsApp Business runs alongside your personal │")
@@ -1947,10 +1949,14 @@ def cmd_whatsapp(args):
         if response.lower() in {"y", "yes"}:
             if wa_mode == "bot":
                 phone = input(
-                    "  Phone numbers that can message the bot (comma-separated): "
+                    "  Phone numbers that can message the bot "
+                    "(country code + area code, no +; comma-separated): "
                 ).strip()
             else:
-                phone = input("  Your phone number (e.g. 15551234567): ").strip()
+                phone = input(
+                    "  Your phone number "
+                    "(country code + area code, no +; e.g. 15551234567): "
+                ).strip()
             if phone:
                 save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
                 print(f"  ✓ Updated to: {phone}")
@@ -1959,10 +1965,14 @@ def cmd_whatsapp(args):
         if wa_mode == "bot":
             print("  Who should be allowed to message the bot?")
             phone = input(
-                "  Phone numbers (comma-separated, or * for anyone): "
+                "  Phone numbers "
+                "(country code + area code, no +; comma-separated, or * for anyone): "
             ).strip()
         else:
-            phone = input("  Your phone number (e.g. 15551234567): ").strip()
+            phone = input(
+                "  Your phone number "
+                "(country code + area code, no +; e.g. 15551234567): "
+            ).strip()
         if phone:
             save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
             print(f"  ✓ Allowed users set: {phone}")
@@ -11793,8 +11803,29 @@ def main():
     whatsapp_parser = subparsers.add_parser(
         "whatsapp",
         help="Set up WhatsApp integration",
-        description="Configure WhatsApp and pair via QR code",
+        description="Configure WhatsApp and pair via QR code.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent(
+            """\
+            Notes:
+              - Hermes uses the bundled Baileys WhatsApp Web bridge, not the
+                official WhatsApp Business Cloud API.
+              - Use a dedicated number for bot mode. WhatsApp often rejects
+                newly created Google Voice numbers; a Voice number is more
+                likely to work only if it was ported from a mobile carrier or
+                has an older acceptance history.
+              - WHATSAPP_ALLOWED_USERS must use the full phone number with
+                country code and area code, without '+', spaces, or dashes.
+                Example: 15551234567 for a US +1 (555) 123-4567 number.
+              - Set WHATSAPP_ALLOWED_USERS=* only if every sender should be
+                allowed to reach the agent.
+
+            More docs:
+              https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp
+            """
+        ),
     )
+    whatsapp_parser.add_argument("-help", action="help", help=argparse.SUPPRESS)
     whatsapp_parser.set_defaults(func=cmd_whatsapp)
 
     # =========================================================================

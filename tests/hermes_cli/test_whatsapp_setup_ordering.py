@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import io
 import os
+import subprocess
+import sys
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -138,3 +140,20 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
 
     # The skip-rebar branch should have set the env var on its way out.
     assert _env_value(isolated_home, "WHATSAPP_ENABLED") == "true"
+
+
+@pytest.mark.parametrize("help_flag", ["-h", "-help", "--help"])
+def test_whatsapp_help_includes_setup_caveats(help_flag):
+    """The setup command help should surface the hard-to-discover bits."""
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "whatsapp", help_flag],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    out = result.stdout + result.stderr
+    assert "newly created Google Voice numbers" in out
+    assert "country code and area code" in out
+    assert "15551234567" in out

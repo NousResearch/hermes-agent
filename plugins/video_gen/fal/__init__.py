@@ -106,8 +106,9 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "text_endpoint": "fal-ai/veo3.1",
         "image_endpoint": "fal-ai/veo3.1/image-to-video",
         "aspect_ratios": ("16:9", "9:16"),
-        "resolutions": ("720p", "1080p"),
+        "resolutions": ("720p", "1080p", "4k"),
         "durations": (4, 6, 8),
+        "duration_suffix": "s",  # FAL veo3.1 wants "4s" not "4"
         "audio": True,
         "negative": True,
     },
@@ -272,7 +273,9 @@ def _build_payload(
     clamped = _clamp_duration(family, duration)
     if clamped is not None and family.get("durations"):
         # FAL exposes duration as a string in the queue API ("8" not 8).
-        payload["duration"] = str(clamped)
+        # Some families (e.g. veo3.1) require a unit suffix ("4s" not "4").
+        suffix = family.get("duration_suffix", "")
+        payload["duration"] = f"{clamped}{suffix}"
 
     if family.get("audio") and audio is not None:
         payload["generate_audio"] = bool(audio)

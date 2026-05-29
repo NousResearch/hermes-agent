@@ -11,6 +11,7 @@ import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,
+  buildVerboseToolTrailLine,
   estimateTokensRough,
   isTransientTrailLine,
   sameToolTrailGroup,
@@ -316,6 +317,10 @@ class TurnController {
   }
 
   recordTodos(value: unknown) {
+    if (this.interrupted) {
+      return
+    }
+
     const todos = parseTodos(value)
 
     if (todos !== null) {
@@ -397,6 +402,10 @@ class TurnController {
   }
 
   pushTrail(line: string) {
+    if (this.interrupted) {
+      return
+    }
+
     patchTurnState(state => {
       if (state.turnTrail.at(-1) === line) {
         return state
@@ -423,7 +432,13 @@ class TurnController {
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
     this.closeReasoningSegment()
 
-    const rawText = (payload.rendered ?? payload.text ?? this.bufRef).trimStart()
+    // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
+    // (`payload.rendered`) is for terminals that can't.  Prioritising
+    // `rendered` here garbles output whenever a user opts into
+    // `display.final_response_markdown: render` because raw ANSI escapes
+    // pass through into the React tree.  Prefer raw text and fall back
+    // only when the gateway elected not to send any (#16391).
+    const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = finalTail(split.text, this.segmentMessages)
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
@@ -508,23 +523,28 @@ class TurnController {
     return { finalMessages, finalText, wasInterrupted }
   }
 
-  recordMessageDelta({ rendered, text }: { rendered?: string; text?: string }) {
-    this.pruneTransient()
-    this.endReasoningPhase()
-
-    if (!text || this.interrupted) {
+  recordMessageDelta({ text }: { rendered?: string; text?: string }) {
+    if (this.interrupted || !text) {
       return
     }
 
-    this.bufRef = rendered ?? this.bufRef + text
+    this.pruneTransient()
+    this.endReasoningPhase()
+
+    // Always accumulate the raw text delta.  The pre-#16391 path replaced
+    // the entire buffer with `rendered` (an *incremental* Rich ANSI
+    // fragment), which on every tick discarded everything streamed so far
+    // — visible as overlapping coloured text and lost prose under
+    // `display.final_response_markdown: render`.
+    this.bufRef += text
 
     if (getUiState().streaming) {
       this.scheduleStreaming()
     }
   }
 
-  recordReasoningAvailable(text: string) {
-    if (!getUiState().showReasoning) {
+  recordReasoningAvailable(text: string, force = false) {
+    if (this.interrupted || (!force && !getUiState().showReasoning)) {
       return
     }
 
@@ -541,8 +561,8 @@ class TurnController {
     this.pulseReasoningStreaming()
   }
 
-  recordReasoningDelta(text: string) {
-    if (!getUiState().showReasoning) {
+  recordReasoningDelta(text: string, force = false) {
+    if (this.interrupted || (!force && !getUiState().showReasoning)) {
       return
     }
 
@@ -568,10 +588,15 @@ class TurnController {
     error?: string,
     summary?: string,
     duration?: number,
-    todos?: unknown
+    todos?: unknown,
+    resultText?: string
   ) {
+    if (this.interrupted) {
+      return
+    }
+
     this.recordTodos(todos)
-    const line = this.completeTool(toolId, fallbackName, error, summary, duration)
+    const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText)
 
     this.pendingSegmentTools = [...this.pendingSegmentTools, line]
     this.flushPendingToolsIntoLastSegment()
@@ -583,26 +608,42 @@ class TurnController {
     toolId: string,
     fallbackName?: string,
     error?: string,
-    duration?: number
+    duration?: number,
+    resultText?: string
   ) {
+    if (this.interrupted) {
+      return
+    }
+
     this.flushStreamingSegment()
-    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration)])
+    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration, resultText)])
     this.publishToolState()
   }
 
-  private completeTool(toolId: string, fallbackName?: string, error?: string, summary?: string, duration?: number) {
+  private completeTool(
+    toolId: string,
+    fallbackName?: string,
+    error?: string,
+    summary?: string,
+    duration?: number,
+    resultText?: string
+  ) {
     const done = this.activeTools.find(tool => tool.id === toolId)
     const name = done?.name ?? fallbackName ?? 'tool'
     const label = toolTrailLabel(name)
     const fallbackDuration = done?.startedAt ? (Date.now() - done.startedAt) / 1000 : undefined
 
-    const line = buildToolTrailLine(
-      name,
-      done?.context || '',
-      Boolean(error),
-      error || summary || '',
-      duration ?? fallbackDuration
-    )
+    const line =
+      done?.verboseArgs || resultText
+        ? buildVerboseToolTrailLine(
+            name,
+            done?.context || '',
+            Boolean(error),
+            duration ?? fallbackDuration,
+            done?.verboseArgs,
+            error || resultText || summary || ''
+          )
+        : buildToolTrailLine(name, done?.context || '', Boolean(error), error || summary || '', duration ?? fallbackDuration)
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 
@@ -626,6 +667,10 @@ class TurnController {
   }
 
   recordToolProgress(toolName: string, preview: string) {
+    if (this.interrupted) {
+      return
+    }
+
     const index = this.activeTools.findIndex(tool => tool.name === toolName)
 
     if (index < 0) {
@@ -644,7 +689,11 @@ class TurnController {
     }, STREAM_BATCH_MS)
   }
 
-  recordToolStart(toolId: string, name: string, context: string) {
+  recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string) {
+    if (this.interrupted) {
+      return
+    }
+
     this.flushStreamingSegment()
     this.closeReasoningSegment()
     this.pruneTransient()
@@ -653,7 +702,7 @@ class TurnController {
     const sample = `${name} ${context}`.trim()
 
     this.toolTokenAcc += sample ? estimateTokensRough(sample) : 0
-    this.activeTools = [...this.activeTools, { context, id: toolId, name, startedAt: Date.now() }]
+    this.activeTools = [...this.activeTools, { context, id: toolId, name, startedAt: Date.now(), verboseArgs }]
 
     patchTurnState({ toolTokens: this.toolTokenAcc, tools: this.activeTools })
   }
@@ -708,6 +757,14 @@ class TurnController {
     }, this.streamDelay)
   }
 
+  hydrateStreamingText(text: string) {
+    this.streamTimer = clear(this.streamTimer)
+    this.bufRef = text
+    const raw = this.bufRef.trimStart()
+    const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
+    patchTurnState({ streaming: boundedLiveRenderText(visible) })
+  }
+
   startMessage() {
     this.endReasoningPhase()
     this.clearReasoning()
@@ -716,6 +773,7 @@ class TurnController {
     this.reasoningSegmentIndex = null
     this.turnTools = []
     this.toolTokenAcc = 0
+    this.interrupted = false
     this.persistedToolLabels.clear()
     patchUiState({ busy: true })
     patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })

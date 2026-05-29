@@ -162,7 +162,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return False
         from aiohttp import web
 
-        self.client = httpx.AsyncClient(timeout=30.0)
+        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
             await self._api_get("/api/v1/ping")
             info = await self._api_get("/api/v1/server/info")
@@ -187,7 +189,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         app = web.Application()
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
         app.router.add_post(self.webhook_path, self._handle_webhook)
-        self._runner = web.AppRunner(app)
+        # The webhook auth value is carried in the query string because the
+        # BlueBubbles webhook API cannot send custom headers. Do not let
+        # aiohttp access logs write that request target to agent.log.
+        self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
         await site.start()
@@ -221,7 +226,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _webhook_url(self) -> str:
         """Compute the external webhook URL for BlueBubbles registration."""
         host = self.webhook_host
-        if host in ("0.0.0.0", "127.0.0.1", "localhost", "::"):
+        if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
             host = "localhost"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
@@ -238,6 +243,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         base = self._webhook_url
         if self.password:
             return f"{base}?password={quote(self.password, safe='')}"
+        return base
+
+    @property
+    def _webhook_register_url_for_log(self) -> str:
+        """Webhook registration URL safe for logs."""
+        base = self._webhook_url
+        if self.password:
+            return f"{base}?password=***"
         return base
 
     async def _find_registered_webhooks(self, url: str) -> list:
@@ -267,7 +280,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         existing = await self._find_registered_webhooks(webhook_url)
         if existing:
             logger.info(
-                "[bluebubbles] webhook already registered: %s", webhook_url
+                "[bluebubbles] webhook already registered: %s",
+                self._webhook_register_url_for_log,
             )
             return True
 
@@ -282,7 +296,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if 200 <= status < 300:
                 logger.info(
                     "[bluebubbles] webhook registered with server: %s",
-                    webhook_url,
+                    self._webhook_register_url_for_log,
                 )
                 return True
             else:
@@ -322,7 +336,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     removed = True
             if removed:
                 logger.info(
-                    "[bluebubbles] webhook unregistered: %s", webhook_url
+                    "[bluebubbles] webhook unregistered: %s",
+                    self._webhook_register_url_for_log,
                 )
         except Exception as exc:
             logger.debug(
@@ -932,4 +947,3 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             asyncio.create_task(self.mark_read(session_chat_id))
 
         return web.Response(text="ok")
-

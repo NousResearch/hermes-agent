@@ -2,7 +2,6 @@
 
 import importlib.util
 import json
-import os
 import subprocess
 import sys
 import types
@@ -101,6 +100,51 @@ def test_bridge_refreshes_expired_token(bridge_module, tmp_path):
     saved = json.loads(token_path.read_text())
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def test_bridge_refresh_passes_timeout_to_urlopen(bridge_module):
+    """Token refresh must pass an explicit timeout so a hung Google endpoint
+    cannot block the agent turn indefinitely (no `timeout=` defaults to the
+    global socket timeout, which is unset)."""
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    token_path = bridge_module.get_token_path()
+    _write_token(token_path, token="ya29.old", expiry=past)
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps({
+        "access_token": "ya29.refreshed",
+        "expires_in": 3600,
+    }).encode()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mocked:
+        bridge_module.get_valid_token()
+
+    assert mocked.call_count == 1
+    _, kwargs = mocked.call_args
+    assert kwargs.get("timeout") is not None, (
+        "urlopen call must pass timeout= to avoid hanging on unreachable upstream"
+    )
+
+
+def test_bridge_refresh_exits_cleanly_on_network_error(bridge_module):
+    """URLError/timeout during refresh exits 1 with a readable message
+    instead of crashing with a raw traceback."""
+    import urllib.error
+
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    token_path = bridge_module.get_token_path()
+    _write_token(token_path, token="ya29.old", expiry=past)
+
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.URLError("timed out"),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            bridge_module.get_valid_token()
+
+    assert exc_info.value.code == 1
 
 
 def test_bridge_exits_on_missing_token(bridge_module):

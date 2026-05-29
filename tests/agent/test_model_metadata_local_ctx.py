@@ -6,12 +6,10 @@ All tests use synthetic inputs — no filesystem or live server required.
 
 import sys
 import os
-import json
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -274,13 +272,15 @@ class TestQueryLocalContextLengthLmStudio:
         return client_mock
 
     def test_lmstudio_exact_key_match(self):
-        """Reads max_context_length when key matches exactly."""
+        """Resolves loaded ctx when key matches exactly."""
         from agent.model_metadata import _query_local_context_length
 
         native_resp = self._make_resp(200, {
             "models": [
-                {"key": "nvidia/nvidia-nemotron-super-49b-v1", "id": "nvidia/nvidia-nemotron-super-49b-v1",
-                 "max_context_length": 131072},
+                {"key": "nvidia/nvidia-nemotron-super-49b-v1",
+                 "id": "nvidia/nvidia-nemotron-super-49b-v1",
+                 "max_context_length": 1_048_576,
+                 "loaded_instances": [{"config": {"context_length": 131072}}]},
             ]
         })
         client_mock = self._make_client(
@@ -310,7 +310,8 @@ class TestQueryLocalContextLengthLmStudio:
             "models": [
                 {"key": "nvidia/nvidia-nemotron-super-49b-v1",
                  "id": "nvidia/nvidia-nemotron-super-49b-v1",
-                 "max_context_length": 131072},
+                 "max_context_length": 1_048_576,
+                 "loaded_instances": [{"config": {"context_length": 131072}}]},
             ]
         })
         client_mock = self._make_client(
@@ -463,7 +464,10 @@ class TestFetchEndpointModelMetadataLmStudio:
                     {
                         "key": "lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf",
                         "id": "lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf",
-                        "max_context_length": 131072,
+                        "max_context_length": 1_048_576,
+                        "loaded_instances": [
+                            {"config": {"context_length": 131072}}
+                        ],
                     }
                 ]
             }
@@ -556,7 +560,7 @@ class TestGetModelContextLengthLocalFallback:
 
     def test_non_local_endpoint_does_not_query_local_server(self):
         """For non-local endpoints, _query_local_context_length is not called."""
-        from agent.model_metadata import get_model_context_length, CONTEXT_PROBE_TIERS
+        from agent.model_metadata import get_model_context_length
 
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \

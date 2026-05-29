@@ -1,26 +1,57 @@
 import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { Fragment, memo, useMemo } from 'react'
+import { Fragment, memo, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
-import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
-import { FULL_RENDER_TAIL_ITEMS } from '../config/limits.js'
+import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
-import { inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
+import {
+  COMPOSER_PROMPT_GAP_WIDTH,
+  composerPromptWidth,
+  inputVisualHeight,
+  stableComposerColumns
+} from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
+import { composerPromptText } from '../lib/prompt.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
+import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
-import { TextInput } from './textInput.js'
+import { TextInput, type TextInputMouseApi } from './textInput.js'
+
+const PromptPrefix = memo(function PromptPrefix({
+  bold = false,
+  color,
+  promptText,
+  width
+}: {
+  bold?: boolean
+  color: string
+  promptText: string
+  width: number
+}) {
+  const glyphWidth = Math.max(1, width - COMPOSER_PROMPT_GAP_WIDTH)
+
+  return (
+    <Box width={width}>
+      <Box width={glyphWidth}>
+        <Text bold={bold} color={color}>
+          {promptText}
+        </Text>
+      </Box>
+      <Box width={COMPOSER_PROMPT_GAP_WIDTH} />
+    </Box>
+  )
+})
 
 const TranscriptPane = memo(function TranscriptPane({
   actions,
@@ -45,19 +76,45 @@ const TranscriptPane = memo(function TranscriptPane({
     return -1
   }, [transcript.historyItems])
 
+  // Index of the first user-role message; every later user message gets a
+  // small dash above it so multi-turn transcripts visually segment by
+  // turn. -1 when no user message has been sent yet → no separator ever
+  // renders.
+  const firstUserIdx = useMemo(
+    () => transcript.historyItems.findIndex(m => m.role === 'user'),
+    [transcript.historyItems]
+  )
+
   return (
     <>
-      <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} ref={transcript.scrollRef} stickyScroll>
+      <ScrollBox
+        flexDirection="column"
+        flexGrow={1}
+        flexShrink={1}
+        onClick={(e: { cellIsBlank?: boolean }) => {
+          if (e.cellIsBlank) {
+            actions.clearSelection()
+          }
+        }}
+        ref={transcript.scrollRef}
+        stickyScroll
+      >
         <Box flexDirection="column" paddingX={1}>
           {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
           {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
+              {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
+                <Box marginTop={1}>
+                  <Text color={ui.theme.color.border}>───</Text>
+                </Box>
+              )}
+
               {row.msg.kind === 'intro' ? (
                 <Box flexDirection="column" paddingTop={1}>
-                  <Banner t={ui.theme} />
+                  <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
 
-                  {row.msg.info?.version && <SessionPanel info={row.msg.info} sid={ui.sid} t={ui.theme} />}
+                  {row.msg.info && <SessionPanel info={row.msg.info} maxWidth={Math.max(1, composer.cols - 2)} sid={ui.sid} t={ui.theme} />}
                 </Box>
               ) : row.msg.kind === 'panel' && row.msg.panelData ? (
                 <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
@@ -67,7 +124,6 @@ const TranscriptPane = memo(function TranscriptPane({
                   compact={ui.compact}
                   detailsMode={ui.detailsMode}
                   detailsModeCommandOverride={ui.detailsModeCommandOverride}
-                  limitHistoryRender={row.index < transcript.historyItems.length - FULL_RENDER_TAIL_ITEMS}
                   msg={row.msg}
                   sections={ui.sections}
                   t={ui.theme}
@@ -113,12 +169,59 @@ const ComposerPane = memo(function ComposerPane({
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
-  const pw = sh ? 2 : 3
-  const inputColumns = stableComposerColumns(composer.cols, pw)
+  const promptText = composerPromptText(ui.theme.brand.prompt, ui.info?.profile_name, sh, TERMUX_TUI_MODE, composer.cols)
+  const promptWidth = composerPromptWidth(promptText)
+  const promptBlank = ' '.repeat(promptWidth)
+  const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
+  const inputMouseRef = useRef<null | TextInputMouseApi>(null)
+
+  const captureInputDrag = (e: GutterMouseEvent) => {
+    if (e.button !== 0) {
+      return
+    }
+
+    e.stopImmediatePropagation?.()
+    inputMouseRef.current?.startAtBeginning()
+  }
+
+  // Drag origin matches the input box's top-left, so localRow / localCol
+  // map directly into TextInput coords (after backing out the prompt cell).
+  const dragFromPromptRow = (e: GutterMouseEvent) => {
+    if (e.button !== 0) {
+      return
+    }
+
+    e.stopImmediatePropagation?.()
+    inputMouseRef.current?.dragAt(e.localRow ?? 0, (e.localCol ?? 0) - promptWidth)
+  }
+
+  // Spacer rows live on a different vertical origin; only the column is
+  // parent-aligned with the input. Force row=0 so vertical drags can't
+  // jump the cursor to the wrong wrapped line.
+  const dragFromSpacer = (e: GutterMouseEvent) => {
+    if (e.button !== 0) {
+      return
+    }
+
+    e.stopImmediatePropagation?.()
+    inputMouseRef.current?.dragAt(0, (e.localCol ?? 0) - promptWidth)
+  }
+
+  const endInputDrag = () => inputMouseRef.current?.end()
 
   return (
-    <NoSelect flexDirection="column" flexShrink={0} fromLeftEdge paddingX={1}>
+    <NoSelect
+      flexDirection="column"
+      flexShrink={0}
+      fromLeftEdge
+      onClick={(e: { cellIsBlank?: boolean }) => {
+        if (e.cellIsBlank) {
+          actions.clearSelection()
+        }
+      }}
+      paddingX={1}
+    >
       <QueuedMessages
         cols={composer.cols}
         queued={composer.queuedDisplay}
@@ -127,19 +230,19 @@ const ComposerPane = memo(function ComposerPane({
       />
 
       {ui.bgTasks.size > 0 && (
-        <Text color={ui.theme.color.dim}>
+        <Text color={ui.theme.color.muted}>
           {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running
         </Text>
       )}
 
       {status.showStickyPrompt ? (
-        <Text color={ui.theme.color.dim} wrap="truncate-end">
+        <Text color={ui.theme.color.muted} wrap="truncate-end">
           <Text color={ui.theme.color.label}>↳ </Text>
 
           {status.stickyPrompt}
         </Text>
       ) : (
-        <Text> </Text>
+        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
@@ -149,55 +252,73 @@ const ComposerPane = memo(function ComposerPane({
           cols={composer.cols}
           compIdx={composer.compIdx}
           completions={composer.completions}
+          onActiveSessionSelect={actions.activateLiveSession}
+          onActiveSessionClose={actions.closeLiveSession}
           onModelSelect={actions.onModelSelect}
+          onNewLiveSession={actions.newLiveSession}
+          onNewPromptSession={actions.newPromptSession}
           onPickerSelect={actions.resumeById}
           pagerPageSize={composer.pagerPageSize}
         />
+
+        {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
 
         {!isBlocked && (
           <>
             {composer.inputBuf.map((line, i) => (
               <Box key={i}>
-                <Box width={3}>
-                  <Text color={ui.theme.color.dim}>{i === 0 ? `${ui.theme.brand.prompt} ` : '  '}</Text>
+                <Box width={promptWidth}>
+                  {i === 0 ? (
+                    <PromptPrefix color={ui.theme.color.muted} promptText={promptText} width={promptWidth} />
+                  ) : (
+                    <Text color={ui.theme.color.muted}>{promptBlank}</Text>
+                  )}
                 </Box>
 
-                <Text color={ui.theme.color.cornsilk}>{line || ' '}</Text>
+                <Text color={ui.theme.color.text}>{line || ' '}</Text>
               </Box>
             ))}
 
-            <Box position="relative">
-              <Box width={pw}>
+            <Box
+              onMouseDown={captureInputDrag}
+              onMouseDrag={dragFromPromptRow}
+              onMouseUp={endInputDrag}
+              position="relative"
+              width={Math.max(1, composer.cols - 2)}
+            >
+              <Box width={promptWidth}>
                 {sh ? (
-                  <Text color={ui.theme.color.shellDollar}>$ </Text>
+                  <PromptPrefix color={ui.theme.color.shellDollar} promptText={promptText} width={promptWidth} />
+                ) : composer.inputBuf.length ? (
+                  <Text color={ui.theme.color.prompt}>{promptBlank}</Text>
                 ) : (
-                  <Text bold color={ui.theme.color.prompt}>
-                    {composer.inputBuf.length ? '  ' : `${ui.theme.brand.prompt} `}
-                  </Text>
+                  <PromptPrefix bold color={ui.theme.color.prompt} promptText={promptText} width={promptWidth} />
                 )}
               </Box>
 
-              <Box flexGrow={0} flexShrink={0} height={inputHeight} position="relative" width={inputColumns}>
+              <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
                   columns={inputColumns}
+                  mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
                   placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
                   value={composer.input}
+                  voiceRecordKey={composer.voiceRecordKey}
                 />
+              </Box>
 
-                <Box position="absolute" right={0}>
-                  <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
-                </Box>
+              <Box position="absolute" right={0}>
+                <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
               </Box>
             </Box>
           </>
         )}
       </Box>
 
-      {!composer.empty && !ui.sid && <Text color={ui.theme.color.dim}>⚕ {ui.status}</Text>}
+      {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}
 
       <StatusRulePane at="bottom" composer={composer} status={status} />
     </NoSelect>
@@ -237,9 +358,11 @@ const StatusRulePane = memo(function StatusRulePane({
         busy={ui.busy}
         cols={composer.cols}
         cwdLabel={status.cwdLabel}
+        liveSessionCount={ui.liveSessionCount}
         model={ui.info?.model ?? ''}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
         modelReasoningEffort={ui.info?.reasoning_effort}
+        onSessionCountClick={() => patchOverlayState({ sessions: true })}
         sessionStartedAt={status.sessionStartedAt}
         showCost={ui.showCost}
         status={ui.status}
@@ -262,6 +385,7 @@ export const AppLayout = memo(function AppLayout({
   transcript
 }: AppLayoutProps) {
   const overlay = useStore($overlayState)
+  const ui = useStore($uiState)
 
   // Inline mode skips AlternateScreen so the host terminal's native
   // scrollback captures rows scrolled off the top; composer + progress
@@ -302,7 +426,7 @@ export const AppLayout = memo(function AppLayout({
 
             {SHOW_FPS && (
               <Box flexShrink={0} justifyContent="flex-end" paddingRight={1}>
-                <FpsOverlay />
+                <FpsOverlay t={ui.theme} />
               </Box>
             )}
           </>
@@ -311,3 +435,10 @@ export const AppLayout = memo(function AppLayout({
     </Shell>
   )
 })
+
+type GutterMouseEvent = {
+  button: number
+  localCol?: number
+  localRow?: number
+  stopImmediatePropagation?: () => void
+}

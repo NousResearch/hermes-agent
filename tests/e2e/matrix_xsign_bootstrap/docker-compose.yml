@@ -1,0 +1,21 @@
+services:
+  homeserver:
+    image: ghcr.io/continuwuity/continuwuity:latest
+    environment:
+      CONTINUWUITY_SERVER_NAME: localhost
+      CONTINUWUITY_DATABASE_PATH: /var/lib/conduwuit/conduwuit.db
+      CONTINUWUITY_PORT: "6167"
+      CONTINUWUITY_ADDRESS: "0.0.0.0"
+      CONTINUWUITY_ALLOW_REGISTRATION: "true"
+      CONTINUWUITY_REGISTRATION_TOKEN: testreg
+      CONTINUWUITY_ALLOW_FEDERATION: "false"
+      CONTINUWUITY_TRUSTED_SERVERS: "[]"
+      CONTINUWUITY_LOG: "warn,conduwuit=info"
+      CONTINUWUITY_ALLOW_CHECK_FOR_UPDATES: "false"
+    ports:
+      - "127.0.0.1:${HOMESERVER_HOST_PORT:-26167}:6167"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/6167 && echo -e 'GET /_matrix/client/versions HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q '200 OK' || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

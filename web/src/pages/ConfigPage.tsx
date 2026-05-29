@@ -4,7 +4,6 @@ import {
   Download,
   FormInput,
   RotateCcw,
-  Save,
   Search,
   Upload,
   X,
@@ -27,16 +26,28 @@ import {
   Wrench,
   FileQuestion,
   Filter,
+  Cloud,
+  Sparkles,
+  LayoutDashboard,
+  BookOpen,
+  Route,
+  History,
+  Shield,
+  FileOutput,
+  RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { getNestedValue, setNestedValue } from "@/lib/nested";
-import { useToast } from "@/hooks/useToast";
-import { Toast } from "@/components/Toast";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { Toast } from "@nous-research/ui/ui/components/toast";
 import { AutoField } from "@/components/AutoField";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
+import { Input } from "@nous-research/ui/ui/components/input";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
@@ -45,7 +56,10 @@ import { PluginSlot } from "@/plugins";
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-const CATEGORY_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+const CATEGORY_ICONS: Record<
+  string,
+  React.ComponentType<{ className?: string }>
+> = {
   general: Settings,
   agent: Bot,
   terminal: Monitor,
@@ -61,9 +75,24 @@ const CATEGORY_ICONS: Record<string, React.ComponentType<{ className?: string }>
   logging: ClipboardList,
   discord: MessageCircle,
   auxiliary: Wrench,
+  bedrock: Cloud,
+  curator: Sparkles,
+  kanban: LayoutDashboard,
+  model_catalog: BookOpen,
+  openrouter: Route,
+  sessions: History,
+  tool_loop_guardrails: Shield,
+  tool_output: FileOutput,
+  updates: RefreshCw,
 };
 
-function CategoryIcon({ category, className }: { category: string; className?: string }) {
+function CategoryIcon({
+  category,
+  className,
+}: {
+  category: string;
+  className?: string;
+}) {
   const Icon = CATEGORY_ICONS[category] ?? FileQuestion;
   return <Icon className={className ?? "h-4 w-4"} />;
 }
@@ -74,16 +103,23 @@ function CategoryIcon({ category, className }: { category: string; className?: s
 
 export default function ConfigPage() {
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
-  const [schema, setSchema] = useState<Record<string, Record<string, unknown>> | null>(null);
+  const [schema, setSchema] = useState<Record<
+    string,
+    Record<string, unknown>
+  > | null>(null);
   const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
-  const [defaults, setDefaults] = useState<Record<string, unknown> | null>(null);
+  const [defaults, setDefaults] = useState<Record<string, unknown> | null>(
+    null,
+  );
   const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [yamlMode, setYamlMode] = useState(false);
   const [yamlText, setYamlText] = useState("");
   const [yamlLoading, setYamlLoading] = useState(false);
   const [yamlSaving, setYamlSaving] = useState(false);
+  const [configPath, setConfigPath] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string>("");
+  const [confirmReset, setConfirmReset] = useState(false);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
@@ -104,18 +140,20 @@ export default function ConfigPage() {
           onChange={(e) => setSearchQuery(e.target.value)}
         />
         {searchQuery && (
-          <button
-            type="button"
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          <Button
+            ghost
+            size="xs"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             onClick={() => setSearchQuery("")}
+            aria-label={t.common.clear}
           >
-            <X className="h-3 w-3" />
-          </button>
+            <X />
+          </Button>
         )}
       </div>,
     );
     return () => setEnd(null);
-  }, [config, schema, searchQuery, setEnd, t.common.search]);
+  }, [config, schema, searchQuery, setEnd, t.common.clear, t.common.search]);
 
   function prettyCategoryName(cat: string): string {
     const key = cat as keyof typeof t.config.categories;
@@ -124,7 +162,10 @@ export default function ConfigPage() {
   }
 
   useEffect(() => {
-    api.getConfig().then(setConfig).catch(() => {});
+    api
+      .getConfig()
+      .then(setConfig)
+      .catch(() => {});
     api
       .getSchema()
       .then((resp) => {
@@ -132,7 +173,14 @@ export default function ConfigPage() {
         setCategoryOrder(resp.category_order ?? []);
       })
       .catch(() => {});
-    api.getDefaults().then(setDefaults).catch(() => {});
+    api
+      .getDefaults()
+      .then(setDefaults)
+      .catch(() => {});
+    api
+      .getStatus()
+      .then((resp) => setConfigPath(resp.config_path))
+      .catch(() => {});
   }, []);
 
   // Set active category when categories load
@@ -157,7 +205,11 @@ export default function ConfigPage() {
   /* ---- Categories ---- */
   const categories = useMemo(() => {
     if (!schema) return [];
-    const allCats = [...new Set(Object.values(schema).map((s) => String(s.category ?? "general")))];
+    const allCats = [
+      ...new Set(
+        Object.values(schema).map((s) => String(s.category ?? "general")),
+      ),
+    ];
     const ordered = categoryOrder.filter((c) => allCats.includes(c));
     const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
     return [...ordered, ...extra];
@@ -186,8 +238,12 @@ export default function ConfigPage() {
       return (
         key.toLowerCase().includes(lowerSearch) ||
         humanLabel.toLowerCase().includes(lowerSearch) ||
-        String(s.category ?? "").toLowerCase().includes(lowerSearch) ||
-        String(s.description ?? "").toLowerCase().includes(lowerSearch)
+        String(s.category ?? "")
+          .toLowerCase()
+          .includes(lowerSearch) ||
+        String(s.description ?? "")
+          .toLowerCase()
+          .includes(lowerSearch)
       );
     });
   }, [isSearching, lowerSearch, schema]);
@@ -196,7 +252,7 @@ export default function ConfigPage() {
   const activeFields = useMemo(() => {
     if (!schema || isSearching) return [];
     return Object.entries(schema).filter(
-      ([, s]) => String(s.category ?? "general") === activeCategory
+      ([, s]) => String(s.category ?? "general") === activeCategory,
     );
   }, [schema, activeCategory, isSearching]);
 
@@ -219,7 +275,10 @@ export default function ConfigPage() {
     try {
       await api.saveConfigRaw(yamlText);
       showToast(t.config.yamlConfigSaved, "success");
-      api.getConfig().then(setConfig).catch(() => {});
+      api
+        .getConfig()
+        .then(setConfig)
+        .catch(() => {});
     } catch (e) {
       showToast(`${t.config.failedToSaveYaml}: ${e}`, "error");
     } finally {
@@ -228,12 +287,42 @@ export default function ConfigPage() {
   };
 
   const handleReset = () => {
-    if (defaults) setConfig(structuredClone(defaults));
+    if (!defaults || !config) return;
+    // Scope the reset to what the user is currently looking at:
+    //   - search mode → the matched fields
+    //   - form mode   → the active category's fields
+    // Resetting the whole config here was a footgun (issue reported by @ykmfb001):
+    // the button sits next to the category tabs and users reasonably assumed
+    // "reset this tab", not "wipe my entire config.yaml".
+    const scopedFields = isSearching ? searchMatchedFields : activeFields;
+    if (scopedFields.length === 0) return;
+    setConfirmReset(true);
+  };
+
+  const executeReset = () => {
+    if (!defaults || !config) return;
+    setConfirmReset(false);
+    const scopedFields = isSearching ? searchMatchedFields : activeFields;
+    if (scopedFields.length === 0) return;
+    const scopeLabel = isSearching
+      ? t.config.searchResults
+      : prettyCategoryName(activeCategory);
+    let next: Record<string, unknown> = config;
+    for (const [key] of scopedFields) {
+      next = setNestedValue(next, key, getNestedValue(defaults, key));
+    }
+    setConfig(next);
+    showToast(
+      t.config.resetScopeToast.replace("{scope}", scopeLabel),
+      "success",
+    );
   };
 
   const handleExport = () => {
     if (!config) return;
-    const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(config, null, 2)], {
+      type: "application/json",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -262,13 +351,16 @@ export default function ConfigPage() {
   if (!config || !schema) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <Spinner className="text-2xl text-primary" />
       </div>
     );
   }
 
   /* ---- Render field list (shared between search & normal) ---- */
-  const renderFields = (fields: [string, Record<string, unknown>][], showCategory = false) => {
+  const renderFields = (
+    fields: [string, Record<string, unknown>][],
+    showCategory = false,
+  ) => {
     let lastSection = "";
     let lastCat = "";
     return fields.map(([key, s]) => {
@@ -276,7 +368,11 @@ export default function ConfigPage() {
       const section = parts.length > 1 ? parts[0] : "";
       const cat = String(s.category ?? "general");
       const showCatBadge = showCategory && cat !== lastCat;
-      const showSection = !showCategory && section && section !== lastSection && section !== activeCategory;
+      const showSection =
+        !showCategory &&
+        section &&
+        section !== lastSection &&
+        section !== activeCategory;
       lastSection = section;
       lastCat = cat;
 
@@ -284,8 +380,11 @@ export default function ConfigPage() {
         <div key={key}>
           {showCatBadge && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
-              <CategoryIcon category={cat} className="h-4 w-4 text-muted-foreground" />
-              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              <CategoryIcon
+                category={cat}
+                className="h-4 w-4 text-muted-foreground"
+              />
+              <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
                 {prettyCategoryName(cat)}
               </span>
               <div className="flex-1 border-t border-border" />
@@ -293,7 +392,7 @@ export default function ConfigPage() {
           )}
           {showSection && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
-              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
                 {section.replace(/_/g, " ")}
               </span>
               <div className="flex-1 border-t border-border" />
@@ -317,62 +416,94 @@ export default function ConfigPage() {
       <PluginSlot name="config:top" />
       <Toast toast={toast} />
 
-      {/* ═══════════════ Header Bar ═══════════════ */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          <Settings2 className="h-4 w-4 text-muted-foreground" />
-          <code className="text-xs text-muted-foreground bg-muted/50 px-2 py-0.5">
-            {t.config.configPath}
+      <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+        <div className="flex min-w-0 items-center gap-2 sm:flex-1">
+          <Settings2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <code className="min-w-0 flex-1 break-words text-xs text-muted-foreground bg-muted/50 px-2 py-0.5">
+            {configPath ?? t.config.configPath}
           </code>
         </div>
-        <div className="flex items-center gap-1.5">
-          <Button variant="ghost" size="sm" onClick={handleExport} title={t.config.exportConfig} aria-label={t.config.exportConfig}>
-            <Download className="h-3.5 w-3.5" />
+        <div className="flex flex-wrap items-center gap-1.5 sm:shrink-0">
+          <Button
+            ghost
+            size="icon"
+            onClick={handleExport}
+            title={t.config.exportConfig}
+            aria-label={t.config.exportConfig}
+          >
+            <Download />
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} title={t.config.importConfig} aria-label={t.config.importConfig}>
-            <Upload className="h-3.5 w-3.5" />
+          <Button
+            ghost
+            size="icon"
+            onClick={() => fileInputRef.current?.click()}
+            title={t.config.importConfig}
+            aria-label={t.config.importConfig}
+          >
+            <Upload />
           </Button>
-          <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
-          <Button variant="ghost" size="sm" onClick={handleReset} title={t.config.resetDefaults} aria-label={t.config.resetDefaults}>
-            <RotateCcw className="h-3.5 w-3.5" />
-          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleImport}
+          />
+          {!yamlMode &&
+            (() => {
+              const resetScopeLabel = isSearching
+                ? t.config.searchResults
+                : prettyCategoryName(activeCategory);
+              const resetTitle = t.config.resetScopeTooltip.replace(
+                "{scope}",
+                resetScopeLabel,
+              );
+              return (
+                <Button
+                  ghost
+                  size="icon"
+                  onClick={handleReset}
+                  title={resetTitle}
+                  aria-label={resetTitle}
+                >
+                  <RotateCcw />
+                </Button>
+              );
+            })()}
 
           <div className="w-px h-5 bg-border mx-1" />
 
           <Button
-            variant={yamlMode ? "default" : "outline"}
             size="sm"
+            outlined={!yamlMode}
             onClick={() => setYamlMode(!yamlMode)}
-            className="gap-1.5"
+            prefix={yamlMode ? <FormInput /> : <Code />}
           >
-            {yamlMode ? (
-              <>
-                <FormInput className="h-3.5 w-3.5" />
-                {t.common.form}
-              </>
-            ) : (
-              <>
-                <Code className="h-3.5 w-3.5" />
-                YAML
-              </>
-            )}
+            {yamlMode ? t.common.form : "YAML"}
           </Button>
 
           {yamlMode ? (
-            <Button size="sm" onClick={handleYamlSave} disabled={yamlSaving} className="gap-1.5">
-              <Save className="h-3.5 w-3.5" />
+            <Button
+              size="sm"
+              className="uppercase"
+              onClick={handleYamlSave}
+              disabled={yamlSaving}
+            >
               {yamlSaving ? t.common.saving : t.common.save}
             </Button>
           ) : (
-            <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
-              <Save className="h-3.5 w-3.5" />
+            <Button
+              size="sm"
+              className="uppercase"
+              onClick={handleSave}
+              disabled={saving}
+            >
               {saving ? t.common.saving : t.common.save}
             </Button>
           )}
         </div>
       </div>
 
-      {/* ═══════════════ YAML Mode ═══════════════ */}
       {yamlMode ? (
         <Card>
           <CardHeader className="py-3 px-4">
@@ -384,7 +515,7 @@ export default function ConfigPage() {
           <CardContent className="p-0">
             {yamlLoading ? (
               <div className="flex items-center justify-center py-12">
-                <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                <Spinner className="text-xl text-primary" />
               </div>
             ) : (
               <textarea
@@ -397,61 +528,52 @@ export default function ConfigPage() {
           </CardContent>
         </Card>
       ) : (
-        /* ═══════════════ Form Mode ═══════════════ */
         <div className="flex flex-col sm:flex-row gap-4">
-          {/* ---- Filter panel ---- */}
           <aside aria-label={t.config.filters} className="sm:w-56 sm:shrink-0">
             <div className="sm:sticky sm:top-4">
               <div className="flex flex-col border border-border bg-muted/20">
-                {/* Panel heading */}
                 <div className="hidden sm:flex items-center gap-2 px-3 py-2 border-b border-border">
-                  <Filter className="h-3 w-3 text-muted-foreground" />
-                  <span className="font-mondwest text-[0.65rem] tracking-[0.12em] uppercase text-muted-foreground">
+                  <Filter className="h-3 w-3 text-text-tertiary" />
+                  <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
                     {t.config.filters}
                   </span>
                 </div>
 
-                {/* Sections heading (hidden on mobile since it becomes a horizontal scroll) */}
-                <div className="hidden sm:block px-3 pt-2 pb-1 font-mondwest text-[0.6rem] tracking-[0.12em] uppercase text-muted-foreground/70">
+                <div className="hidden sm:block px-3 pt-2 pb-1 font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary">
                   {t.config.sections}
                 </div>
 
-                {/* Category nav — horizontal scroll on mobile, pill list on sm+ */}
                 <div className="flex sm:flex-col gap-1 sm:gap-px p-2 sm:pt-1 overflow-x-auto sm:overflow-x-visible scrollbar-none sm:max-h-[calc(100vh-260px)] sm:overflow-y-auto">
                   {categories.map((cat) => {
                     const isActive = !isSearching && activeCategory === cat;
 
                     return (
-                      <button
+                      <ListItem
                         key={cat}
-                        type="button"
+                        active={isActive}
                         onClick={() => {
                           setSearchQuery("");
                           setActiveCategory(cat);
                         }}
-                        className={`
-                          group flex items-center gap-2 px-2 py-1
-                          rounded-sm text-left text-[11px] cursor-pointer whitespace-nowrap
-                          transition-colors
-                          ${
-                            isActive
-                              ? "bg-foreground/10 text-foreground"
-                              : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
-                          }
-                        `}
+                        className="rounded-none whitespace-nowrap px-2 py-1 text-xs"
                       >
-                        <CategoryIcon category={cat} className="h-3.5 w-3.5 shrink-0" />
-                        <span className="flex-1 truncate">{prettyCategoryName(cat)}</span>
+                        <CategoryIcon
+                          category={cat}
+                          className="h-3.5 w-3.5 shrink-0"
+                        />
+                        <span className="flex-1 truncate">
+                          {prettyCategoryName(cat)}
+                        </span>
                         <span
-                          className={`text-[10px] tabular-nums ${
+                          className={`text-xs tabular-nums ${
                             isActive
-                              ? "text-foreground/60"
-                              : "text-muted-foreground/50"
+                              ? "text-text-secondary"
+                              : "text-text-tertiary"
                           }`}
                         >
                           {categoryCounts[cat] || 0}
                         </span>
-                      </button>
+                      </ListItem>
                     );
                   })}
                 </div>
@@ -459,10 +581,8 @@ export default function ConfigPage() {
             </div>
           </aside>
 
-          {/* ---- Content ---- */}
           <div className="flex-1 min-w-0">
             {isSearching ? (
-              /* Search results */
               <Card>
                 <CardHeader className="py-3 px-4">
                   <div className="flex items-center justify-between">
@@ -470,8 +590,12 @@ export default function ConfigPage() {
                       <Search className="h-4 w-4" />
                       {t.config.searchResults}
                     </CardTitle>
-                    <Badge variant="secondary" className="text-[10px]">
-                      {searchMatchedFields.length} {t.config.fields.replace("{s}", searchMatchedFields.length !== 1 ? "s" : "")}
+                    <Badge tone="secondary" className="text-xs">
+                      {searchMatchedFields.length}{" "}
+                      {t.config.fields.replace(
+                        "{s}",
+                        searchMatchedFields.length !== 1 ? "s" : "",
+                      )}
                     </Badge>
                   </div>
                 </CardHeader>
@@ -491,11 +615,18 @@ export default function ConfigPage() {
                 <CardHeader className="py-3 px-4">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm flex items-center gap-2">
-                      <CategoryIcon category={activeCategory} className="h-4 w-4" />
+                      <CategoryIcon
+                        category={activeCategory}
+                        className="h-4 w-4"
+                      />
                       {prettyCategoryName(activeCategory)}
                     </CardTitle>
-                    <Badge variant="secondary" className="text-[10px]">
-                      {activeFields.length} {t.config.fields.replace("{s}", activeFields.length !== 1 ? "s" : "")}
+                    <Badge tone="secondary" className="text-xs">
+                      {activeFields.length}{" "}
+                      {t.config.fields.replace(
+                        "{s}",
+                        activeFields.length !== 1 ? "s" : "",
+                      )}
                     </Badge>
                   </div>
                 </CardHeader>
@@ -508,6 +639,22 @@ export default function ConfigPage() {
         </div>
       )}
       <PluginSlot name="config:bottom" />
+      <ConfirmDialog
+        open={confirmReset}
+        onCancel={() => setConfirmReset(false)}
+        onConfirm={executeReset}
+        title={t.config.confirmResetScope.replace(
+          "{scope}",
+          isSearching
+            ? t.config.searchResults
+            : prettyCategoryName(activeCategory),
+        )}
+        description={`This will reset ${
+          (isSearching ? searchMatchedFields : activeFields).length
+        } field(s) to their default values.`}
+        destructive
+        confirmLabel={t.config.resetDefaults}
+      />
     </div>
   );
 }

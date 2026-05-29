@@ -37,6 +37,19 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Ensure boto3/botocore are installed before any code in this module runs.
+# Upstream removed boto3 from [all] extras (PRs #24220, #24515); lazy_deps
+# handles on-demand installation so the Bedrock provider still works in the
+# EKS deployment without baking boto3 into the base image.
+# ---------------------------------------------------------------------------
+try:
+    from tools.lazy_deps import ensure
+    ensure("provider.bedrock", prompt=False)
+except Exception:
+    pass  # lazy_deps unavailable or install failed — let downstream imports surface the real error
+
+
+# ---------------------------------------------------------------------------
 # Lazy boto3 import — only loaded when the Bedrock provider is actually used.
 # This keeps startup fast for users who don't use Bedrock.
 # ---------------------------------------------------------------------------
@@ -291,14 +304,52 @@ def has_aws_credentials(env: Optional[Dict[str, str]] = None) -> bool:
 def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
     """Resolve the AWS region for Bedrock API calls.
 
-    Priority: AWS_REGION → AWS_DEFAULT_REGION → us-east-1 (fallback).
+    Priority:
+      1. AWS_REGION env var
+      2. AWS_DEFAULT_REGION env var
+      3. boto3/botocore configured region (from ~/.aws/config or SSO profile)
+      4. us-east-1 (hard fallback)
+
+    The boto3 fallback is critical for EU/AP users who configure their region
+    in ~/.aws/config via a named profile rather than env vars — without it,
+    live model discovery would always return us.* profile IDs regardless of
+    the user's actual region.
     """
     env = env if env is not None else os.environ
-    return (
+    explicit = (
         env.get("AWS_REGION", "").strip()
         or env.get("AWS_DEFAULT_REGION", "").strip()
-        or "us-east-1"
     )
+    if explicit:
+        return explicit
+    try:
+        import botocore.session
+        region = botocore.session.get_session().get_config_variable("region")
+        if region:
+            return region
+    except Exception:
+        pass
+    return "us-east-1"
+
+
+def bedrock_model_ids_or_none() -> Optional[List[str]]:
+    """Live-discover Bedrock model IDs for the active region.
+
+    Returns a list of model ID strings if discovery succeeds and yields
+    at least one model, or ``None`` on failure / empty result.  Callers
+    should fall back to the static curated list when ``None`` is returned.
+
+    This helper consolidates the discover → extract-ids → fallback
+    pattern that was previously duplicated across ``provider_model_ids``,
+    ``list_authenticated_providers`` section 2, and section 3.
+    """
+    try:
+        discovered = discover_bedrock_models(resolve_bedrock_region())
+        if discovered:
+            return [m["id"] for m in discovered]
+    except Exception:
+        pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -593,11 +644,18 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
     stop_reason = response.get("stopReason", "end_turn")
 
     text_parts = []
+    reasoning_parts = []
     tool_calls = []
 
     for block in content_blocks:
         if "text" in block:
             text_parts.append(block["text"])
+        elif "reasoningContent" in block:
+            reasoning = block["reasoningContent"]
+            if isinstance(reasoning, dict):
+                thinking_text = reasoning.get("text", "")
+                if thinking_text:
+                    reasoning_parts.append(str(thinking_text))
         elif "toolUse" in block:
             tu = block["toolUse"]
             tool_calls.append(SimpleNamespace(
@@ -614,6 +672,7 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
         role="assistant",
         content="\n".join(text_parts) if text_parts else None,
         tool_calls=tool_calls if tool_calls else None,
+        reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
     )
 
     # Build usage stats
@@ -694,6 +753,7 @@ def stream_converse_with_callbacks(
         ``normalize_converse_response()``.
     """
     text_parts: List[str] = []
+    reasoning_parts: List[str] = []
     tool_calls: List[SimpleNamespace] = []
     current_tool: Optional[Dict] = None
     current_text_buffer: List[str] = []
@@ -739,8 +799,10 @@ def stream_converse_with_callbacks(
                 reasoning = delta["reasoningContent"]
                 if isinstance(reasoning, dict):
                     thinking_text = reasoning.get("text", "")
-                    if thinking_text and on_reasoning_delta:
-                        on_reasoning_delta(thinking_text)
+                    if thinking_text:
+                        reasoning_parts.append(str(thinking_text))
+                        if on_reasoning_delta:
+                            on_reasoning_delta(thinking_text)
 
         elif "contentBlockStop" in event:
             if current_tool is not None:
@@ -779,6 +841,7 @@ def stream_converse_with_callbacks(
         role="assistant",
         content="\n".join(text_parts) if text_parts else None,
         tool_calls=tool_calls if tool_calls else None,
+        reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
     )
 
     usage = SimpleNamespace(
@@ -1104,18 +1167,6 @@ def _extract_provider_from_arn(arn: str) -> str:
     """
     match = re.search(r"foundation-model/([^.]+)", arn)
     return match.group(1) if match else ""
-
-
-def get_bedrock_model_ids(region: str) -> List[str]:
-    """Return a flat list of available Bedrock model IDs for the given region.
-
-    Convenience wrapper around ``discover_bedrock_models()`` for use in
-    the model selection UI.
-    """
-    models = discover_bedrock_models(region)
-    return [m["id"] for m in models]
-
-
 # ---------------------------------------------------------------------------
 # Error classification — Bedrock-specific exceptions
 # ---------------------------------------------------------------------------

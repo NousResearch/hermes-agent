@@ -1,12 +1,9 @@
 """Tests for MCP stability fixes — event loop handler, PID tracking, shutdown robustness."""
 
 import asyncio
-import os
 import signal
-import threading
 from unittest.mock import patch, MagicMock
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -130,15 +127,18 @@ class TestStdioPidTracking:
         fake_sigkill = 9
         monkeypatch.setattr(signal, "SIGKILL", fake_sigkill, raising=False)
 
+        # Post-#21561 the alive check routes through
+        # ``gateway.status._pid_exists`` (so it's safe on Windows — see
+        # bpo-14484). Return True so the SIGKILL escalation fires.
         with patch("tools.mcp_tool.os.kill") as mock_kill, \
-             patch("time.sleep") as mock_sleep:
+             patch("gateway.status._pid_exists", return_value=True), \
+             patch("tools.mcp_tool.time.sleep") as mock_sleep:
             _kill_orphaned_mcp_children()
 
-        # SIGTERM, then alive-check (signal 0), then SIGKILL
+        # SIGTERM then SIGKILL; the alive check no longer touches os.kill.
         mock_kill.assert_any_call(fake_pid, signal.SIGTERM)
-        mock_kill.assert_any_call(fake_pid, 0)  # alive check
         mock_kill.assert_any_call(fake_pid, fake_sigkill)
-        assert mock_kill.call_count == 3
+        assert mock_kill.call_count == 2
         mock_sleep.assert_called_once_with(2)
 
         with _lock:
@@ -160,7 +160,7 @@ class TestStdioPidTracking:
         monkeypatch.delattr(signal, "SIGKILL", raising=False)
 
         with patch("tools.mcp_tool.os.kill") as mock_kill, \
-             patch("time.sleep") as mock_sleep:
+             patch("tools.mcp_tool.time.sleep") as mock_sleep:
             _kill_orphaned_mcp_children()
 
         # SIGTERM phase, alive check raises (process gone), no escalation
@@ -224,7 +224,7 @@ class TestMCPInitialConnectionRetry:
 
     def test_initial_connect_retry_succeeds_on_second_attempt(self):
         """Server succeeds after one transient initial failure."""
-        from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
+        from tools.mcp_tool import MCPServerTask
 
         call_count = 0
 

@@ -1,9 +1,10 @@
 ---
 name: himalaya
 description: "Himalaya CLI: IMAP/SMTP email from terminal."
-version: 1.0.0
+version: 1.1.0
 author: community
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Email, IMAP, SMTP, CLI, Communication]
@@ -15,6 +16,11 @@ prerequisites:
 # Himalaya Email CLI
 
 Himalaya is a CLI email client that lets you manage emails from the terminal using IMAP, SMTP, Notmuch, or Sendmail backends.
+
+This skill is separate from the Hermes Email gateway adapter. The gateway
+adapter lets people email the agent and uses Hermes' built-in IMAP/SMTP
+adapter; this skill lets the agent operate a mailbox from terminal tools and
+requires the external `himalaya` CLI.
 
 ## References
 
@@ -71,7 +77,27 @@ message.send.backend.encryption.type = "start-tls"
 message.send.backend.login = "you@example.com"
 message.send.backend.auth.type = "password"
 message.send.backend.auth.cmd = "pass show email/smtp"
+
+# Folder aliases (himalaya v1.2.0+ syntax). Required whenever the
+# server's folder names don't match himalaya's canonical names
+# (inbox/sent/drafts/trash). Gmail is the common case — see
+# `references/configuration.md` for the `[Gmail]/Sent Mail` mapping.
+folder.aliases.inbox = "INBOX"
+folder.aliases.sent = "Sent"
+folder.aliases.drafts = "Drafts"
+folder.aliases.trash = "Trash"
 ```
+
+> **Heads up on the alias syntax.** Pre-v1.2.0 docs used a
+> `[accounts.NAME.folder.alias]` sub-section (singular `alias`).
+> v1.2.0 silently ignores that form — TOML parses fine, but the
+> alias resolver never reads it, so every lookup falls through to
+> the canonical name. On Gmail this means save-to-Sent fails *after*
+> SMTP delivery succeeds, and `himalaya message send` exits non-zero.
+> Any caller (agent, script, user) that retries on that exit code
+> will re-run the entire send — including SMTP — producing duplicate
+> emails to recipients. Always use `folder.aliases.X` (plural, dotted
+> keys, directly under `[accounts.NAME]`).
 
 ## Hermes Integration Notes
 

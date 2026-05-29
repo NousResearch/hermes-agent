@@ -5,9 +5,7 @@ accepted as base_url, and unknown keys go unreported.
 """
 
 import logging
-from unittest.mock import patch
 
-import pytest
 
 from hermes_cli.config import _normalize_custom_provider_entry
 
@@ -82,7 +80,7 @@ class TestNormalizeCustomProviderEntry:
         """Unknown config keys should produce a warning."""
         entry = {
             "base_url": "https://api.example.com/v1",
-            "api_key": "sk-test-key",
+            "api_key": "***",
             "unknownField": "value",
             "anotherBad": 42,
         }
@@ -90,6 +88,19 @@ class TestNormalizeCustomProviderEntry:
             result = _normalize_custom_provider_entry(entry, provider_key="test")
         assert result is not None
         assert any("unknown config keys" in r.message.lower() for r in caplog.records)
+
+    def test_timeout_keys_not_flagged_unknown(self, caplog):
+        """request_timeout_seconds and stale_timeout_seconds should not produce warnings."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "api_key": "***",
+            "request_timeout_seconds": 300,
+            "stale_timeout_seconds": 900,
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
 
     def test_camel_case_warning_logged(self, caplog):
         """camelCase alias mapping should produce a warning."""

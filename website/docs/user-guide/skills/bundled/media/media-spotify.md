@@ -1,14 +1,14 @@
 ---
-title: "Spotify"
+title: "Spotify — Spotify: play, search, queue, manage playlists and devices"
 sidebar_label: "Spotify"
-description: "Control Spotify — play music, search the catalog, manage playlists and library, inspect devices and playback state"
+description: "Spotify: play, search, queue, manage playlists and devices"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Spotify
 
-Control Spotify — play music, search the catalog, manage playlists and library, inspect devices and playback state. Loads when the user asks to play/pause/queue music, search tracks/albums/artists, manage playlists, or check what's playing. Assumes the Hermes Spotify toolset is enabled and `hermes auth spotify` has been run.
+Spotify: play, search, queue, manage playlists and devices.
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Control Spotify — play music, search the catalog, manage playlists and library
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `spotify`, `music`, `playback`, `playlists`, `media` |
 | Related skills | [`gif-search`](/docs/user-guide/skills/bundled/media/media-gif-search) |
 

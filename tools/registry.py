@@ -19,6 +19,7 @@ import importlib
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
@@ -79,12 +80,12 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars",
+        "max_result_size_chars", "dynamic_schema_overrides",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -95,6 +96,56 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
+        # Optional zero-arg callable returning a dict of schema overrides
+        # applied at get_definitions() time. Use for fields that depend on
+        # runtime config (e.g. delegate_task's description must reflect the
+        # user's current delegation.max_concurrent_children / max_spawn_depth
+        # so the model isn't told the wrong limits). The callable is invoked
+        # on every get_definitions() call; results are merged shallow on top
+        # of the base schema before the {"type": "function", ...} wrap.
+        self.dynamic_schema_overrides = dynamic_schema_overrides
+
+
+# ---------------------------------------------------------------------------
+# check_fn TTL cache
+#
+# check_fn callables like tools/terminal_tool.check_terminal_requirements
+# probe external state (Docker daemon, Modal SDK install, playwright binary
+# availability). For a long-lived CLI or gateway process, calling them on
+# every get_definitions() is pure waste — external state changes on human
+# timescales. Cache results for ~30 s so env-var flips via ``hermes tools``
+# or live credential file changes propagate within a turn or two without
+# requiring any explicit invalidation.
+# ---------------------------------------------------------------------------
+
+_CHECK_FN_TTL_SECONDS = 30.0
+_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
+_check_fn_cache_lock = threading.Lock()
+
+
+def _check_fn_cached(fn: Callable) -> bool:
+    """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False."""
+    now = time.monotonic()
+    with _check_fn_cache_lock:
+        cached = _check_fn_cache.get(fn)
+        if cached is not None:
+            ts, value = cached
+            if now - ts < _CHECK_FN_TTL_SECONDS:
+                return value
+    try:
+        value = bool(fn())
+    except Exception:
+        value = False
+    with _check_fn_cache_lock:
+        _check_fn_cache[fn] = (now, value)
+    return value
+
+
+def invalidate_check_fn_cache() -> None:
+    """Drop all cached ``check_fn`` results. Call after config changes that
+    affect tool availability (e.g. ``hermes tools enable``)."""
+    with _check_fn_cache_lock:
+        _check_fn_cache.clear()
 
 
 class ToolRegistry:
@@ -108,6 +159,12 @@ class ToolRegistry:
         # reading tool metadata, so keep mutations serialized and readers on
         # stable snapshots.
         self._lock = threading.RLock()
+        # Monotonically-increasing generation counter. Bumped on every
+        # mutation (register / deregister / register_toolset_alias / MCP
+        # refresh). External callers (e.g. get_tool_definitions) can memoize
+        # against it: a cache entry keyed on the generation is valid for as
+        # long as the generation hasn't changed.
+        self._generation: int = 0
 
     def _snapshot_state(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
         """Return a coherent snapshot of registry entries and toolset checks."""
@@ -158,6 +215,7 @@ class ToolRegistry:
                     alias, existing, toolset,
                 )
             self._toolset_aliases[alias] = toolset
+            self._generation += 1
 
     def get_registered_toolset_aliases(self) -> Dict[str, str]:
         """Return a snapshot of ``{alias: canonical_toolset}`` mappings."""
@@ -185,8 +243,17 @@ class ToolRegistry:
         description: str = "",
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
+        dynamic_schema_overrides: Callable = None,
+        override: bool = False,
     ):
-        """Register a tool.  Called at module-import time by each tool file."""
+        """Register a tool.  Called at module-import time by each tool file.
+
+        ``override=True`` is an explicit opt-in for plugins that intend to
+        replace an existing built-in tool implementation (e.g. swap the
+        default browser tool for a headed-Chrome CDP backend). Without it,
+        registrations that would shadow an existing tool from a different
+        toolset are rejected to prevent accidental overwrites.
+        """
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:
@@ -201,13 +268,22 @@ class ToolRegistry:
                         "Tool '%s': MCP toolset '%s' overwriting MCP toolset '%s'",
                         name, toolset, existing.toolset,
                     )
+                elif override:
+                    # Explicit plugin opt-in: replace the existing tool.
+                    # Logged at INFO so the override is auditable in agent.log.
+                    logger.info(
+                        "Tool '%s': toolset '%s' overriding existing toolset '%s' "
+                        "(override=True opt-in)",
+                        name, toolset, existing.toolset,
+                    )
                 else:
                     # Reject shadowing — prevent plugins/MCP from overwriting
                     # built-in tools or vice versa.
                     logger.error(
                         "Tool registration REJECTED: '%s' (toolset '%s') would "
-                        "shadow existing tool from toolset '%s'. Deregister the "
-                        "existing tool first if this is intentional.",
+                        "shadow existing tool from toolset '%s'. Pass "
+                        "override=True to register() if the replacement is "
+                        "intentional, or deregister the existing tool first.",
                         name, toolset, existing.toolset,
                     )
                     return
@@ -222,9 +298,11 @@ class ToolRegistry:
                 description=description or schema.get("description", ""),
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
+                dynamic_schema_overrides=dynamic_schema_overrides,
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
+            self._generation += 1
 
     def deregister(self, name: str) -> None:
         """Remove a tool from the registry.
@@ -249,6 +327,7 @@ class ToolRegistry:
                     for alias, target in self._toolset_aliases.items()
                     if target != entry.toolset
                 }
+            self._generation += 1
         logger.debug("Deregistered tool: %s", name)
 
     # ------------------------------------------------------------------
@@ -259,9 +338,17 @@ class ToolRegistry:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
-        are included.
+        are included. ``check_fn()`` results are cached for ~30 s via
+        :func:`_check_fn_cached` to amortize repeat probes (check_terminal_
+        requirements probes modal/docker, browser checks probe playwright,
+        etc.); TTL chosen so env-var changes (``hermes tools enable foo``)
+        still take effect in near-real-time without forcing a full cache
+        flush on every call.
         """
         result = []
+        # Per-call cache on top of the 30 s TTL — handles repeat probes of the
+        # same check_fn within one definitions pass without re-reading the
+        # TTL clock.
         check_results: Dict[Callable, bool] = {}
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
         for name in sorted(tool_names):
@@ -270,18 +357,29 @@ class ToolRegistry:
                 continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
-                    try:
-                        check_results[entry.check_fn] = bool(entry.check_fn())
-                    except Exception:
-                        check_results[entry.check_fn] = False
-                        if not quiet:
-                            logger.debug("Tool %s check raised; skipping", name)
+                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
                 if not check_results[entry.check_fn]:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
             # Ensure schema always has a "name" field — use entry.name as fallback
             schema_with_name = {**entry.schema, "name": entry.name}
+            # Apply runtime-dynamic overrides (e.g. delegate_task description
+            # depends on current delegation.max_concurrent_children /
+            # max_spawn_depth). Caller side (model_tools.get_tool_definitions)
+            # already keys its memo on config.yaml mtime + size, so changes
+            # to delegation.* in config invalidate the cache automatically.
+            if entry.dynamic_schema_overrides is not None:
+                try:
+                    overrides = entry.dynamic_schema_overrides()
+                    if isinstance(overrides, dict):
+                        schema_with_name.update(overrides)
+                except Exception as exc:
+                    logger.warning(
+                        "dynamic_schema_overrides for tool %s raised %s; "
+                        "using static schema",
+                        name, exc,
+                    )
             result.append({"type": "function", "function": schema_with_name})
         return result
 
@@ -306,7 +404,16 @@ class ToolRegistry:
             return entry.handler(args, **kwargs)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
-            return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
+            # Route through the sanitizer so framing tokens / CDATA / fences
+            # in exception strings don't reach the model as structural noise.
+            # See model_tools._sanitize_tool_error for rationale.
+            raw = f"Tool execution failed: {type(e).__name__}: {e}"
+            try:
+                from model_tools import _sanitize_tool_error
+                sanitized = _sanitize_tool_error(raw)
+            except Exception:
+                sanitized = raw  # defensive: never let the sanitizer block error propagation
+            return json.dumps({"error": sanitized})
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)

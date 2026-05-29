@@ -27,6 +27,8 @@ Security:
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -54,10 +56,40 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+_BUILTIN_DELIVER_PLATFORMS = {
+    "telegram", "discord", "slack", "signal", "sms", "whatsapp",
+    "matrix", "mattermost", "homeassistant", "email", "dingtalk",
+    "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
+    "qqbot", "yuanbao",
+}
+
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
+
+# Hostnames/IP literals that only serve connections originating on the same
+# machine. Anything else is treated as a public bind for safety-rail purposes.
+_LOOPBACK_HOSTS = frozenset({
+    "127.0.0.1",
+    "localhost",
+    "::1",
+    "ip6-localhost",
+    "ip6-loopback",
+})
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True when `host` binds only to the local machine.
+
+    Covers IPv4 loopback, the standard `localhost` alias, IPv6 loopback in
+    both bracketed and bare form, and the common Debian-style aliases. Any
+    falsy value (empty string, None) is conservatively treated as non-loopback
+    because an unset host usually means the platform-default public bind.
+    """
+    if not host:
+        return False
+    return host.strip().lower() in _LOOPBACK_HOSTS
 
 
 def check_webhook_requirements() -> bool:
@@ -126,6 +158,17 @@ class WebhookAdapter(BasePlatformAdapter):
                     f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
                 )
 
+            # Safety rail: refuse to start if INSECURE_NO_AUTH is combined with a
+            # non-loopback bind. The escape hatch is for local testing only;
+            # serving an unauthenticated route on a public interface is a
+            # deployment-grade footgun we'd rather crash early than ship.
+            if secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
+                raise ValueError(
+                    f"[webhook] Route '{name}' uses INSECURE_NO_AUTH secret "
+                    f"but is bound to non-loopback host '{self._host}'. "
+                    f"INSECURE_NO_AUTH is for local testing only. "
+                    f"Refusing to start to prevent accidental exposure."
+                )
             # deliver_only routes bypass the agent — the POST body becomes a
             # direct push notification via the configured delivery target.
             # Validate up-front so misconfiguration surfaces at startup rather
@@ -202,26 +245,16 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
-        # Cross-platform delivery — any platform with a gateway adapter
-        if self.gateway_runner and deliver_type in (
-            "telegram",
-            "discord",
-            "slack",
-            "signal",
-            "sms",
-            "whatsapp",
-            "matrix",
-            "mattermost",
-            "homeassistant",
-            "email",
-            "dingtalk",
-            "feishu",
-            "wecom",
-            "wecom_callback",
-            "weixin",
-            "bluebubbles",
-            "qqbot",
-        ):
+        # Cross-platform delivery — any platform with a gateway adapter.
+        # Check both built-in names and plugin-registered platforms.
+        _is_known_platform = deliver_type in _BUILTIN_DELIVER_PLATFORMS
+        if not _is_known_platform:
+            try:
+                from gateway.platform_registry import platform_registry
+                _is_known_platform = platform_registry.is_registered(deliver_type)
+            except Exception:
+                pass
+        if self.gateway_runner and _is_known_platform:
             return await self._deliver_cross_platform(
                 deliver_type, content, delivery
             )
@@ -277,11 +310,37 @@ class WebhookAdapter(BasePlatformAdapter):
             data = json.loads(subs_path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 return
-            # Merge: static routes take precedence over dynamic ones
-            self._dynamic_routes = {
-                k: v for k, v in data.items()
-                if k not in self._static_routes
-            }
+            # Merge: static routes take precedence over dynamic ones.
+            # Reject any dynamic route whose effective secret is empty —
+            # an empty secret would cause _handle_webhook to skip HMAC
+            # validation entirely, letting unauthenticated callers in.
+            new_dynamic: Dict[str, dict] = {}
+            for k, v in data.items():
+                if k in self._static_routes:
+                    continue
+                effective_secret = v.get("secret", self._global_secret)
+                if not effective_secret:
+                    logger.warning(
+                        "[webhook] Dynamic route '%s' skipped: 'secret' is "
+                        "missing or empty. Set a valid HMAC secret, or use "
+                        "'%s' to explicitly disable auth (testing only).",
+                        k,
+                        _INSECURE_NO_AUTH,
+                    )
+                    continue
+                if (
+                    effective_secret == _INSECURE_NO_AUTH
+                    and not _is_loopback_host(self._host)
+                ):
+                    logger.warning(
+                        "[webhook] Dynamic route '%s' skipped: INSECURE_NO_AUTH "
+                        "is only allowed on loopback hosts. Current host: '%s'.",
+                        k,
+                        self._host,
+                    )
+                    continue
+                new_dynamic[k] = v
+            self._dynamic_routes = new_dynamic
             self._routes = {**self._dynamic_routes, **self._static_routes}
             self._dynamic_routes_mtime = mtime
             logger.info(
@@ -320,9 +379,21 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
 
-        # Validate HMAC signature FIRST (skip for INSECURE_NO_AUTH testing mode)
+        # Validate HMAC signature FIRST (skip only for the explicit local-test
+        # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
+        # not only during connect(), so direct handler reuse cannot turn a
+        # network webhook route into an unauthenticated agent-dispatch surface.
         secret = route_config.get("secret", self._global_secret)
-        if secret and secret != _INSECURE_NO_AUTH:
+        if not secret:
+            logger.error(
+                "[webhook] Route %s has no HMAC secret; refusing request",
+                route_name,
+            )
+            return web.json_response(
+                {"error": "Webhook route is missing an HMAC secret"},
+                status=403,
+            )
+        if secret != _INSECURE_NO_AUTH:
             if not self._validate_signature(request, raw_body, secret):
                 logger.warning(
                     "[webhook] Invalid signature for route %s", route_name
@@ -362,6 +433,7 @@ class WebhookAdapter(BasePlatformAdapter):
             request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
             or payload.get("event_type", "")
+            or payload.get("type", "")
             or "unknown"
         )
         allowed_events = route_config.get("events", [])
@@ -414,7 +486,10 @@ class WebhookAdapter(BasePlatformAdapter):
         # Build a unique delivery ID
         delivery_id = request.headers.get(
             "X-GitHub-Delivery",
-            request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+            request.headers.get(
+                "svix-id",
+                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+            ),
         )
 
         # ── Idempotency ─────────────────────────────────────────
@@ -559,7 +634,32 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        def _header(name: str) -> str:
+            return (
+                request.headers.get(name, "")
+                or request.headers.get(name.lower(), "")
+                or request.headers.get(name.upper(), "")
+            )
+
+        # Svix / AgentMail:
+        #   svix-id: msg_...
+        #   svix-timestamp: unix seconds
+        #   svix-signature: v1,<base64-hmac> [v1,<base64-hmac> ...]
+        # Signed content is: "{id}.{timestamp}.{raw_body}".  Svix secrets
+        # usually start with "whsec_" and the remainder is base64-encoded.
+        svix_id = _header("svix-id")
+        svix_timestamp = _header("svix-timestamp")
+        svix_signature = _header("svix-signature")
+        if svix_id or svix_timestamp or svix_signature:
+            return self._validate_svix_signature(
+                body=body,
+                secret=secret,
+                msg_id=svix_id,
+                timestamp=svix_timestamp,
+                signature_header=svix_signature,
+            )
+
         # GitHub: X-Hub-Signature-256 = sha256=<hex>
         gh_sig = request.headers.get("X-Hub-Signature-256", "")
         if gh_sig:
@@ -585,6 +685,56 @@ class WebhookAdapter(BasePlatformAdapter):
         logger.debug(
             "[webhook] Secret configured but no signature header found"
         )
+        return False
+
+    def _validate_svix_signature(
+        self,
+        body: bytes,
+        secret: str,
+        msg_id: str,
+        timestamp: str,
+        signature_header: str,
+        tolerance_seconds: int = 300,
+    ) -> bool:
+        """Validate Svix-compatible signatures used by AgentMail webhooks."""
+        if not (msg_id and timestamp and signature_header and secret):
+            return False
+
+        try:
+            ts = int(timestamp)
+        except (TypeError, ValueError):
+            return False
+        if abs(int(time.time()) - ts) > tolerance_seconds:
+            logger.warning("[webhook] Svix signature timestamp outside replay window")
+            return False
+
+        if secret.startswith("whsec_"):
+            encoded_secret = secret.removeprefix("whsec_")
+            try:
+                key = base64.b64decode(encoded_secret, validate=True)
+            except (binascii.Error, ValueError):
+                logger.debug("[webhook] Invalid whsec_ Svix signing secret")
+                return False
+        else:
+            # Be permissive for providers that document Svix-style headers but
+            # hand out raw shared secrets rather than whsec_ base64 secrets.
+            logger.debug("[webhook] Validating Svix-style signature with raw secret")
+            key = secret.encode()
+
+        signed_content = msg_id.encode() + b"." + timestamp.encode() + b"." + body
+        expected = base64.b64encode(
+            hmac.new(key, signed_content, hashlib.sha256).digest()
+        ).decode()
+
+        # Svix can send multiple signatures separated by spaces during secret
+        # rotation. Each entry is formatted as "vN,<base64>".
+        for part in signature_header.split():
+            try:
+                version, signature = part.split(",", 1)
+            except ValueError:
+                continue
+            if version == "v1" and hmac.compare_digest(signature, expected):
+                return True
         return False
 
     # ------------------------------------------------------------------

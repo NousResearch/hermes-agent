@@ -58,6 +58,7 @@ class AnthropicTransport(ProviderTransport):
             context_length: int | None
             base_url: str | None
             fast_mode: bool
+            drop_context_1m_beta: bool
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
@@ -73,6 +74,7 @@ class AnthropicTransport(ProviderTransport):
             context_length=params.get("context_length"),
             base_url=params.get("base_url"),
             fast_mode=params.get("fast_mode", False),
+            drop_context_1m_beta=params.get("drop_context_1m_beta", False),
         )
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
@@ -104,7 +106,17 @@ class AnthropicTransport(ProviderTransport):
             elif block.type == "tool_use":
                 name = block.name
                 if strip_tool_prefix and name.startswith(_MCP_PREFIX):
-                    name = name[len(_MCP_PREFIX):]
+                    stripped = name[len(_MCP_PREFIX):]
+                    # Only strip the mcp_ prefix for OAuth-injected tools
+                    # (where Hermes adds the prefix when sending to Anthropic
+                    # and must remove it on the way back).  Native MCP server
+                    # tools (from mcp_servers: in config.yaml) are registered
+                    # in the tool registry under their FULL mcp_<server>_<tool>
+                    # name and must NOT be stripped.  GH-25255.
+                    from tools.registry import registry as _tool_registry
+                    if (_tool_registry.get_entry(stripped)
+                            and not _tool_registry.get_entry(name)):
+                        name = stripped
                 tool_calls.append(
                     ToolCall(
                         id=block.id,

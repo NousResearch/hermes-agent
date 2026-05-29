@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
-import { FULL_RENDER_TAIL_ITEMS, MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
@@ -11,12 +11,17 @@ import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
   ClipboardPasteResponse,
+  ConfigSetResponse,
   GatewayEvent,
+  SessionActiveListResponse,
+  SessionCloseResponse,
   TerminalResizeResponse
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
+import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
@@ -25,6 +30,7 @@ import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
+import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -51,7 +57,7 @@ const capHistory = (items: Msg[]): Msg[] => {
   return items[0]?.kind === 'intro' ? [items[0]!, ...items.slice(-(MAX_HISTORY - 1))] : items.slice(-MAX_HISTORY)
 }
 
-const statusColorOf = (status: string, t: { dim: string; error: string; ok: string; warn: string }) => {
+const statusColorOf = (status: string, t: { error: string; muted: string; ok: string; warn: string }) => {
   if (status === 'ready') {
     return t.ok
   }
@@ -64,7 +70,67 @@ const statusColorOf = (status: string, t: { dim: string; error: string; ok: stri
     return t.warn
   }
 
-  return t.dim
+  return t.muted
+}
+
+export interface PromptLiveSessionOptions {
+  dispatchSubmission: (full: string) => void
+  maybeWarn: (value: unknown) => void
+  modelArg?: string
+  newLiveSession: (msg?: string, title?: string) => Promise<null | string> | null | string | void
+  onModelSwitched?: (value: string, result: ConfigSetResponse) => void
+  prompt: string
+  rpc: GatewayRpc
+  sys: (text: string) => void
+}
+
+export async function startPromptLiveSession({
+  dispatchSubmission,
+  maybeWarn,
+  modelArg,
+  newLiveSession,
+  onModelSwitched,
+  prompt,
+  rpc,
+  sys
+}: PromptLiveSessionOptions) {
+  const trimmed = prompt.trim()
+
+  if (!trimmed) {
+    return null
+  }
+
+  // Let the backend-created session key (YYYYMMDD_HHMMSS_xxxxxx) remain
+  // the initial title. Auto-title generation can rename it after the first
+  // response; pre-queuing prompt text here causes duplicate-title errors when
+  // users dispatch common prompts like "Hello, what model are you?".
+  const sid = (await newLiveSession('new live session started')) ?? null
+
+  if (!sid) {
+    sys('error: failed to start new live session')
+
+    return null
+  }
+
+  const requestedModel = modelArg?.trim()
+
+  if (requestedModel) {
+    const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })
+
+    if (!result?.value) {
+      sys('error: invalid response: model switch')
+
+      return sid
+    }
+
+    sys(`model → ${result.value}`)
+    maybeWarn(result)
+    onModelSwitched?.(result.value, result)
+  }
+
+  dispatchSubmission(trimmed)
+
+  return sid
 }
 
 export function useMainApp(gw: GatewayClient) {
@@ -99,8 +165,10 @@ export function useMainApp(gw: GatewayClient) {
   const [stickyPrompt, setStickyPrompt] = useState('')
   const [catalog, setCatalog] = useState<null | SlashCatalog>(null)
   const [voiceEnabled, setVoiceEnabled] = useState(false)
+  const [voiceTts, setVoiceTts] = useState(false)
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
+  const [voiceRecordKey, setVoiceRecordKey] = useState<ParsedVoiceRecordKey>(DEFAULT_VOICE_RECORD_KEY)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [goodVibesTick, setGoodVibesTick] = useState(0)
@@ -142,10 +210,51 @@ export function useMainApp(gw: GatewayClient) {
 
   const hasSelection = useHasSelection()
   const selection = useSelection()
+  const lastCopiedVersionRef = useRef(-1)
 
   useEffect(() => {
     selection.setSelectionBgColor(ui.theme.color.selectionBg)
   }, [selection, ui.theme.color.selectionBg])
+
+  // macOS Terminal.app does not forward Cmd+C to fullscreen TUIs that enable
+  // mouse tracking, so the only reliable native-feeling path is iTerm-style
+  // copy-on-select: once a drag creates a stable TUI selection, write it to
+  // the system clipboard while keeping the highlight visible.
+  //
+  // Subscribe directly via the ink selection bus (not useSyncExternalStore)
+  // so React doesn't re-render MainApp on every drag-move tick. The version
+  // ref de-dupes against re-entrant notifications.
+  useEffect(() => {
+    if (!isMac) {
+      return
+    }
+
+    return selection.subscribe(() => {
+      if (!selection.hasSelection()) {
+        return
+      }
+
+      const state = selection.getState() as { isDragging?: boolean } | null
+
+      if (state?.isDragging) {
+        return
+      }
+
+      const version = selection.version()
+
+      if (version === lastCopiedVersionRef.current) {
+        return
+      }
+
+      lastCopiedVersionRef.current = version
+      void selection.copySelectionNoClear()
+    })
+  }, [selection])
+
+  const clearSelection = useCallback(() => {
+    selection.clearSelection()
+    getInputSelection()?.collapseToEnd()
+  }, [selection])
 
   const composer = useComposerState({
     gw,
@@ -188,9 +297,15 @@ export function useMainApp(gw: GatewayClient) {
     return next
   }, [])
 
+  // Wrapped row heights are width-dependent. Cached layout outlives a resize
+  // and lands sticky-scroll at the stale max, cutting off the tail. The
+  // hook's "scale heights by oldCols/newCols" path is too approximate for
+  // mixed markdown — we deliberately remount every row so yoga re-measures
+  // off live geometry. Cost: per-row local state (e.g. systemOpen toggles)
+  // resets on resize; small UX hit for a hard correctness win.
   const virtualRows = useMemo<TranscriptRow[]>(
-    () => historyItems.map((msg, index) => ({ index, key: messageId(msg), msg })),
-    [historyItems, messageId]
+    () => historyItems.map((msg, index) => ({ index, key: `${messageId(msg)}:c${cols}`, msg })),
+    [cols, historyItems, messageId]
   )
 
   const detailsLayoutKey = useMemo(() => {
@@ -200,8 +315,12 @@ export function useMainApp(gw: GatewayClient) {
     return `${thinking}:${tools}`
   }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
 
-  const detailsVisible = detailsLayoutKey !== 'hidden:hidden'
-  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+  const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
+  const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
+  const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
+  const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
+  const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
+  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
 
   const heightCache = useMemo(() => {
     let cache = heightCachesRef.current.get(heightCacheKey)
@@ -218,23 +337,32 @@ export function useMainApp(gw: GatewayClient) {
     return cache
   }, [heightCacheKey])
 
-  const initialHeights = useMemo(() => {
-    const out = new Map<string, number>()
+  // Index of the first user-role message — separator-rendering in
+  // appLayout.tsx skips this row, so the height estimator must skip it
+  // too. -1 when no user message exists yet (no row will gate true).
+  const firstUserIdx = useMemo(() => virtualRows.findIndex(r => r.msg.role === 'user'), [virtualRows])
 
-    for (const row of virtualRows) {
-      out.set(
-        row.key,
-        heightCache.get(row.key) ??
-          estimatedMsgHeight(row.msg, cols, {
-            compact: ui.compact,
-            details: detailsVisible,
-            limitHistory: row.index < virtualRows.length - FULL_RENDER_TAIL_ITEMS
-          })
-      )
-    }
-
-    return out
-  }, [cols, detailsVisible, heightCache, ui.compact, virtualRows])
+  const estimateRowHeight = useCallback(
+    (index: number) =>
+      estimatedMsgHeight(virtualRows[index]!.msg, cols, {
+        compact: ui.compact,
+        details: detailsVisible,
+        thinkingVisible: thinkingDetailsVisible,
+        toolsVisible: toolsDetailsVisible,
+        userPrompt: ui.theme.brand.prompt,
+        withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
+      }),
+    [
+      cols,
+      detailsVisible,
+      firstUserIdx,
+      thinkingDetailsVisible,
+      toolsDetailsVisible,
+      ui.compact,
+      ui.theme.brand.prompt,
+      virtualRows
+    ]
+  )
 
   const syncHeightCache = useCallback(
     (heights: ReadonlyMap<string, number>) => {
@@ -250,7 +378,8 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols, {
-    initialHeights,
+    estimateHeight: estimateRowHeight,
+    initialHeights: heightCache,
     liveTailActive: turnLiveTailActive,
     onHeightsChange: syncHeightCache
   })
@@ -320,8 +449,21 @@ export function useMainApp(gw: GatewayClient) {
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
 
   const die = useCallback(() => {
-    gw.kill()
+    gw.kill('app.die')
     exit()
+    // Ink's exit() calls unmount() which resets terminal modes but does NOT
+    // call process.exit().  Without an explicit exit the Node process stays
+    // alive (stdin listener keeps the event loop open), so the process.on('exit')
+    // handler in entry.tsx — which sends the final resetTerminalModes() — never
+    // fires.  This leaves kitty keyboard protocol, mouse modes, etc. enabled
+    // in the parent shell.  See issue #19194.
+    process.exit(0)
+  }, [exit, gw])
+
+  const dieWithCode = useCallback((code: number) => {
+    gw.kill(`app.dieWithCode:${code}`)
+    exit()
+    process.exit(code)
   }, [exit, gw])
 
   const session = useSessionLifecycle({
@@ -348,7 +490,37 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [ui.busy])
 
-  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
+  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
+
+  useEffect(() => {
+    if (!ui.sid) {
+      patchUiState({ liveSessionCount: 0 })
+
+      return
+    }
+
+    let stopped = false
+
+    const refresh = () => {
+      gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: getUiState().sid })
+        .then(raw => {
+          const result = asRpcResult<SessionActiveListResponse>(raw)
+
+          if (!stopped && result?.sessions) {
+            patchUiState({ liveSessionCount: result.sessions.length })
+          }
+        })
+        .catch(() => {})
+    }
+
+    refresh()
+    const timer = setInterval(refresh, 1500)
+
+    return () => {
+      stopped = true
+      clearInterval(timer)
+    }
+  }, [gw, ui.sid])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
@@ -366,10 +538,20 @@ export function useMainApp(gw: GatewayClient) {
 
     let timer: ReturnType<typeof setTimeout> | undefined
 
+    // Resize reflows wrapped lines; if the user is still pinned to the tail
+    // we need to re-snap once React has remeasured. virtualRows is keyed on
+    // cols so every column change forces a fresh measurement pass before
+    // this timer fires. Re-check isSticky() inside the timeout — a manual
+    // scroll during the 100ms window otherwise yanks the user back to tail.
     const onResize = () => {
       clearTimeout(timer)
       timer = setTimeout(() => {
         timer = undefined
+
+        if (scrollRef.current?.isSticky()) {
+          scrollRef.current.scrollToBottom()
+        }
+
         void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
       }, 100)
     }
@@ -493,10 +675,12 @@ export function useMainApp(gw: GatewayClient) {
     terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
     voice: {
       enabled: voiceEnabled,
+      recordKey: voiceRecordKey,
       recording: voiceRecording,
       setProcessing: setVoiceProcessing,
       setRecording: setVoiceRecording,
-      setVoiceEnabled
+      setVoiceEnabled,
+      setVoiceTts
     },
     wheelStep: WHEEL_SCROLL_STEP
   })
@@ -520,12 +704,14 @@ export function useMainApp(gw: GatewayClient) {
         voice: {
           setProcessing: setVoiceProcessing,
           setRecording: setVoiceRecording,
-          setVoiceEnabled
+          setVoiceEnabled,
+          setVoiceTts
         }
       }),
     [
       appendMessage,
       bellOnComplete,
+      clearSelection,
       composerActions.setInput,
       gateway,
       panel,
@@ -557,10 +743,10 @@ export function useMainApp(gw: GatewayClient) {
     gw.on('exit', exitHandler)
     gw.drain()
 
+    // entry.tsx's setupGracefulExit handles process cleanup on real exit.
     return () => {
       gw.off('event', handler)
       gw.off('exit', exitHandler)
-      gw.kill()
     }
   }, [gw, sys])
 
@@ -582,12 +768,15 @@ export function useMainApp(gw: GatewayClient) {
           catalog,
           getHistoryItems: () => historyItemsRef.current,
           getLastUserMsg: () => lastUserMsgRef.current,
-          maybeWarn
+          maybeWarn,
+          setCatalog
         },
         session: {
           closeSession: session.closeSession,
           die,
+          dieWithCode,
           guardBusySessionSwitch: session.guardBusySessionSwitch,
+          newLiveSession: session.newLiveSession,
           newSession: session.newSession,
           resetVisibleHistory: session.resetVisibleHistory,
           resumeById: session.resumeById,
@@ -595,7 +784,7 @@ export function useMainApp(gw: GatewayClient) {
         },
         slashFlightRef,
         transcript: { page, panel, send, setHistoryItems, sys, trimLastExchange: session.trimLastExchange },
-        voice: { setVoiceEnabled }
+        voice: { setVoiceEnabled, setVoiceRecordKey, setVoiceTts }
       }),
     [
       catalog,
@@ -662,8 +851,48 @@ export function useMainApp(gw: GatewayClient) {
 
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
-    slashRef.current(`/model ${value} --global`)
+    slashRef.current(`/model ${value}`)
   }, [])
+
+  const closeLiveSession = useCallback(
+    async (id: string) => {
+      patchUiState({ status: 'closing session…' })
+
+      try {
+        const result = (await session.closeSession(id)) as null | SessionCloseResponse
+        patchUiState({ status: 'ready' })
+
+        return result
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e)
+        sys(`error: ${message}`)
+        patchUiState({ status: 'ready' })
+
+        throw e
+      }
+    },
+    [session, sys]
+  )
+
+  const newPromptSession = useCallback(
+    (prompt: string, modelArg?: string) => {
+      void startPromptLiveSession({
+        dispatchSubmission,
+        maybeWarn,
+        modelArg,
+        newLiveSession: session.newLiveSession,
+        onModelSwitched: value =>
+          patchUiState(state => ({
+            ...state,
+            info: state.info ? { ...state.info, model: value } : { model: value, skills: {}, tools: {} }
+          })),
+        prompt,
+        rpc,
+        sys
+      })
+    },
+    [dispatchSubmission, maybeWarn, rpc, session.newLiveSession, sys]
+  )
 
   const hasReasoning = useTurnSelector(state => Boolean(state.reasoning.trim()))
 
@@ -675,18 +904,42 @@ export function useMainApp(gw: GatewayClient) {
     s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
   )
 
+  const thinkingPanelVisible =
+    sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
+  const toolsPanelVisible =
+    sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
+  const activityPanelVisible =
+    sectionMode('activity', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
   const showProgressArea = useTurnSelector(state =>
     anyPanelVisible
       ? Boolean(
           ui.busy ||
           state.outcome ||
           state.streamPendingTools.length ||
-          state.streamSegments.length ||
+          state.streamSegments.some(segment => {
+            const hasThinking = Boolean(segment.thinking?.trim())
+            const hasTrailTools = Boolean(segment.tools?.length)
+
+            if (segment.kind === 'trail' && !segment.text) {
+              return (
+                (thinkingPanelVisible && hasThinking) || ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
+              )
+            }
+
+            return (
+              Boolean(segment.text?.trim()) ||
+              (thinkingPanelVisible && hasThinking) ||
+              ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
+            )
+          }) ||
           state.subagents.length ||
           state.tools.length ||
           state.todos.length ||
           state.turnTrail.length ||
-          hasReasoning ||
+          (thinkingPanelVisible && hasReasoning) ||
           state.activity.length
         )
       : state.activity.some(item => item.tone !== 'info')
@@ -694,15 +947,32 @@ export function useMainApp(gw: GatewayClient) {
 
   const appActions = useMemo(
     () => ({
+      activateLiveSession: session.activateLiveSession,
+      closeLiveSession,
       answerApproval,
       answerClarify,
       answerSecret,
       answerSudo,
+      clearSelection,
+      newLiveSession: () => session.newLiveSession(),
+      newPromptSession,
       onModelSelect,
       resumeById: session.resumeById,
       setStickyPrompt
     }),
-    [answerApproval, answerClarify, answerSecret, answerSudo, onModelSelect, session.resumeById]
+    [
+      answerApproval,
+      answerClarify,
+      answerSecret,
+      answerSudo,
+      clearSelection,
+      closeLiveSession,
+      newPromptSession,
+      onModelSelect,
+      session.activateLiveSession,
+      session.newLiveSession,
+      session.resumeById
+    ]
   )
 
   const appComposer = useMemo(
@@ -718,9 +988,10 @@ export function useMainApp(gw: GatewayClient) {
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
       submit,
-      updateInput: composerActions.setInput
+      updateInput: composerActions.setInput,
+      voiceRecordKey
     }),
-    [cols, composerActions, composerState, empty, pagerPageSize, submit]
+    [cols, composerActions, composerState, empty, pagerPageSize, submit, voiceRecordKey]
   )
 
   // Pass current progress through unfrozen — streaming update throttling
@@ -742,7 +1013,7 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
+      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
     }),
     [
       cwd,
@@ -754,7 +1025,8 @@ export function useMainApp(gw: GatewayClient) {
       ui,
       voiceEnabled,
       voiceProcessing,
-      voiceRecording
+      voiceRecording,
+      voiceTts
     ]
   )
 

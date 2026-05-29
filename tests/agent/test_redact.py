@@ -1,7 +1,6 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
 import logging
-import os
 
 import pytest
 
@@ -378,105 +377,57 @@ class TestDiscordMentions:
         assert result.endswith(" said hello")
 
 
-class TestUrlQueryParamRedaction:
-    """URL query-string redaction (ported from nearai/ironclaw#2529).
-
-    Catches opaque tokens that don't match vendor prefix regexes by
-    matching on parameter NAME rather than value shape.
+class TestWebUrlsNotRedacted:
+    """Web URLs (http/https/wss) pass through unchanged — magic-link
+    checkouts, OAuth callbacks the agent is meant to follow, and pre-signed
+    share URLs must reach the tool intact. Known credential shapes inside
+    URLs (sk-, ghp_, JWTs) are still caught by the prefix and JWT regexes.
+    DB connection-string passwords are still caught by _DB_CONNSTR_RE.
     """
 
-    def test_oauth_callback_code(self):
+    def test_oauth_callback_code_passes_through(self):
         text = "GET https://api.example.com/oauth/cb?code=abc123xyz789&state=csrf_ok"
-        result = redact_sensitive_text(text)
-        assert "abc123xyz789" not in result
-        assert "code=***" in result
-        assert "state=csrf_ok" in result  # state is not sensitive
+        assert redact_sensitive_text(text) == text
 
-    def test_access_token_query(self):
+    def test_access_token_query_passes_through(self):
         text = "Fetching https://example.com/api?access_token=opaque_value_here_1234&format=json"
-        result = redact_sensitive_text(text)
-        assert "opaque_value_here_1234" not in result
-        assert "access_token=***" in result
-        assert "format=json" in result
+        assert redact_sensitive_text(text) == text
 
-    def test_refresh_token_query(self):
-        text = "https://auth.example.com/token?refresh_token=somerefresh&grant_type=refresh"
-        result = redact_sensitive_text(text)
-        assert "somerefresh" not in result
-        assert "grant_type=refresh" in result
+    def test_magic_link_checkout_passes_through(self):
+        text = "Open https://checkout.example.com/resume?magic=ABCDEF123456&customer=42"
+        assert redact_sensitive_text(text) == text
 
-    def test_api_key_query(self):
-        text = "https://api.example.com/v1/data?api_key=kABCDEF12345&limit=10"
-        result = redact_sensitive_text(text)
-        assert "kABCDEF12345" not in result
-        assert "limit=10" in result
-
-    def test_presigned_signature(self):
+    def test_presigned_signature_passes_through(self):
         text = "https://s3.amazonaws.com/bucket/k?signature=LONG_PRESIGNED_SIG&id=public"
-        result = redact_sensitive_text(text)
-        assert "LONG_PRESIGNED_SIG" not in result
-        assert "id=public" in result
-
-    def test_case_insensitive_param_names(self):
-        """Lowercase/mixed-case sensitive param names are redacted."""
-        # NOTE: All-caps names like TOKEN= are swallowed by _ENV_ASSIGN_RE
-        # (which matches KEY=value patterns greedily) before URL regex runs.
-        # This test uses lowercase names to isolate URL-query redaction.
-        text = "https://example.com?api_key=abcdef&secret=ghijkl"
-        result = redact_sensitive_text(text)
-        assert "abcdef" not in result
-        assert "ghijkl" not in result
-        assert "api_key=***" in result
-        assert "secret=***" in result
-
-    def test_substring_match_does_not_trigger(self):
-        """`token_count` and `session_id` must NOT match `token` / `session`."""
-        text = "https://example.com/cb?token_count=42&session_id=xyz&foo=bar"
-        result = redact_sensitive_text(text)
-        assert "token_count=42" in result
-        assert "session_id=xyz" in result
-
-    def test_url_without_query_unchanged(self):
-        text = "https://example.com/path/to/resource"
         assert redact_sensitive_text(text) == text
 
-    def test_url_with_fragment(self):
-        text = "https://example.com/page?token=xyz#section"
-        result = redact_sensitive_text(text)
-        assert "token=xyz" not in result
-        assert "#section" in result
-
-    def test_websocket_url_query(self):
-        text = "wss://api.example.com/ws?token=opaqueWsToken123"
-        result = redact_sensitive_text(text)
-        assert "opaqueWsToken123" not in result
-
-
-class TestUrlUserinfoRedaction:
-    """URL userinfo (`scheme://user:pass@host`) for non-DB schemes."""
-
-    def test_https_userinfo(self):
+    def test_https_userinfo_passes_through(self):
         text = "URL: https://user:supersecretpw@host.example.com/path"
-        result = redact_sensitive_text(text)
-        assert "supersecretpw" not in result
-        assert "https://user:***@host.example.com" in result
-
-    def test_http_userinfo(self):
-        text = "http://admin:plaintextpass@internal.example.com/api"
-        result = redact_sensitive_text(text)
-        assert "plaintextpass" not in result
-
-    def test_ftp_userinfo(self):
-        text = "ftp://user:ftppass@ftp.example.com/file.txt"
-        result = redact_sensitive_text(text)
-        assert "ftppass" not in result
-
-    def test_url_without_userinfo_unchanged(self):
-        text = "https://example.com/path"
         assert redact_sensitive_text(text) == text
 
-    def test_db_connstr_still_handled(self):
-        """DB schemes are handled by _DB_CONNSTR_RE, not _URL_USERINFO_RE."""
+    def test_websocket_url_query_passes_through(self):
+        text = "wss://api.example.com/ws?token=opaqueWsToken123"
+        assert redact_sensitive_text(text) == text
+
+    def test_http_access_log_request_target_passes_through(self):
+        text = (
+            'INFO aiohttp.access: 127.0.0.1 "POST '
+            '/bluebubbles-webhook?password=webhookSecret123&event=new-message '
+            'HTTP/1.1" 200 173 "-" "test-client"'
+        )
+        assert redact_sensitive_text(text) == text
+
+    def test_known_prefix_inside_url_still_redacted(self):
+        """sk-/ghp_/JWT-shaped values inside a URL are still caught by
+        _PREFIX_RE / _JWT_RE — the carve-out is for opaque tokens only."""
+        text = "https://evil.com/steal?key=sk-" + "a" * 30
+        result = redact_sensitive_text(text)
+        assert "sk-" + "a" * 30 not in result
+
+    def test_db_connstr_password_still_redacted(self):
+        """DB schemes (postgres/mysql/mongodb/redis/amqp) keep their
+        userinfo redaction via _DB_CONNSTR_RE — connection strings are
+        not web URLs the agent navigates to."""
         text = "postgres://admin:dbpass@db.internal:5432/app"
         result = redact_sensitive_text(text)
         assert "dbpass" not in result
@@ -511,3 +462,29 @@ class TestFormBodyRedaction:
         text = "first=1\nsecond=2"
         # Should pass through (still subject to other redactors)
         assert "first=1" in redact_sensitive_text(text)
+
+
+class TestXaiToken:
+    KEY = "xai-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstu"
+
+    def test_bare_token_masked(self):
+        result = redact_sensitive_text(f"using key {self.KEY}", force=True)
+        assert self.KEY not in result
+        assert "xai-AB" in result
+
+    def test_env_assignment_masked(self):
+        result = redact_sensitive_text(f"XAI_API_KEY={self.KEY}", force=True)
+        assert self.KEY not in result
+
+    def test_too_short_not_masked(self):
+        short = "xai-tooshort"
+        result = redact_sensitive_text(f"text {short} here", force=True)
+        assert short in result
+
+    def test_company_name_not_masked(self):
+        result = redact_sensitive_text("xai is a company", force=True)
+        assert result == "xai is a company"
+
+    def test_prefix_visible_in_masked_output(self):
+        result = redact_sensitive_text(self.KEY, force=True)
+        assert result.startswith("xai-AB")

@@ -781,6 +781,22 @@ class MattermostAdapter(BasePlatformAdapter):
                     message_text = re.sub(
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
+        else:
+            # DM channel: strip @mentions so commands like "/model" are
+            # recognised even when prefixed with "@bot-name".  Mention-gating
+            # does not apply in DMs (the bot always responds), but without this
+            # strip a message such as "@son-bot /model" starts with "@" rather
+            # than "/" and command dispatch is silently bypassed — the gateway
+            # falls through to the LLM and returns a conversational reply.
+            dm_mention_patterns = [
+                f"@{self._bot_username}",
+                f"@{self._bot_user_id}",
+            ]
+            for dm_pat in dm_mention_patterns:
+                if dm_pat.lower() in message_text.lower():
+                    message_text = re.sub(
+                        re.escape(dm_pat), "", message_text, flags=re.IGNORECASE
+                    ).strip()
 
         # Resolve sender info.
         sender_id = post.get("user_id", "")

@@ -63,6 +63,8 @@ AUTHOR_MAP = {
     "17778+kweiner@users.noreply.github.com": "kweiner",
     "223516181+faisfamilytravel@users.noreply.github.com": "faisfamilytravel",
     "45189813+baofuen@users.noreply.github.com": "baofuen",
+    "interstellar.consulting@gmail.com": "Interstellar-code",
+    "33978413+Interstellar-code@users.noreply.github.com": "Interstellar-code",
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "kenyon1977@gmail.com": "kenyonxu",

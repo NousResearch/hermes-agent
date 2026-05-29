@@ -379,6 +379,415 @@ def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
     assert persisted["last_error_code"] == 402
 
 
+def test_token_invalidated_marks_credential_dead(tmp_path, monkeypatch):
+    """OpenAI Codex token_invalidated must mark the credential DEAD, not exhausted.
+
+    Regression for #32849: when an OAuth credential is revoked upstream, the
+    1-hour exhausted TTL means it re-enters rotation every hour and fails
+    again with the same 401 — surfacing as "Failed to generate context
+    summary" on context compression.  Terminal OAuth failures should never
+    auto-recover.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-dead",
+                        "label": "revoked",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "revoked-at",
+                        "refresh_token": "revoked-rt",
+                    },
+                    {
+                        "id": "cred-ok",
+                        "label": "healthy",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "healthy-at",
+                        "refresh_token": "healthy-rt",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_DEAD
+
+    pool = load_pool("openai-codex")
+    assert pool.select().id == "cred-dead"
+
+    # Simulate the exact OpenAI Codex 401 token_invalidated response shape.
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=401,
+        error_context={
+            "reason": "token_invalidated",
+            "message": "Your authentication token has been invalidated. Please try signing in again.",
+        },
+    )
+
+    # Rotation still works — we hand off to the healthy credential.
+    assert next_entry is not None
+    assert next_entry.id == "cred-ok"
+
+    # The revoked credential is now permanently marked DEAD.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"][0]
+    assert persisted["last_status"] == STATUS_DEAD
+    assert persisted["last_error_code"] == 401
+    assert persisted["last_error_reason"] == "token_invalidated"
+
+
+def test_dead_credential_never_re_enters_rotation_after_ttl(tmp_path, monkeypatch):
+    """A DEAD credential must stay excluded regardless of how much time passes.
+
+    The exhausted TTL clears entries after 5 min (401) / 1 hour (429).
+    A DEAD credential has no recovery TTL — it stays dead until either
+    (a) an explicit re-auth write-side sync rewrites the tokens, or
+    (b) the manual-prune TTL elapses (covered by separate tests below).
+    This test verifies the core invariant in the recent-entry window.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # DEAD entry from 2 hours ago — well past the exhausted TTLs (5min/1h)
+    # but well within the 24h manual-prune window.
+    two_hours_ago = time.time() - (2 * 3600)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-dead",
+                        "label": "revoked",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "revoked-at",
+                        "refresh_token": "revoked-rt",
+                        "last_status": "dead",
+                        "last_status_at": two_hours_ago,
+                        "last_error_code": 401,
+                        "last_error_reason": "token_invalidated",
+                    },
+                    {
+                        "id": "cred-ok",
+                        "label": "healthy",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "healthy-at",
+                        "refresh_token": "healthy-rt",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_DEAD
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+    # Should skip the dead entry and pick the healthy one — even though
+    # the dead entry has priority 0 (would normally be picked first) and
+    # plenty of time has passed since it was marked dead.
+    assert selected is not None
+    assert selected.id == "cred-ok"
+
+    # The DEAD entry is still marked dead on disk — not cleared by TTL.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    dead_entry = next(e for e in auth_payload["credential_pool"]["openai-codex"]
+                       if e["id"] == "cred-dead")
+    assert dead_entry["last_status"] == STATUS_DEAD
+
+
+def test_429_rate_limit_still_uses_exhausted_not_dead(tmp_path, monkeypatch):
+    """429 rate limits must NOT be treated as terminal.
+
+    They should keep the existing 1-hour TTL cooldown semantics so the
+    credential re-enters rotation once the rate window resets.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "at-1",
+                        "refresh_token": "rt-1",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "at-2",
+                        "refresh_token": "rt-2",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+
+    pool = load_pool("openai-codex")
+    assert pool.select().id == "cred-1"
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={"reason": "rate_limit_exceeded", "message": "Rate limit exceeded"},
+    )
+    assert next_entry is not None
+    assert next_entry.id == "cred-2"
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"][0]
+    # 429 stays exhausted (transient) — NOT dead.
+    assert persisted["last_status"] == STATUS_EXHAUSTED
+    assert persisted["last_error_code"] == 429
+
+
+def test_generic_401_without_terminal_reason_still_uses_exhausted(tmp_path, monkeypatch):
+    """A 401 with no specific code/reason should keep TTL semantics.
+
+    Only specific terminal reasons (token_invalidated, token_revoked, etc.)
+    transition to DEAD.  A generic 401 might be a transient server-side
+    issue worth retrying after the 5-min TTL.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "at-1",
+                        "refresh_token": "rt-1",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "at-2",
+                        "refresh_token": "rt-2",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+
+    pool = load_pool("openai-codex")
+    pool.select()
+
+    # 401 with no specific reason — stays exhausted, NOT dead.
+    pool.mark_exhausted_and_rotate(
+        status_code=401,
+        error_context={"message": "Unauthorized"},
+    )
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"][0]
+    assert persisted["last_status"] == STATUS_EXHAUSTED
+    assert persisted["last_error_code"] == 401
+
+
+def test_dead_manual_entry_pruned_after_24h(tmp_path, monkeypatch):
+    """A DEAD manual entry is removed from the pool after the prune TTL.
+
+    Manual entries (``manual:*``) are independent credentials with no
+    singleton to re-seed from, so we can clean them up after a quiet
+    window without losing recoverability — the user can always re-add
+    via ``hermes auth add``.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # DEAD entry from > 24h ago
+    long_ago = time.time() - (25 * 3600)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-old-dead",
+                        "label": "ancient-dead",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "stale",
+                        "refresh_token": "stale",
+                        "last_status": "dead",
+                        "last_status_at": long_ago,
+                        "last_error_code": 401,
+                        "last_error_reason": "token_invalidated",
+                    },
+                    {
+                        "id": "cred-ok",
+                        "label": "healthy",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "healthy-at",
+                        "refresh_token": "healthy-rt",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    # Trigger _available_entries via select; that runs the prune.
+    selected = pool.select()
+    assert selected is not None
+    assert selected.id == "cred-ok"
+
+    # On-disk pool should have the dead entry removed.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"]
+    assert len(persisted) == 1
+    assert persisted[0]["id"] == "cred-ok"
+
+
+def test_dead_manual_entry_kept_within_24h(tmp_path, monkeypatch):
+    """A DEAD manual entry stays in the pool until the prune TTL elapses.
+
+    Recent DEAD entries are kept so the audit trail (last_error_reason,
+    timestamps) remains visible while the user investigates.  They simply
+    don't participate in rotation (covered by the DEAD-skip test above).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # DEAD entry from only an hour ago — well within the 24h window
+    recent = time.time() - 3600
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-recent-dead",
+                        "label": "recent-dead",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "stale",
+                        "refresh_token": "stale",
+                        "last_status": "dead",
+                        "last_status_at": recent,
+                        "last_error_code": 401,
+                        "last_error_reason": "token_invalidated",
+                    },
+                    {
+                        "id": "cred-ok",
+                        "label": "healthy",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "healthy-at",
+                        "refresh_token": "healthy-rt",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_DEAD
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.id == "cred-ok"
+
+    # On-disk pool should still have BOTH entries — recent dead is preserved.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"]
+    assert len(persisted) == 2
+    dead_entry = next(e for e in persisted if e["id"] == "cred-recent-dead")
+    assert dead_entry["last_status"] == STATUS_DEAD
+
+
+def test_dead_singleton_seeded_entry_not_pruned(tmp_path, monkeypatch):
+    """A DEAD ``device_code`` entry must NOT be pruned even after 24h.
+
+    Singleton-seeded entries get re-created by ``_seed_from_singletons`` on
+    every ``load_pool()``, so pruning them is pointless — they reappear
+    immediately with the same stale singleton tokens.  Keep them visible
+    with the DEAD marker so the user knows what's broken.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    long_ago = time.time() - (48 * 3600)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": "revoked-at", "refresh_token": "revoked-rt"},
+                    "last_refresh": "2026-01-01T00:00:00Z",
+                    "auth_mode": "chatgpt",
+                },
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-seeded-dead",
+                        "label": "seeded-dead",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",   # singleton-seeded, NOT manual
+                        "access_token": "revoked-at",
+                        "refresh_token": "revoked-rt",
+                        "last_status": "dead",
+                        "last_status_at": long_ago,
+                        "last_error_code": 401,
+                        "last_error_reason": "token_invalidated",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_DEAD
+
+    pool = load_pool("openai-codex")
+    # No healthy entry available; select returns None (pool empty for rotation).
+    assert pool.select() is None
+
+    # On-disk: the singleton-seeded DEAD entry is preserved.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"]
+    assert len(persisted) == 1
+    assert persisted[0]["id"] == "cred-seeded-dead"
+    assert persisted[0]["last_status"] == STATUS_DEAD
+
+
 def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-seeded")

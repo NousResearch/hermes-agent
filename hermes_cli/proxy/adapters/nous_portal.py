@@ -14,7 +14,6 @@ from typing import Any, Dict, FrozenSet, Optional
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_NOUS_INFERENCE_URL,
-    NOUS_INFERENCE_AUTH_MODE_AUTO,
     _load_auth_store,
     _auth_store_lock,
     _is_terminal_nous_refresh_error,
@@ -74,9 +73,7 @@ class NousPortalAdapter(UpstreamAdapter):
         )
 
     def get_credential(self) -> UpstreamCredential:
-        return self._get_credential(
-            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_AUTO,
-        )
+        return self._get_credential()
 
     def get_retry_credential(
         self,
@@ -89,14 +86,12 @@ class NousPortalAdapter(UpstreamAdapter):
             return None
         logger.info("proxy: Nous upstream rejected bearer; force-refreshing invoke JWT")
         return self._get_credential(
-            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_AUTO,
             force_refresh=True,
         )
 
     def _get_credential(
         self,
         *,
-        inference_auth_mode: str,
         force_refresh: bool = False,
     ) -> UpstreamCredential:
         with self._lock:
@@ -108,7 +103,6 @@ class NousPortalAdapter(UpstreamAdapter):
 
             try:
                 refreshed = resolve_nous_runtime_credentials(
-                    inference_auth_mode=inference_auth_mode,
                     force_refresh=force_refresh,
                 )
             except AuthError as exc:

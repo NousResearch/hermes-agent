@@ -781,7 +781,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                         timeout=15.0,
                         insecure=False,
                         ca_bundle=None,
-                        min_key_ttl_seconds=5 * 60,
                     )
                 )
                 pool = load_pool(selected_provider)
@@ -2975,7 +2974,6 @@ def _run_portal_one_shot(config: dict) -> None:
             timeout=None,
             insecure=False,
             ca_bundle=None,
-            min_key_ttl_seconds=5 * 60,
         )
         try:
             auth_add_command(ns)

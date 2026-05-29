@@ -200,7 +200,7 @@ def test_resolve_nous_runtime_credentials_prefers_invoke_jwt_and_mirrors(
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+    creds = auth_mod.resolve_nous_runtime_credentials()
 
     assert creds["api_key"] == token
     assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
@@ -276,7 +276,7 @@ def test_resolve_nous_runtime_credentials_invoke_jwt_is_idempotent(
         lambda: sync_calls.append(True),
     )
 
-    creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+    creds = auth_mod.resolve_nous_runtime_credentials()
 
     assert creds["api_key"] == token
     assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
@@ -314,7 +314,7 @@ def test_resolve_nous_runtime_credentials_trusts_invoke_jwt_exp_over_stale_metad
 
     monkeypatch.setattr(auth_mod, "_refresh_access_token", _unexpected_refresh)
 
-    creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+    creds = auth_mod.resolve_nous_runtime_credentials()
 
     assert creds["api_key"] == token
     assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
@@ -342,7 +342,7 @@ def test_resolve_nous_runtime_credentials_does_not_apply_agent_key_ttl_to_invoke
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=1800)
+    creds = auth_mod.resolve_nous_runtime_credentials()
 
     assert creds["api_key"] == token
     assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
@@ -386,7 +386,7 @@ def test_resolve_nous_runtime_credentials_refreshes_legacy_agent_key_to_invoke_j
 
     monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
 
-    creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+    creds = auth_mod.resolve_nous_runtime_credentials()
 
     assert refresh_calls == ["refresh-old"]
     assert creds["api_key"] == refreshed_token
@@ -398,27 +398,6 @@ def test_resolve_nous_runtime_credentials_refreshes_legacy_agent_key_to_invoke_j
     assert singleton["agent_key"] == refreshed_token
     assert singleton["agent_key_id"] is None
     assert payload["credential_pool"]["nous"][0]["agent_key"] == refreshed_token
-
-
-def test_legacy_auth_mode_is_rejected(tmp_path, monkeypatch):
-    import hermes_cli.auth as auth_mod
-
-    hermes_home = tmp_path / "hermes"
-    token = _invoke_jwt(seconds=3600)
-    _setup_nous_auth(
-        hermes_home,
-        access_token=token,
-        scope=auth_mod.DEFAULT_NOUS_SCOPE,
-        expires_at=_future_iso(3600),
-        expires_in=3600,
-    )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    with pytest.raises(ValueError, match="Invalid Nous inference auth mode"):
-        auth_mod.resolve_nous_runtime_credentials(
-            min_key_ttl_seconds=300,
-            inference_auth_mode="legacy",
-        )
 
 
 def test_resolve_nous_runtime_credentials_reauths_when_invoke_scope_missing(
@@ -444,7 +423,7 @@ def test_resolve_nous_runtime_credentials_reauths_when_invoke_scope_missing(
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     with pytest.raises(AuthError) as exc:
-        auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+        auth_mod.resolve_nous_runtime_credentials()
 
     assert exc.value.code == "missing_inference_invoke_scope"
     assert exc.value.relogin_required is True
@@ -500,7 +479,7 @@ def test_removed_legacy_session_env_var_does_not_change_jwt_auth(tmp_path, monke
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("HERMES_AGENT_USE_LEGACY_SESSION_KEYS", "true")
 
-    creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+    creds = auth_mod.resolve_nous_runtime_credentials()
 
     assert creds["api_key"] == token
     payload = json.loads((hermes_home / "auth.json").read_text())
@@ -579,7 +558,6 @@ def test_nous_inference_auth_logs_do_not_include_secret_values(
 
     caplog.set_level(logging.INFO, logger="hermes_cli.auth")
     auth_mod.resolve_nous_runtime_credentials(
-        min_key_ttl_seconds=300,
         force_refresh=True,
     )
 
@@ -678,7 +656,7 @@ def test_get_nous_auth_status_auth_store_fallback(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setattr(
         "hermes_cli.auth.resolve_nous_runtime_credentials",
-        lambda min_key_ttl_seconds=60: {
+        lambda **kwargs: {
             "base_url": "https://inference.example.com/v1",
             "expires_at": "2099-01-01T00:00:00+00:00",
             "key_id": "key-1",
@@ -718,7 +696,7 @@ def test_get_nous_auth_status_prefers_runtime_auth_store_over_stale_pool(tmp_pat
 
     monkeypatch.setattr(
         "hermes_cli.auth.resolve_nous_runtime_credentials",
-        lambda min_key_ttl_seconds=60: {
+        lambda **kwargs: {
             "base_url": "https://inference.example.com/v1",
             "expires_at": "2099-01-01T00:00:00+00:00",
             "key_id": "key-fresh",
@@ -740,7 +718,7 @@ def test_get_nous_auth_status_reports_revoked_refresh_session(tmp_path, monkeypa
     _setup_nous_auth(hermes_home, access_token="at-123")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    def _boom(min_key_ttl_seconds=60):
+    def _boom(**kwargs):
         raise AuthError("Refresh session has been revoked", provider="nous", relogin_required=True)
 
     monkeypatch.setattr("hermes_cli.auth.resolve_nous_runtime_credentials", _boom)
@@ -803,7 +781,7 @@ def test_refresh_token_persisted_when_refreshed_jwt_lacks_invoke_scope(tmp_path,
     monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
 
     with pytest.raises(AuthError) as exc:
-        resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+        resolve_nous_runtime_credentials()
     assert exc.value.code == "missing_inference_invoke_scope"
 
     state_after_failure = get_provider_auth_state("nous")
@@ -811,7 +789,7 @@ def test_refresh_token_persisted_when_refreshed_jwt_lacks_invoke_scope(tmp_path,
     assert state_after_failure["refresh_token"] == "refresh-1"
     assert state_after_failure["access_token"] == bad_jwt
 
-    creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+    creds = resolve_nous_runtime_credentials()
     assert creds["api_key"] == good_jwt
     assert refresh_calls == ["refresh-old", "refresh-1"]
 
@@ -836,7 +814,7 @@ def test_refresh_token_persisted_when_refreshed_token_is_not_jwt(tmp_path, monke
     monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
 
     with pytest.raises(AuthError) as exc:
-        resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+        resolve_nous_runtime_credentials()
     assert exc.value.code == "access_token_not_jwt"
 
     state_after_failure = get_provider_auth_state("nous")
@@ -882,7 +860,7 @@ def test_terminal_refresh_failure_quarantines_tokens(
     monkeypatch.setattr(auth_mod, "_refresh_access_token", _terminal_refresh_failure)
 
     with pytest.raises(AuthError, match="Refresh session has been revoked"):
-        auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+        auth_mod.resolve_nous_runtime_credentials()
 
     state_after_failure = auth_mod.get_provider_auth_state("nous")
     assert state_after_failure is not None
@@ -895,7 +873,7 @@ def test_terminal_refresh_failure_quarantines_tokens(
     assert payload.get("credential_pool", {}).get("nous") == []
 
     with pytest.raises(AuthError, match="No access token found"):
-        auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+        auth_mod.resolve_nous_runtime_credentials()
 
     assert refresh_calls == ["refresh-old"]
 
@@ -968,9 +946,9 @@ def test_unusable_access_token_refresh_uses_latest_rotated_refresh_token(tmp_pat
     monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
 
     with pytest.raises(AuthError) as exc:
-        resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+        resolve_nous_runtime_credentials()
     assert exc.value.code == "access_token_not_jwt"
-    creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+    creds = resolve_nous_runtime_credentials()
     assert creds["api_key"] == good_jwt
     assert refresh_calls == ["refresh-old", "refresh-1"]
 
@@ -1251,7 +1229,6 @@ def test_persist_nous_credentials_allows_recovery_from_401(tmp_path, monkeypatch
     monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
 
     creds = resolve_nous_runtime_credentials(
-        min_key_ttl_seconds=300,
         force_refresh=True,
     )
     assert creds["api_key"] == new_jwt
@@ -1788,10 +1765,6 @@ def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
     def _fake_refresh(state, **kwargs):
         # Simulate portal returning a fresh inference JWT.
         assert kwargs.get("force_refresh") is True
-        assert (
-            kwargs.get("inference_auth_mode")
-            == auth_mod.NOUS_INFERENCE_AUTH_MODE_FRESH
-        )
         return {
             **state,
             "access_token": fresh_jwt,
@@ -1914,10 +1887,7 @@ def test_runtime_refresh_uses_newer_shared_token_before_local_stale_token(
 
     monkeypatch.setattr(auth_mod, "_refresh_access_token", _refresh_should_not_happen)
 
-    creds = auth_mod.resolve_nous_runtime_credentials(
-        min_key_ttl_seconds=300,
-        inference_auth_mode=auth_mod.NOUS_INFERENCE_AUTH_MODE_FRESH,
-    )
+    creds = auth_mod.resolve_nous_runtime_credentials()
 
     assert creds["api_key"] == shared_token
 

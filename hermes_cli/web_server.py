@@ -2065,7 +2065,6 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
 def _nous_poller(session_id: str) -> None:
     """Background poller that drives a Nous device-code flow to completion."""
     from hermes_cli.auth import (
-        NOUS_INFERENCE_AUTH_MODE_FRESH,
         _poll_for_token,
         refresh_nous_oauth_from_state,
     )
@@ -2111,10 +2110,8 @@ def _nous_poller(session_id: str) -> None:
         }
         full_state = refresh_nous_oauth_from_state(
             auth_state,
-            min_key_ttl_seconds=300,
             timeout_seconds=15.0,
             force_refresh=False,
-            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_FRESH,
         )
         from hermes_cli.auth import persist_nous_credentials
         persist_nous_credentials(full_state)

@@ -22,7 +22,6 @@ from agent.credential_persistence import (
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
     PROVIDER_REGISTRY,
     _auth_store_lock,
     _codex_access_token_is_expiring,
@@ -932,8 +931,6 @@ class CredentialPool:
                 if synced is not entry:
                     entry = synced
                 auth_mod.resolve_nous_runtime_credentials(
-                    min_key_ttl_seconds=DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
-                    inference_auth_mode=auth_mod.NOUS_INFERENCE_AUTH_MODE_AUTO,
                     force_refresh=force,
                 )
                 updated = self._sync_nous_entry_from_auth_store(entry)

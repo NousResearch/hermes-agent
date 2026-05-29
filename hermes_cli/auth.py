@@ -73,14 +73,7 @@ DEFAULT_NOUS_CLIENT_ID = "hermes-cli"
 NOUS_INFERENCE_INVOKE_SCOPE = "inference:invoke"
 DEFAULT_NOUS_SCOPE = NOUS_INFERENCE_INVOKE_SCOPE
 NOUS_DEVICE_CODE_SOURCE = "device_code"
-NOUS_INFERENCE_AUTH_MODE_AUTO = "auto"
-NOUS_INFERENCE_AUTH_MODE_FRESH = "fresh"
-NOUS_INFERENCE_AUTH_MODES = frozenset({
-    NOUS_INFERENCE_AUTH_MODE_AUTO,
-    NOUS_INFERENCE_AUTH_MODE_FRESH,
-})
 NOUS_AUTH_PATH_INVOKE_JWT = "invoke_jwt"
-DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60  # 30 minutes
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 NOUS_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
@@ -1731,17 +1724,6 @@ def _scope_values(raw_scope: Any) -> set[str]:
             if isinstance(item, str):
                 scopes.update(_scope_values(item))
     return scopes
-
-
-def _normalize_nous_inference_auth_mode(inference_auth_mode: Optional[str]) -> str:
-    mode = str(inference_auth_mode or NOUS_INFERENCE_AUTH_MODE_AUTO).strip().lower()
-    if mode not in NOUS_INFERENCE_AUTH_MODES:
-        allowed = ", ".join(sorted(NOUS_INFERENCE_AUTH_MODES))
-        raise ValueError(
-            "Invalid Nous inference auth mode "
-            f"{inference_auth_mode!r}; expected one of: {allowed}"
-        )
-    return mode
 
 
 def _nous_invoke_jwt_status(
@@ -4649,7 +4631,6 @@ def _quarantine_nous_pool_entries(
 def _try_import_shared_nous_state(
     *,
     timeout_seconds: float = 15.0,
-    min_key_ttl_seconds: int = 5 * 60,
 ) -> Optional[Dict[str, Any]]:
     """Attempt to rehydrate Nous OAuth state from the shared store.
 
@@ -4692,10 +4673,8 @@ def _try_import_shared_nous_state(
 
             refreshed = refresh_nous_oauth_from_state(
                 state,
-                min_key_ttl_seconds=min_key_ttl_seconds,
                 timeout_seconds=timeout_seconds,
                 force_refresh=True,
-                inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_FRESH,
                 on_state_update=_persist_shared_refresh,
             )
             _write_shared_nous_state(refreshed)
@@ -4965,12 +4944,10 @@ def refresh_nous_oauth_pure(
     expires_at: Optional[str] = None,
     agent_key: Optional[str] = None,
     agent_key_expires_at: Optional[str] = None,
-    min_key_ttl_seconds: int = DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
     timeout_seconds: float = 15.0,
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     force_refresh: bool = False,
-    inference_auth_mode: str = NOUS_INFERENCE_AUTH_MODE_AUTO,
     on_state_update: Optional[Callable[[Dict[str, Any], str], None]] = None,
 ) -> Dict[str, Any]:
     """Refresh Nous OAuth state without mutating auth.json directly.
@@ -4979,7 +4956,6 @@ def refresh_nous_oauth_pure(
     Callers that own persistent state can use it to save the newly rotated
     refresh token before later validation can fail.
     """
-    _normalize_nous_inference_auth_mode(inference_auth_mode)
     state: Dict[str, Any] = {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -5001,7 +4977,6 @@ def refresh_nous_oauth_pure(
     timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
 
     with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
-        del min_key_ttl_seconds
         current_invoke_jwt_status = _nous_invoke_jwt_status(
             state.get("access_token"),
             scope=state.get("scope"),
@@ -5056,10 +5031,8 @@ def refresh_nous_oauth_pure(
 def refresh_nous_oauth_from_state(
     state: Dict[str, Any],
     *,
-    min_key_ttl_seconds: int = DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
     timeout_seconds: float = 15.0,
     force_refresh: bool = False,
-    inference_auth_mode: str = NOUS_INFERENCE_AUTH_MODE_AUTO,
     on_state_update: Optional[Callable[[Dict[str, Any], str], None]] = None,
 ) -> Dict[str, Any]:
     """Refresh Nous OAuth from a state dict. Thin wrapper around refresh_nous_oauth_pure."""
@@ -5076,12 +5049,10 @@ def refresh_nous_oauth_from_state(
         expires_at=state.get("expires_at"),
         agent_key=state.get("agent_key"),
         agent_key_expires_at=state.get("agent_key_expires_at"),
-        min_key_ttl_seconds=min_key_ttl_seconds,
         timeout_seconds=timeout_seconds,
         insecure=tls.get("insecure"),
         ca_bundle=tls.get("ca_bundle"),
         force_refresh=force_refresh,
-        inference_auth_mode=inference_auth_mode,
         on_state_update=on_state_update,
     )
 
@@ -5157,11 +5128,9 @@ def _sync_nous_pool_from_auth_store() -> None:
 
 def resolve_nous_runtime_credentials(
     *,
-    min_key_ttl_seconds: int = DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
     timeout_seconds: float = 15.0,
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
-    inference_auth_mode: str = NOUS_INFERENCE_AUTH_MODE_AUTO,
     force_refresh: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -5173,8 +5142,6 @@ def resolve_nous_runtime_credentials(
     Returns dict with: provider, base_url, api_key, key_id, expires_at,
     expires_in, source ("invoke_jwt"), and auth_path.
     """
-    inference_auth_mode = _normalize_nous_inference_auth_mode(inference_auth_mode)
-    min_key_ttl_seconds = max(60, int(min_key_ttl_seconds))
     sequence_id = uuid.uuid4().hex[:12]
 
     with _auth_store_lock():
@@ -5246,8 +5213,6 @@ def resolve_nous_runtime_credentials(
         _oauth_trace(
             "nous_runtime_credentials_start",
             sequence_id=sequence_id,
-            inference_auth_mode=inference_auth_mode,
-            min_key_ttl_seconds=min_key_ttl_seconds,
             refresh_token_fp=_token_fingerprint(state.get("refresh_token")),
         )
 
@@ -5550,7 +5515,7 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
             "source": "auth_store",
         }
         try:
-            creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
+            creds = resolve_nous_runtime_credentials()
             refreshed_state = get_provider_auth_state("nous") or state
             base_status.update(
                 {
@@ -7348,7 +7313,6 @@ def _nous_device_code_login(
     timeout_seconds: float = 15.0,
     insecure: bool = False,
     ca_bundle: Optional[str] = None,
-    min_key_ttl_seconds: int = 5 * 60,
 ) -> Dict[str, Any]:
     """Run the Nous device-code flow and return full OAuth state without persisting."""
     pconfig = PROVIDER_REGISTRY["nous"]
@@ -7450,10 +7414,8 @@ def _nous_device_code_login(
     try:
         return refresh_nous_oauth_from_state(
             auth_state,
-            min_key_ttl_seconds=min_key_ttl_seconds,
             timeout_seconds=timeout_seconds,
             force_refresh=False,
-            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_FRESH,
         )
     except AuthError as exc:
         if exc.code == "subscription_required":
@@ -7505,7 +7467,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 print("Rehydrating Nous session from shared credentials...")
                 auth_state = _try_import_shared_nous_state(
                     timeout_seconds=timeout_seconds,
-                    min_key_ttl_seconds=5 * 60,
                 )
                 if auth_state is None:
                     print("Could not refresh shared credentials — falling back to device-code login.")
@@ -7520,7 +7481,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 timeout_seconds=timeout_seconds,
                 insecure=insecure,
                 ca_bundle=ca_bundle,
-                min_key_ttl_seconds=5 * 60,
             )
 
         inference_base_url = auth_state["inference_base_url"]

@@ -646,6 +646,7 @@ def classify_api_error(
             FailoverReason.invalid_reasoning_config,
             retryable=True,
             should_compress=False,
+            should_fallback=False,
         )
 
     # xAI Grok subscription entitlement errors.
@@ -1154,6 +1155,7 @@ def _classify_by_message(
             FailoverReason.invalid_reasoning_config,
             retryable=True,
             should_compress=False,
+            should_fallback=False,
         )
 
     # Image-too-large patterns (from message text when no status_code)

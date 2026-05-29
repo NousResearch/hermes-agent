@@ -13466,6 +13466,7 @@ class GatewayRunner:
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
                     name=topic_name,
+                    **emoji_kwargs,
                 )
                 return
 

@@ -1,3 +1,4 @@
+import enum
 """Tests for Telegram model picker thread fallback."""
 
 import sys
@@ -13,13 +14,22 @@ def _ensure_telegram_mock():
 
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
-    mod.constants.ChatType.PRIVATE = "private"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
+    class _ParseMode(str, enum.Enum):
+        MARKDOWN = "Markdown"
+        MARKDOWN_V2 = "MarkdownV2"
+        HTML = "HTML"
+
+    class _ChatType(str, enum.Enum):
+        PRIVATE = "private"
+        GROUP = "group"
+        SUPERGROUP = "supergroup"
+        CHANNEL = "channel"
+
+    mod.constants.ParseMode = _ParseMode
+    mod.constants.ChatType = _ChatType
+    # Also set directly for ``from telegram.constants import ...``
+    mod.ParseMode = _ParseMode
+    mod.ChatType = _ChatType
     mod.error.NetworkError = type("NetworkError", (OSError,), {})
     mod.error.TimedOut = type("TimedOut", (OSError,), {})
     mod.error.BadRequest = type("BadRequest", (Exception,), {})

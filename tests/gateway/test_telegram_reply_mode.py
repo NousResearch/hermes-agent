@@ -6,6 +6,7 @@ Covers the threading behavior control for multi-chunk replies:
 - "all": All chunks thread to original message
 """
 import os
+import enum
 import sys
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -20,11 +21,22 @@ def _ensure_telegram_mock():
         return
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
-    mod.constants.ChatType.PRIVATE = "private"
+    class _ParseMode(str, enum.Enum):
+        MARKDOWN = "Markdown"
+        MARKDOWN_V2 = "MarkdownV2"
+        HTML = "HTML"
+
+    class _ChatType(str, enum.Enum):
+        PRIVATE = "private"
+        GROUP = "group"
+        SUPERGROUP = "supergroup"
+        CHANNEL = "channel"
+
+    mod.constants.ParseMode = _ParseMode
+    mod.constants.ChatType = _ChatType
+    # Also set directly for ``from telegram.constants import ...``
+    mod.ParseMode = _ParseMode
+    mod.ChatType = _ChatType
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, mod)
 

@@ -11,6 +11,7 @@ We mock the telegram module at import time to avoid collection errors.
 import asyncio
 import importlib
 import os
+import enum
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -40,11 +41,22 @@ def _ensure_telegram_mock():
     telegram_mod = MagicMock()
     # ContextTypes needs DEFAULT_TYPE as an actual attribute for the annotation
     telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
+    class _ParseMode(str, enum.Enum):
+        MARKDOWN = "Markdown"
+        MARKDOWN_V2 = "MarkdownV2"
+        HTML = "HTML"
+
+    class _ChatType(str, enum.Enum):
+        PRIVATE = "private"
+        GROUP = "group"
+        SUPERGROUP = "supergroup"
+        CHANNEL = "channel"
+
+    telegram_mod.constants.ParseMode = _ParseMode
+    telegram_mod.constants.ChatType = _ChatType
+    # Also set directly for ``from telegram.constants import ...``
+    telegram_mod.ParseMode = _ParseMode
+    telegram_mod.ChatType = _ChatType
 
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, telegram_mod)

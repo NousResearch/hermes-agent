@@ -32,6 +32,7 @@ incident.
 """
 
 import ast
+import enum
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -52,13 +53,30 @@ def _ensure_telegram_mock() -> None:
 
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
-    mod.constants.ChatType.PRIVATE = "private"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
+
+    # Use proper str-enums so ``repr(ParseMode.MARKDOWN_V2)`` contains
+    # "MARKDOWN_V2" — matching what the real python-telegram-bot package
+    # provides.  Plain strings caused test assertions like
+    # ``assert "MARKDOWN_V2" in repr(sent["parse_mode"])`` to fail because
+    # ``repr("MarkdownV2")`` is ``"'MarkdownV2'"`` (no enum member name).
+    class _ParseMode(str, enum.Enum):
+        MARKDOWN = "Markdown"
+        MARKDOWN_V2 = "MarkdownV2"
+        HTML = "HTML"
+
+    class _ChatType(str, enum.Enum):
+        PRIVATE = "private"
+        GROUP = "group"
+        SUPERGROUP = "supergroup"
+        CHANNEL = "channel"
+
+    mod.constants.ParseMode = _ParseMode
+    mod.constants.ChatType = _ChatType
+    # Also set on ``mod`` directly — ``from telegram.constants import ChatType``
+    # resolves to ``sys.modules["telegram.constants"].ChatType`` which is
+    # ``mod.ChatType``, not ``mod.constants.ChatType``.
+    mod.ParseMode = _ParseMode
+    mod.ChatType = _ChatType
 
     # Real exception classes so ``except (NetworkError, ...)`` clauses
     # in production code don't blow up with TypeError.

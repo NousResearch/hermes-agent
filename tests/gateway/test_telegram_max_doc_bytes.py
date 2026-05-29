@@ -6,6 +6,7 @@ of `extra.base_url` as the explicit opt-in to the higher cap.
 """
 
 import sys
+import enum
 from unittest.mock import MagicMock
 
 from gateway.config import PlatformConfig
@@ -17,11 +18,22 @@ def _ensure_telegram_mock():
 
     telegram_mod = MagicMock()
     telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
+    class _ParseMode(str, enum.Enum):
+        MARKDOWN = "Markdown"
+        MARKDOWN_V2 = "MarkdownV2"
+        HTML = "HTML"
+
+    class _ChatType(str, enum.Enum):
+        PRIVATE = "private"
+        GROUP = "group"
+        SUPERGROUP = "supergroup"
+        CHANNEL = "channel"
+
+    telegram_mod.constants.ParseMode = _ParseMode
+    telegram_mod.constants.ChatType = _ChatType
+    # Also set directly for ``from telegram.constants import ...``
+    telegram_mod.ParseMode = _ParseMode
+    telegram_mod.ChatType = _ChatType
 
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, telegram_mod)

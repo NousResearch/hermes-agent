@@ -11,6 +11,7 @@ Covers:
 
 import asyncio
 import os
+import enum
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,11 +30,22 @@ def _ensure_telegram_mock():
     # ``from telegram.constants import ChatType`` resolves to our mock
     # with string-valued members (not auto-generated MagicMocks).
     constants_mod = MagicMock()
-    constants_mod.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    constants_mod.ChatType.GROUP = "group"
-    constants_mod.ChatType.SUPERGROUP = "supergroup"
-    constants_mod.ChatType.CHANNEL = "channel"
-    constants_mod.ChatType.PRIVATE = "private"
+    class _ParseMode(str, enum.Enum):
+        MARKDOWN = "Markdown"
+        MARKDOWN_V2 = "MarkdownV2"
+        HTML = "HTML"
+
+    class _ChatType(str, enum.Enum):
+        PRIVATE = "private"
+        GROUP = "group"
+        SUPERGROUP = "supergroup"
+        CHANNEL = "channel"
+
+    constants_mod.constants.ParseMode = _ParseMode
+    constants_mod.constants.ChatType = _ChatType
+    # Also set directly for ``from telegram.constants import ...``
+    constants_mod.ParseMode = _ParseMode
+    constants_mod.ChatType = _ChatType
 
     sys.modules["telegram"] = telegram_mod
     sys.modules["telegram.ext"] = telegram_mod.ext

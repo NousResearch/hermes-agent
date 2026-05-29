@@ -11,6 +11,7 @@ No LLM, no real platform connections.
 
 import asyncio
 import sys
+import enum
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
